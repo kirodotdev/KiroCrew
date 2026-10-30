@@ -604,18 +604,20 @@ class TestAutonudgeBindingKey:
 class TestCasefoldMatchSpanExpandingFolds:
     """``ß`` casefolds to ``ss``, so a match offset can land mid-expansion."""
 
-    def test_start_offset_inside_an_expansion_snaps_to_the_enclosing_char(self) -> None:
-        # "aßb".casefold() == "assb"; needle "sb" starts at cf offset 2, which is
-        # no source-char boundary (bounds are 0,1,3,4) -> snap back to the 'ß'.
-        span = _casefold_match_span("aßb", "sb")
-        assert span == (1, 3)
-        assert "aßb"[span[0] : span[1]] == "ßb"
-
-    def test_end_offset_inside_an_expansion_snaps_outward(self) -> None:
-        # needle "as" ends at cf offset 2, mid-'ß' -> snap out to include it.
-        span = _casefold_match_span("aßb", "as")
-        assert span == (0, 2)
-        assert "aßb"[span[0] : span[1]] == "aß"
+    # "aßb".casefold() == "assb", whose source-char bounds are 0,1,3,4.
+    @pytest.mark.parametrize(
+        "needle,span,text",
+        [
+            # "sb" starts at cf offset 2, mid-'ß' -> snap back to the enclosing 'ß'.
+            pytest.param("sb", (1, 3), "ßb", id="start-snaps-to-the-enclosing-char"),
+            # "as" ends at cf offset 2, mid-'ß' -> snap out to include it.
+            pytest.param("as", (0, 2), "aß", id="end-snaps-outward"),
+        ],
+    )
+    def test_an_offset_inside_an_expansion_snaps_to_whole_chars(self, needle, span, text) -> None:
+        got = _casefold_match_span("aßb", needle)
+        assert got == span
+        assert "aßb"[got[0] : got[1]] == text
 
     def test_no_match_and_empty_needle_return_none(self) -> None:
         assert _casefold_match_span("abc", "zz") is None
@@ -884,11 +886,12 @@ class TestSpawnStatusTool:
 
     def test_non_positive_paging_values_are_dropped(self) -> None:
         with patch.object(mcp_core, "_get", return_value={"result": "ok"}) as g:
-            _call_tool_inner(
+            out = _call_tool_inner(
                 "spawn_status",
                 {"agent_id": "abc123", "offset": 0, "limit": -1, "grep": "   "},
             )
         assert g.call_args.args[0] == "/api/spawn/abc123"
+        assert "ok" in out
 
     def test_a_transport_error_is_surfaced(self) -> None:
         with patch.object(mcp_core, "_get", return_value={"error": "HTTP 404"}):
@@ -1227,19 +1230,21 @@ class TestLearnListAndRemoveTools:
         # schema has to ADMIT repo_scope for the handler to ever see it, and a
         # direct handler call cannot detect a schema that rejects the field.
         with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
-            _call_tool_inner(
+            out = _call_tool_inner(
                 "learn_remove",
                 mcp_core._validate_args(
                     "learn_remove", {"query": "always X", "repo_scope": "src/pkg"}
                 ),
             )
+        assert out == "Removed lessons matching: always X"
         assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": "src/pkg"})
 
     def test_learn_remove_forwards_an_empty_scope_to_target_global_rows(self) -> None:
         # An empty string is a PRESENT selector -- it targets the unscoped rows --
         # so it must be forwarded, not dropped the way ``or None`` would.
         with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
-            _call_tool_inner("learn_remove", {"query": "always X", "repo_scope": ""})
+            out = _call_tool_inner("learn_remove", {"query": "always X", "repo_scope": ""})
+        assert out == "Removed lessons matching: always X"
         assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": ""})
 
     def test_learn_remove_treats_a_null_scope_as_absent(self) -> None:
@@ -1248,10 +1253,11 @@ class TestLearnListAndRemoveTools:
         # rows", so the handler leaves the selector out of the payload and the
         # delete matches every scope.
         with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
-            _call_tool_inner(
+            out = _call_tool_inner(
                 "learn_remove",
                 mcp_core._validate_args("learn_remove", {"query": "always X", "repo_scope": None}),
             )
+        assert out == "Removed lessons matching: always X"
         assert d.call_args.args == ("/api/lessons", {"rule": "always X"})
 
     def test_learn_remove_schema_rejects_an_unusable_scope(self) -> None:
@@ -1316,21 +1322,21 @@ class TestOpsMissionControlApiTool:
         assert g.call_args.args == ("/api/apps/ops-mission-control/incidents?status=open",)
         assert out == '{"incidents": []}'
 
-    def test_a_malformed_body_is_refused(self) -> None:
+    @pytest.mark.parametrize(
+        "body_json,error",
+        [
+            ("{not json", "Error: body_json is not valid JSON."),
+            ("[1, 2]", "Error: body_json must encode a JSON object."),
+        ],
+        ids=["malformed", "non-object"],
+    )
+    def test_a_bad_body_is_refused_before_any_request(self, body_json, error) -> None:
         with patch.object(mcp_core, "_post", side_effect=AssertionError("no request")):
             out = _call_tool_inner(
                 "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": "{not json"},
+                {"method": "POST", "path": "/ledger", "body_json": body_json},
             )
-        assert out == "Error: body_json is not valid JSON."
-
-    def test_a_non_object_body_is_refused(self) -> None:
-        with patch.object(mcp_core, "_post", side_effect=AssertionError("no request")):
-            out = _call_tool_inner(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": "[1, 2]"},
-            )
-        assert out == "Error: body_json must encode a JSON object."
+        assert out == error
 
     def test_a_post_body_is_sanitized_and_redacted_on_the_way_in(self) -> None:
         body_json = '{"note": "key AKIAIOSFODNN7EXAMPLE", "zw": "a\\u200bb"}'
@@ -1346,9 +1352,10 @@ class TestOpsMissionControlApiTool:
 
     def test_an_empty_body_posts_an_empty_object(self) -> None:
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
-            _call_tool_inner(
+            out = _call_tool_inner(
                 "ops_mission_control_api", {"method": "POST", "path": "/ledger/hygiene"}
             )
+        assert out == '{"ok": true}'
         assert p.call_args.args == ("/api/apps/ops-mission-control/ledger/hygiene", {})
 
     def test_an_oversized_response_is_truncated_with_a_narrowing_hint(self) -> None:
@@ -1377,12 +1384,31 @@ class TestOpsMissionControlApiTool:
 
 
 class TestResourceStatusTool:
-    def _run(self, posture: str, *, cap: Any = 3, state: Any = None, lines: Any = None):
+    def _run(
+        self,
+        posture: str,
+        *,
+        cap: Any = 3,
+        state: Any = None,
+        lines: Any = None,
+        spawn_avail: float = 16.0,
+        pressure_held: bool = False,
+    ):
+        from kiro_crew.resource_status import SpawnFloorReading
+
         rstatus = SimpleNamespace(
             posture=posture,
-            memory_pressure_held=False,
+            memory_pressure_held=pressure_held,
             summary_lines=lambda: list(lines or ["Memory: 19G free", "Load: 1.2"]),
         )
+        # The gate's own figure, pinned so no case turns on the CI host's memory.
+        spawn = SpawnFloorReading(floor_gb=2.0, available_gb=spawn_avail, min_start_gb=2.15)
+        with patch("kiro_crew.resource_status.spawn_floor_reading", return_value=spawn) as read:
+            out = self._run_with(rstatus, cap=cap, state=state)
+        self.floor_reads = read.call_args_list
+        return out
+
+    def _run_with(self, rstatus: Any, *, cap: Any, state: Any):
         cfg = SimpleNamespace(load=staticmethod(lambda: object()))
         resolver = (
             (lambda _c: (_ for _ in ()).throw(RuntimeError("unreadable config")))
@@ -1398,7 +1424,12 @@ class TestResourceStatusTool:
                     with patch(
                         "kiro_crew.mcp_tools.spawn._live_adaptive_state", return_value=state
                     ):
-                        return _call_tool_inner("resource_status", {})
+                        # The caller-scoped block is its own read, pinned in
+                        # test_session_memory_scope.py; held quiet here.
+                        with patch(
+                            "kiro_crew.mcp_tools.spawn.session_memory_lines", return_value=[]
+                        ):
+                            return _call_tool_inner("resource_status", {})
 
     def test_the_live_cap_is_reported_when_the_gateway_answers(self) -> None:
         """The cap IN FORCE, not the configured ceiling.
@@ -1452,13 +1483,55 @@ class TestResourceStatusTool:
         [
             ("critical", "do NOT start heavy work"),
             ("tight", "prefer the lighter path"),
-            ("ample", "ample headroom — heavy work is fine"),
+            (
+                "ample",
+                "ample headroom right now — nothing is reserved, so it can change before you act",
+            ),
             # An unmeasurable host must not silently read as "fine".
             ("unknown", "headroom could not be measured"),
         ],
     )
     def test_each_posture_gets_its_own_guidance(self, posture: str, needle: str) -> None:
         assert needle in self._run(posture)
+
+    def test_an_ample_posture_with_the_spawn_floor_unmet_says_spawning_is_blocked(self) -> None:
+        """The posture's figure reads AMPLE while the gate's own figure
+        is under ``spawn_min_memory_gb`` plus a start's price, so every spawn
+        waits. The tool must not call that ample headroom."""
+        out = self._run("ample", spawn_avail=1.8)
+        assert "Subagent spawn floor: 2 GB must stay free after a start" in out
+        assert "BLOCKED: new top-level subagents wait in the queue" in out
+        assert "Guidance: new top-level subagents cannot start now — the gate reads 1.8 GB" in out
+        assert "at least 2.15 GB" in out
+        assert "ample headroom" not in out
+        # Said once, as the guidance, not again as a trailing line.
+        assert "Spawning:" not in out
+
+    @pytest.mark.parametrize("posture", ["critical", "tight"])
+    def test_a_pressured_posture_also_says_spawning_is_blocked(self, posture: str) -> None:
+        out = self._run(posture, spawn_avail=1.0)
+        # Right after the memory guidance, before any temp-space block.
+        lines = out.splitlines()
+        guidance = next(i for i, line in enumerate(lines) if line.startswith("Guidance:"))
+        assert "they wait in the queue until memory frees" in lines[guidance + 1]
+        assert "Spawning: new top-level subagents cannot start now" in out
+
+    def test_a_blocked_floor_outranks_the_kernel_pressure_guidance(self) -> None:
+        out = self._run("ample", spawn_avail=1.8, pressure_held=True)
+        assert "Guidance: new top-level subagents cannot start now" in out
+        assert "macOS reports memory pressure" not in out
+
+    @pytest.mark.parametrize("remote", [True, False])
+    def test_the_caller_placement_reaches_the_floor_reading(self, remote: bool) -> None:
+        with patch("kiro_crew.mcp_tools.spawn._caller_runs_remotely", return_value=remote):
+            self._run("ample")
+        assert [c.kwargs for c in self.floor_reads] == [{"remote": remote}]
+
+    def test_a_met_floor_keeps_the_ample_guidance(self) -> None:
+        out = self._run("ample", spawn_avail=16.0)
+        assert "the gate reads 16.0 GB, a top-level start needs at least 2.15 GB" in out
+        assert "BLOCKED" not in out
+        assert "ample headroom right now" in out
 
 
 class TestLiveAdaptiveState:
@@ -1599,8 +1672,10 @@ class TestSpawnCapHint:
             patch.object(spawn, "resolve_max_subagents", return_value=5),
             patch.object(spawn.KiroCrewConfig, "load", staticmethod(lambda: object())),
         ):
-            spawn.schemas()
+            schemas = spawn.schemas()
         get.assert_not_called()
+        desc = next(s for s in schemas if s["name"] == "spawn_run")["description"]
+        assert "configured sub-agent ceiling is 5" in desc
 
 
 class TestAdaptiveExecCap:

@@ -95,6 +95,7 @@ from kiro_crew.config.section_builders import (
     _build_memory_config,
     _build_messaging_config,
     _build_monitoring_config,
+    _build_power_config,
     _build_publish_config,
     _build_session_summary_config,
     _build_skills_config,
@@ -110,6 +111,7 @@ from kiro_crew.config.section_builders import (
     _build_wecom_config,
     _build_weixin_config,
     _build_whatsapp_config,
+    _build_work_ledger_config,
 )
 from kiro_crew.config.sections import (
     AgentConfig,
@@ -692,6 +694,8 @@ def build_config(
         # could not read what they configured". Carry the observation
         # through so the caller can tell them apart.
         cfg = config_cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+        # An absent key, so an edition's ``default_stt()`` applies here too.
+        cfg.stt.provider = _sections.default_stt_provider()
         agent_defaults = _sections.SectionReader(AgentConfig, {})
         cfg.agent.acp_backend = _read_backend_choice(agent_defaults, {}, "acp_backend")
         cfg.agent.member_acp_backend = _read_backend_choice(
@@ -825,9 +829,12 @@ def build_config(
     tunnel_data = _coerced_section(data, "tunnel", _degraded)
     skills_data = _coerced_section(data, "skills", _degraded)
     session_summary_data = _coerced_section(data, "session_summary", _degraded)
+    session_environments_data = _coerced_section(data, "session_environments", _degraded)
     messaging_data = _coerced_section(data, "messaging", _degraded)
     telemetry_data = _coerced_section(data, "telemetry", _degraded)
     watchdog_data = _coerced_section(data, "watchdog", _degraded)
+    work_ledger_data = _coerced_section(data, "work_ledger", _degraded)
+    power_data = _coerced_section(data, "power", _degraded)
     decisions_data = _coerced_section(data, "decisions", _degraded)
     browser_data = _coerced_section(data, "browser", _degraded)
     resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
@@ -892,6 +899,10 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    # Kept as written, never coerced to a selectable value: the
+                    # selection gate refuses a pin this build cannot start, and a
+                    # coerced one would run the crewmate on another harness.
+                    acp_backend=crew.read("acp_backend", _safe_str).strip(),
                     approval_mode=_sections.coerce_member_approval_mode(crew.get("approval_mode")),
                     display_name=(
                         raw_display_name
@@ -907,6 +918,8 @@ def build_config(
                     # must not become a truthy star, so only a real bool
                     # is honoured and anything else reads as un-starred.
                     starred=crew.read("starred", _safe_bool),
+                    # Strictly a bool, like ``starred``: a stray string reads as off.
+                    dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
@@ -927,6 +940,7 @@ def build_config(
                     # internals are reached through the module, not
                     # re-exported from here.
                     avatar=_sections._safe_avatar(crew.get("avatar")),
+                    imported=_sections.safe_imported(crew.get("imported")),
                 )
 
     # Migrate workspaces from flat or structured format
@@ -1044,6 +1058,8 @@ def build_config(
         # passes this kwarg — without it config.json values would be
         # silently ignored and the dataclass defaults would always win.
         watchdog=_build_watchdog_config(watchdog_data),
+        work_ledger=_build_work_ledger_config(work_ledger_data),
+        power=_build_power_config(power_data),
         resource_limits=ResourceLimitsConfig.from_raw(resource_limits_data),
         telemetry=_build_telemetry_config(telemetry_data),
         memory=_build_memory_config(memory_data),
@@ -1116,6 +1132,9 @@ def build_config(
         browser=BrowserConfig.from_raw(browser_data),
         skills=_build_skills_config(skills_data),
         session_summary=_build_session_summary_config(session_summary_data),
+        session_environments=_sections.SessionEnvironmentsConfig.from_raw(
+            session_environments_data
+        ),
         slack_channels={
             ch_id: ChannelConfig.from_dict(ch_data)
             for ch_id, ch_data in (

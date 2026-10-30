@@ -26,6 +26,10 @@ from kiro_crew import tool_call_title
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_tool_call_title_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("corpus_gate",)
+
 FACADE = "kiro_crew.tool_call_title"
 SRC_DIR = Path(tool_call_title.__file__).resolve().parent
 #: The owners, lowest layer first.
@@ -152,13 +156,3 @@ def test_the_test_tree_walk_reaches_this_file() -> None:
     walked = {path.resolve() for path in _test_tree_files()}
     assert _THIS_FILE in walked
     assert source_corpus.repo_root() / "test" / "test_tool_call_title.py" in walked
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

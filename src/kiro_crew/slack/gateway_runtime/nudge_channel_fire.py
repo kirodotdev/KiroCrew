@@ -19,12 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import asyncio
+    import contextlib
     import time
 
     from kiro_crew.slack.gateway import (
         APPROVAL_INTERACTIVE,
         STRUCTURAL_TERMINAL_REASON,
         AgentTurnUsage,
+        AutoNudgeService,
         GatewayOrchestrator,
         InboundMessage,
         LLMEvent,
@@ -120,7 +122,38 @@ async def _fire_slack_nudge(
     thread, persist for dashboard replay. Returns True when the turn ran;
     False on skip (busy/unroutable/error) — the AutoNudge service re-arms
     with backoff on False.
+
+    Everything after the provider returns -- the completion report, the usage
+    row, the session release, the thread post and the replay save -- is one
+    section registered with the AutoNudge shutdown drain, so a gateway stop
+    that lands there waits for it instead of cancelling a reply the provider
+    already produced. The provider wait itself stays cancellable.
     """
+    with contextlib.ExitStack() as bookkeeping:
+        return await self._fire_slack_inner_nudge(loop, wake_message, bookkeeping)
+
+
+def _bookkeeping_section(
+    self: GatewayOrchestrator,
+) -> contextlib.AbstractContextManager[None]:
+    """A section the AutoNudge shutdown drain waits for instead of cancelling.
+
+    Only a running service has a drain to register with; without one the
+    section is a no-op.
+    """
+    svc = self.autonudge_svc
+    if not isinstance(svc, AutoNudgeService):
+        return contextlib.nullcontext()
+    return svc.drain_section()
+
+
+async def _fire_slack_inner_nudge(
+    self: GatewayOrchestrator,
+    loop: NudgeLoop,
+    wake_message: str | None,
+    bookkeeping: contextlib.ExitStack,
+) -> bool | MonitorDispatchResult:
+    """The body of :meth:`_fire_slack_nudge`; *bookkeeping* holds its drain section."""
     key = loop.slot_key
     if self.sessions is None or self.slack is None:
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
@@ -142,6 +175,13 @@ async def _fire_slack_nudge(
         logger.warning("AutoNudge: slack session %s unroutable — removing loop %s", key, loop.id)
         if self.autonudge_svc and wake_message is None:
             await self.autonudge_svc.remove(loop.id, stop_reason="slack_unroutable")
+        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    if channel_refusal(channel, operation="slack.autonudge", caller="autonudge"):
+        # The channel itself (``channels.posture.slack.allowed_channel_ids``): no
+        # unattended turn for a channel the policy does not admit.
+        logger.warning("AutoNudge: slack channel refused by policy for loop %s", loop.id)
         return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     if wake_message is None:
         # Snapshot message, sentinel AND config generation TOGETHER, before
@@ -175,6 +215,16 @@ async def _fire_slack_nudge(
     _completion_hook: MonitorCompletionHook | None = None
     _raw_dispositions: list[MonitorActionDisposition] = []
     _completion_reported = False
+    _in_bookkeeping = False
+
+    def _open_bookkeeping() -> None:
+        # Called with no await since the provider returned, so shutdown never
+        # finds this task between the reply and its registration.
+        nonlocal _in_bookkeeping
+        if not _in_bookkeeping:
+            bookkeeping.enter_context(self._bookkeeping_section())
+            _in_bookkeeping = True
+
     try:
         _memory_store = await session_store_for_turn(self.ctx_builder, key)
         if wake_message is None:
@@ -229,6 +279,7 @@ async def _fire_slack_nudge(
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=self._interactive_approval("autonudge", nudge_key=key),
                     on_complete=_capture_raw_completion,
+                    undelivered_watch_key=key,
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
@@ -268,6 +319,11 @@ async def _fire_slack_nudge(
                     else None
                 ),
                 closing_gate=lambda: sessions.begin_turn(key),
+                undelivered_watch_key=key,
+                # Each session's own decline bucket and audit identity, as at the
+                # other channel constructors.
+                audit_session_key=key,
+                audit_agent=_get_agent_for_session(key) or "kirocrew",
             )
             response = await asyncio.wait_for(
                 driver.run(full_msg),
@@ -277,6 +333,7 @@ async def _fire_slack_nudge(
                 return MonitorDispatchResult.UNAVAILABLE
             assert _completion_hook is not None
             _completion_hook.mark_accepted()
+        _open_bookkeeping()
         _turn_usage = provider_last_turn_usage(client)
 
         if _raw_dispositions:
@@ -312,6 +369,7 @@ async def _fire_slack_nudge(
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     except asyncio.CancelledError:
         if _turn_started and _raw_dispositions and not _completion_reported:
+            _open_bookkeeping()
             _turn_usage = provider_last_turn_usage(client)
             await self._report_monitor_completion(
                 loop,
@@ -336,6 +394,7 @@ async def _fire_slack_nudge(
             key,
             loop.id,
         )
+        _open_bookkeeping()
         _turn_usage = provider_last_turn_usage(client)
         if _raw_dispositions:
             await self._report_monitor_completion(
@@ -526,10 +585,15 @@ async def _fire_dm_nudge(
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
 
     if wake_message is None:
-        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
+        fired_message = loop.message
+        msg_body = await compose_nudge_body(fired_message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # Skill triggers read the loop's own message, not the cycle header or the
+        # ledger snapshot Kiro Crew put before it, as on the Slack thread path.
+        trigger_text: str | None = fired_message
     else:
         tagged = wake_message
+        trigger_text = None
 
     try:
         conversation_id = await adapter.resolve_conversation(transport, sessions, key, principal)
@@ -546,6 +610,8 @@ async def _fire_dm_nudge(
     try:
         synthetic = adapter.build_inbound(principal, conversation_id, tagged)
         dispatch_kwargs: dict[str, Any] = {"interpret_commands": False}
+        if trigger_text is not None:
+            dispatch_kwargs["skill_trigger_text"] = trigger_text
         if adapter.supports_monitor:
             completion_hook = self._monitor_completion_hook(loop)
             if wake_message is not None and completion_hook is None:

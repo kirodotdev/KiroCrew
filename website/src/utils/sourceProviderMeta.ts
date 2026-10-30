@@ -68,7 +68,7 @@ const GITHUB_META: SourceProviderMeta = {
   numberLabel: n => `#${n}`,
   logo: 'github',
   pullRequestWording: true,
-  capabilities: { checks: true, mergeState: true, resolveThreads: true, comment: true },
+  capabilities: { checks: true, mergeState: true, mergeActions: true, resolveThreads: true, comment: true },
 }
 
 const GITLAB_META: SourceProviderMeta = {
@@ -80,7 +80,7 @@ const GITLAB_META: SourceProviderMeta = {
   pullRequestWording: false,
   // Checks, merge state, and the thread and comment writes (resolve, reopen,
   // reply, top-level comment) are all served for GitLab by the gateway.
-  capabilities: { checks: true, mergeState: true, resolveThreads: true, comment: true },
+  capabilities: { checks: true, mergeState: true, mergeActions: true, resolveThreads: true, comment: true },
 }
 
 const BITBUCKET_SERVER_META: SourceProviderMeta = {
@@ -92,13 +92,32 @@ const BITBUCKET_SERVER_META: SourceProviderMeta = {
   pullRequestWording: true,
   // Read-only: the gateway serves the overview, files, comments and build
   // status, and refuses every write for this provider.
-  capabilities: { checks: true, mergeState: false, resolveThreads: false, comment: false },
+  capabilities: { checks: true, mergeState: false, mergeActions: false, resolveThreads: false, comment: false },
+}
+
+const GERRIT_META: SourceProviderMeta = {
+  id: 'gerrit',
+  displayName: 'Gerrit',
+  // Gerrit names a change by its bare number and has no sigil of its own, so the
+  // long form is the word Gerrit itself uses ("Change 466698") and the short
+  // form falls to `#`, the convention most forges share.
+  refLabel: n => i18nT('components.pullRequestPanel.change_number', { number: n }),
+  numberLabel: n => `#${n}`,
+  logo: null,
+  pullRequestWording: true,
+  // Read-only: the gateway serves the overview, files, review threads, label
+  // votes as checks and the merge state, and refuses every write for this
+  // provider. `mergeState` without `mergeActions`: the conflict banner is real
+  // information, while Gerrit has no auto-merge and no draft-to-ready write
+  // this panel could offer.
+  capabilities: { checks: true, mergeState: true, mergeActions: false, resolveThreads: false, comment: false },
 }
 
 const BUILTIN_META: Readonly<Record<string, SourceProviderMeta>> = {
   github: GITHUB_META,
   gitlab: GITLAB_META,
   bitbucket_server: BITBUCKET_SERVER_META,
+  gerrit: GERRIT_META,
 }
 
 /** Fail-closed defaults for a provider nothing has described: label it the way
@@ -116,7 +135,7 @@ function fallbackMeta(provider: string): SourceProviderMeta {
     numberLabel: n => `#${n}`,
     logo: null,
     pullRequestWording: true,
-    capabilities: { checks: false, mergeState: false, resolveThreads: false, comment: false },
+    capabilities: { checks: false, mergeState: false, mergeActions: false, resolveThreads: false, comment: false },
   }
 }
 
@@ -147,7 +166,11 @@ export function sourceProviderMeta(provider: PullRequestProvider): SourceProvide
     // the descriptor that supplied it.
     icon: typeof descriptor.icon === 'function' ? descriptor.icon : undefined,
     pullRequestWording: true,
-    capabilities: descriptor.capabilities,
+    // A descriptor predating `mergeActions` meant it by `mergeState`.
+    capabilities: {
+      ...descriptor.capabilities,
+      mergeActions: descriptor.capabilities.mergeActions ?? descriptor.capabilities.mergeState,
+    },
   }
 }
 

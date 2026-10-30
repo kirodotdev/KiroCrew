@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
+import {
+  branchBehindHandoff,
+  mergeConflictHandoff,
+  rebaseRequiredHandoff,
+  type MergeBlockerHandoffSource,
+} from './mergeBlockerHandoff.prompt'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -32,11 +38,13 @@ import type {
 import {
   findSourceForUrl,
   MAX_PULL_REQUEST_SOURCES,
+  sourceInstanceHost,
   sourceLinkKey,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
+import SecretNameCopy from './SecretNameCopy'
 import { PierrePatch } from '../pierre'
 import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
@@ -176,37 +184,33 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   const state = source.state.toLowerCase()
   if ((state !== 'open' && state !== 'opened') || source.mergedAt || source.draft) return null
   const base = source.baseBranch || 'the base branch'
-  const label = sourceProviderMeta(source.provider).refLabel(source.number)
-  const sourceUrl = safeExternalUrl(source.url)
-  const handoffHeader = (problem: string) => [
-    `${problem} on ${label} (${source.title}):`,
-    '',
-    `- Branch: ${source.headBranch || 'the feature branch'} -> ${base}`,
-    ...(sourceUrl ? [`- Pull request: ${sourceUrl}`] : []),
-    '',
-  ]
+  // The handoff bodies are agent-facing prompts, so they live in the
+  // `*.prompt.ts` module beside this file; only the banner copy is translated.
+  const handoffSource: MergeBlockerHandoffSource = {
+    provider: source.provider,
+    title: source.title,
+    headBranch: source.headBranch,
+    label: sourceProviderMeta(source.provider).refLabel(source.number),
+    base,
+    sourceUrl: safeExternalUrl(source.url) ?? '',
+  }
   if (source.mergeable === 'conflicting') {
     return {
       tone: 'danger',
       title: i18nT('components.pullRequestPanel.merge_conflicts'),
       detail: i18nT('components.pullRequestPanel.merge_conflicts_detail', { base }),
-      handoff: [
-        ...handoffHeader('Merge conflict'),
-        `Resolve the conflicts with ${base}. If the branch is shared with other contributors, prefer merging ${base} into the branch; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: mergeConflictHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'need_rebase') {
-    // GitLab-specific: the project requires a rebase (e.g. fast-forward-only
-    // merge method) -- a merge commit cannot unblock this MR.
+    // The project requires a rebase (a fast-forward-only merge method on
+    // GitLab, or a fast-forward-only Gerrit project) -- a merge commit cannot
+    // unblock it.
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.rebase_required'),
       detail: i18nT('components.pullRequestPanel.rebase_required_detail', { base }),
-      handoff: [
-        ...handoffHeader('Rebase required'),
-        `This project requires a rebase (merge commits will not unblock the MR). If the branch is shared with other contributors, coordinate with them before rewriting history; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: rebaseRequiredHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'behind') {
@@ -214,10 +218,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.branch_is_behind'),
       detail: i18nT('components.pullRequestPanel.branch_is_behind_detail', { base }),
-      handoff: [
-        ...handoffHeader('Out-of-date branch'),
-        `Update the branch without rewriting history: merge ${base} into the branch (or use the provider's update-branch option) and push normally. Only rebase if the repository requires a linear history, and never force-push a shared branch without checking with its other contributors.`,
-      ].join('\n'),
+      handoff: branchBehindHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'blocked') {
@@ -244,6 +245,16 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
         tone: 'warn',
         title: i18nT('components.pullRequestPanel.merge_blocked'),
         detail: i18nT('components.pullRequestPanel.waiting_on_checks_detail'),
+      }
+    }
+    // Gerrit has no branch protection: a change that is open, mergeable and not
+    // submittable is waiting on the votes its submit rules require, and the
+    // verb Gerrit uses for landing it is "submit".
+    if (source.provider === 'gerrit') {
+      return {
+        tone: 'warn',
+        title: i18nT('components.pullRequestPanel.submit_blocked'),
+        detail: i18nT('components.pullRequestPanel.submit_requirements_not_met'),
       }
     }
     return {
@@ -702,10 +713,11 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   }
 
   if (!pullRequestIsLive(source)) return null
-  // Ready-for-review and auto-merge are merge-state writes. A provider whose
-  // gateway plugin does not implement them must not get buttons that can only
-  // return "unsupported by this provider".
-  if (!meta.capabilities.mergeState) return null
+  // Ready-for-review and auto-merge are writes. A provider whose gateway plugin
+  // does not implement them must not get buttons that can only return
+  // "unsupported by this provider" -- even one that reports merge state, since
+  // the banner and the buttons are different things (Gerrit has the former only).
+  if (!(meta.capabilities.mergeActions ?? meta.capabilities.mergeState)) return null
   const showReady = source.draft
   const showAutoMerge = !source.draft && !source.autoMerge
   const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
@@ -973,6 +985,7 @@ export default function PullRequestPanel({
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
   const sourceUrl = safeExternalUrl(source?.url || '')
+  const instanceHost = source ? sourceInstanceHost(source) : null
   // One meta lookup for every provider-shaped decision in this component: the
   // Checks tab and its poll, the merge affordances, and the labels.
   const providerChecks = Boolean(
@@ -1125,9 +1138,19 @@ export default function PullRequestPanel({
     // header badge it sits above. Field by field: see `selectedSourceStatus`.
     if (source) {
       merged[source.url] = selectedSourceStatus(source, cached[source.url])
+    } else if (query.error && selected) {
+      // The selected pull request's read failed outright (no payload loaded
+      // at all), which is what the error card above already tells the user.
+      // Falling through to `cached` here would keep a stale glyph — a green
+      // tick from the LAST successful load — contradicting that card, so the
+      // tab clears to neutral instead. A background revalidation failure on
+      // already-loaded data takes the `if (source)` branch above and keeps
+      // its last-known glyph, which is the separate, deliberate behavior the
+      // compact notice at `query.error && source` below exists for.
+      delete merged[selected.url]
     }
     return merged
-  }, [statusQuery.data, source])
+  }, [statusQuery.data, source, query.error, selected])
 
   const allTabs: Array<{ id: SourceTab; label: string; count?: number; countText?: string; tone?: string }> = source ? [
     { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
@@ -1215,8 +1238,14 @@ export default function PullRequestPanel({
           one, so the user knows the data is the last loaded version and how to
           fix the refresh. */}
       {query.error && !source && (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-md w-full flex flex-col items-center">
+        // A vertical scroller, centred with `m-auto` rather than
+        // `items-center`: a notice carrying a long per-host secret name has no
+        // height cap, and on a short phone pane it can be taller than the panel.
+        // `items-center` would push its top and the Retry button below it out
+        // of reach; `m-auto` centres it while it fits and lets it scroll once it
+        // does not.
+        <div className="flex-1 min-h-0 overflow-y-auto flex px-6 py-4" data-testid="pull-request-panel-load-error-scroller">
+          <div className="m-auto max-w-md w-full flex flex-col items-center">
             {/* askAgent on, as in the Issues panel: the panel is read-only (no
                 draft), and a provider CLI that is missing or logged out is the
                 kind of failure the agent can diagnose. The login command rides
@@ -1235,14 +1264,21 @@ export default function PullRequestPanel({
               />
             ) : (
               <ErrorNotice
-                className="w-full max-h-64 leading-relaxed"
+                // A notice carrying a secret name is two short sentences and the
+                // name block: it is shown whole, because the height cap would
+                // turn the sentence into a scroll area the block squeezes, and
+                // its last line says why the shorter shared name stopped working.
+                className={queryError.secretName ? 'w-full leading-relaxed' : 'w-full max-h-64 leading-relaxed'}
                 messageClassName="font-mono whitespace-pre-wrap break-words"
                 title={i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
                 message={queryError.message}
                 messagePlacement="below"
                 actionPlacement="below"
-                scrollMessage
+                scrollMessage={!queryError.secretName}
                 askAgent
+                // A provider read over its own REST API names the token's vault
+                // entry; the name rides beside the sentence so it is copied whole.
+                footer={queryError.secretName ? <SecretNameCopy name={queryError.secretName} /> : undefined}
                 testId="pull-request-panel-load-error"
               />
             )}
@@ -1267,6 +1303,12 @@ export default function PullRequestPanel({
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
               <span>{sourceProviderMeta(source.provider).displayName}</span>
+              {/* Which INSTANCE: two Gerrit servers (or a GitHub Enterprise and
+                  github.com) render the same provider word, and until now only
+                  the open-in-browser tooltip told them apart. A host is an
+                  identifier, not prose, so it is not translated. Elided when
+                  the provider name already implies the host (github.com). */}
+              {instanceHost && <span className="min-w-0 truncate" title={instanceHost} data-testid="pull-request-panel-instance-host">{instanceHost}</span>}
               {source.headBranch && source.baseBranch && (
                 <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
               )}

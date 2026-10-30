@@ -534,13 +534,21 @@ class TestMarkMcpOAuthCompleted:
         prior_call_count = state.broadcast_ws.call_count
         _mark_mcp_oauth_completed(state, slot, "linear", success=True)
         assert state.broadcast_ws.call_count == prior_call_count
+        # The closed banner keeps its recorded failure rather than flipping to completed.
+        m = slot.messages[0]
+        assert m["meta"]["failed"] is True
+        assert m["meta"]["error"] == "boom"
+        assert "completed" not in m["meta"]
 
     def test_no_matching_banner_is_noop(self):
         slot = _ChatSlot("s1")
         state = MagicMock()
-        # No mcp_oauth message has been appended for "phantom".
+        # Only another server's banner exists; marking "phantom" must not touch it.
+        _emit_mcp_oauth_request(MagicMock(), slot, "linear", "https://mcp.linear.app/authorize")
         _mark_mcp_oauth_completed(state, slot, "phantom", success=True)
         state.broadcast_ws.assert_not_called()
+        assert len(slot.messages) == 1
+        assert "completed" not in slot.messages[0]["meta"]
 
     def test_completion_resolves_the_row_by_mid_on_a_ts_collision(self):
         """The completion path shares the supersede path's row-identity problem.
@@ -566,9 +574,9 @@ class TestMarkMcpOAuthCompleted:
         state = MagicMock()
         _mark_mcp_oauth_completed(state, slot, "linear", success=True)
 
-        assert second["meta"].get("completed") is True, (
-            "the completion landed on the wrong row -- ts is not a row identity"
-        )
+        assert (
+            second["meta"].get("completed") is True
+        ), "the completion landed on the wrong row -- ts is not a row identity"
         assert first["meta"].get("completed") is None
         _, payload = state.broadcast_ws.call_args[0]
         assert payload["mid"] == second["meta"]["mid"]
@@ -868,9 +876,9 @@ class TestSupersededOAuthBanners:
         state = MagicMock()
         _supersede_open_mcp_oauth_banners(state, slot, "miro", False)
 
-        assert all(m["meta"].get("superseded") is True for m in slot.messages), (
-            "a ts collision left a banner open, still offering a dead loopback link"
-        )
+        assert all(
+            m["meta"].get("superseded") is True for m in slot.messages
+        ), "a ts collision left a banner open, still offering a dead loopback link"
         assert all("oauth_url" not in m["meta"] for m in slot.messages)
         # Each row patched exactly once -- not the first one twice.
         assert state.broadcast_ws.call_count == 2
@@ -1540,8 +1548,10 @@ def _own(tmp_path, monkeypatch, servers) -> None:
 
 def _pending(*names):
     return _FakeProviderClient(
-        [{"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
-         for n in names]
+        [
+            {"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
+            for n in names
+        ]
     )
 
 
@@ -1679,9 +1689,7 @@ class TestAnnotationFailsOpen:
         """Both halves of the predicate must fail open, not just the store read."""
         _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
         slot = _ChatSlot("s1")
-        with patch(
-            f"kiro_crew.dashboard.chat_runner.{broken}", side_effect=RuntimeError("boom")
-        ):
+        with patch(f"kiro_crew.dashboard.chat_runner.{broken}", side_effect=RuntimeError("boom")):
             await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
         assert _owned_flags(slot) == [False]
 
@@ -1713,9 +1721,7 @@ class TestDrainDoesNoBlockingWorkOnTheLoop:
         assert _owned_flags(slot) == [True]
 
     @pytest.mark.asyncio
-    async def test_lookup_is_skipped_entirely_when_nothing_is_pending(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_lookup_is_skipped_entirely_when_nothing_is_pending(self, tmp_path, monkeypatch):
         """Session init is the hot path and the common case is zero requests."""
         _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
         calls: list[int] = []
@@ -1763,9 +1769,7 @@ class TestMidTurnRequestsAreNeverAnnotated:
 
     def test_annotation_is_opt_in_per_call(self):
         slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(
-            MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1], card_owned=True
-        )
+        _emit_mcp_oauth_request(MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1], card_owned=True)
         assert slot.messages[0]["meta"]["card_owned"] is True
 
 

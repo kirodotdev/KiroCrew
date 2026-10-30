@@ -203,14 +203,20 @@ def test_preview_and_save_warn_when_kas_cannot_apply_single_tool_limits(editor):
     assert service.get("A")["backend_warning"] == expected
 
 
-def test_kiro_backend_applies_single_tool_limits_without_warning(editor):
+def test_a_kiro_member_backend_is_judged_as_kas_for_single_tool_limits(editor):
+    # A member DM set to "kiro" runs on KAS, so the warning names KAS, while the
+    # same "kiro" in agent.acp_backend stays kiro-cli and honours the limits.
     service, home, specs, parent = editor
-    # Both harnesses are explicitly kiro-cli ("kiro"): absent or "" is KAS.
     config = json.loads((home / "config.json").read_text())
     config["agent"] = {"member_acp_backend": "kiro", "acp_backend": "kiro"}
     (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
     loader._invalidate_config_cache()
-    assert save(service, [_LIMITED_DOCS], enroll=True)["backend_warning"] is None
+    assert save(service, [_LIMITED_DOCS], enroll=True)["backend_warning"] == {
+        "code": "tool_limits_unsupported",
+        "backend": "kas",
+        "setting": "agent.member_acp_backend",
+        "servers": ["docs"],
+    }
 
 
 def test_unsupported_member_backend_warns_on_preview_and_save(editor):

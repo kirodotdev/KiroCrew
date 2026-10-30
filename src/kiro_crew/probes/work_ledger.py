@@ -43,8 +43,12 @@ import json
 import logging
 from typing import Callable
 
-from kiro_crew import irq, ledger_wake, work_ledger
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
+from kiro_crew import irq, ledger_wake, work_ledger, work_preview
+from kiro_crew.work_vocab import (
+    WORK_BLOCKED_REASONS,
+    WORK_REASON_STATUSES,
+    WORK_REMOTE_DISPATCH_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,10 @@ _REPORT_KEY = "report"
 
 #: Prefix for a silence wake's dedupe key.
 _STALL_KEY = "stall"
+
+#: Prefix for an undelivered-report wake's dedupe key
+#: (:mod:`kiro_crew.work_ledger_undelivered`).
+_UNDELIVERED_KEY = "undelivered"
 
 #: The one terminal item state that means the item's bar was MET. The other two
 #: (``rejected``, ``abandoned``) close an item without meeting it, so a ledger is
@@ -314,8 +322,16 @@ class WorkLedgerProbe(irq.Probe):
         keys never recur anyway.
         """
         found: list[irq.Observation] = []
+        remote_dispatch: bool | None = None
         for event in events:
-            if not ledger_wake.is_actionable_event(event.kind, event.status):
+            if remote_dispatch is None and (event.status or "").strip() in (
+                WORK_REMOTE_DISPATCH_STATUSES
+            ):
+                # Only a preview status pays for the switch's config read.
+                remote_dispatch = work_preview.remote_dispatch()
+            if not ledger_wake.is_actionable_event(
+                event.kind, event.status, remote_dispatch=bool(remote_dispatch)
+            ):
                 continue
             # Keyed on the event's content-addressed id, which is why these never
             # reset on a revision: the key already cannot recur, and clearing it
@@ -334,6 +350,25 @@ class WorkLedgerProbe(irq.Probe):
                     irq.ResetsOn.NEVER,
                 )
             )
+
+        undelivered = work_ledger.read_undelivered(conductor_key, item)
+        if undelivered is not None:
+            # The worker tried to report and the harness never delivered the call, so
+            # there is no report event to wake on and the silence would otherwise read
+            # as a stall. Keyed on the failed call's own stamp: a second failure later
+            # is news, a re-read of the same one is not.
+            token = f"{_UNDELIVERED_KEY}:{undelivered['at']}"
+            if self._spend(conductor_key, item.item_id, token, replaces=f"{_UNDELIVERED_KEY}:"):
+                found.append(
+                    irq.Observation(
+                        f"{_UNDELIVERED_KEY}:{item.item_id}:{undelivered['at']}",
+                        irq.Severity.WAKE,
+                        ledger_wake.undelivered_wake_brief(
+                            item_id=item.item_id, tool=undelivered["tool"]
+                        ),
+                        irq.ResetsOn.NEVER,
+                    )
+                )
 
         if work_ledger.is_stale(
             item,
@@ -456,7 +491,10 @@ def person_wait_fingerprint(
 
     An item whose worker session is gone (*worker_closed*) is not a wait on a person:
     nobody is left to answer its approval, so the patrol must run and the probe's
-    stall wake must reach the conductor.
+    stall wake must reach the conductor. A worker's ``work_report`` / ``work_brief``
+    that never reached the ledger (:func:`kiro_crew.work_ledger.read_undelivered`)
+    moves no report field, so its record is folded into the fingerprint: each new
+    failure releases the hold once, for the probe's undelivered wake.
 
     Positive evidence only, like :func:`has_open_items`: no open item, a torn item
     file, an unreadable header or a read that raises all answer ``None``, so doubt
@@ -481,7 +519,19 @@ def person_wait_fingerprint(
         closed = worker_closed or _always_open
         if any(closed(item.worker_session_key or "") for item in open_items):
             return None
-        return worker_report_revision(items)
+        # A worker whose report the harness never delivered has news the report
+        # fields do not carry, so its record joins the fingerprint: a new failure
+        # releases the hold for the tick that brings it, and the patrol holds again
+        # once that turn has seen it.
+        undelivered: dict[str, str] = {}
+        for item in open_items:
+            lost = work_ledger.read_undelivered(conductor_key, item)
+            if lost is not None:
+                undelivered[item.item_id] = lost["at"]
+        revision = worker_report_revision(items)
+        if not undelivered:
+            return revision
+        return f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None

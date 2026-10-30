@@ -6,7 +6,9 @@ dedicated process (``run_start`` decides which), builds the prompt, streams the 
 the retry ladder in its nested ``_stream_with_transient_retry``, answers the child's tool
 prompts through the run's permission ladder (``RunEventCoordinator._permission_policy``),
 and records the completion. It is one function, kept whole so its locals and nested closures
-stay as they are. New work inside a run's turn goes here.
+stay as they are. New work inside a run's turn goes here. The per-prompt usage row's body is
+in ``usage_row`` (the nested ``_persist_usage_row`` calls it), which adds the row's task to
+the manager's ``_report_tasks``.
 
 A function here whose first parameter is ``self`` is a ``RunEventCoordinator`` member: the
 class binds it under the same name in ``subagent_manager/run.py``. The ``*_impl`` ones are
@@ -14,13 +16,13 @@ rebound onto ``kiro_crew.subagent``'s globals by ``bind_component_globals``, so 
 they read unqualified are that module's, imported here for typing only; this module defines
 no other.
 
-The manager fields this module uses. Writes: ``_agents``, ``_conversations``,
-``_report_tasks``. Reads: ``_await_late_start``, ``_clear_tool_dispatch``,
+The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads: ``_await_late_start``, ``_clear_tool_dispatch``,
 ``_completion_keep``, ``_completion_keep_chars``, ``_create_shared_session``,
 ``_ctx_builder``, ``_effective_turn_limit``, ``_ensure_dedicated_start_priced``,
 ``_fire_event``, ``_gate_exit_reset``, ``_gate_wait_mark``, ``_global_approval_mode``,
 ``_is_cc_provider``, ``_is_yolo``, ``_leave_startup``, ``_note_startup_progress``,
-``_note_tool_dispatch``, ``_note_tool_result``, ``_provider_label_of``, ``_sessions``,
+``_note_tool_dispatch``, ``_note_tool_result``, ``_parent_steering_dirs``,
+``_provider_label_of``, ``_sessions``,
 ``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
 ``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
 ``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
         STOP_CLASS_CANCELLED,
+        TERMINAL_TOOL_STATUSES,
         TRANSIENT_RETRIES,
         Any,
         FallbackState,
@@ -78,7 +81,6 @@ if TYPE_CHECKING:
         invalidate_stale_kas_session,
         is_registered_agent_name,
         logger,
-        provider_fallback_active,
         refuse_stale_switch,
         replace_stale_shared_session,
         reproject_claimed_session,
@@ -118,6 +120,8 @@ async def _run_inner_impl(
     info._start_queue_wait_mono_ms = 0.0
     info._gate_wait_started = None
     info._gate_wait_started_mono = None
+    # Prompt-hook time paused the startup clock too, per attempt the same way.
+    info._prompt_hooks_secs = 0.0
     # The durable row stays ``starting`` until this run's OWN turn produces
     # its first stream event addressed to its session
     # (``ensure_running_marked`` in the stream loop below):
@@ -196,6 +200,12 @@ async def _run_inner_impl(
                 raise ValueError("memory_unavailable: continuation changed memory owner")
             execution = original_execution.with_mode(captured_execution.memory_mode)
         bind_session_execution(session_key, execution)
+        # A crewmate's own worker (``spawn_run(crew=...)`` of a crewmate that owns
+        # its file) takes its crewmate's backend route and kit, as a hand-off's
+        # worker does; any other run drops the key from that route.
+        from kiro_crew.mate_worker import note_worker_session
+
+        note_worker_session(session_key, execution)
 
     from kiro_crew.workflows.registry import _await_owned
 
@@ -296,7 +306,36 @@ async def _run_inner_impl(
             resources=f"subagent_id={info.id},inherited_agent={agent}",
         )
     effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
-    if agent and (kind == "member" or (info.conversation_key and not info.agent)):
+    from kiro_crew.mate_worker import is_own_worker_execution
+
+    own_worker = not info.agent and is_own_worker_execution(execution)
+    if own_worker:
+        # The worker's spec lives in the crewmate folder, which the agent roster
+        # does not list, so it is not looked up by name; what it needs is a
+        # backend that carries its per-session kit (the hand-off's own check).
+        from kiro_crew.acp_backends import resolve_selected_backend
+        from kiro_crew.config.loader import KiroCrewConfig as _Config
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
+        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+        _cfg = await asyncio.to_thread(_Config.load)
+        try:
+            worker_backend = (
+                resolve_selected_backend(info.backend)
+                if info.backend is not None
+                else crewmate_worker_backend(
+                    _cfg, crew_for_member_id(_cfg, str(execution.member_id or ""))
+                )
+            )
+        except CrewmateHarnessUnavailable as exc:
+            # The crewmate's pinned harness cannot start, so neither can its
+            # worker; it never runs on another harness in its place. The
+            # message leads with its code, as the kit refusal below does.
+            raise RuntimeError(str(exc)) from None
+        backend_reason = worker_kit_backend_refusal(worker_backend)
+        if backend_reason is not None:
+            raise RuntimeError(f"capability_harness_unsupported: {backend_reason}")
+    elif agent and (kind == "member" or (info.conversation_key and not info.agent)):
         agent, error, code = await asyncio.to_thread(_validate_agent, agent, effective_cwd)
         if error:
             info.error_code = code
@@ -316,6 +355,14 @@ async def _run_inner_impl(
     extra_kwargs: dict[str, Any] = {
         "crew_agent": execution.selection_name if kind == "member" else "",
     }
+    # The owning app the spawn was vetted for (``_vet_spawn_governance`` above)
+    # is the child session's app too: its provider's ``owning_app`` is what
+    # the child's own governance reads, its git proxy's egress checks among
+    # them, so an app-owned chat's subagent keeps the app's profile. Passed as
+    # ``owning_app``, not ``app_name``: the child keeps the model the spawn
+    # path resolves and reports (``_spawn_effective_model``), not the app's pin.
+    if info.app:
+        extra_kwargs["owning_app"] = info.app
     # An explicit per-spawn model wins; otherwise fall back to the
     # configured sub-agent role model (agent.role_models['subagent']). When
     # that role is unpinned the helper returns "" so we omit the kwarg and
@@ -395,10 +442,22 @@ async def _run_inner_impl(
     # below still applies, because a record can be pruned or released between the
     # two runs; it is one of two things standing between a shared-arm run and its
     # follow-up rather than the only one.
+    # ── Remote session environment: the child works where the parent does ──
+    # Bound and fenced like the parent, on the dedicated arm: the shared runtime's
+    # workspace server is the parent's and the companion is local. A failed bind
+    # refuses the run.
+    from kiro_crew.coder.session_launch import inherit_environment_for_subagent
+
+    inherits_remote = bool(info.parent_session_key) and (
+        await inherit_environment_for_subagent(info.parent_session_key, session_key)
+    )
+    info._remote_workspace = inherits_remote
     if info.keep:
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()
-    use_session_sharing = plan.shared
+    # The parent's shared runtime carries its workspace server, so a remote
+    # child gets its own; a start priced shared takes the top-up below.
+    use_session_sharing = plan.shared and not inherits_remote
     if use_session_sharing:
         # Local import: this module's ``*_impl`` bodies resolve globals through
         # ``kiro_crew.subagent``, which does not export this name.
@@ -624,21 +683,74 @@ async def _run_inner_impl(
             # Learned recall is optional for prompt construction. Explicit
             # memory tools still report the unavailable captured store.
             logger.debug("Subagent learned memory is unavailable", exc_info=True)
+    from kiro_crew.session_work_dir import is_subagent_work_dir
+
+    # A continuation of a run spawned without a cwd restores that run's
+    # per-run scratch directory as info.cwd; it is still not a project.
+    _is_scratch = bool(info.cwd) and await asyncio.to_thread(is_subagent_work_dir, info.cwd)
+    _project: str | None = None if _is_scratch else (info.cwd or None)
+    if info.crew:
+        from kiro_crew.members import record_activity
+
+        activity_member = execution.selection_name
+        if own_worker:
+            # A worker record names the worker template, not the crewmate; the
+            # crewmate is the one its member id names (the alias it has now).
+            from kiro_crew.config.loader import KiroCrewConfig as _Config
+            from kiro_crew.execution_context import member_config_for_id
+
+            _cfg = await asyncio.to_thread(_Config.load)
+            try:
+                activity_member, _ = member_config_for_id(_cfg, execution.member_id or "")
+            except ValueError:
+                activity_member = info.crew
+
+        # A respawn of this run re-enters with the same key; the dedupe keeps one entry.
+        await asyncio.to_thread(
+            record_activity,
+            activity_member,
+            session_key,
+            execution.memory_mode,
+            project=_project or "",
+            via="spawn",
+            dedupe_session=True,
+        )
+    # The parent's folder steering, so a child spawned from a chat filed in a
+    # folder follows the same guides its parent does. build_message gates the
+    # section on the project group, so a run that withheld it skips the read.
+    info.steering_dirs = ()
+    steering_resolver = self._manager._parent_steering_dirs
+    if steering_resolver is not None and info.include_project and info.parent_session_key:
+        try:
+            info.steering_dirs = tuple(await steering_resolver(info.parent_session_key))
+        except Exception:  # noqa: BLE001 - steering is optional; it must never fail the run
+            logger.warning("Folder steering unavailable for subagent %s", info.id, exc_info=True)
     full_message, _ = await run_in_embed_pool(
         self._manager._ctx_builder.build_message,
         message,
         is_new,
         session_key,
-        project=info.cwd or None,
+        project=_project,
         memory_store=info.memory_store or None,
         execution_context=turn_execution,
         provider_type=self._manager._provider_label_of(client),
         model_window=_sub_window,
         context_groups=_groups,
+        # Triggers read only the task the parent wrote, not the sub-agent
+        # prefix, the resume preamble or the MCP notice prepended above.
+        skill_trigger_text=raw_task,
         blocks_reads=info.memory_mode == "temporary",
         context_provider=client,
         agent=agent or None,
         resumed=_resumed,
+        # A parent agent reads this reply, not a person at a dashboard, so the
+        # [OPTIONS:] and card guidance has nothing to render into.
+        interactive=False,
+        steering_dirs=info.steering_dirs,
+        # The agent was validated against this directory's .kiro/agents, so
+        # its spec is found there too. A cold-started run with no cwd has a
+        # per-run provider cwd that holds no templates.
+        template_dir=effective_cwd or None,
     )
     # The one place the resolved scope and its cost are both known — without
     # this, "the sub-agent didn't know X" is undebuggable after the fact.
@@ -650,6 +762,9 @@ async def _run_inner_impl(
     )
 
     result_text = ""
+    # Text streamed since the run's last tool call: the final segment the
+    # leaked-tool-call check reads at the end (see ``leaked_tool_call``).
+    _final_segment = ""
     turns = 0
     turn_limit = self._manager._effective_turn_limit(info)
     # Separate volume bound for child-origin permission escalations —
@@ -830,12 +945,41 @@ async def _run_inner_impl(
     # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
     # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
     _pending_tools: dict[str, str] = {}
+    # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
+    from kiro_crew.hooks import pre_tool_match_names
+
+    _pending_tool_ids: dict[str, PostToolIdentity] = {}
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    from kiro_crew.subagent_manager.prompt_hooks import prompt_hook_prefix
+
+    # Before the first stream, as a dashboard turn fires them before its own.
+    # Hook time is not the runtime's silence: the reaper's startup, first-prompt
+    # and stall checks skip the run while they run, the startup clock does not
+    # count them, and the activity clock restarts when they end, on every exit.
+    info._prompt_hooks_running = True
+    _hooks_t0 = time.monotonic()
+    try:
+        _hook_prefix = await prompt_hook_prefix(
+            self._manager.hook_store,
+            info,
+            session_key=session_key,
+            task=raw_task,
+            fresh_session=is_new and not _resumed,
+            spec_hooks=_spec.hooks,
+            spec_hooks_cwd=_spec.cwd,
+        )
+    finally:
+        info._prompt_hooks_secs += time.monotonic() - _hooks_t0
+        info.last_activity = time.time()
+        info._last_activity_mono = time.monotonic()
+        info._prompt_hooks_running = False
+    full_message = _hook_prefix + full_message
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
     from kiro_crew import tool_permission
@@ -867,6 +1011,14 @@ async def _run_inner_impl(
 
     _wire = tool_permission.AcpWire(client)
     _policy = _policy_for(_spec)
+    from kiro_crew.deny_notice import REFUSED_TURN_RESUME_MAX, build_refused_turn_resume_prompt
+
+    # The host's refusal in the current prompt attempt, as (title, reason,
+    # cause), set by the permission branch below and read by the stream when
+    # the turn then ends cancelled; and how many such turns this run resumed.
+    _refused_call: list[tuple[str, str, str]] = []
+    _person_rejected = [False]
+    _refusal_resumes = [0]
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -879,6 +1031,67 @@ async def _run_inner_impl(
     prompt_timeout = await asyncio.to_thread(
         capture_prompt_timeout, client, float(info.timeout_secs)
     )
+    # ── Per-turn usage row: attribute subagent spend. ──
+    # One row per prompt the child answers, so a Stop-hook continuation is
+    # billed like the dashboard turn it mirrors. ``_row_t0`` is when the
+    # prompt the row describes began.
+    _row_t0 = [time.monotonic()]
+
+    def _persist_usage_row(completion: LLMEvent | None) -> None:
+        from kiro_crew.subagent_manager.usage_row import persist_usage_row
+
+        persist_usage_row(self, completion, session_key, client, info, agent, is_cc, _row_t0)
+
+    # Stop-hook continuations this run has sent, the depth a Stop hook reads.
+    _stop_continuations = [0]
+
+    def _stop_hook_may_continue() -> bool:
+        return not (
+            info.user_stopped
+            or self._stop_in_progress(info)
+            or info._reap_started
+            or info.reaped
+            or self._manager._shutting_down
+        )
+
+    async def _fire_stop_hooks(done: LLMEvent | None, *, may_continue: bool = True) -> str | None:
+        """Fire Stop for the prompt that just ended; the next prompt when a
+        hook continues the child (``stop_hooks.child_stop_continuation``)."""
+        nonlocal _final_segment, result_text, _result_file_started
+        store = self._manager.hook_store
+        if store is None:
+            return None
+        from kiro_crew.subagent_manager.stop_hooks import child_stop_continuation
+
+        _next = await child_stop_continuation(
+            store,
+            final_text=_final_segment,
+            session_key=session_key,
+            info=info,
+            spec=_spec,
+            client=client,
+            depth=_stop_continuations[0],
+            ended_ok=classify_stop_reason(
+                str(getattr(done, "stop_reason", "") or "") if done is not None else ""
+            ).is_success,
+            may_continue=may_continue,
+            can_continue=_stop_hook_may_continue,
+            log=logger,
+        )
+        if _next is None:
+            return None
+        _stop_continuations[0] += 1
+        # The next Stop judges the continuation's own answer.
+        _final_segment = ""
+        # The parent gets both prompts' answers, a blank line apart, in the
+        # result, the live partial and result.txt alike.
+        if result_text:
+            result_text += "\n\n"
+            if _attempt_has_text:
+                info.streaming_text += "\n\n"
+            if _result_file_started:
+                _result_file_started = write_result_chunk(info.id, "\n\n")
+        return _next
 
     async def _stream_with_transient_retry():
         """Yield stream events, retrying transient backend errors.
@@ -891,9 +1104,10 @@ async def _run_inner_impl(
         Non-transient errors and exhausted budgets propagate unchanged
         (handled by _run's generic exception arm → error tombstone).
         """
+        nonlocal _final_segment
         attempts = 0
         # One-shot post-activity allowance, mirroring the main path's
-        # ``_posttoken_retry_used`` rule (dashboard/chat_runner.py ~L4324):
+        # ``_posttoken_retry_used`` rule (_on_acp_posttoken_transient, chat_turn/acp_recovery.py):
         # each continuation turn issued AFTER observed activity is an
         # independent opportunity for the model to repeat a side-effecting
         # tool, so post-activity recovery gets exactly ONE attempt.
@@ -917,6 +1131,8 @@ async def _run_inner_impl(
             # attempt or turn never closed would otherwise wait in the
             # in-flight set and be handed the slot when a later call returns.
             self._manager._clear_tool_dispatch(info)
+            _refused_call.clear()
+            _person_rejected[0] = False
             try:
                 if not use_session_sharing:
                     # Publish the live dedicated PID before every prompt,
@@ -944,6 +1160,13 @@ async def _run_inner_impl(
                 # by a continuation on the same session.
                 _withheld: LLMEvent | None = None
                 _infra: Any = None
+                # A completion CANCELLED right after the host refused a call:
+                # codex's only reject option for a shell command aborts the
+                # whole turn. It is withheld, and the turn resumes on the same
+                # session with the refusal as the next prompt.
+                _refused_turn: LLMEvent | None = None
+                # The completion that ends this prompt, if the stream sent one.
+                _ended: LLMEvent | None = None
                 stream = (
                     client.stream(msg)
                     if prompt_timeout is None
@@ -980,6 +1203,19 @@ async def _run_inner_impl(
                         if self._manager._stop_recovery_wanted(info, _stop_c):
                             _withheld = _ev
                             continue
+                        if (
+                            _stop_c.name == STOP_CLASS_CANCELLED
+                            and _refused_call
+                            and not _person_rejected[0]
+                            and _refusal_resumes[0] < REFUSED_TURN_RESUME_MAX
+                            and not info.user_stopped
+                            and not self._stop_in_progress(info)
+                            and not info._reap_started
+                            and not info.reaped
+                            and not self._manager._shutting_down
+                        ):
+                            _refused_turn = _ev
+                            continue
                         _last_infra = getattr(client, "last_infra_error", None)
                         if (
                             _stop_c.is_success
@@ -991,12 +1227,57 @@ async def _run_inner_impl(
                             _withheld = _ev
                             _infra = _last_infra
                             continue
+                        # The prompt's own end: held back until the Stop
+                        # hooks below have judged it. The stream is drained,
+                        # as for a withheld completion, so its own cleanup
+                        # (the turn's active mark and lock) runs before any
+                        # continuation prompt starts.
+                        _ended = _ev
+                        continue
                     yield _ev
+                if _refused_turn is not None:
+                    # Every prompt end fires Stop, a resumed one included.
+                    await _fire_stop_hooks(_refused_turn, may_continue=False)
+                    _title, _reason, _cause = _refused_call[-1]
+                    _resume = build_refused_turn_resume_prompt(_title, _reason, cause=_cause)
+                    if not _resume:
+                        yield _refused_turn
+                        return
+                    usage.settle(_refused_turn)
+                    _refusal_resumes[0] += 1
+                    logger.info(
+                        "Subagent %s: turn cancelled after a host refusal; resuming (%d/%d)",
+                        info.id,
+                        _refusal_resumes[0],
+                        REFUSED_TURN_RESUME_MAX,
+                    )
+                    _final_segment = ""
+                    msg = _resume
+                    continue
                 if _withheld is None:
-                    return
+                    # A stream that ends with no completion event ended
+                    # normally too, and its Stop hooks fire the same way.
+                    _next = await _fire_stop_hooks(_ended)
+                    if _next is None:
+                        if _ended is not None:
+                            yield _ended
+                        return
+                    # Settled and recorded even with no completion event: the
+                    # next prompt's ``usage.begin`` resets the baseline, and
+                    # ``settle(None)`` reads the provider's own last-turn stats.
+                    usage.settle(_ended)
+                    _persist_usage_row(_ended)
+                    logger.info(
+                        "Subagent %s: a Stop hook asked to continue (%d)",
+                        info.id,
+                        _stop_continuations[0],
+                    )
+                    msg = _next
+                    continue
                 # Preserve this turn's billing before recovery can cancel
                 # or begin another attempt with a fresh usage baseline.
                 usage.settle(_withheld)
+                await _fire_stop_hooks(_withheld, may_continue=False)
                 if _infra is not None:
                     _nudge = await self._manager._yield_for_infra_retry(info, _infra)
                 else:
@@ -1009,6 +1290,7 @@ async def _run_inner_impl(
                     # partial).
                     yield _withheld
                     return
+                _final_segment = ""
                 msg = _nudge
                 continue
             except asyncio.CancelledError:
@@ -1069,8 +1351,8 @@ async def _run_inner_impl(
                 elif attempts >= TRANSIENT_RETRIES:
                     # ── Throttle-exhaustion fallback chain ──
                     # Zero-activity budget spent: walk agent.fallback_model
-                    # before surfacing (empty chain ⇒ raise exactly as
-                    # before this feature). Two attempts per candidate
+                    # before surfacing (empty chain ⇒ raise directly).
+                    # Two attempts per candidate
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
                     # llm_helpers Case 2.75 for the rationale.
@@ -1164,6 +1446,7 @@ async def _run_inner_impl(
     # Includes transient-retry backoff, which is real wall time the caller
     # waited for this turn.
     _turn_t0 = time.monotonic()
+    _row_t0[0] = _turn_t0
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
         # this session (thinking chunks, tool-call updates, etc.) before
@@ -1222,6 +1505,7 @@ async def _run_inner_impl(
                             "Failed to persist refined model for %s", info.id, exc_info=True
                         )
             result_text += event.text
+            _final_segment += event.text
             if not _attempt_has_text:
                 # The in-memory partial a stop or a cancel delivers. It
                 # keeps growing when the file cannot be written, which is
@@ -1257,6 +1541,17 @@ async def _run_inner_impl(
             # child could generate unbounded approval prompts until the
             # wall-clock reaper fires. Generous multiple of the parent's
             # limit: legitimate crews fan many small child tool calls.
+            # The id the request names the tool by is what the call's
+            # PostToolUse spec hooks match on.
+            if event.tool_call_id:
+                _named = post_tool_identity(
+                    client,
+                    event,
+                    is_shell=False,
+                    earlier=_pending_tool_ids.get(event.tool_call_id),
+                )
+                if _named is not None:
+                    _pending_tool_ids[event.tool_call_id] = _named
             _ask = tool_permission.Ask(event, _wire, session_key)
             # A run that is being stopped bails every request as ``stopped``
             # before any grant or person is consulted: audited, and rejected
@@ -1279,6 +1574,10 @@ async def _run_inner_impl(
             if not event.sub_session_id:
                 turns += 1
                 info.turns = turns
+                # The run's own gated call is a tool-call boundary too (a
+                # backend may surface it ONLY as this request), so the
+                # final segment starts again after it.
+                _final_segment = ""
             else:
                 # Child escalation: counted toward its own volume bound
                 # here; side-effect activity (tool_count) is counted at
@@ -1364,6 +1663,12 @@ async def _run_inner_impl(
                 self._manager._write_tombstone(info, "turn_limit")
                 return
             settled = await tool_permission.settle(_ask, _policy)
+            if settled.outcome == "rejected":
+                # A person said no in this attempt: their answer stands, so a
+                # cancelled ending is never resumed as a host refusal.
+                _person_rejected[0] = True
+            elif settled.outcome == "refused" and settled.cause is not None:
+                _refused_call.append((event.title or "", settled.reason, settled.cause))
             if settled.rung == "stopped":
                 # The ladder bailed this request for a stop that landed
                 # while it was being settled: the run ends here, as at the
@@ -1385,6 +1690,7 @@ async def _run_inner_impl(
             # Count it, record it, and broadcast the same subagent_tool event
             # the permission path uses so the running-card shows live activity.
             info.tool_count += 1
+            _final_segment = ""
             info.last_tool = event.title or info.last_tool
             self._manager._note_tool_dispatch(info, event)
             await self._manager._fire_event(
@@ -1416,6 +1722,13 @@ async def _run_inner_impl(
                 _raw = _raw[9:]
             if event.tool_call_id:
                 _pending_tools[event.tool_call_id] = _raw
+                _named = post_tool_identity(
+                    client, event, is_shell=bool(getattr(event, "is_shell", False))
+                )
+                if _named is None:
+                    _pending_tool_ids.pop(event.tool_call_id, None)
+                else:
+                    _pending_tool_ids[event.tool_call_id] = _named
             # A gated turn runs PreToolUse hooks on the permission request
             # instead (see hooks.permission_pre_tool_block); firing here too
             # would run each twice.
@@ -1438,19 +1751,40 @@ async def _run_inner_impl(
             # branch existed, hooks registered for subagent-spawned tools
             # received PreToolUse but never PostToolUse — losing the
             # tool_response payload.
-            if self._manager.hook_store is not None:
+            # Once per call, on its terminal result: a progress frame carrying
+            # partial output is not the finished call.
+            _terminal = bool(getattr(event, "tool_final", False)) or (
+                getattr(event, "tool_status", None) in TERMINAL_TOOL_STATUSES
+            )
+            if self._manager.hook_store is not None and _terminal:
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
+                    _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     _out = _redact((event.tool_output or "")[:2000])
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
                         tool_response={"output": _out},
+                        # This child's own key, for per-session attribution;
+                        # parent_session_key below names who spawned it.
+                        session_key=session_key,
                         subagent_id=info.id,
                         parent_session_key=info.parent_session_key or None,
                         agent_role=info.agent or None,
                         extra_hooks=_spec.hooks,
                         extra_hooks_cwd=_spec.cwd,
+                        # The spec's matchers are kiro-cli tool names, which a
+                        # KAS call's title is not; None keeps title matching.
+                        extra_hooks_tool_names=(
+                            pre_tool_match_names(
+                                _tool_name,
+                                tool_identity=_named.tool_identity,
+                                mcp_server=_named.mcp_server,
+                                harness_tool_id=_named.tool_id,
+                            )[1]
+                            if _named is not None and _spec.hooks
+                            else None
+                        ),
                     )
                 except Exception:
                     logger.debug(
@@ -1468,6 +1802,8 @@ async def _run_inner_impl(
 
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
+    # Read before the fallback annotation, which is not a reply.
+    _no_reply = not cleaned.strip()
     if cleaned:
         from kiro_crew.security import (
             redact_credentials,
@@ -1496,6 +1832,18 @@ async def _run_inner_impl(
     )
     info.stop_reason = _stop.stop_reason
     info.stop_class = _stop.name
+    if _stop.is_success and _final_segment:
+        # A normal end of turn whose final segment carries a tool call
+        # written as prose: the call never ran, yet the run reads as a
+        # success. Flag it for the parent, whatever the earlier tool-call
+        # count, NOTICE-ONLY like the dashboard's mixed-turn notice
+        # (should_notice_mixed_turn_leak): earlier calls may have taken
+        # effect, so the outcome stays completed and nothing is re-issued.
+        # Deferred import: a core module must not import the dashboard
+        # layer at import time.
+        from kiro_crew.dashboard.chat_utils_turn_text import has_leaked_tool_call
+
+        info.leaked_tool_call = has_leaked_tool_call(_final_segment)
     if not _stop.is_success:
         # Whatever streamed before the non-success completion is a PARTIAL:
         # preserved (result + result.txt) and flagged, never a finished
@@ -1527,57 +1875,23 @@ async def _run_inner_impl(
         info.partial = True
         # result.txt is what spawn_status / spawn_run read for a done run.
         write_result_chunk(info.id, f"\n\n{_warn}\n")
+    # The whole answer a claimed completed ending rewrites result.txt from.
+    _finished_text = result_text
+    if _stop.is_success and _no_reply and not info.made_no_tool_calls:
+        # A child that called a tool and then closed without a reply: its side
+        # effects already landed, so a bare "_No response._" invites the
+        # parent to re-spawn it and run them twice. Flag it partial and say
+        # to continue, never resend (messaging.empty_turn_copy). Added after
+        # the keep cap, like the warning above, so no keep mode cuts it off.
+        from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_WORK
+
+        info.partial = True
+        _base = info.result.strip() or "_No response._"
+        info.result = f"{_base}\n\n{EMPTY_TURN_NOTICE_AFTER_WORK}"
+        _finished_text = info.result
     evict_completed_agents(self._manager._agents)
 
-    # ── Per-turn usage row: attribute subagent spend. ──
-    # Its inputs are read here, synchronously, and the append itself is
-    # best-effort analytics on a task the manager holds (``_report_tasks``,
-    # which ``cancel_all()`` drains within its bound): no ending waits on
-    # it, so a cancel, the shutdown or a wedged FS can never hold one.
-    try:
-        # circular import: reached while kiro_crew.slack.handler is still
-        # initialising (dashboard/file_api/channel_upload.py imports is_tracked_channel
-        # from it), so a module-scope import raises ImportError under the
-        # suite's import order.
-        from kiro_crew.dashboard.handlers.usage import (
-            persist_token_record_async,
-            read_context_tokens,
-            read_effective_agent,
-        )
-
-        _used, _window = read_context_tokens(client)
-        _usage_row = asyncio.ensure_future(
-            persist_token_record_async(
-                session_key,
-                # Blank while a fallback serves this run: the explicit pin
-                # would bill the fallback's spend to a model that never
-                # executed; model_source reports what actually ran.
-                ("" if provider_fallback_active(client) else (info.model or "")),
-                _complete_event,
-                provider="claude_code" if is_cc else "acp",
-                surface="subagent",
-                # Ownership stamp (see _build_token_record): an app-dispatched
-                # subagent's spend must be readable by that app's audit — the
-                # illustrator lane of an app is exactly this path.
-                app=info.app or "",
-                # Explicit/inherited `agent` FIRST here — unlike every other
-                # surface. Under session sharing this subagent reuses the
-                # PARENT's runtime, so read_effective_agent() would report the
-                # parent's agent and misattribute a `spawn_run(agent="…")` turn.
-                # `agent` is already the resolved value (it inherits the parent
-                # session's agent when the spawn did not name one), and the
-                # helper stays as the fallback for when it is empty.
-                agent=agent or read_effective_agent(client) or "",
-                context_used=_used,
-                context_window=_window,
-                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                model_source=client,
-            )
-        )
-        self._manager._report_tasks.add(_usage_row)
-        _usage_row.add_done_callback(self._manager._report_tasks.discard)
-    except Exception:
-        logger.debug("usage row (subagent) persist failed", exc_info=True)
+    _persist_usage_row(_complete_event)
 
     def _count_success() -> None:
         # The one success bookkeeping, for a claimed ending and the tail's alike.
@@ -1608,7 +1922,7 @@ async def _run_inner_impl(
         try:
             # result.txt rewritten whole from memory, then the flag that says
             # so (``subagent_persistence.result_is_whole``).
-            await self._manager._write_finished_result_off_loop(info, result_text)
+            await self._manager._write_finished_result_off_loop(info, _finished_text)
         except Exception:
             logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
         finally:
@@ -1666,9 +1980,9 @@ async def _run_inner_impl(
             _count_success()
     else:
         Stats().inc_subagent_failed()
-        self._manager._write_tombstone(
-            info, "cancelled" if _stop.name == STOP_CLASS_CANCELLED else "error"
-        )
+        _tombstone_cause = "cancelled" if _stop.name == STOP_CLASS_CANCELLED else "error"
+        if not self._leave_for_next_start_impl(info, stop_reason=_stop.stop_reason):
+            self._manager._write_tombstone(info, _tombstone_cause)
         logger.warning(
             "Subagent %s ended %s (stop_reason=%r, recovery attempts=%d, partial=%s)",
             info.id,

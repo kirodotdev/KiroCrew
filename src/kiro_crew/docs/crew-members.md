@@ -14,19 +14,17 @@ one entry in the `agents` map of `~/.kiro/crew/config.json`. This page is the
 user-facing view of them; [agents.md](agents.md) covers the agent JSON and
 markdown specs a mate boots from.
 
-## Turning the page on
+## Where to find it
 
-Mates is a feature preview. Enable **Settings → Developer → Feature
-Previews → Mates** and the **Mates** row appears in the left rail
-at `/members`. The same card has a "See what it looks like" button that shows the
-page before you switch it on.
+The **Mates** row sits in the left rail, under Sessions, and opens
+`/members`.
 
 ## What a mate is made of
 
 | Part | What it does | Empty means |
 |---|---|---|
 | Name | Its identity everywhere: the roster row, the thread, `crew=` on a delegation | required |
-| Agent template (`kiro_agent`) | The spec it boots from — tools, MCP servers, instructions | required — the crew manager and the API both refuse a crew without one |
+| Agent template (`kiro_agent`) | Where it starts. A new mate starts as the built-in worker (`kirocrew`); you add tools, servers and skills from other agents in its editor | required — the crew manager and the API both refuse a crew without one, and refuse any template other than `kirocrew` |
 | Workspace | The folder it reads and writes | the folder your `default_workspace` names — as does a name no workspace matches |
 | Memory store | The database its learned facts, rules and briefing live in | allocated for it at creation |
 | Model | Default model for its sessions | the template's pinned model, then the global default |
@@ -72,12 +70,6 @@ every time: closing it, restarting the gateway, or coming back a week later
 reopens the same conversation with its history. That is the point of a mate
 over an ordinary session — the context you built up with it is where you left it.
 
-Opening a thread that is new, or idle for six hours or more, with no goal in
-flight shows a welcome card above the chat: goals the mate left open (in
-this thread or a recent session of its own), then its recent sessions, and a
-prompt to pick one up. It is read from the session ledgers and the session list,
-with no model call and no chat turn, and shows once per idle stretch.
-
 Member threads are deliberately kept out of the Sessions list; the Mates
 page is their only home. The right-hand side panel is the chat page's panel with
 two standing tabs: **Dashboard** (the page the mate publishes itself) and
@@ -105,9 +97,8 @@ roster header once one exists (its one row is **New mate**)
 shows the mate's picture (press its pencil to pick an icon and a colour);
 press
 **Create** and the mate is made at once. Below the avatar, **Advanced
-settings** unfolds the rest of the form in the same card: what the mate is
-**Built from** (the starting setup it copies; `kirocrew` unless you pick
-another), an optional line on **what it looks after**, and the workspace,
+settings** unfolds the rest of the form in the same card: an optional
+**Goal**, and the workspace,
 model, triggers and session color. Folding it again keeps whatever you set
 there. When a mate suggests a new mate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until
@@ -122,8 +113,8 @@ is a name) — and the dialog only refuses a blank name or one already on the
 roster before the request leaves the browser; the server owns every other rule
 (a credential-shaped name, hidden characters, the length cap) and its answer is
 shown in the dialog. The stable member id, path-safe slug and slot key are
-derived by the server and stay bounded identifiers, as does the **Built from**
-template id. A free-form name is kept as the mate's `display_name`, the label
+derived by the server and stay bounded identifiers. Every new mate starts as
+the built-in worker, with nothing added. A free-form name is kept as the mate's `display_name`, the label
 the dashboard shows, on a config key the server derives from it; an id-shaped
 name is used as the key itself. Creating is refused when that key is taken, or
 when another mate already shows the same name. Two mates whose names
@@ -191,13 +182,50 @@ tools, MCP servers and skills (`request_capabilities`); each ask is a change
 card with a button, and nothing changes until you press it. Its workspace,
 memory store and template are not the mate's to ask for.
 
+When its worker needs a tool or a skill it does not have, the crewmate looks up
+what this gateway or the MCP registry offers and asks you for the addition on a
+card. The card says where each server comes from and exactly which of its tools
+would run without asking. Pressing it adds the server or skill to this
+crewmate's own settings only, not to your MCP config. A worker that is already
+running is reloaded with it, keeping its conversation, as soon as it is idle;
+adding one yourself in the crewmate's advanced settings does the same.
+
+Asking for tools this way is a preview, off by default for each crewmate. While
+it is off, the crewmate asks you once, on a card marked **Preview**, whether it
+may ask you for tools its worker needs. Turning it on only lets it ask: each tool
+still needs your approval on its own card. If you decline, it does not ask again,
+and you add what its worker needs in its advanced settings.
+
+### Its worker
+
+A mate hands longer work to a **worker**: a session it opens with
+`session_create`, which runs on the mate's own memory and workspace with
+the worker's built-in tools plus whatever that mate's settings add. To see
+what it can do, open the crew editor and choose **Abilities**. **Comes with**
+lists what every worker has; you cannot change it. **Added to** lists what was
+added to this mate, and **Remove** takes one out. A new mate starts with
+nothing added. To add more, pick an agent under **Add abilities** on the same
+page: it shows at once which connections, skills and auto-approvals would be
+added and which the mate already has, then **Add** writes them and says so.
+Only what is missing is added and nothing already there is replaced. If the
+agent has its own instructions, they become the mate's **behavior
+directions**, which its worker follows after its built-in instructions. A mate
+has one set: adding another agent that has directions replaces them (the
+preview says **Replaces current**), and **Remove** clears them. Later edits to that agent do not reach the
+mate. Nothing added can lift the worker past your security policy and
+profile. **Add abilities** appears for a mate that owns its own config.
+
 ### Goals
 
 A mate's **Goals** tab (Profile card) holds what it works toward:
 
 - **Goals.** As many as you like, each one paragraph, numbered and coloured on
-  the tab. Add one with **+**, open one to edit or remove it, or confirm one the
-  mate proposes (`set_goal` puts a card in its chat). The mate is
+  the tab. A new goal starts as a conversation: **Create a goal** (the last
+  row of the list) explains in a few words how the mate uses a goal and offers
+  one button, **Tell {name} what to aim for**, which sends an opening message
+  to its chat; the mate asks what matters, writes the goal down and puts it on
+  a card (`set_goal`) for you to confirm. Open an existing goal to edit or
+  remove its text. The mate is
   encouraged to keep the list short and to suggest merging goals that overlap;
   you decide.
 - **Milestones.** Key results that show how far it is from its goals, one
@@ -221,7 +249,8 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   readings. To keep a PDF, choose **Download** in the report's **More actions**
   menu, open the file in your browser and print it.
 - **Heartbeat.** A fourth switch, off by default and only available once a goal
-  is set, shown as a full-width row under the three check-ins. While it is on,
+  is set. It lives on the mate's **Schedules** tab, the first row there, since
+  it is what wakes the mate on its own rather than a goal check-in. While it is on,
   the mate wakes in its own chat every 30 minutes, hour (the default),
   2 hours or 4 hours, looks for what it can move forward toward its goals,
   and does it. It works quietly: what it did shows on its **Dashboard** tab and
@@ -230,10 +259,6 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   now. When it has nothing to move, it ends the wake without a word. Anything
   it does write during a wake shows in the chat. A wake is skipped while the chat is busy or a monitor loop is running in it. Each run uses credits. The
   mate can suggest turning it on with a card; only you can press it.
-- **Track something in chat.** Sends "I'd like you to track something for me."
-  to the mate's chat as your own message. Tell it what to track there; it
-  keeps that item up to date on its task list, which the Crew board shows. Tracked
-  items do not appear on the Goals tab.
 - **Reports.** The newest weekly reports and monthly reviews, each linking its
   artifact.
   When the monthly review finds the goal or its key results no longer fit the
@@ -241,11 +266,10 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   press it.
 
 The goal is stored in the mate's goal record,
-`trust/member-goals/<slug>.json` in Kiro Crew's data folder, apart from its
-rules, with the same protection as its rules: the mate's file-editing tools
-are refused there, so it changes the goal or its key results only through a card
-you press (a shell command it runs can still reach the folder, as with its
-rules). A mate made from chat on a **Create mate** card starts with the
+`member-records/member-goals/<slug>.json` in Kiro Crew's data folder, apart
+from its rules, with the same protection as its rules: nothing the mate runs
+can read or change that folder, so it changes the goal or its key results only
+through a card you press. A mate made from chat on a **Create mate** card starts with the
 card's goal as its goal; its description stays empty until it or you write one.
 What the mate is working on right now is its task list on the Crew board,
 not part of the goal.

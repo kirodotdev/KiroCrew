@@ -8,7 +8,7 @@
  * load-bearing path here is double-click → inline input → Enter commit.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, createEvent, waitFor, within } from '@testing-library/react'
+import { render, fireEvent, createEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -45,12 +45,13 @@ vi.mock('framer-motion', async () => {
 })
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
+const chatConfig = vi.hoisted(() => ({ hideEmptyFolderBody: false }))
 vi.mock('../pages/chat/ChatSettings', () => ({
-  loadChatConfig: () => ({ tagColumnsEnabled: true, confirmCloseSession: false }),
+  loadChatConfig: () => ({ tagColumnsEnabled: true, confirmCloseSession: false, ...chatConfig }),
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn() }))
+const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn(), chatFolders: vi.fn(), chatTags: vi.fn(), tagColumns: vi.fn() }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -83,7 +84,7 @@ const tags: ChatTag[] = [
 const columns: TagColumn[] = [{ id: COL_A, name: 'Review', tag_ids: [REVIEW], mode: 'any', order: 0 }]
 const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0 }]
 
-function renderWith(cols: TagColumn[]) {
+function renderWith(cols: TagColumn[], folderData: ChatFolder[] = folders) {
   const store = createTestStore({
     dashboard: {
       // Load-bearing: rename is guarded on a live gateway, and these cases
@@ -98,7 +99,12 @@ function renderWith(cols: TagColumn[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], cols)
-  qc.setQueryData(['chat-folders'], folders)
+  qc.setQueryData(['chat-folders'], folderData)
+  // A refetch (mount, or the rename's invalidation) must not empty the board
+  // before a focus assertion that runs after a frame.
+  mocks.chatFolders.mockResolvedValue(folderData)
+  mocks.chatTags.mockResolvedValue(tags)
+  mocks.tagColumns.mockResolvedValue(cols)
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -150,6 +156,7 @@ function colFolderRow(container: HTMLElement, colId = COL_A): HTMLElement {
 
 beforeEach(() => {
   localStorage.clear()
+  chatConfig.hideEmptyFolderBody = false
   mocks.updateChatFolder.mockResolvedValue({})
 })
 afterEach(() => vi.clearAllMocks())
@@ -229,5 +236,54 @@ describe('board view: folder rename', () => {
     const before = colFolderRow(container).getAttribute('aria-expanded')
     fireEvent.keyDown(colFolderRow(container), { key: ' ' })
     expect(colFolderRow(container).getAttribute('aria-expanded')).not.toBe(before)
+  })
+})
+
+// #22770: after the rename input closes, the board hands focus to the same
+// element the list view does - the folder header row itself, found by its own
+// column-scoped marker (not a data-testid), wearing the accent focus ring.
+describe('board view: focus after folder rename (#22770)', () => {
+  const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
+  const boardRow = (container: HTMLElement, colId: string, folderId = FOLDER_ID) =>
+    container.querySelector<HTMLElement>(`[data-board-folder-row="${colId}:${folderId}"]`)
+
+  it.each(['Enter', 'Escape'])('%s returns focus to the header row of the column renamed in', async (key) => {
+    const { container } = renderMultiColumn()
+    fireEvent.doubleClick(within(colHeader(container, COL_B)).getByText('CDF'))
+    const input = within(colHeader(container, COL_B)).getByRole('textbox') as HTMLInputElement
+    act(() => { input.focus() })
+    fireEvent.keyDown(input, { key })
+    await nextFrame()
+
+    const row = boardRow(container, COL_B)
+    expect(row).toBeTruthy()
+    expect(document.activeElement).toBe(row)
+    // The header row, not the drop-zone wrapper around it.
+    expect(row).not.toBe(colHeader(container, COL_B))
+    expect(row!.classList.contains('focus-ring-accent-inset')).toBe(true)
+  })
+
+  it('focuses an inert (empty, non-draggable) subfolder row instead of dropping focus to <body>', async () => {
+    chatConfig.hideEmptyFolderBody = true
+    const CHILD = 'folder-child'
+    const { container } = renderWith(columns, [
+      ...folders,
+      { id: CHILD, name: 'Kid', order: 0, parent_id: FOLDER_ID },
+    ])
+    const childBlock = container.querySelector(`[data-testid="col-${COL_A}-folder-${CHILD}"]`) as HTMLElement
+    expect(childBlock).toBeTruthy()
+    fireEvent.doubleClick(within(childBlock).getByText('Kid'))
+    const input = within(childBlock).getByRole('textbox') as HTMLInputElement
+    act(() => { input.focus() })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await nextFrame()
+
+    const row = boardRow(container, COL_A, CHILD)
+    expect(row).toBeTruthy()
+    // Still not a tab stop and not a control: reachable by script only.
+    expect(row!.getAttribute('tabindex')).toBe('-1')
+    expect(row!.hasAttribute('role')).toBe(false)
+    expect(document.activeElement).toBe(row)
+    expect(document.activeElement).not.toBe(document.body)
   })
 })

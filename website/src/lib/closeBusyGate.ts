@@ -8,6 +8,7 @@ import {
 import { isAutomationRunning } from '../monitoring/automation'
 import { hasLiveSessionWork } from '../pages/chat/sessionLane'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * One kind of live work a close would stop. The close prompt names each one
@@ -45,7 +46,7 @@ const LIVE_WORK_REASONS: ReadonlySet<CloseBusyReason> = new Set(['approval', 'tu
 export function closeBusyReasons(state: RootState, slotKey: string): CloseBusyReason[] {
   const reasons: CloseBusyReason[] = []
   const subagentsQueued = state.chat.subagentQueued?.[slotKey] || 0
-  const slot = state.dashboard.slots.find(s => s.key === slotKey)
+  const slot = slotRowByKey(state.dashboard.slots, slotKey)
   // Queued children are not in `hasLiveSessionWork` (nothing has started), but
   // closing retires them too, so they count even for an unlisted slot.
   if (!slot) return subagentsQueued > 0 ? ['subagents'] : []

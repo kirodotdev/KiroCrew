@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
@@ -216,7 +217,8 @@ def test_the_existing_route_creates_a_single_fire_job():
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/crons", cron_handlers.api_crons_create)
-        client = TestClient(TestServer(app))
+        # The card's apply is the owner's browser replaying this body.
+        client = TestClient(TestServer(as_owner(app)))
         await client.start_server()
         try:
             resp = await client.post("/api/crons", json=body)
@@ -225,7 +227,8 @@ def test_the_existing_route_creates_a_single_fire_job():
             await client.close()
 
     status, data = asyncio.run(run())
-    assert status == 200 and data == {"ok": True, "id": "job1"}
+    assert status == 200 and data == {"ok": True, "id": "job1", "revision": data["revision"]}
+    assert isinstance(data["revision"], str) and data["revision"]
     name, message, kw = calls[0]
     assert (name, message) == ("Dentist", "Call the dentist")
     assert kw["at_ts"] == body["at"] and kw["delete_after_run"] is True

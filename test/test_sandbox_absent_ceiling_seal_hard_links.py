@@ -247,6 +247,9 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
         with caplog.at_level("WARNING"):
             sandbox._refuse_aliased_masked_leaves()  # does not raise
 
+        assert target.read_text(encoding="utf-8") == "{}\n"
+        assert target.stat().st_nlink == 2
+
     def test_a_symlinked_legacy_home_does_not_refuse_the_spawn(self, crew_home, tmp_path):
         """The layout a part-migrated host actually has must keep starting agents.
 
@@ -842,10 +845,15 @@ class TestACredentialLeafBehindALinkedComponentIsNotRefused:
         return target
 
     def test_the_refusal_skips_it(self, crew_home, tmp_path):
-        for leaf in self._multi_component_leaves():
-            self._plant(crew_home, tmp_path, leaf)
+        targets = [
+            self._plant(crew_home, tmp_path, leaf) for leaf in self._multi_component_leaves()
+        ]
 
         sandbox._refuse_multilinked_credential_leaves()  # does not raise
+
+        for target in targets:
+            assert target.read_bytes() == b"secret"
+            assert target.stat().st_nlink == 2
 
     def test_the_doctor_read_skips_it_too(self, crew_home, tmp_path):
         """A probe wider than the refusal fails doctor's exit code over a foreign path."""

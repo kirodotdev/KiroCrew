@@ -21,7 +21,7 @@
  * change even when every test of the moved code still passes.
  */
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
-import { Check, Circle, Goal, MessageCircleQuestionMark, Plus, Star, X, Zap } from 'lucide-react'
+import { Check, Circle, FileUp, MessageCircleQuestionMark, Plus, Radar, Star, X, Zap } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import { useTranslation } from 'react-i18next'
@@ -42,11 +42,13 @@ import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STA
 import { ListDock } from '../../components/ListDock'
 import { tabStatus } from '../../lib/sessionTabs'
 import TeamGroupHeader from './TeamGroupHeader'
+import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMemberProjection } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { type ChatSlot } from '../../types'
+import { useAppSelector } from '../../store'
 import { type MembersPageProfileFlight } from './MembersPageProfile'
 import { CrewmateEmptyHero, MemberRow } from './MembersPageRosterRows'
 import { ROSTER_MAX, ROSTER_MIN, type GoneNotice, type PostCreateFailure, type TFn } from './membersPageModel'
@@ -101,7 +103,9 @@ const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNo
   // unread state whose roster dot reads `var(--ok)` (`MemberRow`, in MembersPageRosterRows.tsx),
   // and for the sidebar chip that was rebound in #10488 (#10479).
   unread: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
-  patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
+  // Radar, not Goal: the Goal glyph is the roster row's "has a goal" mark
+  // (CrewmateRowBody), and this row filters on watch, a different state.
+  patrolling: (active) => <Radar size={12} className={active ? 'text-accent' : 'text-muted'} />,
 }
 /** The A–Z row reuses the sidebar menu's label. The activity row does NOT
  *  reuse the sidebar's "Newest": on a list of people that reads as "newest
@@ -129,13 +133,17 @@ export function useMembersPageRosterView({
 }: MembersPageRosterViewOptions) {
   const { projectionSlug, members } = rosterRead
   const { teamsQ } = teamsRead
+  // A child queued behind the spawn caps has not started, so `subagents_running`
+  // misses it, yet the gateway still refuses a new turn on that session: the
+  // queued depth counts as busy here as it does in the Command Bar.
+  const subagentQueued = useAppSelector((s) => s.chat.subagentQueued)
   const liveRunning = useMemo(() => {
     const byKey: Record<string, boolean> = {}
     for (const s of liveSlots) {
-      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running)
+      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running || (subagentQueued?.[s.key] ?? 0) > 0)
     }
     return byKey
-  }, [liveSlots])
+  }, [liveSlots, subagentQueued])
   const isRunning = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)
@@ -440,26 +448,30 @@ interface MembersPageRosterColumnProps {
   postCreateError: PostCreateFailure | null
   createHeld: string | null
   slotKeyOf: (m: MemberRosterRow) => string
+  /** The crewmate whose face is centre stage in the first Mate's entrance
+   *  (#23207), so its row holds the face unpainted until it lands; `''` for none. */
+  faceOnStageFor: string
 }
 
 /** The roster card. On a phone the facade portals it into the roster drawer (`placeRoster`). */
 export function MembersPageRosterColumn({
   rosterRead, teamsRead, layout, drawers, rosterView, rosterSignals, profileFlight, navigation, teamView,
   activeName, scrollActiveRowIntoView, gone, createOpen, openAdvanced, openQuick, postCreateError, createHeld,
-  slotKeyOf,
+  slotKeyOf, faceOnStageFor,
 }: MembersPageRosterColumnProps) {
   const { t } = useTranslation()
+  const [importing, setImporting] = useState(false)
   const { rosterQuery, loaded, loadError, collidingSlugs, members } = rosterRead
   const { teamsNoticeShown, dismissTeamsNotice, activeTeam, collapsedTeams, toggleTeamCollapsed } = teamsRead
   const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin } = layout
   const { closeRosterDrawer, rosterDrawerAvailable } = drawers
   const {
-    isRunning, filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
+    filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
     toggleStarredOnly, pickSource, statusFilter, toggleStatus, setRawSort, sort, clearFilters, setStarError,
     starError, starPending, toggleStar, rowsReady, shownMembers,
   } = rosterView
   const {
-    isUnread, patrol, automationOf, isNeedsYou, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
+    patrol, automationOf, signalsOf, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
     hiddenCount, hiddenNames,
   } = rosterSignals
   const { reduceMotion } = profileFlight
@@ -590,9 +602,18 @@ export function MembersPageRosterColumn({
                       )}
                     </span>
                   </DropdownMenuItem>
+                  {/* Import from file, the same dialog the switcher opens, so the
+                      phone roster (where the switcher is hidden) reaches it too. */}
+                  {createHeld === null && (
+                    <DropdownMenuItem onSelect={() => setImporting(true)} data-testid="member-add-import">
+                      <FileUp size={13} className="lucide-inline text-muted shrink-0" aria-hidden="true" />
+                      <span {...uiLocation('members.add-menu.import')}>{t('pages.membersPage.import_from_file')}</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
               )}
+              {importing && <CrewmateImportDialog open onOpenChange={setImporting} />}
               {/* The pinned roster's own way out, beside a thread on desktop — a
                   second close for the pin the switcher's footer action also lifts.
                   Not in a team view: the column stands there on its own, so
@@ -835,7 +856,7 @@ export function MembersPageRosterColumn({
                 // instead (see the DM thread section), so the two panes never
                 // show the same hero twice on a wide viewport.
                 <li className="md:hidden">
-                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} />
+                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} onImport={() => setImporting(true)} />
                 </li>
               )}
               {loadError && (
@@ -918,9 +939,7 @@ export function MembersPageRosterColumn({
                           toggleStar={toggleStar}
                           starPending={starPending}
                           slotKeyOf={slotKeyOf}
-                          isRunning={isRunning}
-                          isUnread={isUnread}
-                          isNeedsYou={isNeedsYou}
+                          signalsOf={signalsOf}
                           automationOf={automationOf}
                           // No layout projection under the drawer's compositor-
                           // driven slide (registerDrawerTargets' precondition).
@@ -928,6 +947,7 @@ export function MembersPageRosterColumn({
                           scrollActiveRowIntoView={scrollActiveRowIntoView}
                           slugCollides={collidingSlugs.has(m.slug)}
                           indented={grouped}
+                          faceOnStage={faceOnStageFor === m.name}
                         />
                       ))}
                   </Fragment>

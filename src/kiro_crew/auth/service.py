@@ -39,6 +39,7 @@ from kiro_crew.auth.store import (
     TokenStore,
     TokenStoreError,
 )
+from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,11 @@ class _PendingOidcLogin:
     identity: str
     provider: str
     resolve_profile: bool
+    # The start URL the authorization was begun against, recorded on the stored
+    # token (``KasToken.extra["start_url"]``) so a later ``whoami`` can say WHICH
+    # organisation an Identity Center sign-in belongs to. Configuration, not a
+    # credential.
+    start_url: str = ""
     # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
     transport_failures: int = 0
 
@@ -235,6 +241,13 @@ class KasLoginService:
         # credential lands (see _persist_and_finish). Kept beside, not inside, the
         # pending entries: it is a property of the request, not of the flow.
         self._replaces: dict[str, str] = {}
+        # login_id -> the store's sign-out generation when that login began. Checked
+        # again before the credential is persisted: a different value means a
+        # sign-out landed meanwhile in SOME process on this host (this gateway or a
+        # `kirocrew kas logout` in a shell), and the credential must not re-fill
+        # the vault that sign-out emptied. The epoch below is the same guard for
+        # this process alone, read without a file.
+        self._signout_gen: dict[str, str] = {}
         # Bumped by every sign-out. A begin reads it before its first await and
         # hands it to _register_pending, which refuses to register a login that
         # was started before a sign-out: otherwise a begin already talking to the
@@ -316,6 +329,7 @@ class KasLoginService:
         # Before the first await: a sign-out that lands anywhere after this line
         # invalidates this begin (see _register_pending).
         epoch = self._epoch
+        signout_gen = await asyncio.to_thread(self._store.signout_generation)
         replaces = _validate_replaces(replaces)
         normalized = (provider_str or "").strip().lower()
         if normalized in ("builder_id", "idc"):
@@ -332,6 +346,7 @@ class KasLoginService:
                 resolve_profile=False,
                 replaces=replaces,
                 epoch=epoch,
+                signout_gen=signout_gen,
             )
         if normalized == "idc":
             cleaned = (start_url or "").strip()
@@ -345,6 +360,7 @@ class KasLoginService:
                 resolve_profile=True,
                 replaces=replaces,
                 epoch=epoch,
+                signout_gen=signout_gen,
             )
         provider = _parse_provider(provider_str)
         session = await self._http()
@@ -356,6 +372,7 @@ class KasLoginService:
             expires_at=auth.expires_at,
             replaces=replaces,
             epoch=epoch,
+            signout_gen=signout_gen,
         )
 
     async def _begin_oidc(
@@ -368,6 +385,7 @@ class KasLoginService:
         resolve_profile: bool,
         replaces: str = "",
         epoch: int,
+        signout_gen: str = "",
     ) -> dict[str, Any]:
         """Register a fresh SSO-OIDC client and start its device authorization."""
         session = await self._http()
@@ -383,12 +401,14 @@ class KasLoginService:
                 identity=identity,
                 provider=provider,
                 resolve_profile=resolve_profile,
+                start_url=start_url,
             ),
             user_code=auth.user_code,
             verification_uri_complete=auth.verification_uri_complete,
             expires_at=auth.expires_at,
             replaces=replaces,
             epoch=epoch,
+            signout_gen=signout_gen,
         )
 
     async def _register_pending(
@@ -400,6 +420,7 @@ class KasLoginService:
         expires_at: datetime,
         replaces: str = "",
         epoch: int,
+        signout_gen: str = "",
     ) -> dict[str, Any]:
         # Opaque handle so the deviceCode (the secret half of the flow) never
         # travels back to the browser; the poll endpoint accepts only this id.
@@ -417,9 +438,11 @@ class KasLoginService:
             now = datetime.now(timezone.utc)
             expired = [lid for lid, entry in self._pending.items() if _expires_at(entry) <= now]
             for lid in expired:
-                _release(self._pending.pop(lid))
-                self._replaces.pop(lid, None)
+                entry = self._drop_records(lid)
+                if entry is not None:
+                    _release(entry)
             self._pending[login_id] = pending
+            self._signout_gen[login_id] = signout_gen
             if replaces:
                 self._replaces[login_id] = replaces
         return {
@@ -577,6 +600,8 @@ class KasLoginService:
         await self._clear_transport_failures(login_id)
         if token is None:
             return {"status": "pending"}
+        if pending.start_url:
+            token.extra[START_URL_EXTRA_KEY] = pending.start_url
         if pending.resolve_profile:
             # An IdC token is unusable without a profile ARN (the store itself drops
             # it), so resolution failures must end the login loudly, not save junk.
@@ -620,51 +645,102 @@ class KasLoginService:
         async with self._lock:
             if login_id not in self._pending:
                 raise UnknownLoginError(login_id)
-            result = await self._save_token(token)
-            self._pending.pop(login_id, None)
-            replaces = self._replaces.pop(login_id, "")
-            if result.get("status") == "authorized" and replaces:
-                # An explicit account switch. The store resolves by fixed slot
-                # priority (external_idp > builder_id > identity_center > social),
-                # not by recency, so ANY other stored slot that outranks the new one
-                # -- the one the user named, or one they had forgotten about -- would
-                # leave the agents on a different account while the card claimed
-                # the switch happened. A switch therefore means "this is the one
-                # account": every other slot is removed, only now, after the new
-                # credential is on disk, so a failed sign-in never leaves the vault
-                # empty. The delete is unconditional (a no-op on an empty slot):
-                # `load` only decides what to REPORT as replaced, never whether to
-                # delete, because a slot whose read failed transiently is exactly
-                # the one that would otherwise survive and resolve later. A removal
-                # that fails is reported, not hidden: the re-read status will still
-                # show the account that won, and Sign out clears it by hand.
-                removed: list[str] = []
-                failed = False
+            # A sign-out in ANOTHER process (`kirocrew kas logout`, or a second
+            # gateway on this data home) cannot bump this process's epoch, so the
+            # store's own sign-out generation is compared before the write -- and
+            # the compare and the write run under the store-wide sign-out flock,
+            # the same one every sign-out holds across its deletes and its bump,
+            # so a sign-out cannot land between the two. A login begun before that
+            # sign-out does not re-fill the vault it emptied. Terminal for this
+            # login, as an in-process sign-out is; the poll handler answers it as
+            # the same 409 a begin does, so the card ends the sign-in rather than
+            # retrying it on another transport.
+            result = await self._save_token(
+                token,
+                begun_gen=self._signout_gen.get(login_id, ""),
+                replaces=self._replaces.get(login_id, ""),
+            )
+            if result.get("code") == "signed_out_during_login":
+                entry = self._drop_records(login_id)
+                if entry is not None:
+                    _release(entry)
+                logger.info(
+                    "login %s not persisted: a sign-out landed while it was pending", login_id
+                )
+                return result
+            self._drop_records(login_id)
+        return result
+
+    async def _save_token(
+        self, token: KasToken, *, begun_gen: str | None = None, replaces: str = ""
+    ) -> dict[str, Any]:
+        """Write an approved token to the store and shape the poll's terminal answer.
+
+        Takes no asyncio lock, so ``_persist_and_finish`` can run it while holding
+        ``self._lock`` to keep the login cancellable until the write lands. With
+        *begun_gen* (the sign-out generation the login began under) the write runs
+        under the store's sign-out flock and is skipped -- answering
+        ``signed_out_during_login`` -- when the generation has moved: that is the
+        cross-process half of the sign-out guard (``TokenStore.signout_generation``).
+
+        *replaces* names an explicit account switch. The store resolves by fixed
+        slot priority (external_idp > builder_id > identity_center > social), not
+        by recency, so ANY other stored slot that outranks the new one -- the one
+        the user named, or one they had forgotten about -- would leave the agents
+        on a different account while the card claimed the switch happened. A
+        switch therefore means "this is the one account": every other slot is
+        removed, only after the new credential is on disk (so a failed sign-in
+        never leaves the vault empty) and INSIDE the same flock as the save, so a
+        second login finishing in another process (the shell verb beside the
+        dashboard) cannot interleave its own save and deletes with these and
+        leave the vault holding neither credential. The delete is unconditional
+        (a no-op on an empty slot): ``load`` only decides what to REPORT as
+        replaced, never whether to delete, because a slot whose read failed
+        transiently is exactly the one that would otherwise survive and resolve
+        later. A removal that fails is reported, not hidden: the re-read status
+        will still show the account that won, and Sign out clears it by hand.
+        """
+
+        def _locked_save() -> tuple[bool, list[str], bool]:
+            saved = False
+            removed: list[str] = []
+            failed = False
+
+            def _compare_save_replace() -> None:
+                nonlocal saved, failed
+                if begun_gen is not None and self._store.signout_generation() != begun_gen:
+                    return
+                # A new sign-in is an account change to the fingerprint even when
+                # every claim matches (two same-kind accounts, one profileArn), so
+                # the marker moves FIRST: a marker that cannot be written raises
+                # before the credential is saved, and the login reports
+                # token_store_failed rather than signing in a new account the
+                # fingerprint cannot see. A save that then fails leaves only a
+                # moved marker, which reads as an account change -- the safe side.
+                self._store.bump_signin_generation()
+                self._store.save(token)
+                saved = True
+                if not replaces:
+                    return
                 for other in KNOWN_IDENTITIES:
                     if other == token.identity:
                         continue
                     try:
-                        held = await asyncio.to_thread(self._store.load, other) is not None
-                        await asyncio.to_thread(self._store.delete, other)
+                        held = self._store.load(other) is not None
+                        self._store.delete(other)
                         if held:
                             removed.append(other)
                     except TokenStoreError as err:
                         logger.warning("could not remove replaced KAS identity %s: %s", other, err)
                         failed = True
-                if removed:
-                    result["replaced"] = removed
-                if failed:
-                    result["code"] = "previous_identity_not_removed"
-        return result
 
-    async def _save_token(self, token: KasToken) -> dict[str, Any]:
-        """Write an approved token to the store and shape the poll's terminal answer.
+            self._store.with_signout_lock(_compare_save_replace)
+            return saved, removed, failed
 
-        Takes no lock, so ``_persist_and_finish`` can run it while holding
-        ``self._lock`` to keep the login cancellable until the write lands.
-        """
         try:
-            await asyncio.to_thread(self._store.save, token)
+            saved, removed, failed = await asyncio.to_thread(_locked_save)
+            if not saved:
+                return {"status": "error", "code": "signed_out_during_login"}
         except TokenStoreError as err:
             # Disk full / read-only store: the login was approved but we cannot
             # persist it. Report error (not authorized); the caller drops the
@@ -674,7 +750,12 @@ class KasLoginService:
             # The one poll error a dashboard must NOT retry on another transport:
             # the store itself is unwritable, so every flavor would fail the same way.
             return {"status": "error", "code": "token_store_failed"}
-        return {"status": "authorized", "provider": token.provider}
+        result: dict[str, Any] = {"status": "authorized", "provider": token.provider}
+        if removed:
+            result["replaced"] = removed
+        if failed:
+            result["code"] = "previous_identity_not_removed"
+        return result
 
     async def begin_loopback(self, provider_str: str, *, replaces: str = "") -> dict[str, Any]:
         """Start a loopback (PKCE) social login; returns the portal URL to open.
@@ -691,6 +772,7 @@ class KasLoginService:
         between this call's start and its registration.
         """
         epoch = self._epoch  # before the first await; see _register_pending
+        signout_gen = await asyncio.to_thread(self._store.signout_generation)
         replaces = _validate_replaces(replaces)
         provider = _parse_provider(provider_str)
         if select_transport() is not Transport.LOOPBACK:
@@ -716,6 +798,7 @@ class KasLoginService:
             expires_at=expires_at,
             replaces=replaces,
             epoch=epoch,
+            signout_gen=signout_gen,
         )
         # The dashboard opens this URL itself: the browser is the user's, not ours.
         result["auth_url"] = auth_url
@@ -781,13 +864,11 @@ class KasLoginService:
             if self._pending.get(login_id) is not pending:
                 raise UnknownLoginError(login_id)
             if pending.task.cancelled():
-                self._pending.pop(login_id, None)
-                self._replaces.pop(login_id, None)
+                self._drop_records(login_id)
                 return {"status": "error", "code": "loopback_cancelled"}
             err = pending.task.exception()
             if err is not None:
-                self._pending.pop(login_id, None)
-                self._replaces.pop(login_id, None)
+                self._drop_records(login_id)
         if err is None:
             return await self._persist_and_finish(login_id, pending.task.result())
         if isinstance(err, portal.PortalTimeoutError):
@@ -833,21 +914,50 @@ class KasLoginService:
             entries = list(self._pending.values())
             self._pending.clear()
             self._replaces.clear()
+            self._signout_gen.clear()
+            # Released BEFORE the store is touched: a delete that raises must not
+            # leave a loopback listener holding its port with no entry left to
+            # find it by.
             for entry in entries:
                 _release(entry)
-            # The named slot first: an unknown kind raises before any write.
-            await asyncio.to_thread(self._store.delete, identity)
-            for other in KNOWN_IDENTITIES:
-                if other != identity:
-                    await asyncio.to_thread(self._store.delete, other)
+            # An unknown kind raises before any write -- checked here against the
+            # store's own list, with no filesystem call on the serving loop.
+            if identity not in KNOWN_IDENTITIES:
+                raise ValueError(f"unknown identity kind: {identity!r}")
+
+            def _delete_all_and_bump() -> None:
+                self._store.delete(identity)
+                for other in KNOWN_IDENTITIES:
+                    if other != identity:
+                        self._store.delete(other)
+                # Then tell every OTHER process on this host: a login pending in
+                # the gateway while this runs in a shell (or the reverse) compares
+                # this before it persists, and refuses. Deletes and bump sit under
+                # one sign-out flock with that compare-and-save, so no login can
+                # slip a write between them.
+                self._store.bump_signout_generation()
+
+            await asyncio.to_thread(self._store.with_signout_lock, _delete_all_and_bump)
             # Nothing may resolve after a sign-out. A slot that survived is a
             # failure to sign out, not a detail.
             if await asyncio.to_thread(self._store.resolve) is not None:
                 raise TokenStoreError("a stored Kiro identity survived sign-out")
 
+    def _drop_records(self, login_id: str) -> _PendingKind | None:
+        """Remove every per-login record (caller holds ``self._lock``); returns the entry.
+
+        The three tables are keyed by one id and must leave together: a login that
+        drops out of ``_pending`` but keeps its ``_signout_gen`` row is never swept
+        again (the eviction in ``_register_pending`` walks ``_pending`` only) and
+        the table grows by one row per abandoned login.
+        """
+        entry = self._pending.pop(login_id, None)
+        self._replaces.pop(login_id, None)
+        self._signout_gen.pop(login_id, None)
+        return entry
+
     async def _forget(self, login_id: str) -> None:
         async with self._lock:
-            entry = self._pending.pop(login_id, None)
-            self._replaces.pop(login_id, None)
+            entry = self._drop_records(login_id)
         if entry is not None:
             _release(entry)

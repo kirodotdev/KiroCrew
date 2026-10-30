@@ -21,6 +21,8 @@ export interface CronJob {
    * skips its memory, lessons, steering and skills injection; member V2 retains
    * its complete essential guidance and protected identity. Default false. */
   minimal_context?: boolean
+  /** Whole-run time limit in seconds (the cron service's `timeout_secs`). */
+  timeout_secs?: number
   last_run_ts?: number; next_run_ts?: number | null; has_result?: boolean; has_slot?: boolean
   /** Retry telemetry for the LAST completed run: how many transient-backend
    *  retries it took (0 = none needed) and when that run finished. Absent on

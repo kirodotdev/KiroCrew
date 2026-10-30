@@ -373,12 +373,12 @@ class AgentRunner:
             "--mcp-config",
             '{"mcpServers":{}}',
         ]
-        # `if allowed_tools:` was WRONG for an empty list: `[]` means "no tools at all"
-        # (agent_discovery's forced-answer pass), but falsy-empty omitted the flag entirely
+        # `if allowed_tools:` is WRONG for an empty list: `[]` means "no tools at all"
+        # (agent_discovery's forced-answer pass), but falsy-empty omits the flag entirely
         # and this path also passes `--dangerously-skip-permissions` — so the supposedly
-        # tool-free agent got everything. Same inversion I had just fixed in the SESSION
-        # path's `_tool_permitted`; review caught that the subprocess path has its own copy
-        # of the decision. `None` still means "no restriction imposed".
+        # tool-free agent would get everything. The SESSION path's `_tool_permitted` makes
+        # the same decision; the subprocess path has its own copy of it. `None` still means
+        # "no restriction imposed".
         if allowed_tools is not None:
             if allowed_tools:
                 cmd += ["--allowed-tools", *allowed_tools]
@@ -398,8 +398,8 @@ class AgentRunner:
         # `--dangerously-skip-permissions`, so the whole subprocess is one unattended
         # blanket approval and the SEL entry is the only record it happened. Without it
         # the two runner paths disagree: the session path refuses an unauditable tool
-        # while this one ran a permissionless agent silently. Raised by review of this
-        # branch, which read that asymmetry as a sandbox bypass.
+        # while this one would run a permissionless agent silently, an asymmetry that
+        # amounts to a sandbox bypass.
         #
         # The containment argument for the spawn itself is unchanged and recorded in
         # test_spawn_audit (argv[0] is a module constant, the agent edits only files
@@ -417,9 +417,8 @@ class AgentRunner:
         # worktree must stay VISIBLE (there would be nothing to edit otherwise) while the
         # operator's credential directories are hidden and the environment is scrubbed.
         #
-        # Raised by review of this branch, which asked for the fallback to be DELETED.
-        # Sandboxing it addresses the same concern — a malicious repository prompt can no
-        # longer reach credentials outside the worktree — without removing the only path
+        # Sandboxed rather than deleted: the sandbox keeps a malicious repository prompt
+        # from reaching credentials outside the worktree without removing the only path
         # that works when no in-process provider is configured. Deleting it would turn
         # "no provider" from "degraded but functional" into "silently does nothing".
         try:
@@ -577,7 +576,7 @@ class AgentRunner:
                     # blocks (that is what drives the UI feed), so the information was
                     # present and simply not persisted. This brings the subprocess
                     # fallback to the same per-tool visibility the session path gets from
-                    # its approval hook. Raised repeatedly by the GPT review of this branch.
+                    # its approval hook.
                     if act.get("kind") == "tool":
                         _audit_fallback_tool(
                             tool=str(act.get("tool") or "tool"),
@@ -954,8 +953,8 @@ class SessionAgentRunner:
                 # EVERY path (stop / timeout / max_turns / success), so the driver's live
                 # ``--max-cost`` meter (cost_meter=runner.total_cost_usd) sees real spend.
                 # The tool calls billed before an early return are real money — omitting
-                # them (the old behavior, which only accrued on success) made the ceiling
-                # under-count for timeout/max_turns, the EXPECTED common outcomes.
+                # them (accruing only on success) would make the ceiling under-count
+                # for timeout/max_turns, the EXPECTED common outcomes.
                 nonlocal cost_accounted
                 with self._cost_lock:
                     self._total_cost_usd += cost

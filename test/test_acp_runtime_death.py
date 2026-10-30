@@ -995,3 +995,24 @@ class TestAcpRuntimePidTracking:
 
         assert calls["pid"] == []
         assert calls["session"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_a_kill_returns_only_after_its_remote_workspace_has_closed(monkeypatch, fails):
+    """GPT 6.1 on 1d19219382: a reset must not return while the guest is still running
+    an old command, so the kill awaits the workspace's close (its relay stops each
+    guest worker and waits for it); a close that fails never fails the kill."""
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    closed = asyncio.Event()
+
+    async def close():
+        await asyncio.sleep(0)
+        closed.set()
+        if fails:
+            raise RuntimeError("guest unreachable")
+
+    rt._remote_workspace = {"server": {"name": "workspace"}, "workdir": "/w", "close": close}
+    await rt.kill(expected=True, reason="reset")
+    assert closed.is_set()

@@ -1016,14 +1016,23 @@ def test_notify_from_a_writer_thread_does_no_work_of_its_own():
     loop = MagicMock()
     publisher.bind(loop)
     publisher.notify(SESSION)
-    loop.call_soon_threadsafe.assert_called_once()
+    loop.call_soon_threadsafe.assert_called_once_with(publisher._mark, SESSION)
     assert state.frames == []
+    assert publisher._dirty == set()
 
 
 def test_notify_before_the_publisher_is_bound_is_a_no_op():
     publisher = routes.CrewLogPublisher(_Sockets())
     publisher.notify(SESSION)
+    assert publisher._dirty == set()
+    assert publisher._scheduled is False
+    # Once bound, an empty id still hands nothing over, while a real one does.
+    loop = MagicMock()
+    publisher.bind(loop)
     publisher.notify("")
+    loop.call_soon_threadsafe.assert_not_called()
+    publisher.notify(SESSION)
+    loop.call_soon_threadsafe.assert_called_once_with(publisher._mark, SESSION)
 
 
 @pytest.mark.asyncio
@@ -1081,6 +1090,80 @@ async def test_a_reinstall_swaps_the_bus_subscriptions_rather_than_doubling_them
         crew_log_bus.reset_for_tests()
 
 
+def _slot_fold_frame(fold: str) -> dict:
+    """The one ``slot_projection`` frame a slot ``FoldAdvanced`` for *fold* produces.
+
+    Driven through the bus subscriber the publisher really installs, and through the
+    loop hop it really takes, so the frame is the one a socket would receive.
+    """
+    from kiro_crew.crew_log import bus as crew_log_bus
+
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    loop = MagicMock()
+    loop.call_soon_threadsafe.side_effect = lambda fn, *args: fn(*args)
+    publisher.bind(loop)
+    value = {"items": [{"item_id": "it-1"}], "marker": fold}
+    publisher.on_slot_fold(crew_log_bus.FoldAdvanced("slot", "dashboard:1", fold, 7, value, 3))
+    frames = _frames(state, routes.SLOT_FRAME)
+    assert len(frames) == 1, frames
+    return frames[0]
+
+
+def test_the_work_fold_frame_carries_its_whole_value():
+    """``work`` is the one fold the browser seeds by fold, so its frame keeps the value."""
+    assert _slot_fold_frame("work") == {
+        "slot": "dashboard:1",
+        "fold": "work",
+        "revision": 7,
+        "value": {"items": [{"item_id": "it-1"}], "marker": "work"},
+    }
+
+
+@pytest.mark.parametrize(
+    "fold", [name for name in crew_log.SLOT_PROJECTION_NAMES if name != "work"]
+)
+def test_every_other_slot_fold_frame_omits_its_value(fold):
+    """The browser drops a non-work value and re-reads, so the frame does not ship it.
+
+    Keyed by slot, fold and revision exactly as before, so the browser's growth path
+    (and its ancestor invalidation) runs unchanged; only ``value`` is gone.
+    """
+    assert _slot_fold_frame(fold) == {"slot": "dashboard:1", "fold": fold, "revision": 7}
+
+
+def test_omitting_the_value_from_the_frame_leaves_the_bus_event_whole():
+    """Other in-process subscribers of the same event still read the whole value."""
+    from kiro_crew.crew_log import bus as crew_log_bus
+
+    crew_log_bus.reset_for_tests()
+    try:
+        state = _Sockets()
+        publisher = routes.CrewLogPublisher(state)
+        loop = MagicMock()
+        loop.call_soon_threadsafe.side_effect = lambda fn, *args: fn(*args)
+        publisher.bind(loop)
+        publisher.subscribe_bus()
+        seen: list = []
+        crew_log_bus.subscribe(
+            crew_log_bus.FOLD_ADVANCED,
+            lambda event: seen.append(event.value),
+            scope=crew_log_bus.SCOPE_SLOT,
+        )
+        value = {"streams": [{"id": "w-1"}]}
+        crew_log_bus.publish(
+            crew_log_bus.FOLD_ADVANCED,
+            crew_log_bus.FoldAdvanced("slot", "dashboard:1", "workstreams", 2, value, 1),
+        )
+        publisher.unsubscribe_bus()
+    finally:
+        crew_log_bus.reset_for_tests()
+    assert seen == [{"streams": [{"id": "w-1"}]}]
+    assert _frames(state, routes.SLOT_FRAME) == [
+        {"slot": "dashboard:1", "fold": "workstreams", "revision": 2}
+    ]
+
+
 def test_the_frame_keeps_the_name_the_rfc_gives_it():
     assert routes.FRAME == "session_projection"
 
@@ -1126,10 +1209,21 @@ def test_run_does_not_start_an_overlapping_flush_while_one_is_in_flight():
     publisher = routes.CrewLogPublisher(_Sockets())
     loop = MagicMock()
     publisher.bind(loop)
+    # A stand-in pass, so the positive half below hands the loop no real coroutine.
+    flush = MagicMock(return_value="the-flush-pass")
+    publisher._flush = flush
     publisher._flushing = True
     publisher._scheduled = True
     publisher._run()
     loop.create_task.assert_not_called()
+    flush.assert_not_called()
+    assert publisher._flushing is True
+    assert publisher._scheduled is False
+    # With no pass in flight the same call does start one.
+    publisher._flushing = False
+    publisher._run()
+    loop.create_task.assert_called_once_with("the-flush-pass")
+    loop.create_task.return_value.add_done_callback.assert_called_once_with(publisher._finished)
 
 
 def test_finished_reschedules_when_work_arrived_mid_flush():
@@ -1146,7 +1240,7 @@ def test_finished_reschedules_when_work_arrived_mid_flush():
     publisher._finished(done)
     assert publisher._flushing is False
     assert publisher._scheduled is True
-    loop.call_later.assert_called_once()
+    loop.call_later.assert_called_once_with(routes.COALESCE_SECONDS, publisher._run)
 
 
 def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():

@@ -24,6 +24,7 @@ import io
 import json
 import os
 import socket
+import time
 import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePath
@@ -103,6 +104,21 @@ def create_export_zip(
     return buf.getvalue(), manifest
 
 
+def _add_sqlite_member(zf: zipfile.ZipFile, src: Path, arcname: str) -> int:
+    """Back up the database *src* straight into *zf* as *arcname*; return its size.
+
+    The backup streams into the open member (`_backup_sqlite`), so a large memory
+    store is never held whole in RAM. The member carries what ``writestr`` gave it
+    before: the time it was written and mode ``0600``. ``force_zip64`` because the
+    size is not known when the local header goes out, like `_add_from_fd`.
+    """
+    info = zipfile.ZipInfo(arcname, date_time=time.localtime(time.time())[:6])
+    info.compress_type = zf.compression
+    info.external_attr = 0o600 << 16
+    with zf.open(info, "w", force_zip64=True) as dest:
+        return _pf._backup_sqlite(src, dest)
+
+
 def _build_export_zip(
     zf: zipfile.ZipFile,
     prefix: str,
@@ -158,10 +174,7 @@ def _build_export_zip(
     for db_name in ("memory.db", "memory_index.db"):
         src = mc / db_name
         if src.is_file() and not src.is_symlink():
-            db_buf = io.BytesIO()
-            _pf._backup_sqlite(src, db_buf)
-            zf.writestr(f"{prefix}/{db_name}", db_buf.getvalue())
-            contents_summary[db_name] = db_buf.tell()
+            contents_summary[db_name] = _add_sqlite_member(zf, src, f"{prefix}/{db_name}")
 
     # Directory trees: workspace, plan_memory, skills
     #
@@ -209,9 +222,7 @@ def _build_export_zip(
                     real = pinned_fs.fd_real_path(fd)
                     if real is None:
                         continue
-                    db_buf = io.BytesIO()
-                    _pf._backup_sqlite(Path(real), db_buf)
-                    zf.writestr(arcname, db_buf.getvalue())
+                    _add_sqlite_member(zf, Path(real), arcname)
                 else:
                     _pf._add_from_fd(zf, fd, arcname)
             finally:

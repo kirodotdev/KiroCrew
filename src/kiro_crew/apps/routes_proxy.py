@@ -33,8 +33,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.sel import sel
 
@@ -115,12 +119,14 @@ _PROXY_HOP_HEADERS = frozenset(
 # all the backend needs to trust a proxied request, so dropping the rest is a
 # pure hardening with no functional loss.
 #
-# The two gateway-authored proxy headers are stripped too. For an app that has
+# The gateway-authored proxy headers are stripped too. For an app that has
 # not opted in to ``backend.signedPrincipal``, a caller-sent
 # ``x-kirocrew-principal`` would otherwise reach a backend that never asked for
-# one, and could pass for the gateway's. For ``x-kirocrew-proxy``, stripping the
-# caller's copy first keeps the outgoing request from depending on which spelling
-# of a header the HTTP client lets win when the gateway sets its own value below.
+# one, and could pass for the gateway's. For the proxy signature and nonce
+# headers, stripping the caller's copy first keeps the outgoing request from
+# depending on which spelling of a header the HTTP client lets win when the
+# gateway sets its own value below, so a page can never supply its own nonce.
+# Relay identity headers (``x-kiro-relay-*``) are dropped by prefix, ``is_relay_header``.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
         "cookie",
@@ -130,6 +136,8 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
         "x-session-key",
         "x-internal-caller",
         "x-kirocrew-proxy",
+        "x-kirocrew-proxy-v2",
+        "x-kirocrew-proxy-nonce",
         "x-kirocrew-principal",
     }
 )
@@ -288,9 +296,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
+    from kiro_crew.dashboard.relay_headers import is_relay_header
+
     headers: dict[str, str] = {}
     for key, value in request.headers.items():
-        if key.lower() not in _PROXY_STRIP_HEADERS and key.lower() != "host":
+        lowered = key.lower()
+        if lowered not in _PROXY_STRIP_HEADERS and lowered != "host" and not is_relay_header(key):
             headers[key] = value
 
     # Read request body first so the HMAC can bind it (integrity: prevents
@@ -315,6 +326,18 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
+        # The replay-proof v2 signature rides in separate headers beside the
+        # unchanged v1 value, so a backend that only knows v1 ignores them.
+        nonce = new_proxy_nonce()
+        headers[PROXY_NONCE_HEADER] = nonce
+        headers[PROXY_V2_HEADER] = sign_proxy_request_v2(
+            secret=secret,
+            ts=int(ts),
+            nonce=nonce,
+            method=request.method,
+            target=wire_target,
+            body=body or b"",
+        )
     except OSError as exc:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the app name and the OSError only and never the secret value
         logger.warning("Failed to read app secret for %s: %s", name, exc)

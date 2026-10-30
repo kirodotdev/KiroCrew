@@ -10,7 +10,7 @@ untouched:
   (timeout / process-died / prompt-busy)
 * hook verdicts on tool calls and permission requests, plus per-session trust
 * the defence-in-depth authorisation re-checks in ``handle_interaction``
-* small module-level helpers: ``_add_phase_reaction``, ``set_orch_cfg``
+* small module-level helpers: ``set_orch_cfg``
   provider validation, ``_handle_cron_command`` list rendering,
   ``_handle_run_command`` idle status, ``_resolve_agent_name`` project lookup.
 
@@ -249,33 +249,6 @@ def _clean_approval_state():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# _add_phase_reaction
-# ──────────────────────────────────────────────────────────────────────
-class TestAddPhaseReaction:
-    @pytest.mark.asyncio
-    async def test_suppressed_phase_adds_nothing(self, monkeypatch):
-        """A ``null`` sentinel in ``slack.reactions`` means "no emoji at all"."""
-        monkeypatch.setitem(h._PHASE_EMOJIS, "done", None)
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "done")
-        assert slack.actions == []
-
-    @pytest.mark.asyncio
-    async def test_configured_phase_is_added(self, monkeypatch):
-        monkeypatch.setitem(h._PHASE_EMOJIS, "done", "tada")
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "done")
-        assert slack.actions == [("react", {"channel": "C1", "ts": "m1", "emoji": "tada"})]
-
-    @pytest.mark.asyncio
-    async def test_unknown_phase_is_ignored(self):
-        """A phase with no entry at all resolves to None -> no API call."""
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "not-a-phase")
-        assert slack.actions == []
-
-
-# ──────────────────────────────────────────────────────────────────────
 # set_orch_cfg — voice_reply provider validation
 # ──────────────────────────────────────────────────────────────────────
 class _Cfg:
@@ -299,8 +272,8 @@ class TestSetOrchCfgProviderValidation:
     def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
-        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "piper", "voice_id": "Amy"}))
-        assert h._vc.provider == "piper"
+        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}))
+        assert h._vc.provider == "polly"
         assert h._vc.global_enabled is True
         # auto_reply_to_voice defaults to the value of `enabled`.
         assert h._vc.auto_reply_to_voice is True
@@ -1344,7 +1317,7 @@ class TestVoiceReply:
 
     @pytest.mark.asyncio
     async def test_missing_tts_backend_warns_the_opted_in_user(self, monkeypatch):
-        _voice_on(monkeypatch, global_enabled=True, provider="piper")
+        _voice_on(monkeypatch, global_enabled=True, provider="system")
         monkeypatch.setattr(h, "_tts_available", lambda **kw: False)
         slack = MockSlackClient()
         provider = FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text=_LONG_ANSWER)])
@@ -1352,9 +1325,9 @@ class TestVoiceReply:
 
         eph = [a[1]["text"] for a in slack.actions if a[0] == "ephemeral"]
         assert len(eph) == 1
-        assert "provider=piper" in eph[0]
-        # piper-specific remediation, not the Polly one.
-        assert "piper_model" in eph[0]
+        assert "provider=system" in eph[0]
+        # The host-engine remediation, not the Polly one.
+        assert "espeak-ng" in eph[0]
         assert "ada credentials" not in eph[0]
 
     @pytest.mark.asyncio
@@ -1534,51 +1507,3 @@ class TestLinkedThreadRouting:
         assert handled is True
         assert slot.appended == [] and slot.queued == []
         assert "Not authorized." in _all_text(slack)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# StatusReactionController — stall watchdog upgrade path
-# ──────────────────────────────────────────────────────────────────────
-class TestStallWatchdog:
-    @pytest.mark.asyncio
-    async def test_soft_then_hard_stall_emoji_replaces_not_stacks(self, monkeypatch):
-        monkeypatch.setattr(h, "_STALL_SOFT_SECS", 0.001)
-        monkeypatch.setattr(h, "_STALL_HARD_SECS", 0.005)
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        ctrl.on_progress()
-        await asyncio.sleep(0.05)
-        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
-        unreacts = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
-        assert h._STALL_EMOJI_SOFT in reacts
-        assert h._STALL_EMOJI_HARD in reacts
-        # Upgrading to the hard emoji removes the soft one.
-        assert h._STALL_EMOJI_SOFT in unreacts
-        ctrl.finalize()
-        await asyncio.sleep(0)
-
-    @pytest.mark.asyncio
-    async def test_paused_watchdog_adds_nothing(self, monkeypatch):
-        monkeypatch.setattr(h, "_STALL_SOFT_SECS", 0.001)
-        monkeypatch.setattr(h, "_STALL_HARD_SECS", 0.005)
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        ctrl.on_progress()
-        ctrl.pause_stall_watchdog()
-        await asyncio.sleep(0.05)
-        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
-        assert h._STALL_EMOJI_SOFT not in reacts
-        assert h._STALL_EMOJI_HARD not in reacts
-        ctrl.finalize()
-        await asyncio.sleep(0)
-
-    @pytest.mark.asyncio
-    async def test_disabled_controller_never_calls_slack(self):
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1", enabled=False)
-        ctrl.set_phase("queued")
-        ctrl.on_progress()
-        ctrl.resume_stall_watchdog()
-        ctrl.finalize()
-        await asyncio.sleep(0.01)
-        assert slack.actions == []

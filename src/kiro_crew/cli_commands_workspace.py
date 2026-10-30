@@ -130,8 +130,15 @@ def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     thing that crashes.
     """
     try:
-        candidate = _ws_dir_composed(ws_dir).resolve()
-        root = config_dir().resolve()
+        # Windows' ``\\?\`` prefix folded off both (lexically), so one resolve
+        # keeping it is not read as an escape.
+        resolved = _ws_dir_composed(ws_dir).resolve()
+        # The folded path is returned for the write, so a name only the prefixed
+        # spelling reaches is refused: its plain spelling names another directory.
+        if platform_compat.names_a_verbatim_only_file(resolved):
+            return None
+        candidate = platform_compat.strip_extended_length_prefix(resolved)
+        root = platform_compat.strip_extended_length_prefix(config_dir().resolve())
         if candidate == root or not candidate.is_relative_to(root):
             return None
         return None if is_sensitive_path(str(candidate)) else candidate
@@ -203,10 +210,11 @@ def _handle_workspace(args: argparse.Namespace) -> None:
 
     elif action == "create":
         if not WORKSPACE_NAME_RE.match(args.name):
-            print(
-                "Error: invalid workspace name (use alphanumeric, hyphens, underscores)",
-                file=sys.stderr,
-            )
+            # Read here, not at module level: the facade mirrors every module-level
+            # import of its owners, and its import inventory is frozen.
+            from kiro_crew.validation import AGENT_NAME_HINT
+
+            print(f"Error: invalid workspace name ({AGENT_NAME_HINT})", file=sys.stderr)
             sys.exit(1)
         if args.name in cfg.workspaces:
             print(f"Error: workspace '{args.name}' already exists", file=sys.stderr)
@@ -230,7 +238,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             dst_path = _cli_validated_workspace_dst(
                 ws_dir, operation="workspace.create", name=args.name
             )
-            if not src_path.resolve().is_relative_to(config_dir().resolve()):
+            if not platform_compat.strip_extended_length_prefix(src_path.resolve()).is_relative_to(
+                platform_compat.strip_extended_length_prefix(config_dir().resolve())
+            ):
                 sel().log_api_access(
                     caller="cli",
                     operation="workspace.create",

@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "electron": "~44.7.2",
+    "electron": "~44.9.1",
     "electron-builder": "26.15.3"
   },
   "overrides": {
@@ -29,6 +29,14 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "protocols": [
+      {
+        "name": "KiroCrew",
+        "schemes": [
+          "kirocrew"
+        ]
+      }
+    ],
     "toolsets": {
       "appimage": "1.0.3"
     },
@@ -86,7 +94,8 @@
         "libatspi2.0-0 | libatspi2.0-0t64",
         "libuuid1",
         "libsecret-1-0",
-        "libasound2 | libasound2t64"
+        "libasound2 | libasound2t64",
+        "lsof"
       ]
     },
     "rpm": {
@@ -108,7 +117,8 @@
         "at-spi2-core",
         "libuuid",
         "libsecret",
-        "alsa-lib"
+        "alsa-lib",
+        "lsof"
       ]
     },
     "dmg": {
@@ -135,6 +145,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
       "runtime/gateway/family-takeover.js",
@@ -146,6 +157,7 @@
       "runtime/gateway/holder-decision.js",
       "runtime/gateway/shutdown.js",
       "runtime/gateway/reconnect.js",
+      "runtime/gateway/remote-switch.js",
       "window-lifecycle.js",
       "runtime/window/chrome.js",
       "runtime/window/prompts.js",
@@ -167,18 +179,24 @@
       "external-terminal.js",
       "gateway-env.js",
       "mac-env.js",
+      "system-proxy-env.js",
       "bundle-integrity.js",
       "data-home.js",
       "auto-update.js",
       "auth-allowlist.js",
+      "edition.js",
       "runtime/update/state-reporter.js",
       "runtime/update/managed-lane.js",
+      "runtime/update/freshness-gate.js",
       "runtime/update/feed-lane.js",
+      "runtime/update/policy-channel.js",
       "update-logger.js",
       "bundle-location.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",
       "splash-history.js",
+      "scroll-touch.js",
+      "swipe-history.js",
       "hide-to-tray.js",
       "html-fullscreen.js",
       "fullscreen-transition-watch.js",
@@ -190,6 +208,7 @@
       "home-dir.js",
       "local-token.js",
       "local-gateway.js",
+      "close-action.js",
       "wsl-detection.js",
       "mochi-session-token.js",
       "window-state.js",
@@ -211,6 +230,7 @@
       "gpu-crash-fallback.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
+      "launch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
       "cage-trace.js",
@@ -236,6 +256,8 @@
       "browser-annotate.js",
       "browser-page-helpers.js",
       "external-scheme.js",
+      "deep-link.js",
+      "deep-link-handler.js",
       "validation.js",
       "context-menu.js",
       "preload.js",
@@ -265,7 +287,8 @@
       "trayTemplate.png",
       "trayTemplate@2x.png",
       "EXTERNALLY-MANAGED",
-      "AUTH-SERVER-ALLOWLIST"
+      "AUTH-SERVER-ALLOWLIST",
+      "EDITION"
     ],
     "extraResources": [
       {

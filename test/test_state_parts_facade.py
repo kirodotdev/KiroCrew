@@ -42,6 +42,10 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_state_parts_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("class_body_check_can_fail",)
+
 _SRC = Path(kiro_crew.__file__).resolve().parent
 _PARTS = Path(state_parts.__file__).resolve().parent
 _PARTS_PKG = "kiro_crew.dashboard.state_parts"
@@ -259,6 +263,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "pending_has_consumer": ("property", False, False, "(self) -> 'bool'"),
     "pin_completed_todo_rows": ("function", False, False, "(self) -> 'None'"),
     "purge_chunks": ("function", False, False, "(self) -> 'int'"),
+    "project": ("property", False, False, "(self) -> 'str'"),
     "push_wire_frame": ("function", False, False, "(self, cls: 'str', content: 'str') -> 'None'"),
     "queue_append": (
         "function",
@@ -397,6 +402,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_approval_stopped": ("value", "set()"),
     "_artifact": ("value", "''"),
     "_auto_tagged": ("value", "False"),
+    "_binding": ("type", "kiro_crew.dashboard.transcript_binding.TranscriptBinding"),
     "_batch_rejected": ("value", "False"),
     "_batch_rejected_cause": ("value", "''"),
     "_buffers": ("type", "kiro_crew.dashboard.slot_buffers.SlotBufferCoordinator"),
@@ -423,6 +429,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_cycle_reached_provider": ("value", "False"),
     "_dashboard_card_exempt": ("value", "False"),
     "_dashboard_card_identity": ("type", "builtins.str"),
+    "_deferred_model_switch_key": ("value", "''"),
     "_deferred_notes": ("value", "[]"),
     "_detail_render_lock": ("type", "asyncio.locks.Lock"),
     "_dirty_flag": ("value", "False"),
@@ -454,6 +461,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_fallback_slot_model": ("value", "''"),
     "_fallback_walked": ("value", "[]"),
     "_file_changes": ("value", "[]"),
+    "_file_changes_flush": ("value", "None"),
     "_folder_changed": ("value", "False"),
     "_folder_suggested": ("value", "False"),
     "_foreign_reported": ("value", "frozenset()"),
@@ -488,6 +496,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lazy_window": ("value", "None"),
     "_lineage_minted": ("value", "False"),
     "_linked_session_busy": ("value", "None"),
+    "_reports_to_creator": ("value", "False"),
     "_lock": ("type", "asyncio.locks.Lock"),
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),
@@ -508,6 +517,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_on_question_retired": ("value", "None"),
     "_on_row": ("value", "None"),
     "_origin": ("value", "''"),
+    "_owed_segment_cut": ("value", "None"),
     "_pending": ("value", "[]"),
     "_pending_consumers": ("value", "0"),
     "_pending_context": ("value", "[]"),
@@ -536,16 +546,17 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_queue_persisted_sig": ("str", None),
     "_queue_repository": ("type", "kiro_crew.dashboard.slot_queue_repository.SlotQueueRepository"),
     "_reasoning_effort": ("value", "''"),
-    "_recovery_chat_triggered": ("value", "False"),
     "_refusal_client_pick_epoch": ("value", "0"),
     "_refusal_fallback_attempted": ("value", "False"),
     "_refusal_fallback_candidate": ("value", "''"),
     "_refusal_fallback_primary": ("value", "''"),
     "_refusal_fallback_session_key": ("value", "''"),
     "_refusal_pick_gen": ("value", "0"),
+    "_regenerate_target": ("value", "None"),
     "_responsive": ("value", "None"),
     "_resumed_count": ("value", "0"),
     "_revived_by": ("value", "''"),
+    "_saved_created_by": ("value", "''"),
     "_session_not_found_retry_used": ("value", "False"),
     "_session_requested_model": ("value", "None"),
     "_side": ("value", "None"),
@@ -563,11 +574,14 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_audience_fences": ("value", "{}"),
     "_steer_automation": ("value", "{}"),
     "_steer_channel_origin": ("value", "{}"),
+    "_steer_clear": ("value", "None"),
     "_steer_confirmed": ("value", "set()"),
     "_steer_decision_strips": ("value", "{}"),
     "_steer_delivery_ids": ("value", "{}"),
     "_steer_possibly_delivered": ("value", "set()"),
+    "_steer_retract": ("value", "None"),
     "_steer_rpc_in_flight": ("value", "set()"),
+    "_native_steer_in_flight": ("value", "set()"),
     "_steer_segment_cut": ("value", "None"),
     "_steer_send_ids": ("value", "{}"),
     "_steer_user_origin": ("value", "{}"),
@@ -581,6 +595,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_subagents_inline_collected": ("value", "set()"),
     "_summary_in_flight": ("value", "False"),
     "_summary_turn_mark": ("value", "0"),
+    "_swap_in_flight": ("value", "False"),
+    "_synthesis_armers": ("value", "set()"),
     "_synthesis_completion_turns": ("value", "0"),
     "_synthesis_inflight": ("value", "False"),
     "_synthesis_recheck": ("value", "None"),
@@ -605,7 +621,9 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_transient_5xx_retries": ("value", "0"),
     "_transient_ladder_started": ("value", "0.0"),
     "_trust": ("value", "False"),
+    "_trust_card_scoped": ("value", "False"),
     "_trust_reads": ("value", "False"),
+    "_posture_inherited": ("value", "False"),
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),
     "_trusted_patterns": ("value", "set()"),
@@ -620,6 +638,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_timeout_hydrated": ("value", "True"),
     "_turn_user_sent": ("value", "False"),
     "_unknown_row_fields_bytes": ("value", "0"),
+    "_unstarted_generation": ("value", "-1"),
     "_wait_contested": ("value", "False"),
     "_wait_last_ping": ("value", "0.0"),
     "_wait_state": ("value", "None"),
@@ -627,8 +646,11 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_wake_starting_task": ("value", "None"),
     "_welcomed_agent": ("value", "''"),
     "_window_loader_thread": ("value", "None"),
+    "_window_swap_applying": ("value", "None"),
+    "_window_swap_epoch": ("value", "0"),
     "agent": ("value", "''"),
     "agent_kind": ("value", "''"),
+    "crew_mode_agent": ("value", "''"),
     "app_agent_owner": ("value", "''"),
     "autocompact_pct": ("value", "None"),
     "channel_origin": ("value", "False"),
@@ -652,8 +674,6 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "muted": ("value", "False"),
     "mutes_opened": ("value", "False"),
     "pinned": ("value", "False"),
-    "project": ("value", "''"),
-    "recovery_retrigger_count": ("value", "0"),
     "remote_slot": ("value", "''"),
     "replays": ("type", "kiro_crew.dashboard.recovery_replays.RecoveryReplays"),
     "segment_message_id": ("value", "''"),
@@ -897,13 +917,6 @@ def test_no_bound_member_depends_on_the_class_body_it_left() -> None:
         if (deps := _class_body_dependencies(inspect.getsource(inspect.unwrap(fn))))
     }
     assert offenders == {}
-
-
-def test_the_class_body_check_can_fail() -> None:
-    source = (
-        "def f(self):\n" "    super().f()\n" "    print(__class__)\n" "    return self.__hidden\n"
-    )
-    assert sorted(_class_body_dependencies(source)) == ["__class__", "mangled __hidden", "super()"]
 
 
 def test_a_fresh_slot_has_every_base_default() -> None:

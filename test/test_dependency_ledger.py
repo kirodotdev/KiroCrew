@@ -170,7 +170,6 @@ class TestLedgerProperties:
     def test_classify_correctness(self, target_app, other_apps, removable_deps, shared_deps):
         """**Validates: Requirements 6.6, 6.7, 6.8**"""
         _clear_ledger()
-        # Ensure target_app not in other_apps
         other_apps = [a for a in other_apps if a != target_app]
         # Ensure no overlap between dep lists
         shared_deps = [d for d in shared_deps if d not in removable_deps]

@@ -379,8 +379,8 @@ class TestEagerSpawn:
     async def test_passes_speculative_flag(self):
         """The eager path must create speculatively: the flag is what keeps
         the one-shot first-turn context injection armed for the real message
-        (atomically, inside get_or_create — both local reviewers flagged the
-        earlier rearm-after-release design as racy)."""
+        (atomically, inside get_or_create — re-arming after a release would
+        race)."""
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):

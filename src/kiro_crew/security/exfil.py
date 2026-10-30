@@ -25,6 +25,7 @@ reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import contextvars
 import importlib as _importlib
@@ -748,8 +749,13 @@ def redact_exfiltration_urls_with_records(
     extra_exempt_hosts: frozenset[str] = frozenset(),
     removed_out: list[tuple[str, str]] | None = None,
     exempt_hosts: frozenset[str] | None = None,
+    _ordered_out: list[bool] | None = None,
 ) -> tuple[str, list[str], list[dict]]:
     """Redact suspicious URLs and, in the SAME pass, describe each one.
+
+    ``_ordered_out``, when given, is set ``[False]`` when a blocked address was
+    rewritten inside a longer one, so it has no placeholder of its own and the
+    records do not pair with the placeholders by order.
 
     ``removed_out``, when given, receives ``(address, placeholder)`` for every
     address the pass replaced (memory only: never store, log or send it).
@@ -786,7 +792,9 @@ def redact_exfiltration_urls_with_records(
     A URL string appearing more than once yields ONE record, in first-appearance
     order. There is deliberately no positional index: the placeholder carries
     only the domain, so two URLs on one domain redact to byte-identical text and
-    a position could pair one link's path with another's.
+    a position could pair one link's path with another's. Only
+    :func:`restore_allowed_links` pairs by order, and only when the counts and
+    a read-back prove each placeholder stood for one whole recorded address.
     """
     # The warnings come from the same loop, under the same exempt hosts, so a
     # link on a host the reader allowed is neither redacted nor reported. A
@@ -871,6 +879,10 @@ def redact_exfiltration_urls_with_records(
     # rewrite the longer one's head, so the longer one's own replace finds nothing
     # and its token-bearing tail stays in the text.
     for matched in sorted(blocked, key=len, reverse=True):
+        if _ordered_out is not None and matched in seen and matched not in result:
+            # A longer replace rewrote this URL inside itself, so its record has
+            # no placeholder of its own and breaks pairing by order.
+            _ordered_out[:] = [False]
         result = result.replace(matched, blocked[matched])
     if overflow:
         logger.info(
@@ -923,56 +935,70 @@ _PLACEHOLDER_RE = re.compile(re.escape(EXFILTRATION_REDACTION_TAG_PREFIX) + r"([
 
 
 def restore_allowed_links(
-    text: str, records: list[dict], hosts: frozenset[str]
+    text: str, records: list[dict], hosts: frozenset[str], *, ordered: bool = False
 ) -> tuple[str, list[dict]]:
     """Put back the address of each blocked link whose host the reader allowed.
 
     Every saved message carries each blocked link as a placeholder, allowed host
-    or not, and its records keep the full address. For each placeholder
-    whose record is kept (``url`` set), was blocked only by a rule an allowed
-    host relaxes, and names a host in ``hosts``, the placeholder becomes the
-    address again and the record is dropped, so the reply shows the link it
-    was written with. A placeholder carries only its host, so it cannot say
-    which of several addresses on that host it stood for: a host is restored
-    only when every record for it keeps the same address, and otherwise its
-    placeholders stay. It is also restored only when the text holds exactly one
-    placeholder per record for it, so a placeholder with no record behind it
-    (one the model echoed in prose, or one whose record was dropped) never
-    becomes a link to an address that did not stand there. Returns the text and
-    the records left.
+    or not, and its records keep the full address. A host in ``hosts`` is
+    restored only when every record for it keeps its address (``url`` set)
+    under a rule an allowed host relaxes, and the text holds exactly one
+    placeholder per record for it. A placeholder names only its host, so they
+    pair by order: records are in first-appearance order and a repeated address
+    yields one record, so equal counts mean the n-th placeholder is the n-th
+    record; different addresses pair only when ``ordered`` vouches for that
+    order (an older row may not hold it). Any mismatch (an echoed placeholder,
+    a repeat, a dropped record) leaves all of that host's placeholders, as does
+    an address that is not the whole URL match starting where it lands (it
+    stood for part of, or inside, another link). Returns the text and the
+    records left.
     """
     if not hosts or not records or EXFILTRATION_REDACTION_TAG_PREFIX not in text:
         return text, records
     by_domain: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
         by_domain.setdefault(str(rec.get("domain", "")).lower(), []).append(i)
-    placeholders: dict[str, int] = {}
-    for m in _PLACEHOLDER_RE.finditer(text):
-        placeholders[m.group(1).lower()] = placeholders.get(m.group(1).lower(), 0) + 1
-    address: dict[str, str] = {}
-    restored: set[int] = set()
-    for domain, indexes in by_domain.items():
-        if domain not in hosts:
-            continue
-        urls = {records[i].get("url") for i in indexes}
-        rules_ok = all(records[i].get("rule") in ALLOWABLE_BLOCKED_LINK_RULES for i in indexes)
-        url = next(iter(urls)) if len(urls) == 1 else None
-        if (
-            rules_ok
-            and isinstance(url, str)
-            and url
-            and placeholders.get(domain, 0) == len(indexes)
-        ):
-            address[domain] = url
-            restored.update(indexes)
-    if not address:
-        return text, records
-
-    def swap(m: re.Match[str]) -> str:
-        return address.get(m.group(1).lower(), m.group(0))
-
-    out = _PLACEHOLDER_RE.sub(swap, text)
-    return out, [r for i, r in enumerate(records) if i not in restored]
+    matches = list(_PLACEHOLDER_RE.finditer(text))
+    count: dict[str, int] = {}
+    for m in matches:
+        count[m.group(1).lower()] = count.get(m.group(1).lower(), 0) + 1
+    domains = {
+        d
+        for d, ix in by_domain.items()
+        if d in hosts
+        and count.get(d, 0) == len(ix)
+        and (ordered or len({records[i].get("url") for i in ix}) == 1)
+        and all(
+            records[i].get("rule") in ALLOWABLE_BLOCKED_LINK_RULES
+            and isinstance(records[i].get("url"), str)
+            and records[i]["url"]
+            for i in ix
+        )
+    }
+    # Dropping a host changes what follows another host's address, so the
+    # read-back runs again until no host fails it; the set only shrinks.
+    while domains:
+        parts: list[str] = []
+        placed: list[tuple[str, int, str]] = []
+        taken: dict[str, int] = {}
+        last = size = 0
+        for m in (m for m in matches if m.group(1).lower() in domains):
+            d = m.group(1).lower()
+            url = str(records[by_domain[d][taken.setdefault(d, 0)]]["url"])
+            taken[d] += 1
+            parts += [text[last : m.start()], url]
+            size += m.start() - last
+            placed.append((d, size, url))
+            size += len(url)
+            last = m.end()
+        out = "".join(parts) + text[last:]
+        starts = {r.start(): r.group(0) for r in _URL_RE.finditer(out)}
+        failed = {d for d, at, url in placed if starts.get(at) != url}
+        if not failed:
+            restored = {i for d in domains for i in by_domain[d]}
+            return out, [r for i, r in enumerate(records) if i not in restored]
+        domains -= failed
+    return text, records
 
 
 def current_scoped_exempt_hosts() -> frozenset[str]:
@@ -981,20 +1007,20 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
 
 
 # Markerless 40-character values collide with OAuth entropy only for these
-# authorization-request fields. ``code_verifier`` is intentionally absent: it
-# is sent to the token endpoint, not on this front channel.
-_OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"code_challenge", "nonce", "state"})
+# authorization-request fields (``code_verifier`` goes to the token endpoint;
+# a dynamically registered public ``client_id`` may be 43-char base64url).
+_OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
 # The exemption is bounded to shapes the protocol itself can emit, so an
 # AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
-# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`, and an S256
-# challenge is base64url of a 32-byte digest -- exactly 43 characters.
+# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
+# challenge and a dynamic client id must be exactly 43 base64url characters.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
-    if key == "code_challenge":
+    if key in {"client_id", "code_challenge"}:
         return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
     return "+" not in form and "/" not in form
 
@@ -1034,7 +1060,7 @@ def _oauth_credential_scan_target(
 
     Fixed credential signatures are checked against the raw and decoded URL
     before this target is built. At an exact approved endpoint, only the
-    code-owned state, nonce, and PKCE challenge fields are omitted from the
+    code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
     markerless bare-secret heuristic, and only when the value carries a shape
     the protocol can emit (see
     :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
@@ -1311,6 +1337,33 @@ def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
 # canonicalize_ip converts ALL these to dotted-quad for uniform matching.
 
 
+def _octet_literal_value(part: str) -> "int | None":
+    """Value of ONE literal dotted-quad octet in the OS resolver's bases, or None.
+
+    ``inet_aton`` and ``curl`` read a leading-zero octet as C-style OCTAL (``0251``
+    is 169, not 251) and ``0x`` as hex; ``int(part, 0)`` does not accept the bare
+    ``0NNN`` octal spelling, so it is handled first. Returns None for an empty or
+    non-numeric octet. This is the ONE octet parser -- ``canonicalize_ip`` and the
+    IMDS shell-expansion gate both call it, so a leading-zero or hex octet reads the
+    same way on every path.
+
+    EVERY conversion runs inside the try: a very long digit string trips CPython's
+    integer-string length limit with ValueError, and that must read as "not a
+    numeric octet" (None), never crash the gate -- the same fail-soft the inline
+    parser in ``canonicalize_ip`` had before this was extracted.
+    """
+    try:
+        if len(part) > 1 and part[0] == "0" and part[1:].isdigit():
+            # Octal only when every trailing digit is octal; a stray 8/9 is
+            # decimal, exactly as inet_aton reads it.
+            if all(c in "01234567" for c in part[1:]):
+                return int(part, 8)
+            return int(part)
+        return int(part, 0)  # decimal, or 0x-prefixed hex
+    except (ValueError, OverflowError):
+        return None
+
+
 def canonicalize_ip(s: str) -> str:
     """Convert an IP address in any encoding to dotted-quad (a.b.c.d).
 
@@ -1347,23 +1400,13 @@ def canonicalize_ip(s: str) -> str:
         octets: list[int] = []
         valid = True
         for part in parts:
-            try:
-                # Handle C-style octal (0NNN without 'o' prefix) which Python 3
-                # int(x, 0) doesn't recognize. Must check before int(x, 0).
-                if len(part) > 1 and part[0] == "0" and part[1:].isdigit():
-                    # Could be octal (0251) or just "00" etc.
-                    if all(c in "01234567" for c in part[1:]):
-                        val = int(part, 8)
-                    else:
-                        # Has 8 or 9 -- not valid octal, treat as decimal
-                        val = int(part)
-                else:
-                    # int() with base=0 handles: decimal, 0x hex
-                    val = int(part, 0)
-                octets.append(val)
-            except (ValueError, OverflowError):
+            # The ONE octet parser (reads octal/hex in the resolver's bases); None
+            # is an unparseable octet, so this candidate is not a dotted IP.
+            val = _octet_literal_value(part)
+            if val is None:
                 valid = False
                 break
+            octets.append(val)
 
         if valid:
             if len(octets) == 1:
@@ -1462,6 +1505,217 @@ _IMDS_IP = "169.254.169.254"
 # SSRF gate which also blocks it (CWE-918 dual-stack parity).
 _IMDS_IPV6 = "fd00:ec2::254"
 
+# ── IMDS via shell EXPANSION (CWE-185 / CWE-693) ──
+# The deny view deliberately stops BEFORE shell expansion, so a dotted token that
+# splices an expansion into an octet -- ``169.254.169.25$((2+2))``,
+# ``169.254.169.$((100+154))`` -- reaches this gate with that octet UNEXPANDED, and
+# the literal ``169.254.169.254`` the canonicalizer looks for never appears, while
+# bash still produces the real bytes at run time.
+#
+# This gate refuses ONLY what it can resolve STATICALLY, without running anything: an
+# octet made of literal digits and pure-ARITHMETIC expansions (``$((..))`` / ``$[..]``,
+# evaluated by ``_safe_arith`` -- ``+ - * / %`` over PLAIN-DECIMAL and ``0x``-HEX int
+# constants only, via a Python ``ast``, size-bounded). If the four octets resolve to
+# exactly ``169.254.169.254`` the token is refused. Any octet whose value is UNKNOWN
+# without running the shell -- a ``$VAR``, ``${..}``, a ``$(..)`` command substitution,
+# a backtick -- does not resolve and is LEFT ALONE. Unknown value means allow: a benign
+# ``for o in 123 253; do ping 169.254.169.$o; done`` reachability check, a subnet
+# gateway (``${A}.${B}.${C}.254``), a version string (``${MAJOR}.${MINOR}.${PATCH}``)
+# and a regex end-anchor (``grep '^nameserver 169.254.169.253$'``) all pass.
+#
+# ``_safe_arith`` reads a Python ``ast``, NOT a bash arithmetic emulator, so three
+# arithmetic forms that bash DOES resolve statically to ``.254`` are deliberately NOT
+# emulated and are documented RESIDUALS alongside the ``$VAR`` / ``$(..)`` / backtick
+# spellings: a leading-zero OCTAL literal (``$((0376))``), a base-N literal
+# (``$((16#fe))``, ``$((2#11111110))``), and a value that only reaches 254 by 64-bit
+# wraparound (``$((18446744073709551870))``). Emulating bash arithmetic faithfully
+# (octal, base-N, two's-complement overflow, C division) would grow this evaluator
+# without bound and trade a new divergence either way; the agreed scope is the plain
+# decimal / ``0x``-hex arithmetic a Python ``ast`` computes identically to bash. The
+# literal deny tier still catches a fully-resolved literal octet (``169.254.169.0376``
+# is read as octal by ``_octet_literal_value`` and blocked); only the ARITHMETIC
+# spelling of these bases is the residual. An octet holding any unresolvable expansion
+# (``169.254.169.$x``) is allowed, not blocked, so the gate refuses no benign command.
+# The dotted-quad octets of _IMDS_IP, as ints, for positional comparison.
+_IMDS_OCTETS = tuple(int(o) for o in _IMDS_IP.split("."))
+#: Characters of a dotted IP token (decimal, hex digits, ``x``, the dot); never ``$``.
+_IP_TOKEN_CHARS = frozenset("0123456789abcdefABCDEFxX.")
+#: Cap on an arithmetic expression fed to the safe evaluator, so a crafted
+#: ``$((...))`` cannot drive parse/eval cost up; a real IMDS octet needs a few chars.
+_ARITH_MAX_LEN = 256
+
+
+def _arith_span(command: str, i: int) -> "tuple[int, str] | None":
+    """If a bash arithmetic expansion starts at *i*, return ``(end, expr)``, else None.
+
+    Handles ``$((expr))`` (balanced parens, so a nested ``$((100+(154)))`` is spanned
+    whole) and the older ``$[expr]`` form. *end* is the index just past the span;
+    *expr* is the inner text handed to the safe evaluator. A command substitution
+    ``$(..)`` (single paren) is NOT arithmetic and returns None.
+    """
+    n = len(command)
+    if i + 1 >= n or command[i] != "$":
+        return None
+    # Bound every lookahead to the arithmetic cap: an unbalanced ``$((`` must not
+    # scan to end-of-string, or a command of many ``$((`` would be quadratic.
+    limit = min(n, i + _ARITH_MAX_LEN + 4)
+    if command[i + 1 : i + 3] == "((":
+        depth = 0
+        j = i + 1
+        while j < limit:
+            if command[j] == "(":
+                depth += 1
+            elif command[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    return (j + 1, command[i + 3 : j - 1])  # strip ``$((`` and ``))``
+            j += 1
+        return None  # unbalanced within the cap -> not a resolvable span
+    if command[i + 1] == "[":
+        close = command.find("]", i + 2, limit)
+        if close == -1:
+            return None
+        return (close + 1, command[i + 2 : close])
+    return None
+
+
+def _eval_arith(node: ast.AST) -> "int | None":
+    """Evaluate a parsed arithmetic node to an int, or None if it is not pure integer
+    arithmetic over ``+ - * / %`` (shell ``$((..))`` is integer, truncating)."""
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and not isinstance(node.value, bool)
+    ):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        v = _eval_arith(node.operand)
+        if v is None:
+            return None
+        return v if isinstance(node.op, ast.UAdd) else -v
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod)
+    ):
+        left = _eval_arith(node.left)
+        right = _eval_arith(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if right == 0:
+            return None  # shell errors on /0; treat as unresolvable
+        # Truncate toward zero in INTEGERS only. ``int(left / right)`` goes through a
+        # float and loses precision above 2**53, so a large plain-decimal expression
+        # bash resolves to .254 would not (over- or under-resolving the octet); this
+        # matches bash's C-style integer division and remainder exactly.
+        q = abs(left) // abs(right)
+        if (left < 0) != (right < 0):
+            q = -q
+        if isinstance(node.op, ast.Mod):
+            return left - right * q  # C-style remainder, matches shell
+        return q  # truncating integer division toward zero, like the shell
+    return None
+
+
+def _safe_arith(expr: str) -> "int | None":
+    """Value of a plain-decimal / ``0x``-hex integer expression over ``+ - * / %``, or
+    None otherwise. This is a Python ``ast``, NOT a bash arithmetic emulator: a leading-
+    zero octal literal, a base-N (``N#..``) literal and 64-bit wraparound are NOT read
+    (they are documented residuals -- see the module note). No names, calls, attributes
+    or other operators run."""
+    expr = expr.strip()
+    if not expr or len(expr) > _ARITH_MAX_LEN:
+        return None
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+    return _eval_arith(tree.body)
+
+
+def _resolve_octet(octet: str) -> "int | None":
+    """Resolve one dotted octet to its int value, substituting arithmetic spans; None
+    if any non-arithmetic expansion (``$VAR``/``${..}``/``$(..)``/backtick) leaves it
+    with an UNKNOWN run-time value, or the result is not a valid octet literal."""
+    out: list[str] = []
+    i, n = 0, len(octet)
+    while i < n:
+        span = _arith_span(octet, i)
+        if span is not None:
+            end, expr = span
+            value = _safe_arith(expr)
+            if value is None:
+                return None
+            out.append(str(value))
+            i = end
+        elif octet[i] == "$" or octet[i] == "`":
+            return None  # unknown run-time value -> do not block
+        else:
+            out.append(octet[i])
+            i += 1
+    return _octet_literal_value("".join(out))
+
+
+def _arith_ip_tokens(command: str) -> "list[str]":
+    """Maximal dotted tokens made of IP characters and whole arithmetic spans. A token
+    stops at the first character that is neither (so a ``$VAR``/``$(..)``/backtick ends
+    it); the scan is one linear pass, each arithmetic span one balanced lookahead."""
+    tokens: list[str] = []
+    n = len(command)
+    i = 0
+    while i < n:
+        if command[i] in _IP_TOKEN_CHARS or _arith_span(command, i) is not None:
+            start = i
+            while i < n:
+                span = _arith_span(command, i)
+                if span is not None:
+                    i = span[0]
+                elif command[i] in _IP_TOKEN_CHARS:
+                    i += 1
+                else:
+                    break
+            tokens.append(command[start:i])
+        else:
+            i += 1
+    return tokens
+
+
+def _imds_access_via_expansion(command: str) -> str | None:
+    """Refuse a dotted token that STATICALLY resolves to ``169.254.169.254``.
+
+    See the module note above. Only literals and pure-arithmetic ``$((..))`` / ``$[..]``
+    expansions resolve; a ``$VAR`` / ``${..}`` / ``$(..)`` / backtick octet has an
+    unknown value and is LEFT ALONE (unknown -> allow). The denial names the
+    UNEXPANDED token, never any expanded bytes. Returns the reason or None.
+
+    Scope: the four-part dotted form, per GHSA-x2m8-5ff9-f479. The 2-/3-part inet_aton
+    short forms are outside this check.
+    """
+    if "$((" not in command and "$[" not in command:
+        return None  # nothing statically resolvable here -> the canonicalizer owns it
+    for token in _arith_ip_tokens(command):
+        octets = token.split(".")  # arithmetic spans carry no dot, so this is safe
+        if len(octets) == 5 and octets[-1] == "":
+            octets = octets[:-1]  # a single trailing dot (FQDN root) the resolver drops
+        if len(octets) != 4:
+            continue
+        values: list[int] = []
+        for octet in octets:
+            value = _resolve_octet(octet)
+            if value is None:
+                break
+            values.append(value)
+        if values == list(_IMDS_OCTETS):
+            return (
+                f"Blocked: command accesses IMDS endpoint "
+                f"(169.254.169.254 via shell expansion '{token}')"
+            )
+    return None
+
 
 def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = None) -> str | None:
     """Detect attempts to access the IMDS endpoint via any encoding.
@@ -1476,10 +1730,12 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
     """
     if enabled_ids is not None and "credential-exfil-imds-any" not in enabled_ids:
         return None
-    # Quick reject: no IP-like candidate in command
+    # Quick reject: no literal IP candidate. A token whose octets are ALL shell
+    # expansions (``$A.$B.$C.254``) still has no literal candidate, so the
+    # expansion check runs even on this path rather than short-circuiting None.
     candidates = _IP_CANDIDATE_RE.findall(command)
     if not candidates:
-        return None
+        return _imds_access_via_expansion(command)
 
     try:
         imds_v6: ipaddress.IPv6Address | None = ipaddress.ip_address(_IMDS_IPV6)  # type: ignore[assignment]
@@ -1506,7 +1762,8 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
                     )
             except ValueError:
                 pass
-    return None
+    # No literal encoding matched; a per-octet shell-expansion spelling still can.
+    return _imds_access_via_expansion(command)
 
 
 # This module is the import path of every name the egress layer offers. The URL classifier,
@@ -1537,7 +1794,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.security.exfil_bash import (  # noqa: F401
-        _BASH_BLANKS_RE,
         _BASH_EXFIL_PATTERNS,
         _BASH_EXFIL_RES,
         _BASH_EXFIL_ROW_DISCRIMINATORS,
@@ -1592,6 +1848,7 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
         _INERT_SEARCH_VERBS,
         _exception_eligible,
     )
+    from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401
         SecurityEvent,
         SecurityEventLog,

@@ -233,7 +233,9 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/reasoning-effort", "api_chat_slot_reasoning_effort"),
     ("POST", "/api/chat/slots/{slot}/reload", "api_chat_slot_reload"),
     ("POST", "/api/chat/slots/{slot}/reset-conversation", "api_chat_slot_reset_conversation"),
+    ("POST", "/api/chat/slots/{slot}/repair-images", "api_chat_slot_repair_images"),
     ("POST", "/api/chat/slots/{slot}/resume", "api_chat_slot_resume"),
+    ("POST", "/api/chat/slots/{slot}/steers/{mid}/retract", "api_chat_slot_steer_retract"),
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
@@ -682,7 +684,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "resume_slot_from_history",
             "async function",
-            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None) -> 'ResumeOutcome'",
+            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
     "slot_lifecycle": (
@@ -717,7 +719,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "close_slot",
             "async function",
-            "(state: 'DashboardState', slot: \"'_ChatSlot'\", name: 'str', *, pre_pop_check: 'Callable[[], None] | None' = None) -> 'None'",
+            "(state: 'DashboardState', slot: \"'_ChatSlot'\", name: 'str', *, pre_pop_check: 'Callable[[], None] | None' = None, hand_back: 'bool' = True) -> 'None'",
         ),
         (
             "_close_slot",
@@ -769,7 +771,7 @@ project_lists | api_favorite_projects | async function | (request: 'web.Request'
 project_lists | api_favorite_project_add | async function | (request: 'web.Request') -> 'web.Response'
 project_lists | api_favorite_project_remove | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_reload | async function | (request: 'web.Request') -> 'web.Response'
-session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str') -> 'web.Response'
+session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None) -> 'web.Response'
 session_relaunch | api_chat_slot_workspace | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_project | async function | (request: 'web.Request') -> 'web.Response'
 slot_approval | _internal_session_approval_refusal | async function | (request: 'web.Request', operation: 'str') -> "'web.Response | None'"

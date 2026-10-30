@@ -111,8 +111,7 @@ class TestCronReaper:
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
 
-        # Should not have been reaped
-        assert not claim.reaped  # nothing reaped
+        assert not claim.reaped
         sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -222,7 +221,9 @@ class TestCronReaper:
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             await svc._force_reap("cancel1", _JOB_TIMEOUT_SECS + 10, claim=claim)
 
-        mock_task.cancel.assert_called_once()
+        mock_task.cancel.assert_called_once_with()
+        assert claim.reaped
+        assert "cancel1" not in svc._claims
 
     @pytest.mark.asyncio
     async def test_reaper_persists_state(self, tmp_path: object) -> None:
@@ -241,6 +242,9 @@ class TestCronReaper:
             await svc._force_reap("persist1", _JOB_TIMEOUT_SECS + 10, claim=claim)
 
         mock_save.assert_called_once()
+        # What the save persists: the reaped outcome on the job record.
+        assert job.last_status == "error"
+        assert "Reaped" in (job.last_error or "")
 
     @pytest.mark.asyncio
     async def test_reaped_runs_count_toward_auto_pause(self, tmp_path: object) -> None:
@@ -351,6 +355,8 @@ class TestCronReaper:
             await svc._run_job_isolated(job, claim)
 
         mock_merge.assert_not_called()
+        # Only a merge writes the run's generation, so the job keeps the old one.
+        assert job.run_generation == 0
 
     @pytest.mark.asyncio
     async def test_reaped_flag_prevents_merge_on_cancel(self) -> None:
@@ -405,7 +411,6 @@ class TestCronReaper:
         assert svc._reaper_task is not None
         assert svc._sessions is sessions
 
-        # Cleanup
         svc._reaper_task.cancel()
         try:
             await svc._reaper_task

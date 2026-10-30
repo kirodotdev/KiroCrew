@@ -583,6 +583,63 @@ class TestPermissionFlow:
         assert rejected == ["r1"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("expected", ["approved", "rejected"])
+    async def test_prefix_fs_path_check_runs_off_the_event_loop_thread(
+        self, monkeypatch, tmp_path, expected
+    ):
+        """The fs tool's target is resolved and checked on a worker thread."""
+        import threading
+
+        import kiro_crew.security as security_mod
+
+        loop_thread = threading.get_ident()
+        if expected == "approved":
+            target = tmp_path / "safe.txt"
+        else:
+            target = Path.home() / ".aws" / "credentials"
+        resolve_threads = []
+        check_threads = []
+        real_resolve = Path.resolve
+        real_check = security_mod.is_sensitive_path
+
+        def recording_resolve(self, *args, **kwargs):
+            if self == target:
+                resolve_threads.append(threading.get_ident())
+            return real_resolve(self, *args, **kwargs)
+
+        def recording_check(path_str, *args, **kwargs):
+            check_threads.append(threading.get_ident())
+            return real_check(path_str, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", recording_resolve)
+        monkeypatch.setattr(security_mod, "is_sensitive_path", recording_check)
+        approved = []
+        rejected = []
+
+        class PermProvider(MockProvider):
+            async def stream(self, message):
+                self.messages.append(message)
+                yield LLMEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    title="read_file",
+                    tool_input=json.dumps({"path": str(target)}),
+                    request_id="r1",
+                )
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+            async def approve_tool(self, request_id):
+                approved.append(request_id)
+
+            async def reject_tool(self, request_id):
+                rejected.append(request_id)
+
+        runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
+        await runner._run_turn(PermProvider(), Turn(user="read"), "eval-session")
+        assert (approved, rejected) == ((["r1"], []) if expected == "approved" else ([], ["r1"]))
+        assert resolve_threads and loop_thread not in resolve_threads
+        assert check_threads and loop_thread not in check_threads
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("title", "tool_input"),
         [("WorkspaceSearch", '{"searchQuery": "hello"}'), ("read_file", '{"path": "/tmp/safe.txt"}')],

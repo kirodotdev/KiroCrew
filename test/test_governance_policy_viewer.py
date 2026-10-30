@@ -45,11 +45,18 @@ def _reset_ctx():
     ctx_mod.reset_context()
 
 
-def _install_ceiling(policy_body):
-    """Compose a context carrying the given policy and install it as active."""
+def _install_ceiling(policy_body, *, edition=None, monkeypatch=None):
+    """Compose a context carrying the given policy and install it as active.
+
+    ``edition`` is switched only after the base context is composed: an
+    enterprise build refuses to compose without its central policy, and the
+    policy under test is installed here directly rather than fetched.
+    """
     from kiro_crew.config.loader import KiroCrewConfig
 
     base = build_default_context(KiroCrewConfig.load())
+    if edition is not None:
+        monkeypatch.setattr("kiro_crew.edition.EDITION", edition)
     ceiling = parse_policy(policy_body) if policy_body is not None else None
     ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
 
@@ -79,6 +86,17 @@ class TestNoPolicyDefault:
         assert snap["scopes"], "expected a row per catalog scope"
         assert all(row["source"] == "ungoverned" for row in snap["scopes"])
         assert all(row["governed"] is False for row in snap["scopes"])
+
+    def test_enterprise_unnamed_scope_reports_the_baseline(self, profiles_dir, monkeypatch):
+        # An enterprise build answers an unnamed scope from the built-in baseline,
+        # so the viewer must not call it "ungoverned" (RFC D3).
+        _install_ceiling({"version": 1, "boot": {}}, edition="enterprise", monkeypatch=monkeypatch)
+        rows = _by_scope(build_governance_policy_snapshot())
+
+        assert rows["capabilities.browse"]["governed"] is True
+        assert rows["capabilities.browse"]["source"] == "policy"
+        assert rows["capabilities.browse"]["detail"]["enabled"] is False
+        assert rows["sandbox.min_level"]["source"] == "ungoverned"
 
     def test_covers_every_catalog_scope_minus_aliases(self, profiles_dir):
         # The viewer iterates SCOPE_CATALOG (never a hardcoded list) so it stays
@@ -314,9 +332,7 @@ class TestScopeAttribution:
         assert row["source"] == "policy"
         assert row["scope_note"] == "policy_wide"
 
-    def test_composed_row_is_policy_wide_when_policy_is_the_half_that_disables(
-        self, profiles_dir
-    ):
+    def test_composed_row_is_policy_wide_when_policy_is_the_half_that_disables(self, profiles_dir):
         """The inverse mislabel: a Level-1 ceiling must not read as host-only.
 
         ``CapabilityGate.enabled`` composes by AND, so a POLICY gate that is already
@@ -489,9 +505,7 @@ class TestEndpoint:
         assert payload["scopes"] == []
         assert payload["has_policy"] is False
 
-    def test_fallback_profiles_lists_the_broken_host_profile(
-        self, profiles_dir, monkeypatch
-    ):
+    def test_fallback_profiles_lists_the_broken_host_profile(self, profiles_dir, monkeypatch):
         """A resolved profile that is a deny-all fallback is named in the list."""
         # Write a profile with a valid bind but invalid controls — the bind is
         # salvaged so the surface resolves to the deny-all fallback.
@@ -580,9 +594,7 @@ class TestEndpoint:
         assert snap["fallback_profiles"] == []
         assert snap["profile"] is None
 
-    def test_fallback_profiles_empty_in_unavailable_response(
-        self, profiles_dir, monkeypatch
-    ):
+    def test_fallback_profiles_empty_in_unavailable_response(self, profiles_dir, monkeypatch):
         """The unavailable response always reports an empty list."""
         import kiro_crew.dashboard.handlers.security as sec
 

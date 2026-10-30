@@ -1,9 +1,13 @@
 """A subscriber on the crew-log bus: the ``work`` fold moved -> fire its conductor's loop.
 
-ONE TRIGGER, AND IT IS A WORKER'S OWN WORDS. A conductor is pulled forward when the
-``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report landed
-and was folded -- and only when that report's status is one the conductor must act on
-(:data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES`: ``done``, ``blocked``, ``question``).
+TWO TRIGGERS, AND BOTH ARE A WORKER TRYING TO SPEAK. A conductor is pulled forward when
+the ``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report
+landed and was folded -- and only when that report's status is one the conductor must
+act on (:func:`~kiro_crew.work_vocab.wake_statuses`: ``done``, ``blocked``,
+``question``, and ``reply`` while ``work_ledger.remote_dispatch`` is on). And it is pulled forward when a worker's ``work_report`` / ``work_brief``
+call never reached the ledger because the harness could not deliver it
+(:func:`wake_for_undelivered_report`, :mod:`kiro_crew.work_ledger_undelivered`): the
+worker meant to say something, and the conductor would otherwise hear nothing at all.
 Nothing else here wakes anybody.
 
 WHY NOT A TURN END OR A CLOSE. Both were triggers once, on the reading that a worker's
@@ -83,7 +87,8 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_WAKE_STATUSES
+from kiro_crew import work_preview
+from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_REMOTE_DISPATCH_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +145,32 @@ class _Registry:
                 continue
             stamps[item_id] = stamp
             if previous is not None and stamp and previous.get(item_id) != stamp:
+                reported.append((item_id, status))
+        self.boards[board] = stamps
+        return first, reported
+
+    def observe_delta(
+        self, board: str, changed: "list[_Item]", order: "list[str]"
+    ) -> "tuple[bool, list[tuple[str, str]]]":
+        """Record a ``work`` DELTA for *board*: the *changed* items and the ids in *order*.
+
+        The same answer :meth:`observe` gives for the whole render the delta leads to.
+        An item the delta does not send rendered exactly as before, so its stamp is the
+        one already held; a held id *order* does not name is gone from the board. So only
+        the changed items are stamped, and the rest of the table is the held one cut to
+        *order*. With nothing held for *board* this is first sight, as for a whole value,
+        and the items the delta did not send are learned as their own changes arrive.
+        """
+        previous = self.boards.get(board)
+        first = previous is None
+        held = previous or {}
+        stamps = {item_id: held[item_id] for item_id in order if item_id in held}
+        reported: list[tuple[str, str]] = []
+        for item_id, stamp, status in changed:
+            if not item_id:
+                continue
+            stamps[item_id] = stamp
+            if not first and stamp and held.get(item_id) != stamp:
                 reported.append((item_id, status))
         self.boards[board] = stamps
         return first, reported
@@ -216,12 +247,56 @@ def _report_stamp(item: "dict[str, Any]") -> str:
     return f"{stamp}|{hashlib.sha256(blob.encode()).hexdigest()[:16]}"
 
 
+def _event_news(event: Any) -> "tuple[list[_Item] | None, list[str] | None]":
+    """``(items, order)`` for :func:`_observe_board` out of one ``work`` event.
+
+    A ``delta`` the bus handed over is on the revision this subscriber took last (the
+    bus relabels any other as ``snapshot_needed``), so its changed items and its
+    ``order`` are the whole news. Anything else is read whole from the value it carries,
+    and an event carrying none (``snapshot_needed`` once the whole value stops riding
+    along) answers ``(None, None)``: read the board.
+    """
+    if getattr(event, "kind", "value") == "delta":
+        ops = getattr(event, "delta", None)
+        header = ops.get("header") if isinstance(ops, dict) else None
+        changed = ops.get("items") if isinstance(ops, dict) else None
+        order = header.get("order") if isinstance(header, dict) else None
+        if isinstance(changed, dict) and isinstance(order, list):
+            ids = [item_id for item_id in order if isinstance(item_id, str)]
+            return _board_items({"items": list(changed.values())}), ids
+    value = getattr(event, "value", None)
+    if getattr(event, "kind", "value") != "value" and not (isinstance(value, dict) and value):
+        return None, None
+    return _board_items(value), None
+
+
+def _read_board_items(board: str) -> "list[_Item] | None":
+    """*board*'s items read through the fold read path, or ``None`` if not ready. Blocking.
+
+    Never cold: a board with no warm cell and no savepoint is folded by one background
+    prime, whose publish reaches this module anyway.
+    """
+    from kiro_crew.crew_log import projection
+
+    try:
+        folded = projection.read_slot_projection(board, WORK_FOLD_NAME, cold=False)
+    except Exception:
+        logger.debug("conductor wake: could not read board %s for a snapshot", board)
+        return None
+    return _board_items(getattr(folded, "value", None))
+
+
 def _watched(svc: Any) -> "Callable[[str], bool]":
     """The sweep predicate: whether *board*'s conductor has an active work-ledger loop."""
     return lambda board: bool(work_ledger_loop_id(svc, board))
 
 
-async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
+async def _observe_board(
+    svc: Any,
+    board: str,
+    items: "list[_Item] | None",
+    order: "list[str] | None" = None,
+) -> None:
     """Fold *board*'s latest stamps into the registry and fire for what moved.
 
     ON THE EVENT LOOP. A board whose conductor has no active work-ledger loop is dropped
@@ -240,21 +315,41 @@ async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
     worker report needs a ``bind`` on the board before it.
 
     A MOVED STAMP IS NOT ENOUGH. Only a report whose status is in
-    :data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES` is pushed for, because that set is
+    :func:`~kiro_crew.work_vocab.wake_statuses` is pushed for, because that set is
     exactly what the conductor's own gate will act on: a ``progress`` report -- which is
     also what a worker writes when it parks itself in a wait -- advances the board and is
     read on the loop's next scheduled tick, and pulling that tick forward
     would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
     runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
     floor delivers a turn anyway.
+
+    THREE SHAPES OF NEWS. *items* with *order* ``None`` is the whole board. *items*
+    with an *order* is a ``work`` delta: only the changed items, and the ids the board
+    now holds (:meth:`_Registry.observe_delta`). *items* ``None`` is a
+    ``snapshot_needed`` that carried no whole value: the board is read here, off the
+    loop, and observed whole; a board that is not ready yet is skipped and the next
+    publish brings it.
     """
     _registry.sweep(_watched(svc))
     if not work_ledger_loop_id(svc, board):
         _drop(board)
         return
-    _first, reported = _registry.observe(board, items)
+    if items is None:
+        items = await asyncio.to_thread(_read_board_items, board)
+        if items is None:
+            return
+        order = None
+    if order is not None:
+        _first, reported = _registry.observe_delta(board, items, order)
+    else:
+        _first, reported = _registry.observe(board, items)
+    remote_dispatch: bool | None = None
     for item_id, status in reported:
-        if status.strip() not in WORK_WAKE_STATUSES:
+        if remote_dispatch is None and status.strip() in WORK_REMOTE_DISPATCH_STATUSES:
+            # Only a preview status pays for the config read, and off the loop: it is
+            # file I/O, and every other report decides without it.
+            remote_dispatch = await asyncio.to_thread(work_preview.remote_dispatch)
+        if status.strip() not in wake_statuses(bool(remote_dispatch)):
             continue
         await _fire(svc, board, item_id)
 
@@ -443,7 +538,7 @@ def _observe_event(event: Any) -> "Any | None":
         board = str(getattr(event, "key", "") or "")
         if not board:
             return None
-        items = _board_items(getattr(event, "value", None))
+        items, order = _event_news(event)
         from kiro_crew import autonudge
 
         svc = autonudge.get_instance()
@@ -452,7 +547,7 @@ def _observe_event(event: Any) -> "Any | None":
         running = _service_loop(svc)
         if running is None:
             return None
-        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items), running)
+        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items, order), running)
     except Exception:  # pragma: no cover - the fold worker must not see this
         logger.debug("conductor wake: could not schedule a board observation")
         return None
@@ -783,10 +878,10 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
         # hours. With the flag, that tail arms at delay zero instead. The refusal still
         # comes back here and is still logged and dropped.
         #
-        # Passed UNGUARDED. An earlier revision wrapped this in ``except TypeError`` for
-        # "a service build that predates the flag"; no such build exists, because the
+        # Passed UNGUARDED, with no ``except TypeError`` for "a service build that
+        # predates the flag": no such build exists, because the
         # package defines one ``fire_now`` and it ships with this caller in the same
-        # commit -- so the branch could only ever be entered by a test stub, while
+        # commit -- so such a branch could only ever be entered by a test stub, while
         # silently retrying a genuine ``TypeError`` raised INSIDE ``fire_now``.
         _loop, reason, status = await svc.fire_now(loop_id, defer_if_firing=True, delay=window)
     except Exception:  # pragma: no cover - a push must never reach its trigger
@@ -802,6 +897,35 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
         )
         return ""
     return loop_id
+
+
+def wake_for_undelivered_report(conductor_slot_key: str, item_id: str) -> "Any | None":
+    """Pull *conductor_slot_key*'s work-ledger tick forward: *item_id*'s worker tried to
+    report and the harness never delivered the call. The scheduled future, or ``None``.
+
+    The second trigger the module docstring anticipates, and the same push as a
+    report's: the batch window, the per-item budget and every refusal of
+    :func:`_fire` apply unchanged, and the tick that runs reads the item's
+    ``report_undelivered`` flag off the ledger like any other fact. Without it a
+    conductor on an hours-long cadence would learn hours later that the report it is
+    waiting for never left the worker.
+
+    Callable from any thread: it schedules onto the service's loop and returns
+    without waiting. Never raises.
+    """
+    try:
+        from kiro_crew import autonudge
+
+        svc = autonudge.get_instance()
+        if svc is None or not conductor_slot_key:
+            return None
+        running = _service_loop(svc)
+        if running is None:
+            return None
+        return asyncio.run_coroutine_threadsafe(_fire(svc, conductor_slot_key, item_id), running)
+    except Exception:  # noqa: BLE001 - a push must never reach the worker's turn
+        logger.debug("conductor wake: could not schedule an undelivered-report push")
+        return None
 
 
 def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":

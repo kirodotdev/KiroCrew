@@ -202,7 +202,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *     captured while it was still live reverts a finished card to "running".
  *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
  *     `_mark_steer_row_state` -> `slot.update_message` advances
- *     `meta.steerState` `written` -> `consumed`/`requeued`. A snapshot captured
+ *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
  *     while it was still `written` revives the "pending steer" badge on a steer
  *     the turn already took.
  *
@@ -259,7 +259,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // A steer row advances `written` -> `consumed`/`requeued` and never back
   // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
   // its own NEW row, not a rewrite of this one), so both are safe anchors.
-  const STEER_SETTLED = new Set(['consumed', 'requeued'])
+  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
   // is not one this pass guards. Steer rows ride the `user` role, so they are
@@ -543,6 +543,54 @@ export function sameTranscript(prev: ChatMessage[], next: ChatMessage[]): boolea
   return true
 }
 
+/** `next`, with each row that is structurally equal to a row of `prior` replaced
+ *  by that prior row, or `prior` itself when every row matches in order.
+ *
+ *  A reducer that rebuilds a transcript from a fetched page gives every row a
+ *  new object even when the page repeats what the store already holds. The turn
+ *  grouper and the memoised row components compare rows by reference, so that
+ *  rebuild re-renders every mounted turn. Handing back the prior objects keeps
+ *  those bail-outs.
+ *
+ *  Equality is `jsonEqual` over the whole row, not `sameMessage`'s field list:
+ *  a reused row stands in for the new one, so a field the list does not name
+ *  (`seq`, `gen`, the decision strips) must match too. Candidates pair by
+ *  `meta.mid`, else by role and ts, and each prior row is used at most once, so
+ *  the result never holds one object twice.
+ *
+ *  `prior` must be plain store rows (the reducer's `original()` of the array),
+ *  and nothing may mutate the result's rows in place afterwards: a reused row
+ *  is frozen store state. */
+export function reuseUnchangedRows(prior: readonly ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  if (prior === next || prior.length === 0) return next
+  // A JSON-array key, as `deduplicateByMid` uses: a mid key and a role+ts key
+  // differ in length, so they cannot collide.
+  const pairKey = (m: ChatMessage): string => {
+    const mid = m.meta?.mid
+    return typeof mid === 'string' && mid ? JSON.stringify([mid]) : JSON.stringify([m.role, m.ts ?? null])
+  }
+  const candidates = new Map<string, ChatMessage[]>()
+  for (const m of prior) {
+    const k = pairKey(m)
+    const list = candidates.get(k)
+    if (list) list.push(m)
+    else candidates.set(k, [m])
+  }
+  let allPrior = prior.length === next.length
+  const out = next.map((m, i) => {
+    const list = candidates.get(pairKey(m))
+    const at = list ? list.findIndex(p => jsonEqual(p, m)) : -1
+    if (!list || at < 0) {
+      allPrior = false
+      return m
+    }
+    const [reused] = list.splice(at, 1)
+    if (reused !== prior[i]) allPrior = false
+    return reused
+  })
+  return allPrior ? (prior as ChatMessage[]) : out
+}
+
 /** The chunk-seq floor a slot snapshot vouches for: the `seq` the server folded
  *  onto the snapshot's trailing `streaming` row (chat_utils._prepare_messages),
  *  i.e. the newest chunk whose text that snapshot already contains. A live
@@ -753,8 +801,9 @@ export function olderHeadAbovePage(
   return { cutIdx, olderHead: cutIdx > 0 ? prior.slice(0, cutIdx) : [] }
 }
 
-/** Roles the server never writes to history. `permission` is in the backend's own
- *  `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only in this client.
+/** Roles the server never writes to history. `permission` and `elicitation` are in
+ *  the backend's own `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only
+ *  in this client.
  *  `error`/`mcp_oauth` are deliberately absent -- those ARE persisted.
  *
  *  One set, because two consumers ask the same question for opposite reasons and a
@@ -762,7 +811,7 @@ export function olderHeadAbovePage(
  *  a paging OFFSET, and `hasUnidentifiedDurableRow` looks for a durable row the
  *  bound cannot see. A role missing from one copy would silently mis-shift a cursor
  *  in the first and silently drop scrollback in the second. */
-const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission'])
+const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission', 'elicitation'])
 
 /** Does this row survive in the server's transcript?
  *

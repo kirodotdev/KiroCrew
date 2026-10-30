@@ -2,6 +2,7 @@ import type { DisplayItem } from '../pages/chat/types'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
+import { withoutSessionSeed } from '../lib/crewSeed'
 
 /**
  * Geometry + selection helpers for the pinned-prompt banner (the most recent
@@ -102,11 +103,14 @@ export function pinHandoffY(foldY: number): number {
  * A subagent completion in OLDER scrollback was persisted under role `user`
  * (before the `subagent` role existed) and IS excluded, by SHAPE rather than by
  * role: the same completion-event parser the transcript card uses recognises it.
+ *
+ * A steer the person took back (`steerState: retracted`) is excluded too: it
+ * draws as a one-line note with no text, and it is not something they asked.
  */
 function isPrompt(item: DisplayItem | undefined): boolean {
   if (!item || item.kind !== 'single') return false
   const { msg } = item
-  return msg.role === 'user' && !isSubagentCompletionMessage(msg)
+  return msg.role === 'user' && !isSubagentCompletionMessage(msg) && msg.meta?.steerState !== 'retracted'
 }
 
 /**
@@ -557,7 +561,10 @@ function flattenWhitespace(s: string): string {
  * survives all three untouched and substituting into their output exempts the
  * paste from them exactly. With no blocks this is the previous behaviour.
  */
-export function derivePinnedPromptText(content: string, blocks: PasteBlock[]): PinnedPromptText {
+export function derivePinnedPromptText(raw: string, blocks: PasteBlock[], meta?: Record<string, unknown> | null): PinnedPromptText {
+  // A message another session delivered opens with its `[sent by session ...]`
+  // line, which is for the agent: the card shows the sender's text alone.
+  const content = withoutSessionSeed(raw, meta)
   // Computed from the ORIGINAL content on purpose: an image inside a paste is
   // pasted text, not an attachment.
   const images = promptImages(content)
@@ -627,6 +634,8 @@ export interface PinnedPromptInput {
   /** Stored (collapsed) prompt content — the identity the derivation keys on. */
   raw: string
   pastes: PasteBlock[]
+  /** The row's meta, so a person's own row is never read as a delivered seed. */
+  meta?: Record<string, unknown> | null
   push: number
   bannerH: number
   /** See `PinnedPromptState.liveH`. Recomputed every scroll frame. */
@@ -654,7 +663,7 @@ export function nextPinnedPromptState(
   prev: PinnedPromptState | null,
   input: PinnedPromptInput,
 ): PinnedPromptState {
-  const { idx, ts, raw, pastes, push, bannerH, liveH, maxH, stripUncovered } = input
+  const { idx, ts, raw, pastes, meta, push, bannerH, liveH, maxH, stripUncovered } = input
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH && prev.liveH === liveH
     && prev.maxH === maxH && prev.stripUncovered === stripUncovered) return prev
@@ -664,7 +673,7 @@ export function nextPinnedPromptState(
   // the same pin (the strip slides under the resting card), so it rides here too,
   // as does `maxH`, which moves when the pane or the dock does.
   if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered }
-  const { text, body: full, images } = derivePinnedPromptText(raw, pastes)
+  const { text, body: full, images } = derivePinnedPromptText(raw, pastes, meta)
   return {
     idx,
     ts,

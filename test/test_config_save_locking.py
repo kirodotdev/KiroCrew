@@ -79,9 +79,10 @@ class TestSaveHoldsTheAdvisoryLock:
                 saver.start()
                 # Poll instead of one fixed sleep: the unfixed save() finishes
                 # in milliseconds, so any completion inside the hold is the bug.
+                # A blocked save() emits no signal, so the window is wall-clock.
                 deadline = time.monotonic() + 1.0
                 while time.monotonic() < deadline and saver.is_alive():
-                    time.sleep(0.05)
+                    time.sleep(0.05)  # flake-ok: absence window; a blocked save() has no signal
                 assert saver.is_alive(), (
                     "save() completed while another writer held the sidecar "
                     "advisory lock — it is not participating in the lock"
@@ -141,10 +142,11 @@ class TestSaveHoldsTheAdvisoryLock:
             assert entered.wait(self._TIMEOUT), "save() never reached its write"
             writer.start()
             # Give an UNLOCKED writer (the regression) ample time to complete
-            # inside save()'s window; a locked one blocks here on the sidecar.
+            # inside save()'s window; a locked one blocks here on the sidecar,
+            # which emits no signal, so the window is wall-clock.
             deadline = time.monotonic() + 1.0
             while time.monotonic() < deadline and writer.is_alive():
-                time.sleep(0.05)
+                time.sleep(0.05)  # flake-ok: absence window; a blocked writer has no signal
             assert writer.is_alive(), (
                 "update_config_locked completed inside save()'s critical window "
                 "— save() is not holding the sidecar lock"

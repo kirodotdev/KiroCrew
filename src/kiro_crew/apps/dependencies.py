@@ -206,7 +206,10 @@ async def resolve_dependencies(
                 continue
             if ok:
                 result.installed.append(dep_key)
-                record_install(dep_key, app_name, capability_dep_type(dep_type))
+                # The ledger write takes a blocking file lock: keep it off the loop.
+                await asyncio.to_thread(
+                    record_install, dep_key, app_name, capability_dep_type(dep_type)
+                )
                 logger.info("Installed dependency %s for app %s", dep_key, app_name)
             else:
                 result.failed.append(dep_key)
@@ -299,7 +302,7 @@ async def clean_dependencies(
             logger.warning("Failed to uninstall %s: %s", dep_id, message[:200])
             continue
 
-        record_uninstall(dep_id, app_name)
+        await asyncio.to_thread(record_uninstall, dep_id, app_name)
         cleaned.append(dep_id)
         logger.info("Cleaned dependency %s for app %s", dep_id, app_name)
 

@@ -8,6 +8,8 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { i18nT } from '../../i18n/t'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { ComposerControl } from '../composerControl'
+import { anotherEscapeOwnerIsOpen } from './escapeOwners'
+import { slotRowByKey } from '../../store/slotIndex'
 
 /* Dictation as the composer sees it. The Composer root's Voice atom
    (`chat-core/composer/useComposerVoice.ts`) owns capture, the one-mic mutex
@@ -165,13 +167,15 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   // hand-rolled pickers that close on Escape WITHOUT preventing default, so
   // they cannot be detected that way.
   //
-  // The `[role="dialog"]` probe is the precedence rule: Escape belongs to the
-  // TOPMOST dismissible surface, and the composer is not it while a dialog is
-  // up. Modal, CommandPalette and SnipOverlay all bind Escape on `window` and
-  // all carry role="dialog", so one presence check defers to every one of them
-  // rather than enumerating them. Without it this handler would steal Escape
-  // from each — those surfaces own Escape, so intercepting it here would be a
-  // regression, not a trade.
+  // The `anotherEscapeOwnerIsOpen()` probe is the precedence rule: Escape
+  // belongs to the TOPMOST dismissible surface, and the composer is not it
+  // while another surface owns Escape. Shared with the stop-key gate
+  // (escapeOwners.ts) so the two cannot drift: it covers role="dialog"
+  // surfaces (Modal, CommandPalette, SnipOverlay — minus the read-only
+  // live-desktop opt-out) AND the non-dialog document-level owners (the
+  // embedded file preview, the message-search bar). Without it this handler
+  // would steal Escape from each — those surfaces own Escape, so intercepting
+  // it here would be a regression, not a trade.
   //
   // stopPropagation() only once we have decided the key is OURS. document
   // bubbles on to `window`, and those window handlers do not check
@@ -185,7 +189,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
       if (anyPickerOpenRef.current) return
-      if (document.querySelector('[role="dialog"]')) return
+      if (anotherEscapeOwnerIsOpen()) return
       e.preventDefault()
       e.stopPropagation()
       cancel()
@@ -275,7 +279,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   // An untitled chat (its stored title can be the raw slot key) is named
   // "Untitled session", so the label and the jump action never show the key.
   const micOwnerTitle = useAppSelector(s => {
-    const owner = voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession) : undefined
+    const owner = voiceBusyElsewhereSession ? slotRowByKey(s.dashboard.slots, voiceBusyElsewhereSession) : undefined
     return owner ? sessionDisplayTitle(owner) : null
   })
   const micHeldElsewhereLabel = micOwnerTitle

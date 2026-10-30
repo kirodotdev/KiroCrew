@@ -43,6 +43,8 @@ GATED = {
     ("POST", "/meetings/{meeting_id}/message"): "meetings.message",
     ("PUT", "/meetings/{meeting_id}/outputs"): "meetings.put_output",
     ("DELETE", "/meetings/{meeting_id}/outputs"): "meetings.delete_output",
+    ("PUT", "/meetings/{meeting_id}/note"): "meetings.put_note",
+    ("POST", "/meetings/{meeting_id}/note/images"): "meetings.note_image",
     ("POST", "/meetings/{meeting_id}/tasks"): "meetings.add_task",
     ("PATCH", "/meetings/{meeting_id}/tasks"): "meetings.update_task",
     ("DELETE", "/meetings/{meeting_id}/tasks"): "meetings.delete_task",

@@ -194,3 +194,208 @@ def test_inherited_trees_are_promised_for_kiro_cli_only(doc_text: str) -> None:
     )
     kas_column = next(name for name in header if "KAS" in name)
     assert cells[header.index(kas_column)] == "nothing"
+
+
+def test_app_skill_mapping_names_the_namespaced_path(
+    doc_text, tmp_path, monkeypatch, opened
+) -> None:
+    """The page's app-skill rule: one namespaced entry per skill, never the flat link.
+
+    Driven through ``_register_skills`` for every case the page lists: a plain skill
+    gets both links, while a skill named after its app, the reserved ``auto`` and a
+    name a real directory already holds get the namespaced link only. The ``~/`` half
+    is driven through ``expand_skill_uri``, which must expand against the home and
+    ignore ``KIROCREW_HOME``. The mapping half is driven through the loader's
+    ``_scoped_entries``, the selection a session's skill block is built from.
+    """
+    import json
+
+    from kiro_crew import platform_compat
+    from kiro_crew.agent_discovery import expand_skill_uri
+    from kiro_crew.apps import execution as execution_mod
+    from kiro_crew.apps.bridges import _register_skills
+    from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+    from kiro_crew.apps.manifest import AppManifest
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.skills import SkillsLoader
+
+    home = tmp_path / "kirocrew-home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: True)
+    skills_root = home / "skills"
+    (skills_root / "taken").mkdir(parents=True)
+    (skills_root / "taken" / "keep.txt").write_text("mine", encoding="utf-8")
+
+    src = tmp_path / "source" / "design-critique"
+    names = ["design-critique", "auto", "taken", "plain", "a-first"]
+    for name in names:
+        (src / "skills" / name).mkdir(parents=True)
+        (src / "skills" / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d\n---\n# {name}\n", encoding="utf-8"
+        )
+    manifest = {
+        "name": "design-critique",
+        "version": "1.0.0",
+        "displayName": "Design Critique",
+        "description": "d",
+        "author": "t",
+        "skills": [f"skills/{n}" for n in names],
+    }
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    install_app(src)
+    app_root = home / "apps" / "design-critique"
+    registered = _register_skills(
+        "design-critique", AppManifest.from_json_file(app_root / APP_MANIFEST_FILENAME), app_root
+    )
+
+    assert sorted(registered) == sorted(f"design-critique/{n}" for n in names)
+    for name in names:
+        assert (skills_root / "design-critique" / name / "SKILL.md").is_file(), name
+    assert platform_compat.is_link_or_junction(skills_root / "plain")
+    assert platform_compat.is_link_or_junction(skills_root / "a-first")
+    assert not (skills_root / "auto").exists()
+    assert not platform_compat.is_link_or_junction(skills_root / "taken")
+    assert (skills_root / "taken" / "keep.txt").is_file()
+    assert not platform_compat.is_link_or_junction(skills_root / "design-critique")
+    assert not (
+        skills_root / "design-critique" / "SKILL.md"
+    ).exists(), "a flat skills/<skill>/SKILL.md exists for a skill named after its app"
+
+    uri = "skill://~/.kiro/crew/skills/design-critique/plain/SKILL.md"
+    assert expand_skill_uri(uri, tmp_path / "a.json") == str(
+        Path.home() / ".kiro/crew/skills/design-critique/plain/SKILL.md"
+    )
+
+    # Per-skill entries and the app-wide wildcard both select every skill, once.
+    # ``a-first`` sorts before the app's directory, so the catalog keeps its flat
+    # link; the wildcard must still find it through the namespaced link.
+    monkeypatch.setattr(catalog_mod, "_disabled_app_names", lambda: frozenset())
+    loader = opened(SkillsLoader(skills_path=skills_root, install_builtins=False))
+    walked = loader._request_catalog_refresh("")
+    assert walked is not None and walked.wait(30)
+    per_skill = [str(skills_root / "design-critique" / n / "SKILL.md") for n in names]
+    wildcard = [str(skills_root / "design-critique" / "*" / "SKILL.md")]
+
+    def selected(only: list[str]) -> list[str]:
+        return sorted(Path(e[1]).parent.name for e in loader._scoped_entries(None, only))
+
+    assert selected(per_skill) == sorted(names)
+    assert sorted(e[0] for e in loader._iter_visible(None)).count("a-first") == 1
+    assert selected(wildcard) == sorted(names)
+    # A mapping that names one skill through the wildcard's shape picks only it.
+    assert selected([str(skills_root / "design-critique" / "a-*" / "SKILL.md")]) == ["a-first"]
+    # The flat-link sibling outside the app's directory is not an alias.
+    assert selected([str(skills_root / "other-app" / "*" / "SKILL.md")]) == []
+
+    paragraph = doc_text.split("To map an installed app's skills", 1)[1]
+    paragraph = paragraph.split("`file://<glob>`", 1)[0]
+    for claim in (
+        "`skill://~/.kiro/crew/skills/<app>/<skill>/SKILL.md`",
+        "`skill://~/.kiro/crew/skills/<app>/*/SKILL.md`",
+        "home, not `KIROCREW_HOME`",
+        "same name as its app",
+        "reserved\n(`auto`)",
+        "real directory of that name already exists",
+        "Never map an app skill by its flat path.",
+    ):
+        assert claim in paragraph, f"§Resources app-skill rule lost {claim!r}"
+
+
+def test_app_wildcard_alias_never_resolves_a_project_row(tmp_path, monkeypatch):
+    """A project row sharing a leaf with an app skill is never resolved."""
+    import os
+
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.skills import _ScopedSkillEntry
+
+    skills_root = tmp_path / "skills"
+    (skills_root / "app" / "leaf").mkdir(parents=True)
+    (skills_root / "app" / "leaf" / "SKILL.md").write_text("x", encoding="utf-8")
+    project_file = tmp_path / "project" / ".kiro" / "skills" / "leaf" / "SKILL.md"
+    project_file.parent.mkdir(parents=True)
+    project_file.write_text("x", encoding="utf-8")
+    row = _ScopedSkillEntry("leaf", project_file, str(tmp_path / "project"))
+    pattern = str(skills_root / "app" / "*" / "SKILL.md")
+    resolved: list[str] = []
+    real = os.path.realpath
+
+    def spy(path, *args, **kwargs):
+        resolved.append(os.path.abspath(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(catalog_mod.os.path, "realpath", spy)
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == []
+    assert os.path.abspath(project_file) not in resolved
+
+
+def _alias_case(tmp_path):
+    """A skills root holding a flat ``a-first`` row and an ``app`` prefix to map."""
+    from kiro_crew.skills import _ScopedSkillEntry
+
+    skills_root = tmp_path / "skills"
+    target = tmp_path / "bundle" / "a-first"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("x", encoding="utf-8")
+    (skills_root / "app").mkdir(parents=True)
+    row = _ScopedSkillEntry("a-first", skills_root / "a-first" / "SKILL.md", None)
+    pattern = str(skills_root / "app" / "*" / "SKILL.md")
+    return skills_root, target, row, pattern
+
+
+def test_app_wildcard_selects_a_flat_row_through_its_namespaced_link(tmp_path):
+    """A flat row is selected when ``<app>/<leaf>`` resolves to the same skill."""
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, row, pattern = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    make_dir_link(skills_root / "app" / "a-first", target)
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == [row]
+
+
+def test_app_wildcard_skips_an_alias_with_a_different_target(tmp_path):
+    """An ``<app>/<leaf>`` path that is a different skill does not select the flat row."""
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, row, pattern = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    other = skills_root / "app" / "a-first"
+    other.mkdir()
+    (other / "SKILL.md").write_text("y", encoding="utf-8")
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == []
+
+
+def test_app_wildcard_selects_a_flat_row_under_a_linked_loader_root(tmp_path):
+    """A resolved mapping selects a flat row spelled through a linked loader root."""
+    from kiro_crew import skills as sk
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, _, _ = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    make_dir_link(skills_root / "app" / "a-first", target)
+    linked_root = tmp_path / "linked-skills"
+    make_dir_link(linked_root, skills_root)
+    row = sk._ScopedSkillEntry("a-first", linked_root / "a-first" / "SKILL.md", None)
+    loader_roots = [linked_root]
+    real_roots = [real for root in loader_roots if (real := sk.validate_file_path(str(root)))]
+    assert len(real_roots) == 1 and not real_roots[0].startswith(str(linked_root))
+    pattern = str(Path(real_roots[0]) / "app" / "*" / "SKILL.md")
+    head = catalog_mod._canonical_prefix(pattern, None)
+    canonical = catalog_mod._glob_with_prefix(pattern, head)
+
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: head}, {pattern: canonical}, loader_roots, real_roots
+    )
+    assert found == [row]

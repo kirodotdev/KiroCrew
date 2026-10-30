@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from kiro_crew.apps.manifest_names import KEBAB_RE
 
@@ -54,6 +54,10 @@ class CronEntry:
     # default. On a command/script job it must cover ``timeout`` plus cleanup;
     # the same create-time check the cron SDK applies runs at validate().
     timeout_secs: int = 0
+    # Fire exactly on the schedule instead of after the scheduler's random start
+    # delay (up to 59 minutes on a daily job), for a job whose time the user
+    # chose on purpose -- a report wanted ready at 06:50, not near 07:40.
+    strict_schedule: bool = False
     # Schedule-page folder NAME to file the job in (names, not ids: a manifest
     # is portable across installs, and folder ids are minted per-machine by the
     # dashboard). Resolved against existing folders at registration; a name
@@ -113,6 +117,8 @@ class CronEntry:
             d["timeout"] = self.timeout
         if self.timeout_secs:
             d["timeout_secs"] = self.timeout_secs
+        if self.strict_schedule:
+            d["strict_schedule"] = True
         if not self.persistent_session:
             d["persistent_session"] = False
         if self.silent:
@@ -188,6 +194,15 @@ class CronEntry:
                 invalid.append(key)
             return ""
 
+        def _bool_or_false(key: str, v: Any) -> bool:
+            # Strict like ``enabled``: the string "false" is truthy, and reading
+            # it as True would drop the start delay an author never gave up.
+            if isinstance(v, bool):
+                return v
+            if v is not None:
+                invalid.append(key)
+            return False
+
         entry = cls(
             name=_str_or_empty(data.get("name")),
             every=_int_or_zero("every", data.get("every", 0)),
@@ -207,6 +222,7 @@ class CronEntry:
             timeout_secs=_int_or_zero("timeout_secs", data.get("timeout_secs", 0)),
             persistent_session=bool(data.get("persistent_session", True)),
             silent=bool(data.get("silent", False)),
+            strict_schedule=_bool_or_false("strict_schedule", data.get("strict_schedule")),
             # STRICT boolean: "enabled" gates whether a cron fires at all, so a
             # type slip (the string "false" is truthy) must not silently
             # re-enable a disabled-by-design cron. Non-boolean values are
@@ -337,11 +353,25 @@ class UIConfig:
     pages: list[UIPage] = field(default_factory=list)
     overlays: list[UIOverlay] = field(default_factory=list)
     sidebar: UISidebar = field(default_factory=UISidebar)
+    # Placeholder shape the dashboard shows while the bundle loads, from
+    # ``"loading": {"layout": "<name>"}``. A closed set of names the dashboard
+    # draws from its own skeleton pieces (``AppLoadingFallback.tsx``); an app never
+    # supplies markup or styles. Empty means undeclared, which the dashboard
+    # renders as "page", the skeleton every app had before the field existed.
+    loading_layout: str = ""
+
+    # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
+    # ``website/src/components/AppLoadingFallback.tsx``.
+    LOADING_LAYOUTS: ClassVar[frozenset[str]] = frozenset({"page", "rail", "centered", "split"})
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
         if self.entry:
             d["entry"] = self.entry
+        if self.loading_layout:
+            # Emitted only when declared, so a manifest without it keeps producing
+            # the identical dict (and the identical signed payload).
+            d["loading"] = {"layout": self.loading_layout}
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -353,7 +383,14 @@ class UIConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> UIConfig:
-        pages = [UIPage.from_dict(p) for p in data.get("pages", []) if isinstance(p, dict)]
+        # A non-list `pages` (a hand-edited `null`) is returned by `get` instead of
+        # the default, the same hazard `overlays` guards below.
+        raw_pages = data.get("pages", [])
+        pages = [
+            UIPage.from_dict(p)
+            for p in (raw_pages if isinstance(raw_pages, list) else [])
+            if isinstance(p, dict)
+        ]
         # A hand-edited manifest can carry `"overlays": null` (or a string, or a
         # number): the key is present, so `get` returns that value rather than the
         # default and iterating it would raise out of install validation.
@@ -370,7 +407,27 @@ class UIConfig:
             pages=pages,
             overlays=overlays,
             sidebar=sidebar,
+            loading_layout=cls._parse_loading_layout(data.get("loading")),
         )
+
+    @classmethod
+    def _parse_loading_layout(cls, raw: Any) -> str:
+        """Return the declared loading layout, or ``""`` for anything not exactly valid.
+
+        Total, like the rest of ``from_dict``: a hand-edited manifest can hold
+        ``null``, a string, a list, or a layout in the wrong case, and none of those
+        may raise out of install validation. Each one is dropped, which the dashboard
+        reads as the default "page" skeleton. Matching is exact (no case folding or
+        trimming) so the stored value is always one the dashboard recognises verbatim.
+        """
+        if not isinstance(raw, dict):
+            return ""
+        layout = raw.get("layout")
+        # Exact type, not isinstance: a str subclass can override __eq__/__hash__
+        # and pass a set lookup with a value the dashboard would not recognise.
+        if type(layout) is str and layout in cls.LOADING_LAYOUTS:
+            return layout
+        return ""
 
 
 @dataclass
@@ -658,10 +715,13 @@ class CapabilityDependencies:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilityDependencies:
+        # A non-list value (`"mcp": null`, a string) degrades to no entries rather
+        # than raising or splitting into characters.
+        mcp, skills, agents = (data.get(k, []) for k in ("mcp", "skills", "agents"))
         return cls(
-            mcp=list(data.get("mcp", [])),
-            skills=list(data.get("skills", [])),
-            agents=list(data.get("agents", [])),
+            mcp=list(mcp) if isinstance(mcp, list) else [],
+            skills=list(skills) if isinstance(skills, list) else [],
+            agents=list(agents) if isinstance(agents, list) else [],
         )
 
 
@@ -795,7 +855,11 @@ class PlatformConfig:
     installMode: str = "server"  # "server" | "client"  # noqa: N815
     clientInstall: ClientInstallConfig = field(default_factory=ClientInstallConfig)  # noqa: N815
     requiresDesktopApp: bool = False  # noqa: N815
-
+    # A present, non-null ``os`` that is not a list (``"os": "windows"``). Parsing
+    # sets ``os`` to empty so nothing raises and no platform matches, and
+    # validate() refuses it: ``os`` restricts where the app runs, so it must
+    # never widen. Never serialized.
+    os_type_invalid: Any = field(default=None, compare=False, repr=False)
     # Map user-friendly OS names to sys.platform values.
     #
     # ``windows`` is in both directions because Kiro Crew itself supports Windows
@@ -835,6 +899,11 @@ class PlatformConfig:
         installs as a server app. The error names the accepted values.
         """
         errors: list[str] = []
+        if self.os_type_invalid is not None:
+            errors.append(
+                f"platform.os: unknown value {self.os_type_invalid!r} "
+                f"(expected a list of {', '.join(self._OS_TO_PLATFORM)})"
+            )
         for name in self.os:
             if name not in self._OS_TO_PLATFORM:
                 errors.append(
@@ -871,12 +940,27 @@ class PlatformConfig:
             if isinstance(ci_raw, dict)
             else ClientInstallConfig()
         )
+        # `null` reads as unset and keeps the absent-key default. Any other
+        # non-list fails closed: an empty `os` supports no platform, so a reader
+        # that never calls validate() (the enable path's supports_platform check)
+        # cannot run the app where its author restricted it, and the value is
+        # recorded for validate() to refuse. A non-list `arch` degrades to empty
+        # (any arch).
+        os_raw = data.get("os")
+        if os_raw is None:
+            os_names: list[Any] = ["macos", "linux"]
+        else:
+            os_names = os_raw if isinstance(os_raw, list) else []
+        arch_raw = data.get("arch", [])
         return cls(
-            os=[str(o) for o in data.get("os", ["macos", "linux"])],
-            arch=[str(a) for a in data.get("arch", [])],
+            os=[str(o) for o in os_names],
+            arch=[str(a) for a in arch_raw] if isinstance(arch_raw, list) else [],
             installMode=str(data.get("installMode", "server")),  # noqa: N815
             requiresDesktopApp=bool(data.get("requiresDesktopApp", False)),  # noqa: N815
             clientInstall=ci,  # noqa: N815
+            os_type_invalid=(
+                os_raw if os_raw is not None and not isinstance(os_raw, list) else None
+            ),
         )
 
 
@@ -905,8 +989,14 @@ class PublishProviderConfig:
     configuredField: str = (
         ""  # field in configFile that must be non-empty to count as configured  # noqa: N815
     )
+    # A present, non-null ``kinds`` that is not a list (``"kinds": "html"``). Empty
+    # ``kinds`` means every kind, so a wrong type must not degrade to it: the
+    # provider serializes to nothing and no reader offers it. Never serialized.
+    kinds_type_invalid: Any = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
+        if self.kinds_type_invalid is not None:
+            return {}
         d: dict[str, Any] = {}
         if self.id:
             d["id"] = self.id
@@ -928,15 +1018,19 @@ class PublishProviderConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PublishProviderConfig:
+        kinds_raw = data.get("kinds")
+        if kinds_raw is None:
+            kinds_raw = []
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),
             icon=str(data.get("icon", "")),
             endpoint=str(data.get("endpoint", "")),
-            kinds=[str(k) for k in data.get("kinds", []) if k],
+            kinds=[str(k) for k in kinds_raw if k] if isinstance(kinds_raw, list) else [],
             setupRoute=str(data.get("setupRoute", "")),  # noqa: N815
             configFile=str(data.get("configFile", "config.json")),  # noqa: N815
             configuredField=str(data.get("configuredField", "")),  # noqa: N815
+            kinds_type_invalid=None if isinstance(kinds_raw, list) else kinds_raw,
         )
 
 
@@ -988,8 +1082,14 @@ class NotificationsConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NotificationsConfig:
+        # A non-list value (`"channels": null`) is returned by `get` instead of the
+        # default; iterating it would raise out of the parse.
         raw = data.get("channels", [])
-        channels = [NotificationChannel.from_dict(c) for c in raw if isinstance(c, dict)]
+        channels = [
+            NotificationChannel.from_dict(c)
+            for c in (raw if isinstance(raw, list) else [])
+            if isinstance(c, dict)
+        ]
         return cls(channels=channels)
 
     def validate(self) -> list[str]:

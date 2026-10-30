@@ -31,6 +31,7 @@ from kiro_crew.crew_log.emit_state import (
     _crew_log,
     _last_class,
     _lock,
+    _note_eager,
     enabled,
     logger,
 )
@@ -246,6 +247,8 @@ def on_session_adopted(
         written = log.append("session/adopted", data, src=_SRC_GATEWAY)
         settle.wrote()
         _record_session_tree_decision(session_id, slot, written, parent_slot)
+        # After the tree holds the decision, so the wake reaches the creator's cell.
+        _note_eager(written, "session/adopted", session_id, data)
 
     _submit(
         _job,
@@ -298,6 +301,8 @@ def on_session_released(
         written = log.append("session/released", data, src=_SRC_GATEWAY)
         settle.wrote()
         _record_session_tree_decision(session_id, slot, written, None)
+        # After the tree holds the decision, so the wake reaches the creator's cell.
+        _note_eager(written, "session/released", session_id, data)
 
     _submit(
         _job,
@@ -347,6 +352,8 @@ def on_session_spawned(
         written = log.append("session/spawned", data, src=_SRC_GATEWAY)
         settle.wrote()
         _record_session_tree_spawn(creator_sid, creator_slot, child_slot, written)
+        # After the tree holds the create, so the creator's page draws the new worker.
+        _note_eager(written, "session/spawned", creator_sid, data)
 
     _submit(
         _job,

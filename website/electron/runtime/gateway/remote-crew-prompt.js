@@ -19,9 +19,13 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows = false 
   /**
    * Collect a remote crew's address for `promptPort`, opening on `initial`.
    * Resolves with what the user saved, or null when the window was closed
-   * without saving.
+   * without saving. `title` and `saveLabel` name what saving does for callers
+   * other than the failure dialog, whose wording is the default.
    */
-  function promptRemoteCrew(parentWindow, promptPort, initial = {}) {
+  function promptRemoteCrew(parentWindow, promptPort, initial = {}, {
+    title = `Remote crew for port ${promptPort}`,
+    saveLabel = "Save & Retry",
+  } = {}) {
     return new Promise((resolve) => {
       const dark = nativeTheme.shouldUseDarkColors;
       const hasParent = parentWindow && !parentWindow.isDestroyed();
@@ -63,7 +67,7 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows = false 
         .cancel { background:${dark ? "#334155" : "#e2e8f0"}; color:${dark ? "#94a3b8" : "#475569"}; }
         .cancel:hover { background:${dark ? "#475569" : "#cbd5e1"}; }
       </style></head><body>
-        <div class="title">Remote crew for port ${escapeAttr(promptPort)}</div>
+        <div class="title">${escapeAttr(title)}</div>
         <label>Host</label>
         <input id="h" value="${escapeAttr(opening.host)}" placeholder="myhost.example.com" autofocus>
         <div class="hint">An SSH host or a name from your SSH config.</div>
@@ -79,7 +83,7 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows = false 
         ${isWindows ? "" : `<label class="check"><input type="checkbox" id="mt"${opening.manageTunnel ? " checked" : ""}> ${TUNNEL_OPTION_LABEL}</label>
         <div class="hint">${escapeAttr(tunnelOptionHint(promptPort))}</div>`}
         <div class="row">
-          <button class="ok" onclick="save()">Save &amp; Retry</button>
+          <button class="ok" onclick="save()">${escapeAttr(saveLabel)}</button>
           <button class="cancel" onclick="window.close()">Cancel</button>
         </div>
         <script>

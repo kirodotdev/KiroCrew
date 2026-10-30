@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 import time
 from unittest.mock import MagicMock
@@ -10,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture
@@ -569,7 +569,7 @@ class TestAutoUpdateEffectOnTheStatusFrame:
 
         # Served from the cache while the re-derivation runs in the background.
         assert status_fields_of(_fresh)["update_auto_effect"] == "install"
-        await asyncio.wait_for(_fresh._auto_effect_task, timeout=5)
+        await await_until(_fresh._auto_effect_task, what="the background re-derivation")
         monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", 60.0)
         assert status_fields_of(_fresh)["update_auto_effect"] == "notify"
 
@@ -588,7 +588,7 @@ class TestAutoUpdateEffectOnTheStatusFrame:
 
         monkeypatch.setattr(_fresh, "auto_update_effect", _boom)
         status_fields_of(_fresh)
-        await asyncio.wait_for(_fresh._auto_effect_task, timeout=5)
+        await await_until(_fresh._auto_effect_task, what="the failing re-derivation")
         for _ in range(5):
             assert status_fields_of(_fresh)["update_auto_effect"] == "install"
         # The failed attempt was stamped: no re-derivation on the frames after it.

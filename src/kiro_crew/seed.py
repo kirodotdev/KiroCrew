@@ -1,9 +1,9 @@
-"""``kirocrew seed`` — copy a hand-authored fixture into ``$KIROCREW_HOME``.
+"""``kirocrew gateway --seed FIXTURE`` — copy a hand-authored fixture into ``$KIROCREW_HOME``.
 
 Fixtures ship as package data at ``src/kiro_crew/tests_fixtures/<name>/``.
 Each fixture is a valid ``KIROCREW_HOME`` tree with a ``fixture.yaml``
 declaring ``schema-version``. Shipping inside the package is what lets
-``kirocrew seed`` work after ``pip`` installs the wheel into
+``kirocrew gateway --seed`` work after ``pip`` installs the wheel into
 ``site-packages/kiro_crew/`` (a source-tree-relative path walk would
 not find ``<repo>/test/fixtures/`` from there).
 """
@@ -153,7 +153,7 @@ def fixture_summary(name: str) -> str:
 def _resolve_fixture(name: str) -> Path:
     """Return the path to fixture ``name``, or raise ``SeedError``.
 
-    Rejects path-traversal attempts (``--fixture ../../.ssh``) before
+    Rejects path-traversal attempts (``--seed ../../.ssh``) before
     ``shutil.copytree`` ever sees the path. Multiple gates are needed because
     each alone is bypassable:
 

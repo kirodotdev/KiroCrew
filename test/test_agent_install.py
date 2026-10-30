@@ -670,16 +670,36 @@ class TestInstallAgent:
         assert "model_managed" not in config
         assert agent_state.get_model_managed("kirocrew") is True
 
-    def test_managed_config_tracks_defaults_bump(self, tmp_path: Path):
-        """A managed (sidecar) config re-syncs model from defaults.json on a bump."""
+    @pytest.mark.parametrize(
+        ("model", "managed", "want_model"),
+        [
+            # A managed (sidecar) config re-syncs model from defaults.json on a bump.
+            pytest.param(
+                "claude-old-default",
+                True,
+                "claude-default",
+                id="test_managed_config_tracks_defaults_bump",
+            ),
+            # A frozen pick (model_managed=False) is never re-synced to default.
+            pytest.param(
+                "claude-user-pinned",
+                False,
+                "claude-user-pinned",
+                id="test_explicitly_frozen_config_not_tracked",
+            ),
+        ],
+    )
+    def test_a_spec_model_managed_flag_decides_the_defaults_resync(
+        self, tmp_path: Path, model: str, managed: bool, want_model: str
+    ):
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
         # Pre-migration polluted spec: model_managed lives in the spec. The
         # install migration lifts it into the sidecar and strips it.
         existing = {
-            "model": "claude-old-default",
-            "model_managed": True,
+            "model": model,
+            "model_managed": managed,
             "tools": [],
             "allowedTools": [],
             "mcpServers": {},
@@ -688,9 +708,9 @@ class TestInstallAgent:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["model"] == "claude-default"
+        assert config["model"] == want_model
         assert "model_managed" not in config
-        assert agent_state.get_model_managed("kirocrew") is True
+        assert agent_state.get_model_managed("kirocrew") is managed
 
     def test_legacy_config_without_marker_frozen(self, tmp_path: Path):
         """A legacy config (no marker) stays frozen: model untouched."""
@@ -710,26 +730,6 @@ class TestInstallAgent:
         assert config["model"] == "claude-legacy-4.6"
         assert "model_managed" not in config
         assert agent_state.get_model_managed("kirocrew") is None
-
-    def test_explicitly_frozen_config_not_tracked(self, tmp_path: Path):
-        """A frozen pick (model_managed=False) is never re-synced to default."""
-        cfg_dir = _bundled_defaults(tmp_path)
-        kiro_dir = tmp_path / "kiro_agents"
-        kiro_dir.mkdir(exist_ok=True)
-        existing = {
-            "model": "claude-user-pinned",
-            "model_managed": False,
-            "tools": [],
-            "allowedTools": [],
-            "mcpServers": {},
-        }
-        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
-
-        path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["model"] == "claude-user-pinned"
-        assert "model_managed" not in config
-        assert agent_state.get_model_managed("kirocrew") is False
 
     @pytest.mark.parametrize(
         ("recorded", "expected_after"),
@@ -1098,23 +1098,20 @@ class TestInstallAgent:
         assert config["model"] == "claude-default"
         assert "UserTool" not in config["tools"]
 
-    def test_corrupt_existing_falls_back_to_defaults(self, tmp_path: Path):
-        """Corrupt kirocrew.json → falls back to build_agent_config()."""
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            pytest.param("not valid json{{{", id="test_corrupt_existing_falls_back_to_defaults"),
+            pytest.param("[]", id="test_non_dict_json_falls_back_to_defaults"),
+        ],
+    )
+    def test_an_unusable_existing_spec_falls_back_to_defaults(self, tmp_path: Path, existing):
+        """Corrupt kirocrew.json, or valid JSON that is not a dict, falls back to
+        build_agent_config()."""
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
-        (kiro_dir / "kirocrew.json").write_text("not valid json{{{")
-
-        path = _run_install(tmp_path, cfg_dir)
-        config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["model"] == "claude-default"
-
-    def test_non_dict_json_falls_back_to_defaults(self, tmp_path: Path):
-        """Valid JSON that is not a dict → falls back to build_agent_config()."""
-        cfg_dir = _bundled_defaults(tmp_path)
-        kiro_dir = tmp_path / "kiro_agents"
-        kiro_dir.mkdir(exist_ok=True)
-        (kiro_dir / "kirocrew.json").write_text("[]")
+        (kiro_dir / "kirocrew.json").write_text(existing)
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))

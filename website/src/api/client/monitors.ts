@@ -35,6 +35,13 @@ export function createMonitorsEndpoints({ post, patch, j, jfetch: fetch }: Clien
       fetch('/api/autonudge').then(j),
     autonudgeForSlot: (slot: string): Promise<{ enabled: boolean; loop: unknown | null }> =>
       fetch('/api/autonudge/slot/' + encodeURIComponent(slot)).then(j),
+    /** Pause (`active: false`) or resume (`active: true`) a goal loop in place.
+     *  The body carries ONLY `active`: a pause is not a save, and the service
+     *  records a pause as `stopped_reason: "manual"`. A resume on a loop a bound
+     *  stopped resets only the spent bound's counter (the popover's Play does the
+     *  same write), so nothing has to be raised. Returns the written record. */
+    autonudgeSetActive: (id: string, active: boolean): Promise<{ loop: unknown }> =>
+      patch('/api/autonudge/' + encodeURIComponent(id), { active }).then(j) as Promise<{ loop: unknown }>,
     /** Structured monitor records include terminal outcomes for inspection. */
     monitorsList: (): Promise<{ enabled: boolean; monitors: unknown[] }> =>
       fetch('/api/monitors').then(j),

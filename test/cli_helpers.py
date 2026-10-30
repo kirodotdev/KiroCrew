@@ -121,7 +121,7 @@ def _pin_default_config(monkeypatch) -> None:
         return cfg
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
-    monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
+    monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self, **kw: {})
 
 
 @pytest.fixture(autouse=True)
@@ -284,12 +284,17 @@ class _TestChatPermissionRequestHarness:
         )
         reads = {"n": 0, "prompts": []}
 
+        # A list answers successive reads in order (the `o` choice reads twice:
+        # the key, then the reply); a single value answers every read.
+        queue = list(answer) if isinstance(answer, list) else None
+
         def fake_read(prompt=""):
             reads["n"] += 1
             reads["prompts"].append(prompt)
-            if answer is EOFError:
+            value = queue.pop(0) if queue is not None else answer
+            if value is EOFError:
                 raise EOFError
-            return answer
+            return value
 
         monkeypatch.setattr(cli_chat, "_read_line_blocking", fake_read)
         return reads

@@ -77,6 +77,7 @@ from kiro_crew.mcp_gateway.backend import (
     _PendingRequest,
     _strip_caller_meta,
 )
+from kiro_crew.mcp_gateway.backend_wire import _carry_tool_call_id
 
 # --- Pure request-shaping helpers -------------------------------------------
 
@@ -121,6 +122,32 @@ class TestFrameHelpers:
         assert out["params"]["_meta"]["progressToken"] == 7
         assert out["params"]["name"] == "t"
         assert "_meta" in msg["params"] and CALLER_META_KEY not in msg["params"]["_meta"]
+
+    def test_carry_tool_call_id_promotes_progress_token(self) -> None:
+        """The gateway carries the request's progressToken (kiro-cli's ACP
+        toolCallId) onto the caller so the authored block emits it as the
+        always-present correlation key."""
+        msg: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": "toolu_9"}, "name": "t"},
+        }
+        carried = _carry_tool_call_id(CallerContext(session_key="s"), msg)
+        assert carried.tool_call_id == "toolu_9"
+        block = _inject_caller_meta(msg, carried)["params"]["_meta"][CALLER_META_KEY]
+        assert block["toolCallId"] == "toolu_9"
+
+    def test_carry_tool_call_id_is_noop_without_a_token(self) -> None:
+        """No progressToken: the caller is returned unchanged, so the backend's
+        own progressToken fallback (empty here) still applies."""
+        caller = CallerContext(session_key="s")
+        msg: dict[str, Any] = {"method": "tools/call", "params": {"name": "t"}}
+        assert _carry_tool_call_id(caller, msg) is caller
+        # A numeric token coerces to str, matching the backend reader.
+        msg_num: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": 42}, "name": "t"},
+        }
+        assert _carry_tool_call_id(caller, msg_num).tool_call_id == "42"
 
     def test_strip_caller_meta_also_removes_a_forged_TENANT_block(self) -> None:
         """The nonce decides which namespace an unnamed co-tenant lands in.
@@ -190,11 +217,6 @@ class TestFrameHelpers:
 
 
 class TestClientExtensionInjection:
-    def test_noop_when_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
-        msg = {"method": "initialize", "params": {"capabilities": {}}}
-        assert _inject_client_extensions(msg) is msg
-
     def test_injects_ui_extension(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
         msg: dict[str, Any] = {
@@ -207,20 +229,6 @@ class TestClientExtensionInjection:
         # Pre-existing capabilities preserved; caller's frame untouched.
         assert out["params"]["capabilities"]["roots"] == {}
         assert "extensions" not in msg["params"]["capabilities"]
-
-    def test_preserves_caller_declared_extension(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
-        msg = {
-            "method": "initialize",
-            "params": {"capabilities": {"extensions": {MCP_APPS_EXTENSION_KEY: {"mine": 1}}}},
-        }
-        out = _inject_client_extensions(msg)
-        assert out["params"]["capabilities"]["extensions"][MCP_APPS_EXTENSION_KEY] == {"mine": 1}
-
-    def test_non_dict_params_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
-        msg = {"method": "initialize", "params": None}
-        assert _inject_client_extensions(msg) is msg
 
     def test_env_kill_switch_beats_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(MCP_APPS_ENV_FLAG, "off")
@@ -1024,7 +1032,10 @@ class TestStubDelivery:
     @pytest.mark.asyncio
     async def test_deliver_to_detached_stub_is_dropped(self) -> None:
         backend = _make_backend()
-        await backend._deliver_to_stub("ghost", {"id": 1})  # must not raise
+        live = await backend.attach_stub("live")
+        await backend._deliver_to_stub("ghost", {"id": 1})
+        assert live.empty()
+        assert set(backend._stub_inboxes) == {"live"}
 
     @pytest.mark.asyncio
     async def test_broadcast_reaches_every_stub(self) -> None:

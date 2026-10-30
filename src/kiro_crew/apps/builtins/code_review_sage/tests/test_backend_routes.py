@@ -562,6 +562,23 @@ class TestSettingsModelValidation(unittest.TestCase):
         review = self.mod._write_review_section({"model": None})
         self.assertIsNone(review["model"])
 
+    def test_both_config_reads_go_through_the_retrying_read(self):
+        """the recovery re-read after ``ensure_layout`` is a retrying
+        read too, so a Windows sharing violation there does not escape as a 500."""
+        real = self.mod.read_bytes_with_retry
+        calls = []
+
+        def _flaky(path, **kwargs):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "sharing violation")
+            return real(path, **kwargs)
+
+        with unittest.mock.patch.object(self.mod, "read_bytes_with_retry", _flaky):
+            review = self.mod._write_review_section({"effort": ""})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(review["effort"], "")
+
 
 class TestLearningsEndpoint(unittest.IsolatedAsyncioTestCase):
     """GET /learnings surfaces a namespace's consolidated patterns AND the pending

@@ -174,7 +174,6 @@ async def _answer_permission_request(
     context_builder = turn.context_builder
     session_key = turn.session_key
     _agent = turn._agent
-    status_ctrl = turn.status_ctrl
     answer = turn.answer
     task = turn.task
     # Check tool hooks for auto-approve
@@ -220,12 +219,15 @@ async def _answer_permission_request(
                     metadata={"reason": "hook_auto_approve"},
                 )
                 return False
-            logger.warning(
-                "declining a hook auto-approve: %s; the request "
-                "falls through to the Slack handler's normal "
-                "approval ladder",
-                _ng_refusal.log_text,
-            )
+            # Once per session for a platform-scope refusal; the audit row
+            # below is still written for every call.
+            if name_grant.should_log_decline(session_key, _ng_refusal):
+                logger.warning(
+                    "declining a hook auto-approve: %s; the request "
+                    "falls through to the Slack handler's normal "
+                    "approval ladder",
+                    _ng_refusal.log_text,
+                )
             name_grant.log_decline(
                 source="slack",
                 session_key=session_key,
@@ -348,7 +350,6 @@ async def _answer_permission_request(
         return False
 
     logger.info("Permission request: tool=%s req_id=%s", event.title, event.request_id)
-    status_ctrl.pause_stall_watchdog()
     task.await_approval()
     # The stream-prep Slack calls below run BEFORE _request_approval
     # answers the permission. If any raises (rate-limit, network),
@@ -371,7 +372,6 @@ async def _answer_permission_request(
         is_dm=channel.startswith("D"),
     )
     task.resume()
-    status_ctrl.resume_stall_watchdog()
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",

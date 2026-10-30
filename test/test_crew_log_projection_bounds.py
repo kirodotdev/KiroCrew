@@ -211,12 +211,21 @@ def test_a_cold_fold_streams_the_log_rather_than_holding_it(monkeypatch):
     interleaving: list[tuple[int, int]] = []
     real_apply = crew_log._SessionFold.apply
 
+    real_apply_owned = crew_log._SessionFold.apply_owned
+
     def counted_apply(self, state, entry):
         interleaving.append((yielded[0], len(interleaving) + 1))
         return real_apply(self, state, entry)
 
+    # A cold fold steps through ``apply_owned`` (in place, one private state), so the
+    # probe watches both doors; either way each step must follow its own read.
+    def counted_apply_owned(self, state, entry):
+        interleaving.append((yielded[0], len(interleaving) + 1))
+        return real_apply_owned(self, state, entry)
+
     monkeypatch.setattr(CrewLog, "iter_from", counted_iter_from)
     monkeypatch.setattr(crew_log._SessionFold, "apply", counted_apply)
+    monkeypatch.setattr(crew_log._SessionFold, "apply_owned", counted_apply_owned)
 
     streamed = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value
 

@@ -13,6 +13,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
+
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -157,6 +159,74 @@ class TestShouldRotateGeneration:
         last = _local_epoch(2026, 7, 9, 3, 0)
         now = _local_epoch(2026, 7, 10, 5, 0)
         assert should_rotate_generation(last, now, daily_reset_hour=-1) is False
+
+
+class TestShouldRotateGenerationDst:
+    """The daily boundary is the configured local wall-clock hour, even on a 23h/25h day.
+
+    America/New_York springs forward on Mar 8 (02:00 EST -> 03:00 EDT) and
+    falls back on Nov 1 (02:00 EDT -> 01:00 EST) in 2026. The ordinary-day
+    cases are the control.
+    """
+
+    @staticmethod
+    def _ny(year: int, month: int, day: int, hour: int, minute: int = 0) -> float:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        zone = ZoneInfo("America/New_York")
+        return datetime(year, month, day, hour, minute, tzinfo=zone).timestamp()
+
+    @pytest.mark.parametrize(
+        ("last", "now", "hour", "expected"),
+        [
+            # Control: an ordinary 24h day.
+            ((2026, 10, 26, 23, 30), (2026, 10, 27, 5, 0), 0, True),
+            ((2026, 10, 27, 0, 30), (2026, 10, 27, 5, 0), 0, False),
+            ((2026, 10, 27, 0, 30), (2026, 10, 27, 5, 0), 1, True),
+            # Control: yesterday's boundary across a month end (day 0 normalizes).
+            ((2026, 2, 28, 3, 0), (2026, 3, 1, 0, 30), 4, True),
+            # Fall back: midnight already passed at 00:30 EDT, no second reset.
+            ((2026, 11, 1, 0, 30), (2026, 11, 1, 5, 0), 0, False),
+            # Fall back: yesterday's 23:00 passed before 23:30, so no reset at 05:00.
+            ((2026, 10, 31, 23, 30), (2026, 11, 1, 5, 0), 23, False),
+            # Spring forward: midnight lies between 23:30 and 05:00.
+            ((2026, 3, 7, 23, 30), (2026, 3, 8, 5, 0), 0, True),
+            # Spring forward: 01:00 lies between 00:30 and 05:00.
+            ((2026, 3, 8, 0, 30), (2026, 3, 8, 5, 0), 1, True),
+            # Fall back, reset hour 1 (the repeated hour): one reset across the night.
+            ((2026, 10, 31, 23, 30), (2026, 11, 1, 1, 30), 1, True),
+            ((2026, 11, 1, 1, 30), (2026, 11, 2, 0, 30), 1, False),
+            # Spring forward, reset hour 2 (the skipped hour): one reset across the gap.
+            ((2026, 3, 8, 1, 30), (2026, 3, 8, 3, 30), 2, True),
+            ((2026, 3, 8, 3, 30), (2026, 3, 9, 1, 0), 2, False),
+        ],
+        ids=[
+            "control-crossed-midnight",
+            "control-after-midnight",
+            "control-crossed-1am",
+            "control-yesterday-across-month-end",
+            "fall-back-no-second-reset",
+            "fall-back-yesterday-23h-already-passed",
+            "spring-forward-midnight",
+            "spring-forward-1am",
+            "fall-back-repeated-hour-resets",
+            "fall-back-repeated-hour-resets-once",
+            "spring-forward-skipped-hour-resets",
+            "spring-forward-skipped-hour-resets-once",
+        ],
+    )
+    def test_daily_boundary_is_local_wall_clock_hour(
+        self,
+        local_tz: Any,
+        last: tuple[int, ...],
+        now: tuple[int, ...],
+        hour: int,
+        expected: bool,
+    ) -> None:
+        local_tz("America/New_York")
+        result = should_rotate_generation(self._ny(*last), self._ny(*now), daily_reset_hour=hour)
+        assert result is expected
 
 
 class _Sessions:
@@ -484,9 +554,8 @@ class TestUnbindReasonVocabulary:
         The planted sample proves the scanner fires at all.
         """
         import ast
-        from pathlib import Path
 
-        import kiro_crew
+        from source_corpus import parsed_candidates, src_root
 
         binding_calls = {
             "clear_mirror_link",
@@ -512,12 +581,17 @@ class TestUnbindReasonVocabulary:
         planted = ast.parse('s.clear_mirror_link(key, reason="made_up")\n')
         assert len(_bare_reasons(planted)) == 1, "the scanner does not fire"
 
-        pkg = Path(kiro_crew.__file__).resolve().parent
+        pkg = src_root()
+        # A flagged call names a binding method and passes ``reason=``, so only the
+        # files whose text holds both are parsed.
+        candidates = parsed_candidates(
+            require_all=("reason",), require_any=sorted(binding_calls), skip_syntax_errors=False
+        )
         offenders = [
             f"{path.relative_to(pkg)}:{line}"
-            for path in pkg.rglob("*.py")
+            for path, _text, tree in candidates
             if "_vendor" not in path.parts
-            for line in _bare_reasons(ast.parse(path.read_text(encoding="utf-8")))
+            for line in _bare_reasons(tree)
         ]
         assert not offenders, (
             "unbind reasons must come from messaging.link's UNBIND_REASON_* "

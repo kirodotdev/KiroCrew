@@ -818,3 +818,15 @@ def ensure_owner_rwx_dirs(root: str | os.PathLike) -> None:
                 dirnames.remove(dname)
                 continue
             _add_owner_rwx(entry)
+
+
+def claude_code_managed_settings_dir() -> Path:
+    """The directory Claude Code reads managed (organisation policy) settings from on this OS.
+
+    It holds ``managed-settings.json`` and the ``managed-settings.d/`` drop-in directory.
+    """
+    if IS_MACOS:
+        return Path("/Library/Application Support/ClaudeCode")
+    if IS_WINDOWS:
+        return Path("C:\\Program Files\\ClaudeCode")
+    return Path("/etc/claude-code")

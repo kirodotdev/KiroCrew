@@ -23,6 +23,12 @@ description: |
     - pagination-design : markdown, version 1
     - queue-badge       : svg, version 1
 
+  Shipped apps (builtin records already enabled; both builtins declare
+  defaultEnabled false, and the gateway keeps an existing record's
+  enabled state when it registers builtins at start):
+    - design-tweak
+    - project-scaffolder
+
   SQLite stores (memory.db, memory_index.db) are intentionally omitted —
   vector-backed semantic memory and the event log bootstrap themselves
   empty on first gateway start. Text-only content (markdown, JSON,

@@ -2,9 +2,12 @@
 
 :func:`_doctor_kas` reports whether the installed kiro-cli's ``acp`` relay can serve the
 KAS engine: the bundle, the relay's help text, the spec permissions it needs and the
-builtin tool vocabulary it was measured against. The ACP names these rows read stay
-imported by ``kiro_crew.cli_doctor``, so this module imports no ``kiro_crew.acp`` module.
-New KAS rows go here.
+builtin tool vocabulary it was measured against. On the bundle route
+(``agent.kas_bundle`` on) :func:`_report_kas_bundle` reports Crew's own installed
+engine instead -- its version against the release pin, the ``install.json`` entry
+points, the spawn argv and the vault as the only auth owner -- and asks nothing of
+kiro-cli. The ACP names these rows read stay imported by ``kiro_crew.cli_doctor``, so
+this module imports no ``kiro_crew.acp`` module. New KAS rows go here.
 
 Composed onto ``kiro_crew.cli_doctor``, the command's one import path and patch target;
 see :mod:`kiro_crew.cli_doctor_parts`.
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
         kas_relay_help,
         kas_verified_releases,
         kas_vocabulary_drift,
+        kiro_cli_installed,
         resolve_kiro_cli,
         spec_permissions_supported,
     )
@@ -61,17 +65,54 @@ def _doctor_kas(issues: list[str]) -> None:
     """
     # Positive backend test (not ``!= ACP_BACKEND_KAS``): an inequality would
     # silently capture every harness added later — see the harness-parity gate.
-    if KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS:
+    # A stored Kiro CLI pick runs on KAS wherever kiro-cli offers v3, so the same
+    # relay and engine rows answer whether it does here. Not on the bundle route,
+    # where the pick stays on kiro-cli.
+    agent = KiroCrewConfig.load().agent
+    if agent.acp_backend == ACP_BACKEND_KAS or (_kiro_cli_selected() and not agent.kas_bundle):
         _report_kas_backend(issues)
+
+
+def _kiro_cli_selected() -> bool:
+    """Whether ``agent.acp_backend`` is stored as the Kiro CLI pick (``"kiro"``).
+
+    The loaded field already reads KAS for that pick, so the stored value is what
+    tells the engine row to offer the kiro-cli upgrade instead of a harness switch
+    the user has already made. An unreadable document reads as no pick.
+    """
+    try:
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
+
+        return acp_backend_stored_as_kiro()
+    except Exception:
+        return False
+
+
+def _kiro_pick_runs_on_kas() -> bool:
+    """Whether the gateway would move a stored Kiro CLI pick onto KAS on this host.
+
+    The gateway promotes the pick only when its floor probe,
+    ``agent_sdk.kas_engine_verdict``, answers ``True``; every unknown (no pinned
+    kiro-cli, a failed spawn) and every gap keeps it on v2. Reading the same
+    probe keeps the doctor's KAS-only rows on exactly the hosts the pick runs on.
+    """
+    try:
+        from kiro_crew.agent_sdk import kas_engine_verdict
+
+        offers_kas, _reason = kas_engine_verdict()
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
+        return False
+    return offers_kas is True
 
 
 def _report_kas_bundle(issues: list[str]) -> None:
     """The bundle route: Crew's own installed engine, no kiro-cli row at all.
 
-    kiro-cli is not consulted here because the route never runs it -- a missing
-    kiro-cli is not a problem on this route, and reporting one would send the
-    operator to install a binary nothing will use. Crew is the auth owner
-    unconditionally, so the vault row is the only credential row.
+    The route never runs kiro-cli, so a missing kiro-cli is not a problem here,
+    and reporting one would send the operator to install a binary nothing will
+    use. The one place an installed kiro-cli still matters is the auto-approve
+    row: it reads the same spec files. Crew is the auth owner unconditionally, so
+    the vault row is the only credential row.
     """
     from kiro_crew.agent_sdk import kas_bundle
 
@@ -80,9 +121,17 @@ def _report_kas_bundle(issues: list[str]) -> None:
         print(f"  bundle:      ❌ nothing installed under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
         print("               Fix: kirocrew kas install   (or set agent.kas_bundle false)")
         issues.append("agent.kas_bundle is on but no KAS engine bundle is installed")
+        _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""
     print(f"  bundle:      ✅ KAS {installed.version}, Node {installed.node_version or '?'}{where}")
+    _report_kas_bundle_pin(installed.version)
+    # The two entry points ``install.json`` records, each on its own row: the
+    # spawn row below joins them into one argv, which is the right thing to copy
+    # into a terminal and the wrong thing to read a path out of.
+    print(f"  install.json: {installed.root / kas_bundle.KAS_BUNDLE_INSTALL_RECORD_NAME}")
+    print(f"  engine:      {installed.acp_server}")
+    print(f"  node:        {installed.node_bin}")
     print(f"  spawn:       {' '.join(kas_bundle.bundle_spawn_argv(installed))}")
     print("  auth owner:  Kiro Crew vault (the only owner on this route)")
     try:
@@ -95,18 +144,110 @@ def _report_kas_bundle(issues: list[str]) -> None:
         identity_line = None
     if identity_line:
         print(f"  crew vault:  {identity_line}")
-    if not signed_in:
-        print("  crew vault:  ⚠  not signed in; the first prompt will ask for a sign-in")
-    # Not ``_report_kas_spec_permissions``: that row asks the installed kiro-cli's
-    # version, and a working bundle-only host has none to ask. The spec writer
-    # gates the ``permissions`` block on kiro-cli's version
-    # (``auto_approve._write_derived_permissions``), so the honest row here names
-    # that rule rather than reporting a kiro-cli fault on a route that never runs
-    # it; the printed row links the issue that moves the gate to the bundled engine.
-    print(
-        "  auto-approve: spec `permissions` block follows the installed kiro-cli's version"
-        " gate for now (kirodotdev/KiroCrew#20730); without kiro-cli it is withheld"
-    )
+    # Ownership and health are separate facts: vault_holds_identity reads only
+    # the token; the describe verdict is the only read that sees issuer rejection.
+    healthy = identity_line is not None and identity_line.endswith("-> usable")
+    if signed_in and healthy:
+        print("  crew vault:  ✅ signed in through Kiro Crew")
+    elif signed_in:
+        print(
+            "  crew vault:  ⚠️  signed in through Kiro Crew, but the sign-in may not be usable;"
+            " see the line above"
+        )
+        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+    else:
+        print("  crew vault:  ⚠️  not signed in; the first prompt will ask for a sign-in")
+        print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
+    _report_kas_bundle_spec_permissions(installed.version, issues)
+
+
+def _report_kas_bundle_spec_permissions(version: str | None, issues: list[str]) -> None:
+    """Whether the spec ``permissions`` block is written on the bundle route.
+
+    The bundle route's spelling of :func:`_report_kas_spec_permissions`, reporting
+    the writer's rule (``auto_approve._spec_permissions_accepted``) from the same
+    predicates: the installed engine must pass the pin's
+    ``engine_spec_permissions_supported``, and an installed kiro-cli must also pass
+    its own gate, since it reads the same files. *version* is the installed
+    engine's, or ``None`` for no engine: an unknown version, which the gate reads
+    as withheld, so the row says so instead of staying silent -- without a second
+    issue, since the bundle row already names the one fix, the way the relay
+    route's missing-kiro-cli row stands alone.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if kas_bundle.engine_spec_permissions_supported(version):
+        if _report_bundle_kiro_cli_refusal(issues):
+            return
+        print(
+            "  auto-approve: ✅ spec `permissions` block written"
+            f" (the bundled engine KAS {version} reads it)"
+        )
+        return
+    floor = ".".join(str(part) for part in kas_bundle.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION)
+    if version is None:
+        print("  auto-approve: ⚠  spec `permissions` block withheld: no engine bundle installed")
+        print("               It is written once `kirocrew kas install` lays the engine down.")
+        return
+    print(f"  auto-approve: ❌ withheld: the bundled engine KAS {version} is below {floor},")
+    print("               the lowest engine verified to accept the field. Fix: run the")
+    print(f"               pinned engine ({kas_bundle.KAS_PIN_VERSION}; unset")
+    print(f"               {kas_bundle.KAS_VERSION_OVERRIDE_ENV} or install it).")
+    issues.append("the bundled KAS engine is too old to carry the KAS `permissions` block")
+
+
+def _report_bundle_kiro_cli_refusal(issues: list[str]) -> bool:
+    """Print the withheld row when an installed kiro-cli refuses the block; say if it did.
+
+    No kiro-cli installed prints nothing: the engine alone decides. Whether one
+    is installed is ``kiro_cli.kiro_cli_installed``, the writer's own predicate,
+    so the two cannot disagree.
+    """
+    if not kiro_cli_installed():
+        return False
+    cli_version = installed_kiro_cli_version()
+    if spec_permissions_supported(cli_version):
+        return False
+    floor = ".".join(str(part) for part in SPEC_PERMISSIONS_MIN_VERSION)
+    shown = "unknown" if cli_version is None else ".".join(str(p) for p in cli_version)
+    print(f"  auto-approve: ❌ withheld: kiro-cli ({shown}) is installed and reads the")
+    print("               same specs, and it may refuse the field. Fix: update kiro-cli")
+    print(f"               to {floor} or newer, or uninstall it.")
+    if cli_version is None:
+        print(f"               ({PATH_ONLY_INSTALL_NOTE}).")
+    issues.append("kiro-cli is installed but cannot carry the KAS `permissions` block")
+    return True
+
+
+def _report_kas_bundle_pin(installed_version: str) -> None:
+    """The installed engine against this release's pin.
+
+    ``installed_bundle()`` looks up exactly the version ``pinned_version()`` names,
+    so the installed version can differ from ``KAS_PIN_VERSION`` only through the
+    ``KIROCREW_KAS_VERSION`` override; that is the one case worth a ⚠️, because it
+    is the gateway's environment choosing an engine this release was not tested
+    with, and the row names the variable so the operator can find it. Every other
+    installed version (an older release's engine, kept so a rollback finds its
+    own) is listed, not judged.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    pin = kas_bundle.KAS_PIN_VERSION
+    if installed_version == pin:
+        print(f"  pin:         ✅ KAS {pin} is this release's pin")
+    else:
+        print(f"  pin:         ⚠️  running KAS {installed_version}; this release pins {pin}")
+        print(
+            f"               ({kas_bundle.KAS_VERSION_OVERRIDE_ENV} is set in the gateway's"
+            " environment; unset it to run the pin)"
+        )
+    try:
+        versions = kas_bundle.installed_versions()  # type: ignore[misc]  # PEP 562 re-export
+        others = [v for v in versions if v != installed_version]
+    except Exception:
+        others = []
+    if others:
+        print(f"  also installed: {', '.join(others)} (kept for rollback; `kirocrew kas remove`)")
 
 
 def _report_kas_backend(issues: list[str]) -> None:
@@ -161,9 +302,11 @@ def _report_kas_backend(issues: list[str]) -> None:
     # different spawn from ``acp --help``, so a failed help probe establishes
     # nothing about it. The early ``return`` below is for the ENGINE rows alone;
     # letting it swallow this row would hide a withheld auto-approve on exactly
-    # the host where kiro-cli is misbehaving.
-    _report_kas_spec_permissions(issues)
-    _report_kas_tool_vocabulary(issues)
+    # the host where kiro-cli is misbehaving. Both rows matter only to KAS
+    # sessions, so a Kiro CLI pick the gateway keeps on v2 skips them.
+    if not _kiro_cli_selected() or _kiro_pick_runs_on_kas():
+        _report_kas_spec_permissions(issues)
+        _report_kas_tool_vocabulary(issues)
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a
@@ -174,6 +317,12 @@ def _report_kas_backend(issues: list[str]) -> None:
     gap = kas_engine_gap(help_text)
     if gap is None:
         print(f"  engine:      ✅ {KAS_RELAY_ENGINE} supported")
+    elif _kiro_cli_selected():
+        # A Kiro CLI pick runs on KAS only where kiro-cli offers v3; here the gateway
+        # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
+        print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")
+        print("               Fix: run `kiro-cli update`, then restart Kiro Crew.")
+        issues.append(f"kiro-cli is too old for its v3 (KAS) engine: {gap}")
     else:
         print(f"  engine:      ❌ {gap}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")
@@ -253,11 +402,10 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
             f"  tool names:  ➖ vocabulary verified on kiro-cli {verified}; installed version unknown"
         )
         return
+    shown = ".".join(str(part) for part in version)
     if not drift:
-        shown = ".".join(str(part) for part in version)
         print(f"  tool names:  ✅ vocabulary verified on kiro-cli {verified} (installed {shown})")
         return
-    shown = ".".join(str(part) for part in version)
     if drift == "older":
         # Unverified, not compatible: the tables were read from the verified
         # releases and an older KAS may lack an id or spell it differently. Same

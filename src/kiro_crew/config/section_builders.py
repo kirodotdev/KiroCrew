@@ -21,6 +21,8 @@ schema/validation.
 
 from __future__ import annotations
 
+import logging
+
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
 # values in business logic); its defaults are the ComputerUseConfig fields'.
@@ -42,6 +44,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    field_default,
 )
 from kiro_crew.config.integration_sections import (
     ComputerUseConfig,
@@ -62,6 +65,7 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    kind_routing_mode_from,
 )
 from kiro_crew.config.sections import (
     DEDUP_EVERY_N_SWEEPS_MAX,
@@ -101,11 +105,15 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     TaskRunnerConfig,
     WatchdogConfig,
+    WorkLedgerConfig,
+    normalize_on_battery,
 )
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
+from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
@@ -122,6 +130,9 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+
+logger = logging.getLogger("kiro_crew.config.loader")
 
 # ---------------------------------------------------------------------------
 # Service sections (DTOs in ``config.service_sections``).
@@ -173,6 +184,11 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     )
 
 
+def _build_power_config(power_data: dict) -> PowerConfig:
+    section = SectionReader(PowerConfig, power_data)
+    return PowerConfig(on_battery=normalize_on_battery(section.get("on_battery")))
+
+
 def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
     section = SectionReader(WatchdogConfig, watchdog_data)
     return WatchdogConfig(
@@ -184,6 +200,42 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
+
+
+def _positive_gb(data: dict, key: str) -> float:
+    """``work_ledger.<key>`` as a positive finite number, else the field default."""
+    default = float(field_default(WorkLedgerConfig, key))
+    value = _safe_float(data.get(key, default), default)
+    return value if value > 0 else default
+
+
+def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
+    return WorkLedgerConfig(
+        max_depth=_work_ledger_max_depth(work_ledger_data),
+        remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), False),
+        remote_dispatch_memory_gb=_positive_gb(work_ledger_data, "remote_dispatch_memory_gb"),
+        remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
+    )
+
+
+def _work_ledger_max_depth(work_ledger_data: dict) -> int:
+    default = field_default(WorkLedgerConfig, "max_depth")
+    if "max_depth" not in work_ledger_data:
+        return default
+    raw = work_ledger_data["max_depth"]
+    depth = _safe_int(raw, -1)  # -1 is below the floor, so an unreadable value is refused
+    # Refused, not clamped: a clamped cap would read as configured while allowing a
+    # different number of levels. The default applies and the log says why.
+    if isinstance(raw, bool) or not (WORK_MAX_DEPTH_MIN <= depth <= WORK_MAX_DEPTH_MAX):
+        logger.warning(
+            "Config: work_ledger.max_depth %r is not an integer from %d to %d; using %d",
+            raw,
+            WORK_MAX_DEPTH_MIN,
+            WORK_MAX_DEPTH_MAX,
+            default,
+        )
+        return default
+    return depth
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +258,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         embedding_idle_evict_secs=section.read(
             "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
         ),
+        embedding_child_process=section.read("embedding_child_process", _safe_bool),
         embed_model_url=section.get("embed_model_url"),
         embed_model_path=section.get("embed_model_path"),
         embed_model_id=section.get("embed_model_id"),
@@ -236,6 +289,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         persistence_enabled=section.read("persistence_enabled", _safe_bool),
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
+        kind_routing=kind_routing_mode_from(section.get("kind_routing")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -452,6 +506,7 @@ def _build_instances_config(
     return InstancesConfig(
         enabled=bool(section.get("enabled")),
         warm_set_cap=section.read("warm_set_cap", _safe_int),
+        default_destination=clean_crew_ref(section.get("default_destination")),
         tunnel_base_port=section.read("tunnel_base_port", _safe_int),
         ssh_compression=bool(section.get("ssh_compression")),
         connect_timeout_secs=(
@@ -775,7 +830,10 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
     section = SectionReader(SttConfig, stt_data)
     return SttConfig(
         enabled=section.read("enabled", _safe_bool),
-        provider=_validated_stt_provider(section.get("provider")),
+        # The raw value, not ``section.get``: an ABSENT key must reach the
+        # resolver as ``None`` so it takes the edition's default
+        # (``default_stt_provider``) rather than the field's ``local``.
+        provider=_validated_stt_provider(stt_data.get("provider")),
         model=_validated_stt_model(
             section.get("model"),
             custom_path=section.get("custom_model_path"),

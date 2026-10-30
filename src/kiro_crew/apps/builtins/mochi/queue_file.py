@@ -137,7 +137,9 @@ def queue_mutation(queue_path: str | Path) -> Iterator[None]:
     the poller's per-tick poll where added latency is felt.
     """
     lock_path = Path(queue_path).with_name(Path(queue_path).name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield
@@ -157,7 +159,7 @@ def read_queue(queue_path: str | Path) -> MochiQueue | None:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as err:
+    except (OSError, UnicodeDecodeError) as err:
         logger.warning("[read_queue] Failed to read %s: %s", path, err)
         return None
 

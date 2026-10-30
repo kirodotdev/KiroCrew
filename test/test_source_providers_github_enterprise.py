@@ -104,7 +104,7 @@ def test_a_host_also_in_jira_hosts_is_refused_at_config_load() -> None:
 @pytest.mark.asyncio
 async def test_the_refresh_publishes_github_hosts_and_bumps_the_generation(monkeypatch) -> None:
     def fake_load():
-        return frozenset(), frozenset(), True, frozenset({GHE}), frozenset()
+        return frozenset(), frozenset(), True, frozenset({GHE}), frozenset(), frozenset()
 
     monkeypatch.setattr(hosts, "_load_source_link_settings", fake_load)
     monkeypatch.setattr(hosts, "_gitlab_hosts_loaded_at", 0.0)

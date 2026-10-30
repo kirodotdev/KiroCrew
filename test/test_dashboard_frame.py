@@ -264,11 +264,16 @@ class TestTheComposedDocument:
             doc.index("JSON.parse(el.textContent)") < probe < doc.index("<h1 data-dashboard-field")
         )
 
-    def test_the_band_does_not_count_as_a_page_that_refills(self) -> None:
-        """The band script runs after the page and listens for the refill event. Through
-        the wrapped ``addEventListener`` it would mark every page refill-capable, and a
-        page that does not redraw would then show stale values instead of reloading."""
-        assert "EventTarget.prototype.addEventListener.call(window" in dashboard_frame._BAND_JS
+    def test_nothing_the_host_adds_after_the_page_listens_for_the_refill(self) -> None:
+        """Only the beacon runs after the page, and it registers no listener for the
+        refill event. A host listener there would pass through the wrapped
+        ``addEventListener`` and mark every page refill-capable, so a page that does
+        not redraw would show old values instead of reloading."""
+        page = self.page()
+        doc = self.doc()
+        after = doc[doc.index(page) + len(page) :]
+        assert after == f"\n<script>{dashboard_frame._BEACON_JS}</script>\n</body>\n</html>\n"
+        assert f"{dashboard_frame.PAGE_EVENT!r}" not in dashboard_frame._BEACON_JS
 
     def test_the_beacon_reports_whether_the_page_refills(self) -> None:
         beacon = dashboard_frame._BEACON_JS
@@ -343,11 +348,32 @@ class TestTheComposedDocument:
         assert "<script>evil()" not in doc
         assert "&lt;/title&gt;&lt;script&gt;evil()" in doc
 
-    def test_the_stale_band_is_host_markup_above_the_page(self) -> None:
-        """A template cannot suppress it: it is not in the fragment, and the page has
-        no way to remove an element it did not create before the reader sees it."""
-        doc = self.doc(stale=True, missing=["entries"])
-        assert doc.index("kirocrew-stale-band") < doc.index("kirocrew-dashboard-data")
+    @pytest.mark.parametrize(
+        "read",
+        [
+            {},
+            {"missing": ["entries"]},
+            {"missing": ["entries", "risk_note"]},
+        ],
+        ids=["current", "missing", "two-missing"],
+    )
+    def test_the_host_draws_no_stale_band_in_any_state(self, read: dict[str, Any]) -> None:
+        """The person is never told some numbers are older: a field that does not
+        resolve is the crewmate's to fix, and its turn block says so. Asked of the
+        composed document and of the body-only compose, in every read shape."""
+        doc = self.doc(**read)
+        body = dashboard_frame.compose_body(
+            "<p data-dashboard-field='entries'>x</p>", dashboard_frame.read_payload({}, **read)
+        )
+        for text in (doc, body):
+            for marker in (
+                "kirocrew-stale-band",
+                "data-dashboard-stale",
+                "data-stale-detail",
+                "Some numbers are older",
+                "from an earlier read",
+            ):
+                assert marker not in text, f"{marker!r} is still in the composed frame"
 
     def test_the_agentic_cells_are_marked(self) -> None:
         """A number the crewmate asserted and a number the log recorded are different
@@ -355,17 +381,17 @@ class TestTheComposedDocument:
         which."""
         assert "data-dashboard-agentic" in self.doc(agentic=["risk_note"])
 
-    def test_a_read_that_will_not_serialize_composes_an_empty_stale_one(self) -> None:
+    def test_a_read_that_will_not_serialize_composes_an_empty_one(self) -> None:
         """A value this module could not encode must not blank somebody's
-        dashboard."""
+        dashboard, and the empty read carries no staleness flag."""
         doc = dashboard_frame.compose("<p>x</p>", {"fields": {"a": object()}})
         island = doc.split('id="kirocrew-dashboard-data">')[1].split("</script>")[0]
-        assert json.loads(island)["stale"] is True
+        assert json.loads(island)["fields"] == {}
+        assert "stale" not in json.loads(island)
 
     def test_an_unresolved_field_keeps_its_last_value_rather_than_blanking(self) -> None:
-        """Blanking would turn one unresolved path into a page of em dashes and make a
-        stale dashboard look like an empty one."""
-        assert "data-dashboard-missing" in self.doc(stale=True, missing=["entries"])
+        """Blanking would turn one unresolved path into a page of em dashes."""
+        assert "data-dashboard-missing" in self.doc(missing=["entries"])
 
     def test_the_read_payload_is_built_one_way_for_the_document_and_the_refill(self) -> None:
         """Two builders could describe the same read differently, which a reader
@@ -375,7 +401,6 @@ class TestTheComposedDocument:
             "fields": {"a": 1},
             "agentic": ["a"],
             "seq": 4,
-            "stale": False,
             "missing": ["b"],
             # Empty rather than absent: a page reads this map unconditionally, and a
             # missing key would make a template branch on whether the host is new.
@@ -470,24 +495,22 @@ class TestTheComposedDocument:
 def test_compose_body_carries_the_rules_its_own_markup_needs():
     """The host builds the HEAD, so a body-only compose must bring its stylesheet.
 
-    These rules are not decoration. They are what DIMS a missing cell, underlines an
-    agentic one, and makes the stale band a band rather than a line of plain text -- so
-    a body composed without them renders a page whose own marks say nothing. The slice
-    takes what sits between `<body>` and `</body>`, which is why the head's stylesheet
-    needed carrying explicitly.
+    These rules are not decoration. They are what DIMS a missing cell and underlines an
+    agentic one -- so a body composed without them renders a page whose own marks say
+    nothing. The slice takes what sits between `<body>` and `</body>`, which is why the
+    head's stylesheet needed carrying explicitly.
 
     Checked by selector rather than by substring of the whole sheet, so the pin names
-    the three marks that have to keep working instead of freezing the file's text.
+    the marks that have to keep working instead of freezing the file's text.
     """
     body = dashboard_frame.compose_body(
         "<p data-dashboard-field='entries'>x</p>",
-        dashboard_frame.read_payload({"entries": 3}, agentic=[], seq=1, stale=True, missing=["a"]),
+        dashboard_frame.read_payload({"entries": 3}, agentic=[], seq=1, missing=["a"]),
     )
     assert "<style>" in body, "the body-only compose carries no stylesheet at all"
     for selector in (
         "[data-dashboard-missing='true']",
         "[data-dashboard-agentic='true']",
-        "#kirocrew-stale-band",
     ):
         assert selector in body, (
             f"{selector} has no rule in the composed body, so that mark renders "
@@ -495,8 +518,8 @@ def test_compose_body_carries_the_rules_its_own_markup_needs():
         )
     # The stylesheet leads, so the rules are parsed before the markup they apply to.
     assert body.index("<style>") < body.index(
-        'kirocrew-stale-band"'
-    ), "the stylesheet follows the band it styles"
+        "data-dashboard-field='entries'"
+    ), "the stylesheet follows the markup it styles"
 
 
 class TestTheCodeTextOfAPage:
@@ -510,8 +533,26 @@ class TestTheCodeTextOfAPage:
     def texts(html: str) -> list[str]:
         return [html[start:end] for start, end in dashboard_frame.code_spans(html)]
 
-    def test_a_page_with_neither_element_has_no_span(self) -> None:
-        assert self.texts('<p data-dashboard-field="goal"></p><b onclick="f()">x</b>') == []
+    @pytest.mark.parametrize(
+        "html",
+        [
+            pytest.param(
+                '<p data-dashboard-field="goal"></p><b onclick="f()">x</b>',
+                id="a_page_with_neither_element_has_no_span",
+            ),
+            pytest.param(
+                "<scripted>x</scripted><styles>y</styles>", id="a_longer_name_is_not_one_of_them"
+            ),
+            pytest.param("<script></script><style></style>", id="an_empty_element_has_no_span"),
+            pytest.param("<plaintext><script>a</script>", id="plaintext_ends_the_scan"),
+            pytest.param(
+                "<a =x><script>a</script>",
+                id="an_attribute_name_the_scan_cannot_read_ends_the_scan",
+            ),
+        ],
+    )
+    def test_no_span(self, html: str) -> None:
+        assert self.texts(html) == []
 
     def test_the_span_is_the_text_and_the_tags_stay_markup(self) -> None:
         html = '<p>a</p><script type="module">let x = 1;</script><b>b</b><style>.a{c:red}</style>'
@@ -520,22 +561,32 @@ class TestTheCodeTextOfAPage:
     def test_the_names_fold_case_and_an_end_tag_may_carry_whitespace(self) -> None:
         assert self.texts("<SCRIPT>a</Script ><Style>b</STYLE\n>") == ["a", "b"]
 
-    def test_a_longer_name_is_not_one_of_them(self) -> None:
-        assert self.texts("<scripted>x</scripted><styles>y</styles>") == []
-
-    def test_an_empty_element_has_no_span(self) -> None:
-        assert self.texts("<script></script><style></style>") == []
-
-    def test_an_end_tag_must_end_its_name(self) -> None:
-        assert self.texts("<script>a</scripts>b</script>") == ["a</scripts>b"]
-
-    def test_the_first_end_tag_ends_the_element_as_the_parser_reads_it(self) -> None:
-        assert self.texts("<script>var s = '</script>';</script>") == ["var s = '"]
-
-    def test_a_style_inside_a_script_is_script_text(self) -> None:
-        assert self.texts("<script>var a = '<style>x</style>';</script>") == [
-            "var a = '<style>x</style>';"
-        ]
+    @pytest.mark.parametrize(
+        "html, spans",
+        [
+            pytest.param(
+                "<script>a</scripts>b</script>", ["a</scripts>b"], id="an_end_tag_must_end_its_name"
+            ),
+            pytest.param(
+                "<script>var s = '</script>';</script>",
+                ["var s = '"],
+                id="the_first_end_tag_ends_the_element_as_the_parser_reads_it",
+            ),
+            pytest.param(
+                "<script>var a = '<style>x</style>';</script>",
+                ["var a = '<style>x</style>';"],
+                id="a_style_inside_a_script_is_script_text",
+            ),
+            pytest.param(
+                "<script data-note=\">\" data-k='>'>var x</script><p>t</p>",
+                ["var x"],
+                id="a_greater_than_inside_a_quoted_value_does_not_end_the_start_tag",
+            ),
+            pytest.param("1 < 2 and 3 <4 <script>a</script>", ["a"], id="a_lone_less_than_is_text"),
+        ],
+    )
+    def test_the_span_is_the_element_text(self, html: str, spans: list[str]) -> None:
+        assert self.texts(html) == spans
 
     def test_a_limit_stops_the_scan_after_that_many(self) -> None:
         html = "<script>a</script><style>b</style><script>c</script>"
@@ -560,9 +611,6 @@ class TestTheCodeTextOfAPage:
         assert self.texts('<p title="<style>">x</p>') == []
         assert self.texts("<p title='<script>'>x</p><script>a</script>") == ["a"]
         assert self.texts('<a href="x" data-t="<script>">t</a><style>b</style>') == ["b"]
-
-    def test_a_greater_than_inside_a_quoted_value_does_not_end_the_start_tag(self) -> None:
-        assert self.texts("<script data-note=\">\" data-k='>'>var x</script><p>t</p>") == ["var x"]
 
     @pytest.mark.parametrize("name", ["textarea", "title", "xmp", "iframe", "noembed", "noframes"])
     def test_the_content_of_a_raw_text_element_is_text(self, name: str) -> None:
@@ -603,9 +651,6 @@ class TestTheCodeTextOfAPage:
         assert self.texts("<![CDATA[<script>x</script>]]><script>a</script>") == ["a"]
         assert self.texts("<?xml <script> ?><script>a</script>") == ["a"]
         assert self.texts("</ <script>><script>a</script>") == ["a"]
-
-    def test_a_lone_less_than_is_text(self) -> None:
-        assert self.texts("1 < 2 and 3 <4 <script>a</script>") == ["a"]
 
     # -- names are read as the tokenizer reads them, not as Python folds them ---------
 
@@ -714,12 +759,6 @@ class TestTheCodeTextOfAPage:
         """HTML ignores the slash and opens a script; a value ending in ``/`` looks the same."""
         assert self.texts("<p><script/></p><script>a</script>") == []
         assert self.texts("<script src=a/><script>a</script>") == []
-
-    def test_plaintext_ends_the_scan(self) -> None:
-        assert self.texts("<plaintext><script>a</script>") == []
-
-    def test_an_attribute_name_the_scan_cannot_read_ends_the_scan(self) -> None:
-        assert self.texts("<a =x><script>a</script>") == []
 
     def test_a_page_that_needs_more_steps_than_the_bound_gets_no_more_spans(self) -> None:
         reads = dashboard_frame._MAX_SCAN_STEPS

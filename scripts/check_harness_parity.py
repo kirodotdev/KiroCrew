@@ -392,14 +392,89 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_STEER": None,
     "ACP_BACKENDS_STEERING_REQUEST": None,
     "ACP_BACKENDS_STEER_CONCURRENT_PROMPT": None,
+    "ACP_BACKENDS_STEER_RETRACT": None,
     "ACP_BACKENDS_COMPACT": None,
     "ACP_BACKENDS_SIDE_READONLY": None,
     "ACP_BACKENDS_MEMBER_CAPABILITIES": None,
     "ACP_BACKENDS_MARKDOWN_AGENT_SPECS": None,
     "ACP_BACKENDS_KIRO_SLASH_COMMANDS": None,
-    "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"kas"}),
+    "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"codex", "kas", "opencode"}),
     # pi's membership rides its gate extension's confirm dialog, not a mirror.
-    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"pi"}),
+    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"kas", "kiro", "opencode", "pi"}),
+    "ACP_BACKENDS_MATE_WORKER_KIT": None,
+    "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": None,
+    # copilot's drop is off the wire (its log, no frame), so no capture can show it.
+    "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose"}),
+    "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
+    "ACP_BACKENDS_MCP_WIRE_REINJECT": None,
+    "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": None,
+    # kiro-cli 2.35.1 / KAS 0.66.70 / codex-acp 2.2.2: each member's teardown
+    # verb is captured live, the same id answered before and 'not found' after.
+    "ACP_BACKENDS_SESSION_EVICTION": None,
+    # KAS 0.66.70: the settings channel's neverDefer flips the probe tool's
+    # toolOrigin to "client".
+    "ACP_BACKENDS_CLIENT_META_SETTINGS": None,
+    # KAS 0.66.70 spawned without --auth-method cli sends _kiro/auth/getAccessToken.
+    "ACP_BACKENDS_HOST_AUTH_CALLBACK": None,
+    # kiro-cli 2.35.1 --agent off disk; KAS 0.66.70 via customAgents: the spec's
+    # own MCP server reached the session with an EMPTY session/new array.
+    "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": None,
+    "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": None,
+}
+
+# Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
+# in HARNESS_EXEMPT_SETS. These are X sets with no capture yet. Shrink-only: an
+# entry missing on the base ref fails, and a removed entry must move to X_FEATURE_SETS.
+X_REGISTRATION_PENDING: dict[str, str] = {
+    "ACP_BACKENDS_HOOKS_LIST": "kas _kiro/hooks/* requests (KAS_CLIENT_CAPABILITIES does not announce hooks, so the engine asks none; not reachable to capture)",
+    "ACP_BACKENDS_OPEN_EXTERNAL_URL": "kas _kiro/openExternalUrl request",
+    "ACP_BACKENDS_STRUCTURED_REFUSAL": "kiro/kas _kiro.dev/metadata refusal notification",
+    "ACP_BACKENDS_FORK_AT_MESSAGE": "claude _meta.jetbrains.air.fork.messageId fork",
+    "ACP_BACKENDS_META_IDENTITY": "goose _meta tool identity channel",
+    "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": "kas summarization_* notifications",
+    "ACP_BACKENDS_NATIVE_TODOS": "claude native /todos prompt command",
+    "ACP_BACKENDS_REPORT_USAGE": "kiro _kiro.dev/metadata meteringUsage; kas _meta.kiro turn_completion",
+    "ACP_BACKENDS_AGENT_STARTED_TURNS": 'claude _meta["_claude/origin"] end-of-turn marker',
+}
+
+# Sets that are not X features, each with why. A set joins here only when its
+# membership rides standard ACP, routing, or something off the wire.
+HARNESS_EXEMPT_SETS: dict[str, str] = {
+    "ACP_BACKENDS_KNOWN": "routing-only: the acp_backend vocabulary",
+    "ACP_BACKENDS_KIRO_FAMILY": "routing-only: kiro-cli and KAS as a family",
+    "ACP_BACKENDS_ACP_RUNTIME": "routing-only: AcpRuntime vs AcpClient transport",
+    "ACP_BACKENDS_ACP_CLIENT_SPAWNABLE": "routing-only: which spawn branch runs",
+    "ACP_BACKENDS_SELF_SERVED_ACP": "routing-only: launch table membership",
+    "ACP_BACKENDS_INDEPENDENT_SETUP": "off the wire: first-run install path",
+    "ACP_BACKENDS_INTERNAL_SANDBOX": "off the wire: OS sandbox nesting",
+    "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX": "off the wire: OS sandbox nesting on the kiro-cli relay",
+    "ACP_BACKENDS_POD_HOME_REMAP": "off the wire: pod HOME relocation",
+    "ACP_BACKENDS_SESSION_SHARING": "standard ACP: session/load after teardown",
+    "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",
+    "ACP_BACKENDS_RESUME_WITHOUT_LOAD": "standard ACP: session/resume capability",
+    "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
+    "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
+    "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
+    "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
+    "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
+    "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
+    "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
+    "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
+    "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
+    "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
+    "ACP_BACKENDS_EFFORT_OVERLAY": "off the wire: workspace cli.json at spawn",
+    "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": "off the wire: workspace cli.json at spawn",
+    "ACP_BACKENDS_SEED_LOCAL_SETTINGS": "off the wire: settings.local.json file",
+    "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD": "off the wire: engine file watcher",
+    "ACP_BACKENDS_MEMBER_TOOL_LIMITS": "off the wire: saved agent file field",
+    "ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY": "off the wire: spec resolution",
+    "ACP_BACKENDS_SPEC_FILE_GRANTS": "off the wire: whether a start on an unowned spec is refused",
+    "ACP_BACKENDS_MEMBER_PANEL": "Crew-side: panel MCP tools",
+    "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": "Crew-side: Crew runs the spec hooks",
+    "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
+    "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
+    "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",
+    "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT": "Crew-side: worker prompt in the context block",
 }
 
 # ``initialize.agentInfo.name`` (or the ``_meta.agent_name`` header) a capture
@@ -414,6 +489,7 @@ EXPECTED_AGENT_NAMES: dict[str, frozenset[str]] = {
     "goose": frozenset({"goose"}),
     "pi": frozenset({"pi-acp"}),
     "deepseek": frozenset({"deepseek-harness-acp"}),
+    "copilot": frozenset({"Copilot"}),
 }
 
 # kiro-cli and KAS are one binary speaking one ``_kiro`` dialect, and KAS's
@@ -441,18 +517,13 @@ def handshake_matches(d: str, meta: dict) -> bool:
 # (set, fixture dir) -> the capture that is missing. Shrink-only: an entry not on
 # the base ref fails, and an entry whose member now passes fails until removed.
 X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("ACP_BACKENDS_STEERING_REQUEST", "claude"): "claude _session/steering turn",
-    ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
-    ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", "opencode"): "opencode second session/prompt",
-    ("ACP_BACKENDS_SIDE_READONLY", "kiro"): "live capture pending",
-    ("ACP_BACKENDS_SIDE_READONLY", "claude"): "claude side session read-only turn",
-    ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
-    ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): (
-        "live KAS 0.66.43 registers a markdown agent but ignores its prompt; "
-        "membership decided separately"
+    ("ACP_BACKENDS_STEERING_REQUEST", "claude"): (
+        "live 0.94.0 steer during Bash ends the turn early and starts an unowned turn; "
+        "under investigation"
     ),
+    ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
+    ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
+    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
 }
 
 # Sets holding exactly one of kiro-cli and KAS whose comment does not name the
@@ -657,6 +728,75 @@ def _narrowed(prior: dict) -> list[str]:
     return out
 
 
+def check_coverage(sets: dict[str, frozenset[str]]) -> list[str]:
+    """Every live set sits in exactly one of the three lists, each with a reason."""
+    lists = {
+        "X_FEATURE_SETS": set(X_FEATURE_SETS),
+        "X_REGISTRATION_PENDING": set(X_REGISTRATION_PENDING),
+        "HARNESS_EXEMPT_SETS": set(HARNESS_EXEMPT_SETS),
+    }
+    errors = []
+    for name in sorted(sets):
+        homes = [k for k, v in lists.items() if name in v]
+        if not homes:
+            errors.append(
+                f"{name}: unclassified ACP_BACKENDS_* set. Add it to X_FEATURE_SETS "
+                "and cite a live capture above it; to X_REGISTRATION_PENDING if it rides "
+                "a non-standard verb or field with no capture yet; or to HARNESS_EXEMPT_SETS "
+                "with a one-line reason (standard ACP, routing-only, off the wire)"
+            )
+        elif len(homes) > 1:
+            errors.append(f"{name}: listed in {' and '.join(homes)}; keep it in one")
+        scope = X_FEATURE_SETS.get(name)
+        if scope is not None and not scope & {fixture_dir(b) for b in sets[name]}:
+            errors.append(f"{name}: X_FEATURE_SETS scope checks none of its members")
+    for list_name, entries in (
+        ("X_REGISTRATION_PENDING", X_REGISTRATION_PENDING),
+        ("HARNESS_EXEMPT_SETS", HARNESS_EXEMPT_SETS),
+    ):
+        for name, why in sorted(entries.items()):
+            if name not in sets:
+                errors.append(f"{name}: in {list_name} but no longer defined; delete it")
+            elif not why.strip():
+                errors.append(f"{name}: {list_name} entry needs a one-line reason")
+    return errors
+
+
+def _base_pending(base: str) -> set[str] | None:
+    """The base ref's X_REGISTRATION_PENDING names, or None when it predates the list."""
+    import ast
+
+    try:
+        src = git(["show", f"{base}:scripts/check_harness_parity.py"])
+    except subprocess.CalledProcessError:
+        return None
+    for node in ast.parse(src).body:
+        # Annotated or plain: a plain rewrite must not switch the ratchet off.
+        if isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        elif isinstance(node, ast.Assign):
+            targets = node.targets
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "X_REGISTRATION_PENDING" for t in targets):
+            return set(_literal(node.value))
+    return None
+
+
+def _pending_ratchet(prior: set[str], sets: dict[str, frozenset[str]]) -> list[str]:
+    """Pending only shrinks, and a set leaving it lands in X_FEATURE_SETS (or is gone)."""
+    out = [
+        f"{n}: X_REGISTRATION_PENDING entry added; that list only shrinks"
+        for n in sorted(set(X_REGISTRATION_PENDING) - prior)
+    ]
+    out += [
+        f"{n}: left X_REGISTRATION_PENDING without joining X_FEATURE_SETS for every member"
+        for n in sorted(prior - set(X_REGISTRATION_PENDING))
+        if n in sets and (n not in X_FEATURE_SETS or X_FEATURE_SETS[n] is not None)
+    ]
+    return out
+
+
 def enforce_x_captures(base: str | None) -> int:
     sets, comments = live_sets(), set_comments()
     gaps = check_x_captures(sets, comments)
@@ -685,16 +825,22 @@ def enforce_x_captures(base: str | None) -> int:
         )
         errors += [f"{e}: allowlist entry added; the allowlist only shrinks" for e in added]
         errors += _narrowed(prior[2])
+    errors += check_coverage(sets)
+    pending = _base_pending(base) if base else None
+    if pending is not None:
+        errors += _pending_ratchet(pending, sets)
     if not errors:
         print(
             f"x-capture gate: every X-feature member cites a replayed live capture "
-            f"({len(X_CAPTURE_ALLOWLIST)} + {len(KIRO_KAS_PAIR_ALLOWLIST)} allowlisted) ✓"
+            f"({len(X_CAPTURE_ALLOWLIST)} + {len(KIRO_KAS_PAIR_ALLOWLIST)} allowlisted); "
+            f"{len(sets)} sets classified ({len(X_REGISTRATION_PENDING)} pending) ✓"
         )
         return 0
     print(
-        "::error::x-capture gate: a non-standard capability set must cite, above "
-        "the set, a live capture under test/fixtures/acp_frames/<backend>/ that a "
-        "test replays. See docs/ci/harness-parity-gate.md."
+        "::error::x-capture gate: every ACP_BACKENDS_* set is classified, and a "
+        "non-standard capability set must cite, above the set, a live capture under "
+        "test/fixtures/acp_frames/<backend>/ that a test replays. See "
+        "docs/ci/harness-parity-gate.md."
     )
     for e in errors:
         print(f"  {e}")

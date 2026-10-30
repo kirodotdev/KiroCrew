@@ -587,7 +587,14 @@ class TestTheRoutingFlag:
         """A pick the handler answers 409 for changed nothing, so it must not change
         what the NEXT turn runs on either. Asserted on the source order rather than
         by driving the handler: the flag is committed on each success path, and the
-        defect was a write placed ABOVE the busy check where no rollback covers it."""
+        defect was a write placed ABOVE the busy check where no rollback covers it.
+
+        Three success paths commit it: the same-value shortcut, the mid-turn
+        deferral (the pick is committed and answered ``deferred: true``), and the
+        idle transaction, whose write ``_rollback_pick`` covers. The two before the
+        transaction each RETURN ok; nothing else writes the flag."""
+        import re
+
         import kiro_crew.dashboard.chat_handlers as handlers
 
         source = (Path(handlers.__file__).parent / "chat_api" / "slot_model.py").read_text(
@@ -595,21 +602,21 @@ class TestTheRoutingFlag:
         )
         body = source[source.index("async def api_chat_slot_model(") :]
         body = body[: body.index("\nasync def ")]
-        busy = body.index('"code": "turn_in_flight"')
-        writes = [
-            body.count("slot.jev_route = jev_route"),
-            body[:busy].count("slot.jev_route = jev_route"),
-        ]
-        assert writes[0] == 2, "the flag should be committed on exactly the two success paths"
-        assert writes[1] == 1, (
-            "a jev_route write sits above the busy 409 on a path the rollback does not "
-            "cover, so a refused pick would leak into the next turn"
-        )
-        # The one write above the 409 is the same-value shortcut, which RETURNS ok.
-        shortcut = body.index("slot.jev_route = jev_route")
-        assert (
-            body.index('"ok": True', shortcut) < busy
-        ), "the early flag write is no longer on a success path"
+        writes = [m.start() for m in re.finditer(r"slot\.jev_route = jev_route", body)]
+        assert len(writes) == 3, "the flag should be committed on exactly the three success paths"
+        transaction = body.index("prior_jev_route = slot.jev_route")
+        early, deferred, committed = writes
+        assert committed > transaction, "the transaction's write must sit under its rollback"
+        for write in (early, deferred):
+            assert write < transaction, "a flag write outside the transaction must precede it"
+            ok = body.index('"ok": True', write)
+            refused = body.find('"code": "turn_in_flight"', write)
+            assert refused == -1 or ok < refused, (
+                "a jev_route write sits above a refusal on a path no rollback covers, so a "
+                "refused pick would leak into the next turn"
+            )
+        # The deferral is the busy branch itself: it answers ok with the deferred mark.
+        assert '"deferred": True' in body[deferred : body.index('"ok": True', deferred) + 120]
         # And the transaction's write is covered by the rollback.
         assert "slot.jev_route = prior_jev_route" in body
 
@@ -1127,13 +1134,17 @@ class TestAHistoryThatWouldNotFit:
 
     @pytest.mark.asyncio
     async def test_a_large_message_over_a_small_history_is_refused(
-        self, tmp_path, answered, windows
+        self, tmp_path, answered, windows, monkeypatch
     ):
         """The meter answers for the history the session ALREADY holds. 100k held is
         50% of the 200k target and clears the threshold on its own; the 200k-character
         message this turn sends is another ~50k tokens, and the turn would end at 75%
         -- the compaction these rules exist to prevent. A fit test taken on the meter
-        alone passes exactly that turn."""
+        alone passes exactly that turn.
+
+        The gate refuses a message longer than its scan bound before any answer, so
+        the bound is raised here: the subject is the fit rule downstream of it."""
+        monkeypatch.setattr("kiro_crew.decisions.gate.MAX_UNCLIPPED_SCAN_CHARS", 300_000)
         answered("simple", 0.95)
         slot = _routed_slot("chat-fit-prompt")
         state, client = _wired(tmp_path, serves="model-c", used=100_000, limit=70.0)

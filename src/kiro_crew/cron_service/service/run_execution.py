@@ -24,7 +24,12 @@ from typing import TYPE_CHECKING
 from kiro_crew import cron_inflight
 from kiro_crew.cron_history import CronRunRecord
 from kiro_crew.cron_service.claims import _RunClaim
-from kiro_crew.cron_service.execution import close_run, interruption_note, run_parks_one_shot
+from kiro_crew.cron_service.execution import (
+    auto_pause_failed_one_shot,
+    close_run,
+    interruption_note,
+    run_parks_one_shot,
+)
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.store import CronStoreBusy
 from kiro_crew.metrics.events import CRON_FIRES
@@ -114,7 +119,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
         claim.jitter = jitter
         # ``last_result`` is a cross-run context-carry field for AGENT jobs
-        # (see build_cron_session_context): result-less runs leave the
+        # (see cron_prior_result_context): result-less runs leave the
         # previous value in place so the next run's prompt keeps its dedup
         # context. Command and script jobs have theirs cleared once in the
         # finally below, because the prompt built for them is never
@@ -421,14 +426,12 @@ async def _execute_with_timeout(
             self._alert_timeout(job, job.last_error)
     finally:
         # A one-shot whose run FAILED (error or timeout) is auto-paused, not
-        # consumed: the pause is execution-owned, so apply_run_record persists
-        # it under the generation fence and the doctor reports it. In a finally
-        # so a cancel after the failure still parks it. A denied or
-        # never-started run is not a failed run and keeps its own handling.
-        if job.delete_after_run and job.last_status == "error" and not job.auto_paused:
-            if not (job.fire_time_denied or job.run_never_started):
-                job.enabled, job.auto_paused = False, True
-                job._audit_pause_change("auto_paused")
+        # consumed (``auto_pause_failed_one_shot``), and the doctor reports
+        # it. In a finally so a cancel after the failure still parks it. A
+        # cancel or reap that freezes its terminal record first applies the
+        # same rule there (``freeze_terminal_record``), and this call then finds the
+        # job already paused.
+        auto_pause_failed_one_shot(job, job.last_status)
 
 
 def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:

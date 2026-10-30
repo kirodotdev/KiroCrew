@@ -192,7 +192,21 @@ async def _run_connection(self: DiscordClient) -> None:
             try:
                 async for raw in ws:
                     if raw.type == aiohttp.WSMsgType.TEXT:
-                        await self._handle_frame(ws, json.loads(raw.data))
+                        # One bad frame costs that frame, not the connection:
+                        # escaping here would land in _gateway_loop's
+                        # catch-all and reconnect. Log metadata only, never
+                        # the body.
+                        try:
+                            frame = json.loads(raw.data)
+                        except json.JSONDecodeError:
+                            frame = None
+                        if not isinstance(frame, dict):
+                            logger.warning(
+                                "Discord gateway: dropping non-object frame (%d bytes)",
+                                len(raw.data),
+                            )
+                            continue
+                        await self._handle_frame(ws, frame)
                     elif raw.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSE,

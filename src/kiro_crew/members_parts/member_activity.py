@@ -56,11 +56,13 @@ def record_activity(
     the counts this log exists to feed. Routing decisions are NOT deduped — each
     ``select_crew`` bind is a distinct event even for one session.
 
-    ``via`` records HOW the member was chosen, because the two call sites mean
+    ``via`` records HOW the member was chosen, because the call sites mean
     different things and a mixed log cannot be read apart afterwards:
 
     * ``"chat"`` — the human picked this member for the session.
     * ``"select_crew"`` — the orchestrator judged this member fits the task.
+    * ``"spawn"`` — the member ran a delegated ``spawn_run(crew=...)``.
+    * ``"auto-improvement"`` — the auto-improvement runner ran the member.
 
     A ``select_crew`` entry records the routing *decision*, not an execution:
     binding a crew does not oblige the model to delegate to it. That is the

@@ -131,7 +131,8 @@ class ChannelNameResolver:
                 merged.update(new_names)
                 self._names = merged
             self._fetched_at = time.time()
-            self._save_to_disk()
+            # _names is replaced above, never mutated, so the thread reads a stable dict.
+            await asyncio.to_thread(self._save_to_disk)
         except Exception as exc:
             logger.warning("Failed to refresh channel name cache: %s", exc)
         finally:

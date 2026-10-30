@@ -43,6 +43,7 @@ from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_ser
     _usage_number,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.metrics.harness import HARNESS_UNKNOWN, harness_of
 from kiro_crew.metrics.turns import (
     OUTCOME_UNCLASSIFIED,
     emit_turn_duration,
@@ -350,6 +351,10 @@ def _build_token_record(
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
         "context_window": _coerce_int(context_window),
+        # Additive: the context occupancy after each of the turn's model calls,
+        # added up (kiro-cli reports it per call; ``turns`` above counts the
+        # calls). Read off the turn's usage, so no caller passes it.
+        "context_sum": _coerce_int(getattr(u, "context_sum_tokens", 0)),
         # Additive: the turn's terminal stop reason ("" when the producer has
         # none). str-coerced so a non-string on a test double / legacy event
         # can't break json.dumps.
@@ -606,7 +611,11 @@ async def persist_token_record_async(
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
         if emit_metric:
-            _emit_turn_histogram(record, slot_key, event)
+            # The harness is read off model_source, the live provider every
+            # surface already hands in to name the model that ran: it is the one
+            # object here that knows the session's EFFECTIVE backend, overrides
+            # included. Not written to the row; it labels the latency sample only.
+            _emit_turn_histogram(record, slot_key, event, harness=harness_of(model_source))
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)
@@ -616,6 +625,8 @@ def _emit_turn_histogram(
     record: dict,
     slot_key: str,
     event: object,
+    *,
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
@@ -656,6 +667,7 @@ def _emit_turn_histogram(
         outcome=outcome,
         model=model,
         provider=provider,
+        harness=harness,
     )
     emit_turn_usage(
         input_tokens=record.get("input"),
@@ -758,14 +770,18 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.usage_context import (  # noqa: F401
+        _CATEGORY_LABEL,
         _CONTEXT_CACHE,
         _CONTEXT_CACHE_KEY,
         _CONTEXT_CACHE_TS,
         _CONTEXT_CACHE_TTL,
         _CONTEXT_TOP_SESSIONS,
+        _as_blocks,
         _row_iso,
+        _usage_read,
         context_occupancy,
         context_trace,
+        context_turn_detail,
     )
     from kiro_crew.dashboard.handlers.usage_cost import (  # noqa: F401
         _COMPACTION_DROP_PCT,

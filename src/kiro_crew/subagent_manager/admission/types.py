@@ -56,7 +56,8 @@ class MemoryWait:
     configured cost; 0 for a nested start that shares its parent's runtime),
     ``price_gb`` what its row owes once admitted (None: the configured cost).
     The fit pass rebuilds the start's bar from them. ``nested`` exempts it from
-    the per-lane share. ``since`` is monotonic.
+    the per-lane share. ``since`` is monotonic. ``remote`` marks a remote session's
+    child, whose bar owes no gateway floor (only its engine runs here).
     """
 
     lane: str
@@ -66,6 +67,7 @@ class MemoryWait:
     price_gb: float | None
     nested: bool
     durable: bool
+    remote: bool = False
 
 
 def outcome_task_state(outcome: str) -> str | None:
@@ -255,6 +257,10 @@ class QueuedRun:
     ``recovering`` row after a gateway restart (``RESUMING_AFTER_RESTART``) or a
     ``retry_wait`` row that ran before (``RESUMING_RETRY``). It is not "not
     started", and a reader must not call it that.
+
+    ``state`` is the task-store state of the row it was read from (``queued``,
+    ``retry_wait``, ``recovering``, ``admitted``), and empty for an entry held only
+    in memory, which has no row.
     """
 
     id: str
@@ -266,6 +272,7 @@ class QueuedRun:
     reason: str = ""
     reason_detail: str = ""
     resuming: str = ""
+    state: str = ""
 
 
 class QueuedReadUnavailable(Exception):

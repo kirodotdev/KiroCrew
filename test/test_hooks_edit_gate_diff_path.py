@@ -652,17 +652,17 @@ class TestEveryEnforcingCallSiteThreadsTheDiffPath:
 
     def test_raw_params_callers_all_pass_diff_path(self) -> None:
         import ast
-        from pathlib import Path
 
-        src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+        from source_corpus import parsed_candidates
+        from source_corpus import src_root as corpus_root
+
+        src_root = corpus_root()
         offenders: list[str] = []
-        for py in sorted(src_root.rglob("*.py")):
+        # A flagged call spells ``on_tool_call`` and passes ``raw_params=``, so only the
+        # files whose text holds both are parsed.
+        for py, _text, tree in parsed_candidates(require_all=("on_tool_call", "raw_params")):
             if "tests" in py.parts:
                 continue  # in-package test fixtures are not enforcement surfaces
-            try:
-                tree = ast.parse(py.read_text(encoding="utf-8"))
-            except SyntaxError:  # pragma: no cover - unparseable file is CI's problem
-                continue
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue

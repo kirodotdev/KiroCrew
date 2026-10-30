@@ -478,7 +478,7 @@ async def _write_knowledge_copy(campaign_dir: Path, raw_findings: str) -> str:
     """
     redacted = untrusted._redact_finding({"v": raw_findings})["v"]
     await asyncio.to_thread(storage._write_text, _knowledge_copy(campaign_dir), redacted)
-    return _knowledge_uri(campaign_dir)
+    return await asyncio.to_thread(_knowledge_uri, campaign_dir)
 
 
 def _read_question_row(cid: str) -> sqlite3.Row | None:

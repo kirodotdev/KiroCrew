@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.crew_log.entry_types import (
     RADAR_CLEARABLE_FIELDS,
     RADAR_CREW_LEVEL_EVENT_KIND,
@@ -473,10 +473,9 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
     path = settings_path(owner, repo, root)
     out = dict(DEFAULT_SETTINGS)
     if path.is_file():
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return out
+        # Retries a Windows sharing violation and logs a read that outlasts it;
+        # an absent or damaged file reads as None, the default below.
+        stored = read_json_or(path, None, logger=logger, what="issue radar settings")
         if isinstance(stored, dict):
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
@@ -532,10 +531,7 @@ def list_crews(
         # a crew record cannot be one by name.
         if not is_crew_id(path.stem):
             continue
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
+        rec = read_json_or(path, None, logger=logger, what="issue radar crew record")
         if not isinstance(rec, dict):
             continue
         if rec.get("retired_at") and not include_retired:
@@ -551,10 +547,7 @@ def read_crew(
     path = crew_path(owner, repo, crew_id, root)
     if not path.is_file():
         return None
-    try:
-        rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    rec = read_json_or(path, None, logger=logger, what="issue radar crew record")
     return _coerce_crew(rec) if isinstance(rec, dict) else None
 
 

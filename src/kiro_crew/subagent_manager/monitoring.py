@@ -39,6 +39,12 @@ _FIRST_PROMPT_SILENT_SECS = 300.0
 #: (its dedicated starts are held back), so time alone must also re-read the log.
 _SETTLED_REREAD_SECS = 3600.0
 
+#: Longest the boot orphan sweep holds its notices for the gateway's release
+#: (``hold_orphan_notices``). Long enough for a cautious boot, whose staggered
+#: startup pauses come before the dashboard restores its tabs; short enough that a
+#: dashboard that never comes up still has the owner DM digest sent within minutes.
+_ORPHAN_NOTICE_HOLD_SECS = 300.0
+
 
 if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
@@ -470,7 +476,19 @@ class OrphanStallMonitor(ManagerComponent):
         A surviving ``result.txt`` is classified further by
         :func:`tombstone_recovery_action`: a whole answer, or a fragment the
         restart cut off mid-turn.
+
+        Every orphan's process is ended before any notice goes out. On a manager
+        built with ``hold_orphan_notices`` the notices then wait for
+        :meth:`release_orphan_notices`: the gateway calls it once the dashboard
+        has restored the tabs they are injected into, and before that every
+        notice would find no tab and fall back to the owner DM. The wait is
+        bounded by ``_ORPHAN_NOTICE_HOLD_SECS``. Released or timed out, the
+        notices then go out by the rules below, the digest DM included. A sweep
+        cancelled while it waits writes no tombstone, so the next start
+        announces those runs.
         """
+        from kiro_crew.subagent_manager.monitoring import _ORPHAN_NOTICE_HOLD_SECS
+
         try:
             await self._manager._end_leaked_processes()
         except Exception:
@@ -482,22 +500,10 @@ class OrphanStallMonitor(ManagerComponent):
                 return
             logger.info("Reconciling %d orphaned subagent(s)", len(orphans))
             processed = 0
-            # DM-fallback messages are DIGESTED: collected across the whole
-            # scan and delivered as ONE message at the end — a restart with N
-            # in-flight agents must never produce N pings. (The session-
-            # injection path batches naturally via the parent slot's pending-
-            # failures drain.)
-            dm_pending: list[str] = []
-            # Written after the scan: a DM-bound notice's tombstone waits for the
-            # digest DM below, and a run whose notifier raised is tombstoned with them.
-            held_tombstones: list[tuple[str, dict[str, Any]]] = []
-
-            def _tombstone_unless_present(agent_id: str, fields: dict[str, Any]) -> None:
-                from kiro_crew.subagent_persistence import read_tombstone
-
-                if read_tombstone(agent_id) is None:
-                    write_tombstone(agent_id, **fields)
-
+            # What each orphan's notice and tombstone are built from, collected
+            # while its process is ended so that no process waits on the notice
+            # hold below.
+            reconciled: list[tuple[str, dict, bool, dict[str, Any]]] = []
             for state in orphans:
                 agent_id = state.get("id", "")
                 if not agent_id or agent_id in self._manager._agents:
@@ -541,42 +547,72 @@ class OrphanStallMonitor(ManagerComponent):
                         pid,
                         has_result,
                     )
-                    # Notify user about the orphaned agent. Injection happens
-                    # per-orphan (it rides the parent slot's batched pending-
-                    # failures queue); DM fallback is deferred to the digest.
-                    try:
-                        undelivered = await self._manager._notify_orphan(
-                            agent_id, state, has_result
-                        )
-                        if undelivered == ORPHAN_NOTICE_OWED:
-                            # Queued for the parent agent with its tombstone, which
-                            # the drain of the notice writes: no DM and no write here.
-                            pass
-                        elif undelivered:
-                            dm_pending.append(undelivered)
-                            held_tombstones.append((agent_id, tombstone))
-                        else:
-                            # A slot took the notice: _notify_orphan writes its
-                            # delivered tombstone after the injection. When none
-                            # landed, this boot's own is written, as before.
-                            try:
-                                await asyncio.to_thread(
-                                    _tombstone_unless_present, agent_id, tombstone
-                                )
-                            except Exception:
-                                logger.debug(
-                                    "Failed to tombstone orphan %s", agent_id, exc_info=True
-                                )
-                    except Exception:
-                        logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
-                        # A notifier that raises would raise again at every start,
-                        # so the run is tombstoned as before, after the scan; only a
-                        # process that dies first leaves it to the next start.
-                        held_tombstones.append((agent_id, tombstone))
+                    reconciled.append((agent_id, state, has_result, tombstone))
                 except Exception:
                     logger.warning("Failed to reconcile orphan %s", agent_id, exc_info=True)
 
                 # Rate limit: yield to event loop every 50 entries
+                processed += 1
+                if processed % 50 == 0:
+                    await asyncio.sleep(0)
+
+            gate = getattr(self._manager, "_orphan_notice_gate", None)
+            if reconciled and gate is not None and not gate.is_set():
+                try:
+                    await asyncio.wait_for(gate.wait(), timeout=_ORPHAN_NOTICE_HOLD_SECS)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Orphan notices held %.0fs with no release from the gateway; "
+                        "sending them to the tabs back so far and the owner DM",
+                        _ORPHAN_NOTICE_HOLD_SECS,
+                    )
+
+            # DM-fallback messages are DIGESTED: collected across the whole
+            # scan and delivered as ONE message at the end — a restart with N
+            # in-flight agents must never produce N pings. (The session-
+            # injection path batches naturally via the parent slot's pending-
+            # failures drain.)
+            dm_pending: list[str] = []
+            # Written after the scan: a DM-bound notice's tombstone waits for the
+            # digest DM below, and a run whose notifier raised is tombstoned with them.
+            held_tombstones: list[tuple[str, dict[str, Any]]] = []
+
+            def _tombstone_unless_present(agent_id: str, fields: dict[str, Any]) -> None:
+                from kiro_crew.subagent_persistence import read_tombstone
+
+                if read_tombstone(agent_id) is None:
+                    write_tombstone(agent_id, **fields)
+
+            for agent_id, state, has_result, tombstone in reconciled:
+                # Notify user about the orphaned agent. Injection happens
+                # per-orphan (it rides the parent slot's batched pending-
+                # failures queue); DM fallback is deferred to the digest.
+                try:
+                    undelivered = await self._manager._notify_orphan(agent_id, state, has_result)
+                    if undelivered == ORPHAN_NOTICE_OWED:
+                        # Queued for the parent agent with its tombstone, which
+                        # the drain of the notice writes: no DM and no write here.
+                        pass
+                    elif undelivered:
+                        dm_pending.append(undelivered)
+                        held_tombstones.append((agent_id, tombstone))
+                    else:
+                        # A slot took the notice: _notify_orphan writes its
+                        # delivered tombstone after the injection. When none
+                        # landed, this boot's own is written, as before.
+                        try:
+                            await asyncio.to_thread(_tombstone_unless_present, agent_id, tombstone)
+                        except Exception:
+                            logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
+                except Exception:
+                    logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
+                    # A notifier that raises would raise again at every start,
+                    # so the run is tombstoned as before, after the scan; only a
+                    # process that dies first leaves it to the next start.
+                    held_tombstones.append((agent_id, tombstone))
+
+                # The same yield as the scan above: a notice for a parent with no
+                # tab awaits nothing.
                 processed += 1
                 if processed % 50 == 0:
                     await asyncio.sleep(0)
@@ -830,11 +866,17 @@ class OrphanStallMonitor(ManagerComponent):
             )
             if resume:
                 lines.append(resume)
+        # The task preview is cut at 100 characters, so a worktree the task text
+        # names is cut with it. The run's recorded working directory is the whole
+        # path, and it is what the parent needs to find the run's files again.
+        cwd = state.get("cwd")
+        worktree = [f"Worktree: `{cwd}`"] if isinstance(cwd, str) and cwd.strip() else []
         msg = "\n".join(
             [
                 SUBAGENT_COMPLETION_PREFIX,
                 f"Agent `{agent_id}` {glyph} {note}",
                 f"Task: {task_preview}",
+                *worktree,
                 *lines,
             ]
         )
@@ -957,7 +999,10 @@ class OrphanStallMonitor(ManagerComponent):
                     return
             except Exception:
                 logger.debug("on_orphan_dm raised", exc_info=True)
-        logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
+        # The log line is the only copy of the notice here, so it carries all of
+        # it: the result path and worktree sit past the first 200 characters. The
+        # caller redacts each notice before it reaches this method.
+        logger.warning("Orphan notification (no delivery channel wired): %s", msg)
 
     def _live_shared_count_impl(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
@@ -1082,7 +1127,9 @@ class OrphanStallMonitor(ManagerComponent):
             return  # never sampled (e.g. finished before the first reaper sweep)
         try:
             append_cost_sample(
-                _cost_bucket(info.agent, info.execution_context),
+                _cost_bucket(
+                    info.agent, info.execution_context, remote=bool(info._remote_workspace)
+                ),
                 info.peak_rss_gb,
                 info.peak_cpu_cores,
                 shared=bool(info._session_sharing),
@@ -1440,9 +1487,11 @@ class OrphanStallMonitor(ManagerComponent):
             gate_mark, queued_ms = info._gate_wait_started_mono, info._start_queue_wait_mono_ms
         # Queued for a permit: the clock reads as it stood when the wait began.
         clock_now = gate_mark if gate_mark is not None else now
-        starting = clock_now - exec_started - queued_ms / 1000.0
+        # Prompt hooks are Crew's work, not the start's: off the clock.
+        starting = clock_now - exec_started - queued_ms / 1000.0 - info._prompt_hooks_secs
         return (
-            info.turns == 0
+            not info._prompt_hooks_running
+            and info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
             and starting > self._stamped_startup_deadline(info)
@@ -1471,6 +1520,7 @@ class OrphanStallMonitor(ManagerComponent):
             and not self._manager._in_startup(info)
             and info._gate_wait_started is None
             and not info._awaiting_approval
+            and not info._prompt_hooks_running
             and self._idle_since_activity(info, now, mono_now) > _FIRST_PROMPT_SILENT_SECS
         )
 
@@ -1629,7 +1679,8 @@ class OrphanStallMonitor(ManagerComponent):
         # A subagent blocked on a human tool-approval prompt is healthy, not
         # stalled — the permission request bumps `turns` before the approval
         # wait, so without this a slow approval would be mislabelled idle.
-        if info._awaiting_approval:
+        # Its prompt-start hooks are running: Crew's wait, not the runtime's.
+        if info._awaiting_approval or info._prompt_hooks_running:
             return
         idle = now - info.last_activity
         if not info.stalled and idle > self._manager._stall_idle_secs:

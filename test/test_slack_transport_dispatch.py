@@ -268,7 +268,7 @@ class TestTransportAdmissionSpool:
         assert routes[0].text == text
         assert routes[0].attachments_dropped == dropped
 
-    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
+    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch, caplog):
         from kiro_crew.session_allocation import SessionClosingError
 
         async def reject_turn(*_args, **_kwargs):
@@ -278,10 +278,13 @@ class TestTransportAdmissionSpool:
         monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
         monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
         monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: True)
+        caplog.set_level("INFO", logger=transport_dispatch.logger.name)
 
         _run_transport(monkeypatch)
 
         spool.assert_not_awaited()
+        msgs = [r.getMessage() for r in caplog.records if r.name == transport_dispatch.logger.name]
+        assert any("gateway is shutting down" in m for m in msgs), msgs
 
 
 class TestTransportBookkeepingIsolation:
@@ -1459,3 +1462,93 @@ class TestHydrationBeforeHook:
         assert saved == []
         assert _handler.is_thread_incognito(canonical_key(_MSG_TS)) is True
         _handler._thread_incognito.pop(canonical_key(_MSG_TS), None)
+
+
+class TestTeardownReleasesSessionOnCancel:
+    """A ``!stop`` cancelling the turn task while ``renderer.close()`` awaits
+    must still release the session semaphore.
+
+    ``close()`` now awaits (it clears the thread status on a cancelled turn),
+    so a cancellation can land inside it and raise ``CancelledError`` -- which
+    is not an ``Exception`` and escapes the dispatcher's ``except Exception``
+    teardown guard. The session release must sit in a ``finally`` so the
+    permit is always returned; otherwise the semaphore stays locked and every
+    later message in that conversation wedges until the gateway restarts.
+    """
+
+    def _run(self, monkeypatch, *, close_raises):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        # Keep the post-release dashboard refresh from reaching real wiring.
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_refresh_dashboard_tab",
+            AsyncMock(return_value=None),
+        )
+
+        real_renderer_cls = transport_dispatch.SlackRenderer
+
+        class _CancelClosingRenderer(real_renderer_cls):
+            async def close(self):
+                if close_raises is not None:
+                    raise close_raises
+                await super().close()
+
+        monkeypatch.setattr(transport_dispatch, "SlackRenderer", _CancelClosingRenderer)
+
+        released: list[str] = []
+
+        class _ReleaseRecordingSessions(FakeSessions):
+            def release(self, session_key):
+                released.append(session_key)
+
+        slack = RecordingSlackClient()
+        sessions = _ReleaseRecordingSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text="hi"),
+                    make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+
+        async def drive():
+            await transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+
+        return released, drive
+
+    def test_release_happens_when_close_is_cancelled(self, monkeypatch):
+        released, drive = self._run(monkeypatch, close_raises=asyncio.CancelledError())
+        turn_key = canonical_key(_MSG_TS)
+        # The CancelledError propagates out of the dispatcher (as it must, to
+        # not swallow the stop), but the session is released on the way out.
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(drive())
+        assert turn_key in released, "session semaphore leaked when close() was cancelled"
+
+    def test_release_happens_when_close_raises(self, monkeypatch):
+        # A plain Exception in close() is swallowed and the release still runs.
+        released, drive = self._run(monkeypatch, close_raises=RuntimeError("boom"))
+        asyncio.run(drive())
+        assert canonical_key(_MSG_TS) in released
+
+    def test_release_happens_on_normal_close(self, monkeypatch):
+        released, drive = self._run(monkeypatch, close_raises=None)
+        asyncio.run(drive())
+        assert canonical_key(_MSG_TS) in released

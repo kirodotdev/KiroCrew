@@ -93,8 +93,10 @@ class SlackConfig:
         default_factory=dict,
         metadata=_meta(
             "Reactions",
-            "Override phase reaction emojis. Valid keys: queued, thinking, coding, browsing, tool, done, error. "
-            "Set a value to null to suppress that phase entirely.",
+            "Override the status reaction emojis. Valid keys: queued (the ack shown while a turn "
+            "runs where Slack shows no native thread status; removed when the reply lands) and "
+            "error (a failed turn). Set a value to null to suppress it. Keys of the retired "
+            "per-phase trail (thinking, coding, browsing, tool, done) are accepted and ignored.",
             tags=["slack"],
         ),
     )
@@ -102,7 +104,8 @@ class SlackConfig:
         default=True,
         metadata=_meta(
             "Reactions Enabled",
-            "Show phase-aware emoji reactions on Slack messages during processing.",
+            "Ack a Slack message with a reaction while it is being answered (where Slack shows "
+            "no native thread status) and mark a failed turn with the error reaction.",
             tags=["slack"],
         ),
     )

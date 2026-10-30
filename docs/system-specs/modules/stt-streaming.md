@@ -32,9 +32,13 @@ meetings audio import folds both into one failure: any falsy transcript, includi
 `502` with `code: "transcription_failed"`
 (`apps/builtins/meetings/backend/routes/audio_import.py`).
 
-Compressed files are decoded by the FFmpeg executable in the pinned
-`imageio-ffmpeg` wheel. It is part of the desktop voice runtime, not a desktop
-system prerequisite. The release gate resolves that exact packaged resource and
+Compressed files are decoded by a minimal audio-only FFmpeg executable
+(`scripts/build-ffmpeg.sh`, published once per bump by
+`.github/workflows/build-ffmpeg-decoder.yml` as the release
+`stt.decoder.DECODER_RELEASE`). The desktop build installs it into
+`site-packages/kirocrew_ffmpeg/bin` through `python -m kiro_crew.stt.decoder
+--install-into`, so the build and the runtime use one pin table. It is part of
+the desktop voice runtime, not a desktop system prerequisite. The release gate resolves that exact packaged resource and
 executes `ffmpeg -version`; a supported artifact cannot publish with only
 dependency metadata or an ambient PATH copy satisfying the check. Source
 environments do not read their own site-packages, because a project venv is
@@ -43,7 +47,7 @@ platform paths, and failing that the digest-verified decoder store below.
 
 **macOS Intel ships no decoder, on purpose.** `macos-x86_64` has no pin in
 `stt.decoder.ARTIFACTS`, the Intel half of the universal app installs no
-`imageio-ffmpeg` (`desktop_decoder_requirement` in `packaging/build-desktop.sh`),
+decoder (`install_desktop_decoder` in `packaging/build-desktop.sh`),
 and the store reports that platform `unsupported`. Every branch that means "a
 desktop release owns its decoder" asks `stt.decoder.bundle_carries_decoder()` —
 a bundled interpreter that is not the decoderless backend
@@ -62,13 +66,10 @@ a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) previou
 had no decoder it could ever reach, so batch voice was permanently broken with a
 shell command as the only remedy — and on such a host that command was an `echo`
 of the ffmpeg.org URL. `stt.decoder` closes that: it downloads the platform's
-pinned `imageio-ffmpeg==0.6.0` **wheel** from PyPI (filename, URL, size and sha256
-pinned per platform), verifies the wheel's own digest before opening it, extracts
-only `imageio_ffmpeg/binaries/<artifact>` by exact member name through a descriptor
-it opened itself (never `ZipFile.extract`, whose destination is attacker-controlled
-name data), re-verifies the extracted bytes against the SAME
-`transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin, and renames it atomically into
-`<data home>/models/ffmpeg/`. Both digest tables are one table, derived in
+pinned executable from `DECODER_RELEASE` as itself (no archive), bounded by the
+pinned size and checked against the pinned sha256 — the SAME
+`transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin the resolver authenticates — and
+renames it atomically into `<data home>/models/ffmpeg/`. Both digest tables are one table, derived in
 `stt.decoder`: two copies would fail as a decoder that downloads successfully and
 is then refused at exec, with nothing to say which copy was wrong.
 
@@ -90,9 +91,10 @@ it stops the build. Whether they then **execute** is a property of the build
 machine: an image lacking an OS library the executable load-time imports makes
 the loader refuse it before its entry point runs, while the identical bytes run
 correctly for a user. Windows Server Core is the case that forced the
-distinction — it carries no Video for Windows components, so it cannot load a
-Windows ffmpeg that imports `AVICAP32.dll`, and every CodeBuild Windows image is
-built on it. So an authenticated payload that will not run **warns and ships**;
+distinction — it carries no Video for Windows components, so it could not load
+the earlier full Windows ffmpeg, which imported `AVICAP32.dll`, and every
+CodeBuild Windows image is built on it. The audio-only build imports only core
+system DLLs, but the split stays because it is the right rule. So an authenticated payload that will not run **warns and ships**;
 only an unauthenticated one fails. Collapsing the two reported a build-host
 limitation as a corrupt artifact and withheld a correct release over it.
 
@@ -101,8 +103,8 @@ doing so: the Apple notary service decompresses archive members and scans what i
 inside them, so a decoder sealed as a compressed payload is rejected as an
 unsigned nested executable and fails the entire macOS release. Shipping it plain
 means the app signer rewrites its Mach-O signature, so its released bytes cannot
-match the pinned upstream digest. The runtime therefore accepts the macOS decoder
-on **either** cryptographic anchor: the pinned upstream digest (a local or
+match the pinned digest. The runtime therefore accepts the macOS decoder
+on **either** cryptographic anchor: the pinned digest (a local or
 unsigned build, and the pre-signing release gate above) or a valid Developer ID
 signature from the release team, evaluated by `codesign` against the exact
 private snapshot staged for execution. Neither anchor is a path or a
@@ -223,7 +225,7 @@ Either one releases the microphone and ends the start.
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
-| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx` and `ChatPane.tsx` mount the root and supply only host options |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
@@ -314,7 +316,7 @@ machine-readable code rather than a bare 503 that only surfaces as `'connection'
 
 1. `stt.enabled`
 2. `stt.streaming`
-3. `stt.provider` is in `stt_stream._STREAMING_PROVIDERS`
+3. `stt.provider` is in `stt_stream.streaming_providers()` (the built-in `_STREAMING_PROVIDERS` plus any edition provider that declared `streaming`)
 
 The third is positive membership in a named tuple, never an inequality or a
 negation against one provider. Adding a name to that tuple grants it the
@@ -347,7 +349,7 @@ After the three gates, each provider has its own precondition and failure frame:
   refused custom vocabulary has its own code too
   ([Custom vocabulary](#custom-vocabulary-transcribe-only)), and so does
   mixed-language detection on an SDK too old for it
-  ([Mixed-language detection](#mixed-language-detection-transcribe-only)); any
+  ([Mixed-language detection](#mixed-language-detection)); any
   other start failure is `_CODE_SESSION_FAILED`. A stream on a named
   `stt.transcribe_profile` keeps the credentials it opened with:
   `_ProfileCredentialResolver` resolves once, because the SDK asks again for every
@@ -416,7 +418,7 @@ vocabulary.
   is loading while the list is still being read with the stored value still shown,
   and warns when the stored name is not ready in the configured region.
 
-### Mixed-language detection (`transcribe` only)
+### Mixed-language detection
 
 `stt.transcribe_languages` lists the languages speakers switch between in one
 recording (empty: off). With `TRANSCRIBE_LANGUAGES_MIN` (two) or more,
@@ -425,6 +427,15 @@ opens the stream with `IdentifyMultipleLanguages` and `LanguageOptions`, so
 Amazon Transcribe transcribes each part in the language it identifies. With
 fewer, the stream is opened exactly like the single-language one, on
 `effective_language_code`.
+
+Of the built-ins only `transcribe` identifies languages. An edition STT provider
+that sets the optional `identifies_languages = True` (exactly `True`) gets the
+same picker; it reads the candidates from
+`SttConfig.transcribe_language_identification` itself, and the bullets below on
+the stream, the SDK and the voice memo describe the `transcribe` provider only.
+`GET /api/config/stt` serves `language_identification_providers`, the built-in
+`transcribe` followed by each such edition provider
+(`speech_providers.language_identifying_stt_names`).
 
 - **No `LanguageCode` beside identification.** Amazon Transcribe fails a stream
   that names both, so `stt_stream._transcribe_language_kwargs` passes
@@ -449,7 +460,9 @@ fewer, the stream is opened exactly like the single-language one, on
   client method's signature first (`_client_identifies_languages`) and, when it
   lacks them, refuses before any audio is read with
   `stt_transcribe_sdk_outdated` and logs the install command.
-- **The panel offers the picker beside Language.** Its candidates are the
+- **The panel offers the picker beside Language** for every provider in
+  `language_identification_providers`, or for `transcribe` alone when an older
+  gateway serves no list. Its help text names no provider. Its candidates are the
   served `language_codes` (which include `vi-VN`, and any stored code the
   common list lacks, so a value set in config.json stays selectable), each named
   in the app language beside its code, as the Language picker's options are; the
@@ -740,7 +753,7 @@ therefore by every surface that asks whether local recognition can run
 
 | Mechanism | What it checks | Refusal code |
 |---|---|---|
-| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags`, the one cpuinfo parser this repository keeps, AArch64 through the same intersect-across-cores read of the `Features` line; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
+| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags` and AArch64 through `embeddings._linux_aarch64_cpu_features` (the `Features` reader the Linux arm64 dotprod lib choice also uses), one cpuinfo parser per architecture; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
 | Load marker | `_build_model_fused`, on the WORKER THREAD, writes `<models dir>/.load-in-progress.json` (via `atomic_write`, so no predictable temp name a sandboxed agent could pre-plant as a symlink; a per-process random token, the pid for a human, model path, binary identity) immediately before `_build_model` and clears it in a `finally` around it -- the marker is filesystem I/O and the loop neither writes nor clears it -- so every outcome in which the call RETURNED -- success, a Python exception, a load that outlived its timeout -- clears it, including a shutdown that has already closed the event loop (a loop done-callback would not run then, and a routine restart mid-prewarm would trip the fuse). Identity is the token, not the pid: the marker outlives the process on the models directory and a replacement container in a fresh PID namespace lands on the same low pid. A marker from another process naming the binary installed now means the last load never returned, and `probe` refuses. A marker naming a binary that is gone, or one that cannot be read, is ignored and LEFT IN PLACE: the inspector only reads, because the path is shared and an unlink here could erase another process's live fuse mid-load; the next arm's `atomic_write` replaces it whole. The read itself is bounded (`_read_marker_bounded`: `O_NOFOLLOW|O_NONBLOCK`, `fstat` must show a regular file of at most `_MARKER_MAX_BYTES` = 4 KiB, judged before a byte is read), because the name is fixed in a directory a sandboxed agent can write and the read runs on every availability check -- a planted symlink, FIFO or multi-GB file is ignored like garbage | `stt_load_crashed` |
 
 The subprocess probe answers a deterministic property of the (binary, CPU) pair and
@@ -1405,9 +1418,33 @@ snapshot, so anything the user typed before speaking survives, and the caret doe
 not jump. The snapshot clears on the final, so the next utterance starts from the
 newly committed text.
 
+## Registered providers
+
+A composed edition can add STT providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.stt_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly the built-in set.
+
+- **Collision rule.** A registered name may not be a built-in (`local`, `apple`, `transcribe`), a retired name or `off`, may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
+- **Default precedence.** A stored `stt.provider` always wins. Only an absent key takes the edition's `default_stt()`, and only when that is `None` does it take core's `local`. An unusable stored value keeps its built-in fallback below, so a typo never reaches the edition default.
+- **Streaming.** A registered provider joins the streaming grant only when its `streaming` attribute is true. Positive membership stays the rule.
+
+### The capability `providers` list
+
+`GET /api/config/stt` serves `providers`, one entry per selectable provider, in `valid_stt_providers()` order: built-ins first in their usual order, then registered ones in registration order, with `off` last. A built-in entry is `{name, builtin: true}` and runs no probe; the dashboard reads built-in availability from its existing badge. A registered entry is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string | The `stt.provider` value. |
+| `label` | string | Display label. |
+| `builtin` | bool | Whether core ships it. |
+| `available` | bool | Whether it can run now, from the provider's `check()`. |
+| `reason` | string or null | Why it cannot run, in the provider's words. |
+| `action` | `{"kind": "login", "label": string}` or null | What the user can do. `login` names the account to sign in to. |
+| `error` | bool | True only when the provider's `check()` timed out or raised (`speech_providers.check_status`). False for a missing prerequisite such as a login or an install. |
+
+The Settings picker (`SttSettings`, through `lib/speechProviders.ts`) renders its options from this list. An unavailable registered provider stays selectable; while it is selected, `SpeechProviderNotice` shows its `reason` under the picker. An `error` row is a failure, so it renders through `ErrorNotice`, with the agent hand-off only while no AWS profile or region draft is unsaved. Any other row is status text, with a sign-in hint naming `action.label` for a `login` action. Built-ins keep the availability badge and messages above, so a standalone install shows no new text. An older gateway that serves bare names, or no list, still renders: bare names read as available built-ins, and no list falls back to `FALLBACK_PROVIDERS`.
+
 ## Legacy provider values
 
-`_validated_stt_provider` in `config/sections_stt.py` accepts `local`, `apple`, `transcribe`, and `off`. Two classes of stored value fall outside that set and degrade differently, each logging the replacement once per process rather than preventing the gateway from loading a voice setting:
+`_validated_stt_provider` in `config/sections_stt.py` accepts `local`, `apple`, `transcribe`, `off`, and any name an edition registered (see Registered providers). Two classes of stored value fall outside that set and degrade differently, each logging the replacement once per process rather than preventing the gateway from loading a voice setting:
 
 - Persisted `whisper`, `mlx`, `parakeet`, or `faster` (the retired names) degrade to `local`: each was a local recogniser the user had working, and the resident engine recognises the same speech.
 - Any other value degrades to `off`. An unknown value used to degrade to `local`, which put a typo or a guessed value onto the one provider that links a native library into the gateway; a user told to set `stt.provider off` while that library was crashing on model load got the crashing engine back, and learned it only from a WARNING line (kirodotdev/KiroCrew#13179). Failing closed is the one reading that cannot make things worse. `kirocrew config set stt.provider <value>` refuses a value outside the enum at the write, so a stored unknown value can only arrive from a hand edit or an older writer.

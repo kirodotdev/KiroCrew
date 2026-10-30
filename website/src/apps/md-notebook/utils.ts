@@ -188,6 +188,49 @@ export function resolveNoteImageSrc(src: string, noteDir?: string): string | nul
   return `/api/file-raw?path=${encodeURIComponent(path)}`
 }
 
+/**
+ * The vault-rooted URL for a root-relative image source (`/images/a.png`), or
+ * null when the source is not one or cannot be placed safely inside the vault.
+ *
+ * `resolveNoteImageSrc` serves a leading-slash source as an absolute filesystem
+ * path first, so a real absolute path keeps loading on the first request. This
+ * is the second try, taken only after that one fails: the same path read
+ * against the vault root, which is what a vault that links `/images/a.png`
+ * means. It asks `/api/file-raw` for a path under the vault, nothing more than
+ * the absolute path could already ask for, and every check on that endpoint
+ * (sensitive paths, symlinks, image magic number) still applies to it.
+ *
+ * The candidate must stay lexically inside the root, so it is refused rather
+ * than normalised when any segment is `.` or `..`, including when written
+ * percent-encoded or with a backslash, or when the source carries a NUL byte or
+ * is protocol-relative (`//host/x`). A refused candidate yields no second try,
+ * so the image degrades to its alt text as before.
+ */
+export function vaultRootImageSrc(src: string, vaultRoot?: string): string | null {
+  const raw = src.trim()
+  if (!vaultRoot || !raw.startsWith('/') || raw.startsWith('//')) return null
+  const rel = raw.slice(1)
+  if (!rel || rel.includes('\0')) return null
+  // The path is built from the decoded segments, the same text that was
+  // checked: a markdown link writes a space as `%20`, and `/api/file-raw`
+  // takes its `path` as a literal filesystem path that it does not decode again.
+  const segments: string[] = []
+  for (const segment of rel.split(/[\\/]/)) {
+    let decoded = segment
+    try {
+      decoded = decodeURIComponent(segment)
+    } catch {
+      // A malformed escape is not decodable to `..`; judge the text as written.
+    }
+    // The decoded form may itself hide a separator (%2f, %5c) or a NUL.
+    if (/[\\/\0]/.test(decoded)) return null
+    if (decoded === '.' || decoded === '..' || segment === '.' || segment === '..') return null
+    segments.push(decoded)
+  }
+  const root = vaultRoot.replace(/[\\/]+$/, '')
+  return `/api/file-raw?path=${encodeURIComponent(`${root}/${segments.join('/')}`)}`
+}
+
 /** Directory of a note inside its vault, absolute, for resolving its images. */
 export function noteDirPath(
   vault: { localPath: string; subfolder?: string } | null | undefined,

@@ -64,9 +64,10 @@ def _fabricate_slice(
     (slice_dir / "memory.high").write_text(f"{high}\n", encoding="utf-8")
     (slice_dir / "memory.max").write_text(f"{maximum}\n", encoding="utf-8")
     (slice_dir / "memory.current").write_text(f"{current}\n", encoding="utf-8")
-    (slice_dir / "memory.events").write_text(
-        f"low 0\nhigh {high_events}\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
-    )
+    for events in ("memory.events", "memory.events.local"):
+        (slice_dir / events).write_text(
+            f"low 0\nhigh {high_events}\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
+        )
     return slice_dir
 
 
@@ -124,8 +125,49 @@ class TestAgentsSliceHeadroom:
             encoding="utf-8",
         )
         monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
-        # 370 - (364 - 151); active cache and anon stay counted as used.
-        assert sa._agents_slice_available_gb() == pytest.approx(157.0)
+        # 370 - (364 - 151 - 126); anon and shmem stay counted as used.
+        assert sa._agents_slice_available_gb() == pytest.approx(283.0)
+
+    def test_active_page_cache_is_headroom(self, tmp_path, monkeypatch, no_container_cgroup):
+        """A 64 GB host at 38% RAM read 4 GB free because 24.7 GB of active
+        file cache counted as used. The kernel reclaims active cache too, so
+        only anon and shmem fill this slice."""
+        slice_dir = _fabricate_slice(
+            tmp_path, high=int(46.3 * GIB), maximum=int(49.4 * GIB), current=int(46.1 * GIB)
+        )
+        (slice_dir / "memory.stat").write_text(
+            f"anon {int(7.5 * GIB)}\nfile {int(36.6 * GIB)}\n"
+            f"active_file {int(24.7 * GIB)}\ninactive_file {int(4.0 * GIB)}\n"
+            f"shmem {int(7.9 * GIB)}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        # 46.3 - (46.1 - 24.7 - 4.0)
+        assert sa._agents_slice_available_gb() == pytest.approx(28.9, abs=0.01)
+
+    def test_dirty_and_writeback_cache_stay_used(self, tmp_path, monkeypatch, no_container_cgroup):
+        """Dirty and writeback pages must reach disk before the kernel can
+        drop them, so they are not headroom even on the file lists."""
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=18 * GIB)
+        (slice_dir / "memory.stat").write_text(
+            f"active_file {6 * GIB}\ninactive_file {4 * GIB}\n"
+            f"file_dirty {3 * GIB}\nfile_writeback {1 * GIB}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        # 20 - (18 - (6 + 4 - 3 - 1))
+        assert sa._agents_slice_available_gb() == pytest.approx(8.0)
+
+    def test_dirty_beyond_cache_subtracts_nothing(self, tmp_path, monkeypatch, no_container_cgroup):
+        """The stat lines are not one atomic snapshot; a dirty figure ahead of
+        the cache figures must never add to usage."""
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=18 * GIB)
+        (slice_dir / "memory.stat").write_text(
+            f"active_file {1 * GIB}\ninactive_file {1 * GIB}\nfile_dirty {3 * GIB}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        assert sa._agents_slice_available_gb() == pytest.approx(2.0)
 
     def test_cache_read_ahead_of_usage_never_exceeds_the_ceiling(
         self, tmp_path, monkeypatch, no_container_cgroup
@@ -161,25 +203,20 @@ class TestAgentsSliceHeadroom:
 
 
 class TestCompositeProbePicksTheBindingCeiling:
-    def test_slice_tighter_than_container(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: 12.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 3.0)
-        assert sa._cgroup_available_gb() == 3.0
-
-    def test_container_tighter_than_slice(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: 2.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 9.0)
-        assert sa._cgroup_available_gb() == 2.0
-
-    def test_only_the_slice_constrains(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: -1.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 5.5)
-        assert sa._cgroup_available_gb() == 5.5
-
-    def test_neither_constrains(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: -1.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: -1.0)
-        assert sa._cgroup_available_gb() == -1.0
+    @pytest.mark.parametrize(
+        ("container", "slice_gb", "want"),
+        [
+            pytest.param(12.0, 3.0, 3.0, id="test_slice_tighter_than_container"),
+            pytest.param(2.0, 9.0, 2.0, id="test_container_tighter_than_slice"),
+            # -1.0 is the probes' "no limit found" answer.
+            pytest.param(-1.0, 5.5, 5.5, id="test_only_the_slice_constrains"),
+            pytest.param(-1.0, -1.0, -1.0, id="test_neither_constrains"),
+        ],
+    )
+    def test_the_tighter_ceiling_wins(self, monkeypatch, container, slice_gb, want):
+        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: container)
+        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: slice_gb)
+        assert sa._cgroup_available_gb() == want
 
 
 class TestAdmissionSeesTheSlice:
@@ -252,7 +289,7 @@ class TestAgentsSliceThrottling:
         monkeypatch.setattr(sb, "time", SimpleNamespace(monotonic=_clock))
         # First read only baselines.
         assert sb.agents_slice_throttling() is False
-        (slice_dir / "memory.events").write_text(
+        (slice_dir / "memory.events.local").write_text(
             "low 0\nhigh 4200\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
         )
         assert sb.agents_slice_throttling() is True
@@ -274,7 +311,7 @@ class TestAgentsSliceThrottling:
         monkeypatch.setattr(sb, "_SLICE_THROTTLE_PROBE_SEEN", 7)
         monkeypatch.setattr(sb, "_SLICE_THROTTLE_EDGE_AT", None)
         monkeypatch.setattr(sb, "time", SimpleNamespace(monotonic=lambda: 5000.0))
-        (slice_dir / "memory.events").write_text(
+        (slice_dir / "memory.events.local").write_text(
             "low 0\nhigh 8\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
         )
         first = sb.agents_slice_throttling()

@@ -28,8 +28,8 @@ import stat
 from pathlib import Path
 from typing import Optional
 
-from kiro_crew import platform_compat
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew import platform_compat, windows_acl
+from kiro_crew.atomic_write import on_event_loop, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.execution_context import execution_from_record
 from kiro_crew.pinned_fs import fd_real_path
@@ -101,6 +101,7 @@ class WorkflowRunStore:
     def __init__(self, base_dir: Optional[Path] = None) -> None:
         self._base = Path(base_dir) if base_dir else default_workflows_dir()
         self._runs_dir = self._base / _RUNS_SUBDIR
+        self._dacl_skip_warned = False
 
     @property
     def runs_dir(self) -> Path:
@@ -113,6 +114,41 @@ class WorkflowRunStore:
         except Exception as exc:  # noqa: BLE001
             logger.debug("workflow store: directory unavailable (%s)", type(exc).__name__)
             return False
+
+    def _restrict_run_file(self, path: Path) -> None:
+        """Make one run file owner-only without ever failing the save.
+
+        Follows the calling-thread rule ``config.loader_document`` applies to
+        ``config.json``: off the event loop (``RunRegistry.persist_async`` runs
+        ``save`` in a worker thread) the Windows owner-only DACL is applied on any
+        volume, because there is no loop to stall. On the loop (the registry's
+        synchronous ``_persist`` hooks) a DACL write to a UNC or mapped-drive path
+        costs an unbounded SMB round-trip, so a non-local volume keeps its
+        inherited DACL and says so once per store. On POSIX this is
+        ``chmod(0o600)`` either way.
+
+        A lockdown failure is swallowed: persistence must never break a run, and
+        the payload has already been through ``_redact``.
+        """
+        if not platform_compat.IS_POSIX and on_event_loop():
+            try:
+                local = windows_acl.volume_is_local(path)
+            except Exception:  # noqa: BLE001 - an unknown volume is not a local one
+                local = False
+            if not local:
+                if not self._dacl_skip_warned:
+                    self._dacl_skip_warned = True
+                    logger.warning(
+                        "workflow store: run files are on a non-local volume and "
+                        "this checkpoint is running on the event loop, so the "
+                        "owner-only DACL was skipped to avoid stalling the loop "
+                        "on SMB; checkpoints written off the loop still get it"
+                    )
+                return
+        try:
+            platform_compat.restrict_to_owner(path)
+        except OSError as exc:
+            logger.debug("workflow store: owner-only lockdown failed (%s)", type(exc).__name__)
 
     def _path_for(self, run_id: str) -> Path:
         # run_ids are gateway-generated (wf_NNNNNN) or wf_<hex>; sanitize defensively
@@ -151,21 +187,13 @@ class WorkflowRunStore:
             raise OSError("Workflow snapshot serialization failed") from None
         tmp = path.with_suffix(".json.tmp")
         try:
+            # Lock the temp file down while it is still empty, so the run record
+            # never sits in a file other local users can read. The rename keeps
+            # the temp file's permissions, so the published file is owner-only.
+            tmp.touch()
+            self._restrict_run_file(tmp)
             tmp.write_text(payload, encoding="utf-8")
             replace_with_retry(tmp, path)
-            try:
-                # POSIX tightening only, deliberately still NOT
-                # ``platform_compat.restrict_to_owner``: on POSIX that helper IS
-                # this exact call, so a swap would add only the Windows
-                # owner-only DACL — and ``save`` runs on the event loop via the
-                # registry's persist hooks, where a DACL write to a UNC or
-                # mapped-drive path costs an unbounded SMB round-trip. The
-                # payload is already passed through ``_redact`` above, so
-                # what a wider Windows DACL could expose is the redacted
-                # run record, not credentials.
-                os.chmod(path, 0o600)  # lockdown-ok: unbounded SMB round-trip on the loop
-            except OSError:
-                pass
         except Exception as exc:  # noqa: BLE001 - registry reports the durability failure
             logger.debug("workflow store: write failed (%s)", type(exc).__name__)
             try:

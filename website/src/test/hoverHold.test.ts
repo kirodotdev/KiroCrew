@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { heldSeat, type HoverPin } from '../pages/chat/hoverHold'
+import { heldSeat, seatInSection, type HoverPin } from '../pages/chat/hoverHold'
 
 /**
  * Direct tests for the hover-hold seat arithmetic. The component suite exercises
@@ -121,5 +121,28 @@ describe('heldSeat – the frame must cover only the row own container', () => {
       heights: { a1: 40, a2: 40, b1: 40, b2: 40 },
     })
     expect(heldSeat(spanning, list('b2', 'b1'), rawKey)).toBe(1)
+  })
+})
+
+describe('seatInSection – the hold never crosses the pinned boundary', () => {
+  const pinnedKeys = new Set(['p0', 'p1', 'fork'])
+  const leads = (s: { key: string }) => pinnedKeys.has(s.key)
+
+  it('moves an unpinned held row below a pinned row that arrived above it', () => {
+    // rest = the lane without the held row: three pinned, then one unpinned.
+    expect(seatInSection(2, list('p0', 'p1', 'fork', 'u0'), false, leads)).toBe(3)
+  })
+
+  it('keeps a pinned held row inside the pinned run', () => {
+    expect(seatInSection(3, list('p0', 'fork', 'u0', 'u1'), true, leads)).toBe(2)
+  })
+
+  it('leaves a seat inside the held row section unchanged', () => {
+    expect(seatInSection(4, list('p0', 'p1', 'u0', 'u1', 'u2'), false, leads)).toBe(4)
+    expect(seatInSection(1, list('p0', 'p1', 'u0'), true, leads)).toBe(1)
+  })
+
+  it('leaves the seat alone when the pinned rows are not one run at the top', () => {
+    expect(seatInSection(0, list('u0', 'p0', 'u1'), false, leads)).toBe(0)
   })
 })

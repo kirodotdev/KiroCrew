@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew.instances import run_marker
-from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.loopback_http import loopback_urlopen, tcp_verified_urlopen, unix_socket_urlopen
 from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.pod import runtime, runtime_attestation, runtime_ports
 from kiro_crew.pod.config import PodConfig
@@ -138,6 +138,44 @@ def _attested_gateway_verifier(cfg: PodConfig, name: str, port: int, socket_path
                 f"{expected}. The socket path may have been rebound since the pod "
                 f"started; `kirocrew pod status {name}` shows the gateway's state."
             )
+
+    return _verify
+
+
+def _attested_gateway_tcp_verifier(cfg: PodConfig, name: str, port: int):
+    """The loopback-TCP twin of :func:`_attested_gateway_verifier`.
+
+    Used where the platform has no unix socket (native Windows). The pid on the
+    far end of the connected 4-tuple (``cli_server_peer._connected_tcp_peer_pid``,
+    the resolver every loopback-TCP secret sender shares) must equal pod *name*'s
+    currently attested gateway pid, re-proven on the connected socket, or the
+    hook raises :class:`PodError` before any byte is written. ``PodError`` is not
+    an ``OSError``, so the refusal reaches the caller unwrapped. Deny-by-default:
+    an unresolvable peer refuses too.
+    """
+    from kiro_crew.cli_server_peer import (
+        _audit_peer_allowed,
+        _audit_peer_denied,
+        _connected_tcp_peer_pid,
+    )
+
+    def _verify(sock: socket.socket) -> None:
+        try:
+            peer = _connected_tcp_peer_pid(sock)
+        except Exception:
+            peer = None
+        current_attested = runtime_attestation._pod_recorded_pid(cfg, name, port)
+        if current_attested is None or peer != current_attested:
+            who = "an unidentifiable process" if peer is None else f"pid {peer}"
+            # Both arms of this permission decision are audited, in the same SEL
+            # shape the CLI's other connection-bound proofs emit.
+            _audit_peer_denied("pod_token_mint", port, f"connected peer is {who}")
+            raise PodError(
+                f"refusing to send pod {name!r}'s credential: 127.0.0.1:{port} is "
+                f"answered by {who}, which is not the currently attested gateway. "
+                f"`kirocrew pod status {name}` shows the gateway's state."
+            )
+        _audit_peer_allowed("pod_token_mint", port)
 
     return _verify
 
@@ -408,12 +446,16 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
         )
     if runtime.IS_WINDOWS:
         # Windows has no AF_UNIX, so the pod binds no dashboard socket there.
-        # The mint rides the OWNER_POD-attested loopback port, the strongest
-        # transport the platform offers.
+        # The mint rides loopback TCP, and the peer on that very connection must
+        # be the pod's attested gateway before the secret is written: the
+        # port_owner check above is a snapshot, and the port can change hands
+        # between it and the send.
         url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
         req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
         try:
-            with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+            with tcp_verified_urlopen(  # nosemgrep
+                req, 5, verify_peer=_attested_gateway_tcp_verifier(cfg, name, port)
+            ) as resp:
                 token = json.loads(resp.read()).get("token", "")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc

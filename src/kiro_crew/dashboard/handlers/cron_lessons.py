@@ -164,15 +164,28 @@ def _load_workspace_lessons(state: DashboardState, workspace: str) -> list[Lesso
 
 
 async def _prepare_member_lesson_store(store: str) -> web.Response | None:
-    """Prepare V2 before synchronous lesson readers can borrow a handle."""
+    """Prepare a named store before synchronous lesson readers can borrow a handle.
+
+    Every named store is prepared, V1 included: ``get_memory_for`` attaches only a
+    handle some caller already opened, so after a restart an unprepared V1 store
+    would lend a ``None`` handle and the route would list the empty JSONL tier
+    instead of the lessons in its ``memory.db``. Every other reader (chat,
+    subagent, workflow, consolidation, task runner) prepares first, and so does
+    this route.
+
+    Only V2 refuses with 503 when it cannot be opened. ``ensure_store`` answers
+    ``None`` for a V1 store it could not prepare (it logs why), which keeps that
+    store's markdown/keyword fallback.
+    """
     # The member database is opened through the shim, so its errors are the shim's
     # classes; the stdlib ``sqlite3.Error`` would let them escape as a 500.
     from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_stores import memory_store_version
 
     try:
-        if store and await asyncio.to_thread(memory_store_version, store) == 2:
-            if await ContextBuilder.ensure_store(store) is None:
+        if store:
+            prepared = await ContextBuilder.ensure_store(store)
+            if prepared is None and await asyncio.to_thread(memory_store_version, store) == 2:
                 raise ValueError("Member memory database is unavailable")
     except (ValueError, OSError, sqlite3.Error) as exc:
         return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
@@ -208,7 +221,8 @@ async def _surface_lesson_saved(
 
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
-    from kiro_crew.learn import Lesson  # noqa: F811
+    from kiro_crew.learn import Lesson, lesson_contains_injection  # noqa: F811
+    from kiro_crew.vector_memory_runtime.write_outcomes import SemanticRejectCode
 
     state: DashboardState = request.app["state"]
     # Default cap: lesson fields are short strings (MAX_SHORT_STRING-bounded).
@@ -485,20 +499,23 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # refusal the fallback owns, and its string outcome matches
         # LessonWriteOutcome on the wire.
         outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
-        # This store has exactly TWO refusal paths -- the volatile-text predicate
-        # and the row cap -- and both answer with the bare ``refused`` string, so
-        # the cause has to be re-derived here. Re-running the predicate is exact
-        # rather than a guess: it is the same pure-text call the store made, and
-        # ``_lesson_withheld`` above re-derives it the same way for its own surface.
-        # Reporting every refusal as ``volatile_session_fact`` told a user at the
-        # row cap to reword a rule whose wording was never the problem.
+        # This store has exactly THREE refusal paths -- the volatile-text
+        # predicate, the blocked-content screen and the row cap -- and all answer
+        # with the bare ``refused`` string, so the cause has to be re-derived here.
+        # Re-running the predicates is exact rather than a guess: they are the same
+        # pure-text calls the store made, and ``_lesson_withheld`` above re-derives
+        # the first the same way for its own surface. Reporting every refusal as
+        # ``volatile_session_fact`` told a user at the row cap to reword a rule
+        # whose wording was never the problem. The blocked-content reason is the
+        # vector store's own code, so both stores answer one text alike.
         reason = None
         if outcome == "refused":
-            reason = (
-                "volatile_session_fact"
-                if contains_volatile_lesson_fact(rule, negative)
-                else LESSON_REFUSED_AT_CAPACITY
-            )
+            if contains_volatile_lesson_fact(rule, negative):
+                reason = "volatile_session_fact"
+            elif lesson_contains_injection(rule, negative):
+                reason = SemanticRejectCode.INJECTION.value
+            else:
+                reason = LESSON_REFUSED_AT_CAPACITY
         stored = outcome != "refused"
         # A genuine empty, not an unfilled field. ``_insert_or_enrich`` has no dedup
         # rule that supersedes: it matches on exact rule text plus scope and either
@@ -511,14 +528,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
-    # Refreshed unconditionally, and deliberately so. An earlier revision of this
-    # change gated the push on the write having landed, which is wrong: a DECLINING
+    # Refreshed unconditionally, and deliberately so. Gating the push on the
+    # write having landed would be wrong: a DECLINING
     # outcome can still have mutated the store. ``write_lesson``'s second pass
     # DELETES a row it supersedes and keeps scanning, so with a containment chain
     # (A inside R inside B) whose rows are visited A-first -- and the scan order is
     # effectively random, since get_lessons orders by updated_at DESC, then by md5
     # key within one stamp -- A is removed and the call then returns ``deduped`` for
-    # B. The store changed while ``wrote`` is False, so gating on it left connected dashboards showing a lesson that is gone.
+    # B. The store changed while ``wrote`` is False, so gating on it would leave
+    # connected dashboards showing a lesson that is gone.
     # Reporting mutation separately would buy nothing over refreshing always: an extra
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.
@@ -705,6 +723,15 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "exact must be a boolean", "code": "exact_not_bool"}, status=400
         )
+    # Optional keep-one mode: delete only the extra copies of identical lessons
+    # among the matches, keeping the oldest of each, so duplicates can be
+    # collapsed without deleting the lesson and re-adding it. JSON boolean only,
+    # for the same reason as ``exact``.
+    keep_one = body.get("keep_one", False)
+    if not isinstance(keep_one, bool):
+        return web.json_response(
+            {"error": "keep_one must be a boolean", "code": "keep_one_not_bool"}, status=400
+        )
     # Delete from the vector store if active; fall through to JSONL (V1) below.
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -730,7 +757,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # arriving untyped from the global getter.
     ok = False
     if vs and (vs_lessons or vs.algorithm_version == "v2"):
-        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope, exact=exact)
+        ok = await asyncio.to_thread(
+            vs.delete_lesson, rule_sub, repo_scope, exact=exact, keep_one=keep_one
+        )
     # V1 only: when the vector store matched nothing, try the JSONL tier, as
     # ``kirocrew learn remove`` does. Injection falls back to that file when every
     # vector row is withheld, so a lesson active in every turn must stay
@@ -741,7 +770,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         # thread can be holding across file I/O for a concurrent save_or_enrich --
         # so calling it inline would let one lessons write stall every task on the
         # event loop. Same reason api_lessons_create offloads its write.
-        ok = await asyncio.to_thread(store.remove, rule_sub, repo_scope, exact=exact)
+        ok = await asyncio.to_thread(
+            store.remove, rule_sub, repo_scope, exact=exact, keep_one=keep_one
+        )
     if ok:
         state.push_refresh("lessons")
     return web.json_response({"ok": ok})
@@ -1072,9 +1103,8 @@ async def api_lessons(request: web.Request) -> web.Response:
             # not the operator either -- falls through to the per-session branch
             # and, with no resolvable slot, sees the global rows only. A keyless
             # internal-secret agent (``internal_auth`` set) likewise never
-            # reaches the union. That is the cross-workspace data-isolation harm
-            # this PR removes: only the operator's own browser sees every
-            # workspace.
+            # reaches the union. That keeps workspace data isolated: only the
+            # operator's own browser sees every workspace.
             sk = request.headers.get("X-Session-Key", "")
             if workspace:
                 union = [workspace]

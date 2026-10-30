@@ -149,7 +149,6 @@ class TestTaskRunnerApproval:
             mock_tr_inst._on_approval = None
             mock_tr.return_value = mock_tr_inst
             orch._init_task_runner()
-        # Verify approval callbacks were set
         assert mock_tr_inst._on_tool_approval is not None
         assert mock_tr_inst._on_approval is not None
 
@@ -247,7 +246,6 @@ class TestTaskApprovalCallback:
             mock_tr_inst = MagicMock()
             mock_tr.return_value = mock_tr_inst
             orch._init_task_runner()
-        # Get the _on_approval callback
         approval_cb = mock_tr_inst._on_approval
         task = MagicMock()
         task.index = 1

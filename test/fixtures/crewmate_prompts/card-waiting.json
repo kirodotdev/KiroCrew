@@ -1,0 +1,13 @@
+{
+  "_note": "Every milestone met and the next milestones already wait on the user's card: the wake does work instead.",
+  "member": "Atlas",
+  "goal": "Keep the tasklog CLI's tests and docs in step with the code",
+  "milestones": [
+    {"text": "Passing test count", "target": ">= 5", "readings": ["5"]},
+    {"text": "README commands match the real CLI (mismatch count)", "target": "0", "readings": ["0"]}
+  ],
+  "milestones_card_waiting": true,
+  "heartbeat_minutes": 30,
+  "worker_servers": ["git"],
+  "gateway_has_beyond_worker": []
+}

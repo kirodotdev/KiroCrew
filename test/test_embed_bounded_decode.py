@@ -456,7 +456,7 @@ _REAL_MODEL = os.environ.get("KIROCREW_TEST_EMBED_MODEL", "")
 # plus the shipped model's pin. Proven on linux_x86_64 with the shipped
 # qwen3-embedding-0.6b.gguf, sha256
 # 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439.
-_PROVEN_RUNTIME_DIGEST = "51809aa578037b401030db5cbe2886543411d556d863af9e40b751ae33f12e95"
+_PROVEN_RUNTIME_DIGEST = "7f547d78b4a4fd0755c7fa03dc0fb3d0dee2715b8281ae68f3a56b9cb89513d1"
 _EMBED_PATH_BINDINGS = ("llama_cpp/llama.py", "llama_cpp/_internals.py", "llama_cpp/llama_cpp.py")
 _VENDOR_MANIFEST = (
     pathlib.Path(__file__).resolve().parents[1] / "scripts" / "vendor_manifest.sha256"

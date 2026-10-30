@@ -15,6 +15,7 @@ import logging
 import re
 import struct
 import sys
+import threading
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from kiro_crew.lesson_validation import order_by_request_relevance
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import lessons as _lessons
+from kiro_crew.vector_memory_runtime import term_index as _term_index
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
 
@@ -113,6 +115,45 @@ def _scoring_row_tokens(scoring: _SemanticScoringSet):
         return tokens
 
     return row_tokens
+
+
+def _scoring_term_index(store: VectorMemoryStore, scoring: _SemanticScoringSet, identities):
+    """``(index, key texts)`` for the set, built on first use; ``None`` without one.
+
+    Texts ``2i`` and ``2i + 1`` of the :class:`~term_index.RowTermIndex` are row
+    ``i``'s key text and lowercased value, the two texts the V1 loop scores. A
+    value is fixed for the set's lifetime; a key text also reads the row's
+    identity, so the key texts indexed are kept and the loop tokenizes one that
+    has changed since. One build per set:
+    concurrent first builds wait for it rather than each stemming every row.
+    ``None`` without numpy or past :data:`~term_index.MAX_TERM_IDS`, and the
+    loop keeps the per-text memo.
+    """
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    if not vm._HAS_NUMPY:
+        return None
+    derived = scoring.derived
+    if "term_index" in derived:
+        return derived["term_index"]
+    with derived.setdefault("term_index_lock", threading.Lock()):
+        if "term_index" not in derived:
+            texts: list[str] = []
+            key_texts: list[str] = []
+            for raw in scoring.rows:
+                key = str(raw["key"])
+                identity = identities.get(key)
+                label = (
+                    key
+                    if identity is None
+                    else store._fact_label({"key": key, "identity": identity})
+                )
+                key_texts.append(label.replace("_", " ").replace(".", " "))
+                texts.append(key_texts[-1])
+                texts.append(str(raw["value_json"]).lower())
+            index = _term_index.RowTermIndex.build(texts, vm.np)
+            derived["term_index"] = None if index is None else (index, tuple(key_texts))
+    return derived["term_index"]
 
 
 # Rows widened to float64 at a time when scoring against the resident matrix.
@@ -387,8 +428,21 @@ def log_reject_event(
     store._log_event(code.value, "semantic", key, None, snippet, source)
 
 
+#: The ``semantic_memory`` view's columns on the crew schema, in its order
+#: (``memory_schema.CREW_SCHEMA_SQL``), for a keyed read of the table under it.
+_V1_SEMANTIC_COLUMNS = (
+    "key, value_json, confidence, source, created_at, updated_at, is_deleted, embedding"
+)
+
+
 def get_all_semantic(
-    store: VectorMemoryStore, limit: int | None = None, offset: int = 0, *, q: str = ""
+    store: VectorMemoryStore,
+    limit: int | None = None,
+    offset: int = 0,
+    *,
+    q: str = "",
+    after_key: str | None = None,
+    exclude_lessons: bool = False,
 ) -> list[dict]:
     """Get active semantic memory entries.
 
@@ -400,17 +454,45 @@ def get_all_semantic(
 
     Optional ``q`` matches literal Unicode text in keys and decoded values
     before pagination. Omitting it keeps the existing unfiltered read path.
+
+    ``after_key`` returns only rows whose key sorts after it, so a caller can
+    walk the table in key order one bounded page at a time (keyset paging).
+    ``exclude_lessons`` leaves out ``lesson.*`` rows, for a reader that draws
+    lessons from :func:`get_lessons` and would otherwise spend its window on
+    them. Either one asks for a read in KEY-INDEX order: the liveness and kind
+    tests are written ``+is_deleted`` / ``+kind`` so SQLite walks the unique key
+    index and stops at ``limit``, instead of collecting every live row through
+    the ``is_deleted`` or ``kind`` index and sorting them all to keep a page
+    The rows and their order are the same either way.
     """
     query = _text_scoring._normalize_memory_search_query(q)
-    sql = "SELECT * FROM semantic_memory WHERE is_deleted = 0"
-    if store.algorithm_version == "v2":
+    keyed = after_key is not None or exclude_lessons
+    live = "+is_deleted = 0" if keyed else "is_deleted = 0"
+    sql = f"SELECT * FROM semantic_memory WHERE {live}"
+    if keyed and store.algorithm_version != "v2" and store._sem_rel != "semantic_memory":
+        # A v1 store on the crew schema reads ``semantic_memory`` as a VIEW over
+        # ``memory_items`` whose ``kind IN (...)`` test steers the plan onto the kind
+        # index. Read the table itself, in the view's columns, with that test unindexed.
+        sql = (
+            f"SELECT {_V1_SEMANTIC_COLUMNS} FROM {store._sem_rel} WHERE {live}{store._sem_guard}"
+        ).replace(" AND kind ", " AND +kind ")
+    elif store.algorithm_version == "v2":
         # Compatibility views intentionally omit facets. Private lifecycle readers
         # need the canonical row so an explicit copy keeps its visible provenance.
-        sql = f"SELECT * FROM {store._sem_rel} WHERE is_deleted = 0" f"{store._sem_guard}"
+        sql = f"SELECT * FROM {store._sem_rel} WHERE {live}{store._sem_guard}"
+        if keyed:
+            # The kind guard is an IN test too, and would steer the plan onto the
+            # kind index the same way the liveness test does.
+            sql = sql.replace(" AND kind ", " AND +kind ")
     params: tuple = ()
     if query:
         sql += " AND (memory_text_contains(key, ?, 0) OR memory_text_contains(value_json, ?, 1))"
         params = (query, query)
+    if exclude_lessons:
+        sql += " AND key NOT LIKE 'lesson.%'"
+    if after_key is not None:
+        sql += " AND key > ?"
+        params += (after_key,)
     sql += " ORDER BY key"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
@@ -777,8 +859,8 @@ def delete_semantic(
         # A forget writes its audit event best-effort AFTER committing the
         # tombstone, through the shared helper -- an unavailable event table
         # must not fail a forget. Only the supersede branch inlines the INSERT
-        # inside the transaction, where losing the winner/reason is the data
-        # loss this change exists to prevent.
+        # inside the transaction, where losing the winner/reason is data
+        # loss.
         store._log_event("delete", "semantic", key, row["value_json"], new_value, source)
     return True
 
@@ -880,14 +962,23 @@ def semantic_candidates_v1(
         row_tokens = _text_scoring._row_stem_tokens_for_scan(2 * len(all_rows))
 
     blocked = store._ineligible_ids()
+    indexed = _scoring_term_index(store, scoring, identities) if scoring is not None else None
+    hits = indexed[0].query(query_words) if indexed is not None else None
     for i, raw in enumerate(all_rows):
         key = raw["key"]
         if blocked and record_meta.record_id_for("fact", key) in blocked:
             continue
         identity = identities.get(key)
         label = key if identity is None else store._fact_label({"key": key, "identity": identity})
-        key_words = row_tokens(label.replace("_", " ").replace(".", " "))
-        val_words = row_tokens(raw["value_json"].lower())
+        key_text = label.replace("_", " ").replace(".", " ")
+        if hits is not None and indexed is not None and indexed[1][i] == key_text:
+            # The query's terms in each text, which is all the scoring below
+            # reads of them: intersecting with query_words again changes nothing.
+            key_words = hits.matched(2 * i)
+            val_words = hits.matched(2 * i + 1)
+        else:
+            key_words = row_tokens(key_text)
+            val_words = row_tokens(raw["value_json"].lower())
         key_overlap = len(query_words & key_words)
         val_overlap = len(query_words & val_words)
         kw_raw = key_overlap * 3 + val_overlap
@@ -1131,13 +1222,14 @@ def get_semantic_context(
             val = json.loads(r["value_json"])
         except (json.JSONDecodeError, TypeError):
             val = r["value_json"]
-        # Format complex values as JSON, simple values as-is
-        val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
+        # Format complex values as JSON, simple values as-is. Non-ASCII stays
+        # as written, as in the preferences block: an escaped "\uac00" costs six
+        # characters of the cap for one the model reads.
+        val_str = json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else str(val)
         line = f"{store._fact_label(dict(r))}: {val_str}"
         if total + len(line) > cap:
-            if store.algorithm_version == "v2":
-                continue
-            break
+            # Skip a line that does not fit; a shorter, lower-ranked one may.
+            continue
         lines.append(line)
         total += len(line) + 1
     if not lines:

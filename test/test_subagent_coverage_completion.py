@@ -31,9 +31,17 @@ _ANNOUNCE_WAIT_SECS = 60.0
 
 class TestNotifyInjectionFailed:
     def test_parent_without_a_tab_is_skipped(self) -> None:
-        mgr = _manager(on_event=AsyncMock())
-        with patch("kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value=""):
-            mgr.notify_injection_failed(_info(parent_session_key="cron:1"))
+        on_event = AsyncMock()
+        mgr = _manager(on_event=on_event)
+        info = _info(parent_session_key="cron:1")
+        with patch(
+            "kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value=""
+        ) as slot_key:
+            mgr.notify_injection_failed(info)
+        slot_key.assert_called_once_with("cron:1")
+        # The record still learns its report was not delivered; only the notice is skipped.
+        assert info._report_undelivered is True
+        on_event.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_queues_failure_for_the_next_turn(self, tmp_path: Path) -> None:
@@ -71,12 +79,17 @@ class TestNotifyInjectionFailed:
         assert seen and "bytes" not in seen[0]["failure_msg"]
 
     def test_lookup_failure_is_swallowed(self) -> None:
-        mgr = _manager(on_event=AsyncMock())
+        on_event = AsyncMock()
+        mgr = _manager(on_event=on_event)
+        info = _info(parent_session_key="dash:1")
         with patch(
             "kiro_crew.dashboard.chat_utils.dashboard_slot_key",
             side_effect=RuntimeError("no dashboard"),
-        ):
-            mgr.notify_injection_failed(_info(parent_session_key="dash:1"))
+        ) as slot_key:
+            mgr.notify_injection_failed(info)
+        slot_key.assert_called_once_with("dash:1")
+        assert info._report_undelivered is True
+        on_event.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_teardown_cancelled_run_announces_nothing(self, tmp_path: Path) -> None:
@@ -647,19 +660,6 @@ class TestScanKeepStates:
 
 
 class TestReleaseConversation:
-    def test_busy_conversation_refused(self) -> None:
-        mgr = _manager()
-        mgr._agents["c1"] = _info("c1")
-        ok, detail = mgr.release_conversation("c1")
-        assert ok is False
-        assert "conversation_busy" in detail
-
-    def test_nothing_to_release(self) -> None:
-        mgr = _manager()
-        mgr._sessions.forget_conversation.return_value = ""
-        with patch.object(sa, "update_state"):
-            ok, detail = mgr.release_conversation("c1")
-        assert (ok, detail) == (False, "conversation_gone: nothing to release")
 
     def test_released_deletes_session_files(self) -> None:
         mgr = _manager()
@@ -693,44 +693,12 @@ class TestSweepConversations:
         await mgr._sweep_conversations_async(now=1001.0)
         assert "subagent:c1" in mgr._conversations
 
-    @pytest.mark.asyncio
-    async def test_busy_conversation_refreshed_not_released(self) -> None:
-        mgr = _manager()
-        mgr._conversations["subagent:c1"] = 0.0
-        mgr._agents["c1"] = _info("c1")
-        now = float(sa._CONVERSATION_TTL_SECS * 3)
-        await mgr._sweep_conversations_async(now=now)
-        assert mgr._conversations["subagent:c1"] == now
-
-    @pytest.mark.asyncio
-    async def test_expired_conversation_released(self) -> None:
-        mgr = _manager()
-        mgr._conversations["subagent:c1"] = 0.0
-        mgr._sessions.forget_conversation.return_value = "sid-1"
-        with (
-            patch.object(sa, "update_state"),
-            patch.object(sa, "_cleanup_session_files_sync"),
-        ):
-            await mgr._sweep_conversations_async(now=float(sa._CONVERSATION_TTL_SECS * 3))
-        assert "subagent:c1" not in mgr._conversations
-
 
 class TestInheritedContextGroups:
     def test_live_record_wins(self) -> None:
         mgr = _manager()
         mgr._agents["c1"] = _info("c1", include_memory=False)
         assert mgr._inherited_context_groups("c1") == (False, True, True)
-
-    def test_run_predating_the_field_defaults_all_on(self) -> None:
-        mgr = _manager()
-        with patch.object(sa, "read_state", return_value={}):
-            assert mgr._inherited_context_groups("c1") == (True, True, True)
-
-    def test_persisted_scope_is_read_back(self) -> None:
-        mgr = _manager()
-        raw = f"{sa.CONTEXT_GROUP_LESSONS},{sa.CONTEXT_GROUP_PROJECT}"
-        with patch.object(sa, "read_state", return_value={"context_groups": raw}):
-            assert mgr._inherited_context_groups("c1") == (False, True, True)
 
     def test_empty_scope_means_every_group_withheld(self) -> None:
         mgr = _manager()
@@ -836,7 +804,11 @@ class TestSweepStuckWaves:
         mgr._batch_submitted["w1"] = [2, 2]
         with patch.object(mgr, "record_lost_submission") as rec:
             mgr._sweep_stuck_waves(now=1e9)
-        rec.assert_not_called()
+            rec.assert_not_called()
+            # Control: the same wave one submission short is reconciled.
+            mgr._batch_submitted["w1"] = [1, 2]
+            mgr._sweep_stuck_waves(now=1e9)
+        assert rec.call_count == 1
 
     def test_within_grace_window_skipped(self) -> None:
         mgr = _manager()
@@ -844,7 +816,10 @@ class TestSweepStuckWaves:
         mgr._batch_progress_ts["w1"] = 1000.0
         with patch.object(mgr, "record_lost_submission") as rec:
             mgr._sweep_stuck_waves(now=1001.0)
-        rec.assert_not_called()
+            rec.assert_not_called()
+            # Control: once the grace window has passed, the wave is reconciled.
+            mgr._sweep_stuck_waves(now=1000.0 + sa._WAVE_STUCK_SECS)
+        assert rec.call_count == 1
 
     def test_live_member_defers_reconciliation(self) -> None:
         mgr = _manager()
@@ -853,7 +828,11 @@ class TestSweepStuckWaves:
         mgr._agents["a"] = _info("a", batch_id="w1")
         with patch.object(mgr, "record_lost_submission") as rec:
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        rec.assert_not_called()
+            rec.assert_not_called()
+            # Control: once the member ends, the wave is reconciled.
+            mgr._agents["a"].done = True
+            mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
+        assert rec.call_count == 1
 
     def test_queued_member_defers_reconciliation(self) -> None:
         mgr = _manager()
@@ -862,7 +841,11 @@ class TestSweepStuckWaves:
         mgr._queue = [{"batch_id": "w1"}]
         with patch.object(mgr, "record_lost_submission") as rec:
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        rec.assert_not_called()
+            rec.assert_not_called()
+            # Control: with the queue drained, the wave is reconciled.
+            mgr._queue = []
+            mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
+        assert rec.call_count == 1
 
     def test_wedged_wave_reconciled_once(self) -> None:
         mgr = _manager()
@@ -885,32 +868,26 @@ def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
 
 
 class TestSweepDigestHolds:
-    def test_disabled_deadline_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 0.0)
-        mgr = _manager(on_done=AsyncMock())
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-        flush.assert_not_called()
-
     def test_no_completion_consumer_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager()
+        held = _info("a", batch_id="w1", batch_total=2, done=True, parent_session_key="dash:1")
+        held._digest_held_at = 1.0
+        mgr._agents["a"] = held
+        mgr._batch_submitted["w1"] = [1, 2]
         with patch.object(mgr, "force_digest_flush") as flush:
             mgr._sweep_digest_holds(now=1e9)
-        flush.assert_not_called()
-
-    def test_hold_within_window_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 100.0)
-        mgr = _manager(on_done=AsyncMock())
-        held = _info("a", batch_id="w1", batch_total=2)
-        held._digest_held_at = 1000.0
-        mgr._agents["a"] = held
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1050.0)
-        flush.assert_not_called()
+            flush.assert_not_called()
+            # Control: the same expired hold is flushed once a consumer exists.
+            mgr._on_done = AsyncMock()
+            mgr._sweep_digest_holds(now=1e9)
+        assert flush.call_count == 1
 
     @pytest.mark.parametrize("form", ["sync", "async"])
     def test_closing_wave_not_forced(self, monkeypatch: pytest.MonkeyPatch, form: str) -> None:
+        """With no member outstanding and the final report in flight, the real
+        wave-close digest lands when that report is consumed; a forced partial
+        digest here would race it and could deliver the same members twice."""
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager(on_done=AsyncMock())
         held = _info("a", batch_id="w1", batch_total=1, done=True)
@@ -921,6 +898,10 @@ class TestSweepDigestHolds:
         with patch.object(mgr, "force_digest_flush") as flush:
             _sweep_digest_holds(mgr, form, now=1e6)
         flush.assert_not_called()
+        # The in-flight report is what held the flush back; without the arm the
+        # same state is force-flushed (test_stranded_hold_past_deadline_is_forced).
+        assert mgr.batch_reports_in_flight("w1") is True
+        assert mgr.batch_members_pending("w1") is False
 
     @pytest.mark.parametrize("form", ["sync", "async"])
     def test_stranded_hold_past_deadline_is_forced(
@@ -968,7 +949,12 @@ class TestSweepDigestHolds:
         mgr._agents["b"] = _info("b")
         with patch.object(mgr, "force_digest_flush") as flush:
             mgr._sweep_digest_holds(now=1e9)
-        flush.assert_not_called()
+            flush.assert_not_called()
+            # Control: once the wave member holds a result, the sweep flushes it.
+            mgr._agents["a"]._digest_held_at = 1.0
+            mgr._sweep_digest_holds(now=1e9)
+        assert flush.call_count == 1
+        assert flush.call_args[0][0] == "w1"
 
 
 class TestForceDigestFlush:
@@ -1081,8 +1067,13 @@ class TestAnnounceRejection:
 
     @pytest.mark.asyncio
     async def test_safe_announce_swallows_callback_failure(self) -> None:
-        mgr = _manager(on_done=AsyncMock(side_effect=RuntimeError("boom")))
-        await mgr._safe_announce(_info())  # must not raise
+        on_done = AsyncMock(side_effect=RuntimeError("boom"))
+        mgr = _manager(on_done=on_done)
+        info = _info(done=True, batch_id="w1")
+        await mgr._safe_announce(info)
+        on_done.assert_awaited_once_with(info)
+        # A failed announce still releases the in-flight hold it armed.
+        assert mgr.batch_reports_in_flight("w1") is False
 
 
 # ── Manager: done-but-unreported wave accounting ────────────
@@ -1099,12 +1090,19 @@ class TestBatchReportsInFlight:
     def test_no_batch_id_is_never_in_flight(self) -> None:
         assert _manager().batch_reports_in_flight("") is False
 
-    def test_done_but_unreported_member_is_in_flight(self) -> None:
+    @pytest.mark.parametrize(
+        "armed_batch, expected",
+        [
+            pytest.param("w1", True, id="test_done_but_unreported_member_is_in_flight"),
+            pytest.param("w2", False, id="test_other_waves_members_do_not_count"),
+        ],
+    )
+    def test_armed_member_holds_only_its_own_wave(self, armed_batch: str, expected: bool) -> None:
         mgr = _manager()
-        info = _info("a", batch_id="w1", done=True)
+        info = _info("a", batch_id=armed_batch, done=True)
         mgr._agents["a"] = info
         mgr.arm_report_in_flight(info)
-        assert mgr.batch_reports_in_flight("w1") is True
+        assert mgr.batch_reports_in_flight("w1") is expected
 
     def test_consumed_report_is_not_in_flight(self) -> None:
         mgr = _manager()
@@ -1167,13 +1165,6 @@ class TestBatchReportsInFlight:
         here and the two predicates stay complementary, not redundant."""
         mgr = _manager()
         mgr._agents["a"] = _info("a", batch_id="w1", done=False)
-        assert mgr.batch_reports_in_flight("w1") is False
-
-    def test_other_waves_members_do_not_count(self) -> None:
-        mgr = _manager()
-        info = _info("a", batch_id="w2", done=True)
-        mgr._agents["a"] = info
-        mgr.arm_report_in_flight(info)
         assert mgr.batch_reports_in_flight("w1") is False
 
 

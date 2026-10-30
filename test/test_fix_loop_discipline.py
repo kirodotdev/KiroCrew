@@ -606,6 +606,7 @@ class TestDeferralCheckIssueReadFailure:
                 "- **finding**: accepted-and-deferred -- tracked in #123"
             ),
             "REPO": "example/repo",
+            "RELEASE_RECORD": str(ROOT / ".github" / "scripts" / "release_record.py"),
             "PR_NUMBER": "999",
             "COMMENT_URL": "https://example.com/pr/999#comment-1",
             "TMPDIR": str(tmp_path),

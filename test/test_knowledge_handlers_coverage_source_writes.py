@@ -23,9 +23,21 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.url_fetch import FetchedPage
 from kiro_crew.testing.wait import await_until
 
 # ------------------------------------------------------------ agent document
+
+
+@pytest.fixture(autouse=True)
+def _listed_test_hosts(_floor_monkeypatch):
+    """List the hosts these sources name in ``knowledge.doc_ingest_hosts``.
+
+    A source with no connector is fetched by Kiro Crew only from a listed host,
+    and the list is empty by default; these tests exercise what happens after
+    that gate lets the URL through.
+    """
+    _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com", "e.test"])
 
 
 class TestAddAgentDocumentRoute:
@@ -266,13 +278,13 @@ class TestSyncSourceAgentBranch:
         sid = store.add_source("s", "web", "", properties={"url": "https://e.test/a"})
         seen = {}
 
-        async def _fake_sync(source_id, url, name, st, pipeline, pool, *, claim_settled=None):
+        async def _fake_sync(source_id, url, name, st, pipeline, *, claim_settled=None):
             # The handler holds the ingestion gate until the task reports its claim.
             if claim_settled is not None:
                 claim_settled.set()
             seen["url"] = url
 
-        monkeypatch.setattr(f"{MODULE}._background_agent_sync", _fake_sync)
+        monkeypatch.setattr(f"{MODULE}._background_url_sync", _fake_sync)
         async with _client(_make_app(store, pipeline=MagicMock())) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
             assert resp.status == 200
@@ -304,13 +316,13 @@ class TestSyncSourceAgentBranch:
         sid = store.add_source("s", "web", "https://e.test/a")
         ran = asyncio.Event()
 
-        async def _fake_sync(source_id, url, name, st, pipeline, pool, *, claim_settled=None):
+        async def _fake_sync(source_id, url, name, st, pipeline, *, claim_settled=None):
             # The handler holds the ingestion gate until the task reports its claim.
             if claim_settled is not None:
                 claim_settled.set()
             ran.set()
 
-        monkeypatch.setattr(f"{MODULE}._background_agent_sync", _fake_sync)
+        monkeypatch.setattr(f"{MODULE}._background_url_sync", _fake_sync)
         app = _make_app(store, pipeline=MagicMock())
         async with _client(app) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
@@ -326,11 +338,12 @@ class TestBackgroundAgentSync:
     @pytest.mark.asyncio
     async def test_success_marks_source_synced_and_removes_temp_file(self, store, monkeypatch):
         sid = store.add_source("s", "web", "https://example.com")
-        monkeypatch.setattr(f"{MODULE}.fetch_url_content", AsyncMock(return_value="fetched body"))
-        pipeline = MagicMock(ingest_file=AsyncMock(return_value="j1"))
-        await kh._background_agent_sync(
-            sid, "https://example.com", "S", store, pipeline, MagicMock()
+        monkeypatch.setattr(
+            f"{MODULE}.fetch_page",
+            AsyncMock(return_value=FetchedPage("https://example.com", "fetched body", ".txt")),
         )
+        pipeline = MagicMock(ingest_file=AsyncMock(return_value="j1"))
+        await kh._background_url_sync(sid, "https://example.com", "S", store, pipeline)
         row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "synced"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
@@ -338,11 +351,7 @@ class TestBackgroundAgentSync:
     @pytest.mark.asyncio
     async def test_fetch_failure_marks_source_error(self, store, monkeypatch):
         sid = store.add_source("s", "web", "https://example.com")
-        monkeypatch.setattr(
-            f"{MODULE}.fetch_url_content", AsyncMock(side_effect=RuntimeError("offline"))
-        )
-        await kh._background_agent_sync(
-            sid, "https://example.com", "S", store, MagicMock(), MagicMock()
-        )
+        monkeypatch.setattr(f"{MODULE}.fetch_page", AsyncMock(side_effect=RuntimeError("offline")))
+        await kh._background_url_sync(sid, "https://example.com", "S", store, MagicMock())
         row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "error"

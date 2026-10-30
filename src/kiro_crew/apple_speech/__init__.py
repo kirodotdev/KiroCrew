@@ -38,6 +38,7 @@ from pathlib import Path
 from kiro_crew import platform_compat, sandbox
 from kiro_crew.config.loader import config_dir
 from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def _sdk_path() -> str | None:
         out = subprocess.run(
             ["/usr/bin/xcrun", "--show-sdk-path"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=_build_env(),
         )
@@ -273,7 +274,7 @@ def _swiftc() -> str | None:
         out = subprocess.run(
             ["/usr/bin/xcrun", "--find", "swiftc"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=_build_env(),
         )
@@ -517,7 +518,7 @@ def _build_helper(name: str, source: str, *, build: bool = True) -> str | None:
             # the SDK implicitly and nothing may redirect the toolchain.
             [swiftc, "-O", "-parse-as-library", "-sdk", sdk, str(src), "-o", tmp_out],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=180,
             env=_build_env(),
         )
@@ -616,8 +617,8 @@ async def _to_native_audio(
 
     # The native fast path hands *audio_path* to the Swift helper BY VALUE, and
     # a descriptor path (``/dev/fd/N``) names a descriptor of THIS process —
-    # useless to the helper, whose own fd table does not hold N (GPT review
-    # r23: a native-suffix import would fail with a 502). The remux below is
+    # useless to the helper, whose own fd table does not hold N (a native-suffix
+    # import would fail with a 502). The remux below is
     # the materializing path: its FFmpeg child inherits the descriptor via the
     # spawn seam and writes a NAMED temp file the helper can open.
     if _dev_fd_number(audio_path) is None and _input_suffix(audio_path) in _NATIVE_AUDIO_SUFFIXES:
@@ -649,7 +650,7 @@ async def _to_native_audio(
     # return above hands the original file over and the framework fails
     # loudly), while WITH a decoder the ``-t``-bounded conversion below must
     # never run on an input whose duration is over — or UNKNOWN. ``None``
-    # refuses too (GPT review r27): a transient probe cause (a load spike that
+    # refuses too: a transient probe cause (a load spike that
     # clears before the remux) is not covered by the aligned-budget argument,
     # and proceeding would transcribe a silently truncated prefix.
     try:
@@ -702,7 +703,7 @@ async def _to_native_audio(
                 "1",
                 # Bounds the temp file as well as the conversion itself: a large
                 # low-bitrate input could otherwise expand into a multi-gigabyte
-                # WAV and exhaust the temp volume (GPT review r23). This is the
+                # WAV and exhaust the temp volume. This is the
                 # ceiling ``batch_duration_cap_secs`` reports for the Apple lane,
                 # so the meetings import refuses over-cap recordings loudly
                 # BEFORE this truncation could ever bite.
@@ -802,7 +803,7 @@ async def transcribe(
         native_path, is_temp = await _to_native_audio(audio_path, probe_timeout_secs=timeout_secs)
     except TranscriptionRefusedError as exc:
         # Loud, user-actionable refusal — never a transcript that silently
-        # omits everything past the ceiling (GPT review r26/r27): over-cap
+        # omits everything past the ceiling: over-cap
         # AND duration-unverified inputs both stop here, before conversion.
         return None, {"error": str(exc)}
     # When `is_temp` is true this invocation owns the transcode temp from here

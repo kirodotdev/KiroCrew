@@ -232,7 +232,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         assert live.read_bytes() == appeared
 
     def test_the_data_home_gains_nothing_but_the_notifications_file(self, tmp_path):
-        """No intermediate artifact, which is the second review finding's whole point.
+        """No intermediate artifact may appear in the data home.
 
         A temp file in the data home is published through a NAME, and a same-user
         process that can list the directory can swap what that name holds between
@@ -407,7 +407,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
     def test_a_source_that_became_a_fifo_fails_instead_of_hanging(self, tmp_path):
-        """Pins ``O_NONBLOCK``. Not a review finding -- found by auditing the span.
+        """Pins ``O_NONBLOCK``.
 
         The caller selected this branch on ``is_file()``, which is False for a FIFO,
         so reaching one means the name changed afterwards. Without ``O_NONBLOCK`` the

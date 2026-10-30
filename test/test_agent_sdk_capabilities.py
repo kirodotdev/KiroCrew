@@ -362,6 +362,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "",
         "claude",
         "codex",
+        "copilot",
         "deepseek",
         "goose",
         "kas",
@@ -622,17 +623,26 @@ class TestTheKiroConstructionPathIsUnconditional:
             f"lookup must not move a kiro-family backend off to_acp_id"
         )
 
-    def test_the_claude_backend_still_reaches_its_own_namespace(self, monkeypatch) -> None:
-        """The other half: the one backend that DID take the other arm still does."""
-        calls = self._translations(monkeypatch, "claude")
-        assert calls == [("to_provider_id", "opus-4.8-1m", "claude_code")]
-
-    def test_the_codex_backend_reaches_its_own_namespace(self, monkeypatch) -> None:
-        """codex ids are the adapter's own vocabulary: translated into the ``codex``
-        namespace (a passthrough, the registry has no such provider), never folded
-        onto a kiro id codex would refuse."""
-        calls = self._translations(monkeypatch, "codex")
-        assert calls == [("to_provider_id", "opus-4.8-1m", "codex")]
+    @pytest.mark.parametrize(
+        ("backend", "namespace"),
+        [
+            # The other half: the one backend that DID take the other arm still does.
+            pytest.param(
+                "claude",
+                "claude_code",
+                id="test_the_claude_backend_still_reaches_its_own_namespace",
+            ),
+            # codex ids are the adapter's own vocabulary: translated into the
+            # ``codex`` namespace (a passthrough, the registry has no such
+            # provider), never folded onto a kiro id codex would refuse.
+            pytest.param("codex", "codex", id="test_the_codex_backend_reaches_its_own_namespace"),
+        ],
+    )
+    def test_a_non_kiro_backend_reaches_its_own_namespace(
+        self, monkeypatch, backend: str, namespace: str
+    ) -> None:
+        calls = self._translations(monkeypatch, backend)
+        assert calls == [("to_provider_id", "opus-4.8-1m", namespace)]
 
     def test_the_namespace_table_cannot_move_kiro_off_the_acp_arm(self) -> None:
         """The drift the reviewer named, pinned at the table rather than the branch.
@@ -730,12 +740,18 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
     from kiro_crew.providers.mirrors.registry import MIRRORS, ProjectionKind, projection_for
 
+    # A fourth fact the three above assume: the harness asks about EVERY call, so
+    # ``_deny_zero_tools`` sees each one. Copilot CLI 1.0.100 reads a file inside the
+    # session's own directory without asking (measured, see the set's comment), so a
+    # total ban cannot be honoured there even though the three facts hold.
+    reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
         expected = routing is sdk_backends.Routing.AGENT_SPEC or (
             routing in ENFORCED_ROUTINGS
             and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
             and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+            and backend not in reads_unasked
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (

@@ -584,9 +584,12 @@ class TestCronUsageRow:
 
         persist = AsyncMock()
         with patch("kiro_crew.slack.gateway.persist_token_record_async", persist):
-            await _run_script_callback(gw, job, {"status": "ok"})
+            result, mock_run = await _run_script_callback(gw, job, {"status": "ok"})
 
         persist.assert_not_awaited()
+        # The script did run, so the missing row is not a skipped fire.
+        assert mock_run.call_count == 1
+        assert result == "ok"
 
     @pytest.mark.asyncio
     async def test_command_cron_writes_no_usage_row(self):
@@ -595,8 +598,11 @@ class TestCronUsageRow:
 
         persist = AsyncMock()
         with patch("kiro_crew.slack.gateway.persist_token_record_async", persist):
-            await _run_command_callback(
+            result, mock_run = await _run_command_callback(
                 gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
             )
 
         persist.assert_not_awaited()
+        # The command did run, so the missing row is not a skipped fire.
+        assert mock_run.call_count == 1
+        assert result == "hello\n"

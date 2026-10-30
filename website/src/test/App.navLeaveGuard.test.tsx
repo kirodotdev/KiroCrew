@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import { setActiveSlot } from '../store/chatSlice'
+import { setActiveId } from '../store/instancesSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import App from '../App'
 import SidePanelLayout, { useSidePanelLeaveGuard } from '../components/SidePanelLayout'
@@ -255,6 +256,40 @@ describe('native app-menu navigation leave guard', () => {
     expect(draftValue()).toBe('half-written prompt')
   })
 
+  it('brings the local Crew forward over a Remote Crew pane for a session deep link', async () => {
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    expect(store.getState().instances.activeId).toBe('remote-1')
+    act(() => { nativeHandler!('/chat?sid=other') })
+    expect(store.getState().instances.activeId).toBeNull()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('other'))
+    await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+
+  it('shows the leave prompt on the local Crew and keeps the session when declined', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    const slotBefore = store.getState().chat.activeSlot
+    act(() => { nativeHandler!('/chat?sid=other') })
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(store.getState().chat.activeSlot).toBe(slotBefore)
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
   it('follows the menu path once the confirm is accepted', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
@@ -263,6 +298,28 @@ describe('native app-menu navigation leave guard', () => {
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/schedule') })
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+})
+
+describe('native history step relayed from a macOS swipe', () => {
+  // The desktop shell relays a swipe (how a mouse's Back/Forward buttons reach
+  // the macOS app under Logitech's Options software) as one history step. The
+  // step's own behaviour is pinned in nativeHistoryStep.test; this pins that
+  // the dashboard actually listens, for as long as it is mounted.
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI
+    vi.restoreAllMocks(); cleanup()
+  })
+
+  it('subscribes once the dashboard mounts and lets go on unmount', async () => {
+    const unsubscribe = vi.fn()
+    const onHistoryStep = vi.fn(() => unsubscribe)
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = { onHistoryStep }
+    const { unmount } = renderDashboard()
+    await paneReady()
+    expect(onHistoryStep).toHaveBeenCalled()
+    unmount()
+    expect(unsubscribe).toHaveBeenCalledTimes(onHistoryStep.mock.calls.length)
   })
 })
 

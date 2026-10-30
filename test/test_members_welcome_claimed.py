@@ -45,7 +45,10 @@ def _members_app(state) -> web.Application:
 def _fake_config():
     return SimpleNamespace(
         agents={
-            "mate": KiroCrewAgentConfig(kiro_agent="kirocrew", source="builtin"),
+            # Mate as first_crewmate creates it: built in, with its member id.
+            "mate": KiroCrewAgentConfig(
+                kiro_agent="kirocrew-mate-conductor", source="builtin", member_id="mate"
+            ),
             "alpha": KiroCrewAgentConfig(kiro_agent="alpha"),
         },
         default_agent="",

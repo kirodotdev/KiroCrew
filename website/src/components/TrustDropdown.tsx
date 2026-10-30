@@ -117,7 +117,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       <Trans
         i18nKey={key}
         values={{ cmd: fullCommand, ...extra, ...labelValues }}
-        components={{ mono: <span className="font-mono break-all" /> }}
+        components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border" /> }}
       />
     </span>
   )

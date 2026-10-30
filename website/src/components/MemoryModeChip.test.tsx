@@ -49,6 +49,16 @@ describe('MemoryModeChip', () => {
     expect(btn).toHaveFocus()
   })
 
+  it('says goal loops are unavailable in both incognito and temporary', () => {
+    // The server refuses to host a loop in either private mode, so the picker must
+    // say so before the user chooses one.
+    renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
+    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    const desc = (label: string) => screen.getByText(label).closest('button')!.textContent
+    expect(desc('Incognito')).toContain('Goal loops are not available.')
+    expect(desc('Temporary')).toContain('Goal loops are not available.')
+  })
+
   it('picking an option switches mode and closes the popover', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(<MemoryModeChip onSwitchMode={onSwitchMode} />)

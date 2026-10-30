@@ -1,12 +1,22 @@
-"""Sign the ``kiro-cli`` backend in on the EC2 instance, over SSM.
+"""Sign the Kiro backend in on the EC2 instance, over SSM.
 
 Backend auth can't be baked into user-data (it needs a human to approve in a
 browser and, possibly, to buy a Kiro subscription). We drive it after the box is
-up: run ``kiro-cli login`` on the instance over SSM, scrape the device-code URL
-+ code, and open that URL in the user's *local* browser. KiroCrew stores **no**
-Kiro credentials — they live in kiro-cli's own store on the instance.
+up: run the box's sign-in program on the instance over SSM, scrape the
+device-code URL + code, and open that URL in the user's *local* browser. The
+local machine stores **no** Kiro credentials — they live on the instance, in
+kiro-cli's own store or in Crew's own vault.
 
-Two remote-login shapes:
+Which program that is, the BOX decides, inside every remote script
+(:func:`kiro_crew.cloud.login_vault.route_prelude`): on the KAS bundle route
+(``agent.acp_backend == "kas"`` with ``agent.kas_bundle`` on) kiro-cli is not
+installed and the scripts drive ``kirocrew kas login|whoami|logout`` against
+Crew's vault; on every other route they drive ``kiro-cli login|whoami|logout``
+exactly as they always have. The local Python reads one set of outputs and
+sentinels whichever program produced them.
+
+Two remote-login shapes on the kiro-cli route (the vault route has only the
+first, since its ``login`` verb always prints a device code):
 
 - **Device code.** Per ``docs/reference/kiro-cli/authentication.md`` the device
   flow covers Builder ID, IAM Identity Center, Google and GitHub: kiro-cli
@@ -30,6 +40,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from typing import Optional
 
+from kiro_crew.cloud import login_vault as vault
 from kiro_crew.cloud import ssm
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.login_target import (
@@ -143,6 +154,14 @@ _CALLBACK_LOGIN_CAPTURE_ATTEMPTS = 20
 _CALLBACK_LOGIN_CAPTURE_SLEEP = 1
 _TOKEN_PRESENT_SENTINEL = "__KIRO_AUTH_TOKEN_PRESENT__"
 _NOAUTH_SENTINEL = "__NOAUTH__"
+# Reported when a vault-route box produced no device-code prompt. There is no
+# kiro-cli callback flow to degrade into on that route, so the remedy names the
+# box's own sign-in verb and its log.
+_VAULT_NO_DEVICE_CODE_ERROR = (
+    "the instance signs in through Kiro Crew's own vault (KAS bundle route) and its "
+    "`kirocrew kas login` produced no device-code prompt; retry, or run "
+    "`kirocrew cloud connect` and `kirocrew kas login` on the instance to see its error."
+)
 
 # Resolve the kiro-cli binary to an absolute path, PATH-independent. Under SSM's
 # `echo <b64> | base64 -d | sudo -u <run_as> -i bash` wrapper (script on stdin,
@@ -155,6 +174,36 @@ _KIRO_BIN_RESOLVE = (
     '/usr/bin/kiro-cli; do [ -x "$c" ] && KIRO="$c" && break; done; '
     '[ -n "$KIRO" ] || KIRO=kiro-cli'
 )
+
+
+_BOX_REFUSAL_SENTINELS = (vault.ROUTE_UNKNOWN_SENTINEL, vault.NO_SIGNIN_PROGRAM_SENTINEL)
+_BOX_REFUSAL_FALLBACK = (
+    "the instance refused before touching either sign-in program (its route could not be "
+    "read, or it has no kiro-cli and is not on the KAS bundle route)."
+)
+
+
+def _box_refused(stdout: str) -> bool:
+    """Did the remote script stop before running either sign-in program?"""
+    return any(s in stdout for s in _BOX_REFUSAL_SENTINELS)
+
+
+def _box_refusal_error(stdout: str) -> str:
+    """The box's own explanation, from the lines after its refusal sentinel.
+
+    The remote script already wrote the plain-language cause and remedy (see
+    :func:`login_vault.require_sign_in_program`); this returns those lines as the
+    prompt's error so the CLI shows the box's words rather than a second guess.
+    """
+    lines = stdout.splitlines()
+    try:
+        start = next(
+            i for i, ln in enumerate(lines) if any(s in ln for s in _BOX_REFUSAL_SENTINELS)
+        )
+    except StopIteration:
+        return _BOX_REFUSAL_FALLBACK
+    text = "\n".join(ln for ln in lines[start + 1 :] if ln.strip())
+    return text or _BOX_REFUSAL_FALLBACK
 
 
 def _login_dir_guard() -> str:
@@ -293,6 +342,10 @@ def _auth_probe(instance_id: str, profile: str = "", region: str = "") -> Option
         total_wait=60,
     )
     out = (res.stdout or "").strip()
+    if _box_refused(out):
+        # The box could not decide its route, or has no kiro-cli and no vault
+        # route: nothing was asked, so the state is unknown -- not "signed out".
+        return None
     if _TOKEN_PRESENT_SENTINEL in out:
         return True
     if _NOAUTH_SENTINEL in out:
@@ -361,6 +414,8 @@ def remote_identity(
     out = (res.stdout or "").strip()
     if not res.ok and not out:
         return None
+    if _box_refused(out):
+        return None
     if _NOAUTH_SENTINEL in out:
         return {}
     return parse_whoami_output(out)
@@ -408,6 +463,11 @@ def logout(instance_id: str, profile: str = "", region: str = "") -> bool:
     # unconditionally, so `res.ok` only tells us the script ran end-to-end, not
     # that the kills landed — hence the status check, not `res.ok`.)
     if res.status != "Success":
+        return False
+    if vault.VAULT_LOGOUT_FAILED_SENTINEL in (res.stdout or ""):
+        # The vault verb exited non-zero: its sign-out did not complete (the slots
+        # may be gone, but the fence a pending login checks was not written), and
+        # the empty-vault probe below would read as a clean sign-out anyway.
         return False
     return _auth_probe(instance_id, profile, region) is False
 
@@ -481,6 +541,11 @@ def start_device_login(
         total_wait=90,
     )
     prompt = parse_login_output(res.stdout or res.stderr or "", ignore_url=resolved.start_url)
+    if _box_refused(res.stdout or ""):
+        # The box refused before touching either program and printed why and the
+        # remedy. Hand that text on as the error -- there is no flow to fall back to.
+        prompt.error = _box_refusal_error(res.stdout or "")
+        return prompt
     if prompt.already_logged_in:
         # kiro-cli ignores a login over a LIVE session and prints "already
         # logged in" whatever that session's identity is. The caller asked for
@@ -492,6 +557,15 @@ def start_device_login(
     if prompt.actionable:
         if open_browser and prompt.url:
             prompt.browser_opened = _open_browser(prompt.url)
+        return prompt
+
+    if vault.VAULT_ROUTE_SENTINEL in (res.stdout or ""):
+        # The box took the vault branch: its `kirocrew kas login` prompts for
+        # nothing and prints a device code for every target, so no prompt means
+        # the sign-in itself failed to start, and the box has no kiro-cli whose
+        # social callback flow could stand in. Report what the log says.
+        if not prompt.error:
+            prompt.error = _VAULT_NO_DEVICE_CODE_ERROR
         return prompt
 
     if resolved.is_identity_center:
@@ -580,8 +654,10 @@ def cancel_device_login(instance_id: str, profile: str = "", region: str = "") -
     cancelled it. Deliberately not :func:`logout` — the box may hold an older,
     valid session that the cancelled attempt was never meant to drop.
 
-    **Blast radius: every ``kiro-cli login`` under the same uid on that instance.**
-    The kill is `pkill -u "$(id -u)" -f "kiro-cli login"` — a command-line match,
+    **Blast radius: every ``kiro-cli login`` and every ``kirocrew kas login`` under
+    the same uid on that instance.**
+    The kill is `pkill -u "$(id -u)" -f "kiro-cli login"` (and the same for the
+    vault sign-in's command line) — a command-line match,
     not a PID this function tracked, because the PID file sits at a predictable
     path and honouring it would let whoever can write there pick what gets killed.
     So an operator who is running their own ``kiro-cli login`` in a terminal on
@@ -664,6 +740,7 @@ set +e
 killed=0
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "{vault.VAULT_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
   killed=1
 fi
 {_login_dir_guard()}
@@ -678,7 +755,10 @@ fi
 # Re-probe, and report UNCONFIRMED rather than a clean stop.
 if command -v pgrep >/dev/null 2>&1; then
   for _ in 1 2 3 4 5; do
-    pgrep -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" >/dev/null 2>&1 || exit 0
+    if ! pgrep -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" >/dev/null 2>&1 \\
+       && ! pgrep -u "$(id -u)" -f "{vault.VAULT_LOGIN_PROCESS_PATTERN}" >/dev/null 2>&1; then
+      exit 0
+    fi
     sleep 1
   done
   echo "{_CANCEL_UNCONFIRMED_SENTINEL}"
@@ -702,7 +782,13 @@ def _login_check_command() -> str:
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
-out="$("$KIRO" whoami < /dev/null 2>&1)"
+{vault.route_prelude()}
+{vault.require_sign_in_program()}
+if {vault.is_vault_route_test()}; then
+  out="$({vault.whoami_line(as_json=False)})"
+else
+  out="$("$KIRO" whoami < /dev/null 2>&1)"
+fi
 rc=$?
 echo "$out"
 if [ "$rc" -eq 0 ]; then
@@ -725,7 +811,13 @@ def _whoami_json_command() -> str:
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
-out="$("$KIRO" whoami --format json < /dev/null 2>&1)"
+{vault.route_prelude()}
+{vault.require_sign_in_program()}
+if {vault.is_vault_route_test()}; then
+  out="$({vault.whoami_line(as_json=True)})"
+else
+  out="$("$KIRO" whoami --format json < /dev/null 2>&1)"
+fi
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "{_NOAUTH_SENTINEL}"
@@ -751,17 +843,38 @@ def _logout_command() -> str:
 
     The log/PID/FIFO hold the previous device-code URL + code, so they are
     removed too — a stale prompt must never be shown as if it were a fresh one.
+
+    On the vault route the box runs :func:`login_vault.logout_lines` instead:
+    stop a polling ``kirocrew kas login``, then ``kirocrew kas logout``. No engine
+    process is killed there -- the gateway's pre-turn identity-change check
+    retires them on the next turn once the vault's fingerprint has changed. That
+    verb's exit status IS meaningful (non-zero = the sign-out's cross-process
+    fence was not written, so a pending dashboard login could still land), so
+    unlike ``kiro-cli logout``'s it is propagated: the script echoes
+    :data:`login_vault.VAULT_LOGOUT_FAILED_SENTINEL` and exits 1, and
+    :func:`logout` reports failure without probing.
     """
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{vault.route_prelude()}
+{vault.require_sign_in_program()}
 {_login_dir_guard()}
+KC_LOGOUT_RC=0
+if {vault.is_vault_route_test()}; then
+{vault.logout_lines()}
+else
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
   pkill -u "$(id -u)" -f "kiro-cli acp" 2>/dev/null || true
 fi
 "$KIRO" logout < /dev/null 2>&1
+fi
 rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
+if [ "$KC_LOGOUT_RC" -ne 0 ]; then
+  echo "{vault.VAULT_LOGOUT_FAILED_SENTINEL}"
+  exit 1
+fi
 exit 0
 """.strip()
 
@@ -773,15 +886,24 @@ def _device_login_command(
     license_: str = "",
     idp_region: str = "",
 ) -> str:
-    """Build the remote command that starts login and captures its prompt."""
+    """Build the remote command that starts login and captures its prompt.
+
+    The box picks the sign-in program (``$KC_ROUTE``, see
+    :func:`login_vault.route_prelude`): ``kirocrew kas login`` against Crew's vault
+    on the KAS bundle route, ``kiro-cli login --use-device-flow`` everywhere else.
+    Both write the verification URL + code to the same private log, which the
+    shared capture loop below reads.
+    """
     replace = ""
     if replace_existing:
-        # The same constant the cancel uses: a box may be running the social-login
-        # shape (`kiro-cli login`, no device flag), and a replacement that misses it
-        # leaves that poller alive beside the new one.
+        # The same constants the cancel uses: a box may be running the social-login
+        # shape (`kiro-cli login`, no device flag) or a vault sign-in (`kirocrew kas
+        # login`), and a replacement that misses either leaves that poller alive
+        # beside the new one.
         replace = f"""
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "{vault.VAULT_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
 fi
 """.strip()
     # Build optional kiro-cli flags for enterprise / IAM Identity Center login.
@@ -840,9 +962,18 @@ else
   nohup "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
 fi
 """.strip()
+    # The vault route has ONE launch shape for every target (its verb prompts for
+    # nothing and prints the prompt itself), so the whole kiro-cli block above --
+    # pty driver included -- sits in the else branch and runs only where kiro-cli
+    # owns the sign-in. `$!` after the `fi` is the job whichever branch started.
+    vault_launch = vault.login_launch(
+        log_path=_LOGIN_LOG_PATH, identity_provider=identity_provider, idp_region=idp_region
+    )
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{vault.route_prelude()}
+{vault.require_sign_in_program()}
 {_login_dir_guard()}
 {replace}
 rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
@@ -851,7 +982,11 @@ rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # The files live in the private per-user $KC_LOGIN_DIR (0700, owner-checked
 # above); umask 077 makes the files themselves 0600 on top of that.
 umask 077
+if {vault.is_vault_route_test()}; then
+{vault_launch}
+else
 {launch_block}
+fi
 echo $! > "{_LOGIN_PID_PATH}"
 for _ in $(seq 1 {_DEVICE_LOGIN_CAPTURE_ATTEMPTS}); do
   if [ -s "{_LOGIN_LOG_PATH}" ] && grep -Eiq "https://|verification code|user_code=|already .*logged in|already .*signed in" "{_LOGIN_LOG_PATH}"; then
@@ -882,6 +1017,13 @@ def _start_callback_login(
         total_wait=90,
     )
     prompt = parse_login_output(res.stdout or res.stderr or "")
+    if _box_refused(res.stdout or ""):
+        prompt.error = _box_refusal_error(res.stdout or "")
+        return prompt
+    if vault.VAULT_NO_CALLBACK_SENTINEL in (res.stdout or ""):
+        # The box signs in through Crew's vault; the callback flow is kiro-cli's.
+        prompt.error = _VAULT_NO_DEVICE_CODE_ERROR
+        return prompt
     if prompt.already_logged_in:
         return prompt
     if not prompt.ports:
@@ -955,6 +1097,12 @@ def _callback_login_command() -> str:
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{vault.route_prelude()}
+{vault.require_sign_in_program()}
+if {vault.is_vault_route_test()}; then
+  echo "{vault.VAULT_NO_CALLBACK_SENTINEL}"
+  exit 1
+fi
 {_login_dir_guard()}
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "kiro-cli login" 2>/dev/null || true

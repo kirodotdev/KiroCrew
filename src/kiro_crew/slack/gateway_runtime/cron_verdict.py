@@ -69,6 +69,9 @@ class _GateTally:
 
     def __init__(self) -> None:
         self.refused: list[str] = []
+        # The rule each refusal names, parallel to ``refused`` ("" when the
+        # gate gave no reason), so the summary can say WHY, not only what.
+        self.refused_rules: list[str] = []
         self.approved = 0
         self.unresolved = 0
         # An approved call whose bare tool name is ``send_message``. Titles
@@ -77,13 +80,16 @@ class _GateTally:
         # either wrapper so the comparison is on the name alone.
         self.delivered = False
 
-    def note(self, title: str, approved: bool, security_blocked: bool) -> None:
+    def note(self, title: str, approved: bool, security_blocked: bool, reason: str = "") -> None:
         if approved:
             self.approved += 1
             if _bare_tool_name(title) == "send_message":
                 self.delivered = True
         elif security_blocked:
             self.refused.append(title)
+            # First line only: it is the rule; later lines are operator notes
+            # and diagnostics.
+            self.refused_rules.append((reason or "").strip().split("\n", 1)[0].strip())
         else:
             self.unresolved += 1
 
@@ -169,8 +175,18 @@ class _GateTally:
         ``<!channel>`` from paging a whole channel the moment the run reports
         it. The break is invisible on the dashboard cron row, so one spelling
         serves both surfaces.
+
+        Each named call carries the rule that refused it, in parentheses, when
+        the gate reported one: a bare "blocked" leaves the reader unable to
+        tell which rule fired or whether it was the right one.
         """
-        named = ", ".join(t or "<untitled tool>" for t in self.refused[:3])
+
+        def _named(title: str, rule: str) -> str:
+            name = title or "<untitled tool>"
+            return f"{name} ({rule})" if rule else name
+
+        rules = self.refused_rules + [""] * (len(self.refused) - len(self.refused_rules))
+        named = ", ".join(_named(t, r) for t, r in zip(self.refused[:3], rules[:3], strict=True))
         if self.all_blocked:
             head = f"all {len(self.refused)} tool call(s) blocked by the security gate: "
         else:

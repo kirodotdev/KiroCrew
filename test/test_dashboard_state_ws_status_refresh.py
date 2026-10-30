@@ -156,6 +156,7 @@ class TestPeriodicCheckStatusRefresh:
         loop must push explicitly instead of waiting for message activity."""
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard.handlers import source_providers
+        from kiro_crew.platform import governance_profiles
 
         state = MagicMock()
         state.owner_id = "U_OWNER"
@@ -228,10 +229,16 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket())
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
+        # The governance watch also pushes slots when real profile files change,
+        # which other tests on the same xdist worker do; pin it so the only push
+        # left is the host-allowlist one this test is about.
+        monkeypatch.setattr(governance_profiles, "poll_profiles_fresh", lambda: None)
+        monkeypatch.setattr(governance_profiles, "governance_answer_generation", lambda: 0)
 
         await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
-        state.push_slots_update.assert_called()
+        assert calls["n"] >= 2
+        state.push_slots_update.assert_called_with()
 
     @pytest.mark.asyncio
     async def test_slots_broadcast_carries_gitlab_hosts_generation(
@@ -413,6 +420,7 @@ class TestPeriodicCheckStatusRefresh:
 
         refresh.assert_not_called()
         state.source_link_urls.assert_not_called()
+        assert fake_ws.sent[0]["type"] == "slots"
 
     @pytest.mark.asyncio
     async def test_non_owner_dashboard_user_does_not_start_refresh_loop(self, monkeypatch) -> None:
@@ -714,6 +722,10 @@ class TestTurnBoundarySourceStatus:
         state.refresh_slot_source_status("chat-a")
 
         refresh.assert_not_called()
+        state._owner_ws_clients.add(MagicMock(closed=False))
+        state.refresh_slot_source_status("chat-a")
+        assert refresh.call_count == 1
+        assert refresh.call_args.args[0] == ["https://github.com/acme/repo/pull/7"]
 
     def test_turn_boundary_non_owner_drives_no_refresh(
         self, state: DashboardState, monkeypatch
@@ -766,13 +778,12 @@ class TestTurnBoundarySourceStatus:
         slot = state.get_or_create_slot("chat-a")
         slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
         state._owner_ws_clients.add(MagicMock(closed=False))
-        monkeypatch.setattr(
-            source_providers,
-            "request_check_refresh_now",
-            MagicMock(side_effect=RuntimeError("no event loop")),
-        )
+        refresh = MagicMock(side_effect=RuntimeError("no event loop"))
+        monkeypatch.setattr(source_providers, "request_check_refresh_now", refresh)
 
-        state.refresh_slot_source_status("chat-a")  # must not raise
+        state.refresh_slot_source_status("chat-a")
+
+        assert refresh.call_args.args[0] == ["https://github.com/acme/repo/pull/7"]
 
     def test_status_delta_goes_only_to_owner_sockets(
         self, state: DashboardState, monkeypatch

@@ -201,6 +201,9 @@ ERROR_INVALID_RESULT = "invalid-result"
 ERROR_SCRUBBED_CREDENTIAL = "scrubbed:credential"
 ERROR_SCRUBBED_URL = "scrubbed:exfiltration-url"
 ERROR_SCRUBBED_SCAN_FAILED = "scrubbed:scan-failed"
+#: The unclipped text was longer than :data:`MAX_UNCLIPPED_SCAN_CHARS`, so it was
+#: not scanned. Its own category so a long paste never reads as a scanner fault.
+ERROR_SCRUBBED_SCAN_BOUND = "scrubbed:scan-bound"
 #: ``provider.model`` is not a model id (``types.MODEL_ID_RE``). The field is in
 #: the agent-writable config and goes on the wire verbatim, so anything but a
 #: short identifier is refused as an egress channel, not sent as a model name.
@@ -212,8 +215,15 @@ SCRUB_ERRORS = (
     ERROR_SCRUBBED_CREDENTIAL,
     ERROR_SCRUBBED_URL,
     ERROR_SCRUBBED_SCAN_FAILED,
+    ERROR_SCRUBBED_SCAN_BOUND,
     ERROR_SCRUBBED_MODEL,
 )
+
+#: Longest *unclipped* text the scrub reads (see :func:`decide`). A point clips its
+#: excerpt at a few thousand characters; this leaves room past that clip for a
+#: credential that starts inside it, a PEM block included. Longer text refuses:
+#: any cut of the scan can leave a credential's anchor past the cut.
+MAX_UNCLIPPED_SCAN_CHARS = 8192
 
 #: Credential spellings refused locally, before the canonical scanner. Compiled
 #: here because ``credential_patterns`` exports pattern SOURCE strings. This is the
@@ -369,6 +379,32 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
             ),
         )
     return True
+
+
+def _targets_denied(
+    config: Any | None, session_key: str | None, point: str, model: str, lane: str
+) -> bool:
+    """Whether the ceiling's ``points`` / ``models`` / ``endpoints`` lists refuse this
+    request. Filesystem IO; never raises (an error denies).
+
+    The ``models`` and ``endpoints`` lists bind the decision PROVIDER, which only
+    the Jev lane uses. The judge's LLM lane sends to the session's own model
+    provider through the session runner, which picks the served model itself, so
+    it is asked about its point only.
+    """
+    from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, targets_denied
+
+    try:
+        jev = lane == LANE_JEV
+        return targets_denied(
+            session_key or DASHBOARD_SURFACE_KEY,
+            point=point,
+            model=model if jev else None,
+            endpoint=configured_endpoint(config) if jev else None,
+        )
+    except Exception as exc:
+        logger.debug("decisions: %s target check failed (%s)", point, type(exc).__name__)
+        return True
 
 
 def _consented_for(
@@ -925,7 +961,11 @@ def _scan_text(state: dict | str, questions: list[Question], model: str = "") ->
 
 
 def scrub_reason(
-    state: dict | str, questions: list[Question], *, model: str = _DEFAULT_MODEL
+    state: dict | str,
+    questions: list[Question],
+    *,
+    model: str = _DEFAULT_MODEL,
+    unclipped: str = "",
 ) -> str | None:
     """A :data:`SCRUB_ERRORS` category, or ``None`` when the request may be sent.
 
@@ -937,10 +977,19 @@ def scrub_reason(
     external request cannot be cleared by a scan that did not complete. The reason
     is a category, never the matched text, which would put the credential into
     the log.
+
+    *unclipped* is scanned with them but never sent: the text a point clipped to
+    build *state*. A credential the clip cut in half is a fragment no pattern
+    matches in *state*, yet the fragment is what would go on the wire, so the
+    refusal has to read the text before the cut. Text longer than
+    :data:`MAX_UNCLIPPED_SCAN_CHARS` is not read at all and refuses, so the scan
+    stays bounded without a cut of its own.
     """
     if not is_model_id(model):
         return ERROR_SCRUBBED_MODEL
-    text = _scan_text(state, questions, model)
+    if len(unclipped) > MAX_UNCLIPPED_SCAN_CHARS:
+        return ERROR_SCRUBBED_SCAN_BOUND
+    text = _scan_text(state, questions, model) + "\n" + unclipped
     if _CREDENTIAL_RE.search(text) is not None:
         return ERROR_SCRUBBED_CREDENTIAL
     try:
@@ -1120,6 +1169,7 @@ async def decide(
     scopes: Sequence[str] = (),
     images: Mapping[str, ImageAsset] | None = None,
     max_wait_s: float | None = None,
+    unclipped: str = "",
 ) -> Answers | None:
     """Ask *questions* about *state* at *point*, or return ``None``.
 
@@ -1167,6 +1217,10 @@ async def decide(
     image, refuses with no row and no IO.
 
     *max_wait_s* narrows the provider budget for this one call; it never widens it.
+
+    *unclipped* is the text a point clipped to build *state*, usually the new
+    message. It is scanned by :func:`scrub_reason` and never sent, so a credential
+    the clip halved still refuses the request.
     """
     if receipt is not None:
         receipt["row_written"] = False
@@ -1303,9 +1357,17 @@ async def decide(
     # For every lane but the judge's LLM one this is ``provider.model`` with the
     # same fallback the System One client applies, unchanged.
     model = lane_model(cfg, lane=lane)
-    refusal = scrub_reason(state, questions, model=model)
+    # The scrub runs first: the list check below writes the model id to the SEL,
+    # so an id the scrub refuses (a pasted credential) never reaches that row.
+    refusal = scrub_reason(state, questions, model=model, unclipped=unclipped)
     if refusal is not None:
         await _write(latency_ms=0, answers=None, error=refusal)
+        return None
+    # The fleet's lists: which points, models and endpoints the seam may use. Like
+    # the capability row in ``_consented_for``, a refusal here writes no decision
+    # row (its audit is the SEL ``governance_decision`` row) and costs nothing on
+    # an unconsented install, which never reaches this line.
+    if await asyncio.to_thread(_targets_denied, cfg, session_key, point, model, lane):
         return None
 
     started = time.monotonic()

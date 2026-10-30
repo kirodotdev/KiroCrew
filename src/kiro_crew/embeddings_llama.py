@@ -20,6 +20,7 @@ import time
 import weakref
 from pathlib import Path
 
+from kiro_crew.embeddings_child import ChildLlama, is_vendored_llama_class
 from kiro_crew.embeddings_gguf import _GGUF_CAUSAL_SUFFIX, _model_context_policy
 from kiro_crew.embeddings_model import (
     _is_sensitive_model_path,
@@ -53,6 +54,7 @@ from kiro_crew.embeddings_settings import (
     _work_for_priority,
     bulk_embed_threads,
     bulk_pace_delay,
+    embedding_child_process_enabled,
     embedding_idle_evict_secs,
     embedding_work,
 )
@@ -136,7 +138,7 @@ def _install_bounded_decode(llm: object) -> bool:
     model unloads. The vendored ``Llama.embed`` is told to decode a longer batch
     as consecutive slices of at most ``n_ubatch`` tokens (its
     ``kiro_crew_max_decode_tokens`` divergence), so the buffer never holds more
-    than ``n_ubatch`` rows: 149 MiB for the shipped model's 256.
+    than ``n_ubatch`` rows: 75 MiB for the shipped model's 128.
 
     ``n_ubatch`` and not anything smaller, because a unified-cache decode splits a
     batch into consecutive ``n_ubatch`` slices in batch order (``split_simple``):
@@ -192,6 +194,20 @@ def _free_llama(llm: object) -> None:
             closer()
         except Exception:  # noqa: BLE001 - freeing must not propagate
             logger.debug("Freeing abandoned model failed", exc_info=True)
+
+
+def _construct_llama(llama_cls: object, kwargs: dict, stamp: "tuple[int, ...] | None") -> object:
+    """Build the model: in this process by default, in a child process when switched on.
+
+    The child (``memory.embedding_child_process``, default off) takes native
+    inference and its Python wrapper off this process's GIL and CPU priority; see
+    :mod:`kiro_crew.embeddings_child`. Only the vendored runtime can be rebuilt in
+    another interpreter, so any other class (a test fake, a future backend)
+    keeps running here, as does everything when the switch is ``false``.
+    """
+    if embedding_child_process_enabled() and is_vendored_llama_class(llama_cls):
+        return ChildLlama(kwargs, stamp=stamp)
+    return llama_cls(**kwargs)  # type: ignore[operator]
 
 
 def _chars_bucket(chars: int) -> str:
@@ -363,6 +379,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
     daemon thread (``kc-embed-infer``), so the process holds exactly one
     compute pool no matter how many threads embed. ``_lock`` already serializes
     inference, so the hand-off adds no extra queueing.
+
+    With ``memory.embedding_child_process`` on, the published model is a
+    :class:`~kiro_crew.embeddings_child.ChildLlama`:
+    the model itself lives in a child process and ``kc-embed-infer`` only waits
+    on a pipe, so inference runs outside this process's GIL. Queueing,
+    priorities, pacing and eviction are unchanged and stay here.
     """
 
     def __init__(
@@ -581,7 +603,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                     policy.n_ctx,
                     policy.n_ctx,
                 )
-            llm = llama_cls(
+            llama_kwargs = dict(
                 model_path=str(self._model_path),
                 embedding=True,
                 # From the model's id, passed for every file: a model whose id
@@ -597,7 +619,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # against input length. Both are
                 # clamped to the trained position count the GGUF declares, at
                 # most 2,048 (see _model_context_policy). Decoder models keep the
-                # lower-RSS 256-token micro-batch, bounded by that batch; non-causal
+                # lower-RSS 128-token micro-batch, bounded by that batch; non-causal
                 # models (cache-less encoder architectures, or a GGUF declaring
                 # `.attention.causal = false`) need one physical micro-batch to
                 # hold every token, so all three coincide. So does any model
@@ -605,7 +627,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # its own and keeps only the last one's result, which would store
                 # the mean, or the first token, of a longer input's tail. The
                 # token last-token pooling reads is always in the last micro-batch,
-                # so only a last-token decoder keeps the 256.
+                # so only a last-token decoder keeps the 128.
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
                 n_ubatch=(
@@ -619,6 +641,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_threads_batch=threads,
                 verbose=False,
             )
+            llm = _construct_llama(llama_cls, llama_kwargs, stamp)
             _install_metadata_kv_clear(llm)
             _install_bounded_decode(llm)
             try:
@@ -792,7 +815,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
                         continue
                     self._apply_thread_class(job.llm, prio)
                     job.started = time.monotonic()
-                    job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
+                    # A child-process model can stop waiting at the caller's
+                    # deadline; an in-process native call cannot be interrupted.
+                    if isinstance(job.llm, ChildLlama):
+                        job.result = job.llm.create_embedding_for(job.texts, job.work)
+                    else:
+                        job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
             except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
                 job.error = exc
             finally:
@@ -1086,8 +1114,17 @@ class LlamaCppEmbedder(EmbeddingBackend):
             thread.join(0.05)
 
     def _start_evictor(self) -> None:
-        """Start the idle evictor for the model just published. Idempotent."""
+        """Start the idle evictor for the model just published. Idempotent.
+
+        Guarded by ``_load_lock`` so it cannot race ``_close_retiring_worker``:
+        if ``retire()`` or ``close()`` cleared ``_llm`` (or set ``_closed``)
+        before this call acquires the lock, the evictor must not start -- the
+        next ``_close_retiring_worker`` already saw ``_evict_thread=None`` and
+        returned without a join, so a thread started here would be orphaned.
+        """
         with self._load_lock:
+            if self._closed or self._llm is None:
+                return
             if self._evict_thread is not None and self._evict_thread.is_alive():
                 return
             self._evict_wake = threading.Event()

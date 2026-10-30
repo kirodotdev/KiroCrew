@@ -205,10 +205,11 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
 
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
+  derivePctFromUsed?: boolean
   showContextPct?: boolean
   showContextTokens?: boolean
   shelfCompact: boolean
@@ -225,19 +226,29 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   const agentDefaultSource = autoCompact?.agent_pct != null
     ? i18nT('components.chatInput.agent_default_source', { agent: autoCompact.agent ?? '' })
     : undefined
-  const pct = Math.round(contextPct)
   const win = contextWindowTokens || 0
-  const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
+  const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((contextPct / 100) * win) : 0)
+  // Only on a model switch does the stored entry carry `used` with NO measured
+  // window (the reducer drops the stale pct and window, keeps `used`): the
+  // caller signals that shape with `derivePctFromUsed`, and the percentage is
+  // derived from `used` against the window this control resolved, so the old
+  // model's percentage never pairs with the new model's window. On every other
+  // frame the backend's reported `contextPct` is used exactly as before — a
+  // backend whose percentage is not simply `used / window` (overhead counted,
+  // or a percentage backfilled against tokens) keeps rendering its own number.
+  const effectivePct = derivePctFromUsed && contextUsedTokens != null && win > 0
+    ? (used / win) * 100
+    : contextPct
   const remaining = win ? Math.max(win - used, 0) : 0
   const approx = contextUsedTokens == null
-  const pctColor = contextColor(contextPct)
+  const pctColor = contextColor(effectivePct)
   const showAnyReadout = !!(showContextPct || showContextTokens)
   // Graceful degrade: on a narrow shelf, collapse to the percentage
   // alone (or tokens, if that's the only segment enabled) so the
   // readout never crowds out the agent/model controls.
   const readout = shelfCompact
-    ? composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
-    : composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
+    ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
+    : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
   // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
   // this button, so a press while open toggles it closed.
@@ -247,18 +258,18 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
       {...bindPress(() => setCtxPopoverOpen(o => !o))}
-      title={contextTip(contextPct)}
+      title={contextTip(effectivePct)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
     >
-      <ContextBar pct={contextPct} width={40} height={3} />
+      <ContextBar pct={effectivePct} width={40} height={3} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
     {ctxPopoverOpen && (
       <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
-                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(contextPct) / 100)}</span>
+                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
                 </div>
                 <div className="flex flex-col gap-1 text-[11px] font-mono">
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(used)}</span></div>
@@ -331,6 +342,11 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                           : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
                       </div>
                     )}
+                    {autoCompact.harness_managed && (
+                      <div className="mt-1 text-[10px] text-muted" data-testid="autocompact-harness-managed-note">
+                        {i18nT('components.chatInput.harness_managed_note', { backend: autoCompact.harness_managed.toUpperCase() })}
+                      </div>
+                    )}
                   </div>
                 )}
         </div>
@@ -365,20 +381,27 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   const effortShown = effortIsDefault
     ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
     : effortLabel(reasoningEffort || '')
-  // The chip is disabled while a response runs: a guide to it says so.
+  // The chip stays enabled while a response runs -- a pick then is committed
+  // and applied from the next message (the gateway answers `deferred: true`;
+  // the running reply finishes on the model it started with), the project
+  // chip's contract. The predicate is still reported from here because the
+  // send control's location requires it; it no longer gates this chip.
   useGuidePredicate('no_response_running', !isRunning)
   const effortSuffix = hasEffort
     ? ` · ${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortShown}`
     : ''
-  const modelChipLabel = `${isRunning
-    ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-    : modelIsJevRouted
-      ? i18nT('pages.chatPage.model_auto_jev_description')
-      : modelIsInheritedDefault
-        ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-        : modelIsAutoChosen
-          ? `${i18nT('components.chatInput.model_2', { name: modelName })} · ${i18nT('components.jobForm.auto')}`
-          : i18nT('components.chatInput.model_2', { name: modelName })}${effortSuffix}`
+  const modelChipName = modelIsJevRouted
+    ? i18nT('pages.chatPage.model_auto_jev_description')
+    : modelIsInheritedDefault
+      ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+      : modelIsAutoChosen
+        ? `${i18nT('components.chatInput.model_2', { name: modelName })} · ${i18nT('components.jobForm.auto')}`
+        : i18nT('components.chatInput.model_2', { name: modelName })
+  // While a response runs the name is followed by the one line that matters
+  // then: a pick applies from the next message, as the project chip says.
+  const modelChipLabel = `${modelChipName}${effortSuffix}${isRunning
+    ? `\n${i18nT('components.chatInput.model_switch_applies_next_turn')}`
+    : ''}`
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
   const bindPress = usePressActivation()
   const press = bindPress<HTMLButtonElement>(el => {
@@ -398,7 +421,6 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
       press.onPointerDown(e)
     }}
     onClick={press.onClick}
-    disabled={isRunning}
     data-testid="composer-model-chip"
     {...uiLocation('chat.model-picker')}
     // Inherited default: the explanation rides on hover (title) AND keyboard

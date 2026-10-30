@@ -463,7 +463,132 @@ def _url_payload_command(n: int) -> str:
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
 #: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
 #: boundary split an SRI value saves main's verdict on the digest, not the notice.
-_PACKAGE_LINE_BUDGET = 32_188
+#:
+#: Raised again, from 32,188, for the ``self-protection-skills-authority-retire`` floor,
+#: which denies the operator-only ``kirocrew skills authority-retire`` recovery
+#: through an agent shell: one argv matcher in ``argv_floor_self``, its facade
+#: manifest line, its rule id and reason in ``denied_rules_tables``, its ``deny_gate``
+#: registration, its facade export, and its name in the ungated-floor comment. No pass
+#: widened and no threshold moved.
+#:
+#: Raised again, from 32,206, for the shell-expansion IMDS gate (GHSA-x2m8-5ff9-f479).
+#: A spliced last octet like ``169.254.169.25$((2+2))`` evaded the literal
+#: ``169.254.169.254`` deny, so ``exfil`` resolves a statically-knowable octet before
+#: comparing: a tiny ``ast``-based integer evaluator (``_safe_arith``) reads only
+#: ``$((..))``/``$[..]`` built from int constants and ``+ - * / %``, size-bounded and
+#: running nothing, and ``_resolve_octet`` folds a literal-or-arithmetic octet to its
+#: value. Only a token resolving to exactly ``169.254.169.254`` refuses; an octet
+#: holding ``$VAR``, ``${..}``, ``$(..)`` or a backtick stays unresolved and is allowed
+#: (``169.254.169.$o`` in a loop is benign), so the gate adds no new over-block. This
+#: replaces an earlier presence-based attempt that was larger and over-blocked, so the
+#: package shrank here (prior head pinned 32,485).
+#:
+#: Raised by 9, from 32,438, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
+#: ``paths_lists``: the Meetings app's per-meeting user notes tree, write-denied to
+#: the agent file tools and read-allowed so the dashboard can serve pasted images.
+#: Data, not rule logic: the matcher and every other entry are unchanged.
+#:
+#: Raised again for the ``rm_floor`` reads of a backtick body inside
+#: double quotes and of a redirection glued to an operand, and for the floor-error
+#: path naming ``rm`` as a word (``_names_rm_word``, on the raw text and with
+#: ``${X:-…}`` defaults resolved). One helper pair, two branches in the existing
+#: segment walk and one regex; no floor widened beyond ``rm`` itself. A live
+#: redirection is kept as ONE segment word -- its fd prefix (``2>``), a ``{fd}``,
+#: a two-character operator (``>>``) and an fd-dup (``2>&1``) all stay together --
+#: so the program-word scan can step over a leading redirection (and its separate
+#: target) the way it steps over a ``VAR=val`` assignment, using the shared
+#: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
+#: ``rm`` cannot hide the program word.
+#:
+#: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
+#: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
+#: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
+#:
+#: Raised by 1, from 32,526, for one ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
+#: ``member-records``, the gateway-only leaf a crewmate's rules, goals and DM binding
+#: live in. Data, not rule logic.
+#:
+#: Raised by 3, from 32,527, for the ``web-push`` leaf in ``paths_lists`` (the Web
+#: Push key and device secrets): the leaf and its two-line reason. No rule changed.
+#:
+#: Raised again, from 32,530, for ``redaction_patterns``' optional native pre-filter: the
+#: loader that accepts ``kc_native`` only when its fingerprint matches the Python gate,
+#: the fingerprint itself, a debug line when a build's fingerprint does not match, and
+#: the dispatcher that falls back to the Python gate (kept verbatim as
+#: ``_might_contain_credential_py``) on a missing, stale, disabled or failing module.
+#: Seventy-one lines. No pattern moved and no pass changed.
+#:
+#: Raised by 12, from 32,601, for the crewmate folder's state files in ``paths_lists``
+#: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
+#: like the folder itself. Data, not rule logic: the matcher is unchanged.
+#:
+#: Raised by 3, from 32,613, for the enterprise install-tree write fence in
+#: ``paths``: one import and one ``or`` clause on the write gate, plus the blank line
+#: isort puts after the import. The matcher lives outside the package
+#: (``kiro_crew.edition_install_fence``).
+#:
+#: Raised by 19, from 32,616, for the ``rm`` floor's own segment walk: reserved
+#: words (``then``, ``do``, ``!``, ``time`` …) keep command position, a quoted
+#: substitution may expand to nothing in the program word, and
+#: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
+#: Each command is read with and without that tracking. Deny-only: no allow widened.
+#:
+#: Raised by 8, from 32,635, for the ``rm`` floor's program word: an unquoted
+#: ``$x`` / ``${…}`` / ``$1`` there may be unset, so ``${x}rm`` is read as ``rm``.
+#: A word already read as ``rm`` keeps that reading. Deny-only: no allow widened.
+#: Raised by 25, from 32,643, for ``exfil.restore_allowed_links``: an allowed host with several
+#: different addresses in one reply pairs its placeholders with its records by order
+#: instead of staying blocked, but only on a row marked ``blocked_links_ordered``, and
+#: every address put back must be the whole URL match that starts where it lands;
+#: plus the redactor's ``_ordered_out`` flag for a link rewritten inside a longer one.
+#: Display-time only; no redaction rule, pattern or threshold moved.
+#: Raised by 125, from 32,668, for ``shell_commands``: the shared quote-aware command
+#: reader (words with quote state and raw offsets, redirections, the live separator)
+#: that the ``rm`` floor's segment walk moved into, net of the walk it replaced, and
+#: the carve-out's first word in ``exfil_bash``. No rule, pattern or verdict moved.
+#: Raised by 5, from 32,793, for ``vm_stat``, ``uptime`` and ``free`` in the read-only
+#: allowlist of ``readonly_bash`` plus their two-line note. Table data, no matcher change.
+#:
+#: Raised again, from 32,798, by one line: the per-template MCP additions record joins
+#: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
+#: ``headers`` can hold an API key and only the floor masks it from a foreign child.
+#:
+#: Set to the measured 32,802: the package measures 32,799, plus 3 for one
+#: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
+#: the mediated-secret request directory (``secret-request-policy``), denied to the
+#: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
+#:
+#:
+#:
+#:
+#: Raised again, from 32,802, for a real new rule in ``redaction_patterns.py``: the
+#: Telegram-bot-token branch (``_CREDENTIAL_PATTERNS``) false-positives on a long
+#: CDK-generated ARN, whose account-id/resource boundary shares that branch's bare
+#: ``<digits>:<30+ run>`` shape. Two new compiled patterns (an alternation with the
+#: branch dropped, and an ARN-account-id look-behind) plus the ``_credential_matches``
+#: rejection arm that retries past a hit on that shape sitting in an ARN, mirroring the
+#: existing JWT rejection arm beside it. The ARN-prefix check is left-bounded by
+#: ``_ARN_PREFIX_MAX_LOOKBACK`` so it stays constant-time per hit -- an unbounded
+#: ``search(text, 0, hit)`` would be quadratic over the multi-ARN output this rule
+#: targets, which is the loop-stall shape this very file guards. The exemption also
+#: requires the hit's own digit run to be exactly 12 digits (``_ARN_ACCOUNT_ID_12_DIGITS_RE``),
+#: the invariant length of an AWS account id, so a genuine Telegram token (6-10 digit
+#: bot id) placed right after a real ARN prefix is NOT exempted and still redacts.
+#: This raise and the raises above it are independent additions to the same ratchet,
+#: so the number below is re-MEASURED off the tree, not the sum of the deltas. The
+#: count also carries the five new owner names this rule adds to the ``redaction``
+#: facade's ``TYPE_CHECKING`` mirror manifest (the two ARN-prefix regexes, the lookback
+#: constant, the 12-digit account-id regex and the sans-Telegram alternation), which
+#: ``test_facade_mirror_guards`` requires name everything the facade forwards.
+#: Then for ``_arn_exemption_withheld``: twelve digits alone do not prove an account
+#: id, so the exemption needs the whole tail to fullmatch a CDK-generated name
+#: (``_CDK_RESOURCE_NAME_RE`` over ``_CDK_WORDS``, capped by ``_CDK_NAME_MAX_LEN``), and
+#: is still withheld when the account is a zero-padded 6-10 digit bot id
+#: (``_BOT_ID_LENGTHS``). Four constants, one predicate, its call in the rejection arm,
+#: their comments and their manifest lines; the exemption only narrows.
+#: Raised again, from 32,899, for ``redaction.py``'s hold on a whole SRI digest that a
+#: streamed delta cuts: it is counted on top of the ARN exemption above.
+_PACKAGE_LINE_BUDGET = 32_909
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

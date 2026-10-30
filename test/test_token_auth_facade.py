@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import importlib
 import os
 import subprocess
 import sys
@@ -36,6 +35,10 @@ from kiro_crew.dashboard import token_auth
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_token_auth_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
 
 FACADE = "kiro_crew.dashboard.token_auth"
 OWNER_PREFIX = "kiro_crew.dashboard.token_auth_"
@@ -103,11 +106,6 @@ def _corpus_patched_names() -> frozenset[str]:
         names = facade_mirror_scan.patched_names(text, {FACADE: FACADE})
         found |= names.get(FACADE, set())
     return frozenset(found)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
@@ -278,13 +276,3 @@ def test_the_test_tree_walk_reaches_this_file() -> None:
     walked = {path.resolve() for path in _test_tree_files()}
     assert _THIS_FILE in walked
     assert source_corpus.repo_root() / "test" / "test_token_auth.py" in walked
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

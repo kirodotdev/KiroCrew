@@ -352,11 +352,11 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#7248",
         new_default_display="0 (automatic: as many as are registered)",
     ),
-    # A stored False keeps every peer-session tool disabled, including a
-    # conductor whose agent spec deliberately mounts the dashboard server. False
-    # is also the supported global withdrawal, so this stays report-only: Doctor
-    # can name the stale-default possibility without overriding an operator's
-    # explicit security choice.
+    # A stored False withdraws session control from every ordinary agent. Crew
+    # members and the owner-tab Conductor keep a creator-fenced dispatch bypass
+    # unless agent.member_dispatch is also False. False is a supported operator
+    # withdrawal, so this stays report-only: Doctor can name the stale-default
+    # possibility without overriding an operator's explicit security choice.
     SupersededDefault(
         dotted_key="agent.session_control",
         old_default=False,
@@ -839,7 +839,7 @@ def _update_map(
         raise AckPathRefused(f"refusing to write through a link at {ACK_FILE_NAME}")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / (path.name + ".lock")
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
             document, readable = _read_ack_document_status()
@@ -1161,8 +1161,10 @@ class CoercedValue:
     #: setting is the one thing the command promises never to do.
     resolves_to: Callable[[object], str]
     #: Section default for the key, so an adoption whose resolution IS the default
-    #: can delete the key (an absent key resolves to it) rather than write it.
-    default: str
+    #: can delete the key (an absent key resolves to it) rather than write it. A
+    #: callable when the absent-key answer can move at runtime (an edition's
+    #: ``default_stt()``): deleting the key must land where the stored value did.
+    default: "str | Callable[[], str]"
     reason: str
     is_coerced: Callable[[object], bool]
 
@@ -1170,7 +1172,15 @@ class CoercedValue:
         """What ``--adopt`` should leave in the file for *stored*: a value to
         write, or ``None`` to delete the key because the default already answers."""
         resolved = self.resolves_to(stored)
-        return None if resolved == self.default else resolved
+        default = self.default() if callable(self.default) else self.default
+        return None if resolved == default else resolved
+
+
+def _stt_provider_default() -> str:
+    """What an absent ``stt.provider`` resolves to, the edition's default included."""
+    from kiro_crew.config.sections_stt import default_stt_provider  # circular import
+
+    return default_stt_provider()
 
 
 def _stt_provider_is_coerced(value: object) -> bool:
@@ -1205,7 +1215,7 @@ COERCED_VALUES: tuple[CoercedValue, ...] = (
     CoercedValue(
         dotted_key="stt.provider",
         resolves_to=_stt_provider_resolution,
-        default="local",
+        default=_stt_provider_default,
         reason=(
             "names a retired speech provider (voice input runs on 'local') or an "
             "unknown one (no recogniser runs, as if it were 'off')"

@@ -16,10 +16,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
 import {
   assertMenuCaption,
   cropRectForWindow,
@@ -170,15 +169,22 @@ describe('the display the capture happens on', () => {
   })
 
   it('finds Xvfb on PATH and prefers the earliest entry that has one', () => {
-    const early = mkdtempSync(join(tmpdir(), 'xvfb-early-'))
-    const late = mkdtempSync(join(tmpdir(), 'xvfb-late-'))
+    // The helper reads a Linux PATH, so it splits on ':'. An absolute temporary
+    // directory on Windows starts with a drive ('C:\...'), and that colon would
+    // cut each entry in two. A root relative to the working directory carries no
+    // drive, so the same colon-separated PATH names the same two directories on
+    // every host the unit tests run on.
+    const root = mkdtempSync('xvfb-path-')
+    const early = join(root, 'early')
+    const late = join(root, 'late')
     try {
+      mkdirSync(early)
+      mkdirSync(late)
       writeFileSync(join(early, 'Xvfb'), '')
       writeFileSync(join(late, 'Xvfb'), '')
       expect(xvfbExecutable(undefined, `/nonexistent:${early}:${late}`)).toBe(join(early, 'Xvfb'))
     } finally {
-      rmSync(early, { recursive: true, force: true })
-      rmSync(late, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
     }
   })
 

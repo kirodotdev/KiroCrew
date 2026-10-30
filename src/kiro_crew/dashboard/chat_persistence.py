@@ -22,6 +22,7 @@ parts of :mod:`kiro_crew.dashboard.chat_persistence_parts`, which
 The rules those consult are composed from :mod:`kiro_crew.dashboard.slot_persistence`:
 ``write_guards`` (the save's refusals and witnesses), ``metadata_codec`` (every
 slot field of the metadata line, written and read back through one table),
+``metadata_values`` (what a value read back from the line must satisfy first),
 ``metadata_line`` (what a save folds against the line on disk before it encodes),
 ``transcript_merge`` (frozen prefix, foreign appends, payload), ``message_entries``
 (row projection), ``restore_inputs`` (restore-time reads and screens) and
@@ -342,7 +343,9 @@ def _remember_reasoning_effort_for_restore(level: str) -> None:
     path = _effort_marker_path(directory, level)
     # Old raw-name markers remain readable after upgrade. Avoid creating a
     # duplicate that would count twice against the durable bound.
-    lock_fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    lock_fd = open_create_or_existing(directory / ".lock", os.O_RDWR, 0o600)
     with os.fdopen(lock_fd, "r+b") as lock_file, file_lock(lock_file.fileno(), required=True):
         if path.is_symlink():
             raise OSError("validated effort marker is a symlink")
@@ -762,9 +765,19 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     _build_message_entry_uncached,
     remember_unknown_row_fields,
 )
-from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
+from kiro_crew.dashboard.slot_persistence.metadata_codec import COLOR_HEX_RE  # noqa: E402,F401
+from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
+    _META_LAST_USER_AT,
+    _PENDING_MEMORY_MODE_LOCK,
+    _capped_dismissed_line,
+    _latest_stamp,
+    _newest_human_turn_ts,
+    _record_pending_memory_mode,
+    _tighten_carried_execution,
+    pending_slot_memory_mode,
+)
+from kiro_crew.dashboard.slot_persistence.metadata_values import (  # noqa: E402,F401
     _RETIRED_MODES,
-    COLOR_HEX_RE,
     _rebase_rehydrated_refresh_mark,
     _rehydrate_slot_title,
     _rehydrate_title_low_signal,
@@ -775,16 +788,6 @@ from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,
     _restored_mode,
     _validate_autocompact_pct,
     _validate_turn_timeout_secs,
-)
-from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
-    _META_LAST_USER_AT,
-    _PENDING_MEMORY_MODE_LOCK,
-    _capped_dismissed_line,
-    _latest_stamp,
-    _newest_human_turn_ts,
-    _record_pending_memory_mode,
-    _tighten_carried_execution,
-    pending_slot_memory_mode,
 )
 from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,F401
     _build_kiro_model_map,

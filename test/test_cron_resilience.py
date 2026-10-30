@@ -73,6 +73,8 @@ class TestCronNonBlocking:
         await _wait_for(lambda: "ok" in executed)
         fail_job = next(j for j in svc._jobs if j.name == "fail")
         await _wait_for(lambda: fail_job.last_status == "error")
+        assert executed == ["ok"]
+        assert "boom" in (fail_job.last_error or "")
         await svc.stop()
 
     @pytest.mark.asyncio
@@ -98,7 +100,6 @@ class TestCronNonBlocking:
         await task
         assert svc._jobs[0].last_status == "ok"
 
-        # Reload from disk and verify
         svc2 = CronService(base_dir=tmp_path)
         svc2._load()
         assert svc2._jobs[0].last_status == "ok"
@@ -183,7 +184,6 @@ class TestHeartbeatParallel:
             await asyncio.sleep(0.5)
 
         svc = HeartbeatService(memory=MagicMock(), on_task=on_task)
-        # Write 3 tasks
         hb_path = tmp_path / "HEARTBEAT.md"
         hb_path.write_text(_HEADER + "- task1\n- task2\n- task3\n")
 

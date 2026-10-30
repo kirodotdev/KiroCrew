@@ -73,6 +73,13 @@ With Tailwind, use arbitrary values: `bg-[var(--card)]`,
 `text-white`, `bg-white`, etc — they clash the moment the user switches
 themes.
 
+Only the names in these two tables reach the sandboxed frame; a parent
+theme override cannot add more. Two common names are aliased for you:
+`--surface` resolves to `--card` and `--surface-secondary` to
+`--bg-elevated`. Any other name (`--surface-raised`, `--panel`, ...) is
+undefined inside the frame, so `var(--panel, #1e1e1e)` always paints its
+dark literal and is unreadable on a light theme.
+
 ### The theme contract
 
 These rules apply to **every artifact-bound HTML document**, not just

@@ -1,9 +1,9 @@
 """Tests for each voice_reply provider's synthesis call.
 
-``_synthesize_system``, ``_synthesize_piper`` and ``_synthesize_polly``: the argv
+``_synthesize_system`` and ``_synthesize_polly``: the argv
 each one builds inside the sandbox wrap, the consent gate in front of Polly, the
 failure exits, and the temp file each one owns until every exit removes it
-(cancellation included, for Piper and Polly).
+(cancellation included).
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from voice_reply_helpers import _no_argv_prefixers  # noqa: F401
 from voice_reply_helpers import _polly_consented_fixture  # noqa: F401
 from voice_reply_helpers import (
     _capture_mkstemp,
-    _make_executable,
     _mock_subprocess,
     _patch_aws_on_path,
     _prepared,
@@ -31,7 +30,6 @@ from kiro_crew.voice_reply import (
     SYSTEM_ENGINE_SAPI,
     SYSTEM_ENGINE_SAY,
     _produced_audio,
-    _synthesize_piper,
     _synthesize_polly,
     _synthesize_system,
 )
@@ -420,234 +418,20 @@ class TestSynthesizeSystem:
         assert allocated and not any(os.path.exists(p) for p in allocated)
 
 
-# ── _synthesize_piper() ──────────────────────────────────────────────────
+# ── _run_tts_subprocess() through the system engine ───────────────────────
 
 
-class TestSynthesizePiper:
-    @pytest.mark.asyncio
-    async def test_binary_not_found_warns_and_returns_none(self, caplog) -> None:
-        with (
-            patch("kiro_crew.voice_reply._resolve_piper_binary", return_value=None),
-            caplog.at_level("DEBUG", logger="kiro_crew.voice_reply"),
-        ):
-            assert await _synthesize_piper("hi") is None
+class TestSystemSubprocessOwnership:
+    """The shared spawn helper's exits, driven through the system engine.
 
-        records = [
-            record for record in caplog.records if "piper binary not found" in record.message
-        ]
-        assert len(records) == 1
-        assert records[0].levelname == "WARNING"
+    Temp ownership, kill-and-reap on cancellation and the sandbox refusal live in
+    ``_run_tts_subprocess``, which every WAV provider goes through.
+    """
 
     @pytest.mark.asyncio
-    async def test_model_missing_returns_none(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        with patch(
-            "kiro_crew.voice_reply._resolve_piper_binary",
-            return_value=str(bin_path),
-        ):
-            # Empty model
-            assert await _synthesize_piper("hi", piper_model="") is None
-            # Nonexistent file
-            assert (
-                await _synthesize_piper(
-                    "hi",
-                    piper_model=str(tmp_path / "missing.onnx"),
-                )
-                is None
-            )
-
-    @pytest.mark.asyncio
-    async def test_success_returns_wav_path(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-
-        proc = _mock_subprocess(returncode=0)
-
-        async def fake_wrap(cmd, *_a, **_kw):
-            return cmd, {}, None  # no sandbox, no cleanup
-
-        # The synthesized file needs size >= 100 to be considered valid.
-        async def fake_exec(*cmd, **kwargs):
-            # The output file is the arg after "-f"
-            out_idx = cmd.index("-f") + 1
-            out_path = cmd[out_idx]
-            with open(out_path, "wb") as f:
-                f.write(b"RIFF" + b"x" * 200)
-            return proc
-
-        with (
-            patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
-            ),
-            patch("kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=fake_wrap),
-            patch(
-                "asyncio.create_subprocess_exec",
-                side_effect=fake_exec,
-            ),
-        ):
-            result = await _synthesize_piper(
-                "hello",
-                piper_model=str(model),
-            )
-        assert result is not None
-        assert result.endswith(".wav")
-        assert os.path.isfile(result)
-        os.unlink(result)
-
-    @pytest.mark.asyncio
-    async def test_success_with_config_and_length_scale(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-        cfg = tmp_path / "voice.onnx.json"
-        cfg.write_text("{}")
-
-        proc = _mock_subprocess(returncode=0)
-        captured_cmd: list[str] = []
-
-        async def fake_wrap(cmd, *_a, **_kw):
-            captured_cmd.extend(cmd)
-            return cmd, {}, None
-
-        async def fake_exec(*cmd, **kwargs):
-            out_path = cmd[cmd.index("-f") + 1]
-            with open(out_path, "wb") as f:
-                f.write(b"x" * 200)
-            return proc
-
-        with (
-            patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
-            ),
-            patch("kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=fake_wrap),
-            patch(
-                "asyncio.create_subprocess_exec",
-                side_effect=fake_exec,
-            ),
-        ):
-            result = await _synthesize_piper(
-                "hello",
-                piper_model=str(model),
-                piper_model_config=str(cfg),
-                length_scale=0.9,
-            )
-        assert result is not None
-        os.unlink(result)
-        # Config + length-scale should be present in cmd.
-        assert "-c" in captured_cmd
-        assert str(cfg) in captured_cmd
-        assert "--length-scale" in captured_cmd
-        assert "0.9" in captured_cmd
-
-    @pytest.mark.asyncio
-    async def test_nonzero_returncode_unlinks_and_returns_none(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-
-        proc = _mock_subprocess(returncode=1, stderr=b"bad voice")
-
-        with (
-            patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
-            ),
-            patch(
-                "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
-                side_effect=_prepared(),
-            ),
-            patch(
-                "asyncio.create_subprocess_exec",
-                return_value=proc,
-            ),
-        ):
-            assert await _synthesize_piper("hello", piper_model=str(model)) is None
-
-    @pytest.mark.asyncio
-    async def test_output_too_small_unlinks_and_returns_none(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-
-        proc = _mock_subprocess(returncode=0)
-
-        async def fake_exec(*cmd, **kwargs):
-            out_path = cmd[cmd.index("-f") + 1]
-            with open(out_path, "wb") as f:
-                f.write(b"tiny")  # < 100 bytes
-            return proc
-
-        with (
-            patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
-            ),
-            patch(
-                "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
-                side_effect=_prepared(),
-            ),
-            patch(
-                "asyncio.create_subprocess_exec",
-                side_effect=fake_exec,
-            ),
-        ):
-            assert await _synthesize_piper("hello", piper_model=str(model)) is None
-
-    @pytest.mark.asyncio
-    async def test_timeout_kills_and_returns_none(self, tmp_path) -> None:
-        import asyncio as _asyncio
-
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-
-        proc = _mock_subprocess(returncode=0)
-
-        async def hang_wait_for(coro, timeout=None):
-            coro.close()
-            raise _asyncio.TimeoutError()
-
-        with (
-            patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
-            ),
-            patch(
-                "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
-                side_effect=_prepared(),
-            ),
-            patch(
-                "asyncio.create_subprocess_exec",
-                return_value=proc,
-            ),
-            patch("asyncio.wait_for", side_effect=hang_wait_for),
-        ):
-            assert await _synthesize_piper("hello", piper_model=str(model)) is None
-
-        proc.kill.assert_called_once()
-        # The reap goes through communicate(), not wait(): wait_for already
-        # cancelled the pipe readers, so wait() on a full-PIPE child hangs.
-        proc.communicate.assert_awaited()
-        proc.wait.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_timeout_survives_process_lookup_error(self, tmp_path) -> None:
+    async def test_timeout_survives_process_lookup_error(self) -> None:
         """If proc.kill() raises ProcessLookupError, synthesize still returns None cleanly."""
         import asyncio as _asyncio
-
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
 
         proc = _mock_subprocess(returncode=0)
         proc.kill.side_effect = ProcessLookupError
@@ -658,8 +442,8 @@ class TestSynthesizePiper:
 
         with (
             patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
             ),
             patch(
                 "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
@@ -671,7 +455,7 @@ class TestSynthesizePiper:
             ),
             patch("asyncio.wait_for", side_effect=hang_wait_for),
         ):
-            assert await _synthesize_piper("hello", piper_model=str(model)) is None
+            assert await _synthesize_system("hello") is None
 
     @pytest.mark.asyncio
     async def test_cancellation_kills_child_and_removes_owned_temp(
@@ -680,10 +464,6 @@ class TestSynthesizePiper:
         # CancelledError is a BaseException: it bypasses ``except Exception``,
         # so only the finally-based invariant discards the owned temp file —
         # and the cancellation must still propagate to the caller.
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
 
         allocated = _capture_mkstemp(monkeypatch)
         proc = _mock_subprocess(returncode=0)
@@ -694,8 +474,8 @@ class TestSynthesizePiper:
 
         with (
             patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
             ),
             patch(
                 "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
@@ -704,7 +484,7 @@ class TestSynthesizePiper:
             patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
         ):
             with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
+                await _synthesize_system("hello")
 
         # wait_for cancels communicate() but does not terminate the child;
         # the child must be killed and reaped, and the owned temp discarded.
@@ -721,10 +501,6 @@ class TestSynthesizePiper:
         # A cancellation delivered BEFORE the child exists (here: from the
         # subprocess spawn itself) bypasses the kill/reap branch entirely —
         # only the ``finally`` invariant discards the owned temp file.
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
 
         allocated = _capture_mkstemp(monkeypatch)
 
@@ -733,8 +509,8 @@ class TestSynthesizePiper:
 
         with (
             patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
             ),
             patch(
                 "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
@@ -743,22 +519,18 @@ class TestSynthesizePiper:
             patch("asyncio.create_subprocess_exec", side_effect=cancelled_exec),
         ):
             with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
+                await _synthesize_system("hello")
 
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
 
     @pytest.mark.asyncio
-    async def test_exec_exception_returns_none(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
+    async def test_exec_exception_returns_none(self) -> None:
 
         with (
             patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
             ),
             patch(
                 "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
@@ -769,7 +541,7 @@ class TestSynthesizePiper:
                 side_effect=OSError("boom"),
             ),
         ):
-            assert await _synthesize_piper("hello", piper_model=str(model)) is None
+            assert await _synthesize_system("hello") is None
 
     @pytest.mark.asyncio
     async def test_sandbox_unavailable_propagates_and_unlinks(
@@ -781,17 +553,12 @@ class TestSynthesizePiper:
         """A fail-closed sandbox is reported with its remedy, not as a generic error.
 
         Mirrors the Polly counterpart: no OS sandbox backend (every Windows host,
-        Linux without user namespaces) makes wrap_argv raise, and piper must
+        Linux without user namespaces) makes wrap_argv raise, and synthesis must
         propagate, unlink the temp WAV, and relay the sandbox layer's own
-        remedy prose rather than logging a stack trace that reads as a
-        binary/model fault.
+        remedy prose rather than logging a stack trace that reads as an
+        engine fault.
         """
         from kiro_crew.sandbox import SandboxUnavailableError
-
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
 
         created: list[str] = []
         real_mkstemp = tempfile.mkstemp
@@ -808,41 +575,38 @@ class TestSynthesizePiper:
 
         monkeypatch.setattr("kiro_crew.voice_reply.sandboxed_spawn_argv_async", refuse)
         monkeypatch.setattr(
-            "kiro_crew.voice_reply._resolve_piper_binary", lambda *a, **k: str(bin_path)
+            "kiro_crew.voice_reply.resolve_system_tts",
+            lambda: (SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
         )
 
         with caplog.at_level("ERROR", logger="kiro_crew.voice_reply"):
             with pytest.raises(SandboxUnavailableError):
-                await _synthesize_piper("hello", piper_model=str(model))
+                await _synthesize_system("hello")
 
-        assert created, "piper should have allocated a temp wav"
+        assert created, "synthesis should have allocated a temp wav"
         assert not os.path.exists(created[0]), "temp wav must be unlinked"
         assert _SANDBOX_REMEDY in caplog.text
         assert "no_backend" in caplog.text
-        assert "piper synthesis error" not in caplog.text
+        assert "synthesis error" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_sandbox_cleanup_unlinked(self, tmp_path) -> None:
         """If wrap_argv returns a cleanup path, it must be unlinked after exit."""
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
         cleanup_path = tmp_path / "sandbox-profile"
         cleanup_path.write_text("profile")
 
         proc = _mock_subprocess(returncode=0)
 
         async def fake_exec(*cmd, **kwargs):
-            out_path = cmd[cmd.index("-f") + 1]
+            out_path = cmd[cmd.index("-w") + 1]
             with open(out_path, "wb") as f:
                 f.write(b"x" * 200)
             return proc
 
         with (
             patch(
-                "kiro_crew.voice_reply._resolve_piper_binary",
-                return_value=str(bin_path),
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
             ),
             patch(
                 "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
@@ -853,7 +617,7 @@ class TestSynthesizePiper:
                 side_effect=fake_exec,
             ),
         ):
-            result = await _synthesize_piper("hello", piper_model=str(model))
+            result = await _synthesize_system("hello")
 
         assert result is not None
         os.unlink(result)
@@ -1210,7 +974,7 @@ class TestSynthesizePolly:
 
 
 # ---------------------------------------------------------------------------
-# _synthesize_piper / _synthesize_polly temp ownership under cancellation
+# _synthesize_polly temp ownership under cancellation
 # ---------------------------------------------------------------------------
 
 
@@ -1277,7 +1041,7 @@ def _lock_unlink(monkeypatch, owned, events: list[str]) -> None:
     ``monkeypatch`` is undone last. Under ``tmp_path_retention_policy =
     failed`` that teardown is a ``shutil.rmtree`` whose fd-walk calls
     ``os.unlink(leaf, dir_fd=fd)``. A wrapper that forwarded ``os.remove(path)``
-    dropped ``dir_fd``, re-resolved ``piper`` / ``voice.onnx`` / ``owned.wav``
+    dropped ``dir_fd``, re-resolved ``owned.wav``
     against the CWD -- the checkout -- and left the tmp dir behind.
     """
     real_unlink = os.unlink
@@ -1296,110 +1060,10 @@ def _lock_unlink(monkeypatch, owned, events: list[str]) -> None:
     monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked)
 
 
-class TestSynthesizePiperCancelOwnership:
-    """``_synthesize_piper`` owns the ``.wav`` until every exit removes it.
-
-    A cancellation mid-``communicate`` (``CancelledError`` is a
-    ``BaseException``, so the ``except Exception`` guard missed it) must kill
-    AND reap the piper child before the unlink — Windows keeps the output file
-    locked until the child fully exits — then remove the ``.wav`` and
-    re-raise. Reference pattern:
-    ``test_apple_speech.py::TestTranscodeTempOwnership``.
-    """
-
-    @staticmethod
-    def _piper_env(tmp_path, monkeypatch):
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
-        owned = tmp_path / "owned.wav"
-        _pin_mkstemp(monkeypatch, owned)
-        monkeypatch.setattr(
-            "kiro_crew.voice_reply._resolve_piper_binary", lambda cfg: str(bin_path)
-        )
-        monkeypatch.setattr("kiro_crew.voice_reply.sandboxed_spawn_argv_async", _prepared())
-        return model, owned
-
-    @pytest.mark.asyncio
-    async def test_cancellation_reaps_piper_before_removing_the_wav(self, tmp_path, monkeypatch):
-        model, owned = self._piper_env(tmp_path, monkeypatch)
-        events: list[str] = []
-        _track_unlink(monkeypatch, owned, events)
-
-        with patch("asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)):
-            with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
-        assert events == ["killed", "reaped", "unlinked"]
-        assert not owned.exists()
-
-    @pytest.mark.asyncio
-    async def test_repeat_cancellation_on_the_reap_still_unlinks(self, tmp_path, monkeypatch):
-        """A REPEAT cancellation landing on the reap await is swallowed so the
-        unlink still runs and the ORIGINAL cancellation propagates."""
-        model, owned = self._piper_env(tmp_path, monkeypatch)
-        events: list[str] = []
-        _track_unlink(monkeypatch, owned, events)
-
-        with patch("asyncio.create_subprocess_exec", return_value=_CancelAlwaysProc(events)):
-            with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
-        assert events == ["killed", "unlinked"]
-        assert not owned.exists()
-
-    @pytest.mark.asyncio
-    async def test_locked_wav_does_not_replace_the_cancellation(self, tmp_path, monkeypatch):
-        """Worst case on Windows: the child still holds the ``.wav`` so the
-        unlink raises ``PermissionError``. That must not REPLACE the in-flight
-        cancellation — the ``OSError`` guard swallows it and the original
-        propagates."""
-        model, owned = self._piper_env(tmp_path, monkeypatch)
-        events: list[str] = []
-        _lock_unlink(monkeypatch, owned, events)
-
-        with patch("asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)):
-            with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
-        assert events == ["killed", "reaped", "unlink_attempted"]
-        # The locked unlink never removed the file — the guarantee under test
-        # is exception identity, not removal.
-        assert owned.exists()
-
-    @pytest.mark.asyncio
-    async def test_cancellation_during_spawn_still_removes_the_wav(self, tmp_path, monkeypatch):
-        """A cancellation landing on the spawn itself means no child exists —
-        the ``.wav`` must still be removed and the cancellation propagate."""
-        model, owned = self._piper_env(tmp_path, monkeypatch)
-
-        with patch("asyncio.create_subprocess_exec", side_effect=asyncio.CancelledError()):
-            with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
-        assert not owned.exists()
-
-    @pytest.mark.asyncio
-    async def test_cancellation_still_unlinks_the_sandbox_cleanup_path(self, tmp_path, monkeypatch):
-        """The outer ``finally`` owns the sandbox cleanup path; a cancelled
-        synthesis must not leak the launcher script either."""
-        model, owned = self._piper_env(tmp_path, monkeypatch)
-        launcher = tmp_path / "launcher.sh"
-        launcher.write_text("#!/bin/sh\n")
-        monkeypatch.setattr(
-            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
-            _prepared(cleanup=str(launcher)),
-        )
-        events: list[str] = []
-
-        with patch("asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)):
-            with pytest.raises(asyncio.CancelledError):
-                await _synthesize_piper("hello", piper_model=str(model))
-        assert not owned.exists()
-        assert not launcher.exists()
-
-
 class TestSynthesizePollyCancelOwnership:
     """``_synthesize_polly`` owns the ``.mp3`` until every exit removes it.
 
-    Same cancellation contract as the piper path above: kill AND reap the AWS
+    The cancellation contract: kill AND reap the AWS
     CLI child before the unlink, remove the ``.mp3``, re-raise the original
     cancellation.
     """

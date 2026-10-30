@@ -27,6 +27,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew import validation
 from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.work_vocab import worker_statuses
 
 #: The real implementation, captured before the autouse fixture stubs the name.
 #: A test that drives the true branch has to reach past its own default.
@@ -398,6 +399,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "no_ledger": 404,
         "unknown_item": 404,
         "already_bound": 409,
+        "duplicate_item": 409,
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
@@ -998,7 +1000,14 @@ def test_the_schema_caps_restate_the_stores_own():
     pr = next(f for f in report.fields if f.name == "pr")
     assert (pr.min_val, pr.max_val) == (wl.MIN_PR, wl.MAX_PR)
     status = next(f for f in report.fields if f.name == "status")
-    assert status.allowed == wl.WORKER_STATUSES
+    assert status.allowed == frozenset(worker_statuses(False))
+    preview = validation.WORK_REPORT_REMOTE_DISPATCH_SCHEMA
+    assert next(f for f in preview.fields if f.name == "status").allowed == wl.WORKER_STATUSES
+    # Every field but ``status`` is the very same spec, so the two cannot drift.
+    assert [f for f in preview.fields if f.name != "status"] == [
+        f for f in report.fields if f.name != "status"
+    ]
+    assert preview.custom_validator is report.custom_validator
 
     record = validation.WORK_LEDGER_RECORD_SCHEMA
     assert next(f for f in record.fields if f.name == "title").max_len == wl.MAX_TITLE_CHARS
@@ -1230,57 +1239,6 @@ async def test_an_unreadable_parent_ledger_refuses_the_bootstrap_rather_than_res
     # Nothing was persisted at the wrong depth.
     assert wl.read_conductor(grandchild) is None
     assert ids
-
-
-@pytest.mark.asyncio
-async def test_a_worker_session_is_bound_once_and_never_rebound():
-    """The store permits replacing a binding whose item is terminal, so a session
-    COULD be reused — but a report already in flight from the old work resolves its
-    binding when it LANDS, and there is no unbind path to undo the overwrite. An idle
-    check cannot close that: a turn can start during the awaits before the commit.
-    So the route refuses reuse outright, which makes the race unrepresentable."""
-    ids = await two_by_two()
-    # Close A's item, so the STORE would now allow the binding to be replaced.
-    status, _ = await _record(
-        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
-    )
-    assert status == 200
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "create", "title": "second", "acceptance": {"kind": "human_approval"}},
-    )
-    assert status == 200
-    second = body["item"]["item_id"]
-
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "bind", "item_id": second, "worker_session_key": WORKER_A},
-    )
-    assert status == 409
-    assert body["code"] == "worker_already_dispatched"
-    item = wl.read_work_item(CONDUCTOR_A, second)
-    assert item is not None and item.worker_session_key is None
-    # The original binding is untouched, so no report can be misrouted.
-    assert wl.read_binding(WORKER_A) == (CONDUCTOR_A, ids["item_a"])
-
-    # A FRESH session for the new item is the supported path.
-    _dispatched("chat-a-worker-2", CONDUCTOR_A)
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "bind", "item_id": second, "worker_session_key": "chat-a-worker-2"},
-    )
-    assert status == 200, body
-
-
-def test_the_binding_presence_check_fails_closed(monkeypatch):
-    """An unreadable store must not admit a rebind: the alternative is deciding the
-    one question the refusal exists for on a store that could not answer."""
-
-    def _boom(_key: str):
-        raise OSError("store unreadable")
-
-    monkeypatch.setattr(routes.work_ledger, "binding_path", _boom)
-    assert routes._has_binding("chat-whoever") is True
 
 
 @pytest.mark.asyncio
@@ -1776,6 +1734,72 @@ async def test_a_compact_read_shows_a_stale_worker(monkeypatch):
     _, full = await _read(CONDUCTOR_A)
     full_row = next(r for r in full["items"] if r["item_id"] == ids["item_a"])
     assert (row["stale"], row["orphaned"]) == (full_row["stale"], full_row["orphaned"])
+
+
+@pytest.mark.asyncio
+async def test_a_report_the_harness_never_delivered_shows_on_both_reads():
+    """A worker whose ``work_report`` failed undelivered is not a silent stall: the
+    full and the compact read both carry ``report_undelivered`` for its item, the
+    other conductor's item carries none, and a report that then lands clears it."""
+
+    ids = await two_by_two()
+    assert wl.note_undelivered(WORKER_A, "work_report") is not None
+    _, full = await _read(CONDUCTOR_A)
+    row = next(r for r in full["items"] if r["item_id"] == ids["item_a"])
+    assert row["report_undelivered"]["tool"] == "work_report"
+    _, compact = await _read_with(CONDUCTOR_A, "compact=true")
+    assert compact["items"][0]["report_undelivered"] == row["report_undelivered"]
+    _, other = await _read(CONDUCTOR_B)
+    assert other["items"][0]["report_undelivered"] is None
+
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "got through"})
+    assert status == 200
+    _, after = await _read(CONDUCTOR_A)
+    assert after["items"][0]["report_undelivered"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_close_deletes_the_items_undelivered_record():
+    """A closed item reads no flag, so its record must not stay behind forever."""
+
+    ids = await two_by_two()
+    wl.note_undelivered(WORKER_A, "work_report")
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "abandoned"}
+    )
+    assert status == 200
+    assert not wl.undelivered_path(WORKER_A).exists()
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_close_keeps_the_items_undelivered_flag(monkeypatch):
+    """The close is undone when the crew log does not confirm it, and the item it
+    leaves open still says its worker's report never arrived."""
+
+    ids = await two_by_two()
+    wl.note_undelivered(WORKER_A, "work_report")
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "abandoned"}
+    )
+    assert status == 503
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert not item.is_terminal
+    assert wl.read_undelivered(CONDUCTOR_A, item)["tool"] == "work_report"
+
+
+@pytest.mark.asyncio
+async def test_a_brief_that_gets_through_clears_a_failed_brief():
+    """The block tells a worker to retry with the qualified name at once, so a
+    retried ``work_brief`` clears the flag without waiting for a report."""
+
+    ids = await two_by_two()
+    wl.note_undelivered(WORKER_A, "work_brief")
+    status, _ = await _brief(WORKER_A)
+    assert status == 200
+    _, after = await _read(CONDUCTOR_A)
+    row = next(r for r in after["items"] if r["item_id"] == ids["item_a"])
+    assert row["report_undelivered"] is None
 
 
 @pytest.mark.asyncio

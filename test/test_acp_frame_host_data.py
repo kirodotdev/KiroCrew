@@ -72,24 +72,11 @@ def test_only_pre_gate_harnesses_carry_debts(gate) -> None:
 #: the intended edit when a debt is paid down; adding one is the edit this exists to refuse.
 BASELINE_DEBTS = frozenset(
     {
-        ("claude/session.expected.json", "a scratch run id"),
-        ("claude/session.expected.json", "a run or request uuid"),
-        ("claude/session.jsonl", "a scratch run id"),
-        ("claude/session.jsonl", "a run or request uuid"),
         ("kas/session.expected.json", "a run or request uuid"),
         ("kas/session.jsonl", "a scratch run id"),
         ("kas/session.jsonl", "a run or request uuid"),
         ("kiro/session.expected.json", "a run or request uuid"),
         ("kiro/session.jsonl", "a run or request uuid"),
-        ("pi/permission-request-live.expected.json", "a run or request uuid"),
-        ("pi/permission-request-live.jsonl", "a run or request uuid"),
-        ("pi/permission-request-live.jsonl", "the harness's own command inventory"),
-        ("pi/permission-request-live.jsonl", "an absolute scratch path"),
-        ("pi/session-live.expected.json", "a run or request uuid"),
-        ("pi/session-live.jsonl", "a run or request uuid"),
-        ("pi/session-live.jsonl", "the harness's own command inventory"),
-        ("pi/session-load-live.jsonl", "a run or request uuid"),
-        ("pi/session-load-live.jsonl", "the harness's own command inventory"),
     }
 )
 

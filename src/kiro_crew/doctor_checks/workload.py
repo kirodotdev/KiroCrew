@@ -336,16 +336,16 @@ def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
     The controller exists only in the gateway process, so the snapshot comes
     from ``GET /api/spawn/adaptive``: the route the gateway serves for exactly
     this out-of-process reader, under the internal-API prefix a loopback
-    ``X-Internal-Secret`` caller reaches. The credential and transport are the
-    ones the other CLI clients of the local gateway use: the local secret
-    resolved for the loopback host this request dials, and the gateway's unix
-    socket when it is present, TCP loopback otherwise. Without a credential
-    nothing is sent at all. Read-only: a GET, and the route only reads the
-    controller.
+    ``X-Internal-Secret`` caller reaches. The credential is the local secret
+    resolved for the loopback host this request dials, and the send goes through
+    ``cli_server_peer._owner_verified_secret_urlopen`` like every other CLI
+    sender of it: the gateway's unix socket when it is present, TCP loopback
+    otherwise, with the connected peer proven to be this install's recorded
+    gateway before the first byte. Without a credential nothing is sent at all.
+    Read-only: a GET, and the route only reads the controller.
     """
+    from kiro_crew.cli_server_peer import _GatewayPeerRefused, _owner_verified_secret_urlopen
     from kiro_crew.config.loader import read_local_secret
-    from kiro_crew.dashboard.urls import dashboard_socket_path
-    from kiro_crew.loopback_http import loopback_urlopen
     from kiro_crew.port_resolution import resolve_client_port
 
     port = resolve_client_port(None)
@@ -357,14 +357,12 @@ def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
         headers={"X-Internal-Secret": secret},
     )
     try:
-        socket_path: str | None = str(dashboard_socket_path(port))
-    except Exception:
-        socket_path = None
-    try:
-        with loopback_urlopen(
-            req, timeout=_ADAPTIVE_READ_TIMEOUT_SECS, unix_socket_path=socket_path
+        with _owner_verified_secret_urlopen(
+            req, port, _ADAPTIVE_READ_TIMEOUT_SECS, operation="doctor_adaptive_read"
         ) as resp:
             payload = json.loads(resp.read())
+    except _GatewayPeerRefused:
+        return port, None, "the answering process is not proven to be this install's gateway"
     except urllib.error.HTTPError as exc:
         return port, None, f"the gateway refused the read (HTTP {exc.code})"
     except (urllib.error.URLError, OSError) as exc:

@@ -1189,6 +1189,8 @@ class TestDigestHoldDeadline:
         consolidated digest — the deadline is a latency cap, not a per-member
         flush. Regression guard against re-introducing the chunk-size=1
         behavior (which floods the parent with N turns at scale)."""
+        from kiro_crew.subagent import DIGEST_HOLD_SECS
+
         mgr = self._mgr()
         now = time.time()
         m = self._held_member(0)
@@ -1196,7 +1198,10 @@ class TestDigestHoldDeadline:
         mgr._agents["h0"] = m
         with patch.object(mgr, "force_digest_flush") as forced:
             mgr._sweep_digest_holds(now)
-        forced.assert_not_called()
+            forced.assert_not_called()
+            # Control: the same hold is flushed once it is past the deadline.
+            mgr._sweep_digest_holds(m._digest_held_at + DIGEST_HOLD_SECS + 1.0)
+        forced.assert_called_once()
 
     def test_expired_hold_forces_flush(self):
         """THE BUG: two members finished, the third is still running, so
@@ -1222,24 +1227,6 @@ class TestDigestHoldDeadline:
         # must describe the worst wait the parent actually suffered.
         assert age >= DIGEST_HOLD_SECS + 10 - 1
 
-    def test_closing_wave_is_not_force_flushed(self):
-        """When no member is outstanding AND a terminal report is in flight the
-        real wave-close digest (counts + release guidance) lands when that
-        report is consumed; forcing a partial one here would race it and could
-        double-deliver the same members. (Without the in-flight hold this
-        aged-hold state is the STRANDED one — the sweep force-flushes it.)"""
-        from kiro_crew.subagent import DIGEST_HOLD_SECS
-
-        mgr = self._mgr(pending=False)
-        now = time.time()
-        m = self._held_member(0)
-        m._digest_held_at = now - (DIGEST_HOLD_SECS + 60)
-        mgr._agents["h0"] = m
-        mgr.arm_report_in_flight(m)
-        with patch.object(mgr, "force_digest_flush") as forced:
-            mgr._sweep_digest_holds(now)
-        forced.assert_not_called()
-
     def test_deadline_zero_disables_sweep(self):
         """``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS=0`` is the documented opt-out
         back to count-trigger-only behavior."""
@@ -1248,12 +1235,13 @@ class TestDigestHoldDeadline:
         m = self._held_member(0)
         m._digest_held_at = now - 100_000.0
         mgr._agents["h0"] = m
-        with (
-            patch("kiro_crew.subagent.DIGEST_HOLD_SECS", 0.0),
-            patch.object(mgr, "force_digest_flush") as forced,
-        ):
+        with patch.object(mgr, "force_digest_flush") as forced:
+            with patch("kiro_crew.subagent.DIGEST_HOLD_SECS", 0.0):
+                mgr._sweep_digest_holds(now)
+            forced.assert_not_called()
+            # Control: with the deadline back on, the same aged hold is flushed.
             mgr._sweep_digest_holds(now)
-        forced.assert_not_called()
+        forced.assert_called_once()
 
     def test_unheld_members_never_trip_the_sweep(self):
         """``_digest_held_at`` is the sweep's ONLY input: a delivered member
@@ -1268,7 +1256,11 @@ class TestDigestHoldDeadline:
         mgr._agents["h0"] = m
         with patch.object(mgr, "force_digest_flush") as forced:
             mgr._sweep_digest_holds(now + DIGEST_HOLD_SECS * 10)
-        forced.assert_not_called()
+            forced.assert_not_called()
+            # Control: a running hold clock on the same member does trip the sweep.
+            m._digest_held_at = now
+            mgr._sweep_digest_holds(now + DIGEST_HOLD_SECS * 10)
+        forced.assert_called_once()
 
     def test_force_digest_flush_builds_flush_only_record(self):
         mgr = self._mgr()

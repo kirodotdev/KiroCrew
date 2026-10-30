@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from named_cases_helpers import named_cases
+
 from kiro_crew.platform.tool_names import (
     KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME,
     KIRO_CLI_NAME_BY_KAS_TOOL,
@@ -207,7 +210,14 @@ class TestPolicyAliasSplit:
 
 
 class TestExpand:
-    def test_is_pure_and_order_preserving(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_is_pure_and_order_preserving"),
+            *named_cases("test_expand_is_pure_and_order_preserving"),
+        ],
+    )
+    def test_expand_is_pure_and_keeps_order(self):
         entries = ["@a", "fs_read", "@b", "fs_read"]
         assert expand_kiro_cli_tool_names(entries) == [
             "@a",

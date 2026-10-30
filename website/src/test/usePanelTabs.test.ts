@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing, notePanelShown } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing, notePanelShown, MAX_TERMINALS_PER_CHAT } from '../hooks/usePanelTabs'
 import * as panelTabsModule from '../hooks/usePanelTabs'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
@@ -1135,5 +1135,33 @@ describe('openPanelView', () => {
       const restored = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
       expect(restored.result.current.tabs.map(t => t.kind)).toContain(demoTab.kind)
     })
+  })
+
+  /* At the terminal cap a request reuses only a terminal on the same machine:
+   * a remote one must never land in a gateway shell, nor a local one in a
+   * workspace. With no match it is refused (empty id), leaving focus alone. */
+  it.each([
+    ['remote', { remoteSlot: 'chat-r' }, {}],
+    ['local', {}, { remoteSlot: 'chat-r' }],
+  ])('at the cap a %s request never reuses a terminal on the other machine', (_name, ask, held) => {
+    const { result } = renderHook(() => usePanelTabs('chat-r', mock.descriptors))
+    for (let i = 0; i < MAX_TERMINALS_PER_CHAT; i++) act(() => { result.current.openTerminal(held) })
+    const before = result.current.activeId
+    let sid = 'unset'
+    act(() => { sid = result.current.openTerminal(ask) })
+    expect(sid).toBe('')
+    expect(result.current.activeId).toBe(before)
+    expect(result.current.tabs.filter(t => t.kind === 'terminal')).toHaveLength(MAX_TERMINALS_PER_CHAT)
+  })
+
+  it('at the cap a remote request reuses the newest remote terminal', () => {
+    const { result } = renderHook(() => usePanelTabs('chat-r', mock.descriptors))
+    let remote = ''
+    act(() => { remote = result.current.openTerminal({ remoteSlot: 'chat-r' }) })
+    for (let i = 1; i < MAX_TERMINALS_PER_CHAT; i++) act(() => { result.current.openTerminal() })
+    let sid = ''
+    act(() => { sid = result.current.openTerminal({ remoteSlot: 'chat-r' }) })
+    expect(sid).toBe(remote)
+    expect(result.current.activeId).toBe(`terminal:${remote}`)
   })
 })

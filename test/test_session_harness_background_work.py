@@ -35,6 +35,7 @@ inside the hold, or a session that keeps launching work would never be bounded.
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 import unicodedata
 from typing import Any
@@ -491,6 +492,15 @@ def _proc_route(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
 
+def _notice_recorder(notices: list[tuple[str, str]]):
+    """A recycle callback that keeps each ``(key, reason)`` notice it is handed."""
+
+    async def _record(key: str, *, reason: str) -> None:
+        notices.append((key, reason))
+
+    return _record
+
+
 async def _rss_tick(manager: Any, rss: int = 2514) -> None:
     with (
         patch("kiro_crew.session._build_child_map", return_value={}),
@@ -502,7 +512,7 @@ async def _rss_tick(manager: Any, rss: int = 2514) -> None:
 @pytest.mark.usefixtures("_proc_route")
 class TestRssRecycleHonoursHarnessWork:
     @pytest.mark.asyncio
-    async def test_a_launch_inside_the_hold_keeps_the_session(self) -> None:
+    async def test_a_launch_inside_the_hold_keeps_the_session(self, caplog) -> None:
         # rss=1500 is above the 1000 MB ceiling but inside the 2x hard ceiling,
         # so the hold applies.
         manager = _make_manager(rss_max_mb=1000)
@@ -510,9 +520,15 @@ class TestRssRecycleHonoursHarnessWork:
         manager.reset = AsyncMock(return_value=True)
         manager.get_pid = MagicMock(return_value=4242)
 
-        await _rss_tick(manager, rss=1500)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+            await _rss_tick(manager, rss=1500)
 
         manager.reset.assert_not_awaited()
+        assert manager._cleanup_boundary().state.rss_recycled == {}
+        assert any(
+            "harness launched background work 30s ago" in m and "skipping" in m
+            for m in caplog.messages
+        )
 
     @pytest.mark.asyncio
     async def test_the_hard_ceiling_recycles_even_inside_the_hold(self) -> None:
@@ -541,13 +557,13 @@ class TestRssRecycleHonoursHarnessWork:
         manager._sessions["dashboard:x"] = _session_with_launch(None)
         manager.reset = AsyncMock(return_value=True)
         manager.get_pid = MagicMock(return_value=4242)
-        cb = AsyncMock()
-        manager.set_recycle_callback(cb)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
 
         await _rss_tick(manager)
 
         manager.reset.assert_awaited_once()
-        assert cb.await_args.kwargs["reason"] == "memory limit (2514MB)"
+        assert notices == [("dashboard:x", "memory limit (2514MB)")]
 
     @pytest.mark.asyncio
     async def test_a_launch_past_the_hold_recycles_with_the_plain_notice(self) -> None:
@@ -559,13 +575,13 @@ class TestRssRecycleHonoursHarnessWork:
         manager._sessions["dashboard:x"] = _session_with_launch(_PAST)
         manager.reset = AsyncMock(return_value=True)
         manager.get_pid = MagicMock(return_value=4242)
-        cb = AsyncMock()
-        manager.set_recycle_callback(cb)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
 
         await _rss_tick(manager)
 
         manager.reset.assert_awaited_once()
-        assert cb.await_args.kwargs["reason"] == "memory limit (2514MB)"
+        assert notices == [("dashboard:x", "memory limit (2514MB)")]
 
     @pytest.mark.asyncio
     async def test_a_raising_provider_does_not_break_the_tick(self) -> None:
@@ -583,23 +599,29 @@ class TestRssRecycleHonoursHarnessWork:
         await _rss_tick(manager)
 
         manager.reset.assert_awaited_once()
+        assert set(manager._cleanup_boundary().state.rss_recycled) == {"dashboard:x"}
 
 
 class TestIdleSweepHonoursHarnessWork:
     @pytest.mark.asyncio
-    async def test_an_idle_session_inside_the_hold_is_kept(self) -> None:
+    async def test_an_idle_session_inside_the_hold_is_kept(self, caplog) -> None:
         manager = _make_manager(rss_max_mb=0)
         sess = _session_with_launch(_INSIDE)
         sess.last_used = time.monotonic() - 10_000
         manager._sessions["dashboard:x"] = sess
         manager.reset = AsyncMock(return_value=True)
 
-        await manager._expire_idle(timeout_secs=1)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+            await manager._expire_idle(timeout_secs=1)
 
         manager.reset.assert_not_awaited()
+        assert any(
+            m.startswith("Idle sweep: dashboard:x looks idle but its harness launched")
+            for m in caplog.messages
+        )
 
     @pytest.mark.asyncio
-    async def test_an_orphaned_session_inside_the_hold_is_kept(self) -> None:
+    async def test_an_orphaned_session_inside_the_hold_is_kept(self, caplog) -> None:
         manager = _make_manager(rss_max_mb=0)
         sess = _session_with_launch(_INSIDE)
         sess.last_used = time.monotonic()
@@ -608,9 +630,14 @@ class TestIdleSweepHonoursHarnessWork:
         manager.set_active_dashboard_slots({"dashboard:x"})
         manager.set_active_dashboard_slots({"dashboard:other"})  # x's tab closed
 
-        await manager._expire_idle(timeout_secs=9999)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+            await manager._expire_idle(timeout_secs=9999)
 
         manager.reset.assert_not_awaited()
+        assert any(
+            m.startswith("Idle sweep: dashboard:x looks orphaned but its harness launched")
+            for m in caplog.messages
+        )
 
     @pytest.mark.asyncio
     async def test_an_orphaned_session_without_a_launch_is_reaped(self) -> None:
@@ -626,6 +653,7 @@ class TestIdleSweepHonoursHarnessWork:
         await manager._expire_idle(timeout_secs=9999)
 
         manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:x"
 
     @pytest.mark.asyncio
     async def test_an_idle_session_past_the_hold_expires(self) -> None:
@@ -638,3 +666,4 @@ class TestIdleSweepHonoursHarnessWork:
         await manager._expire_idle(timeout_secs=1)
 
         manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:x"

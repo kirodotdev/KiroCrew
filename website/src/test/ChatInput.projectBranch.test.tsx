@@ -179,7 +179,9 @@ describe('ChatInput project chip branch copy', () => {
 // #7263: a project pick made while a response is streaming is staged, not
 // refused -- the project route arms a deferred reset that the NEXT turn
 // consumes -- so the chip stays clickable mid-turn and says when the change
-// lands. The agent and model chips stay locked: their routes answer 409.
+// lands. The model chip follows the same contract (#23217): a mid-turn pick
+// is committed and applied from the next message, so its chip stays enabled.
+// The agent chip alone stays locked: its route still answers 409.
 describe('ChatInput project chip while a response is running', () => {
   it('stays enabled, opens the picker, and says the change applies from the next response', () => {
     const onProjectClick = vi.fn()
@@ -239,11 +241,11 @@ describe('ChatInput project chip while a response is running', () => {
     expect(chip().getAttribute('title')).toContain('This reply finishes in OtherRepo.')
   })
 
-  it('keeps the agent and model chips locked mid-turn', () => {
+  it('keeps the agent chip locked mid-turn while the model chip stays enabled', () => {
     renderWithProviders(
       <ChatInput {...defaultProps} isRunning onStop={vi.fn()} agentName="kirocrew" onAgentClick={vi.fn()} modelName="claude-sonnet-4" onModelClick={vi.fn()} />,
     )
     expect(screen.getByRole('button', { name: /switch agents/ })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /switch model/ })).toBeDisabled()
+    expect(screen.getByTestId('composer-model-chip')).toBeEnabled()
   })
 })

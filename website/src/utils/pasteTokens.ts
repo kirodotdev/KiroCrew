@@ -1,5 +1,6 @@
 import { safeSetItem } from './safeStorage'
 import { mergeRecoveredDraft } from './chatDrafts'
+import { knowledgeEnvelopeEndInRow } from './knowledgeEnvelope'
 /**
  * Paste-token utilities.
  *
@@ -328,9 +329,10 @@ export function expandAll(text: string, blocks: PasteBlock[]): string {
  * Replaces the FIRST non-overlapping occurrence of each block in document
  * order, so repeated sends of the same paste each collapse to their own token.
  * A block whose content is not found verbatim is skipped (that region renders
- * as-is). Returns `content` unchanged when nothing matched.
+ * as-is). Text before `from` is kept verbatim (e.g. a recorded knowledge head).
+ * Returns `content` unchanged when nothing matched.
  */
-export function recollapsePastes(content: string, blocks: PasteBlock[]): string {
+export function recollapsePastes(content: string, blocks: PasteBlock[], from = 0): string {
   if (!content || !blocks.length) return content
   interface Hit { start: number; end: number; block: PasteBlock }
   const hits: Hit[] = []
@@ -340,12 +342,12 @@ export function recollapsePastes(content: string, blocks: PasteBlock[]): string 
   // another's). Returns -1 when every occurrence overlaps a claim or none exist.
   const firstUnclaimed = (needle: string): number => {
     if (!needle) return -1
-    let from = 0
-    while (from <= content.length) {
-      const idx = content.indexOf(needle, from)
+    let searchFrom = from
+    while (searchFrom <= content.length) {
+      const idx = content.indexOf(needle, searchFrom)
       if (idx < 0) return -1
       if (!claimed.some(([s, e]) => idx < e && idx + needle.length > s)) return idx
-      from = idx + 1
+      searchFrom = idx + 1
     }
     return -1
   }
@@ -577,7 +579,8 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
         // them from the transcript permanently. Fall through to a generic
         // re-collapse that folds only the paste tokens and preserves all other
         // merged content.
-        const recollapsed = recollapsePastes(m.content, held.pastes)
+        const recollapsed = recollapsePastes(m.content, held.pastes,
+          knowledgeEnvelopeEndInRow(m.content, m.meta))
         if (recollapsed !== m.content) {
           consumeHeld()
           return { ...m, content: recollapsed, meta: newMeta }
@@ -621,11 +624,149 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
     // (sendId) above.
     const ownPastes = (m.meta?.pastes as PasteBlock[] | undefined) || []
     if (ownPastes.length && !findTokenRanges(m.content, ownPastes).length) {
-      const collapsed = recollapsePastes(m.content, ownPastes)
+      const collapsed = recollapsePastes(m.content, ownPastes,
+        knowledgeEnvelopeEndInRow(m.content, m.meta))
       if (collapsed !== m.content) return { ...m, content: collapsed }
     }
     return m
   })
+}
+
+/**
+ * Fold expanded content back to its tokens when the blocks' ORDER in the text
+ * is known, or refuse. `blocks` is the blocks in token order (the order the
+ * composer's display text had them); each body is looked for at or after the
+ * end of the one before it, so a body that is a prefix of a later sibling's
+ * cannot claim that sibling's start, and the later one cannot claim an earlier
+ * body plus the text after it. {@link recollapsePastes} cannot tell those
+ * apart from the text alone, which is fine for a bubble that only draws the
+ * chip; a surface that EDITS the folded text and expands the tokens again
+ * (the queue card) needs the attribution right, or a deleted token takes a
+ * sibling's text with it.
+ *
+ * The order alone does not settle a body that also stands in the text as
+ * plain words (a paste expanded in place, then pasted again collapsed): the
+ * token could sit on either copy, and an edit that deletes it would remove
+ * the wrong one. So the fold is accepted only when exactly ONE placement of
+ * all the blocks, in order, exists; a second complete placement refuses it.
+ * An occurrence inside a later sibling's body is not a second placement,
+ * because that sibling then finds no body after it.
+ *
+ * Verbatim first, then the body with trailing whitespace off (the gateway
+ * strips it from a stored message). Returns null when a body is not found in
+ * order, when the placement is ambiguous, or when the fold does not expand
+ * back to `content` (trailing whitespace aside), so the caller shows the
+ * text as sent instead.
+ */
+/** Every start of `needle` in `text`, overlapping ones included, in one pass
+ *  over each (Knuth-Morris-Pratt). A repeated `indexOf` from each hit
+ *  re-compares the whole needle at every position, which for a body of
+ *  thousands of identical lines standing at thousands of positions is the
+ *  product of the two; this stays at their sum. */
+export function allOccurrences(text: string, needle: string): number[] {
+  const out: number[] = []
+  const m = needle.length
+  if (!m || m > text.length) return out
+  // fail[i]: length of the longest proper prefix of needle[0..i] that is also its suffix.
+  const fail = new Int32Array(m)
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && needle.charCodeAt(i) !== needle.charCodeAt(k)) k = fail[k - 1]
+    if (needle.charCodeAt(i) === needle.charCodeAt(k)) k++
+    fail[i] = k
+  }
+  for (let i = 0, k = 0; i < text.length; i++) {
+    while (k > 0 && text.charCodeAt(i) !== needle.charCodeAt(k)) k = fail[k - 1]
+    if (text.charCodeAt(i) === needle.charCodeAt(k)) k++
+    if (k === m) { out.push(i - m + 1); k = fail[k - 1] }
+  }
+  return out
+}
+
+export function foldPastesInOrder(content: string, blocks: PasteBlock[]): string | null {
+  if (!content || !blocks.length || blocks.some(b => !b.content)) return null
+  const end = content.trimEnd().length
+  // Every place a body stands in the text, scanned ONCE per distinct body:
+  // verbatim anywhere, and with its trailing whitespace off only where the
+  // text ENDS (the gateway strips trailing whitespace from the stored text,
+  // never from the middle). Both forms count toward uniqueness: a verbatim
+  // copy earlier in the text must not hide the stripped tail as the other
+  // possible placement. A body of repeated lines stands at hundreds of
+  // overlapping positions, so the list is built once and sliced by position,
+  // never rescanned.
+  type Candidate = { at: number; len: number }
+  const occurrences = new Map<string, Candidate[]>()
+  const allCandidates = (body: string): Candidate[] => {
+    const known = occurrences.get(body)
+    if (known) return known
+    const out: Candidate[] = allOccurrences(content, body).map(at => ({ at, len: body.length }))
+    const trimmed = body.trimEnd()
+    if (trimmed && trimmed !== body) {
+      const at = end - trimmed.length
+      if (at >= 0 && content.startsWith(trimmed, at) && !out.some(c => c.at === at)) out.push({ at, len: trimmed.length })
+    }
+    out.sort((a, b) => a.at - b.at)
+    occurrences.set(body, out)
+    return out
+  }
+  // Index of the first candidate at or after `from` (the list is sorted).
+  const firstAtOrAfter = (list: Candidate[], from: number): number => {
+    let lo = 0
+    let hi = list.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (list[mid].at < from) lo = mid + 1; else hi = mid
+    }
+    return lo
+  }
+  // The least room the blocks after `i` need, so a placement that leaves
+  // less is refused before its tail is searched.
+  const roomAfter: number[] = new Array(blocks.length + 1).fill(0)
+  for (let i = blocks.length - 1; i >= 0; i--) roomAfter[i] = roomAfter[i + 1] + blocks[i].content.trimEnd().length
+  // Complete placements of blocks[i..] from `pos`, counted up to 2, with the
+  // first one found (leftmost first, in order). Memoized on (i, pos): many
+  // blocks with one body would otherwise re-walk the same failed tails.
+  type Placement = { count: number; first: Candidate[] | null }
+  const memo = new Map<string, Placement>()
+  const place = (i: number, pos: number): Placement => {
+    if (i === blocks.length) return { count: 1, first: [] }
+    const key = `${i}:${pos}`
+    const hit = memo.get(key)
+    if (hit) return hit
+    let count = 0
+    let first: Candidate[] | null = null
+    const list = allCandidates(blocks[i].content)
+    for (let k = firstAtOrAfter(list, pos); k < list.length; k++) {
+      const c = list[k]
+      if (c.at + c.len + roomAfter[i + 1] > content.length) break
+      const rest = place(i + 1, c.at + c.len)
+      if (rest.count && !first && rest.first) first = [c, ...rest.first]
+      count += rest.count
+      if (count >= 2) break
+    }
+    const result = { count, first }
+    memo.set(key, result)
+    return result
+  }
+  // No placement at all when the bodies cannot even be met left to right
+  // (one missing, or standing before the one that precedes it): refused here
+  // in one greedy pass, because the search below ends early only on a SECOND
+  // complete placement, and with none it would walk every failed pair.
+  for (let i = 0, pos = 0; i < blocks.length; i++) {
+    const list = allCandidates(blocks[i].content)
+    const k = firstAtOrAfter(list, pos)
+    if (k === list.length) return null
+    pos = list[k].at + list[k].len
+  }
+  const { count, first } = place(0, 0)
+  if (count !== 1 || !first) return null
+  let out = ''
+  let pos = 0
+  first.forEach((c, i) => {
+    out += content.slice(pos, c.at) + formatToken(blocks[i])
+    pos = c.at + c.len
+  })
+  out += content.slice(pos)
+  return expandAll(out, blocks).trimEnd() === content.trimEnd() ? out : null
 }
 
 /* ---- localStorage side table: content-addressed paste preservation ---- */

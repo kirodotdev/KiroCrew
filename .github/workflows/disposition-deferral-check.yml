@@ -45,6 +45,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The four tests a tracked deferral passes live in
+      # .github/scripts/release_record.py, the module the override handler calls
+      # for class `deferred`, so the two cannot drift. Read from the default
+      # branch's tree at the commit this workflow runs from; no checkout.
+      - name: Load the release-record module
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RELEASE_RECORD: ${{ runner.temp }}/release_record.py
+        run: |
+          set -euo pipefail
+          dest="$RELEASE_RECORD"
+          for attempt in 1 2 3; do
+            if gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$REPO/contents/.github/scripts/release_record.py?ref=$WORKFLOW_SHA" \
+              > "$dest" && [ -s "$dest" ]; then
+              exit 0
+            fi
+            echo "Loading release_record.py failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          echo "::error::Could not load .github/scripts/release_record.py from $WORKFLOW_SHA after 3 attempts. This is a read failure, not an untracked deferral -- re-run this job."
+          exit 1
+
       - name: Check the deferral names a tracked follow-up issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,6 +79,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENT_URL: ${{ github.event.comment.html_url }}
+          RELEASE_RECORD: ${{ runner.temp }}/release_record.py
         run: |
           set -euo pipefail
           problems=""
@@ -117,18 +145,17 @@ jobs:
               if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
                 continue
               fi
-              state="$(printf '%s' "$issue_json" | jq -r '.state // ""')"
-              has_label="$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | index("deferred-finding") != null')"
-              has_assignee="$(printf '%s' "$issue_json" | jq -r '(.assignees | length) > 0')"
-              body_due="$(printf '%s' "$issue_json" | jq -r '.body // ""' | grep -cE '^ *Due: *[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)"
-              milestone_due="$(printf '%s' "$issue_json" | jq -r '.milestone.due_on // ""')"
-              missing=""
-              [ "$state" != "open" ] && missing="$missing closed;"
-              [ "$has_label" != "true" ] && missing="$missing no deferred-finding label;"
-              [ "$has_assignee" != "true" ] && missing="$missing no assignee (owner);"
-              if [ "${body_due:-0}" -eq 0 ] && [ -z "$milestone_due" ]; then
-                missing="$missing no due date (add a 'Due: YYYY-MM-DD' line to the issue body, or a milestone with a due date);"
+              # The same four tests the override handler applies to class
+              # `deferred`: open, labelled, assigned, dated. One problem per line.
+              found=""
+              if ! found="$(printf '%s' "$issue_json" | python3 "$RELEASE_RECORD" issue-problems)"; then
+                echo "::error::Could not evaluate issue #$n (release_record.py failed). This is a read failure, not an untracked deferral -- re-run this job."
+                exit 1
               fi
+              missing=""
+              while IFS= read -r problem; do
+                [ -n "$problem" ] && missing="$missing $problem;"
+              done <<<"$found"
               if [ -z "$missing" ]; then
                 valid="$n"
                 break

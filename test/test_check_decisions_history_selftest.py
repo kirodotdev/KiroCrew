@@ -15,7 +15,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+
+# 10x the worst call-phase duration observed on Windows in run 39959306936
+# shard 1: the test completed the call phase in 13.7 s on a loaded GitHub
+# runner.  The test-level @pytest.mark.timeout is set to twice this value so
+# pytest-timeout ends the test by raising a Timeout exception before it can
+# kill the xdist worker and silently drop any pending tests.
+_SELFTEST_HANG_GUARD_SECS = 140
 
 #: A rejection line's shape, with the parts after the path the way
 #: ``entries_in_tree`` words them for a directory child.
@@ -96,9 +105,20 @@ def test_other_childs_rejection_does_not_match() -> None:
     assert not gate._names_ledger_child(report, "notes.txt")
 
 
+@pytest.mark.timeout(300)
 def test_self_test_passes_on_this_platform() -> None:
-    """The whole self-test stays green, so the gate floor keeps working here."""
-    result = subprocess.run(
+    """The whole self-test stays green, so the gate floor keeps working here.
+
+    The self-test runs in a subprocess so that ``_self_test()``'s own use of
+    ``contextlib.redirect_stdout/stderr`` and ``os.chdir`` (for the CWD probe)
+    cannot affect the in-process capture state of other tests if a git call
+    stalls past the hang guard.  ``_SELFTEST_HANG_GUARD_SECS`` is the
+    lost-run bound: 10x the worst call-phase time observed in CI (13.7 s on
+    Windows in run 39959306936 shard 1).  On timeout the subprocess is killed
+    and reaped before teardown, leaving no dangling processes.  The ``-X utf8``
+    flag keeps the encoding behaviour consistent across platforms.
+    """
+    proc = subprocess.Popen(
         [
             sys.executable,
             "-X",
@@ -106,9 +126,18 @@ def test_self_test_passes_on_this_platform() -> None:
             str(ROOT / "scripts" / "check_decisions_history.py"),
             "--test",
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
-        timeout=60,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    try:
+        stdout, _ = proc.communicate(timeout=_SELFTEST_HANG_GUARD_SECS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, _ = proc.communicate()
+        pytest.fail(
+            f"_self_test() subprocess did not finish within "
+            f"{_SELFTEST_HANG_GUARD_SECS}s (hang guard). Partial output: {stdout}"
+        )
+    assert proc.returncode == 0, stdout

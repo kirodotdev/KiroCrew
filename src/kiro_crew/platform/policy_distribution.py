@@ -164,8 +164,11 @@ from kiro_crew.platform.policy_distribution_cache import (
 )
 from kiro_crew.platform.policy_distribution_source import (
     POLICY_URL_ENV,
+    _assert_signed_in_unchanged,
     _body_digest,
+    _source_identity,
     _split_url,
+    cache_only,
     resolve_distribution,
 )
 
@@ -314,6 +317,12 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     """
     from kiro_crew.platform.governance import active_policy_distribution
 
+    if cache_only():
+        # A cache-only process inherits the gateway's ceiling and never fetches.
+        return RefreshOutcome(
+            REFRESH_REJECTED,
+            "this process takes its ceiling from the gateway's cache and does not fetch one",
+        )
     try:
         dist = resolve_distribution(active_policy_distribution())
     except PlatformCompositionError as exc:
@@ -336,7 +345,9 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     # cache holds the retired endpoint's document) look like a lost race.
     expect_pair = _cache_pair(read_cache_meta())
     pre_fetch = read_cache()
-    if pre_fetch is not None and pre_fetch.source_digest != _source_digest(dist.source):
+    if pre_fetch is not None and pre_fetch.source_digest != _source_digest(
+        _source_identity(dist.source)
+    ):
         pre_fetch = None
     cached = None if force else pre_fetch
     try:
@@ -367,6 +378,11 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
     # `unchanged` forever while the gateway kept enforcing v1 — the live-refresh
     # guarantee silently withdrawn, under the most reassuring status there is.
     body = fetched.body
+    adopted = cached.body if (fetched.not_modified and cached is not None) else body
+    try:
+        _assert_signed_in_unchanged(dist.source, adopted)
+    except PlatformCompositionError as exc:
+        return _refresh_failure(REFRESH_REJECTED, dist, str(exc), incident="rejected")
     if fetched.not_modified:
         if cached is None:
             # A fetcher answered "unchanged" against validators we never sent — which is the
@@ -502,7 +518,7 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         validate_ceiling(ceiling)
         if not write_cache(
             body,
-            source=dist.source,
+            source=_source_identity(dist.source, body),
             etag=fetched.etag,
             last_modified=fetched.last_modified,
             expect_pair=expect_pair,
@@ -554,7 +570,7 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         if (
             published is None
             or published.body != body
-            or published.source_digest != _source_digest(dist.source)
+            or published.source_digest != _source_digest(_source_identity(dist.source))
         ):
             raise PlatformCompositionError(
                 "the refreshed ceiling could not be published to the policy cache, so a "
@@ -566,7 +582,13 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         # Only if the cache still holds what THIS refresh published: another process may
         # have published a newer document between the publish above and this failure, and
         # rolling back over it would destroy a valid ceiling nobody asked us to touch.
-        _restore_cache(previous, published_pair=(_body_digest(body), _source_digest(dist.source)))
+        _restore_cache(
+            previous,
+            published_pair=(
+                _body_digest(body),
+                _source_digest(_source_identity(dist.source, body)),
+            ),
+        )
         # The document is well-formed but this host cannot run under it — a bound
         # profile is looser than the new ceiling, or a mandated signature is
         # missing. Keeping the running ceiling is the whole reason a live refresh
@@ -1038,7 +1060,7 @@ def distribution_posture() -> Dict[str, object]:
     # to MAX_POLICY_BYTES to answer "how old is it" is the waste that only shows up
     # once a viewer is left open.
     meta = read_cache_meta()
-    if meta is not None and meta.source_digest == _source_digest(dist.source):
+    if meta is not None and meta.source_digest == _source_digest(_source_identity(dist.source)):
         posture["cache_present"] = True
         posture["cache_age_seconds"] = int(meta.age_secs())
     outcome, at = _REFRESHER.last()
@@ -1158,6 +1180,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FETCHER_LOCK,
         _FETCHERS,
         _LOOPBACK_HOSTNAME,
+        ENTERPRISE_POLICY_SCHEME,
+        ENTERPRISE_POLICY_URL,
         POLICY_CACHE_ONLY_ENV,
         POLICY_DISTRIBUTION_ENV_VARS,
         POLICY_HEADERS_ENV,
@@ -1170,14 +1194,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PolicyFetcher,
         _assert_transport_permitted,
         _env_number,
+        _fetch_enterprise,
         _fetch_file,
         _fetch_http,
         _fetcher_for,
+        _is_enterprise,
         _is_loopback,
         _NoRedirects,
         _open,
         _opener_handlers,
-        cache_only,
+        host_pinned_source,
         register_policy_fetcher,
         registered_policy_schemes,
         request_headers,

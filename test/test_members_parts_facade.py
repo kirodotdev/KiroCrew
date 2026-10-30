@@ -36,12 +36,15 @@ from kiro_crew import _facade_mirror, members
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_members_parts_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
+
 FACADE = "kiro_crew.members"
 _SRC = Path(kiro_crew.__file__).resolve().parent
 _OWNER_PREFIX = "kiro_crew.members_parts"
 PARTS_DIR = Path(members.__file__).resolve().parent / "members_parts"
 INVENTORY = source_corpus.repo_root() / "test" / "campaign_facade_inventories" / f"{FACADE}.json"
-_THIS_FILE = Path(__file__).resolve()
 
 #: Names the test trees are known to patch through the facade, one per kind of seam: the
 #: data-home resolver every path reads, a slug resolver one owner defines and others
@@ -106,11 +109,6 @@ def _corpus_patched_names() -> set[str]:
                 continue
             names |= facade_mirror_scan.names_by_target(events, {FACADE}).get(FACADE, set())
     return names
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
@@ -356,13 +354,3 @@ def test_every_name_served_from_outside_the_family_is_visible_to_a_type_checker(
         and _home(getattr(members, name)) not in family
     }
     assert served_from_outside == {}
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

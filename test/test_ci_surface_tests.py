@@ -26,6 +26,11 @@ import pytest
 # spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
 # per full run for this file alone. Grouping keeps the cache single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_ci_surface_tests")
+
+#: ``test_posix_scope_is_unfiltered`` collects the backend scope twice, 40 s of CPU
+#: alone on a fast host. Eight times that is over the ``tree_scan`` group default
+#: (``TREE_SCAN_TIMEOUT_SECS`` in ``conftest.py``), so it carries its own budget.
+POSIX_SCOPE_TIMEOUT_SECS = 360
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "ci-surface-tests.py"
 
@@ -167,8 +172,8 @@ def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
     encoding load-bearing DO hold everywhere, and this asserts both -- so the
     guard cannot rot silently on the runners that never feel it.
 
-    Deliberately not a repo-wide "missing encoding=" rule. `cross-platform.yml`
-    documents why it ships none (a line regex breaks on nested and multi-line
+    Deliberately not a repo-wide "missing encoding=" rule. The `Cross-Platform
+    Portability` step of `pr-policy.yml` documents why it ships none (a line regex breaks on nested and multi-line
     calls), and an AST version means editing `.github/workflows/**`. This stays
     the size of the defect.
     """
@@ -385,6 +390,11 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     ``test_harness.py`` left this set when the gateway harness became
     cross-platform (reader thread instead of ``selectors`` on a pipe, tree kill
     instead of ``terminate_pgid``); it now runs on the Windows shards.
+    ``test_stop_kill_cancel.py``, the three ``test_theme_install*.py`` parts and
+    ``test_file_office_preview.py`` left it once their blockers were gone: the
+    kill-path tests skip their POSIX-only cases themselves, theme packs are served
+    on Windows, and the file schema accepts a drive-letter path. They run on the
+    Windows shards too.
 
     ``test_pod_windows_boot.py`` is the one entry here for a reason other than a
     POSIX assumption: it boots a real pod under Task Scheduler, needs a built
@@ -461,7 +471,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_acp_client_tool_events.py",
         "test_acp_client_tool_hooks.py",
         "test_acp_client_transient_errors.py",
-        "test_stop_kill_cancel.py",
         "test_app_backend_stale_reap.py",
         "test_env.py",
         "test_outbox_notify_broadcast.py",
@@ -472,13 +481,9 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_snapshot.py",
         "test_snapshot_notification_copy_branch.py",
         "test_snapshot_notification_merge_branch.py",
-        "test_theme_install.py",
-        "test_theme_install_declarations.py",
-        "test_theme_install_identity.py",
         "test_webapp_preview.py",
         "test_file_raw.py",
         "test_file_download.py",
-        "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
         "test_dev_fleet_app_make_live.py",
@@ -530,6 +535,7 @@ def test_windows_scope_names_nothing_on_the_ignore_list(selector, monkeypatch) -
     assert not offenders, f"Windows scope names uncollectable suites: {offenders}"
 
 
+@pytest.mark.timeout(POSIX_SCOPE_TIMEOUT_SECS)
 def test_posix_scope_is_unfiltered(selector, monkeypatch) -> None:
     """The filter is Windows-only -- POSIX coverage must not shrink."""
     monkeypatch.setattr(selector, "_is_windows", lambda: False)

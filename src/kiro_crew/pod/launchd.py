@@ -64,6 +64,7 @@ from pathlib import Path
 from kiro_crew.pod import log_mark
 from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Reverse-DNS label namespace. One label per pod; the name has already been
 # through runtime.validate_name (single safe segment, no '/', no '..'), which is
@@ -271,9 +272,11 @@ def launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["launchctl", *args],
         capture_output=True,
-        text=True,
         timeout=30,
         check=check,
+        # launchctl writes labels and plist paths as UTF-8, whatever the
+        # gateway's locale says; a locale decode would garble a non-ASCII path.
+        **UTF8_TEXT,
     )
 
 

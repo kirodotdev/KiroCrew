@@ -207,7 +207,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       // Named exactly as Settings → Agent names it: a harness that panel has no
       // translated name for renders under the server's policy id here too, so
       // one agent is never called two things on two screens.
-      expect.stringContaining('codex'),
+      expect.stringContaining('OpenAI Codex'),
     ])
     expect(screen.queryByText('future-harness')).not.toBeInTheDocument()
   })
@@ -253,8 +253,8 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(within(notice).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
 
     // Another agent's row does not inherit a failure it never had.
-    fireEvent.click(screen.getByRole('radio', { name: 'codex' }))
-    expect(screen.getByRole('radio', { name: 'codex' })).toBeChecked()
+    fireEvent.click(screen.getByRole('radio', { name: 'OpenAI Codex' }))
+    expect(screen.getByRole('radio', { name: 'OpenAI Codex' })).toBeChecked()
     expect(screen.queryByTestId('other-agent-switch-error')).not.toBeInTheDocument()
 
     // Back on the attempted agent, the notice is still there, and its Use
@@ -401,8 +401,8 @@ describe('KiroPrerequisiteGate agent choice', () => {
     }
     expect(owner()).toHaveAccessibleName('Claude Code')
 
-    fireEvent.click(screen.getByRole('radio', { name: 'codex' }))
-    expect(owner()).toHaveAccessibleName('codex')
+    fireEvent.click(screen.getByRole('radio', { name: 'OpenAI Codex' }))
+    expect(owner()).toHaveAccessibleName('OpenAI Codex')
     expect(owner()).toBeChecked()
     expect(codeBlock('npm install -g @zed-industries/codex-acp')).toBeInTheDocument()
   })
@@ -443,16 +443,16 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(within(ready).queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
 
     // A failed check is still something a re-check can settle, so it keeps one.
-    fireEvent.click(screen.getByRole('radio', { name: 'pi' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Pi' }))
     const unverified = screen.getByTestId('other-agent-detail')
     const recheck = within(unverified).getByRole('button', { name: 'Check again' })
     expect(recheck).toBeEnabled()
     expect(screen.getByText('Check failed')).toBeInTheDocument()
     expect(within(unverified).getByText(
-      'Kiro Crew could not confirm that pi is installed. Press Check again to verify the installation before using this agent. Setup stays open until your chosen agent is ready. You can switch agents here, or later in Settings > Agent Harness.',
+      'Kiro Crew could not confirm that Pi is installed. Press Check again to verify the installation before using this agent. Setup stays open until your chosen agent is ready. You can switch agents here, or later in Settings > Agent Harness.',
     )).toBeInTheDocument()
     expect(unverified).not.toHaveTextContent('This host cannot provide that sandbox')
-    const useAgent = within(unverified).getByRole('button', { name: /Use pi/ })
+    const useAgent = within(unverified).getByRole('button', { name: /Use Pi/ })
     expect(useAgent).toBeDisabled()
     fireEvent.click(useAgent)
     expect(api.patchConfig).not.toHaveBeenCalled()
@@ -460,7 +460,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.acpBackendRecheck).mockResolvedValue({ backend: probe({ id: 'pi', policy_id: 'pi' }) })
     fireEvent.click(recheck)
     await waitFor(() => expect(api.acpBackendRecheck).toHaveBeenCalledWith('pi'))
-    expect(await screen.findByText('pi is installed and ready to use.')).toBeInTheDocument()
+    expect(await screen.findByText('Pi is installed and ready to use.')).toBeInTheDocument()
     expect(useAgent).toBeEnabled()
     expect(within(unverified).queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
     // Checking a row is not choosing it: only Use may save the new agent.
@@ -686,15 +686,15 @@ describe('KiroPrerequisiteGate agent choice', () => {
     render()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'codex' }))
-    const useAgent = screen.getByRole('button', { name: /Use codex/ })
+    fireEvent.click(await screen.findByRole('radio', { name: 'OpenAI Codex' }))
+    const useAgent = screen.getByRole('button', { name: /Use OpenAI Codex/ })
     expect(useAgent).toBeDisabled()
     const detail = screen.getByTestId('other-agent-detail')
     // Plain words for what the block means, in place of the bare badge text
     // repeated as a heading: a reader who does not know what a sandbox is here
     // otherwise has a disabled button, a command, and no idea why.
     expect(within(detail).getByText(
-      'Kiro Crew runs codex inside a sandbox that keeps your credentials out of its reach. This host cannot provide that sandbox right now, so codex stays unavailable until it can.',
+      'Kiro Crew runs OpenAI Codex inside a sandbox that keeps your credentials out of its reach. This host cannot provide that sandbox right now, so OpenAI Codex stays unavailable until it can.',
     )).toBeInTheDocument()
     expect(within(detail).getByText(/Run this on the gateway host for a full prerequisite report/)).toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: 'Copy command' })).toHaveTextContent('kirocrew doctor')
@@ -708,7 +708,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
     fireEvent.click(recheck)
     await waitFor(() => expect(api.acpBackendRecheck).toHaveBeenCalledWith('codex'))
     await waitFor(() => expect(vi.mocked(api.kiroPrerequisite).mock.calls.length).toBeGreaterThan(statusReads))
-    const selectedRow = screen.getByRole('radio', { name: 'codex' }).closest('label')
+    const selectedRow = screen.getByRole('radio', { name: 'OpenAI Codex' }).closest('label')
     expect(within(selectedRow!).getByText("Host can't sandbox")).toHaveClass('text-warn-text')
     expect(within(selectedRow!).queryByText('Installed')).not.toBeInTheDocument()
     expect(detail).not.toHaveTextContent('ready to use')
@@ -732,12 +732,12 @@ describe('KiroPrerequisiteGate agent choice', () => {
     render()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'codex' }))
-    const useAgent = screen.getByRole('button', { name: /Use codex/ })
+    fireEvent.click(await screen.findByRole('radio', { name: 'OpenAI Codex' }))
+    const useAgent = screen.getByRole('button', { name: /Use OpenAI Codex/ })
     expect(useAgent).toBeDisabled()
     const detail = screen.getByTestId('other-agent-detail')
     expect(within(detail).getByText(
-      "Kiro Crew runs codex inside a sandbox that keeps your credentials out of its reach, but the sandbox is turned off in Kiro Crew's settings (agent.sandbox). Turn it back on to use codex.",
+      "Kiro Crew runs OpenAI Codex inside a sandbox that keeps your credentials out of its reach, but the sandbox is turned off in Kiro Crew's settings (agent.sandbox). Turn it back on to use OpenAI Codex.",
     )).toBeInTheDocument()
     // Neither remedy for a host verdict is offered: nothing they measure is the cause.
     expect(within(detail).queryByText(/This host cannot provide that sandbox/)).not.toBeInTheDocument()
@@ -745,7 +745,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(within(detail).queryByText('kirocrew doctor')).not.toBeInTheDocument()
     expect(within(detail).queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
     // The badge says what the detail says: off, not unavailable.
-    const selectedRow = screen.getByRole('radio', { name: 'codex' }).closest('label')
+    const selectedRow = screen.getByRole('radio', { name: 'OpenAI Codex' }).closest('label')
     expect(within(selectedRow!).getByText('Sandbox turned off')).toHaveClass('text-warn-text')
     expect(within(selectedRow!).queryByText("Host can't sandbox")).not.toBeInTheDocument()
     expect(within(selectedRow!).queryByText('Installed')).not.toBeInTheDocument()
@@ -771,12 +771,12 @@ describe('KiroPrerequisiteGate agent choice', () => {
     render()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'codex' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'OpenAI Codex' }))
     const detail = screen.getByTestId('other-agent-detail')
     expect(within(detail).getByText(/This host cannot provide that sandbox/)).toBeInTheDocument()
     expect(within(detail).queryByText(/turned off in Kiro Crew's settings/)).not.toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: 'Check again' })).toBeEnabled()
-    const selectedRow = screen.getByRole('radio', { name: 'codex' }).closest('label')
+    const selectedRow = screen.getByRole('radio', { name: 'OpenAI Codex' }).closest('label')
     expect(within(selectedRow!).getByText("Host can't sandbox")).toBeInTheDocument()
     expect(within(selectedRow!).queryByText('Sandbox turned off')).not.toBeInTheDocument()
   })
@@ -835,8 +835,8 @@ describe('KiroPrerequisiteGate agent choice', () => {
 
     const fallback = await screen.findByRole('button', { name: 'Use Kiro CLI instead' })
     expect(fallback).toBeEnabled()
-    expect(screen.getByText(/is set to use codex, which isn't ready/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Use codex/ })).toBeDisabled()
+    expect(screen.getByText(/is set to use OpenAI Codex, which isn't ready/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Use OpenAI Codex/ })).toBeDisabled()
     fireEvent.click(fallback)
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'kiro'))
   })
@@ -1072,14 +1072,14 @@ describe('KiroPrerequisiteGate agent choice', () => {
 
     const notice = await screen.findByTestId('kiro-gate-config-error')
     fireEvent.click(screen.getByRole('button', { name: 'Use other coding agents' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'codex' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'OpenAI Codex' }))
     expect(within(notice).queryByRole('button', { name: /Ask the agent/ })).not.toBeInTheDocument()
     expect(api.patchConfig).not.toHaveBeenCalled()
 
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kiro' } })
     fireEvent.click(within(notice).getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(screen.queryByTestId('kiro-gate-config-error')).not.toBeInTheDocument())
-    expect(screen.getByRole('radio', { name: 'codex' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'OpenAI Codex' })).toBeChecked()
     expect(api.patchConfig).not.toHaveBeenCalled()
   })
 

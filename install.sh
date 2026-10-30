@@ -65,7 +65,9 @@ NODE_VERSION="24"
 NODE_MIN_VERSION="22.12.0"
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"
-ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
+# ACP_NPM_PKG and acp_adapter_spec (the exact pinned version).
+# shellcheck source=scripts/lib/acp-adapter-pin.sh
+. "$KIROCREW_APP_DIR/scripts/lib/acp-adapter-pin.sh"
 
 # ── Colors & Formatting ──
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
@@ -160,6 +162,17 @@ node_supported() {
     [ "$_pat" -ge "$_fpat" ] 2>/dev/null
 }
 
+# Install a supported Node through ensure-node.sh (pinned, checksum-verified
+# mise or glibc-217 build; an existing nvm is reused), then put the node it
+# recorded on this shell's PATH. Never pipes a remote installer into a shell.
+install_node_via_ensure() {
+    bash "$KIROCREW_APP_DIR/ensure-node.sh" || true
+    if [ -s "$KIROCREW_DATA_DIR/node-bin-dir" ]; then
+        PATH="$(cat "$KIROCREW_DATA_DIR/node-bin-dir"):$PATH"
+        export PATH
+    fi
+}
+
 # ── Pre-flight ──
 
 banner
@@ -183,7 +196,10 @@ step "Dependencies"
 if [ "$USE_MISE" -eq 1 ]; then
     if ! has mise; then
         info "Installing mise…"
-        curl -fsSL https://mise.run | sh || true
+        # A pinned release checked against a recorded sha256, never a piped script.
+        # shellcheck source=scripts/lib/pinned-mise.sh
+        . "$KIROCREW_APP_DIR/scripts/lib/pinned-mise.sh"
+        MISE_INSTALL_PATH="$HOME/.local/bin/mise" install_pinned_mise || true
         export PATH="$HOME/.local/bin:$PATH"
         has mise || die "mise installation failed. Install manually: https://mise.jdx.dev/installing-mise.html"
     fi
@@ -346,17 +362,9 @@ elif has node; then
         brew install node >/dev/null 2>&1 || true
     fi
     if ! node_supported; then
-        # Distro package still too old (the common case on AL2023/Debian):
-        # nvm is the only channel that reliably provides a current Node.
-        info "Installing Node.js $NODE_VERSION via nvm…"
-        if [ ! -d "$HOME/.nvm" ]; then
-            curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash 2>/dev/null
-        fi
-        export NVM_DIR="$HOME/.nvm"
-        # shellcheck disable=SC1091
-        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-        nvm install "$NODE_VERSION" >/dev/null 2>&1
-        nvm alias default "$NODE_VERSION" >/dev/null 2>&1
+        # Distro package still too old (the common case on AL2023/Debian).
+        info "Installing Node.js $NODE_VERSION via ensure-node.sh…"
+        install_node_via_ensure
     fi
     node_supported \
         && ok "Node.js $(node --version) now active" \
@@ -374,20 +382,13 @@ elif has brew; then
     brew install node >/dev/null 2>&1
     has node && ok "Node.js $(node --version) installed via brew" || warn "Node.js install failed — run: brew install node"
 else
-    info "Installing Node.js via nvm…"
-    if [ ! -d "$HOME/.nvm" ]; then
-        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash 2>/dev/null
-    fi
-    export NVM_DIR="$HOME/.nvm"
-    # shellcheck disable=SC1091
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    nvm install "$NODE_VERSION" >/dev/null 2>&1
-    nvm alias default "$NODE_VERSION" >/dev/null 2>&1
+    info "Installing Node.js via ensure-node.sh…"
+    install_node_via_ensure
     if has node; then
-        ok "Node.js $(node --version) installed via nvm"
+        ok "Node.js $(node --version) installed"
     else
         warn "Node.js install failed — frontend build will be skipped"
-        detail "Install manually: nvm install $NODE_VERSION"
+        detail "Install Node.js $NODE_VERSION (LTS): https://nodejs.org"
     fi
 fi
 fi # USE_MISE -eq 0 (Node.js)
@@ -414,12 +415,17 @@ step "Optional Agent Backend"
 if has claude-agent-acp; then
     ok "claude-agent-acp ($( which claude-agent-acp ))"
 elif has npm; then
-    info "Installing $ACP_NPM_PKG via npm…"
-    if npm install -g "$ACP_NPM_PKG" >/dev/null 2>&1; then
-        ok "claude-agent-acp installed"
+    if ! ACP_NPM_SPEC="$(acp_adapter_spec "$KIROCREW_APP_DIR")"; then
+        warn "Could not read the pinned $ACP_NPM_PKG version (packaging/acp-adapters/package.json) — skipping"
+        detail "npm i -g $ACP_NPM_PKG@<version>"
     else
-        warn "Global npm install failed — install it manually before first run:"
-        detail "npm i -g $ACP_NPM_PKG"
+        info "Installing $ACP_NPM_SPEC via npm…"
+        if npm install -g "$ACP_NPM_SPEC" >/dev/null 2>&1; then
+            ok "claude-agent-acp installed"
+        else
+            warn "Global npm install failed — install it manually before first run:"
+            detail "npm i -g $ACP_NPM_SPEC"
+        fi
     fi
 else
     warn "npm not available — install the agent backend later:"

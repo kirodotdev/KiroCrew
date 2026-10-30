@@ -610,3 +610,85 @@ class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
             )
 
         assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+
+
+class TestFileLocksDoNotPileUp:
+    """``ConversationLog._file_locks`` must not grow one RLock per session forever.
+
+    The per-file writer lock is shared process-wide so two writers to one
+    transcript serialize. It is keyed by session path and held in a
+    ``WeakValueDictionary``, so an entry evicts once no one holds the lock
+    rather than one RLock accumulating per distinct session for the gateway's
+    life. That eviction is sound ONLY while every acquirer keeps a strong
+    reference for its whole critical section (so a concurrent writer to the same
+    path still gets the same object). Both facts are pinned here.
+    """
+
+    def test_locks_return_to_baseline_after_append_and_delete(self, tmp_path: Path) -> None:
+        import gc
+
+        from kiro_crew.history import ConversationLog
+
+        n = 1000
+        base = tmp_path / "sessions"
+        base.mkdir()
+        log = ConversationLog(base)
+        try:
+            baseline = len(ConversationLog._file_locks)
+
+            keys = [f"chat-leaktest-{i:05d}" for i in range(n)]
+            for k in keys:
+                # Real production mutation path: append takes _locked(key),
+                # which calls _file_lock(key) and inserts into _file_locks.
+                log.append(k, "user", "hello")
+            for k in keys:
+                log.delete_session(k)
+
+            # The deferred off-loop flock release holds no reference to the
+            # RLock, and no critical section is live now, so every weak entry
+            # is collectable. Force a collection to make eviction deterministic
+            # across interpreters rather than leaning on CPython refcounting.
+            gc.collect()
+
+            leaked = len(ConversationLog._file_locks) - baseline
+            assert leaked == 0, (
+                f"_file_locks leaked {leaked} RLock entries after appending to "
+                f"and deleting {n} distinct sessions (expected 0 growth)"
+            )
+        finally:
+            # delete_session lazily opens a per-thread SQLite search-index
+            # connection under the sessions dir; close it so no open handle
+            # blocks the fixture's directory cleanup on Windows.
+            log._catalog_projection.search_index.close()
+
+    def test_same_lock_object_while_a_writer_holds_it(self, tmp_path: Path) -> None:
+        import threading
+
+        from kiro_crew.history import ConversationLog
+
+        base = tmp_path / "sessions"
+        base.mkdir()
+        log = ConversationLog(base)
+        key = "chat-concurrency-control"
+
+        # Hold the path's lock (as every real writer does, via ``with``),
+        # then from another thread ask for the lock for the SAME path. The
+        # weak entry must not have evicted while we hold a strong reference,
+        # so the second caller gets the identical object — the guarantee two
+        # concurrent writers to one transcript depend on.
+        other: list[threading.RLock] = []
+
+        def fetch() -> None:
+            other.append(log._file_lock(key))
+
+        held_lock = log._file_lock(key)
+        with held_lock:  # strong ref kept for the whole critical section
+            t = threading.Thread(target=fetch)
+            t.start()
+            t.join(timeout=10)
+
+        assert other, "second _file_lock call did not return"
+        assert other[0] is held_lock, (
+            "a concurrent caller got a DIFFERENT lock object for the same "
+            "path while a writer held it — two writers could then race"
+        )

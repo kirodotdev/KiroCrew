@@ -301,13 +301,13 @@ class TestReactionOverrides:
 
     def test_defaults_without_overrides(self):
         result, unknown = _build_phase_emojis({})
-        assert result["done"] == "lobster"
-        assert result["queued"] == "eyes"
+        assert result == {"queued": "eyes", "error": "scream"}
+        assert "lobster" not in result.values()
         assert unknown == []
 
     def test_override_applies(self):
-        result, unknown = _build_phase_emojis({"done": "sparkle"})
-        assert result["done"] == "sparkle"
+        result, unknown = _build_phase_emojis({"error": "sparkle"})
+        assert result["error"] == "sparkle"
         assert result["queued"] == "eyes"  # others unchanged
         assert unknown == []
 
@@ -340,79 +340,30 @@ class TestContextFooter:
     # ── Threshold boundary tests ──
 
     @pytest.mark.asyncio
-    async def test_green_at_zero(self):
-        text, _ = await self._get_footer(0.0)
-        assert "🟢" in text
-        assert "ctx 0%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_29_rounds_to_yellow(self):
-        """29.9 rounds to 30 → 🟡 (not green). Icon and display are consistent."""
-        text, _ = await self._get_footer(29.9)
-        assert "🟡" in text
-        assert "ctx 30%" in text
-
-    @pytest.mark.asyncio
-    async def test_green_at_29_exact(self):
-        text, _ = await self._get_footer(29.4)
-        assert "🟢" in text
-        assert "ctx 29%" in text
-
-    @pytest.mark.asyncio
-    async def test_yellow_at_exactly_30(self):
-        text, _ = await self._get_footer(30.0)
-        assert "🟡" in text
-        assert "ctx 30%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_49_rounds_to_orange(self):
-        """49.9 rounds to 50 → 🟠. Icon and display are consistent."""
-        text, _ = await self._get_footer(49.9)
-        assert "🟠" in text
-        assert "ctx 50%" in text
-
-    @pytest.mark.asyncio
-    async def test_yellow_at_49_exact(self):
-        text, _ = await self._get_footer(49.4)
-        assert "🟡" in text
-        assert "ctx 49%" in text
-
-    @pytest.mark.asyncio
-    async def test_orange_at_exactly_50(self):
-        text, _ = await self._get_footer(50.0)
-        assert "🟠" in text
-        assert "ctx 50%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_69_rounds_to_red(self):
-        """69.9 rounds to 70 → 🔴. Icon and display are consistent."""
-        text, _ = await self._get_footer(69.9)
-        assert "🔴" in text
-        assert "ctx 70%" in text
-
-    @pytest.mark.asyncio
-    async def test_orange_at_69_exact(self):
-        text, _ = await self._get_footer(69.4)
-        assert "🟠" in text
-        assert "ctx 69%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_exactly_70(self):
-        text, _ = await self._get_footer(70.0)
-        assert "🔴" in text
-        assert "ctx 70%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_99(self):
-        text, _ = await self._get_footer(99.0)
-        assert "🔴" in text
-        assert "ctx 99%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_100(self):
-        text, _ = await self._get_footer(100.0)
-        assert "🔴" in text
-        assert "ctx 100%" in text
+    @pytest.mark.parametrize(
+        ("pct", "icon", "shown"),
+        [
+            pytest.param(0.0, "🟢", "ctx 0%", id="test_green_at_zero"),
+            # 29.9 rounds to 30 → 🟡 (not green). Icon and display are consistent.
+            pytest.param(29.9, "🟡", "ctx 30%", id="test_boundary_29_rounds_to_yellow"),
+            pytest.param(29.4, "🟢", "ctx 29%", id="test_green_at_29_exact"),
+            pytest.param(30.0, "🟡", "ctx 30%", id="test_yellow_at_exactly_30"),
+            # 49.9 rounds to 50 → 🟠. Icon and display are consistent.
+            pytest.param(49.9, "🟠", "ctx 50%", id="test_boundary_49_rounds_to_orange"),
+            pytest.param(49.4, "🟡", "ctx 49%", id="test_yellow_at_49_exact"),
+            pytest.param(50.0, "🟠", "ctx 50%", id="test_orange_at_exactly_50"),
+            # 69.9 rounds to 70 → 🔴. Icon and display are consistent.
+            pytest.param(69.9, "🔴", "ctx 70%", id="test_boundary_69_rounds_to_red"),
+            pytest.param(69.4, "🟠", "ctx 69%", id="test_orange_at_69_exact"),
+            pytest.param(70.0, "🔴", "ctx 70%", id="test_red_at_exactly_70"),
+            pytest.param(99.0, "🔴", "ctx 99%", id="test_red_at_99"),
+            pytest.param(100.0, "🔴", "ctx 100%", id="test_red_at_100"),
+        ],
+    )
+    async def test_threshold_icon_and_display(self, pct, icon, shown):
+        text, _ = await self._get_footer(pct)
+        assert icon in text
+        assert shown in text
 
     # ── Format and structure ──
 
@@ -568,51 +519,56 @@ class TestToSlackMrkdwnImages:
     on, and it matches Discord, whose renderer rewrites no links at all.
     """
 
-    def test_image_with_local_path_is_untouched(self):
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "![shot](/tmp/x.png)",
+                "![shot](/tmp/x.png)",
+                id="test_image_with_local_path_is_untouched",
+            ),
+            pytest.param(
+                "![diagram](https://example.com/d.png)",
+                "![diagram](https://example.com/d.png)",
+                id="test_image_with_http_url_is_untouched",
+            ),
+            pytest.param(
+                "[docs](https://example.com)",
+                "<https://example.com|docs>",
+                id="test_regular_link_still_converts",
+            ),
+            pytest.param(
+                "see ![a](/x.png) and [b](https://y)",
+                "see ![a](/x.png) and <https://y|b>",
+                id="test_mixed_line_converts_only_the_link",
+            ),
+            # CommonMark reads ``\![x](p)`` as an escaped literal ``!`` followed by a
+            # LINK, so a strict reader would convert it. This converter has no
+            # backslash-unescaping layer, so honouring that in detection alone would
+            # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
+            # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
+            # which registers ``\![x](p)`` as an image on the dashboard side.
+            pytest.param(
+                r"\![x](p)", r"\![x](p)", id="test_escaped_bang_is_still_treated_as_an_image"
+            ),
+            # No space between ``!`` and ``[``: CommonMark binds the ``!`` into image
+            # syntax, so this is an image, not "exclamation mark, then link".
+            pytest.param(
+                "Wow![click](https://x)",
+                "Wow![click](https://x)",
+                id="test_sentence_bang_before_a_link_is_an_image_per_commonmark",
+            ),
+            pytest.param(
+                "```\n![a](/x.png)\n```",
+                "```\n![a](/x.png)\n```",
+                id="test_image_inside_a_code_fence_is_untouched",
+            ),
+        ],
+    )
+    def test_image_passthrough_and_link_conversion(self, text, expected):
         from kiro_crew.slack.format import to_slack_mrkdwn
 
-        assert to_slack_mrkdwn("![shot](/tmp/x.png)") == "![shot](/tmp/x.png)"
-
-    def test_image_with_http_url_is_untouched(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        text = "![diagram](https://example.com/d.png)"
-        assert to_slack_mrkdwn(text) == text
-
-    def test_regular_link_still_converts(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        assert to_slack_mrkdwn("[docs](https://example.com)") == "<https://example.com|docs>"
-
-    def test_mixed_line_converts_only_the_link(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        out = to_slack_mrkdwn("see ![a](/x.png) and [b](https://y)")
-        assert out == "see ![a](/x.png) and <https://y|b>"
-
-    def test_escaped_bang_is_still_treated_as_an_image(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        # CommonMark reads ``\![x](p)`` as an escaped literal ``!`` followed by a
-        # LINK, so a strict reader would convert it. This converter has no
-        # backslash-unescaping layer, so honouring that in detection alone would
-        # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
-        # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
-        # which registers ``\![x](p)`` as an image on the dashboard side.
-        assert to_slack_mrkdwn(r"\![x](p)") == r"\![x](p)"
-
-    def test_sentence_bang_before_a_link_is_an_image_per_commonmark(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        # No space between ``!`` and ``[``: CommonMark binds the ``!`` into image
-        # syntax, so this is an image, not "exclamation mark, then link".
-        assert to_slack_mrkdwn("Wow![click](https://x)") == "Wow![click](https://x)"
-
-    def test_image_inside_a_code_fence_is_untouched(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        text = "```\n![a](/x.png)\n```"
-        assert to_slack_mrkdwn(text) == text
+        assert to_slack_mrkdwn(text) == expected
 
 
 class TestMermaidSequenceArrows:
@@ -901,7 +857,6 @@ class TestToolElapsedTimer:
         # Just verify the handler completes without hanging (timer not blocking)
         await handle_message(slack, sessions, "C1", "read it", None, "msg1", "U1")
 
-        # Verify tool completion was recorded
         task_appends = [a for a in slack.actions if a[0] == "append_task"]
         complete_tasks = [t for t in task_appends if t[1].get("status") == "complete"]
         assert len(complete_tasks) >= 1
@@ -990,7 +945,7 @@ class TestToolElapsedTimer:
         sessions = FakeSessionManager(provider)
         await handle_message(slack, sessions, "C1", "read it", None, "msg1", "U1")
 
-        # Verify the 30s sleep was attempted (updater was started)
+        # The 30s sleep is the updater's: seeing it proves the updater started.
         assert 30 in sleep_calls
 
     @pytest.mark.asyncio

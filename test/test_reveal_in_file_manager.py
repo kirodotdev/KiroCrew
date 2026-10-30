@@ -16,6 +16,7 @@ Three properties matter and each has a reason to exist:
 from __future__ import annotations
 
 import os
+import subprocess
 from unittest.mock import patch
 
 from kiro_crew import platform_compat
@@ -36,6 +37,50 @@ class TestRevealInFileManager:
              patch("subprocess.Popen") as popen:
             assert platform_compat.open_with_default_app("/w/x.md") is True
         assert popen.call_args.args[0] == ["/usr/bin/open", "/w/x.md"]
+
+    def test_open_with_default_app_does_not_wait_by_default(self) -> None:
+        # Every existing caller relies on "started" being the whole answer.
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("subprocess.Popen") as popen:
+            assert platform_compat.open_with_default_app("/w/x.md") is True
+        assert popen.call_args.args[0] == ["/usr/bin/xdg-open", "/w/x.md"]
+        popen.return_value.wait.assert_not_called()
+
+    def test_open_with_default_app_wait_reads_the_launcher_exit(self) -> None:
+        # `open` exits non-zero when no application handles the target, and
+        # xdg-open exits 3/4 when no handler is registered.
+        for platform in ("darwin", "linux"):
+            for returncode, expected in ((0, True), (1, False), (3, False)):
+                with patch("sys.platform", platform), \
+                     patch.object(platform_compat, "IS_WINDOWS", False), \
+                     patch("os.path.isfile", return_value=True), \
+                     patch("subprocess.Popen") as popen:
+                    popen.return_value.wait.return_value = returncode
+                    assert platform_compat.open_with_default_app(
+                        "kirocrew://", wait_for_exit=2.0) is expected
+                popen.return_value.wait.assert_called_once_with(timeout=2.0)
+
+    def test_open_with_default_app_still_running_at_the_deadline_is_a_launch(self) -> None:
+        # xdg-open's generic path runs the application in the foreground.
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("subprocess.Popen") as popen:
+            popen.return_value.wait.side_effect = subprocess.TimeoutExpired(
+                ["/usr/bin/xdg-open", "kirocrew://"], 2.0)
+            assert platform_compat.open_with_default_app(
+                "kirocrew://", wait_for_exit=2.0) is True
+
+    def test_open_with_default_app_wait_with_no_launcher_answers_false(self) -> None:
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch("os.path.isfile", return_value=False), \
+             patch("subprocess.Popen") as popen:
+            assert platform_compat.open_with_default_app(
+                "kirocrew://", wait_for_exit=2.0) is False
+        popen.assert_not_called()
 
     def test_open_with_default_app_is_refused_on_windows(self) -> None:
         # Launching by association goes through the shell and the path usually

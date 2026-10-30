@@ -67,10 +67,16 @@ class SlotRegistry:
     @staticmethod
     def creator_slot_count(owner: Any, creator_key: str) -> int:
         """Count published slots charged to one non-empty caller key under the
-        per-caller slot cap: the slots it CREATED (``_created_by``) and the slots
-        it REVIVED from history (``_revived_by``, which a revive stamps while
-        preserving the target's own creator). A slot that is both counts once.
+        per-caller slot cap: the slots it CREATED (``_created_by``), the slots it
+        MANAGES (see :func:`session_managers.holder`, which differs from the
+        creator only after a ``session_handoff``) and the slots it REVIVED from
+        history (``_revived_by``, which a revive stamps while preserving the
+        target's own creator). A slot that matches more than one counts once.
+        The creator stays charged after a handoff, so handing a session on, or
+        closing its manager, never lowers the total a caller can hold.
         """
+        from kiro_crew.dashboard import session_managers
+
         if not creator_key:
             return 0
         # Construction reservations carry no creator attribution, so charging
@@ -79,6 +85,7 @@ class SlotRegistry:
             1
             for slot in owner._slots.values()
             if getattr(slot, "_created_by", "") == creator_key
+            or session_managers.holder(slot) == creator_key
             or getattr(slot, "_revived_by", "") == creator_key
         )
 

@@ -1017,16 +1017,14 @@ class TestReviewFixes:
         assert len(_crumbs(home)) == 1
 
     def test_a_superseded_start_leaves_only_the_successors_crumb(self, home, rec, monkeypatch):
-        """Review rounds 3-5 all lived here; the inline write ended the class.
+        """The crumb is written inline, under the lock that installs the start.
 
         A deferred write could land after its own session ended, or after a
-        SUCCESSOR registered under the same key. Guarding it with an ended-key
-        set, then with a generation compared before and after the write, both
-        failed -- the post-write check acted on the path the successor SHARES, so
-        a late predecessor deleted the crumb its successor had just written and
-        lost that session's crash. Writing under the lock that installs the start
-        removes the interleaving rather than detecting it: there is no window in
-        which two starts are both mid-write.
+        SUCCESSOR registered under the same key. A post-write check cannot guard
+        it: it acts on the path the successor SHARES, so a late predecessor would
+        delete the crumb its successor had just written and lose that session's
+        crash. Writing under the lock removes the interleaving rather than
+        detecting it: there is no window in which two starts are both mid-write.
         """
         _stamp_starts(monkeypatch, _FIRST_START, _SECOND_START)
         _start("dashboard:chat-1")

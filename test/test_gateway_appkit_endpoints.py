@@ -100,7 +100,6 @@ class TestMcpServerRegistration:
             assert data["ok"] is True
             assert data["name"] == "my-server"
 
-            # Verify written to mcp.json
             cfg = json.loads(mcp_env.read_text(encoding="utf-8"))
             assert "my-server" in cfg["mcpServers"]
             assert cfg["mcpServers"]["my-server"]["command"] == "node"
@@ -792,7 +791,6 @@ class TestReverseProxy:
                 resp = await client.get("/apps/proxy-app/api/test-path")
                 assert resp.status == 200
 
-            # Verify HMAC header was forwarded
             proxy_header = received_headers.get("x-kirocrew-proxy", "")
             assert proxy_header, "X-KiroCrew-Proxy header missing"
             assert ":" in proxy_header
@@ -841,7 +839,6 @@ class TestReverseProxy:
                 resp = await client.get("/apps/proxy-app/api/data?user=alice&limit=10")
                 assert resp.status == 200
 
-            # Verify query string was forwarded
             assert "user=alice" in received_qs
             assert "limit=10" in received_qs
 
@@ -900,7 +897,6 @@ class TestReverseProxy:
 
         try:
             async with self._make_client() as client:
-                # Test path containing space (%20)
                 resp = await client.get("/apps/proxy-app/api/read?path=/tmp/my%20notes.md")
                 assert resp.status == 200, f"Expected 200, got {resp.status}"
                 data = await resp.json()

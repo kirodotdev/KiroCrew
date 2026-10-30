@@ -8,7 +8,7 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
-import { useFrameOpenLink } from '../../hooks/useFrameOpenLink'
+import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
@@ -37,8 +37,7 @@ export { CREW_DASHBOARD_SANDBOX }
  * own bootstrap, which does not run here -- so when the server withholds script
  * it writes each bound cell's text itself, HTML-escaped
  * (`dashboard_frame.fill_bindings_as_text`). Without that the page drew every
- * bound cell empty with its stale band still hidden, which reads as a current
- * page showing nothing.
+ * bound cell empty, which reads as a current page showing nothing.
  */
 export const CREW_DASHBOARD_SANDBOX_STATIC = ''
 
@@ -190,8 +189,8 @@ interface Loaded {
  * It renders the INSTANCE -- the crewmate's own copy of a template -- which the
  * registry serves from `GET /api/members/{slug}/dashboard`. The gateway composes
  * the document: it fills every `data-dashboard-field` element from the folded
- * values, sets `window.kirocrew`, marks the agentic cells and raises its own stale
- * band. This component's jobs are the three the document cannot do for itself:
+ * values, sets `window.kirocrew`, and marks the agentic and missing cells. This
+ * component's jobs are the three the document cannot do for itself:
  * mint it into a sandbox, keep the last page that successfully loaded, and offer a
  * way out when nothing loads at all.
  *
@@ -222,8 +221,12 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '' }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
+  /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
+   *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
+   *  browser's back swipe over the frame. The Mates side panel does. */
+  relayWheel?: boolean
   displayName: string
   /** The crew record's `avatar` field, verbatim, for the suggestions page's face. */
   avatar?: unknown
@@ -249,8 +252,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   /** A gap recovery that did not arrive. The page keeps its values; this says they
-   *  are older than the record, which nothing else on screen can say: the page's
-   *  own stale band is driven by a read that never came. */
+   *  are older than the record, which nothing else on screen can say: the read
+   *  that would have moved them never came. */
   const [refetchError, setRefetchError] = useState<string | null>(null)
   /** A whole-read request is in flight. The notice's Retry is disabled on it, which is
    *  what acknowledges the press: the notice itself stays up until the read arrives, so
@@ -258,8 +261,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const [refetchPending, setRefetchPending] = useState(false)
   const onActRef = useRef(onAct)
   onActRef.current = onAct
-  // A pull request the page links to: this frame only, GitHub PR URLs only.
-  useFrameOpenLink([frameRef])
+  // A link the page asks for: the agent-page link bridge, from this frame only. A
+  // click it cannot tie to the frame gets the host's "Open <host>" button.
+  const linkChip = useFrameLinkBridge([frameRef])
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -377,8 +381,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       .catch((err) => {
         // REPORTED, not swallowed. The page keeps the values it has, which is right,
         // but those values are now known to be older than the record and the reader
-        // cannot tell: the page's own stale band is driven by the host's read, and a
-        // refetch that never arrived leaves it saying nothing. The notice sits beside
+        // cannot tell: the document draws no warning of its own, and a refetch that
+        // never arrived leaves nothing on the page saying so. The notice sits beside
         // the page rather than over it, and a retry that fails again leaves it there.
         setRefetchError(apiErrorCode(err) || 'refetch_failed')
       })
@@ -437,7 +441,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // (crewmate, package) page can still be armed from before. Letting its pushes
       // through gave the template's bootstrap a generation it cannot place, so it asked
       // for a whole read with no package to name, the gateway answered 400
-      // `missing_dashboard`, and the stale band came back on every push.
+      // `missing_dashboard`, and the page refetched on every push.
       const mine = livePackageRef.current
       if (fromPackage !== mine) return
       // Same reason as the refetch answer above: an opaque origin cannot be named,
@@ -531,7 +535,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // the gateway deliberately does not compose that state -- `_render` is skipped, so
     // there is no data island, no bootstrap and no ready beacon. Promoting it would
     // draw the template's own placeholder markup as a healthy dashboard: every cell
-    // empty, nothing marked missing, no band, and no sign to a reader that what they
+    // empty, nothing marked missing, and no sign to a reader that what they
     // are looking at is not their data.
     //
     // It is not the same answer as the guard below, which is why it is asked separately.
@@ -672,8 +676,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const srcdoc = useMemo(
     () =>
       shown && !isError
-        // `rewriteBareLinks: false`: the sandbox withholds `allow-popups`, so a
-        // `target="_blank"` link here would be a blocked popup (a dead click).
+        // `linkBridge`: the sandbox withholds `allow-popups` and top navigation, so
+        // a `_blank` or `_top` link would be a dead click. The shim hands it to
+        // `useFrameLinkBridge` above, which checks the frame, URL and gesture.
         ? // offlineScripts: the CDN script origins are dropped for THIS document.
           // The page is filled with this crewmate's own task titles, summaries
           // and costs, and since the preview/apply pair it can be written by an
@@ -685,14 +690,17 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: shown.html,
             themeVars,
             mode: theme,
-            rewriteBareLinks: false,
+            linkBridge: true,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
+            // So does the desktop trackpad swipe that hides the panel, where
+            // the host asks for it.
+            relayWheel,
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
-    [shownKey, docRev, isError, themeVars, theme],
+    [shownKey, docRev, isError, themeVars, theme, relayWheel],
   )
   const mint = useSandboxDoc(srcdoc)
   const { pending, retry } = mint
@@ -982,13 +990,16 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: candidate.html,
             themeVars,
             mode: theme,
-            rewriteBareLinks: false,
+            linkBridge: true,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
             relayTouches: true,
+            // So does the desktop trackpad swipe that hides the panel, where
+            // the host asks for it.
+            relayWheel,
           })
         : null,
-    [probating, candidate, isError, themeVars, theme],
+    [probating, candidate, isError, themeVars, theme, relayWheel],
   )
   const probe = useSandboxDoc(probeSrcdoc)
 
@@ -1217,9 +1228,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       )}
       {reverted && (
         // THE KEPT-PAGE BAND, above the frame and never over it: the document on
-        // screen keeps every pixel it earned. It is distinct from the document's
-        // OWN stale band, which is about values that did not resolve; this one is
-        // about a newer page that did not load at all.
+        // screen keeps every pixel it earned. It is about a newer page that did not
+        // load at all; a field that did not resolve draws no band anywhere, because
+        // that is the crewmate's to fix and its turn block tells it.
         <div
           className="shrink-0 border-b border-border p-2 flex items-start gap-2"
           data-testid="crew-dashboard-kept-band"
@@ -1269,8 +1280,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           data-testid="crew-dashboard-refetch-error-band"
         >
           {/* The page keeps its values, which is right. What a reader cannot otherwise
-              learn is that those values are older than the record: the page's own stale
-              band is raised by a read, and this is the case where the read never came.
+              learn is that those values are older than the record, because the read
+              that would have moved them never came.
               Beside the page rather than over it, like the two bands above.
 
               ITS OWN SENTENCE, not the kept-last-good one. That string says a newer
@@ -1330,6 +1341,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // The SERVER's latest answer, not the promoted document's. A revocation that
           // arrived after this document was promoted has to reach the frame that is
           // mounted, which is what the key above makes happen.
+          // Marks the frame whose document carries the wheel relay: the host arms only these.
+          data-wheel-relay={relayWheel ? '' : undefined}
           sandbox={crewDashboardSandbox(mayRunScript && shown.scripts)}
           className="flex-1 min-h-0 w-full border-none bg-bg"
           style={{ colorScheme: theme }}
@@ -1348,6 +1361,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             key={`frame-${grantKey}-${stageUrl}`}
             ref={stageRef}
             src={stageUrl}
+            // Marks the frame whose document carries the wheel relay: the host arms only these.
+            data-wheel-relay={relayWheel ? '' : undefined}
             sandbox={crewDashboardSandbox(mayRunScript && shown.scripts)}
             aria-hidden
             tabIndex={-1}
@@ -1376,6 +1391,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // A candidate on probation gets the SAME grants its own response
           // decided, so a page cannot earn promotion while running under looser
           // ones than it will be mounted with.
+          // Marks the frame whose document carries the wheel relay: the host arms only these.
+          data-wheel-relay={relayWheel ? '' : undefined}
           sandbox={crewDashboardSandbox(mayRunScript && (candidate ? candidate.scripts : shown.scripts))}
           aria-hidden
           tabIndex={-1}
@@ -1388,6 +1405,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           data-testid="crew-dashboard-probe"
         />
       )}
+      {linkChip}
     </div>
   )
 }

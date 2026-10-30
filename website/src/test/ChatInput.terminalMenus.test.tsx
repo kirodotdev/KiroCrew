@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import ChatInput from '../components/ChatInput'
 import { renderWithProviders } from './helpers'
+import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 
 beforeEach(() => {
   localStorage.clear()
@@ -53,7 +54,7 @@ function Host({
 }
 
 async function typeInto(value: string) {
-  const input = await screen.findByRole('textbox', { name: 'Message input' })
+  const input = await screen.findByRole('textbox', { name: 'Message input' }, LAZY_COMPOSER_MOUNT)
   if (input instanceof HTMLTextAreaElement) {
     fireEvent.change(input, { target: { value } })
   } else {
@@ -125,9 +126,9 @@ describe.each([false, true])('terminal completion ownership (Lexical: %s)', lexi
     await typeInto('! pwd')
     fireEvent.click(screen.getByLabelText('Add files & options'))
     expect(await screen.findByText('Upload file')).toBeVisible()
-    expect(screen.queryByTitle('Reference a file')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reference a file')).not.toBeInTheDocument()
     expect(screen.queryByTitle('Slash commands')).not.toBeInTheDocument()
-    expect(screen.queryByTitle('Use a skill')).not.toBeInTheDocument()
+    expect(screen.queryByText('Use a skill')).not.toBeInTheDocument()
     expect(screen.getByTestId('draft').textContent).toBe('! pwd')
   })
 

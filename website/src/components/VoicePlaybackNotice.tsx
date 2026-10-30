@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { voiceFailureMessage, type VoiceFailure } from '../lib/voiceFailure'
 import ErrorNotice from './ErrorNotice'
 import { SettingsLink } from './SettingsLink'
@@ -9,6 +10,10 @@ export default function VoicePlaybackNotice({ slot, onBlockedSlotChange }: {
   slot: string | null | undefined
   onBlockedSlotChange?: (slot: string | null) => void
 }) {
+  // Subscribes to language switches: a parent compiled by the React Compiler
+  // caches this element while its props are unchanged, so without its own
+  // subscription the notice would keep the previous language's text.
+  useLanguageGeneration()
   const [failure, setFailure] = useState<VoiceFailure | null>(null)
   useEffect(() => {
     setFailure(null)

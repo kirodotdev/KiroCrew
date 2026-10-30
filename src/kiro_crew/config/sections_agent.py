@@ -69,6 +69,12 @@ def coerce_fallback_model(raw: object) -> str:
     return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
 
 
+#: The Crew Mode conductor template's name. Equal to
+#: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
+#: binds no name the sections facade does not.
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+
+
 @dataclass
 class AgentConfig:
     approval_mode: str = field(
@@ -100,7 +106,10 @@ class AgentConfig:
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
-            "interactive chat default.",
+            "interactive chat default. A 'subagent' pin runs each spawned "
+            "sub-agent in its own runtime (its own agent process and MCP "
+            "servers, about 0.55 GB of memory each) where it could otherwise "
+            "share the parent chat's.",
         ),
     )
     role_efforts: dict[str, str] = field(
@@ -110,7 +119,10 @@ class AgentConfig:
             "Optional per-task-class reasoning effort, paired with role_models "
             "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
-            "Only applies on reasoning-capable models.",
+            "Only applies on reasoning-capable models. Like a model pin, a "
+            "'subagent' effort runs each spawned sub-agent in its own runtime "
+            "(about 0.55 GB of memory each) where it could otherwise share the "
+            "parent chat's.",
         ),
     )
     model_context_tokens: dict[str, int] = field(
@@ -229,12 +241,10 @@ class AgentConfig:
         metadata=_meta(
             "Crew member ACP backend",
             "Backend for crew-member DM sessions: 'kas' (default when omitted or '') "
-            "or another dispatch-capable backend (claude, codex, opencode, goose); "
-            "'kiro' selects kiro-cli. "
-            "Members dispatch work into worker sessions through session-control "
-            "tools mounted per session over the wire, which the kiro-cli v2 "
-            "backend cannot carry — a value resolving to kiro leaves member "
-            "threads as plain chat (no dispatch tools), logged at session start.",
+            "or another dispatch-capable backend (claude, codex, opencode, goose). "
+            "Crewmates run on KAS as their Kiro backend, so 'kiro' here also "
+            "selects KAS. Members dispatch work into worker sessions through "
+            "session-control tools mounted per session over the wire.",
             # Same no-enum reasoning as acp_backend above: the live selectable
             # set comes from the registry via resolve_selected_backend, never a
             # frozen literal.
@@ -284,9 +294,35 @@ class AgentConfig:
             "accepted; redirects that leave the host are refused.",
         ),
     )
+    native_skill_projection: bool = field(
+        default=True,
+        metadata=_meta(
+            "Native skill views for kiro-cli",
+            "When true (the default), the 'kiro' backend launches each agent under a "
+            "Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents "
+            "directory) that serves skills through Kiro Crew's skill search, and "
+            "overlays the workspace's .kiro/settings/cli.json while it runs. When "
+            "false, agents launch under their authored names, no view is written, "
+            "the workspace overlay is rolled back, and kiro-cli loads skill metadata "
+            "natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, "
+            "which still disables projection whatever this says.",
+            # Latched at spawn: a running native process keeps the mode it was
+            # launched under until it is replaced.
+            restart=True,
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
+    )
+    crew_mode_agent: str = field(
+        default=_CREW_MODE_AGENT_DEFAULT,
+        metadata=_meta(
+            "Crew Mode conductor",
+            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Empty falls back to the default. Takes effect live for new chats; "
+            "no gateway restart.",
+        ),
     )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,
@@ -683,6 +719,8 @@ class AgentConfig:
             "one and skip the detection, so a local disk whose mount table is "
             "unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
             restart=True,
+            # The loader lower-cases, then reads any other value as 'auto'.
+            enum=["auto", "wal", "delete"],
         ),
     )
     admit_wait_secs: int = field(
@@ -794,10 +832,12 @@ class AgentConfig:
             "kiro-cli Child Env Defaults",
             "Environment variables given to every spawned kiro-cli process (chat "
             "sessions, background sessions and subagents) ONLY when the variable "
-            "is not already set in the environment it inherits. Empty by default. "
-            "kiro-cli sizes its thread pools by core count, so on a many-core host "
-            "running dozens of kiro-cli processes they can be capped, e.g. "
-            '{"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"}. Only '
+            "is not already set in the environment it inherits. kiro-cli sizes its "
+            "thread pools by core count, and every thread counts against the agent "
+            "slice's task ceiling, so a name left out of this map defaults to "
+            "min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; kirocrew "
+            "doctor shows the value in force. A value set here wins, e.g. "
+            '{"TOKIO_WORKER_THREADS": "8"}. Only '
             "TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a "
             "decimal integer string from 1 to 1024; any other "
             "entry is ignored with a warning. Kiro Crew's own agent environment "
@@ -1078,25 +1118,39 @@ class AgentConfig:
             "config: the tools come from the kirocrew-dashboard MCP server, so an "
             "agent that does not mount it never has them, exactly like any other "
             "MCP server. Turn this off to withdraw the capability from every agent "
-            "at once without editing each spec. Sessions can only reach peers in "
-            "the same workspace; incognito, app-scoped and scheduled sessions are "
-            "never addressable, and a crew member or a scheduled run reaches only "
-            "sessions it created itself.",
+            "at once without editing each spec, except crew member DM sessions and "
+            "the Conductor in your own dashboard tab, which keep dispatching "
+            "workers unless Member Dispatch is also off. Sessions can only reach "
+            "peers in the same workspace; incognito, app-scoped and scheduled "
+            "sessions are never addressable, and a crew member, a scheduled run, "
+            "or a Conductor admitted with this off reaches only sessions it "
+            "created itself.",
+        ),
+    )
+    session_manager_chain: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Manager Chain",
+            "Let a session reach the whole line of sessions under it, not only the "
+            "ones it manages directly. With it on, a lead that handed a worker to a "
+            "conductor can still send to, read, stop and close that worker, and "
+            "closing the conductor hands its workers to the lead. Off by default.",
         ),
     )
     member_dispatch: bool = field(
         default=True,
         metadata=_meta(
             "Member Dispatch",
-            "Let a crew member's DM session open and drive worker sessions it "
-            "creates, even when Session Control is off. On by default, because "
-            "dispatching work into workers is the crew-member operating model, "
-            "not an opt-in: this is the zero-configuration contract. Turn this "
-            "off to put member callers back under the Session Control switch, so "
-            "an operator who withdrew session control keeps member DM threads "
-            "chat-only without disabling the member. When on, a member's reach is "
-            "still bounded to sessions it created itself (creator ownership), the "
-            "same fence that binds it when Session Control is on.",
+            "Let a crew member's DM session, and the Conductor in your own "
+            "dashboard tab, open and drive worker sessions they create, even when "
+            "Session Control is off. On by default, because dispatching work into "
+            "workers is the crew-member operating model, not an opt-in: this is "
+            "the zero-configuration contract. Turn this off to put member callers "
+            "and the Conductor back under the Session Control switch, so an "
+            "operator who withdrew session control keeps them chat-only without "
+            "disabling them. When on, their reach is still bounded to sessions "
+            "they created themselves (creator ownership), the same fence that "
+            "binds a member when Session Control is on.",
         ),
     )
     crew_panel: bool = field(

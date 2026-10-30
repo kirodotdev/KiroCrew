@@ -1,0 +1,205 @@
+[
+ {
+  "pr": 23083,
+  "comment": 6340550477,
+  "form": "quoted lead `> Fixed in <sha>`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=opus head=4d033d10c702a2a276c2abae37919b638e1834ec -->\n- **Typing animation lost for an untitled header** (span=f344869f3cdc)\n> Fixed in dcf637c69b97. `TypewriterText` now takes a `placeholder` flag, and `SessionTitleControl` sets it for an untitled session. A generated title that replaces \"Unti\n> Test: `SessionTitleControl.test.tsx`, \"types out a generated title that replaces the \"Untitled session\" label (#20871)\". It fails with `TypewriterText.tsx` reverted to \n"
+ },
+ {
+  "pr": 23074,
+  "comment": 6339041532,
+  "form": "`Disposition: fixed` line, marker without target/head",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition -->\nissue (blocking): An armed slots timer bypasses the fork suspension\n\nDisposition: fixed, span=src/kiro_crew/dashboard/chat_fork.py:1196, in the next push.\n\n> Legitimate. `_trailing_slots_flush` published without checking `_slots_push_suspend`, so a timer armed before the fork could fire while the bind runs on a worker thread\n> Fixed at the coalescer, not in the fork. `_trailing_slots_flush` in `state_parts/slots_push.py` now clears its timer and sets `_slots_push_pending` when a suspension is"
+ },
+ {
+  "pr": 23023,
+  "comment": 6333595382,
+  "form": "quoted lead `> fixed in <sha>:`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=ux head=764152c5cf6dcf5d8fd0739439974b90bc7c88eb -->\n- **Identical \"Untitled session\" rows in the composer suggestions** (span=ce6228135a88)\n> fixed in 2d49e39956c1: an untitled \"Continue a previous chat\" row's second line is now `<key> · <date>`, so two untitled rows read differently; the name line still neve\n> A titled row is unchanged. `ChatPage.composerDock.test.tsx` pins the name lines and the key lines; neutering the key line makes it fail.\n\n🤖 *AI-assisted comment* 🤖"
+ },
+ {
+  "pr": 22989,
+  "comment": 6331397054,
+  "form": "quoted `> Outcome: fixed in <sha>`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=5f7dc8e376ea54e2951e00b656511a5d5a6c0c6b span=767a9edfdd2e -->\nissue (blocking): Refused activation puts a new-session message in the origin chat\n\n> Outcome: fixed in 7ff6176c3d. `send()` in `website/src/pages/chat/page/composerSend.ts` now appends the optimistic user bubble with `appendSlotMessage({ slot, message }\n> Test: `ChatPageSendCreateFailure.test.tsx` adds an auto-send launch whose create resolves after A to B and back. It asserts the turn goes to slot-c, A has no user bubbl\n"
+ },
+ {
+  "pr": 22989,
+  "comment": 6331750886,
+  "form": "quoted `> Outcome: checked, no change needed`",
+  "expected": "checked",
+  "body": "<!-- ai-review-disposition target=design head=7ff6176c3d46045721751298c67447bdca21b180 -->\nnote (non-blocking): hand-built `createSlot/fulfilled` fixtures without move counts\n\n> Outcome: checked, no change needed. `src/test/chatSlice.slots.test.ts` and `src/test/ChatPageCoverage.test.tsx` pass on 7ff6176c3d (2 files, 122 tests). A fixture with \n"
+ },
+ {
+  "pr": 22915,
+  "comment": 6328143102,
+  "form": "quoted lead `> Agreed, no change.` under a bold PASS title",
+  "expected": "agreed",
+  "body": "<!-- ai-review-disposition target=design head=3fe2a1a50f746a0b728d3ee165a03fc69cc8390f -->\n[operator: bolichen97]\n- **PASS punchline: the per-turn checkout scan was stale**\n> Agreed, no change. Both allowed backends already run the registered user-level spec: kiro-cli runs the launch copy from an empty folder, and KAS's `resolve_projected_sp\n> The scan is gone. The registration and reserved-name checks stay, along with the KAS skill/prompt pin, so no checkout spec can set what the session reads.\n"
+ },
+ {
+  "pr": 22915,
+  "comment": 6330010983,
+  "form": "`> fixed in <sha>:` with title span and self-added lines",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=887e278243e21cc4d01152bfe435b27cf1f96bd0 -->\n[operator: bolichen97]\nself-added: yes\nmechanism: removing the checkout scan left KAS resolving the bare name at session start\n- **Keep KAS projection bound to the admitted app spec** span=4803882cd425\n> fixed in 3fbddba122: an admitted turn binds its session to (app, agent) before the claim (`apps/agent_launch.py` `bind_session_app_agent`); the KAS projection of a boun\n> any other turn of the key drops the binding first (`unbind_session_app_agent`), so a recreated or switched slot projects its own agent."
+ },
+ {
+  "pr": 22893,
+  "comment": 6325810956,
+  "form": "title suffix `— fixed in <sha>` after a bold span title",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=25539f1ca66da65428f0b58dcee63934201ecbcc -->\nself-added: yes\nmechanism: earlier-screenshot expectation in settings-shortcuts\n- **span=2cbc52c4e6db Earlier-frame expectation conflicts with the harness's evidence contract** — fixed in 359f7cdffa2b4d8c422f3e6212c0b77347b744c0\n> Fixed: the scenario no longer scrolls. Every expectation (Shortcuts tab highlighted, Enable shortcuts switch on, Chat Navigation rows with key caps, no clipping) is jud\n> No prompt-contract change: the last-screenshot rule stays as is.\n> test_shortcuts_scenario_judges_everything_on_the_frame_it_lands_on fails if the scenario scrolls or an expectation names an earlier screenshot."
+ },
+ {
+  "pr": 22875,
+  "comment": 6325801949,
+  "form": "quoted bold `> **fixed** in <sha>`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=debee13b9889b7738b93ffd6147f640263374be6 span=e9d61697a3bf -->\n> **fixed** in debee13b98. The out-of-range limit no longer goes through `setError`, so it never reaches `<ErrorNotice>`. It is held in its own `autoPauseHint` state and \n"
+ },
+ {
+  "pr": 22875,
+  "comment": 6326473017,
+  "form": "quoted bold `> **acknowledged**.`",
+  "expected": "acknowledged",
+  "body": "<!-- ai-review-disposition target=ux head=1ff6e86da259406b78de297619574f908bfca2e3 -->\n> **acknowledged**. The two screenshots predate the validation hint's current form: since debee13b98 an out-of-range limit shows one line of plain text under the field, \"\n"
+ },
+ {
+  "pr": 22875,
+  "comment": 6327515508,
+  "form": "quoted bold `> **intended**.`",
+  "expected": "intended",
+  "body": "<!-- ai-review-disposition target=first-principles head=1ff6e86da259406b78de297619574f908bfca2e3 -->\n> **intended**. The branch exists for its prefix. `audit_actor` files an app-token request under the bare app name, while `_refuse_foreign_app_job` and `_audit_app_cron` \n"
+ },
+ {
+  "pr": 22866,
+  "comment": 6325077747,
+  "form": "none of the forms: an operator record",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=first-principles head=5242ab2427207b231fe9cd6334fadc73425503e3 -->\n🤖 Kiro Crew Auto-Pipeline [operator: buluoray#ce473fca]: disposition for First Principles PASS note item 8 on 5242ab2427.\n\n**`_BUSY_TIMEOUT_MS` is kept.** It has a second user: `test_a_populated_up_to_date_store_opens_while_another_connection_holds_the_write_lock` patches it to 200 ms. That k\n"
+ },
+ {
+  "pr": 22866,
+  "comment": 6327611513,
+  "form": "undeclared (title, prose or metadata only): title colon `...: agreed, ...`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=design head=5242ab2427207b231fe9cd6334fadc73425503e3 -->\n🤖 Kiro Crew Auto-Pipeline [operator: buluoray#ce473fca]: disposition for Design PASS note 2 of 2 on 5242ab2427 (split out of comment 6325077369, one finding per record).\n\n- **Nothing enforces \"no `executescript` in a step\": agreed, and nothing is lost meanwhile.** A step that commits fails the open loudly at the closing `COMMIT`, and `test\n"
+ },
+ {
+  "pr": 22866,
+  "comment": 6327613705,
+  "form": "undeclared (title, prose or metadata only): title colon `...: checked.`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=design head=5242ab2427207b231fe9cd6334fadc73425503e3 -->\n🤖 Kiro Crew Auto-Pipeline [operator: buluoray#ce473fca]: disposition for Design PASS note 1 of 2 on 5242ab2427.\n\n- **Windows shards are the evidence: checked.** On this head `Backend Tests (Windows) (1)` through `(8)` all passed, and so did `Windows Fail-Closed Sandbox Contract`, `P\n"
+ },
+ {
+  "pr": 22844,
+  "comment": 6323419914,
+  "form": "title bullet with `span=` then `> fixed in <sha>:`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=88b64319507244e4d34a89b2ee2d7b54c14c6196 -->\nself-added: yes\nmechanism: header pill liveness fed by the display-only preparing flag\n- **span=92e365b7c7d1 Preparation revives the previous turn stale activity**\n> fixed in fd1a83d492: the pill useSlotActivity gets true turn liveness only; when it resolves idle and the slot is preparing, the pill shows the working activity (AWAITI\n> A live turn keeps its own status. Regression test in MembersPage.openThread.test.tsx (streaming and tool stale status) fails 2/2 with the fix reverted."
+ },
+ {
+  "pr": 22816,
+  "comment": 6321814519,
+  "form": "quoted lead `> fixed: ...` with `New head:` line",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=11f307a7f4fa5b673fc35a20b8b32299350b1735 -->\n- **Empty template bindings falsely mark a folder default as ambiguous** (span=bd0c4d84b29c)\n> fixed: the code this finding names is gone. On the owner's ruling, the server-side display-name remap and the folder_agent_ambiguous refusal were removed, so default_se\n> The fix moved to the writer: the folder Default-agent picker now saves a crewmate's config key for a crewmate row and a template name for a template row, so the create \n> New head: b112e1720a598718362e5e7e5743092c3ce2c6b3."
+ },
+ {
+  "pr": 22796,
+  "comment": 6321105547,
+  "form": "undeclared (title, prose or metadata only): sentence `... is fixed in <sha>`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=first-principles head=2e5337d3e3df2a807f6cefacb4a3cc85a6656eb2 -->\nFirst Principles review on 2e5337d3: item 6 (the single-caller `_write_installed_locked` split) is fixed in 049fcdcc66. The body is now inlined in `_write_installed` unde\n"
+ },
+ {
+  "pr": 22784,
+  "comment": 6318712836,
+  "form": "quoted lead `> removed in <sha>` under a bold title",
+  "expected": "removed",
+  "body": "<!-- ai-review-disposition target=first-principles head=7322ba0d44c0afcbe4cf5b9ed93673edaeeb55ea -->\nself-added: yes\nmechanism: member role on the thread-side wait\n- **fixed: the new member parameter has no caller that sets it**\n> removed in 3f04fb2f04e6c0007fe5977162ecb513bd91fb95: `wait_kas_floor_verdict_blocking()` takes no arguments and waits for the main role; the docstring says no off-loop "
+ },
+ {
+  "pr": 22784,
+  "comment": 6318713324,
+  "form": "undeclared (title, prose or metadata only): bold title `- **acknowledged: ...**`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=design head=7322ba0d44c0afcbe4cf5b9ed93673edaeeb55ea -->\n- **acknowledged: nothing blocks**\n> the change adds one thread-side entry into the existing bounded floor wait and removes nothing; no change needed for this verdict."
+ },
+ {
+  "pr": 22773,
+  "comment": 6317000836,
+  "form": "undeclared (title, prose or metadata only): bold title `- **rebutted: ...** span=<id>`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=gpt head=eff119642acec999386129d3d899ef15772b4404 -->\n- **rebutted: duplicate-frame suppression and retention retry** span=177359c37691\n> thought (non-blocking): the stall needs a failed GET and then only byte-identical frames with `dashboard.slots` unchanged (slotList.ts:77-79).\n> The first frame that differs reruns `sseSlots`, whose `retainUnlistedMembers` applies the 15 s cap or asks for the read again, and any successful `fetchSlots` settles t\n> The cost is one stale row that clears itself. A bypass on the hot `slots` dedupe path, or a timer, would cost every reader of that path more than the row does.\n> The Opus adjudication on this head reached the same verdict (DOWNGRADE F1, disproportionate-remedy). No code change.\n"
+ },
+ {
+  "pr": 22773,
+  "comment": 6320359190,
+  "form": "undeclared (title, prose or metadata only): bold title `- **fixed: ...** span=<id>` with `> issue (blocking): fixed in <sha>`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=gpt head=8ab23702cf38fd3372605e588830f68f8bcf6e36 -->\n- **fixed: identical frames bypass membership retries and expiry** span=177359c37691\n> issue (blocking): fixed in 85e5b87788. `onSlots` in slotList.ts no longer returns early on a byte-identical repeat while that frame omits a key `slotMemberUnlisted` sti\n> The check is `omitsUnlistedMember(dashboard, data)` in dashboardSlice.ts. The repeat reaches `sseSlots`, whose `retainUnlistedMembers` re-asks for the read a failed GET\n> Repeats that list every kept key, or arrive with nothing kept, are still suppressed as before.\n> Three tests in dashboardSlice.staleSlotsFrame.test.ts pin the predicate across a failed read and the cap. The file passed 5 shuffled runs, and the full frontend suite p\n> self-added: yes"
+ },
+ {
+  "pr": 22764,
+  "comment": 6322696057,
+  "form": "quoted lead `> accepted: ...`",
+  "expected": "accepted",
+  "body": "<!-- ai-review-disposition target=design head=8c7ff1e8717af51db0227a6975bdc0f271f8f9c7 -->\n- **Design Review PASS: one mechanism, test-only, every assertion kept**\n> accepted: the PR stays within that shape. 38 sites wait through `kiro_crew.testing.wait` (`await_until`, `finished`, `async_wait_until`, `wait_until`); 12 sleeps that a"
+ },
+ {
+  "pr": 22744,
+  "comment": 6314550052,
+  "form": "bold title `- **fixed span=<id> — ...**`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=ux head=ae4caeaa47be383d23895f7dcabcedebe842b1df -->\n- **fixed span=ce0c86e55c68 — clear-all ⓧ read as close**\n> Fixed in ef56d5124a: the bell clear-all is a Trash2 glyph at rest again (NotificationClearButton icon=\"trash\"), so an ⓧ in the sheet corner never means \"delete everythi\n> It still needs a second press (\"Clear all\") and disarms on pointer-leave, blur or Escape. Pinned by the senderStacks test asserting svg.lucide-trash-2 and no svg.lucide\n"
+ },
+ {
+  "pr": 22744,
+  "comment": 6331284342,
+  "form": "undeclared (title, prose or metadata only): bold title `- **rebutted span=<id> — ...**`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=gpt head=bfeaa5d8c66b5484f908c26b5989c07e0e2620aa -->\n- **rebutted span=b99c8286b17b — mobile sheet stays open after the error hand-off**\n> Adjudication downgraded this to LOW: it needs a phone layout, the user already on /chat, and a failed clear at once.\n> The chat does open; the sheet closes with one tap and nothing is lost. Threading a close callback through NotificationFeed for that case is disproportionate.\n"
+ },
+ {
+  "pr": 22742,
+  "comment": 6313963084,
+  "form": "title suffix `span=<id> — fixed in <sha>`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=b8ae4221b3f83abe95d8ea7778b635db7be0b47b -->\n- **Preserve the deadline distinguishing the hard ceiling from the idle timer** span=9b76acaace50 — fixed in b83c7f3bddd6f212623920d1961209f6045bbd5b\n> fixed: the default `finished` bound (60s) sat above the test's 10s idle window, so idle-only delivery could satisfy `assert received`.\n> Restored `timeout=5` on the `finished` call with a comment saying the bound sits under the idle window on purpose; `test_telegram_album.py` and both ratchets green loca\n"
+ },
+ {
+  "pr": 22742,
+  "comment": 6313963424,
+  "form": "undeclared (title, prose or metadata only): title suffix `— acknowledged, no change needed`",
+  "expected": "",
+  "body": "<!-- ai-review-disposition target=design head=b8ae4221b3f83abe95d8ea7778b635db7be0b47b -->\n- **Nothing blocks: test-only changes keep each test's stated signal** — acknowledged, no change needed\n> PASS acknowledged. The Windows-only file matches CI's `**/*windows*` filter, so the Windows backend lane exercises it.\n"
+ },
+ {
+  "pr": 22726,
+  "comment": 6314255506,
+  "form": "bold title `- **fixed** span=<id> — ...`",
+  "expected": "fixed",
+  "body": "<!-- ai-review-disposition target=gpt head=a616a638c39c8c9b33bef80a0f8cc25f7c84d336 -->\n- **fixed** span=e5696d1782ec — Keep diagnostic bundle collection usable after composition failure\n> Fixed in a616a638c3. `_tracker_issue_url` catches `PlatformCompositionError` and returns an empty link after a warning; it does not fall back to the public GitHub link,\n> `cli_doctor` prints the issue-link line only when it is non-empty and otherwise says the link is skipped because the companion did not compose, so `doctor --bundle` pri\n> Pinned by `TestFeedbackTrackerSeam::test_a_composition_error_keeps_the_bundle_without_issue_links` and `test_bundle_mode_prints_the_bundle_when_the_companion_does_not_c\n"
+ },
+ {
+  "pr": 22716,
+  "comment": 6312961835,
+  "form": "`**Disposition: rebutted (no change needed)**`",
+  "expected": "rebutted",
+  "body": "<!-- ai-review-disposition target=design head=1222ac9ebc0afc0dc6846f562f82bcdf9266a8ec -->\n**Disposition: rebutted (no change needed)** — the PASS punchline raises no ask; nothing follows from it.\n\n> The punchline restates the PR's own claim: every rewrite returns the value it replaces and both corrected comments match the code.\n> Pre-PR, a differential probe compared base and head over 40,739 generated inputs with no mismatch, and five mutants of the rewritten lines each failed an existing test.\n"
+ },
+ {
+  "pr": 22915,
+  "comment": 6330417386,
+  "form": "quoted lead `> Kept as two maps ...`",
+  "expected": "kept",
+  "body": "<!-- ai-review-disposition target=first-principles head=3fbddba122912d0e39834a0e5d1a56d4d9940e7d -->\n[operator: bolichen97]\n- **PASS punchline: a second session-keyed map points at the same file as an existing one**\n> Kept as two maps, because the two maps are set at different times for different readers. The skill-scope pin (`skill_scope_pin`) is set only AFTER the turn holds the se\n> The KAS binding (`agent_launch._KAS_BINDINGS`) must exist BEFORE the claim, because the session it governs is created during the claim. One map cannot serve both moment\n"
+ }
+]

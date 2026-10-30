@@ -59,7 +59,7 @@ CATEGORY_KIROCREW_SELF = "kirocrew_self"
 # mechanism to remove an entry, so the floor cannot be edited away from the
 # dashboard or by a prompt-injected agent.
 #
-# Honest scope statement, because a reviewer will find it otherwise: this list
+# Honest scope statement: this list
 # is *enumerable*, not provably complete. An app that embeds a shell without a
 # recognizable bundle id — a terminal pane inside an IDE, an in-app JS console —
 # is not covered. That is why the governance ``apps`` ruleset exists as the

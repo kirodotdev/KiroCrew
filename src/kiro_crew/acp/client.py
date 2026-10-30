@@ -231,7 +231,6 @@ from kiro_crew.acp.client_turn_control import _GOOSE_SESSION_STEER  # noqa: F401
 from kiro_crew.acp.client_turn_control import _ConcurrentSteerTurn  # noqa: F401
 from kiro_crew.acp.client_turn_control import format_command_result  # noqa: F401
 from kiro_crew.acp.client_turn_control import parse_slash_command  # noqa: F401
-from kiro_crew.acp.client_turn_control import steering_advertised  # noqa: F401
 from kiro_crew.acp.harness import claude as claude_mod  # noqa: F401
 from kiro_crew.acp.harness import pi as pi_mod  # noqa: F401
 from kiro_crew.acp.harness import process_adapter_for  # noqa: F401
@@ -293,6 +292,7 @@ from kiro_crew.acp.transport_framing import (  # noqa: F401
     write_request_frame_bounded,
     write_response_frame_bounded,
 )
+from kiro_crew.acp.types import steering_advertised  # noqa: F401
 from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -480,6 +480,7 @@ from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.session_pid import _replace_child_pids  # noqa: F401
 from kiro_crew.session_token_sig import schedule_session_token_publish  # noqa: F401
 from kiro_crew.skill_usage import get_global_skill_read_observer  # noqa: F401  (facade surface)
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard  # noqa: F401
 from kiro_crew.turn_limit import current_turn_limit_secs  # noqa: F401
 from kiro_crew.user_json import loads_user_json  # noqa: F401
@@ -501,7 +502,9 @@ def _mise_which(tool: str) -> str | None:
         result = subprocess_mod.run(
             [mise_bin, "which", tool],
             capture_output=True,
-            text=True,
+            # mise (Rust) writes the path to a pipe as UTF-8; the locale code
+            # page would mangle a non-ASCII profile dir on Windows.
+            **UTF8_TEXT,
             timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -920,6 +923,8 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_timeouts",
     "kiro_crew.acp.client_spawn_env",
     "kiro_crew.acp.client_permissions",
+    "kiro_crew.acp.client_elicitation",
+    "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
     "kiro_crew.acp.client_claude_seed",
     "kiro_crew.acp.client_seed_ownership",
@@ -930,6 +935,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_transport",
     "kiro_crew.acp.client_lifecycle",
     "kiro_crew.acp.client_turn_control",
+    "kiro_crew.acp.client_native_children",
     "kiro_crew.acp.client_start",
     "kiro_crew.acp.client_turn",
     "kiro_crew.acp.client_class",

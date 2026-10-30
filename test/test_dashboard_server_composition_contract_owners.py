@@ -328,6 +328,8 @@ def test_without_a_serving_loop_the_bell_rings_inline_and_retires_nothing(
     on_staged, on_consumed = _skill_hooks(monkeypatch, state)
     on_staged({"slug": "tidy-up", "name": "Tidy"})
     state.notify.assert_called_once()
+    assert state.notify.call_args.args[0] == "skills"
+    assert state.notify.call_args.kwargs["meta"]["slug"] == "tidy-up"
     state.broadcast_ws.assert_not_called()
     on_consumed({"slug": "tidy-up", "consumed_at": "t1"})
     state.resolve_skill_review_notifications.assert_not_called()

@@ -262,6 +262,37 @@ class TestClaimCap(_HomeIsolated):
         self.assertEqual(len(result.claimed), dispatch.DEFAULT_MAX_CLAIMS_PER_CYCLE)
 
 
+class TestDispatchKnobsAreReadOffTheLoop(_HomeIsolated):
+    async def test_every_knob_read_runs_on_a_worker_thread(self):
+        """The claim cap and both stale thresholds come from ``config.json`` on disk.
+
+        ``run_cycle`` runs on the gateway's event loop every heartbeat, so a read of
+        that file on the loop stalls every session for as long as the disk takes.
+        The three reads sit between steps that are already offloaded; each must be
+        offloaded too.
+        """
+        import threading
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+        real_read_config = dispatch.read_config
+
+        def _recording_read_config():
+            threads.append(threading.get_ident())
+            return real_read_config()
+
+        self._add_source([self._signal()])
+        with mock.patch.object(dispatch, "read_config", _recording_read_config):
+            result = await dispatch.run_cycle()
+
+        self.assertEqual(len(result.claimed), 1)
+        # Cap, stale threshold, needs-human threshold: all three were read.
+        self.assertEqual(len(threads), 3)
+        self.assertNotIn(loop_thread, threads)
+
+
 class TestLedgerWiring(_HomeIsolated):
     """The point of the whole app: a repeat failure arrives with its answer."""
 

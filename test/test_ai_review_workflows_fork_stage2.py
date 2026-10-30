@@ -19,6 +19,7 @@ from ai_review_workflows_helpers import (
     _concurrency_group,
     _flat,
     _proc_log,
+    _script_file,
     _step_env,
     _step_script,
     _stub_path,
@@ -705,8 +706,14 @@ class TestForkLaneStrandedRunSweeps:
                 bash,
                 "-uo",
                 "pipefail",
-                "-c",
-                _step_script(_workflow("fork-gpt-review.yml"), "Finalize check-run (fail closed)"),
+                # A script file, not ``-c``: MSYS re-parses a long multi-line
+                # argument on the Windows command line and can split its quotes.
+                _script_file(
+                    tmp_path,
+                    _step_script(
+                        _workflow("fork-gpt-review.yml"), "Finalize check-run (fail closed)"
+                    ),
+                ),
             ],
             check=False,
             capture_output=True,

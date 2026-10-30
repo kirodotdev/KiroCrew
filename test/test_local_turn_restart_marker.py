@@ -459,8 +459,8 @@ async def test_a_cancel_inside_the_admission_save_still_clears_the_marker(tmp_pa
         "kiro_crew.dashboard.chat_runner._begin_local_turn_marker", cancelling_begin
     )
 
-    # _run_chat absorbs the cancellation (its except arm persists the partial
-    # reply) and reaches its finally, which owns the clear.
+    # _run_chat absorbs the cancellation (_on_cancelled in chat_turn/turn_failures.py, its
+    # except arm, persists the partial reply) and reaches its finally, which owns the clear.
     await _run_chat(state, slot, "hello")
 
     assert slot._turn_in_flight_generation == 0

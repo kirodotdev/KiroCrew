@@ -6,7 +6,9 @@
  *  session gets a plain send, so the server's hold behind live sub-agents and
  *  queued messages still applies. The row label says which, so the count on
  *  the Send button can be reconciled with what each session will do. */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useAppSelector } from '../../store'
+import { withLiveLastTs } from '../../store/slotLastTs'
 import { Megaphone } from 'lucide-react'
 import { isCrewmateChat } from '../../components/AgentDropdownList'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -90,7 +92,7 @@ export function firstNonEmptyPreset(slots: readonly BroadcastSlot[], ctx: Broadc
   return PRESETS.find(p => broadcastTargets(slots, { ...base, preset: p }, ctx).length > 0) ?? 'all'
 }
 
-export default function BroadcastPanel({ slots, folders, tags, agents, signals, onClose, onOpenSession }: {
+export default function BroadcastPanel({ slots: rowSlots, folders, tags, agents, signals, onClose, onOpenSession }: {
   slots: readonly Slot[]
   /** Opens one session, for the rows whose receipt could not be confirmed. */
   onOpenSession: (key: string) => void
@@ -102,6 +104,10 @@ export default function BroadcastPanel({ slots, folders, tags, agents, signals, 
   tags: readonly ChatTag[]
   onClose: () => void
 }) {
+  // The "active within" filter and the row times read message recency, which
+  // the sidebar's rows do not carry while a turn streams.
+  const lastTsOverlay = useAppSelector(s => s.dashboard.slotLastTs)
+  const slots = useMemo(() => withLiveLastTs(rowSlots, lastTsOverlay), [rowSlots, lastTsOverlay])
   const now = Date.now()
   const isCrewmate = (s: BroadcastSlot) => isCrewmateChat(s.agent_kind, s.agent ?? '', agents)
   const extrasFor = (s: BroadcastSlot) => laneExtrasFor(s.key, signals)
@@ -249,8 +255,7 @@ export default function BroadcastPanel({ slots, folders, tags, agents, signals, 
         </Btn>
       </div>
 
-      <div className="text-[11px] text-muted">{i18nT('pages.chatSidebar.broadcast_crewmates')}</div>
-      <div className="text-[11px] text-muted mb-1">{i18nT('pages.chatSidebar.broadcast_crewmates_hint')}</div>
+      <div className="text-[11px] text-muted mb-1">{i18nT('pages.chatSidebar.broadcast_crewmates')}</div>
       {/* One segmented control: three equal cells inside a shared border, so
           the row never grows past the panel and a long label truncates
           instead of wrapping onto a second line. */}
@@ -351,7 +356,7 @@ export default function BroadcastPanel({ slots, folders, tags, agents, signals, 
             const ticked = !unticked.has(s.key)
             const folder = folderName(s.folder_id)
             const title = s.title || i18nT('pages.chatSidebar.broadcast_untitled')
-            const meta = folder ?? (s.last_ts ? fmtRelative(s.last_ts, { now }) : '')
+            const meta = folder ?? (s.last_ts ? fmtRelative(s.last_ts, { now }) : '') // last-ts: withLiveLastTs rows
             return (
               <li key={s.key} data-testid={`broadcast-row-${s.key}`} className="py-1.5 border-b border-border last:border-b-0 text-[12px]">
                 <div className="flex items-center justify-between gap-2">

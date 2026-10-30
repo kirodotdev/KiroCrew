@@ -232,20 +232,81 @@ async def steer_refusal_notice(
     while ``CancelledError`` propagates, because the caller is the one that
     knows how to answer the wire while it unwinds.
     """
-    if not getattr(provider, "supports_refusal_steer", False):
-        return ""
+    # The capability probe lives in ``steer_notice_into_refused_turn`` alone,
+    # so the gate has one spelling; building first only costs a redaction pass.
     try:
         title_safe, _ = redact_exfiltration_urls(title or "")
         title_safe, _ = redact_credentials(title_safe)
         notice = build_refusal_steer_notice(title_safe, reason, cause=cause)
-        if not notice:
-            return ""
+    except Exception:
+        logger.debug("deny-cause steer notice failed; the reject still runs", exc_info=True)
+        return ""
+    if not notice:
+        return ""
+    sent = await steer_notice_into_refused_turn(provider, notice, bound_secs=bound_secs)
+    return notice if sent else ""
+
+
+async def steer_notice_into_refused_turn(
+    provider: Any,
+    notice: str,
+    *,
+    bound_secs: float = STEER_NOTICE_BOUND_SECS,
+) -> bool:
+    """Send an already-built *notice* into the turn of a call being refused.
+
+    The probe-and-bounded-send half of :func:`steer_refusal_notice`, shared
+    with callers that author their own text: ``kirocrew chat``'s ``o`` answer
+    steers the person's typed reply this way. Same ordering contract -- await it
+    while the ``session/request_permission`` is still unanswered -- and the same
+    capability gate, ``supports_refusal_steer``. The caller owns redaction of
+    whatever it put in *notice*.
+
+    True only when the provider accepted the write. No capability, an empty
+    notice, a steer failure, or the bound expiring is False and swallowed at
+    debug -- the caller's reject must still run -- while ``CancelledError``
+    propagates to the caller, which knows how to answer the wire as it unwinds.
+    """
+    if not notice or not getattr(provider, "supports_refusal_steer", False):
+        return False
+    try:
         sent = await asyncio.wait_for(provider.steer(notice), timeout=bound_secs)
     except asyncio.CancelledError:
         raise
     except Exception:
-        logger.debug("deny-cause steer notice failed; the reject still runs", exc_info=True)
-        return ""
+        logger.debug("refused-turn steer failed; the reject still runs", exc_info=True)
+        return False
     # A provider that answers False did not write the notice; report that
-    # honestly rather than claim an explanation the model never received.
-    return notice if sent is not False else ""
+    # honestly rather than claim a message the model never received.
+    return sent is not False
+
+
+#: How many times one sub-agent run resumes a turn its backend ended because the
+#: host refused a call. Each resume is a fresh model turn that may hit the gate
+#: again, so the count is bounded; past it the cancelled ending stands.
+REFUSED_TURN_RESUME_MAX = 3
+
+
+def build_refused_turn_resume_prompt(title: str, reason: str, *, cause: str) -> str:
+    """The prompt that resumes a turn the backend ended on a host refusal.
+
+    Codex answers its only reject option for a shell command (``cancel``,
+    ``ReviewDecision::Abort``) by aborting the WHOLE turn, so the steered notice
+    never reaches a model inference and the model is left with ``aborted by
+    user``. The sub-agent run sends this as the next prompt on the same session
+    instead: the same notice, plus the fact that the turn was stopped. *title*
+    and *reason* are redacted here, as :func:`steer_refusal_notice` does.
+    Returns ``""`` when there is nothing to say.
+    """
+    title_safe, _ = redact_exfiltration_urls(title or "")
+    title_safe, _ = redact_credentials(title_safe)
+    reason_safe, _ = redact_exfiltration_urls(reason or "")
+    reason_safe, _ = redact_credentials(reason_safe)
+    notice = build_refusal_steer_notice(title_safe, reason_safe, cause=cause)
+    if not notice:
+        return ""
+    return (
+        f"{notice}\n\nThe backend ended your previous turn when this call was "
+        "refused, so the refused call did not run. Continue the task from where "
+        "you stopped, in a way the host allows."
+    )

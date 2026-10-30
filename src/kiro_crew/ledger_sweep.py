@@ -87,8 +87,9 @@ KIND_WORK = "work"
 #: wants a different answer.
 DEFAULT_OLDER_THAN_DAYS = 30
 
-#: Directory name under the work-ledger root that is NOT a conductor store.
-_BINDINGS_DIR_NAME = "bindings"
+#: Directory names under the work-ledger root that are NOT a conductor store
+#: (bindings, undelivered-call records), owned by the store itself.
+_RESERVED_ROOT_DIR_NAMES = wl.RESERVED_ROOT_DIRS
 
 #: Reason for a store directory that is a symbolic link or junction: it names
 #: somewhere else, and a delete aimed through it would land there.
@@ -496,7 +497,9 @@ def _scan_work_ledgers(*, older_than_days: float, now: datetime) -> tuple[list[C
     kept = 0
     root = wl._work_ledger_root()
     try:
-        children = sorted(p for p in root.iterdir() if p.is_dir() and p.name != _BINDINGS_DIR_NAME)
+        children = sorted(
+            p for p in root.iterdir() if p.is_dir() and p.name not in _RESERVED_ROOT_DIR_NAMES
+        )
     except FileNotFoundError:
         return candidates, kept
     # Same as the session scanner: an unreadable root is an error, not "empty".

@@ -244,20 +244,24 @@ class TestSpecPathPrefersTheDeclaredName:
         assert spec_path.name == "foo.json"
         assert previous == "m"
 
-    def test_the_filename_is_accepted_when_it_declares_no_name(self, tmp_path: Path, monkeypatch):
-        import kiro_crew.agent as agent_mod
-
-        agents = self._dir(tmp_path, monkeypatch)
-        (agents / "foo.json").write_text(json.dumps({"model": "m"}), encoding="utf-8")
-        assert agent_mod.agent_spec_path("foo") == agents / "foo.json"
-
-    def test_the_filename_is_accepted_when_it_declares_the_same_name(
-        self, tmp_path: Path, monkeypatch
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(
+                {"model": "m"}, id="test_the_filename_is_accepted_when_it_declares_no_name"
+            ),
+            pytest.param(
+                {"name": "foo"}, id="test_the_filename_is_accepted_when_it_declares_the_same_name"
+            ),
+        ],
+    )
+    def test_the_filename_is_accepted_unless_another_name_is_declared(
+        self, tmp_path: Path, monkeypatch, body: dict
     ):
         import kiro_crew.agent as agent_mod
 
         agents = self._dir(tmp_path, monkeypatch)
-        (agents / "foo.json").write_text(json.dumps({"name": "foo"}), encoding="utf-8")
+        (agents / "foo.json").write_text(json.dumps(body), encoding="utf-8")
         assert agent_mod.agent_spec_path("foo") == agents / "foo.json"
 
 

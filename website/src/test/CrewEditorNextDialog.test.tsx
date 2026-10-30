@@ -25,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -32,7 +33,8 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import type { CapabilityView, CapabilityPreview } from '../api/crewCapabilities'
+import type { CapabilityRow, CapabilityView, CapabilityPreview } from '../api/crewCapabilities'
+import { ApiError } from '../api/apiError'
 
 /* Render framer-motion elements as plain DOM (same rationale as the sibling
    editor test: the dialog is an AnimatePresence child). */
@@ -87,9 +89,14 @@ const mockCaps = vi.hoisted(() => ({
   preview: vi.fn(),
   save: vi.fn(),
 }))
+const mockKit = vi.hoisted(() => ({
+  get: vi.fn(),
+  preview: vi.fn(),
+  apply: vi.fn(),
+}))
 vi.mock('../api/crewCapabilities', async (orig) => {
   const real = await orig<typeof import('../api/crewCapabilities')>()
-  return { ...real, crewCapabilitiesApi: mockCaps }
+  return { ...real, crewCapabilitiesApi: mockCaps, crewWorkerKitApi: mockKit }
 })
 
 /* Plain-DOM stand-in for SimpleSelect (same as the sibling test). */
@@ -232,10 +239,9 @@ function Host({ memberId, openCrew }: { memberId?: string; openCrew?: string } =
     <>
       <button data-testid="open-editor" onClick={() => setEditingCrew(openCrew ?? 'oncall')}>edit</button>
       {/* Direct controller drives for handlers the modal UI does not surface
-          (save flow, chat hand-off) and a readout of a computed value, so the
-          hook's save/chatWith/collision paths are exercised. */}
+          (save flow) and a readout of a computed value, so the hook's
+          save/collision paths are exercised. */}
       <button data-testid="ctl-save" onClick={() => ctl.save()}>save</button>
-      <button data-testid="ctl-request-chat" onClick={() => ctl.requestChat()}>chat</button>
       <div data-testid="ctl-colliding">{ctl.collidingCrews.join(',')}</div>
       <CrewEditorModal ctl={ctl} />
     </>
@@ -306,6 +312,314 @@ describe('CrewEditorNextDialog — section rail', () => {
     }
   })
 
+  it('offers no Add-abilities pane to a crewmate that does not own its config', async () => {
+    const dialog = await openNew()
+    await waitFor(() => expect(mockCaps.get).toHaveBeenCalled())
+    await waitFor(() => expect(within(dialog).getByTestId('next-rail-builtFrom')).toBeInTheDocument())
+    // There is no separate Advanced rail entry; Add abilities lives on the
+    // Abilities page, and only for a crewmate that owns its file.
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    // The capabilities query determines whether Add abilities is available.
+    await within(dialog).findByTestId('next-builtfrom-details', {}, { timeout: 2000 })
+    await waitFor(() => expect(within(dialog).queryByTestId('next-pane-advanced')).toBeNull(), { timeout: 2000 })
+  })
+
+  it('shows the Add-abilities flow on the Abilities page for a crewmate that owns its config', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, scope: 'mate' } })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    // Add abilities is on the same page as the bands, not a separate tab.
+    expect(await within(dialog).findByTestId('next-pane-advanced')).toBeInTheDocument()
+    // The picker waits for WorkerKitPane's separate worker-kit query.
+    expect(await within(dialog).findByRole('combobox', { name: /copy abilities from/i }, { timeout: 2000 })).toBeInTheDocument()
+  })
+
+  it('gives a crewmate that owns its config no Built from switcher, only the way to Abilities', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' } })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    const owned = await within(dialog).findByTestId('next-built-from-owned')
+    // The switcher would repoint the binding away from the crewmate's own file.
+    expect(within(dialog).queryByRole('combobox', { name: /built from/i })).toBeNull()
+    // A generic mate label, never the file's id and never a template provenance.
+    expect(owned).toHaveTextContent('Mate')
+    expect(owned).not.toHaveTextContent('c0ffee12')
+    fireEvent.click(within(dialog).getByTestId('next-open-advanced'))
+    expect(await within(dialog).findByTestId('next-pane-builtFrom')).toBeInTheDocument()
+  })
+
+  it("names the capabilities view and the Added band by the crewmate's display name, not the file id", async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, display_name: 'On-Call Pager' }],
+    })
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' } })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const name = await within(dialog).findByTestId('next-builtfrom-name')
+    expect(name).toHaveTextContent('What On-Call Pager can do')
+    expect(name).not.toHaveTextContent('c0ffee12')
+    const added = within(dialog).getByTestId('next-band-added')
+    expect(added).toHaveTextContent('Added to On-Call Pager')
+    expect(added).not.toHaveTextContent('Added to Mate')
+  })
+
+  it("splits what the owned config's worker carries into Comes-with and Added bands", async () => {
+    const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
+      section, id, label: section === 'skills' ? '' : id, state, present: true, value: true, managed: false, shared_reference: section === 'skills',
+      remove: state === 'local' ? { section, id } : null,
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: {
+        rows: [
+          // Comes with (source base): inherited.
+          row('tools', 'fs_read', 'inherited'),
+          row('mcpServers', 'platform', 'inherited'),
+          // Added (the file's own additions): local.
+          row('mcpServers', 'github', 'local'),
+          row('skills', 'release-notes', 'local'),
+        ],
+      },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+
+    const comesWith = await within(dialog).findByTestId('next-band-comes-with')
+    // Tools starts collapsed (it's the long group); expand to read a tool row.
+    fireEvent.click(within(comesWith).getByTestId('next-band-comes-with-group-tools'))
+    expect(within(comesWith).getByText('fs_read')).toBeInTheDocument()
+    // MCP servers are open by default; a comes-with row is never removable.
+    expect(within(comesWith).getByText('platform')).toBeInTheDocument()
+    expect(within(comesWith).queryByTestId('next-band-remove-mcpServers-platform')).toBeNull()
+
+    const added = within(dialog).getByTestId('next-band-added')
+    expect(within(added).getByText('github')).toBeInTheDocument()
+    expect(within(added).getByText('Release Notes')).toBeInTheDocument()
+    // An added item is removable; a comes-with item never is.
+    expect(within(added).getByTestId('next-band-remove-mcpServers-github')).toBeInTheDocument()
+  })
+
+  it('hides the Comes-with band entirely when the file carries everything (no inherited rows)', async () => {
+    const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
+      section, id, label: section === 'skills' ? '' : id, state, present: true, value: true, managed: false, shared_reference: section === 'skills',
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      // A full-copy mate: every row is in its own file -> local, nothing inherited.
+      worker: { rows: [row('mcpServers', 'github', 'local'), row('tools', '@github', 'local')] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    // Added renders; Comes-with is absent (a dead "None" box reads as broken).
+    expect(await within(dialog).findByTestId('next-band-added')).toBeInTheDocument()
+    expect(within(dialog).queryByTestId('next-band-comes-with')).toBeNull()
+  })
+
+  it.each([
+    { section: 'skills' as const, id: 'kirocrew-worktree-dev', secondary: '' },
+    { section: 'mcpServers' as const, id: 'long-named-local-development-server', secondary: 'long-development-server.example.com' },
+  ])('truncates the long local $section band label while keeping Remove rendered', async ({ section, id, secondary }) => {
+    const row: CapabilityRow = {
+      section, id, label: id, state: 'local', present: true,
+      value: secondary ? { url: `https://${secondary}/mcp` } : null,
+      managed: false, shared_reference: section === 'skills', remove: { section, id },
+    }
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    const bandRow = within(added).getByTestId('next-band-added-row')
+    const label = within(bandRow).getByTitle(id)
+    const remove = within(bandRow).getByRole('button', { name: 'Remove' })
+    expect(remove).toBeInTheDocument()
+    expect(remove).toHaveClass('shrink-0')
+    expect(label).toHaveTextContent(id)
+    expect(label).toHaveClass('truncate', 'min-w-0', 'flex-1')
+    expect(label).not.toHaveClass('shrink-0')
+    expect(label.parentElement).toHaveClass('flex', 'min-w-0', 'flex-1')
+    expect(bandRow).toHaveClass('flex', 'min-w-0')
+    if (secondary) {
+      expect(within(bandRow).getByText(secondary)).toHaveClass('truncate', 'min-w-0', 'flex-1')
+    }
+  })
+
+  it('removes an added capability through the capabilities remove op', async () => {
+    const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
+      section, id, label: id, state, present: true, value: true, managed: false, shared_reference: false,
+      remove: state === 'local' ? { section, id } : null,
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row('mcpServers', 'github', 'local')] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    fireEvent.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.preview).toHaveBeenCalled())
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    const draft = mockCaps.preview.mock.calls[0][1]
+    expect(draft.operations).toEqual([{ section: 'mcpServers', id: 'github', action: 'remove' }])
+  })
+
+  it('removes against the revision shown when Remove was pressed, not a fresh read', async () => {
+    const view: CapabilityView = {
+      ...CAPS_VIEW, mode: 'mate', revision: 'r1',
+      worker: { rows: [{
+        section: 'mcpServers', id: 'github', label: 'github', state: 'local', present: true, value: true,
+        remove: { section: 'mcpServers', id: 'github' },
+      }] },
+    }
+    mockCaps.get.mockResolvedValue(view)
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    fireEvent.click(await within(dialog).findByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    mockCaps.get.mockResolvedValue({ ...view, revision: 'r2' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(mockCaps.preview.mock.calls[0][1].revision).toBe('r1')
+  })
+
+  it('refuses a stale remove, refreshes the view and asks to confirm again', async () => {
+    const view: CapabilityView = {
+      ...CAPS_VIEW, mode: 'mate', revision: 'r1',
+      worker: { rows: [{
+        section: 'mcpServers', id: 'github', label: 'github', state: 'local', present: true, value: true,
+        remove: { section: 'mcpServers', id: 'github' },
+      }] },
+    }
+    mockCaps.get.mockResolvedValue(view)
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    mockCaps.preview.mockRejectedValueOnce(new ApiError(409, 'stale_revision', '{"code":"stale_revision"}'))
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    fireEvent.click(await within(dialog).findByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    const getsBefore = mockCaps.get.mock.calls.length
+    mockCaps.get.mockResolvedValue({ ...view, revision: 'r2' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    expect(await within(dialog).findByTestId('next-builtfrom-remove-error')).toHaveTextContent(
+      "This mate's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
+    )
+    expect(mockCaps.save).not.toHaveBeenCalled()
+    expect(mockCaps.get.mock.calls.length).toBeGreaterThan(getsBefore)
+    expect(mockCaps.preview).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(dialog).getByTestId('next-band-remove-mcpServers-github'))
+    const retryAsk = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    expect(mockCaps.preview).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(retryAsk).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalledTimes(1))
+    expect(mockCaps.preview.mock.calls[1][1].revision).toBe('r2')
+  })
+
+  it('asks before removing an added capability, naming it, and sends nothing on cancel', async () => {
+    const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
+      section, id, label: id, state, present: true, value: true, managed: false, shared_reference: false,
+      remove: state === 'local' ? { section, id } : null,
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row('mcpServers', 'github', 'local')] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    const getsBefore = mockCaps.get.mock.calls.length
+    fireEvent.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    expect(ask).toHaveTextContent('It stops being available to this mate. You can add it back with Add abilities.')
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove “github”?' })).toBeNull())
+    expect(mockCaps.preview).not.toHaveBeenCalled()
+    expect(mockCaps.save).not.toHaveBeenCalled()
+    // Cancel does not even read a fresh revision for the remove draft.
+    expect(mockCaps.get.mock.calls.length).toBe(getsBefore)
+    expect(within(added).getByText('github')).toBeInTheDocument()
+  })
+
+  it('keeps the editor open through the Remove confirm: real pointer, focus and Escape', async () => {
+    const user = userEvent.setup()
+    const row = (section: CapabilityRow['section'], id: string): CapabilityRow => ({
+      section, id, label: id, state: 'local', present: true, value: true, managed: false, shared_reference: false,
+      remove: { section, id },
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row('mcpServers', 'github')] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    await user.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    // Escape closes only the confirm.
+    await user.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
+    await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove “github”?' })).toBeNull())
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBeInTheDocument()
+    // Confirming removes, and the editor stays.
+    await user.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    await user.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(screen.getByTestId('crew-editor-next-dialog')).toBeInTheDocument()
+  })
+
+  it('removes a skill under the stored row the server names, not the displayed section', async () => {
+    const uri = 'skill:///home/x/skills/release-notes/SKILL.md'
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: {
+        rows: [{
+          section: 'skills', id: uri, label: '', state: 'local', present: true, value: uri,
+          managed: false, shared_reference: true, remove: { section: 'resources', id: uri },
+        }],
+      },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    fireEvent.click(within(added).getByTestId(`next-band-remove-skills-${uri}`))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “release-notes”?' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.preview).toHaveBeenCalled())
+    const draft = mockCaps.preview.mock.calls[0][1]
+    expect(draft.operations).toEqual([{ section: 'resources', id: uri, action: 'remove' }])
+  })
+
+  it('offers no Remove for an added row that names no stored row', async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: {
+        rows: [{
+          section: 'mcpServers', id: 'jira', label: 'jira', state: 'local', present: true, value: true,
+          managed: false, shared_reference: false, remove: null,
+        }],
+      },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByText('jira')).toBeInTheDocument()
+    expect(within(added).queryByTestId('next-band-remove-mcpServers-jira')).toBeNull()
+  })
+
   it('renders the General pane fields (name, built-from, workspace, color)', async () => {
     const dialog = await openNew()
     // General is the default section.
@@ -316,17 +630,18 @@ describe('CrewEditorNextDialog — section rail', () => {
   })
 })
 
-describe('CrewEditorNextDialog — Built From inspectors (read-only)', () => {
-  it('shows loading then the details stats once capabilities resolve', async () => {
+describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () => {
+  it('shows loading then the bands once capabilities resolve', async () => {
     let resolveCaps: (v: CapabilityView) => void = () => {}
     mockCaps.get.mockReturnValue(new Promise((res) => { resolveCaps = res }))
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
     expect(await within(dialog).findByText(/loading/i)).toBeInTheDocument()
     resolveCaps(CAPS_VIEW)
-    // Details stats: tools jump-tile shows the present tools count (2).
-    const toolsStat = await within(dialog).findByTestId('next-builtfrom-stat-tools')
-    expect(toolsStat).toHaveTextContent('2')
+    // The non-mate CAPS_VIEW rows are all inherited → the Comes-with band.
+    const comesWith = await within(dialog).findByTestId('next-band-comes-with')
+    fireEvent.click(within(comesWith).getByTestId('next-band-comes-with-group-tools'))
+    expect(within(comesWith).getByText('fs_read')).toBeInTheDocument()
   })
 
   it('surfaces an error when the capabilities read fails', async () => {
@@ -336,59 +651,26 @@ describe('CrewEditorNextDialog — Built From inspectors (read-only)', () => {
     expect(await within(dialog).findByTestId('next-builtfrom-error')).toBeInTheDocument()
   })
 
-  it('lists tools grouped with read-only / can-modify badges', async () => {
+  it('lists comes-with tools, MCP servers and skills in collapsible kind groups, none removable', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
-    await within(dialog).findByTestId('next-builtfrom-details')
-    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-tools'))
-    const tools = await within(dialog).findByTestId('next-builtfrom-tools')
-    expect(within(tools).getByText('fs_read')).toBeInTheDocument()
-    expect(within(tools).getByText('fs_write')).toBeInTheDocument()
+    const comesWith = await within(dialog).findByTestId('next-band-comes-with')
+    // MCP servers and skills are open by default.
+    expect(within(comesWith).getByText('github')).toBeInTheDocument()
+    expect(within(comesWith).getByText('Writing Tests')).toBeInTheDocument()
+    // Tools starts collapsed; expand to see them.
+    fireEvent.click(within(comesWith).getByTestId('next-band-comes-with-group-tools'))
+    expect(within(comesWith).getByText('fs_read')).toBeInTheDocument()
+    expect(within(comesWith).getByText('fs_write')).toBeInTheDocument()
+    // No remove control anywhere in the comes-with band.
+    expect(comesWith.querySelector('[data-testid^="next-band-remove-"]')).toBeNull()
   })
 
-  it('expands an MCP server row to env/header NAMES only, never a secret value', async () => {
+  it('shows the Added band empty-state when the file adds nothing', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
-    await within(dialog).findByTestId('next-builtfrom-details')
-    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-mcp'))
-    const mcp = await within(dialog).findByTestId('next-builtfrom-mcp')
-
-    // Expand the stdio server: its env NAME shows, its value must not.
-    fireEvent.click(within(mcp).getByTestId('next-mcp-row-local-fs'))
-    const detail = await within(dialog).findByTestId('next-mcp-detail-local-fs')
-    expect(within(detail).getByText('API_KEY')).toBeInTheDocument()
-    expect(within(detail).queryByText(/SECRET-VALUE/)).toBeNull()
-
-    // Expand the HTTP server: its header NAME shows, the token value must not.
-    fireEvent.click(within(mcp).getByTestId('next-mcp-row-github'))
-    const httpDetail = await within(dialog).findByTestId('next-mcp-detail-github')
-    expect(within(httpDetail).getByText(/Authorization/)).toBeInTheDocument()
-    expect(within(httpDetail).queryByText(/SECRET-TOKEN/)).toBeNull()
-  })
-
-  it('lists skills with a de-slugified label and expands to the raw id', async () => {
-    const dialog = await openNew()
-    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
-    await within(dialog).findByTestId('next-builtfrom-details')
-    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-skills'))
-    const skills = await within(dialog).findByTestId('next-builtfrom-skills')
-    // "writing-tests" → "Writing Tests"; owner "kirocrew-core" shown muted.
-    expect(within(skills).getByText('Writing Tests')).toBeInTheDocument()
-    fireEvent.click(within(skills).getByTestId('next-skill-row-kirocrew-core/writing-tests'))
-    const detail = await within(dialog).findByTestId('next-skill-detail-kirocrew-core/writing-tests')
-    expect(within(detail).getByText('kirocrew-core/writing-tests')).toBeInTheDocument()
-  })
-
-  it('shows the details stat tiles as readouts and navigates via the tab bar', async () => {
-    const dialog = await openNew()
-    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
-    // The skills stat tile is a non-interactive readout (not a jump button) —
-    // three sibling action buttons here would exceed the two-action cap. The
-    // Built From tab bar provides the navigation instead.
-    const skillsStat = await within(dialog).findByTestId('next-builtfrom-stat-skills')
-    expect(skillsStat.tagName).toBe('DIV')
-    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-skills'))
-    expect(await within(dialog).findByTestId('next-builtfrom-skills')).toBeInTheDocument()
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-empty')).toBeInTheDocument()
   })
 })
 
@@ -721,26 +1003,6 @@ describe('CrewEditorNextDialog — save, chat hand-off, and sharing collisions',
     const call = mockApi.updateKirocrewAgent.mock.calls.at(-1)
     expect(call?.[0]).toBe('oncall')
     expect(call?.[1]?.display_name).toBe('On-Call Pager')
-  })
-
-  it('requestChat runs the guarded leave and mints a slot for the crew', async () => {
-    await openNew()
-    leaveSpy.mockClear()
-    fireEvent.click(screen.getByTestId('ctl-request-chat'))
-    // requestChat routes through the guarded leave; leaveSpy auto-performs, so
-    // the chatWith body (createSlot dispatch + close + navigate) runs.
-    await waitFor(() => expect(leaveSpy).toHaveBeenCalled())
-  })
-
-  it('requestChat on a dirty editor prompts to discard, then hands off on confirm', async () => {
-    const dialog = await openNew()
-    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Dirty Name' } })
-    leaveSpy.mockClear()
-    fireEvent.click(screen.getByTestId('ctl-request-chat'))
-    // A dirty pane routes requestChat through the discard prompt rather than
-    // straight to the hand-off; confirming it runs chatWith (guarded leave).
-    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
-    await waitFor(() => expect(leaveSpy).toHaveBeenCalled())
   })
 
   it('reports mates sharing the edited crew\u2019s workspace or memory store', async () => {

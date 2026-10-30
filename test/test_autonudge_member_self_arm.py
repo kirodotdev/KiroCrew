@@ -421,34 +421,42 @@ async def test_external_arm_kwargs_shape_is_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_monitor_start_directive_passes_its_own_binding_as_initiator() -> None:
-    """The consumer applies a directive to the exact session whose turn
-    produced it, so it -- and only it -- may vouch for a self-arm."""
-    captured: dict[str, Any] = {}
-
-    async def _authz(**kw: Any) -> tuple[Any, None, int]:
-        captured.update(kw)
-        return SimpleNamespace(id="loop-1", monitor=None, gate=False), None, 200
-
-    state = SimpleNamespace()
-    slot = SimpleNamespace(key="member-conductor", _app="", messages=[])
+async def test_monitor_start_from_a_human_started_member_turn_writes_self_arm_trust_and_sel(
+    audits: list[dict[str, Any]], trust_record: list[tuple[str, str]]
+) -> None:
+    """A member conductor told by its bind reply to arm its own patrol does so
+    from a turn its human started. That positive mark reaches the
+    existing self-arm chokepoint, including its durable trust and SEL records."""
+    svc = RecordingSvc()
+    slot = SimpleNamespace(
+        key="member-conductor",
+        workspace="default",
+        mode="member",
+        memory_mode="persistent",
+        _app="",
+        messages=[],
+    )
+    state = _state({"member-conductor": slot})
     with (
-        patch("kiro_crew.autonudge.get_instance", return_value=object()),
-        patch("kiro_crew.autonudge_authz.authorize_and_add_nudge", _authz),
+        patch("kiro_crew.autonudge.get_instance", return_value=svc),
         patch.object(sda, "_audit"),
+        patch.object(sda, "_surface_arm_success"),
     ):
         result = await sda.apply_session_directive(
             state,
             slot,
             "dashboard:member-conductor",
             "monitor_start",
-            {"message": "patrol", "idle_secs": 1200, "max_cycles": 0},
+            {"message": "patrol", "idle_secs": 1200, "max_cycles": 4},
             producer_is_user_facing=True,
         )
 
     assert "started on this session" in result
-    assert captured["slot_key"] == "member-conductor"
-    assert captured["initiator_slot_key"] == "member-conductor"
+    assert len(svc.added) == 1 and svc.added[0]["self_armed"] is True
+    assert trust_record == [(svc.added[0]["loop_id"], "member-conductor")]
+    outcomes = [event["outcome"] for event in audits]
+    assert "self_armed" in outcomes
+    assert outcomes[-2:] == ["invoked", "success"]
 
 
 @pytest.mark.asyncio
@@ -924,12 +932,52 @@ def test_only_the_session_directive_consumer_passes_initiator_slot_key() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_directive_with_no_positive_producer_mark_keeps_the_outside_arm_409(
+    audits: list[dict[str, Any]],
+    trust_record: list[tuple[str, str]],
+) -> None:
+    """Every producer flag defaults to False, so a turn whose dispatcher set no
+    positive mark (cron, app, native sub-agent, peer session, restored or an
+    untagged dispatcher, pinned at the runner in
+    ``test_session_directive_self_arm_provenance.py``) arms nothing and gets the
+    existing outside-arm refusal."""
+    svc = RecordingSvc()
+    slot = SimpleNamespace(
+        key="member-conductor",
+        workspace="default",
+        mode="member",
+        memory_mode="persistent",
+        _app="",
+        messages=[],
+    )
+    state = _state({"member-conductor": slot})
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        patch.object(sda, "_audit"),
+        patch.object(sda, "_surface_arm_refusal"),
+    ):
+        result = await sda.apply_session_directive(
+            state,
+            slot,
+            "dashboard:member-conductor",
+            "monitor_start",
+            {"message": "patrol", "idle_secs": 1200, "max_cycles": 4},
+        )
+
+    assert "status 409" in result
+    assert "this turn was started by something other than the user" in result
+    assert audits[-1]["error"] == external_arm_refusal("member")
+    assert svc.added == []
+    assert trust_record == []
+    assert [event["outcome"] for event in audits][-1] == "denied"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["monitor_start", "monitor_watch"])
 async def test_a_headless_turn_in_a_member_session_gets_no_self_arm_provenance(kind: str) -> None:
     """A cron injection, a sub-agent sharing the slot, an app- or nudge-driven
-    turn all run IN the member's session without BEING it. Without the
-    authenticated-human provenance flag the applier hands the authorizer an
-    empty initiator, so the crew/member refusal stands for such turns."""
+    turn all run IN the member's session without BEING it. Without a positive
+    producer mark the applier hands the authorizer an empty initiator."""
     captured: dict[str, Any] = {}
 
     async def _authz(**kw: Any) -> tuple[Any, None, int]:
@@ -1436,7 +1484,7 @@ class TestLegacyLoopUpdateOnAMemberSlotKeepsTheSelfArmRule:
                 patch("kiro_crew.autonudge.get_instance", return_value=self._svc(loop)),
                 patch("kiro_crew.autonudge.is_structured_monitor_loop", return_value=False),
             ):
-                await sda.apply_session_directive(
+                result = await sda.apply_session_directive(
                     _state({"member-conductor": _member_slot("member")}),
                     SimpleNamespace(key="member-conductor", _app="", messages=[]),
                     "dashboard:member-conductor",
@@ -1444,6 +1492,7 @@ class TestLegacyLoopUpdateOnAMemberSlotKeepsTheSelfArmRule:
                     {"patch": {"message": "new standing orders"}},
                 )
         audit.assert_called_with("dashboard:member-conductor", "monitor_update", "denied")
+        assert result.startswith("Failed to update monitor loop: this turn was started by")
 
     @pytest.mark.asyncio
     async def test_the_slots_own_human_turn_may_revise_it(self) -> None:

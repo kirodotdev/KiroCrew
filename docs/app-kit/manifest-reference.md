@@ -150,11 +150,12 @@ receive a vault secret is undecided
 | `env` | object | String environment variables passed to the job |
 | `persistent_session` | boolean | Default `true`; retain one agent session across runs |
 | `silent` | boolean | Default `false`; suppress automatic result delivery |
-| `folder` | string | Existing Schedule-folder name; an unknown name leaves the job ungrouped until a later enable finds it |
+| `folder` | string | Schedule-folder name. Installing, enabling or updating the app in a running gateway creates a missing folder; a name several folders share, registration during gateway startup, or a CLI enable leaves the job ungrouped |
 | `timezone` | string | IANA zone name the schedule and `skip_dates` are evaluated in, e.g. `America/New_York`. Optional, but an empty value falls back to the gateway config's timezone and then to **UTC** — so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC, the wrong calendar day for most users. An unknown zone is rejected at manifest validation. A per-**user** zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |
 | `skip_dates` | string[] | Calendar dates the job must not fire on, evaluated in `timezone`. Must be zero-padded `YYYY-MM-DD` — `2026-1-1` parses but never matches the padded fire-time rendering, so it is rejected at manifest validation rather than silently skipping nothing |
 | `timeout` | number | Seconds a `command` or `script` subprocess may run. `0` or omitted uses the scheduler default: 30s for a script, 300s for a command |
 | `timeout_secs` | number | Seconds one run may take in total, within 1..86400. `0` or omitted uses the scheduler default. On a `command` or `script` cron it must cover `timeout` (or that default) plus 5s of cleanup, so a script that runs 40s needs both, e.g. `"timeout": 60, "timeout_secs": 65`. A value the cron SDK would refuse is rejected at manifest validation |
+| `strict_schedule` | boolean | Default `false`. When `true` the job fires exactly on its schedule instead of after the scheduler's random start delay, which spreads jobs out and on a daily job can reach 59 minutes. Use it for a time the user chose on purpose, such as a report wanted ready at 06:50. Must be a JSON boolean; any other type is rejected at manifest validation |
 | `enabled` | boolean | Default `true`. Must be a JSON boolean — any other type is rejected at manifest validation. When `false` the cron is registered **paused** (visible in the Schedule view, resumable) instead of firing on install/enable — for jobs that need user configuration first |
 
 A manifest that declares any `crons` must also declare `"cron": true` under
@@ -177,8 +178,9 @@ manifest** always: a paused job gets the new values and stays paused. Settings t
 visibility, a secret grant -- are never touched. A change to `command`, `script`,
 `agent_sequence` or `env` is the exception: the scheduler accepts those fields at
 creation only, so the change is logged (and audited as
-`app_cron_resync_pending_reenable`) on every registration until the app is
-disabled and enabled again, which is when it reaches the job; the entry's other
+`app_cron_resync_pending_reenable`) on every registration until the job is
+recreated, which is when it reaches the job: the app is disabled and enabled
+again, or a Sync of an app with backend hooks reloads its code; the entry's other
 changed fields still land at once. A `message` cleared to empty is reported the
 same way, because the scheduler keeps the stored prompt on an empty value. A job registered
 by a build that did not yet record its entry is brought up to the manifest once,
@@ -227,20 +229,50 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.entry` | string | | Path to ESM bundle (relative to ui/) |
 | `ui.pages[].route` | string | | URL path for the page |
 | `ui.pages[].label` | string | | Sidebar label |
-| `ui.pages[].icon` | string | | Lucide icon name (e.g. `"Shield"`, `"Package"`) |
+| `ui.pages[].icon` | string | | Lucide icon name (e.g. `"Shield"`, `"Package"`). Built-in apps only: an installed app's sidebar row shows the generic icon for it, so ship an image instead (`iconPath`, or `ui.pages[].iconUrl`) |
 | `ui.pages[].iconUrl` | string | | Custom active icon image path (relative to ui/) |
-| `ui.pages[].iconInactiveUrl` | string | | Optional inactive-state icon image path (relative to ui/) |
+| `ui.pages[].iconInactiveUrl` | string | | Optional sidebar icon for when the app is not selected (relative to ui/). Read from the first page. The sidebar row shows this file while another page is open, and the app's normal icon when its own page is open or the row is hovered. Use it for a greyed-out variant, the way built-in icons go grey. If the file fails to load, the row keeps the normal icon |
 | `ui.pages[].entryPoint` | string | | Per-page ESM bundle path, relative to ui/ (overrides `ui.entry`) |
 | `ui.pages[].mountFunction` | string | `"mount"` | Exported function name in the ESM bundle |
 | `ui.sidebar.section` | string | `"Apps"` | Sidebar section name |
 | `ui.sidebar.order` | number | `10` | Sort order within section |
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
+| `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
 | `contributes.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines` and `Mic` are rendered; any other name falls back to `Package`. Use `AudioLines` for a control that starts a voice conversation and `Mic` only for voice input: the composer's own dictation button already draws `Mic`, so a conversation chip with that glyph reads as a second dictation button |
 | `contributes.sessionControls[].statusPath` | string | | Optional backend route reporting per-session chip state (see below) |
+
+### `ui.loading` — Loading Placeholder Shape
+
+While your bundle downloads, the dashboard shows a placeholder. Nothing appears
+for the first 300 ms, so a fast load (the usual case on a local gateway) shows no
+placeholder at all. After that, the placeholder takes the shape you declare, so
+your page doesn't jump when it mounts:
+
+```json
+{
+  "ui": {
+    "entry": "dist/index.mjs",
+    "loading": { "layout": "rail" }
+  }
+}
+```
+
+| `layout` | Shape |
+|----------|-------|
+| `"page"` | Title bar, subtitle bar and content rows. The default |
+| `"rail"` | A 232px left column of list rows beside the main content |
+| `"centered"` | One narrow card in the middle of the page, e.g. a composer or a sign-in |
+| `"split"` | Two panes side by side, e.g. a list and a detail view |
+
+The shapes are drawn by the dashboard from its own skeleton pieces. You pick a
+name; you can't supply markup or styles. The match is exact: a missing or `null`
+`loading`, a non-object, a non-string `layout`, or an unknown name (including a
+different case, like `"Rail"`) all fall back to `"page"`. An invalid value is
+not an install error; it is dropped.
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 
@@ -540,6 +572,13 @@ installed at runtime.
 At most **10** rows per app.
 
 On activation core POSTs `{ item_id, surface, path, kind?, root? }` to `endpoint`.
+A successful JSON response may include a nonempty string `message` and an optional
+`url`. Core shows the message as plain text in a local
+host toast with a clickable HTTP(S) link. Unsafe URLs, including script/data
+schemes and credential-bearing URLs, are not linked. An absent, empty, or
+non-string message produces no toast. The toast holds only the latest result: a
+second result that arrives before the first hides replaces it. HTTP failures keep the existing host error
+notice; a toast neither grants access nor changes the endpoint's approval flow.
 
 **The file's PATH is sent, never its CONTENT.** A contributed row needs no
 permission to exist, so shipping file bytes with every activation would hand any
@@ -907,7 +946,7 @@ packages at all.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `permissions.api` | string[] | Allowed API path prefixes |
+| `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY crewmate it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |
@@ -1035,10 +1074,11 @@ installs do not run `onInstall`; build first, then install. The `onEnable`,
 **not run on native Windows** (which has no `/bin/bash`): the runner refuses the
 hook before any process is started and reports a failure whose message names the
 unsupported platform, rather than letting the spawn fail opaquely and look like
-your script breaking. `onInstall` also runs through `/bin/bash`, without that
-up-front refusal, so a registry install of an app that declares it fails on a
-native-Windows host. Write hooks for POSIX shells; do not rely on them running
-on a native-Windows host.
+your script breaking. `onInstall` also runs through `/bin/bash` and gets the
+same up-front refusal: a registry install or update of an app that declares it
+fails on a native-Windows host with an error naming the unsupported platform,
+before the script is started. Write hooks for POSIX shells; do not rely on them
+running on a native-Windows host.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as
@@ -1246,7 +1286,10 @@ hints a desktop launch needs:
   is the list): shell and locale basics such as `HOME` and `PATH`, the XDG
   directories (including `XDG_RUNTIME_DIR`), toolchain roots (Java, Node,
   Python, Conda, Gradle/Maven), the git SSH overrides, and the Windows
-  equivalents of the basics.
+  equivalents of the basics. Proxy and CA-bundle variables (`HTTPS_PROXY`,
+  `NO_PROXY`, `SSL_CERT_FILE`, ...) are not on it: only the gateway's own
+  `git` clone, fetch and pull of app and registry repositories receive them,
+  because a proxy URL can carry a password.
 - **Removed again before the spawn** (`sandbox.scrub_env`): of the allowlisted
   names, the SSH agent socket `SSH_AUTH_SOCK`. The install and build commands
   run git against the owner's own repositories and need it; a launcher does

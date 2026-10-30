@@ -13,7 +13,6 @@ import asyncio
 import os
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,7 @@ from kiro_crew import platform_compat
 from kiro_crew.acp import skill_projection
 from kiro_crew.acp.harness.base import SpawnPlan
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.skipif(
     not platform_compat.IS_POSIX, reason="process groups are a POSIX mechanism"
@@ -68,16 +68,12 @@ async def _reap_stand_in(pid: int, start_id: str | None) -> None:
             os.kill(pid, 9)
         except OSError:
             pass
-    await _wait_gone(pid)
+    await _await_gone(pid, what=f"the SIGKILLed stand-in (PID {pid}) is still alive")
 
 
-async def _wait_gone(pid: int, timeout: float = 3.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _gone(pid):
-            return True
-        await asyncio.sleep(0.05)
-    return _gone(pid)
+async def _await_gone(pid: int, *, what: str) -> None:
+    """Wait until *pid* has exited; fail by name, with *what*, otherwise."""
+    await async_wait_until(lambda: _gone(pid), describe=lambda: what)
 
 
 @pytest.mark.asyncio
@@ -98,10 +94,7 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch, ca
 
     async def _failing_handshake(_caps):
         # Wait for the tree to exist, then fail the way a stalled kiro-cli does.
-        for _ in range(200):
-            if pid_file.exists():
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
         pid = int(pid_file.read_text())
         child_pid.append(pid)
         start_ids[pid] = platform_compat.get_process_start_id(pid)
@@ -118,9 +111,9 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch, ca
             with pytest.raises(AcpRuntimeError, match="initialize timed out"):
                 await rt.spawn()
         assert child_pid, "the stand-in tree never started"
-        assert await _wait_gone(
-            child_pid[0]
-        ), f"the MCP stand-in (PID {child_pid[0]}) outlived the failed start"
+        await _await_gone(
+            child_pid[0], what=f"the MCP stand-in (PID {child_pid[0]}) outlived the failed start"
+        )
         # A reaped tree is not reported as a leak: no survivor warning from the
         # kill's teardown or from the reap, for processes that did exit.
         survivor_lines = [
@@ -159,10 +152,7 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
     start_ids: dict[int, str | None] = {}
 
     async def _failing_handshake(_caps):
-        for _ in range(200):
-            if pid_file.exists():
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
         pid = int(pid_file.read_text())
         child_pid.append(pid)
         start_ids[pid] = platform_compat.get_process_start_id(pid)
@@ -184,7 +174,7 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
 
     try:
         spawn = asyncio.ensure_future(rt.spawn())
-        await asyncio.wait_for(in_scan.wait(), timeout=10)
+        await await_until(in_scan, what="the failed-start cleanup enters its descendant scan")
         spawn.cancel()
         # A second signal (a slot deletion after a newer slot signal) cancels again.
         await asyncio.sleep(0.05)
@@ -192,9 +182,10 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
         (outcome,) = await asyncio.gather(spawn, return_exceptions=True)
         assert child_pid, "the stand-in tree never started"
         # The leak first: it is the harm, and it is independent of what was raised.
-        assert await _wait_gone(
-            child_pid[0]
-        ), f"the MCP stand-in (PID {child_pid[0]}) outlived a cancelled failed start"
+        await _await_gone(
+            child_pid[0],
+            what=f"the MCP stand-in (PID {child_pid[0]}) outlived a cancelled failed start",
+        )
         assert isinstance(outcome, asyncio.CancelledError), repr(outcome)
     finally:
         for pid in child_pid:

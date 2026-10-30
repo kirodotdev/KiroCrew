@@ -4,14 +4,20 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection'
 import {
   $applyNodeReplacement,
+  $createLineBreakNode,
   $createNodeSelection,
+  $createTextNode,
   $getNodeByKey,
   $getSelection,
   $isNodeSelection,
+  $isTextNode,
   $setSelection,
   DecoratorNode,
   type EditorConfig,
   type LexicalEditor,
+  type LexicalNode,
+  type LineBreakNode,
+  type TextNode,
   type NodeKey,
   type SerializedLexicalNode,
 } from 'lexical'
@@ -27,6 +33,41 @@ export type SerializedPasteTokenNode = SerializedLexicalNode & {
   block: PasteBlock
   type: 'paste-token'
   version: 1
+}
+
+/** Convert plain text into Lexical nodes: one TextNode per non-empty line,
+ *  a LineBreakNode between lines. The one place the composer turns text into
+ *  nodes, shared by the draft loader and paste-chip expansion. */
+export function appendPlainText(text: string, append: (node: TextNode | LineBreakNode) => void): void {
+  const lines = text.split('\n')
+  lines.forEach((line, index) => {
+    if (line) append($createTextNode(line))
+    if (index < lines.length - 1) append($createLineBreakNode())
+  })
+}
+
+/** Replace the paste-token node `nodeKey` with its block's content as plain
+ *  text (one TextNode per line, LineBreakNodes between them) and put the caret
+ *  right after the inserted text. A no-op when the key is not a paste token. */
+export function $expandPasteTokenNode(nodeKey: NodeKey): void {
+  const node = $getNodeByKey(nodeKey)
+  if (!$isPasteTokenNode(node)) return
+  const parts: LexicalNode[] = []
+  appendPlainText(node.getBlock().content, part => parts.push(part))
+  const [first, ...rest] = parts
+  if (!first) {
+    node.selectNext(0, 0)
+    node.remove()
+    return
+  }
+  node.replace(first)
+  let last = first
+  for (const part of rest) {
+    last.insertAfter(part)
+    last = part
+  }
+  if ($isTextNode(last)) last.select()
+  else last.selectNext(0, 0)
 }
 
 function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKey }) {
@@ -95,15 +136,31 @@ function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKe
         }}
         onClick={(event) => {
           event?.preventDefault()
-          const extend = event?.shiftKey ?? false
-          editor.update(() => {
-            const current = $getSelection()
-            const selection = extend && $isNodeSelection(current) ? current : $createNodeSelection()
-            if (!selection.has(nodeKey)) selection.add(nodeKey)
-            $setSelection(selection)
-          })
+          // A read-only editor keeps its state untouched: the click still
+          // toggles the preview, but does not select the chip. A double-click
+          // sends two clicks first, so this also keeps that gesture inert.
+          if (editor.isEditable()) {
+            const extend = event?.shiftKey ?? false
+            editor.update(() => {
+              const current = $getSelection()
+              const selection = extend && $isNodeSelection(current) ? current : $createNodeSelection()
+              if (!selection.has(nodeKey)) selection.add(nodeKey)
+              $setSelection(selection)
+            })
+          }
           if (previewOpen) closePreview()
           else openPreview()
+        }}
+        // A double-click inserts the full pasted text in the chip's place, the
+        // same gesture the textarea composer honours (pasteEditor's
+        // handleTextareaClick) and the preview hint names. The block drops out
+        // of the sidecar on its own: the composer derives it from the nodes.
+        onDoubleClick={(event) => {
+          if (!editor.isEditable()) return
+          event.preventDefault()
+          closePreview()
+          editor.update(() => { $expandPasteTokenNode(nodeKey) })
+          editor.focus()
         }}
         // Opened from the pointer's own enter, not from mouseenter: a tap's
         // replayed mouseenter would open the preview mid-tap (iOS then drops

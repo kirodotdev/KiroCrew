@@ -719,24 +719,24 @@ class TestCompactionFailureIsTransient:
             }
         )
 
-    def test_a_4xx_is_not_transient(self):
-        """A validation or auth failure is answered by fixing the request, not
-        by sending it again."""
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            # A validation or auth failure is answered by fixing the request,
+            # not by sending it again.
+            pytest.param({"error": {"httpStatusCode": 400}}, id="a_4xx_is_not_transient"),
+            pytest.param({"status": {"type": "failed"}}, id="a_bare_failure_is_not_transient"),
+            # ``bool`` is an ``int`` subclass, so a True under this key would
+            # otherwise compare as 1 — and 1 is not a status code at all.
+            pytest.param(
+                {"error": {"httpStatusCode": True}}, id="a_boolean_is_not_read_as_a_status_code"
+            ),
+        ],
+    )
+    def test_not_transient(self, frame):
         from kiro_crew.acp.client import compaction_failure_is_transient
 
-        assert not compaction_failure_is_transient({"error": {"httpStatusCode": 400}})
-
-    def test_a_bare_failure_is_not_transient(self):
-        from kiro_crew.acp.client import compaction_failure_is_transient
-
-        assert not compaction_failure_is_transient({"status": {"type": "failed"}})
-
-    def test_a_boolean_is_not_read_as_a_status_code(self):
-        """``bool`` is an ``int`` subclass, so a True under this key would
-        otherwise compare as 1 — and 1 is not a status code at all."""
-        from kiro_crew.acp.client import compaction_failure_is_transient
-
-        assert not compaction_failure_is_transient({"error": {"httpStatusCode": True}})
+        assert not compaction_failure_is_transient(frame)
 
     def test_the_reason_and_the_verdict_read_the_same_frame(self):
         """Both readers are driven off one walker, so the reason a row DISPLAYS

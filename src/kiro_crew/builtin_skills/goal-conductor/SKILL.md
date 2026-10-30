@@ -62,6 +62,8 @@ A candidate qualifies only if **all three** hold:
    green via `gh`; always set `repo` to `owner/name` — without it `gh` resolves
    the PR number against whatever checkout the evaluator runs in, which can be
    another repository's PR, and outside a checkout it cannot be evaluated),
+   `pr_merged` (a PR has merged, also via `gh`, with `repo` required: an open
+   PR reads `pending`, one closed without merging reads `fail`),
    `file` (a path existing), or `human_approval` (the user accepts it —
    legitimate for design reviews and go/no-go gates, but never
    machine-evaluated). **There is deliberately no "run this command" kind**, so
@@ -169,7 +171,19 @@ beats more parallelism: every open item is a session the user may have to read.
 
 ### Dispatch a round
 
-For each item in the round, in **exactly this order**:
+For each item in the round, call `work_dispatch` with the item's `title`, its
+`acceptance`, the `agent`, the `folder` and the `seed` described in the steps
+below. One call runs the four steps in order, sends the seed only after the bind
+succeeded, and on a failure names the step, the refusal code and what it cleaned
+up. It prompts for approval once per item, as `session_send` does. It never
+opens your ledger: Round 0's `action=goal` does, and without it the first step is
+refused `no_ledger`. A reply with
+`outcome=outcome_unknown` lost a reply rather than being refused: read the board
+and the sidebar (or, for a lost seed, the session) before dispatching again.
+
+Run the four steps as separate calls only to bind an existing session. Then
+make **one call at a time**, each after the previous reply came back, in
+**exactly this order**:
 
 1. `work_ledger_record` `action=create`, with the item's `title` and its
    `acceptance` condition — the same condition object `accept_eval.py` parses,
@@ -190,8 +204,8 @@ For each item in the round, in **exactly this order**:
 
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
-**A `pr_checks` seed may name the PR procedure.** The worker is a custom agent
-and sees no skill catalog, so nothing auto-loads `kirocrew-prepare-pr` for it. If the
+**A `pr_checks` seed may name the PR procedure.** The worker gets no per-message
+skill matching, so nothing auto-loads `kirocrew-prepare-pr` for it. If the
 worker will open a pull request, you can add one line to the seed: it may
 read `<crew-home>/skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md` (`<crew-home>` is
 `KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
@@ -232,8 +246,10 @@ cycle; an unbound running worker is neither visible nor recoverable.
 | `select_crew` names a specialist crew that fits | that crew |
 
 `depth` is computed when a child first opens its ledger (its first `goal` or
-`create`) and capped at 2, so you may dispatch a conductor and its own
-workers may not conduct. A `depth_exceeded` error means the item has to be
+`create`) and capped at 2 by default (the operator's `work_ledger.max_depth`
+setting raises it; `work_ledger_read` reports the value in force as `max_depth`),
+so at the default you may dispatch a conductor and its own workers may not
+conduct. A `depth_exceeded` error means the item has to be
 flattened into leaves, not retried.
 
 A specialist crew that does not mount `@kirocrew-work` cannot report to the
@@ -351,7 +367,11 @@ Each cycle:
    read too large for the tool-result limit
    comes back trimmed with `truncated: true` and says what it left out. An item is never `stale` on the strength of silence alone: its worker
    also has to be not running, and its last word has to have left the next move
-   with the worker, so a `done` item waiting on you is not flagged.
+   with the worker, so a `done` item waiting on you is not flagged. An item whose
+   `report_undelivered` is set had a worker that TRIED to report or read its brief
+   and the harness never delivered the call: check that worker's `session_status`
+   and its pull request, and tell the user what you find ("couldn't send its
+   report") instead of calling it stalled.
 2. **Act on three statuses, and only three:**
 
    | status | what it means | what you do |
@@ -360,9 +380,20 @@ Each cycle:
    | `done` | the worker CLAIMS acceptance is met | verify (step 3) |
    | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it, then `work_ledger_record` `action=decide` |
    | `question` | your own decision is needed | `session_send` the answer, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
+   | `reply` | only while the `work_ledger.remote_dispatch` preview is on: the worker's answer to a follow-up you sent it | relay the summary to the worker that asked; run no acceptance, since it claims nothing finished. A `reply` replaces the item's status like any report, so verify a `done` before you send its worker a follow-up |
 
    `blocked` and `question` differ by who must act. That is why they are separate
    values, and why you must not treat one as the other.
+
+   **A person's steer outranks your decision.** When the person types into a
+   worker from the Crew panel, its item gets a `steer` event (`kind: steer`, the
+   person's own words, redacted). Before any `action=decide`, and before any
+   instruction you send a worker, read that item's events (`work_ledger_read`
+   with `item_id=<id>`, no `compact`) and look for `steer` events newer than your
+   last decision. Follow them and never overrule, undo or re-send against them;
+   a steer that conflicts with your plan wins and you re-plan around it. A steer
+   never moves the acceptance bar: the verdict still comes from
+   `accept_eval.py`.
 
    A `blocked` or `question` row may also carry the worker's `reason`: `approval`
    (a tool approval timed out) or `needs_human` (only a person can unblock it).
@@ -452,7 +483,14 @@ Each cycle:
    `session_close` that child session in the same cycle — a finished worker
    has nothing left to re-arm. `session_close` archives (reopenable); it never
    deletes. Never close a child that still has a pending human question or an
-   unmerged PR it is actively driving. `action=decide` records an
+   unmerged PR it is actively driving. **Closing an item cuts its worker's
+   report channel**: from then on its `work_report` is refused `item_closed`,
+   and it cannot `session_send` to you. The close reply warns when that
+   worker's session is still open. If the worker still has work for you,
+   `create` a new item and `bind` it to the SAME session, then `session_send`
+   it the new item's goal; its `work_brief` and `work_report` resolve to the
+   new item. A session holds one open item at a time, so binding one whose
+   item is still open is refused `worker_already_dispatched`. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
 5. `session_read_message` for detail the record does not carry — a question's
@@ -595,8 +633,10 @@ So the worker contract applies to you on top of everything in this skill:
   parent's record across a dispatch relationship, so it prompts. Reporting at
   round boundaries keeps that to a handful of approvals per goal.
 
-Depth is capped at 2, so your own children may be workers only — a
-`depth_exceeded` on a child's first `goal` or `create` means flatten, not retry.
+Depth is capped at 2 by default (`work_ledger.max_depth`), so your own children
+may be workers only unless `work_ledger_read` shows a larger `max_depth` than
+your `depth` plus one — a `depth_exceeded` on a child's first `goal` or `create`
+means flatten, not retry.
 
 ## Stop conditions
 
@@ -794,7 +834,8 @@ what the composer renders:
   and `patrol_budget.py`; every call is
   audit-logged and every call prompts. The evaluator accepts **no command, argv
   array, or shell string from a spec** — it builds every argv it runs from a
-  fixed template, so `pr_checks` becomes `gh pr checks <n>` and nothing else
+  fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
+  becomes `gh pr view <n> --repo <owner/name> --json state`, and nothing else
   executes. That is deliberate and load-bearing: this script is invoked as an
   approved wrapper, so a spec that could name a command would turn it into a
   general way to run one, and Kiro Crew's denied-command floor cannot see inside

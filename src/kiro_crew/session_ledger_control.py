@@ -443,7 +443,7 @@ def _claim_carry(slot_key: str) -> str:
     try:
         if not ledger_dir(slot_key).exists():
             # Nothing to carry, and nothing to claim: a slot with no legacy directory
-            # never ran before this change.
+            # never used the legacy layout.
             return _CLAIM_DONE
         path = _control_file(slot_key, _CARRIED_FILE, create=True)
         # READ, DECIDE and REPLACE under the slot's own lock. An exclusive create alone
@@ -691,6 +691,34 @@ def note_work_unit_recorded(slot_key: str, session_id: str) -> None:
         session_id,
         order_file=_WORK_UNIT_ORDER_FILE,
     )
+
+
+def newest_work_unit(slot_key: str) -> str:
+    """*slot_key*'s CURRENT newest unit, the one a report or relay for it is written into.
+
+    The newest unit the slot has, whether or not it holds a work record yet: after a
+    conductor restart the new unit has none, and writing into the unit that last held
+    one would grow a unit the slot has moved on from. Read by succession
+    (``crew_log.projection_readers.newest_unit_in_succession``, cached against the
+    store root). Falls back to the unit that last recorded (the work-order file) when
+    the store lists no unit for the slot; ``""`` when neither names a live unit.
+    """
+    if not slot_key:
+        return ""
+    try:
+        from kiro_crew.crew_log.projection_readers import newest_unit_in_succession
+        from kiro_crew.crew_log.schema import KIND_SESSION
+        from kiro_crew.crew_log.store import CrewLog
+
+        unit = newest_unit_in_succession(slot_key)
+        if unit:
+            return unit
+        for unit in reversed(_recorded_unit_order(slot_key, order_file=_WORK_UNIT_ORDER_FILE)):
+            if CrewLog.exists(KIND_SESSION, unit):
+                return unit
+    except Exception as exc:
+        logger.debug("work ledger: could not resolve this slot's newest unit: %s", exc)
+    return ""
 
 
 def work_crew_log_units(slot_key: str) -> tuple[str, ...]:

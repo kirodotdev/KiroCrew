@@ -332,7 +332,6 @@ class TestFolderWatcherScan:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        # Mock ingest to create items
         async def fake_ingest(path, *, on_committed=None, **kwargs):
             item_id = store.add_item("title", "content", "doc", source_id=source_id)
             if on_committed is not None:
@@ -606,13 +605,11 @@ class TestFolderWatcherFailedFiles:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        # Make pipeline raise on ingest
         pipeline.ingest_file = AsyncMock(side_effect=RuntimeError("parse error"))
 
         stats = await fw.scan_source(source)
         assert stats["failed"] == 3  # all 3 files fail
 
-        # Check error recorded in state
         rows = store.db.execute(
             "SELECT status, error_message FROM folder_file_state WHERE source_id = ?",
             (source_id,)).fetchall()
@@ -916,6 +913,64 @@ class TestAsyncToThread:
 
         assert len(release_threads) == 1
         assert release_threads[0] != loop_thread
+
+    @staticmethod
+    def _record_path_calls(monkeypatch, method: str) -> list[tuple[str, int]]:
+        """Record ``(path, thread)`` for every ``Path.<method>`` call."""
+        calls: list[tuple[str, int]] = []
+        original = getattr(Path, method)
+
+        def recording(self, *args, **kwargs):
+            calls.append((str(self), threading.get_ident()))
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method, recording)
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("present", [True, False])
+    async def test_source_dir_check_runs_off_the_event_loop(
+            self, store, pipeline, tmp_path, monkeypatch, present):
+        """The scan's existence check stats a folder that may sit on a network mount."""
+        vault = tmp_path / "vault"
+        if present:
+            vault.mkdir()
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        calls = self._record_path_calls(monkeypatch, "is_dir")
+
+        stats = await fw.scan_source(
+            {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+             "properties": "{}"})
+
+        assert ("error" in stats) is not present
+        threads = [t for p, t in calls if p == str(vault)]
+        assert threads, "the source dir was never checked; the test is vacuous"
+        assert threading.get_ident() not in threads, (
+            "the source dir's is_dir() ran on the event-loop thread")
+
+    @pytest.mark.asyncio
+    async def test_ingest_time_path_recheck_runs_off_the_event_loop(
+            self, store, pipeline, tmp_path, monkeypatch):
+        """Both TOCTOU resolutions stat the disk, so neither may run on the loop."""
+        root = tmp_path / "project"
+        root.mkdir()
+        doc = root / "doc.md"
+        doc.write_text("# Doc\n")
+        source_id = store.add_source("test", "local_folder", str(root))
+        fw = FolderWatcher(store, pipeline)
+        calls = self._record_path_calls(monkeypatch, "resolve")
+
+        await fw._ingest_file(
+            str(doc), source_id, "default", {"confine_to_root": True}, [],
+            root=str(root))
+
+        pipeline.ingest_file.assert_awaited_once()
+        resolved = {p: t for p, t in calls if p in (str(doc), str(root))}
+        assert set(resolved) == {str(doc), str(root)}, (
+            f"expected the file and the root to be re-resolved, saw {sorted(resolved)}")
+        assert threading.get_ident() not in resolved.values(), (
+            "an ingest-time resolve() ran on the event-loop thread")
 
 
 class TestDeleteSourceCascade:

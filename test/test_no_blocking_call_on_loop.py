@@ -455,7 +455,6 @@ def test_heartbeat_beat_has_no_inline_blocking_calls() -> None:
     for call in _scope_calls(beat_fn):
         func = call.func
         if isinstance(func, ast.Attribute) and func.attr in banned_methods:
-            # Check it's not inside asyncio.to_thread(...)
             violations.append(f"line {call.lineno}: bare .{func.attr}() call")
 
     assert violations == [], (

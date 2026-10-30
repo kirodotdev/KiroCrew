@@ -245,16 +245,41 @@ def test_a_mask_seals_nothing_by_default() -> None:
 def test_the_capabilities_are_declared_per_renderer() -> None:
     caps = sandbox_plan.CAPABILITIES
     assert set(caps) == {BACKEND_NAMESPACE, BACKEND_SEATBELT}
-    assert caps[BACKEND_SEATBELT].cc_unmaskable_dirs == frozenset({".aws"})
+    assert caps[BACKEND_SEATBELT].cc_unmaskable_dirs == frozenset()
     assert caps[BACKEND_NAMESPACE].cc_unmaskable_dirs == frozenset()
 
 
-def test_seatbelt_cannot_partially_expose_aws_so_cc_leaves_it_visible() -> None:
+def test_cc_masks_aws_on_both_backends_and_exposes_only_config() -> None:
     linux = _plan("cc", BACKEND_NAMESPACE)
     macos = _plan("cc", BACKEND_SEATBELT)
     assert f"{HOME}/.aws" in linux.sensitive_dirs
-    assert f"{HOME}/.aws" not in [m.path for m in macos.masks]
+    aws = {m.path: m for m in macos.masks}[f"{HOME}/.aws"]
+    assert aws.exposed == (f"{HOME}/.aws/config",)
+    assert not aws.cancelled
+    # strict hides .aws with no exception; standard does not touch it.
     assert _plan("strict", BACKEND_SEATBELT).masks[0].path == f"{HOME}/.aws"
+    assert _plan("strict", BACKEND_SEATBELT).masks[0].exposed == ()
+
+
+def test_seatbelt_cc_profile_denies_aws_except_config() -> None:
+    """Everything under ~/.aws but ``config`` is unreadable in a macOS cc profile:
+    the credentials file, the SSO token cache and any link name inside it. The
+    exception is a ``literal``, so it opens one path and nothing beneath ``config``."""
+    profile = sandbox_seatbelt.render_seatbelt_profile(_plan("cc", BACKEND_SEATBELT))
+    aws = f"{HOME}/.aws"
+    read_rule = (
+        f'(deny file-read* (require-all (subpath "{aws}")'
+        f' (require-not (literal "{aws}/config"))))'
+    )
+    assert read_rule in profile.splitlines()
+    assert f'(deny file-link (subpath "{aws}"))' in profile.splitlines()
+    assert f'(deny file-read* (subpath "{aws}"))' not in profile
+    # The only exception under ~/.aws is config itself.
+    assert profile.count("require-not") == 1
+    # A literal exception: nothing beneath a ``config`` directory or link name opens.
+    assert f'(require-not (subpath "{aws}/config"))' not in profile
+    for leaf in ("credentials", "sso/cache/abc123.json", "cli/cache/x.json", "config.bak"):
+        assert f"{aws}/{leaf}" not in profile
 
 
 #: For each declared capability: the tier and request that exercise it, and a value it
@@ -263,7 +288,7 @@ _CAPABILITY_FLIPS: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {
     "cc_unmaskable_dirs": (
         "cc",
         {},
-        {BACKEND_NAMESPACE: frozenset({".aws"}), BACKEND_SEATBELT: frozenset()},
+        {BACKEND_NAMESPACE: frozenset({".aws"}), BACKEND_SEATBELT: frozenset({".aws"})},
     ),
 }
 

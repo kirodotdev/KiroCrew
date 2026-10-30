@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   EXTERNAL_URLS,
   classifyNavigation,
+  createNavigationGuard,
   createWindowOpenHandler,
   openExternalSafely,
 } = require("../external-scheme");
@@ -115,10 +116,11 @@ describe("classifyNavigation", () => {
   });
 
   /* The allowlist is whole-URL, not scheme-granular. This is reachable, not
-   * theoretical: LLM-authored widget/artifact content renders in iframes with
-   * `allow-popups-to-escape-sandbox`, and no CSP directive constrains a
-   * window.open target's scheme — so a scheme-only rule would let model-generated
-   * JS pop ANY System Settings pane next to text telling the user to enable it. */
+   * theoretical: the dashboard opens links from LLM-authored widget/artifact
+   * content with window.open, other frames still grant `allow-popups`, and no
+   * CSP directive constrains a window.open target's scheme — so a scheme-only
+   * rule would let model-generated JS pop ANY System Settings pane next to text
+   * telling the user to enable it. */
   it("blocks every other pane in the permitted scheme", () => {
     for (const url of [
       "x-apple.systempreferences:com.apple.preferences.sharing?Services_RemoteLogin",
@@ -373,5 +375,42 @@ describe("openExternalSafely", () => {
       }),
     );
     await new Promise((r) => setImmediate(r));
+  });
+});
+
+// The guard must compare whole WHATWG origins, never string prefixes: each URL
+// below starts with the app origin's text yet belongs to a different origin.
+describe("createNavigationGuard pins the exact-origin compare", () => {
+  const APP = "http://localhost:5476";
+  const navigate = (url, appOrigin = APP) => {
+    let prevented = false;
+    createNavigationGuard({ getAppOrigin: () => appOrigin, log: () => {} })(
+      { preventDefault: () => { prevented = true; } },
+      url,
+    );
+    return prevented;
+  };
+
+  it("refuses a host that only extends the app host", () => {
+    // A remote gateway on a default port has no ":port" to end the host text.
+    assert.equal(navigate("https://crew.example.evil.test/", "https://crew.example"), true);
+  });
+
+  it("refuses userinfo that spells the app origin before another host", () => {
+    assert.equal(navigate("http://localhost:5476@evil.example/"), true);
+  });
+
+  it("refuses a longer port that starts with the app port", () => {
+    assert.equal(navigate("http://localhost:54760/"), true);
+  });
+
+  it("refuses a match on an opaque app origin", () => {
+    // A file: app origin is the opaque "null". The target starts with its text,
+    // yet the guard only lets http(s) through, so nothing can match it.
+    assert.equal(navigate("file:///app/index.html", "file:///app/"), true);
+  });
+
+  it("still allows the app's own origin", () => {
+    assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
   });
 });

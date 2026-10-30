@@ -23,7 +23,7 @@ import os
 import sys as _sys
 import threading
 import time as _time
-from collections.abc import Container, Iterable, Iterator
+from collections.abc import Callable, Container, Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -84,11 +84,13 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _SEARCH_MAX_FORGE_REFS,
     _SEARCH_MAX_SCORING_EXTRAS,
     _SHORT_NEEDLE_MAX_CHARS,
+    _TITLE_SCOPE_PREFIX,
     CJK_SEGMENT_MAX_RUN_CHARS,
     CJK_SEGMENT_MAX_RUNS,
     SEARCH_MAX_TOKENS,
     CjkSegmenter,
     SearchNeedle,
+    TitleScope,
     _cjk_slot,
     _cjk_words,
     _cjk_words_lock,
@@ -119,6 +121,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     reset_search_ref_resolver_for_tests,
     snippet_needle_tiers,
     snippet_needles,
+    split_title_scope,
     tiered_first_hit,
 )
 from kiro_crew.jsonl_util import bounded_records
@@ -196,6 +199,20 @@ def _jsonl_stem(name: str) -> str:
 _unreadable_session_files_warned: set[str] = set()
 #: Listings run on executor threads, so the check and the add share one lock.
 _unreadable_session_files_lock = threading.Lock()
+
+
+#: The metadata-line fields a catalog row carries so a reader can tell a Crew Mode
+#: root from a crew member without opening the file: the creator stamp, the agent's
+#: namespace and the Crew Mode stamp (``crew_mode.saved_row_is_root``).
+_CREW_CATALOG_FIELDS: tuple[str, ...] = ("created_by", "agent_kind", "crew_mode_agent")
+
+
+def _project_crew_fields(meta: dict, line: dict) -> None:
+    """Copy the non-empty :data:`_CREW_CATALOG_FIELDS` of metadata *line* onto catalog row *meta*."""
+    for field in _CREW_CATALOG_FIELDS:
+        value = line.get(field)
+        if isinstance(value, str) and value:
+            meta[field] = value
 
 
 def _warn_unreadable_session_file(path: str, error: OSError) -> None:
@@ -417,6 +434,7 @@ class SessionCatalogProjection:
                 meta["memory_mode"] = d.get("memory_mode", "persistent")
                 if d.get("folder_id"):
                     meta["folder_id"] = d["folder_id"]
+                _project_crew_fields(meta, d)
             else:
                 # Read only the first line for metadata
                 try:
@@ -434,6 +452,7 @@ class SessionCatalogProjection:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
+                            _project_crew_fields(meta, d)
                             # Guarded publish — discard the fill if a write
                             # invalidated this key inside the stat → read
                             # window (see the generation snapshot above).
@@ -673,9 +692,26 @@ class SessionCatalogProjection:
         crowd an allowed one off the page; an app-token caller passes the keys
         it owns. Membership is re-judged under the transcript lock through snippet
         extraction for each output row; a failed check or lock timeout drops the row.
+
+        A query that starts with ``title:`` (see :func:`split_title_scope`) is
+        scoped to titles: only sessions whose title matches its term qualify, and
+        any text after the term is searched as above among them. With nothing after
+        the term, :meth:`_search_titles` answers from titles alone. A bare
+        ``title:`` names no title yet and matches nothing.
         """
         if not query or limit <= 0 or not self._log._dir.exists():
             return []
+        title_filter: Callable[[str], bool] | None = None
+        scope = split_title_scope(query)
+        if scope is not None:
+            if not scope.term:
+                return []
+            title_filter = scope.title_filter()
+            if not scope.rest:
+                return self._search_titles(title_filter, limit, keys)
+            # The rest is the query from here on: it is what the content gate
+            # and the snippet look for, and the term only narrows the window.
+            query = scope.rest
         needles, phrase, adjacency_floor = parse_search_query(query)
         if not needles:
             # Whitespace-only query: no needles to require, so nothing can match.
@@ -697,7 +733,31 @@ class SessionCatalogProjection:
             _pinned(self._count_memo, gate.memo_keys),
             _pinned(self._snippet_memo, [snippet_group]),
         ):
-            return self._search_parsed(query, limit, keys, needles, phrase, adjacency_floor, gate)
+            return self._search_parsed(
+                query, limit, keys, needles, phrase, adjacency_floor, gate, title_filter
+            )
+
+    def _search_titles(
+        self, title_filter: Callable[[str], bool], limit: int, keys: Container[str] | None
+    ) -> list[dict]:
+        """A ``title:`` query with nothing after its term: match on titles alone.
+
+        Reads no transcript: ``list_sessions`` already carries every title, so
+        this skips the index shortlist, the content folds and the snippets a
+        content search pays for. For the same reason it is not held to the scan
+        window, so a known chat older than the newest ``_SEARCH_SCAN_WINDOW``
+        sessions is still found by its name. Rows keep ``list_sessions`` order,
+        newest first, and carry no snippet. *keys* restricts the rows exactly as
+        in :meth:`_search_parsed`, re-judged under the lock for each output row.
+        """
+        picked = [
+            (meta, False)
+            for meta in self._log.list_sessions()
+            # The title first: it is a string test, while an app caller's *keys*
+            # judges ownership per key.
+            if title_filter(meta.get("title") or "") and (keys is None or meta["key"] in keys)
+        ]
+        return self._result_rows(picked[:limit], keys, "")
 
     def _search_parsed(
         self,
@@ -708,22 +768,42 @@ class SessionCatalogProjection:
         phrase: str,
         adjacency_floor: bool,
         gate: "_MemoGate",
+        title_filter: Callable[[str], bool] | None = None,
     ) -> list[dict]:
-        """The scoring and snippet half of :meth:`_search_sessions`."""
+        """The scoring and snippet half of :meth:`_search_sessions`.
+
+        *title_filter*, when given (a ``title:`` query's term), makes the window
+        the newest ``_SEARCH_SCAN_WINDOW`` sessions whose title it accepts, chosen
+        from every session after the memo prune. Judging a title reads no
+        transcript, so an older session that ``title:x`` finds is still searched
+        for ``title:x more``, and the cap still bounds the transcripts scored.
+        Like *keys*, it skips the content-memo prune, which must see every
+        window session's row; the per-session cache prune still sees the usual
+        window. What an older match adds to the caches and memos stays inside
+        their byte budgets, and the next unrestricted search under pressure
+        releases it.
+        """
         multi = gate.multi
         now = _time.time()
         # (verbatim runs hit, score, -rank, meta, needs_snippet)
         scored: list[tuple[int, float, int, dict, bool]] = []
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        sessions = self._log.list_sessions()
+        scan_window = _facade_search_scan_window()
+        window = sessions[:scan_window]
         self._log._prune_search_memos({m["key"] for m in window})
+        if title_filter is not None:
+            window = [m for m in sessions if title_filter(m.get("title") or "")]
         if keys is not None:
             # After the prune, which must see the whole window: the memos are
             # shared with every unrestricted search.
             window = [m for m in window if m["key"] in keys]
+        if title_filter is not None:
+            window = window[:scan_window]
         allowed, rowids = self._index_shortlist(window, needles)
-        if keys is None:
-            # Only an unrestricted search sees every live session's row; a
-            # restricted one would prune entries other callers still reach.
+        if keys is None and title_filter is None:
+            # Only an unrestricted search sees every live session's row; one
+            # restricted by *keys* or by a title would prune entries other
+            # callers still reach.
             self._prune_content_memos(rowids)
         needle_keys = gate.needle_keys
         phrase_key = gate.phrase_key
@@ -817,8 +897,19 @@ class SessionCatalogProjection:
         # original text, so offsets line up), so building one per match put a
         # full re-read back on the hot path — dominating the query once the fold
         # itself was memoized.
+        picked = [(meta, needs_snippet) for _v, _s, _r, meta, needs_snippet in scored[:limit]]
+        return self._result_rows(picked, keys, query)
+
+    def _result_rows(
+        self, picked: list[tuple[dict, bool]], keys: Container[str] | None, query: str
+    ) -> list[dict]:
+        """The output rows for ranked *picked* ``(meta, needs_snippet)`` pairs.
+
+        A row flagged for a snippet gets the excerpt of *query* from its transcript.
+        With *keys*, each row is re-judged under its transcript lock first.
+        """
         out: list[dict] = []
-        for _verbatim, _score, _rank, meta, needs_snippet in scored[:limit]:
+        for meta, needs_snippet in picked:
             if keys is not None:
                 # Scoring-time folds may race ownership and affect ranking/inclusion
                 # only; the lock-held re-judge keeps foreign rows/snippets out of output.

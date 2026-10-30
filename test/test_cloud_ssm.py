@@ -10,6 +10,25 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import aws, ssm
+from kiro_crew.testing.wait import wait_until
+
+#: How long a killed tree's descendant may take to leave the process table.
+#: Well under the 30 s the stand-in descendants sleep, so a test that waited on
+#: a descendant's natural exit instead of the kill fails.
+_DESCENDANT_KILL_SECS = 5.0
+
+#: The ownership fix ``_plugin_ownership_remedy`` offers for AWS's own tree.
+_PKG_TREE_REMEDY = "sudo chown -R root:wheel /usr/local/sessionmanagerplugin"
+
+
+def _pkg_tree_refusal() -> ssm.PluginRefusal:
+    """A plugin refused inside AWS's install tree, with its known ownership fix."""
+    return ssm.PluginRefusal(
+        path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+        reason="executable is owned by another user (uid 1501)",
+        remedy_command=_PKG_TREE_REMEDY,
+        code="other_owner",
+    )
 
 
 class TestArgvBuilders:
@@ -341,6 +360,110 @@ class TestSessionManagerPluginProbe:
         assert refusal.reason == "executable parent is owned by another user (uid 1501)"
         # Outside AWS's package prefix no ownership command is known to fix it.
         assert refusal.remedy_command == ""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_a_refused_plugin_is_not_reported_as_not_installed_at_tunnel_start(
+        self, monkeypatch, tmp_path
+    ):
+        """The tunnel gate and the installer name the refusal, not "not
+        installed" -- reinstalling puts the same refused file back."""
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        install = tmp_path / "pkgbin"
+        install.mkdir()
+        plugin = install / "session-manager-plugin"
+        plugin.write_text("#!/bin/sh\n")
+        plugin.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+        reason = "executable is owned by another user (uid 1501)"
+
+        def _refuse(candidate):
+            raise ValueError(reason)
+
+        monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+        with pytest.raises(aws.AWSError) as excinfo:
+            ssm.require_session_manager_plugin()
+        assert "not installed" not in str(excinfo.value)
+        assert str(plugin) in str(excinfo.value)
+        assert reason in str(excinfo.value)
+
+    def test_a_plugin_refused_in_aws_install_tree_is_not_reinstalled(self, monkeypatch):
+        """AWS's installer rewrites the same file and keeps its ownership."""
+        refusal = _pkg_tree_refusal()
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        def _no_install(*_a, **_k):
+            raise AssertionError("a plugin refused in AWS's tree must not be reinstalled")
+
+        monkeypatch.setattr(ssm, "_session_manager_plugin_install_plan", _no_install)
+
+        assert ssm.reinstall_cannot_clear_refusal() is True
+        result = ssm.install_session_manager_plugin()
+        assert result.ok is False
+        assert refusal.path in result.message
+        assert refusal.remedy_command in result.message
+
+    def test_a_refusal_with_no_known_fix_still_installs(self, monkeypatch):
+        """A refused copy outside AWS's tree (a second account's Homebrew) can be
+        shadowed by a fresh AWS install, so the installer still runs."""
+        refusal = ssm.PluginRefusal(
+            path="/opt/homebrew/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+        planned: list = []
+
+        def _plan(tmpdir):
+            planned.append(tmpdir)
+            return None
+
+        monkeypatch.setattr(ssm, "_session_manager_plugin_install_plan", _plan)
+
+        assert ssm.reinstall_cannot_clear_refusal() is False
+        ssm.install_session_manager_plugin()
+        assert planned
+
+    def test_unavailable_message_carries_a_known_remedy(self, monkeypatch):
+        refusal = _pkg_tree_refusal()
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        message = ssm.session_manager_plugin_unavailable_message()
+        assert "not installed" not in message
+        assert refusal.path in message
+        assert refusal.remedy_command in message
+        assert "reinstall it from AWS first" in message
+
+    def test_unavailable_message_without_a_remedy_takes_the_per_code_next_step(self, monkeypatch):
+        """A file another account owns, outside AWS's tree, gets the table's step
+        (install AWS's copy), never the generic "fix the ownership" sentence."""
+        refusal = ssm.PluginRefusal(
+            path="/opt/homebrew/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="",
+            code="other_owner",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        message = ssm.session_manager_plugin_unavailable_message()
+        assert message.endswith(ssm.REFUSAL_NEXT_STEP["other_owner"])
+        assert ssm.REFUSAL_NEXT_STEP[""] not in message
+
+    def test_unavailable_message_is_the_install_hint_when_absent(self, monkeypatch):
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+
+        assert (
+            ssm.session_manager_plugin_unavailable_message()
+            == ssm.session_manager_plugin_install_hint()
+        )
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
     def test_an_accepted_plugin_has_no_refusal(self, monkeypatch, tmp_path):
@@ -695,7 +818,6 @@ class TestKillPortForward:
         # `taskkill /T`) but the invariant is the same: no descendant survives.
         import subprocess
         import sys
-        import time
 
         pidfile = tmp_path / "child.pid"
         script = (
@@ -718,10 +840,10 @@ class TestKillPortForward:
                 else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
             ),
         )
-        for _ in range(50):
-            if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
-                break
-            time.sleep(0.1)
+        wait_until(
+            lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+            describe=lambda: f"{pidfile} was never written",
+        )
         child_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
         # `platform_compat.pid_exists`, NOT `os.kill(pid, 0)`: on Windows signal 0
@@ -734,11 +856,13 @@ class TestKillPortForward:
         assert _alive(child_pid)
         ssm.kill_port_forward(proc)
         assert proc.poll() is not None
-        for _ in range(50):
-            if not _alive(child_pid):
-                break
-            time.sleep(0.1)
-        assert not _alive(child_pid), "plugin child (same tree) must be killed"
+        # Bounded well under the child's own 30 s sleep, so its natural exit can
+        # never stand in for the kill.
+        wait_until(
+            lambda: not _alive(child_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin child (same tree) must be killed",
+        )
 
     def test_escalates_to_kill_when_terminate_does_not_reap(self, monkeypatch):
         """The SIGKILL escalation must actually run — on Windows too.

@@ -9,6 +9,7 @@ import json
 import os
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from apps_registry_coverage_helpers import _explicit_registry_execution_admission  # noqa: F401
@@ -17,6 +18,7 @@ from apps_registry_coverage_helpers import _fake_sandbox, _FakeProc
 
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
+from kiro_crew.apps.registry_pipeline import manifests as manifests_mod
 
 # ---------------------------------------------------------------------------
 # Manifest cache
@@ -147,7 +149,9 @@ class TestExpireCacheFile:
         assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_missing_file_is_a_no_op(self, cache_dir):
-        registry._expire_cache_file(cache_dir / "absent.json")
+        absent = cache_dir / "absent.json"
+        registry._expire_cache_file(absent)
+        assert not absent.exists()
 
     def test_path_outside_the_cache_dir_is_refused(self, cache_dir, tmp_path):
         outside = tmp_path / "victim.json"
@@ -164,6 +168,8 @@ class TestExpireCacheFile:
 
         monkeypatch.setattr(registry.os, "utime", _boom)
         registry._expire_cache_file(registry._manifest_cache_path(self._DEMO))
+        # The failed backdate leaves the entry exactly as written: present and fresh.
+        assert registry._read_manifest_cache(self._DEMO) == {"name": "demo"}
 
 
 class TestManifestCacheGc:
@@ -229,7 +235,8 @@ class TestManifestCacheGc:
             raise OSError("no listdir for you")
 
         monkeypatch.setattr(registry.Path, "iterdir", _boom)
-        registry._write_manifest_cache(self._DEMO, {"name": "demo"})  # must not raise
+        assert registry._write_manifest_cache(self._DEMO, {"name": "demo", "v": 2}) is True
+        assert registry._read_manifest_cache(self._DEMO) == {"name": "demo", "v": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +461,10 @@ class TestFetchAppManifest:
             owner_designated=True,
         )
         assert got == {"name": "demo"}
-        assert seen_env == [{"SENTINEL": "owner"}]
+        # Exactly the builder's env plus the network entries the git spawn may add.
+        assert seen_env == [
+            registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git")
+        ]
         assert grants == ["fetch_app_manifest"]
 
     @pytest.mark.asyncio
@@ -482,7 +492,10 @@ class TestFetchAppManifest:
         await registry._fetch_app_manifest(
             "o/demo", "main", git_url="https://github.com/o/demo.git"
         )
-        assert seen_env == [{"SENTINEL": "anon"}]
+        # Exactly the builder's env plus the network entries the git spawn may add.
+        assert seen_env == [
+            registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git")
+        ]
         assert modes == ["strict"]
 
 
@@ -599,6 +612,183 @@ class TestResolveManifest:
         assert enriched[0]["installedVersion"] == "1.0.0"
         assert enriched[0]["version"] == "2.0.0"
         assert enriched[0]["updateAvailable"] is True
+
+
+class TestManifestNegativeCache:
+    """A failed listing-time app.json fetch is remembered for an hour, so
+    repeated listings stop re-cloning the same failing source."""
+
+    _ROW = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+
+    @pytest.mark.asyncio
+    async def test_repeated_listings_fetch_once_for_a_failing_source(self, cache_dir, monkeypatch):
+        # The repro: three listing passes over a source whose app.json cannot
+        # be fetched must hit the network ONCE, not once per pass. The first
+        # failure is negative-cached; passes 2 and 3 read the cache and skip.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        calls = 0
+
+        async def _fetch(*a, **k):
+            nonlocal calls
+            if k.get("allow_remote", True):
+                calls += 1
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        for _ in range(3):
+            got = await registry._resolve_manifest(dict(self._ROW))
+            assert got == self._ROW
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_negative_cache_lapses_and_the_next_listing_retries(self, cache_dir, monkeypatch):
+        # After the negative TTL lapses, the next listing fetches again so a
+        # since-fixed source is picked up without explicit invalidation.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        calls = 0
+
+        async def _fetch(*a, **k):
+            nonlocal calls
+            if k.get("allow_remote", True):
+                calls += 1
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        await registry._resolve_manifest(dict(self._ROW))
+        assert calls == 1
+        # Backdate the miss record past its TTL.
+        miss = registry._manifest_negative_cache_path(self._ROW)
+        past = time.time() - registry._MANIFEST_NEGATIVE_CACHE_TTL - 60
+        os.utime(miss, (past, past))
+        assert registry._read_manifest_negative_cache(self._ROW) is False
+        await registry._resolve_manifest(dict(self._ROW))
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_one_sources_failure_does_not_suppress_another(self, cache_dir, monkeypatch):
+        # The miss record is keyed on full source coordinates, so a failure for
+        # branch `main` never suppresses the fetch for the same app on `dev`.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        fetched: list[str] = []
+
+        async def _fetch(repo, branch, *a, **k):
+            if k.get("allow_remote", True):
+                fetched.append(branch)
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        main_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+        dev_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "dev"}
+        await registry._resolve_manifest(dict(main_row))
+        await registry._resolve_manifest(dict(dev_row))
+        assert fetched == ["main", "dev"]
+        # main stays suppressed, dev gets its own record.
+        assert registry._read_manifest_negative_cache(main_row) is True
+        assert registry._read_manifest_negative_cache(dev_row) is True
+
+    @pytest.mark.asyncio
+    async def test_success_after_expiry_is_cached_as_success_not_a_miss(
+        self, cache_dir, monkeypatch
+    ):
+        # A source that fails and then returns a manifest after the marker
+        # lapses is cached as a SUCCESS, and later listings merge it.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        result: dict | None = None
+
+        async def _fetch(*a, **k):
+            return result
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        await registry._resolve_manifest(dict(self._ROW))  # fails -> miss cached
+        assert registry._read_manifest_negative_cache(self._ROW) is True
+        # Lapse the miss, then let the fetch succeed.
+        miss = registry._manifest_negative_cache_path(self._ROW)
+        past = time.time() - registry._MANIFEST_NEGATIVE_CACHE_TTL - 60
+        os.utime(miss, (past, past))
+        result = {"description": "now here", "version": "1.2.3"}
+        got = await registry._resolve_manifest(dict(self._ROW))
+        assert got["description"] == "now here"
+        assert registry._read_manifest_cache(self._ROW) == result
+
+    @pytest.mark.asyncio
+    async def test_installed_clone_is_read_while_a_miss_is_fresh(
+        self, cache_dir, monkeypatch, tmp_path
+    ):
+        # A listing fetch fails, then the app is installed. While the miss is
+        # still fresh, the next listing must read the installed clone's
+        # app.json and must not clone the remote.
+        real_fetch = registry._fetch_app_manifest
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        monkeypatch.setattr(registry, "_fetch_app_manifest", AsyncMock(return_value=None))
+        await registry._resolve_manifest(dict(self._ROW))
+        assert registry._read_manifest_negative_cache(self._ROW) is True
+        monkeypatch.setattr(registry, "_fetch_app_manifest", real_fetch)
+
+        src = tmp_path / "app-sources" / "demo"
+        src.mkdir(parents=True)
+        installed = {"description": "installed copy", "version": "2.0.0"}
+        (src / "app.json").write_text(json.dumps(installed), encoding="utf-8")
+        monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+
+        async def _true(*a, **k):
+            return True
+
+        monkeypatch.setattr(registry, "_clone_origin_matches", _true)
+        monkeypatch.setattr(registry, "_clone_branch_matches", _true)
+
+        def _no_remote(url):
+            raise AssertionError("remote clone attempted while the miss is fresh")
+
+        monkeypatch.setattr(registry, "is_clone_host_trusted", _no_remote)
+        got = await registry._resolve_manifest(dict(self._ROW))
+        assert got["description"] == "installed copy"
+        assert got["version"] == "2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_fresh_miss_with_no_installed_clone_skips_the_remote(
+        self, cache_dir, monkeypatch, tmp_path
+    ):
+        # With no installed clone, a fresh miss still keeps the remote off,
+        # and the marker's age is not reset by the skipped listing.
+        real_fetch = registry._fetch_app_manifest
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        monkeypatch.setattr(registry, "_fetch_app_manifest", AsyncMock(return_value=None))
+        await registry._resolve_manifest(dict(self._ROW))
+        monkeypatch.setattr(registry, "_fetch_app_manifest", real_fetch)
+
+        miss = registry._manifest_negative_cache_path(self._ROW)
+        aged = time.time() - 600
+        os.utime(miss, (aged, aged))
+        monkeypatch.setattr(registry, "app_source_dir", lambda n: tmp_path / "absent")
+
+        def _no_remote(url):
+            raise AssertionError("remote clone attempted while the miss is fresh")
+
+        monkeypatch.setattr(registry, "is_clone_host_trusted", _no_remote)
+        assert await registry._resolve_manifest(dict(self._ROW)) == self._ROW
+        assert abs(miss.stat().st_mtime - aged) < 1
+
+    @pytest.mark.asyncio
+    async def test_install_path_is_not_short_circuited_by_a_listing_miss(
+        self, cache_dir, monkeypatch
+    ):
+        # The install path calls _fetch_app_manifest directly. With a fresh
+        # listing miss on disk, that real function must still start its fetch.
+        real_fetch = registry._fetch_app_manifest
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        monkeypatch.setattr(registry, "_fetch_app_manifest", AsyncMock(return_value=None))
+        await registry._resolve_manifest(dict(self._ROW))
+        assert registry._read_manifest_negative_cache(self._ROW) is True
+
+        started: list[str] = []
+
+        def _target_check(target):
+            started.append(target)
+            return True  # refuse, so the test never touches the network
+
+        monkeypatch.setattr(manifests_mod, "_git_target_is_unsupported", _target_check)
+        assert await real_fetch("", "main", app_name="demo", git_url=self._ROW["gitUrl"]) is None
+        assert started == [self._ROW["gitUrl"]]
 
 
 class TestMergeManifest:

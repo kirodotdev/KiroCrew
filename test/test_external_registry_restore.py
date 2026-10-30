@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from apps_registry_helpers import _install_script_runs_on_this_host  # noqa: F401 - fixture
 from external_registry_helpers import _catalog_absent  # noqa: F401
 from external_registry_helpers import _explicit_registry_execution_admission  # noqa: F401
 
@@ -348,7 +349,6 @@ class TestInstallScriptFailurePreservesStaleCheckout:
                 new_url, "testapp", [], branch="main", index_originated=False
             )
 
-        # Build succeeded.
         assert result["ok"]
         # Stale paths surfaced for caller cleanup — NOT deleted.
         stale_paths = result.get("_pending_stale_cleanup", [])
@@ -689,6 +689,70 @@ class TestInstallScriptFailurePreservesStaleCheckout:
 
         assert result["ok"] is True
         assert result["notice"] == "session_approval_reconsent"
+
+    @pytest.mark.asyncio
+    async def test_self_managed_install_republishes_config_keys_off_the_loop(self, tmp_path):
+        """The registration writes a manifest that can declare ``config_keys``, and the
+        registry runs it on the loop. The snapshot refresh that follows scans every
+        installed app, so it must run in a worker, once, after the registration."""
+        import threading
+
+        from kiro_crew.apps.registry import install_from_registry
+
+        pkg_dir = tmp_path / "testapp"
+        pkg_dir.mkdir()
+        (pkg_dir / "app.json").write_text(
+            json.dumps({"name": "testapp", "version": "1.0.0", "resources": "app"}),
+            encoding="utf-8",
+        )
+
+        async def _fake_clone_build(git_url, app_name, log_lines, branch="main", **kwargs):
+            return {"ok": True, "pkg_dir": pkg_dir}
+
+        order: list[str] = []
+        refresh_threads: list[int] = []
+
+        def _register(**_kwargs):
+            order.append("register")
+            return SimpleNamespace(ok=True, notice="")
+
+        def _refresh():
+            order.append("refresh")
+            refresh_threads.append(threading.get_ident())
+            return frozenset()
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "repo": "https://example.com/app.git",
+                    "branch": "main",
+                    "resources": "app",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._entry_git_url",
+                return_value="https://example.com/app.git",
+            ),
+            patch("kiro_crew.apps.registry._clone_build_app", new=_fake_clone_build),
+            patch("kiro_crew.apps.registry.app_admission_denied", return_value=None),
+            patch("kiro_crew.apps.registry.app_execution_denied", return_value=None),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("kiro_crew.apps.manager.register_external_app", side_effect=_register),
+            patch("kiro_crew.apps.manager.refresh_app_config_keys", side_effect=_refresh),
+            patch("kiro_crew.apps.registry.set_app_provenance"),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry._sweep_stale_checkouts", new=AsyncMock()),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await install_from_registry("testapp")
+
+        assert result["ok"] is True
+        assert order == ["register", "refresh"]
+        assert refresh_threads[0] != threading.get_ident()
 
     @pytest.mark.asyncio
     async def test_self_managed_install_fails_when_registration_is_refused(self, tmp_path):

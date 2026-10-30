@@ -43,6 +43,13 @@ interface DetailPanelProps {
    *  the tab strip is the shell, so the panel only contributes its header
    *  (title + actions) and content. */
   embedded?: boolean
+  /** Mark the embedded root with `data-escape-owner` while this panel is the
+   *  current Escape owner (open, visible, and its own document handler will
+   *  answer Escape). The composer's Escape-to-stop / dictation-discard gates
+   *  read that marker (chat-input/escapeOwners.ts) and yield, so one Escape
+   *  does not both close this panel AND stop the running turn. Only meaningful
+   *  with `embedded` — the standalone right-docked path is not affected. */
+  escapeOwner?: boolean
   /** Replace the default header rows (title + close + headerActions and the
    *  secondary row) with a single caller-provided bar. Used by tab bodies in
    *  SidePanel where the tab chip already owns identity + close, so the panel
@@ -89,7 +96,7 @@ const maxPanelWidth = (rowWidth: number, reserveWidth?: number) => {
 const clampPanelWidth = (w: number, minWidth: number, rowWidth: number, reserveWidth?: number) =>
   Math.max(minWidth, Math.min(w, maxPanelWidth(rowWidth, reserveWidth)))
 
-export default function DetailPanel({ title, icon, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, customHeader, frameClassName }: DetailPanelProps) {
+export default function DetailPanel({ title, icon, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, escapeOwner = false, customHeader, frameClassName }: DetailPanelProps) {
   const isMobile = useIsMobile()
   // Outer wrapper ref, used to measure the panel's flex row (its parent) so the
   // width cap tracks the actual available room rather than the whole viewport.
@@ -235,7 +242,10 @@ export default function DetailPanel({ title, icon, onClose, footer, headerAction
   // NARROWER than the floor it replaced. Measured at a 390px row: 42px.
   if (embedded || isMobile) {
     return (
-      <div className="h-full w-full min-w-0 bg-bg flex flex-col overflow-hidden relative">
+      <div
+        className="h-full w-full min-w-0 bg-bg flex flex-col overflow-hidden relative"
+        {...(escapeOwner ? { 'data-escape-owner': '' } : {})}
+      >
         {body}
       </div>
     )

@@ -3,9 +3,12 @@ import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { useAppDispatch } from '../store'
+import { openCreatedSlot } from '../store/chatSlice'
 
 export function useCronActions(load: () => void) {
   const navigate = useNavigate()
+  const dispatch = useAppDispatch()
   const [running, setRunning] = useState<Set<string>>(new Set())
   const [actionError, setActionError] = useState<{ id: string; msg: string } | null>(null)
 
@@ -53,9 +56,14 @@ export function useCronActions(load: () => void) {
     try {
       const res = await api.cronToChat(id)
       if (res.error) { setActionError({ id, msg: res.error }); return }
-      if (res.slot) navigate('/chat?slot=' + res.slot)
+      if (!res.slot) return
+      // The route can re-mint a closed cron tab, so open it the way the other
+      // /to-chat hand-offs do. A navigate-only open switches once the key is
+      // listed, and a full slots frame serialized before the re-mint then drops it.
+      openCreatedSlot(dispatch, res.slot)
+      navigate('/chat?slot=' + res.slot)
     } catch { setActionError({ id, msg: i18nT('hooks.useCronActions.failed_to_open_in_chat') }) }
-  }, [navigate])
+  }, [navigate, dispatch])
 
   return { running, setRunning, actionError, setActionError, runNow, toggleEnabled, openInChat, cancelling, cancelRun }
 }

@@ -445,7 +445,6 @@ class TestExecutePlan:
         assert run.tasks[1].status == StepStatus.FAILED
         assert run.error == "Task 2 failed"
 
-        # Cleanup fake tasks
         for i in range(_MAX_CONCURRENT_TASKS):
             runner._tasks.pop(f"fake_{i}", None)
 

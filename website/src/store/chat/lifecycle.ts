@@ -42,8 +42,8 @@ const configuredDefaultMemoryMode = () =>
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string } | string | undefined,
-  { fulfilledMeta: { originActiveSlot: string | null; originActiveSlotMoves: number; originActiveSlotAutoMoves: number; activate: boolean; prefillStaged?: boolean } }
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string; automatic?: boolean } | string | undefined,
+  { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
   async (opts, { getState, fulfillWithValue }) => {
@@ -70,6 +70,10 @@ export const createSlot = createAsyncThunk<
     // do so before the user is able to type into it. Defaults to true — every
     // existing caller keeps the create-and-focus behaviour.
     const activate = typeof opts === 'string' ? true : opts?.activate !== false
+    // `automatic` is the chat page's own create for an empty list. Its
+    // activation counts in `activeSlotAutoMoves`, like the page's auto-select,
+    // so a create or fork the user started meanwhile may still open.
+    const automatic = typeof opts === 'object' && opts.automatic === true
     // `sessionFolder: false` is for a purpose-built chat (an app's session, an
     // intake, a hand-off) that should keep the default project even when the
     // owner turned on a fresh folder per new chat. A carried project opts out
@@ -179,16 +183,32 @@ export const createSlot = createAsyncThunk<
     // caller can fall back to another channel.
     const prefill = typeof opts === 'string' ? undefined : opts?.prefill
     const prefillStaged = !!prefill && writePrefill(slot.key, prefill)
-    return fulfillWithValue(slot, { originActiveSlot: origin.activeSlot, originActiveSlotMoves: origin.moves, originActiveSlotAutoMoves: origin.autoMoves, activate, prefillStaged })
+    return fulfillWithValue(slot, { ...originMeta(origin), activate, prefillStaged, automatic })
   },
 )
 
-export const resumeFromHistory = createAsyncThunk(
+/** How long a create, fork or resume started in this window counts as on its
+ *  way. Every measured create and fork answered within 3.5 s; a request still
+ *  open after this is treated as hung and keeps running. The chat page, having
+ *  lost its chat, waits this long for such a request to open one before it
+ *  auto-picks as usual, and a resume stops blocking a repeat of its row after
+ *  it. */
+export const PENDING_OPEN_LEASE_MS = 10_000
+
+export const resumeFromHistory = createAsyncThunk<
+  { ok: boolean; key: string; surface: string; nextBefore: number; messages: ReturnType<typeof filterMessages>; hasMore: boolean; total: number; folderId: string },
+  { key: string; title: string },
+  { pendingMeta: { startedAt: number }; fulfilledMeta: Required<OriginMeta> }
+>(
   'chat/resumeFromHistory',
-  async ({ key, title }: { key: string; title: string }, { dispatch }) => {
+  async ({ key, title }, { dispatch, getState, fulfillWithValue }) => {
+    // Where the user stands when the resume starts, as `createSlot` captures
+    // it. A resume rebuilds the slot from its transcript and can take seconds;
+    // the fulfilled reducer asks `forkMayOpen` before it opens the session.
+    const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:
@@ -199,13 +219,46 @@ export const resumeFromHistory = createAsyncThunk(
     // shows default/orchestrator, see isChatPageSurface) can tell a
     // silently-unusable resume apart from a genuinely failed one (#3624) --
     // the request succeeds either way, so `ok` alone cannot distinguish them.
-    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
+    return fulfillWithValue(
+      { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0, folderId: typeof d.folder_id === 'string' ? d.folder_id : '' },
+      originMeta(origin),
+    )
+  },
+  {
+    // A repeat of a resume already on its way (a double click or a double
+    // Enter on a slow row) is dropped here, for every entry point at once,
+    // whatever other rows were resumed in between. Only for the lease: the
+    // POST has no deadline, and a request that never answers must not leave
+    // its row dead for good. The drop is dispatched as a rejection so the
+    // reducer can hand the latest-click token back to the resume it repeats.
+    condition: ({ key }, { getState }) => {
+      const newest = newestResumeOf((getState() as RootState).chat, key)
+      return !newest || Date.now() - newest.startedAt >= PENDING_OPEN_LEASE_MS
+    },
+    dispatchConditionRejection: true,
+    getPendingMeta: () => ({ startedAt: Date.now() }),
   },
 )
 
+/** Whether a resume started in this window is still within its lease at
+ *  `now`. An entry past the lease is a hung request, not one on its way. */
+export function resumeStillOpening(chat: Pick<ChatState, 'pendingResumes'>, now: number): boolean {
+  return Object.values(chat.pendingResumes ?? {}).some(p => now - p.startedAt < PENDING_OPEN_LEASE_MS)
+}
+
+/** The newest resume of `key` still on its way, if any. */
+function newestResumeOf(chat: Pick<ChatState, 'pendingResumes'>, key: string): { requestId: string; startedAt: number } | null {
+  let newest: { requestId: string; startedAt: number } | null = null
+  for (const [requestId, p] of Object.entries(chat.pendingResumes ?? {})) {
+    if (p.key === key && (!newest || p.startedAt >= newest.startedAt)) newest = { requestId, startedAt: p.startedAt }
+  }
+  return newest
+}
+
 /** The action that lists a successful fork in the sidebar. Every fork path
  *  dispatches this before activating the fork: the chat page clears an active
- *  session its slot list lacks. memory_mode is the parent's, echoed by the
+ *  session its slot list lacks. `openCreatedSlot` uses it the same way for a
+ *  session another server route created. memory_mode is the parent's, echoed by the
  *  server; without it the new tab would read as persistent until the next
  *  slots refresh. */
 export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot, 'title' | 'messages' | 'folder_id' | 'memory_mode' | 'pinned'>>) {
@@ -213,10 +266,50 @@ export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot,
 }
 
 /** Where the user stood when a fork or create started; see `forkMayOpen`. */
-export interface ForkOrigin { activeSlot: string | null; moves: number; autoMoves: number }
+export interface ForkOrigin { activeSlot: string | null; moves: number; autoMoves: number; requestMoves: number; seq: number; burst: number }
 
 export function captureForkOrigin(state: Pick<RootState, 'chat'>): ForkOrigin {
-  return { activeSlot: state.chat.activeSlot, moves: state.chat.activeSlotMoves ?? 0, autoMoves: state.chat.activeSlotAutoMoves ?? 0 }
+  const c = state.chat
+  return { activeSlot: c.activeSlot, moves: c.activeSlotMoves ?? 0, autoMoves: c.activeSlotAutoMoves ?? 0, requestMoves: c.activeSlotRequestMoves ?? 0, seq: c.requestSeq ?? 0, burst: c.requestBurst ?? 0 }
+}
+
+/** The origin a create or resume thunk sent in its meta. An action without
+ *  the request fields (a fixture, an older caller) reads as one that started
+ *  now, after every other request. */
+export function originFromMeta(state: ChatState, meta: OriginMeta): ForkOrigin {
+  return {
+    activeSlot: meta.originActiveSlot ?? null,
+    moves: meta.originActiveSlotMoves ?? 0,
+    autoMoves: meta.originActiveSlotAutoMoves ?? 0,
+    requestMoves: meta.originActiveSlotRequestMoves ?? state.activeSlotRequestMoves ?? 0,
+    seq: meta.originRequestSeq ?? state.requestSeq ?? 0,
+    burst: meta.originRequestBurst ?? state.requestBurst ?? 0,
+  }
+}
+
+export interface OriginMeta {
+  originActiveSlot?: string | null
+  originActiveSlotMoves?: number
+  originActiveSlotAutoMoves?: number
+  originActiveSlotRequestMoves?: number
+  originRequestSeq?: number
+  originRequestBurst?: number
+}
+
+function originMeta(origin: ForkOrigin): Required<OriginMeta> {
+  return {
+    originActiveSlot: origin.activeSlot,
+    originActiveSlotMoves: origin.moves,
+    originActiveSlotAutoMoves: origin.autoMoves,
+    originActiveSlotRequestMoves: origin.requestMoves,
+    originRequestSeq: origin.seq,
+    originRequestBurst: origin.burst,
+  }
+}
+
+/** Records that a request with `origin` opened its session. */
+function noteRequestActivation(state: ChatState, origin: ForkOrigin): void {
+  state.activatedRequestSeq = Math.max(state.activatedRequestSeq ?? 0, origin.seq)
 }
 
 /** Whether a fork or create that just resolved may open its new session.
@@ -227,12 +320,19 @@ export function captureForkOrigin(state: Pick<RootState, 'chat'>): ForkOrigin {
  *  and came back, since coming back is a choice too; an equal `activeSlot`
  *  alone cannot tell that apart from never moving. A move the chat page made
  *  on its own, after it lost the origin from its list, is not a choice, and
- *  the new session still opens. The new session is listed in the sidebar
- *  either way; only the switch, and what the caller does on opening it, is
- *  skipped. */
+ *  the new session still opens. Nor is a move made by another create, fork or
+ *  resume opening its session: that request was clicked before this one, so
+ *  this one still opens, while a request clicked after this one that has
+ *  already opened its session keeps the view. The new session is listed in
+ *  the sidebar either way; only the switch, and what the caller does on
+ *  opening it, is skipped. */
 export function forkMayOpen(state: Pick<RootState, 'chat'>, origin: ForkOrigin): boolean {
-  if ((state.chat.activeSlotMoves ?? 0) !== origin.moves) return false
-  return state.chat.activeSlot === origin.activeSlot || (state.chat.activeSlotAutoMoves ?? 0) !== origin.autoMoves
+  const c = state.chat
+  if ((c.activeSlotMoves ?? 0) !== origin.moves) return false
+  if ((c.activatedRequestSeq ?? 0) > origin.seq) return false
+  return c.activeSlot === origin.activeSlot
+    || (c.activeSlotAutoMoves ?? 0) !== origin.autoMoves
+    || (c.activeSlotRequestMoves ?? 0) !== origin.requestMoves
 }
 
 export const forkSlot = createAsyncThunk(
@@ -313,7 +413,9 @@ export const clearHistorySessions = createAsyncThunk<
   async (_, { getState, rejectWithValue }) => {
     let body: unknown
     try {
-      body = await api.clearSessions()
+      // `user_only`, the same flag `fetchHistory` lists with: Delete all removes
+      // only rows this pane could show, never hidden machine transcripts.
+      body = await api.clearSessions(true)
     } catch (e) {
       const errBody = (e as { body?: unknown } | null)?.body
       const code = parseErrorCode(typeof errBody === 'string' ? errBody : undefined) ?? ''
@@ -360,6 +462,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
     })
     .addCase(createSlot.pending, (state, action) => {
       state.creatingSlot = true
+      state.requestSeq = (state.requestSeq ?? 0) + 1
       const arg = action.meta.arg
       if (typeof arg === 'string' || arg?.activate !== false) {
         state.foregroundCreateId = action.meta.requestId
@@ -384,24 +487,39 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       // are. `send()`'s forceNew path and welcome-screen New Chat both leave
       // the user on the origin with no move, so they still activate normally.
       //
-      // Conscious edge: a rapid double New Chat from the same slot makes both
-      // creates capture the same origin; the first fulfilled activates its
-      // slot (moving activeSlot), so the second sees activeSlot !== origin and
-      // stays put. "First create wins" rather than the prior "last wins". Both
-      // slots exist in the sidebar and both land the user on an empty chat, so
-      // the outcomes are equivalent, accepted over re-stealing focus.
+      // Conscious edge: a rapid double New Chat is one request made twice, so
+      // the first create to open keeps the view, and the text typed while
+      // both ran stays where it was carried (create-carry in composerDrafts).
+      // This create's pending action cleared `lastCreatedActivation`, so a
+      // value naming another create means that one opened since this started.
+      // Both slots exist in the sidebar. A resume or fork clicked after a
+      // create still opens over it (`forkMayOpen`).
       // Caller asked for a background create (see `activate` above): the slot
       // is registered but focus stays put until the caller switches to it.
       if (action.meta.activate === false) return
-      const origin = { activeSlot: action.meta.originActiveSlot ?? null, moves: action.meta.originActiveSlotMoves ?? 0, autoMoves: action.meta.originActiveSlotAutoMoves ?? 0 }
+      const origin = originFromMeta(state, action.meta)
+      // Only for creates in one burst (no resume or fork clicked since the
+      // first, however many creates came between), and only while the first
+      // is still the newest request to have opened. A resume or fork clicked
+      // between them, or opened after the first, makes this create the later
+      // click, and it opens as any later click does.
+      const opened = state.lastCreatedActivation
+      if (opened && opened.requestId !== action.meta.requestId && opened.seq === (state.activatedRequestSeq ?? 0)
+        && opened.burst !== undefined && opened.burst === origin.burst) return
       if (!forkMayOpen({ chat: state }, origin)) return
       if (state.activeSlot) {
         state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
         state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
         parkActiveTranscript(state)
       }
-      enterActiveSlot(state, action.payload.key)
-      state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId }
+      // An automatic create (#23412) is the page's own move, so it counts
+      // as one and orders no request; any other create is a request opening.
+      if (action.meta.automatic === true) enterActiveSlot(state, action.payload.key, true)
+      else {
+        enterActiveSlot(state, action.payload.key, 'request')
+        noteRequestActivation(state, origin)
+      }
+      state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId, seq: origin.seq, burst: origin.burst }
       // A default-folder create learns its folder only from this response, so
       // no caller can open a collapsed default folder (or a collapsed
       // ancestor) before the create, the way a folder "+" create does. The
@@ -438,14 +556,38 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       state.slotStopping = false
       state.slotState = 'idle'
       setPagingCursor(state, false, 0)
+      // A switch still loading the chat being left, such as a close landing
+      // made while this create was pending, no longer owns the pane. Retire
+      // it: its answer is now superseded (`supersededSwitch`) and cannot
+      // write this chat's view, and the new chat has nothing to load.
+      state.slotLoading = false
+      state.slotSwitchRequestId = null
+      state.slotSwitchTarget = null
+      state.slotSwitchOrigin = null
+      state.slotSwitchLatestRequestId = action.meta.requestId
     })
     .addCase(resumeFromHistory.pending, (state, action) => {
       // A new attempt supersedes whatever the previous one narrated, and its
       // requestId becomes the only answer allowed to write the notice below.
       state.lastResumeRequestId = action.meta.requestId
+      // Entries past the lease are hung requests that may never settle; drop
+      // them so the map stays bounded. A late answer still lands, it only has
+      // no entry left to remove.
+      const startedAt = action.meta.startedAt
+      const pendingResumes: NonNullable<ChatState['pendingResumes']> = {}
+      for (const [id, p] of Object.entries(state.pendingResumes ?? {})) {
+        if (startedAt - p.startedAt < PENDING_OPEN_LEASE_MS) pendingResumes[id] = p
+      }
+      state.requestSeq = (state.requestSeq ?? 0) + 1
+      state.requestBurst = (state.requestBurst ?? 0) + 1
+      pendingResumes[action.meta.requestId] = { key: action.meta.arg.key, startedAt, origin: captureForkOrigin({ chat: state }) }
+      state.pendingResumes = pendingResumes
       state.unresumableResume = null
     })
     .addCase(resumeFromHistory.fulfilled, (state, action) => {
+      const latest = action.meta.requestId === state.lastResumeRequestId
+      const entry = state.pendingResumes?.[action.meta.requestId]
+      if (entry) delete state.pendingResumes![action.meta.requestId]
       // A resume that resolved to a surface ChatPage cannot display must not
       // mutate this slice at all: consuming the history row while the notice
       // says "can't be opened" reads as data loss, and switching activeSlot
@@ -494,6 +636,18 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
           // nothing here and must not move the offset.
           state.historyOffset = Math.max(0, state.historyOffset - 1)
         }
+        // The session is an open tab now either way; only taking the view is
+        // conditional. A later resume is the user's newer pick, so an earlier
+        // one answering after it must not open (latest click wins, the same
+        // token that orders the notice). And a session the user opened while
+        // this resume was pending, or a return to the origin, is a choice the
+        // late answer must not undo: the rule creates and forks follow.
+        // The entry's origin moves with a repeated click; the thunk's own
+        // capture covers an answer whose entry was pruned as hung.
+        const origin = entry?.origin ?? originFromMeta(state, action.meta)
+        if (!latest || !forkMayOpen({ chat: state }, origin)) return
+        noteRequestActivation(state, origin)
+        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot }
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
@@ -517,7 +671,15 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         const resumedRun = state.slotRun[safeKey(action.payload.key)]
         state.lastChunkSeq = resumedRun?.lastChunkSeq
         state.lastChunkGen = resumedRun?.lastChunkGen
-        enterActiveSlot(state, action.payload.key)
+        enterActiveSlot(state, action.payload.key, 'request')
+        // A history session keeps the folder it was filed in, which can be
+        // collapsed: open that path so the row of the session now in view
+        // shows. Placed on the activation, so a resume that does not take the
+        // view asks for nothing.
+        if (action.payload.folderId) {
+          state.revealNonce += 1
+          state.revealRequest = { kind: 'session', target: action.payload.key, nonce: state.revealNonce, openFoldersOnly: true, folderId: action.payload.folderId }
+        }
         state.messages = mergePreservedPastes(state.messages, action.payload.messages)
         state.slotState = 'idle'
         state.pendingTurnSlot = null
@@ -531,6 +693,26 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       // silent swallow -- ChatPage's `catch {}`, the palette providers'
       // `void dispatch`, the notification panel's console log -- so the click
       // looked exactly as dead as the bug this field exists to fix.
+      if (action.meta.condition) {
+        // A repeat dropped by `condition`: nothing was sent and nothing
+        // failed. The click is still the user's newest pick, so the resume it
+        // repeats becomes the latest again and opens when it answers, judged
+        // from where the user stands now, even when another row was resumed
+        // in between.
+        const repeated = newestResumeOf(state, action.meta.arg.key)
+        if (repeated) {
+          state.lastResumeRequestId = repeated.requestId
+          // The repeat is a click of its own, after every request started so far.
+          state.requestSeq = (state.requestSeq ?? 0) + 1
+          state.requestBurst = (state.requestBurst ?? 0) + 1
+          state.pendingResumes![repeated.requestId].origin = captureForkOrigin({ chat: state })
+          // A notice an in-between resume raised names a row the user has
+          // moved past, as a fresh click would clear it.
+          state.unresumableResume = null
+        }
+        return
+      }
+      if (state.pendingResumes) delete state.pendingResumes[action.meta.requestId]
       if (action.meta.requestId !== state.lastResumeRequestId) return
       state.unresumableResume = {
         key: action.meta.arg.key,

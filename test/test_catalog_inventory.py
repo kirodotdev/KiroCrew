@@ -391,6 +391,131 @@ class TestInstallCoordinatesDoNotTrustTheCache:
             oc.inventory_for_install("demo-app")
 
 
+class _CannedResp:
+    """A stand-in for the HTTPResponse `_open_catalog` returns: sized reads that
+    can come back SHORT against their declared Content-Length without raising,
+    which is what a relay truncating the tail of the stream looks like."""
+
+    def __init__(self, body: bytes, declared: int):
+        self._body = body
+        self.status = 200
+        self.headers = {"Content-Length": str(declared)}
+
+    def read(self, amt: int = -1) -> bytes:
+        if amt is None or amt < 0:
+            return self._body
+        return self._body[:amt]
+
+    def __enter__(self) -> "_CannedResp":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class TestAFailedListingFetchDoesNotGateTheInstall:
+    """The failure sentinel records what a STORE LISTING fetch saw.
+
+    `inventory_for_install` is defined to re-fetch and ignore the cache entirely
+    -- and the sentinel lives IN that cache file -- but the sentinel check read
+    it anyway: one truncated listing response then refused every explicit
+    install for ``FAILURE_TTL`` (60 s) with zero network attempts, each refusal
+    telling the user to "Retry when the catalog is reachable" while refusing to
+    retry. Bypassing the memory on the install click is fail-closed in the same
+    direction the module already reasons about: it can only buy one real fetch
+    attempt, which ends in the same refusal if the catalog is genuinely down.
+    """
+
+    def test_a_fresh_sentinel_does_not_stop_the_install_click(self, monkeypatch):
+        """THE regression: a listing-page failure must not gate the next install."""
+        calls: list[str] = []
+        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(
+            oc,
+            "fetch_document",
+            lambda url: (
+                calls.append(url),
+                {
+                    "schemaVersion": 1,
+                    "apps": [catalog_git()],
+                },
+            )[1],
+        )
+        with oc.install_attempt():
+            row = oc.inventory_for_install("demo-app")
+        assert row is not None
+        assert row["commit"] == SHA
+        assert calls, "the install click must make a real fetch attempt, not refuse from memory"
+
+    def test_a_truncated_listing_response_still_installs(self, monkeypatch):
+        """End to end through the seam: first fetch comes back SHORT (8463 of
+        23349 bytes in the wild), the install still resolves its pin."""
+        import json as _json
+
+        good = _json.dumps({"schemaVersion": 1, "apps": [catalog_git()]}).encode("utf-8")
+        responses = [
+            _CannedResp(good[: len(good) // 2], len(good)),
+            _CannedResp(good, len(good)),
+        ]
+        monkeypatch.setattr(oc, "_open_catalog", lambda req: responses.pop(0))
+        row = oc.inventory_for_install("demo-app")
+        assert row is not None
+        assert row["gitUrl"] == URL
+        assert not responses, "both responses were consumed: truncated, then complete"
+
+    def test_an_install_under_a_fresh_sentinel_still_fails_closed(self, monkeypatch):
+        """Bypassing the memory buys an ATTEMPT, not an answer: when that fetch
+        fails too, the refusal still raises -- and the sentinel is refreshed for
+        the listing page, which is whose back-off it is."""
+        writes: list[dict] = []
+        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "fetch_document", lambda url: None)
+        monkeypatch.setattr(oc, "_write_failure", lambda: writes.append({}))
+        with oc.install_attempt(), pytest.raises(oc.CatalogUnavailable):
+            oc.inventory_for_install("demo-app")
+        assert writes, "the failed install-time fetch must refresh the listing's back-off"
+
+    def test_the_listing_path_still_honours_the_backoff(self, monkeypatch):
+        """The bypass is the INSTALL path's, not everyone's: a store listing
+        during a real outage must keep refusing without paying the timeout."""
+        calls: list[str] = []
+        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "fetch_document", lambda url: (calls.append(url), None)[1])
+        with pytest.raises(oc.CatalogUnavailable):
+            oc.fetch_inventory_entries()
+        assert calls == [], "the listing must keep its FAILURE_TTL back-off"
+
+    def test_a_per_app_lookup_still_honours_the_backoff(self, monkeypatch):
+        """`inventory_for_install` also answers per-app lookups (the app list's
+        trust stamping, the Security panel, update candidates). By default they
+        keep failing at once from the sentinel during an outage, instead of each
+        waiting out a fetch timeout on every refresh."""
+        calls: list[str] = []
+        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "fetch_document", lambda url: (calls.append(url), None)[1])
+        with pytest.raises(oc.CatalogUnavailable):
+            oc.inventory_for_install("demo-app")
+        assert calls == []
+
+    def test_only_the_install_entry_bypasses_the_backoff(self, monkeypatch):
+        """The install itself (`_resolve_install_entry`, for an app with no
+        recorded source) is the one caller that asks for the bypass."""
+        from kiro_crew.apps.registry_pipeline import catalog as rp_catalog
+
+        seen: list[bool] = []
+
+        def lookup(name):
+            seen.append(oc._INSTALL_ATTEMPT.get())
+            return {"name": name}
+
+        monkeypatch.setattr(rp_catalog, "get_app", lambda name: None)
+        monkeypatch.setattr(rp_catalog, "get_registry_app", lookup)
+        entry, error = rp_catalog._resolve_install_entry("demo-app")
+        assert entry == {"name": "demo-app"} and error == ""
+        assert seen == [True], "the install's own lookup runs inside install_attempt()"
+        assert oc._INSTALL_ATTEMPT.get() is False, "the mark does not outlive the lookup"
+
+
 class TestCredentialPosture:
     def test_a_catalog_row_takes_the_credential_free_posture(self):
         """A catalog URL is remote-controlled content, not a repo the owner typed.

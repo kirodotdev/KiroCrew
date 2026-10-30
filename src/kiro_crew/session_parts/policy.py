@@ -99,6 +99,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_env",
         "bypass_shared_scratch",
+        "bypass_remote_environment",
         "bypass_backend_override",
         "bypass_effort",
         "disabled",
@@ -384,8 +385,8 @@ def _session_model(
 
     Every tier is scoped to the backend that will run the session, chosen by the
     same per-session selection the provider factory makes from *session_key* and
-    *backend_override*: a member DM routed to another harness keeps a pin that
-    harness serves.
+    *backend_override*: a member DM (or a crewmate's own worker) routed to another
+    harness keeps a pin that harness serves.
 
     Returns ``None`` when every tier defers, leaving the backend to pick. A
     resolver error also returns ``None``, with a warning: the provider factory
@@ -395,16 +396,29 @@ def _session_model(
     Blocking I/O (globs + reads ``~/.kiro/agents/*.json``): call in an executor.
     """
     from kiro_crew.config.loader import resolve_effective_model
-    from kiro_crew.members import is_member_session_key, select_provider_backend
+    from kiro_crew.members import (
+        is_crewmate_worker_session,
+        is_member_session_key,
+        select_provider_backend,
+    )
 
     try:
         backend: str | None = None
-        if backend_override is not None or is_member_session_key(session_key):
+        if (
+            backend_override is not None
+            or is_member_session_key(session_key)
+            or is_crewmate_worker_session(session_key)
+        ):
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
+
             backend = select_provider_backend(
                 session_key,
                 cfg.agent.member_acp_backend,
                 cfg.agent.acp_backend,
                 backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(cfg, session_key) if backend_override is None else None
+                ),
             )
         crew_name = _resolve_allocation_crew_identity(cfg, agent, crew_agent)
         if crew_name and crew_name in cfg.agents:

@@ -228,9 +228,8 @@ _GIT_ENV_NEUTRALIZERS: dict[str, str] = {
     # for the reason GIT_OPTIONAL_LOCKS above is: the argv this handler builds keeps
     # naming just its subcommand, and a ``log`` read added later inherits the pin
     # instead of having to remember a flag. The flag form also has a measured cost --
-    # an earlier round of this change put a global flag in the argv and broke 28
-    # shard tests whose stubs match the argv they expect, in a file this change does
-    # not own.
+    # a global flag in the argv breaks the shard tests whose stubs match the argv
+    # they expect.
     "GIT_CONFIG_KEY_8": "log.showSignature",
     "GIT_CONFIG_VALUE_8": "false",
 }

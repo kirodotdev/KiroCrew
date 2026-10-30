@@ -54,8 +54,8 @@ afterEach(() => {
 })
 
 describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
-  // The Files tab mounts only while active, so opening a file remounts the
-  // whole tree; `persistExpansion` remembers the expanded directories (keyed
+  // A file tab's rail remounts on in-place navigation, so the tree is rebuilt
+  // often; `persistExpansion` remembers the expanded directories (keyed
   // by projectDir) and restores them through `resetPaths`'
   // `initialExpandedPaths`. Off by default: the other hosts of this shared
   // tree keep their collapsed-by-default behavior.
@@ -340,6 +340,65 @@ describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
     })
     await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'big'))
     await waitFor(() => expect(model.calls.expand).toContain('big'))
+  })
+
+  describe('a nested repository', () => {
+    // A submodule is a childless folder row (no state row holds it open), so the
+    // reset that folds its own listing in would close it again. It is re-opened
+    // once the listing has landed.
+    const nestedRoot = () => mkTree({
+      paths: ['README.md'],
+      directories: ['libs', 'libs/sub'],
+      nestedRepoDirectories: ['libs/sub'],
+    })
+    const subListing = (): TreePayload => ({
+      root: ROOT,
+      dir: 'libs/sub',
+      paths: ['libs/sub/a.ts'],
+      directories: [],
+      repo: false,
+      truncated: false,
+      truncatedDirectories: [],
+    })
+
+    it('is re-opened once its own listing has landed', async () => {
+      vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir === 'libs/sub' ? subListing() : nestedRoot()))
+      renderTree()
+      await waitForTree()
+      const model = treeMock.last()
+      act(() => {
+        model.simulateExpanded(['libs/sub'])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: true }])
+      })
+      await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'libs/sub'))
+      await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('libs/sub/a.ts'))
+      await waitFor(() => expect(model.calls.expand).toContain('libs/sub'))
+    })
+
+    it('is not re-opened when it was closed again before its listing landed', async () => {
+      let release: (() => void) | undefined
+      const gate = new Promise<void>(resolve => { release = resolve })
+      vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+        if (dir !== 'libs/sub') return nestedRoot()
+        await gate
+        return subListing()
+      })
+      renderTree()
+      await waitForTree()
+      const model = treeMock.last()
+      act(() => {
+        model.simulateExpanded(['libs/sub'])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: true }])
+      })
+      await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'libs/sub'))
+      act(() => {
+        model.simulateExpanded([])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: false }])
+      })
+      await act(async () => { release?.(); await new Promise<void>(resolve => setTimeout(resolve, 0)) })
+      await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('libs/sub/a.ts'))
+      expect(model.calls.expand).not.toContain('libs/sub')
+    })
   })
 
   it('does not reload a folder the listing bound dropped while it stays open', async () => {

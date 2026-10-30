@@ -231,9 +231,9 @@ def test_uninstall_holds_the_shared_config_lock_across_the_grant_drop(home: Path
     # under that name next. Asserted structurally (the route acquires the shared
     # lock around the executor call) because reproducing the interleaving requires
     # winning a race.
-    from kiro_crew.apps import routes as approutes
+    from kiro_crew.apps import routes_uninstall
 
-    src = Path(approutes.__file__).read_text(encoding="utf-8")
+    src = Path(routes_uninstall.__file__).read_text(encoding="utf-8")
     handler = src[src.index("async def _run_uninstall") :]
     handler = handler[: handler.index("\nasync def ", 1)]
     lock_at = handler.index("_get_config_lock()")

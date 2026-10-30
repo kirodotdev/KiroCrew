@@ -28,12 +28,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
-from kiro_crew import memory_schema, memory_stores, platform_compat
+from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.lesson_validation import (
     contains_volatile_lesson_fact,
     extracted_lesson_applies,
     utf8_encodable,
 )
+from kiro_crew.memory_kind_routing import KindRouting, record_kind_routing_in_transaction
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -121,7 +122,7 @@ def create_member_database(path: Path, *, member_id: str, store_id: str) -> None
     platform_compat.restrict_to_owner(path)  # lockdown-ok: empty reservation; SQLite writes follow
     db = sqlite3.connect(path, isolation_level=None)
     try:
-        db.execute("PRAGMA journal_mode=WAL")
+        sqlite_wal.enable_wal(db, timeout_secs=5.0)
         db.executescript(
             "BEGIN IMMEDIATE;" + memory_schema.CREW_SCHEMA_SQL + memory_schema.MEMBER_SCHEMA_SQL
         )
@@ -428,11 +429,16 @@ def apply_consolidation(
     snapshot: dict,
     messages: list[dict],
     facets: memory_schema.MemoryFacets | None = None,
+    kind_routing: KindRouting | None = None,
 ) -> dict:
     """Publish one extracted span, its provenance and retry receipt atomically.
 
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
+
+    *kind_routing* is the consolidator's ``_route_by_kind`` answer for this
+    *result*; its bounded log is written inside the same transaction, so a
+    replayed span (which returns the stored receipt) logs nothing twice.
     """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
@@ -678,6 +684,8 @@ def apply_consolidation(
                 receipt["metadata_fields_dropped"] = fields_dropped
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
+            if kind_routing is not None:
+                record_kind_routing_in_transaction(self, kind_routing, source)
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (

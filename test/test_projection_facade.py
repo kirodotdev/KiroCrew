@@ -33,6 +33,10 @@ from kiro_crew.crew_log import projection
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_projection_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "spelling_cases")
+
 FACADE = "kiro_crew.crew_log.projection"
 OWNER_PREFIX = "kiro_crew.crew_log.projection_"
 CREW_LOG_DIR = Path(projection.__file__).resolve().parent
@@ -43,7 +47,6 @@ CREW_LOG_DIR = Path(projection.__file__).resolve().parent
 #: so a scanner that stops matching goes red instead of passing over nothing.
 _KNOWN_SEAMS = frozenset(
     {
-        "CONTEXT_TURNS_LIMIT",
         "RADAR_ITEM_LIMIT",
         "RADAR_SKIP_LIMIT",
         "open_session_log",
@@ -234,112 +237,84 @@ def _corpus_patched_names() -> frozenset[str]:
     return frozenset(found)
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew.crew_log import projection\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(projection, 'A', 1)\n",
-            {"A"},
-        ),
-        (
-            "from kiro_crew.crew_log import projection as crew_log\n"
-            "def t(monkeypatch):\n    monkeypatch.delattr(crew_log, 'B')\n",
-            {"B"},
-        ),
-        (
-            "import kiro_crew.crew_log.projection as P\n"
-            "from unittest import mock\n"
-            "def t():\n    with mock.patch.object(P, 'C'):\n        pass\n",
-            {"C"},
-        ),
-        (
-            "def t(monkeypatch):\n"
-            "    monkeypatch.setattr('kiro_crew.crew_log.projection.D', 1)\n",
-            {"D"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.crew_log.projection.E'):\n        pass\n",
-            {"E"},
-        ),
-        (
-            "import importlib\n"
-            "P = importlib.import_module('kiro_crew.crew_log.projection')\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(P, 'F', 1)\n",
-            {"F"},
-        ),
-        (
-            "from kiro_crew.crew_log import read as crew_log_read\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(crew_log_read.projections, 'G', 1)\n",
-            {"G"},
-        ),
-        (
-            "from kiro_crew.crew_log import projection\n"
-            "from unittest import mock\n"
-            "def t():\n    with mock.patch.multiple(projection, H=1):\n        pass\n",
-            {"H"},
-        ),
-        (
-            "from kiro_crew.crew_log import projection as crew_log\n"
-            "def t():\n    crew_log.I = 1\n    del crew_log.J\n",
-            {"I", "J"},
-        ),
-        (
-            "from kiro_crew.dashboard.handlers import crew_log as routes\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(routes._crew_log(), 'K', 1)\n",
-            {"K"},
-        ),
-        (
-            "from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs\n"
-            "def t(monkeypatch):\n"
-            "    projection = cs._projection()\n"
-            "    monkeypatch.setattr(projection, 'L', 1)\n",
-            {"L"},
-        ),
-        # Another module's patch, and a facade patch of a name chosen at run time.
-        (
-            "from kiro_crew.crew_log import store\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(store, 'X', 1)\n",
-            set(),
-        ),
-        (
-            "from kiro_crew.crew_log import projection\n"
-            "def t(monkeypatch, name):\n    monkeypatch.setattr(projection, name, 1)\n",
-            set(),
-        ),
-        (
-            "def t(monkeypatch):\n"
-            "    monkeypatch.setattr('kiro_crew.crew_log.projection_usage.Y', 1)\n",
-            set(),
-        ),
-    ],
-    ids=[
-        "monkeypatch-alias",
-        "delattr-renamed-alias",
-        "patch-object-import-as",
-        "dotted-setattr",
-        "mock-patch-string",
-        "import-module",
-        "module-attribute-receiver",
-        "patch-multiple",
-        "plain-assignment-and-del",
-        "helper-call-receiver",
-        "local-bound-from-helper",
-        "other-module",
-        "name-chosen-at-run-time",
-        "an-owner-path-is-not-the-facade",
-    ],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: set[str]
-) -> None:
-    assert patched_names(source) == expected
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "monkeypatch-alias": (
+        "from kiro_crew.crew_log import projection\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(projection, 'A', 1)\n",
+        {"A"},
+    ),
+    "delattr-renamed-alias": (
+        "from kiro_crew.crew_log import projection as crew_log\n"
+        "def t(monkeypatch):\n    monkeypatch.delattr(crew_log, 'B')\n",
+        {"B"},
+    ),
+    "patch-object-import-as": (
+        "import kiro_crew.crew_log.projection as P\n"
+        "from unittest import mock\n"
+        "def t():\n    with mock.patch.object(P, 'C'):\n        pass\n",
+        {"C"},
+    ),
+    "dotted-setattr": (
+        "def t(monkeypatch):\n" "    monkeypatch.setattr('kiro_crew.crew_log.projection.D', 1)\n",
+        {"D"},
+    ),
+    "mock-patch-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.crew_log.projection.E'):\n        pass\n",
+        {"E"},
+    ),
+    "import-module": (
+        "import importlib\n"
+        "P = importlib.import_module('kiro_crew.crew_log.projection')\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(P, 'F', 1)\n",
+        {"F"},
+    ),
+    "module-attribute-receiver": (
+        "from kiro_crew.crew_log import read as crew_log_read\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(crew_log_read.projections, 'G', 1)\n",
+        {"G"},
+    ),
+    "patch-multiple": (
+        "from kiro_crew.crew_log import projection\n"
+        "from unittest import mock\n"
+        "def t():\n    with mock.patch.multiple(projection, H=1):\n        pass\n",
+        {"H"},
+    ),
+    "plain-assignment-and-del": (
+        "from kiro_crew.crew_log import projection as crew_log\n"
+        "def t():\n    crew_log.I = 1\n    del crew_log.J\n",
+        {"I", "J"},
+    ),
+    "helper-call-receiver": (
+        "from kiro_crew.dashboard.handlers import crew_log as routes\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(routes._crew_log(), 'K', 1)\n",
+        {"K"},
+    ),
+    "local-bound-from-helper": (
+        "from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs\n"
+        "def t(monkeypatch):\n"
+        "    projection = cs._projection()\n"
+        "    monkeypatch.setattr(projection, 'L', 1)\n",
+        {"L"},
+    ),
+    # Another module's patch, and a facade patch of a name chosen at run time.
+    "other-module": (
+        "from kiro_crew.crew_log import store\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(store, 'X', 1)\n",
+        set(),
+    ),
+    "name-chosen-at-run-time": (
+        "from kiro_crew.crew_log import projection\n"
+        "def t(monkeypatch, name):\n    monkeypatch.setattr(projection, name, 1)\n",
+        set(),
+    ),
+    "an-owner-path-is-not-the-facade": (
+        "def t(monkeypatch):\n"
+        "    monkeypatch.setattr('kiro_crew.crew_log.projection_usage.Y', 1)\n",
+        set(),
+    ),
+}
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:

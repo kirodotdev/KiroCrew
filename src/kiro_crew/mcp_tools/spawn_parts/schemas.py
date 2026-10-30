@@ -248,6 +248,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 " If result batches from a previous spawn are still arriving,"
                 " do not start a new spawn until all of them have been"
                 " delivered and processed."
+                " A shared-session spawn costs about 200ms and little memory; a per-spawn"
+                " model or reasoning_effort runs each subagent in its own process"
+                " (~3-5s, ~400MB), so check resource_status before a wide wave."
+                " A memory-pressure refusal means take a lighter path; an unknown agent"
+                " name means pick from the returned roster. awaiting_approval means the"
+                " run launched and waits on the parent's approval surface, not that it"
+                " failed: tell the user and end your turn."
             ),
             "inputSchema": {
                 "type": "object",
@@ -344,7 +351,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "the kiro backend list them with "
                             "`kiro-cli chat --list-models --format json`; another backend "
                             "(e.g. codex) accepts only ids from its own model list and "
-                            "refuses ids from kiro's catalog."
+                            "refuses ids from kiro's catalog. Setting it forces the "
+                            "dedicated-process path (~3-5s start, ~400MB per subagent)."
                         ),
                     },
                     "backend": {
@@ -416,7 +424,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "conversation_gone (files expired — re-spawn with a summary), "
                 "resume_failed (session could not be restored; never executes "
                 "context-free). Context scope is inherited from the run being "
-                "continued, so the include_* flags are not accepted here."
+                "continued, so the include_* flags are not accepted here. "
+                "A continue always means yield: report it and end your turn."
             ),
             "inputSchema": {
                 "type": "object",
@@ -491,6 +500,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "End a continuable subagent conversation (spawn_run keep=true): "
                 "deletes its persisted session so it can no longer be continued. "
+                "A backend that keeps its own session store answers 'Not "
+                "disposed': that session may still resume. "
                 "Call when the delegated workstream is finished. Idle "
                 "conversations also expire automatically after several hours. "
                 "On a run of yours that is still queued (accepted, not started) "
@@ -620,6 +631,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "run the "
                 "heavy path now, switch to a lighter path (targeted tests, fewer "
                 "sub-agents, deferred build), or wait for memory to free. "
+                "It also reports YOUR OWN session's memory: its size, process "
+                "and MCP server counts, its sub-agents' shared runtime, and the "
+                "runs you started, as numbers only; other sessions are never "
+                "shown. "
+                "It also reports free space and inodes in /tmp and in your "
+                "$TMPDIR, since a full temp directory fails a test run with "
+                "ENOSPC however much memory is free. "
                 "Read-only and advisory — it does NOT reserve or enforce "
                 "anything, and headroom can change between the check and your "
                 "action, so treat it as guidance, not a guarantee."

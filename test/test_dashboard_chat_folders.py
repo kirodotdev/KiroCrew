@@ -511,6 +511,41 @@ class TestFolderCRUD:
         assert state._folders[0]["hidden"] is False  # revive re-engaged → un-hid
 
     @pytest.mark.asyncio
+    async def test_resume_answers_with_the_session_folder(self, tmp_path, monkeypatch):
+        """The resume answer names the folder the session is filed in.
+
+        The client opens a collapsed folder path from this field when the resume
+        takes the view; the slots push that also carries it can land after the
+        switch, leaving the active row hidden. Both the revive path and the
+        already-open path answer with it.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._folders = [{"id": "f1", "name": "Test", "order": 0, "collapsed": True}]
+        slot = state.get_or_create_slot("revive2")
+        slot.folder_id = "f1"
+        slot.append("user", "old msg")
+        slot.drain()
+        _save_slot_to_history(state, slot, closed=True)
+        close_before_resume(state.conversation_log, "dashboard:revive2")
+        state._slots.pop("revive2", None)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/revive2/resume", json={"key": "dashboard:revive2"}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["folder_id"] == "f1"
+            # The session is open now, so a second resume takes the dedup path.
+            again = await client.post(
+                "/api/chat/slots/revive2/resume", json={"key": "dashboard:revive2"}
+            )
+            assert again.status == 200
+            assert (await again.json())["folder_id"] == "f1"
+
+    @pytest.mark.asyncio
     async def test_update_folder_default_agent(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -523,7 +558,6 @@ class TestFolderCRUD:
             )
             data = await resp.json()
             assert data["default_agent"] == "msad"
-            # Verify persistence
             assert state._folders[0]["default_agent"] == "msad"
 
     @pytest.mark.asyncio
@@ -1017,3 +1051,37 @@ class TestFolderPersistence:
         state = _make_state(tmp_path)
         state.load_folders()
         assert state._folders == []
+
+
+class TestChatFolderOrderIsNotA500:
+    """A caller-supplied order never reaches int() unguarded: no middleware maps
+    handler exceptions, so it would surface as HTTP 500. A bad order is skipped."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_order", ["abc", None, [], {}, "1.5", 1e309, -1e309, "nan"])
+    async def test_bad_order_does_not_500(self, tmp_path, monkeypatch, bad_order):
+        """1e309 parses to float('inf'), which body_int turns into a ValueError
+        where int(inf) would raise OverflowError."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            created = await (await client.post("/api/chat/folders", json={"name": "Oncall"})).json()
+            resp = await client.patch(
+                f"/api/chat/folders/{created['id']}", json={"order": bad_order}
+            )
+            assert resp.status == 200, f"order={bad_order!r} produced {resp.status}"
+            # The bad field is skipped, not coerced into some other order.
+            assert (await resp.json())["order"] == created["order"]
+
+    @pytest.mark.asyncio
+    async def test_valid_order_is_still_applied(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            created = await client.post("/api/chat/folders", json={"name": "Oncall"})
+            folder_id = (await created.json())["id"]
+            resp = await client.patch(f"/api/chat/folders/{folder_id}", json={"order": 7})
+            assert resp.status == 200
+            assert (await resp.json())["order"] == 7

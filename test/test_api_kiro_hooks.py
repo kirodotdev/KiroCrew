@@ -18,6 +18,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import kiro_crew
+from kiro_crew.agent import _VALID_HOOK_EVENTS
 from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
 
 # The handler imports `_shipped_defaults` at module scope (hoisted), so
@@ -209,3 +211,55 @@ class TestApiKiroHooks:
                 resp = await client.get("/api/kiro-hooks")
                 assert resp.status == 200
                 assert (await resp.json()) == {"hooks": {}, "unsent": []}
+
+    @pytest.mark.asyncio
+    async def test_bundled_defaults_read_as_utf8_under_cjk_locale(
+        self, kiro_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shipped defaults.json decodes as UTF-8 whatever the locale code page.
+
+        ``Path.read_text()`` without ``encoding=`` decodes with the locale code
+        page. The patch stands in for a cp932 (Japanese Windows) locale there, so
+        only a read that names its encoding sees the file's real text.
+        """
+        shipped = Path(kiro_crew.__file__).parent / "config" / "defaults.json"
+        shipped_bytes = shipped.read_bytes()
+        with pytest.raises(UnicodeDecodeError):
+            shipped_bytes.decode("cp932")  # precondition: the file is not cp932-clean
+        bundled_hooks = json.loads(shipped_bytes.decode("utf-8"))["hooks"]
+        event, entries = next(
+            (k, v) for k, v in bundled_hooks.items() if k in _VALID_HOOK_EVENTS and v
+        )
+        bundled = entries[0]
+        _write_agent_cfg(kiro_dir, {"hooks": {event: [bundled]}})
+
+        real_read_text = Path.read_text
+
+        def _cp932_locale_read_text(
+            self: Path, encoding: str | None = None, errors: str | None = None
+        ) -> str:
+            return real_read_text(self, encoding=encoding or "cp932", errors=errors)
+
+        monkeypatch.setattr(Path, "read_text", _cp932_locale_read_text)
+        with patch(_P_AGENTS_DIR, kiro_dir), patch(_P_DEFAULTS, return_value=shipped):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/kiro-hooks")
+                assert resp.status == 200
+                entry = (await resp.json())["hooks"][event][0]
+                assert entry["source"] == "bundled"
+
+    @pytest.mark.asyncio
+    async def test_undecodable_defaults_degrade_to_user(
+        self, kiro_dir: Path, tmp_path: Path
+    ) -> None:
+        """A defaults file that is not valid UTF-8 means no bundled tags, not a 500."""
+        _write_agent_cfg(
+            kiro_dir, {"hooks": {"preToolUse": [{"command": "echo hi", "matcher": ""}]}}
+        )
+        defaults = tmp_path / "defaults.json"
+        defaults.write_bytes(b'{"hooks": {"preToolUse": [{"command": "\xff"}]}}')
+        with patch(_P_AGENTS_DIR, kiro_dir), patch(_P_DEFAULTS, return_value=defaults):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/kiro-hooks")
+                assert resp.status == 200
+                assert (await resp.json())["hooks"]["preToolUse"][0]["source"] == "user"

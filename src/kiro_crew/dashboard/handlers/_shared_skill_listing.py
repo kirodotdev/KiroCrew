@@ -9,7 +9,6 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import os
 from pathlib import Path
@@ -21,7 +20,7 @@ from kiro_crew.dashboard.handlers._shared_skill_roots import _edition_skill_root
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
-from kiro_crew.skills import _with_canonical_globs
+from kiro_crew.skills import _matches_any, _with_canonical_globs
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers._shared")
 
@@ -144,7 +143,6 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
     resources = agent_json.get("resources") or []
     if not isinstance(resources, list):
         return False
-    target = str(skill_md)
     globs = [
         g
         for res in resources
@@ -152,7 +150,7 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
         for g in (_expand_resource_uri(res, agent_path),)
         if g
     ]
-    return any(fnmatch.fnmatch(target, g) for g in _with_canonical_globs(globs))
+    return bool(_agents_loading_skill(skill_md, [("", _with_canonical_globs(globs))]))
 
 
 def _expand_agent_globs(
@@ -190,10 +188,22 @@ def _expand_agent_globs(
 def _agents_loading_skill(
     skill_md: Path, expanded_agents: list[tuple[str, list[str]]]
 ) -> list[str]:
-    """Return names of agents whose pre-expanded globs match *skill_md*."""
+    """Return names of agents whose pre-expanded globs match *skill_md*.
+
+    Uses the runtime scope match, so a row listed under a symlinked ``$HOME``
+    also matches a glob written against the resolved home path, and an app
+    skill listed under its flat link matches its app's ``<app>/*/SKILL.md``.
+    """
+    # Imported here: every module-level name of this family is served by the
+    # ``_shared`` facade, and these two are not part of that surface.
+    from kiro_crew.skill_runtime.catalog import _alias_matches
+    from kiro_crew.skills import skills_dir
+
     target = str(skill_md)
     return [
-        name for name, globs in expanded_agents if any(fnmatch.fnmatch(target, g) for g in globs)
+        name
+        for name, globs in expanded_agents
+        if _matches_any(target, globs) or _alias_matches(skill_md, globs, [skills_dir()])
     ]
 
 
@@ -429,10 +439,16 @@ def _one_row_per_skill_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if key and key != kept.get("key") and key not in aliases:
                 aliases.append(key)
         kept["aliases"] = aliases
-        # Usage, size and the injection mode come only from the loader's read,
-        # so a kept row from another source would otherwise show the skill as
-        # never used, sizeless and "on demand" even when it is pointer-only.
-        for field in ("deliveries", "last_used_at", "size_bytes", "inject_on_trigger"):
+        # Usage, size, creation time and the injection mode come only from the
+        # loader's read, so a kept row from another source would otherwise show
+        # the skill as never used, undated, sizeless and "on demand".
+        for field in (
+            "deliveries",
+            "last_used_at",
+            "created_at",
+            "size_bytes",
+            "inject_on_trigger",
+        ):
             if kept.get(field) is None and row.get(field) is not None:
                 kept[field] = row[field]
     return out

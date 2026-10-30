@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 from kiro_crew.testing import fake_acp_backend
+from kiro_crew.testing.wait import finished
 
 
 def test_workflow_warm_reset_allocates_distinct_native_sessions(tmp_path):
@@ -162,7 +163,9 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
     async def exercise():
         async def observe(reader, writer):
             try:
-                headers = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+                headers = await finished(
+                    reader.readuntil(b"\r\n\r\n"), "the probe's HTTP headers arrive"
+                )
                 fields = dict(
                     line.decode().split(": ", 1)
                     for line in headers.split(b"\r\n")[1:]
@@ -215,7 +218,9 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
                     async def stream(self, message):
                         child.stdin.write(b"call\n")
                         await child.stdin.drain()
-                        reply = await asyncio.wait_for(child.stdout.readline(), 10)
+                        reply = await finished(
+                            child.stdout.readline(), "the MCP transport child answers"
+                        )
                         assert reply, "MCP transport child exited before answering"
                         yield LLMEvent(kind="text_chunk", text=reply.decode())
                         yield LLMEvent(kind="complete")
@@ -243,10 +248,11 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
             finally:
                 child.stdin.close()
                 try:
-                    await asyncio.wait_for(child.wait(), 5)
-                except asyncio.TimeoutError:
+                    # A cleanup grace before SIGKILL, not an assertion boundary.
+                    await finished(child.wait(), "the transport child exits", timeout=5)
+                except AssertionError:
                     child.kill()
-                    await asyncio.wait_for(child.wait(), 5)
+                    await finished(child.wait(), "the transport child exits after SIGKILL")
 
     asyncio.run(exercise())
 

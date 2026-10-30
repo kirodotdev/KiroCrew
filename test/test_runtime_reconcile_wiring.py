@@ -1480,3 +1480,60 @@ def test_a_reading_that_acted_is_summarised_at_warning(
     reading = rr.ReconcileReading(unowned_alive=20, owned_dead=10, **acted)
     levels = _session_summary_levels(monkeypatch, caplog, reading, next(iter(acted)))
     assert levels == [logging.WARNING], f"{acted} is worth a warning; got {levels}"
+
+
+def test_the_reconcile_counter_name_passes_the_core_metric_name_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MUTATION TARGET: the per-pass counter is named so the recorder accepts it.
+
+    The recorder refuses a core name outside ``kirocrew.`` / ``gen_ai.`` and only
+    logs a warning, so a bad name drops the counter on every pass with no failure.
+    """
+    import dataclasses
+
+    from kiro_crew.metrics.schema import validate_name
+
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    cleanup, _recorded = _cleanup(candidates=[], active={4242})
+    cleanup._deps = dataclasses.replace(
+        cleanup._deps, emit_counter=lambda name, dims: emitted.append((name, dims))
+    )
+
+    _drive_reconcile(cleanup, monkeypatch, rr.ReconcileReading(supported=True))
+
+    assert len(emitted) == 1, emitted
+    name, dims = emitted[0]
+    try:
+        validate_name(name)
+    except ValueError as exc:
+        pytest.fail(f"the recorder would refuse the reconcile counter: {exc}")
+    assert set(dims) == set(rr.ReconcileReading(supported=True).as_counter_fields())
+
+
+def test_the_reconcile_counter_attributes_are_bounded_flags_not_raw_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MUTATION TARGET: no per-pass count becomes an attribute value.
+
+    The recorder keeps one series per attribute set for the process's life, so a
+    raw byte sum or pid count would open a new series on nearly every pass.
+    """
+    import dataclasses
+
+    emitted: list[dict[str, Any]] = []
+    cleanup, _recorded = _cleanup(candidates=[], active={4242})
+    cleanup._deps = dataclasses.replace(
+        cleanup._deps, emit_counter=lambda name, dims: emitted.append(dims)
+    )
+    reading = rr.ReconcileReading(
+        supported=True, unowned_alive=3, leaked_untracked=2, leaked_rss_bytes=123_456_789
+    )
+
+    _drive_reconcile(cleanup, monkeypatch, reading)
+
+    assert len(emitted) == 1, emitted
+    assert all(type(v) is bool for v in emitted[0].values()), emitted[0]
+    assert emitted[0]["unowned_alive"] is True
+    assert emitted[0]["leaked_rss_bytes"] is True
+    assert emitted[0]["killed"] is False

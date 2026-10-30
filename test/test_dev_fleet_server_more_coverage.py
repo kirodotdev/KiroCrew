@@ -1225,7 +1225,6 @@ async def test_sync_refuses_when_task_genuinely_running(monkeypatch):
     never_done = asyncio.get_event_loop().create_future()
     running_task = asyncio.ensure_future(never_done)
 
-    # Mock a subprocess still running
     mock_proc = MagicMock()
     mock_proc.returncode = None  # process still alive
 
@@ -1247,7 +1246,6 @@ async def test_sync_refuses_when_task_genuinely_running(monkeypatch):
     assert "already running" in result["error"]
     assert result["run_id"] == old_rid
 
-    # Cleanup
     never_done.set_result(None)
     await running_task
 
@@ -1310,7 +1308,6 @@ async def test_sync_proc_not_yet_spawned_refuses(monkeypatch):
     assert result["ok"] is False
     assert "already running" in result["error"]
 
-    # Cleanup
     never_done.set_result(None)
     await running_task
 
@@ -1348,7 +1345,6 @@ async def test_sync_refuses_when_worker_cleanup_times_out(monkeypatch):
     assert result["ok"] is False
     assert "already running" in result["error"]
 
-    # Cleanup
     never_done.set_result(None)
     await slow_task
 

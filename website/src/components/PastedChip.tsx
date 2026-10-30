@@ -106,7 +106,7 @@ function PastedChip({ block }: { block: PasteBlock }) {
         {i18nT('components.pastedChip.paste_lines', { seq: block.seq, count: block.lines })}
       </button>
       <OverlayPortal>
-        <PastePreviewTooltip open={previewOpen} panelId={panelId} anchor={anchor} content={block.content} seq={block.seq} />
+        <PastePreviewTooltip open={previewOpen} panelId={panelId} anchor={anchor} content={block.content} seq={block.seq} escapeOwner />
       </OverlayPortal>
       <AnimatePresence initial={false}>
         {expanded && (

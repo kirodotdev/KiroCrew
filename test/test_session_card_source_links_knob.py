@@ -111,8 +111,9 @@ class TestSnapshotRead:
             "kiro_crew.config.loader.KiroCrewConfig.load",
             staticmethod(lambda *a, **k: (_ for _ in ()).throw(OSError("torn read"))),
         )
-        gitlab, jira, chips, github, bitbucket_server = sp._load_source_link_settings()
-        assert (gitlab, jira, github, bitbucket_server) == (
+        gitlab, jira, chips, github, bitbucket_server, gerrit = sp._load_source_link_settings()
+        assert (gitlab, jira, github, bitbucket_server, gerrit) == (
+            frozenset(),
             frozenset(),
             frozenset(),
             frozenset(),
@@ -142,13 +143,15 @@ class TestSnapshotRead:
         release = asyncio.Event()
 
         def slow_load() -> (
-            tuple[frozenset[str], frozenset[str], bool, frozenset[str], frozenset[str]]
+            tuple[
+                frozenset[str], frozenset[str], bool, frozenset[str], frozenset[str], frozenset[str]
+            ]
         ):
             # Runs in a worker thread: marshal the Event back onto the loop.
             loop.call_soon_threadsafe(started.set)
             asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=default_timeout())
             # The reading this load is holding: chips still ON.
-            return frozenset(), frozenset(), True, frozenset(), frozenset()
+            return frozenset(), frozenset(), True, frozenset(), frozenset(), frozenset()
 
         monkeypatch.setattr(sp, "_load_source_link_settings", slow_load)
 

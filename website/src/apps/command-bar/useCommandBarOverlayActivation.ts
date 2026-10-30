@@ -5,7 +5,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
 import type { ChatFolderRow } from './sessionFolder'
 import type { AppDispatch } from '../../store'
-import { createSlot, setPendingInput, switchSlot } from '../../store/chatSlice'
+import { createSlot, requestSlotFolderOpen, setPendingInput, switchSlot } from '../../store/chatSlice'
 import { i18nT } from '../../i18n/t'
 
 import { recordUse, type UsageMap } from './frecency'
@@ -237,7 +237,13 @@ export function useCommandBarOverlayActivation({
                   // Through the idle gate so the refetch cannot land inside a
                   // pending optimistic folder write in the sidebar.
                   () => invalidateFoldersWhenIdle(queryClient),
-                )
+                ).then(folderId => {
+                  // Filed after the switch, so the run sits in the command's
+                  // folder, which the reader may have collapsed after an earlier
+                  // run: open that path so the active row shows. Only while the
+                  // run is still the session in view.
+                  if (folderId) dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: folderId, onlyIfActive: true }))
+                })
               }
             } finally {
               // Only the OWNING run may clear the guard. Unconditionally, a stale

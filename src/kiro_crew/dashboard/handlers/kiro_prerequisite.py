@@ -9,6 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.enterprise_gate_middleware import login_screen_required
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
@@ -63,6 +64,21 @@ def _service(request: web.Request) -> KiroPrerequisiteService:
             content_type="text/plain",
         )
     return service
+
+
+def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """*snapshot* marked locked while an enterprise login gate is closed.
+
+    Every handler here that answers a status snapshot goes through this, since
+    the dashboard replaces its cached status with each one. Locked, it reports
+    ``enterprise_login_required`` and setup as not complete, so the setup gate
+    shows its sign-in path instead of handing over an app whose every API is
+    refused; the on-disk marker is untouched. Unchanged in an oss build, which
+    installs no gate.
+    """
+    if not login_screen_required(request.app):
+        return snapshot
+    return {**snapshot, "initial_setup_complete": False, "enterprise_login_required": True}
 
 
 def _caller(request: web.Request) -> str:
@@ -155,6 +171,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             bool(service.initial_setup_complete),
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
         )
+    snapshot = _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 
@@ -169,6 +186,11 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "authenticated": False,
             "ready": bool(snapshot.get("ready")),
             "initial_setup_complete": bool(snapshot.get("initial_setup_complete")),
+            **(
+                {"enterprise_login_required": True}
+                if snapshot.get("enterprise_login_required")
+                else {}
+            ),
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "login_command": KIRO_CLI_LOGIN_COMMAND,
@@ -235,7 +257,7 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     if denied is not None:
         return denied
     snapshot = await _service(request).repair_agent_specs(_caller(request))
-    return web.json_response({**snapshot, "setup_allowed": True})
+    return web.json_response({**_with_gate_state(request, snapshot), "setup_allowed": True})
 
 
 async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response:
@@ -256,4 +278,4 @@ async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response
     if denied is not None:
         return denied
     snapshot = await _service(request).update_cli(_caller(request))
-    return web.json_response({**snapshot, "setup_allowed": True})
+    return web.json_response({**_with_gate_state(request, snapshot), "setup_allowed": True})

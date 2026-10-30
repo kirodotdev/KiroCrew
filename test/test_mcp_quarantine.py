@@ -270,10 +270,9 @@ class TestStore:
     def test_any_parse_failure_is_corrupt_not_an_exception(self, store, monkeypatch):
         """The CLASS ratchet, not another instance of it.
 
-        Four review rounds found four different exception types escaping
-        successively wider tuples in this arm. The store is unfenced, so the set
-        of ways a parse can fail is open-ended and grows with the interpreter --
-        the invariant is that NOTHING from the parse escapes as an exception, so
+        Widening an exception tuple in this arm never converges. The store is
+        unfenced, so the set of ways a parse can fail is open-ended and grows with
+        the interpreter -- the invariant is that NOTHING from the parse escapes as an exception, so
         this asserts it with an error type that is not in any tuple anyone would
         have thought to write.
         """

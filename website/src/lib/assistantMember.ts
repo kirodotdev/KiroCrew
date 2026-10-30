@@ -14,6 +14,18 @@ export function isAssistantMember(m: { name?: string } | null | undefined): bool
   return !!m && m.name === ASSISTANT_MEMBER_NAME
 }
 
+/** The reserved main agent. On every roster, and not a mate. */
+const DEFAULT_AGENT_NAME = 'default'
+
+/** True when the roster holds a mate the person made themselves: anything that
+ *  is neither Mate nor the reserved `default` agent. The same split the server's
+ *  welcome kickoff makes (`mate_welcome._member_entry` leaves `default` out), so
+ *  "your first Mate" is said on a fresh install and the name alone once a
+ *  second mate exists. */
+export function hasOtherMates(rows: readonly { name?: string }[]): boolean {
+  return rows.some(r => !isAssistantMember(r) && r.name !== DEFAULT_AGENT_NAME)
+}
+
 type RosterHistory = { name?: string; has_dm_message?: boolean; last_message?: string }
 
 /** Mate's roster row while no message has been exchanged with it (the
@@ -26,12 +38,3 @@ export function pendingMate<T extends RosterHistory>(rows: readonly T[]): T | un
   return history ? undefined : mate
 }
 
-/** `rows` without Mate while the Crewmates preview is off. Mate is created in the
- *  background on every install, but nothing about it is shown until the person
- *  turns the Crewmates preview on, so every list that offers crew records (the
- *  agent pickers, Customize, a template's crews) drops it first. */
-export function hideMateWithoutPreview<T extends { name?: string; source?: string }>(rows: readonly T[], crewPreview: boolean): T[] {
-  // Only the row Kiro Crew created (`source: builtin`) is hidden: a crewmate the
-  // person already had under the key `mate` stays where it always was.
-  return crewPreview ? [...rows] : rows.filter(r => !(isAssistantMember(r) && r.source === 'builtin'))
-}

@@ -20,6 +20,7 @@ import reducer, {
   selectUnreadByMode,
 } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
+import { sharedItem } from './unreadStorageTestUtils'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -224,6 +225,18 @@ describe('a fetchSlots reply cannot clobber a write that raced it', () => {
     expect(Object.keys(written.slotWrittenAt)).toEqual(['k:a'])
     // Nothing was written through Object.prototype on the way.
     expect(Object.prototype.hasOwnProperty.call(written.slotWrittenAt, 'a')).toBe(false)
+  })
+
+  it('keeps a mid-turn last_ts bump held off the row from being undone by an older reply', () => {
+    // The bump lands in the overlay, a slots frame catches up and drops it,
+    // then a reply serialized before the bump arrives with the older last_ts.
+    const base = loaded(mk('a', { last_ts: '2026-01-01T00:00:00Z', last_turn_ts: '2026-01-01T00:00:00Z' }))
+    const inFlight = reducer(base, started('r1'))
+    const bumped = reducer(inFlight, touchSlotActivity({ key: 'a', ts: '2026-06-01T00:00:00Z' }))
+    expect(bumped.slots).toBe(inFlight.slots)
+    const caught = reducer(bumped, sseSlots([mk('a', { last_ts: '2026-06-01T00:00:00Z', last_turn_ts: '2026-01-01T00:00:00Z' })]))
+    const settled = reducer(caught, reply([mk('a', { last_ts: '2026-01-01T00:00:00Z', last_turn_ts: '2026-01-01T00:00:00Z' })], 'r1'))
+    expect(rowOf(settled, 'a')?.last_ts).toBe('2026-06-01T00:00:00Z')
   })
 
   it('does not hold on a write both recency guards rejected', () => {
@@ -501,7 +514,7 @@ describe('fetchSlots unread hold supersession', () => {
 
     expect(state.unreadSlots).toEqual(['a'])
     expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
   })
 
   it('drains a deleted session once a complete empty frame has arrived since dispatch', () => {
@@ -519,7 +532,7 @@ describe('fetchSlots unread hold supersession', () => {
 
     expect(state.unreadSlots).toEqual([])
     expect(state.unreadSince.a).toBeUndefined()
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).not.toHaveProperty('a')
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).not.toHaveProperty('a')
     expect(selectUnreadByMode('')({ dashboard: state } as unknown as Parameters<ReturnType<typeof selectUnreadByMode>>[0])).toBe(0)
     expect(state.slotFetchWriteMark.empty).toBeUndefined()
   })
@@ -533,7 +546,7 @@ describe('fetchSlots unread hold supersession', () => {
 
     expect(state.unreadSlots).toEqual(['a'])
     expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
   })
 
   it('keeps a session the complete frame lists when an older reply omits it', () => {
@@ -575,7 +588,7 @@ describe('fetchSlots unread hold supersession', () => {
 
     expect(state.unreadSlots).toEqual(['a'])
     expect(state.unreadSince.a).toBe('2026-01-01T00:00:00Z')
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).toHaveProperty('a')
   })
 
   it('keeps request-time channel holds after a live frame releases the hold', () => {
@@ -591,6 +604,6 @@ describe('fetchSlots unread hold supersession', () => {
 
     expect(state.unreadSlots).toEqual([channel.key])
     expect(state.unreadSince[channel.key]).toBe('2026-01-01T00:00:00Z')
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toHaveProperty(channel.key)
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).toHaveProperty(channel.key)
   })
 })

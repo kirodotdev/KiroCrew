@@ -379,6 +379,39 @@ async def test_empty_llm_output_produces_visible_fallback(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_empty_answer_after_text_streamed_still_produces_the_fallback(tmp_path, monkeypatch):
+    """A prompt-busy retry starts its text over: chunks from the abandoned attempt
+    reached ``on_chunk``, but the answer it returns is the last attempt's, here empty."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("run ls /tmp")
+    parent._side.last_run_id = "run-abc"
+    parent._side.is_complete = False
+
+    mock_provider = MagicMock()
+
+    async def _fake_get_or_create(key, **kwargs):
+        return mock_provider, True, False
+
+    async def _retried_to_nothing(provider, message, *, on_chunk=None, **kwargs):
+        on_chunk("Let me look at /tmp")
+        return ""
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _retried_to_nothing)
+
+    await _run_side_turn(state, parent, "run-abc", "run ls /tmp", is_first_turn=True)
+
+    final = [d for t, d in events if t == "chat.side_result" and d.get("final")][-1]
+    assert "lookups work here, but changes don't" in final["content"]
+    stored = [m for m in parent._side.messages if m["role"] == "assistant"]
+    assert stored and stored[-1]["content"] == final["content"]
+
+
+@pytest.mark.asyncio
 async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch):
     """slot.agent (a KiroCrew name like "default") is resolved to the real
     kiro-cli agent before get_or_create -> create_session -> set_mode.

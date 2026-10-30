@@ -54,7 +54,20 @@ export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}
     refetchInterval: modelListRefetchInterval,
     ...(enabled === undefined ? {} : { enabled }),
   })
-  return { ...query, data: query.data ?? PLACEHOLDER, isDegraded }
+  return {
+    // Getters, not a `...query` spread. React Query re-renders an observer
+    // only for the result fields it read, and a spread reads every field, so
+    // each fetch's `isFetching`/`fetchStatus`/`dataUpdatedAt` flips re-rendered
+    // ChatPage and every split pane even when the model list was unchanged.
+    // A getter reads its field only when the caller does.
+    get data() { return query.data ?? PLACEHOLDER },
+    get error() { return query.error },
+    get isError() { return query.isError },
+    get isFetching() { return query.isFetching },
+    get isSuccess() { return query.isSuccess },
+    refetch: query.refetch,
+    isDegraded,
+  }
 }
 
 export function useAvailableModels(options: AvailableModelsOptions = {}): ModelInfo[] {

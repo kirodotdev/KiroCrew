@@ -22,11 +22,15 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => false,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+// These editor tests run on a positively confirmed local session.
+vi.mock('../components/sessionEnvironmentHooks', () => ({
+  useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),
+}))
 vi.mock('../pages/chat/FileBrowserRail', () => ({
   default: () => null,
   useTreeState: () => 'ready',
+  useTreeQuery: () => ({ error: null }),
 }))
 vi.mock('../components/MarkdownPanel', async () => {
   const React = await vi.importActual<typeof import('react')>('react')

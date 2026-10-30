@@ -23,7 +23,7 @@ WHY THIS IS BUILT ON :class:`~kiro_crew.dashboard_feed.DashboardFeed` rather tha
 it. The feed already solves the hard half: one keyed bus subscription per fold with a
 baseline that closes the join race, values ordered by REVISION (a slot fold's seq cannot
 order two values of one key), a cached value per fold so a read is O(fields), and
-staleness as a fact about a path that stopped resolving rather than a timer. All of that
+an unresolved field named with its reason rather than a timer. All of that
 is the same for a page out of a package as for a page out of a template -- what differs
 is only WHICH document declares the fields, and that difference is one function here.
 
@@ -200,9 +200,9 @@ class LivePage:
         # reading outside the lock is what let a stale snapshot win -- see `_full_read`.
         self._lock = threading.RLock()
         self._sent: dict[str, Any] = {}
-        #: What the page's stale band was last told, so a change in it is a
+        #: Which cells the page was last told are missing, so a change in it is a
         #: reason to send even when every value compares equal.
-        self._sent_band: tuple[bool, tuple[str, ...]] = (False, ())
+        self._sent_missing: tuple[str, ...] = ()
         self._version = 0
         #: This page's own counter, named so a reader can tell one counter's numbers
         #: from another's. Minted per instance because the version restarts with the
@@ -242,11 +242,16 @@ class LivePage:
             # here instead.
             if fold not in self._tree_folds
         ]
+        # A cold slot fold hands no baseline: one background prime folds it and pushes
+        # the value. Wait for it here (off this thread's CPU), so the first paint and a
+        # one-shot snapshot carry the value instead of an empty field and a patch sent
+        # before any frame exists to take it.
+        self._feed.wait_for_primes()
         self._read_trees()
         if unavailable:
             # REPORTED, never raised: one unsubscribable fold must not deny the page the
-            # others, and the fields it feeds read as missing -- which the frame draws as
-            # its stale band rather than as an error.
+            # others, and the fields it feeds read as missing and unresolved -- which
+            # dims their cells and reaches the crewmate's turn block, never an error.
             logger.info(
                 "dashboard %s: no subscription for fold(s) %s; their fields read as missing",
                 self.slug,
@@ -277,7 +282,7 @@ class LivePage:
         full read anyway.
 
         A fold that cannot be read leaves its entry absent, so its fields read as
-        missing and the page shows the band rather than a tree drawn from nothing.
+        missing rather than as a tree drawn from nothing.
         """
         from kiro_crew.crew_log import projection
 
@@ -309,28 +314,45 @@ class LivePage:
     def _resolve_trees(self, read: Any) -> None:
         """Fill the tree-bound fields from the cached read, in place.
 
-        The feed reported them missing, because it has no subscription for a fold with
-        no scope. Resolved here from the cache :meth:`_read_trees` filled, and taken OUT
-        of ``missing`` when they resolve -- a tree-bound page would otherwise fly the
-        stale band permanently, which teaches a reader to ignore it.
+        The feed reported them missing and unresolved, because it has no subscription
+        for a fold with no scope. Resolved here from the cache :meth:`_read_trees`
+        filled, and taken OUT of both when they resolve -- a tree-bound page would
+        otherwise dim its cells and tell the crewmate the tree is unseen on every turn.
+        A tree read that FAILED leaves the feed's ``fold_unseen`` standing; a tree that
+        has a value without the path reads ``path_missing``, or ``older_value`` when
+        the field resolved before.
         """
-        from kiro_crew.dashboard_feed import MISSING, resolve_path
+        from kiro_crew.dashboard_feed import (
+            FOLD_UNSEEN,
+            MISSING,
+            OLDER_VALUE,
+            PATH_MISSING,
+            remember_resolved,
+            resolve_path,
+            resolved_before,
+        )
 
         with self._lock:
             trees = dict(self._trees)
+        resolved_here: list[str] = []
         for name, spec in self._manifest.fields.items():
             fold = spec.fold or ""
             if fold not in self._tree_folds or fold not in trees:
                 continue
             resolved = resolve_path(trees[fold], spec.path or "")
             if resolved is MISSING:
+                # The tree HAS a value, so a miss is the path, not an unseen fold.
+                if read.unresolved.get(name) == FOLD_UNSEEN:
+                    read.unresolved[name] = (
+                        OLDER_VALUE if name in resolved_before(self._feed.slot) else PATH_MISSING
+                    )
                 continue
             read.fields[name] = resolved
+            resolved_here.append(name)
             if name in read.missing:
                 read.missing.remove(name)
-        read.stale = bool(read.missing) and any(
-            not self._manifest.fields[n].agentic for n in read.missing if n in self._manifest.fields
-        )
+            read.unresolved.pop(name, None)
+        remember_resolved(self._feed.slot, resolved_here)
 
     def _payload(self, fields: Mapping[str, Any], read: Any, version: int) -> dict[str, Any]:
         """One frame's ``read``, in the shape the frame's own builder produces."""
@@ -340,7 +362,6 @@ class LivePage:
             fields,
             agentic=sorted(self._agentic),
             seq=getattr(read, "seq", 0),
-            stale=bool(getattr(read, "stale", False)),
             missing=sorted(getattr(read, "missing", ()) or ()),
             written_at={
                 name: str(self._redact(at))
@@ -413,8 +434,8 @@ class LivePage:
         be in flight at once -- a page asks on every gap it sees -- and with the tree
         read outside the lock the older of the two can finish last, replace ``_trees``
         with what it saw, and then be stamped with the higher version. The page accepts
-        that as the latest and draws a tree from before the newer one, with
-        ``stale: false`` beside it. Holding the lock across both is what makes the
+        that as the latest and draws a tree from before the newer one, with nothing
+        saying so. Holding the lock across both is what makes the
         values and the version describe one instant, which is the same reason
         ``_full_read`` holds it across its own read.
 
@@ -459,16 +480,13 @@ class LivePage:
             # `DashboardFeed.read` DROPS a field whose fold path does not resolve, so
             # its last value stays in `self._sent` and nothing compares unequal. A
             # comparison of values alone therefore sends nothing, and the page keeps
-            # drawing that value with its stale band hidden -- reporting a number as
-            # current at the moment the product cannot read it. So the band's own
-            # inputs are part of what "moved".
-            band = (
-                bool(getattr(read, "stale", False)),
-                tuple(sorted(getattr(read, "missing", ()) or ())),
-            )
-            if not moved and band == self._sent_band:
+            # drawing that value undimmed -- reporting a number as current at the
+            # moment the product cannot read it. So the missing set is part of what
+            # "moved".
+            missing_now = tuple(sorted(getattr(read, "missing", ()) or ()))
+            if not moved and missing_now == self._sent_missing:
                 return
-            self._sent_band = band
+            self._sent_missing = missing_now
             self._sent.update(moved)
             self._version += 1
             version = self._version
@@ -508,8 +526,8 @@ def render_package_page(
     html = ((package.get("view") or {}).get("html")) or ""
     dashboard_frame.validate_page(html)
     # WITH NO SCRIPT, NOTHING ELSE FILLS THE CELLS. The bootstrap is what sets a
-    # binding's text, so a page mounted without it has every bound cell EMPTY while
-    # its stale band stays hidden -- an empty page that reads as a current one.
+    # binding's text, so a page mounted without it has every bound cell EMPTY -- an
+    # empty page that reads as a current one.
     # Filled here instead, ESCAPED, so this path keeps the same promise the
     # assignment makes: a value can never become markup.
     #
@@ -555,9 +573,9 @@ _STAGED: Final[str] = "(staged)"
 
 
 def authored_html(package: Mapping[str, Any]) -> str | None:
-    """The page an agent wrote as ``view.html``, or ``None`` for a block layout.
+    """The page an agent wrote as ``view.html``, or ``None`` when *package* has none.
 
-    A block layout has no script of its own, so there is nothing to run.
+    A canonical package always has one; ``None`` answers a view that is not a page.
     """
     view = package.get("view")
     html = view.get("html") if isinstance(view, Mapping) else None
@@ -573,7 +591,7 @@ def verify_package_page(
 ) -> dict[str, Any] | None:
     """Run an authored page once over a SYNTHETIC copy of *crew*'s read; the result in wire form.
 
-    ``None`` when the package draws from blocks. Otherwise the wire form of a
+    ``None`` when the package holds no page. Otherwise the wire form of a
     :class:`~kiro_crew.dashboard_verify.Verification`, which says ``passed``, ``failed``
     with each error and where it was thrown, ``timed_out`` or ``skipped`` with the reason.
 
@@ -604,27 +622,104 @@ def verify_package_page(
     Blocking (fold reads, a browser start), so a route calls it through
     ``asyncio.to_thread``. Never raises: a save must not fail because a check could not.
     """
+    return _run_package_page(slug, crew, slot, package, deadline, capture=False)[0]
+
+
+def snapshot_package_page(
+    slug: str,
+    crew: str,
+    slot: str,
+    package: Mapping[str, Any],
+    deadline: float | None,
+    package_slug: str,
+    version: int,
+    state: Any,
+) -> tuple[dict[str, Any] | None, Any]:
+    """The page IN FORCE run over the crewmate's REAL read, with a picture of it.
+
+    ``(verification, image)``: :func:`verify_package_page`'s wire form, and the run's
+    :class:`~kiro_crew.dashboard_page_image.PageImage`, or ``None`` when the run never got
+    as far as one (the verification's ``reason`` says why).
+
+    Unlike the save's check this hands the page the record itself: the read
+    :meth:`LivePage.arm` builds for the tab, through the tab's own ``_page_safe``
+    redaction, so the picture shows exactly the values the person's tab shows. That is
+    only sound for a page that is already applied -- the tab serves it this record
+    anyway -- so *package* must be the page in force; a page that is only saved goes
+    through :func:`verify_package_page` and its synthetic copy. The picture is bytes and
+    is not put through a text pass, which could only corrupt it; what it can show is what
+    the tab already shows.
+
+    *package_slug* and *version* name the applied page, and the script-grant audit row
+    is written under them, as the tab's own serve writes it, so the log shows which
+    applied page ran script over the record. The page is drawn with its theme in front
+    of it, as the tab draws it. *state* is the gateway's, so the session folds are read
+    from the unit the slot's live session serves, as the tab reads them
+    (``member_dashboard._live_or_newest_unit``). Blocking, and never raises.
+    """
+    return _run_package_page(
+        slug,
+        crew,
+        slot,
+        package,
+        deadline,
+        capture=True,
+        real=(package_slug, version),
+        state=state,
+    )
+
+
+def _run_package_page(
+    slug: str,
+    crew: str,
+    slot: str,
+    package: Mapping[str, Any],
+    deadline: float | None,
+    *,
+    capture: bool,
+    real: tuple[str, int] | None = None,
+    state: Any = None,
+) -> tuple[dict[str, Any] | None, Any]:
+    """The run behind :func:`verify_package_page` and :func:`snapshot_package_page`.
+
+    *real* is ``(package slug, version)`` of the applied page for a snapshot over the
+    real record, and ``None`` for the save's check over the synthetic copy.
+    """
     html = authored_html(package)
     if html is None:
-        return None
+        return None, None
     # Deferred: this module is imported before the socket binds and must not pull in
     # the browser runner, and `member_dashboard` imports this module (a cycle).
     from kiro_crew import dashboard_verify
     from kiro_crew.dashboard.handlers import member_dashboard
 
-    def skipped(reason: str) -> dict[str, Any]:
-        return dashboard_verify.Verification(dashboard_verify.STATUS_SKIPPED, reason=reason).wire()
+    def skipped(reason: str) -> tuple[dict[str, Any], None]:
+        wire = dashboard_verify.Verification(dashboard_verify.STATUS_SKIPPED, reason=reason).wire()
+        return wire, None
 
     if not crew:
         return skipped("only a crewmate's own page is run, and this session is not a crewmate")
     reason = dashboard_verify.preflight()
     if reason:
         return skipped(reason)
+    look = ""
+    if real is not None:
+        # Before the grant is audited: without the tab's look nothing is drawn.
+        from kiro_crew import dashboard_snapshot_look
+
+        look, missing = dashboard_snapshot_look.look_prefix()
+        if missing:
+            return skipped(missing)
     try:
         key = member_dashboard.governance_session_key(slot)
         decision = member_dashboard._egress_decision(crew, key)
+        audited_slug, audited_version = real if real is not None else (_STAGED, 0)
         member_dashboard._audit_page_script_grant(
-            member=crew, package_slug=_STAGED, version=0, session_key=key, decision=decision
+            member=crew,
+            package_slug=audited_slug,
+            version=audited_version,
+            session_key=key,
+            decision=decision,
         )
         if not decision.granted:
             return skipped(
@@ -639,6 +734,11 @@ def verify_package_page(
         # it; `rewrite_note` tells the agent that the page it wrote is not the page it got.
         shown = member_dashboard._template_text_safe(html)
         note = dashboard_verify.rewrite_note(html, shown)
+        # A snapshot draws the page as the tab does: the tab's default light look and
+        # its Tailwind runtime (`dashboard_snapshot_look`), then the package's theme
+        # (`render_package_page`). The save's check is left as it is. Error lines are
+        # moved back onto view.html.
+        theme = look + _theme_style(package) if real is not None else ""
 
         def read_once() -> Mapping[str, Any]:
             page = LivePage(
@@ -646,29 +746,75 @@ def verify_package_page(
                 slot,
                 package,
                 lambda _frame: None,
-                session_unit=member_dashboard._newest_unit(slot),
+                session_unit=(
+                    member_dashboard._live_or_newest_unit(state, slot)
+                    if real is not None
+                    else member_dashboard._newest_unit(slot)
+                ),
                 redact=member_dashboard._page_safe,
+                # A snapshot has no browser to say the reader's language, so it takes
+                # the one Settings persists (``dashboard.language``); the save check
+                # keeps the default it always had.
+                locale=_persisted_locale() if real is not None else "",
             )
             try:
                 return page.arm()
             finally:
                 page.disarm()
 
+        # Asked for only by a snapshot, so the save's own call stays as it was.
+        picture = {"capture": True, "real_record": real is not None} if capture else {}
         verdict = dashboard_verify.verify_page(
-            shown,
+            theme + shown,
             read_once,
             model=member_dashboard._manifest_text_safe(package.get("model")),
             deadline=deadline,
+            **picture,
         )
+        if theme:
+            verdict = _without_theme_lines(verdict, theme.count("\n"))
         if note:
             verdict = dataclasses.replace(verdict, notes=(note, *verdict.notes))
         # REDACTED LIKE EVERY VALUE THE TAB IS SERVED. The page's own script chose the text of
         # its errors, and it can build a string that no scan of its source saw (two literals
         # joined at run time), so what goes back to the agent crosses the same recursive pass.
-        return member_dashboard._page_safe(verdict.wire())
+        return member_dashboard._page_safe(verdict.wire()), verdict.image
     except Exception:
         logger.warning("dashboard: the page for %r could not be checked", slug, exc_info=True)
         return skipped("the check could not run on this machine")
+
+
+def _persisted_locale() -> str:
+    """The UI language Settings stores, or ``""`` (then the page draws in English).
+
+    ``""`` also covers "follow the browser", which only the browser can resolve. Read
+    through the same validator the prompt's language section uses; never raises."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.context import ui_language_tag
+
+        return ui_language_tag(KiroCrewConfig.load())
+    except Exception:
+        logger.debug("dashboard: the UI language could not be read", exc_info=True)
+        return ""
+
+
+def _without_theme_lines(verdict: Any, lines: int) -> Any:
+    """*verdict* with each error line counted from ``view.html`` again, not from the theme
+    put in front of it; an error inside the theme itself has no ``view.html`` line."""
+    errors = tuple(
+        (
+            error
+            if error.line is None
+            else dataclasses.replace(
+                error,
+                line=error.line - lines if error.line > lines else None,
+                column=error.column if error.line > lines else None,
+            )
+        )
+        for error in verdict.errors
+    )
+    return dataclasses.replace(verdict, errors=errors)
 
 
 def writing_caller(request: Any) -> tuple[str, str]:

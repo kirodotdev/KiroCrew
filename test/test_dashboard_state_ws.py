@@ -59,8 +59,11 @@ class TestSubagentSubscribers:
         assert ws not in state._ws_subagent_subscribers
 
     def test_unsubscribe_idempotent(self, state: DashboardState) -> None:
-        ws = MagicMock()
-        state.unsubscribe_subagents(ws)  # should not raise
+        ws, other = MagicMock(), MagicMock()
+        state.subscribe_subagents(other)
+        state.unsubscribe_subagents(ws)
+        state.unsubscribe_subagents(ws)
+        assert state._ws_subagent_subscribers == {other}
 
     def test_broadcast_sends_to_subscribed_only(self, state: DashboardState) -> None:
         ws_sub = MagicMock(closed=False)
@@ -77,7 +80,12 @@ class TestSubagentSubscribers:
         ws_nosub.send_str.assert_not_called()
 
     def test_broadcast_noop_when_empty(self, state: DashboardState) -> None:
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        state.register_ws(ws)
         state.broadcast_ws_subagent_subscribers("subagent_chunk", {"id": "a1"})
+        ws.send_str.assert_not_called()
+        assert not state._ws_subagent_subscribers
 
     def test_broadcast_ws_sends_to_all(self, state: DashboardState) -> None:
         ws1 = MagicMock(closed=False)
@@ -87,8 +95,11 @@ class TestSubagentSubscribers:
         state.register_ws(ws1)
         state.register_ws(ws2)
         state.broadcast_ws("subagent_spawn", {"id": "a1", "slot": "chat-1"})
-        ws1.send_str.assert_called_once()
-        ws2.send_str.assert_called_once()
+        for ws in (ws1, ws2):
+            ws.send_str.assert_called_once()
+            payload = json.loads(ws.send_str.call_args[0][0])
+            assert payload["type"] == "subagent_spawn"
+            assert payload["data"] == {"id": "a1", "slot": "chat-1"}
 
     def test_broken_subscriber_removed(self, state: DashboardState) -> None:
         ws = MagicMock(closed=False)
@@ -282,6 +293,61 @@ class TestSlotsBroadcastCarriesFolders:
         assert state.folders_generation() == before
         assert state._folders == [{"id": "f1", "name": "Existing", "order": 0}]
 
+    def test_frame_carries_the_tags_generation(self, state: DashboardState) -> None:
+        # the tag vocabulary and board columns change signal rides the
+        # same frame, so an agent's tag write reaches an open tab.
+        state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
+        state._tags_generation = 4
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["tagsGeneration"] == 4
+
+    def test_every_tag_and_column_save_advances_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        # Bumped in the store writers, not at each handler, so a new tag or
+        # column writer cannot forget it.
+        state._tags = [{"id": "t1", "name": "Bug", "color": "#f00", "order": 0}]
+        state._tag_boards = []
+        before = state.tags_generation()
+
+        state.save_tags()
+        state.save_tags_snapshot([dict(t) for t in state._tags])
+        state.save_tag_boards()
+        state.save_tag_boards_snapshot([])
+
+        assert state.tags_generation() == before + 4
+
+    def test_a_handler_bump_advances_the_tags_generation(self, state: DashboardState) -> None:
+        # An adoption or a grant minted after the vocabulary save commits
+        # outside the store writers, so its handler bumps before it pushes.
+        before = state.tags_generation()
+
+        state.bump_tags_generation()
+
+        assert state.tags_generation() == before + 1
+
+    def test_slot_activity_alone_does_not_advance_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-1"}])  # type: ignore[method-assign]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-2"}])  # type: ignore[method-assign]
+        state._do_slots_broadcast()
+
+        generations = [
+            json.loads(call[0][0])["tagsGeneration"] for call in ws.send_str.call_args_list
+        ]
+        assert len(generations) == 2
+        assert generations[0] == generations[1]
+
 
 class TestOwnerScopedBroadcast:
     """Owner-only typed broadcast + its delivery count."""
@@ -298,7 +364,8 @@ class TestOwnerScopedBroadcast:
         owner, other = self._ws(), self._ws()
         state.register_ws(owner, owner=True)
         state.register_ws(other)
-        await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        delivered = await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        assert delivered == 1
         assert owner.send_str.await_count or owner.send_str.call_count
         assert not (other.send_str.await_count or other.send_str.call_count)
 
@@ -748,9 +815,6 @@ class TestSubagentProbeWiring:
         assert inspect.iscoroutinefunction(probe)
         return probe
 
-    def test_wire_installs_probe_on_sessions(self, state: DashboardState) -> None:
-        self._installed_probe(state)
-
     @pytest.mark.asyncio
     async def test_probe_reports_running_children(self, state: DashboardState) -> None:
         state.subagents = MagicMock()
@@ -873,15 +937,18 @@ class TestCompactCallbackWiring:
             "kiro_crew.dashboard.state.deliver_channel_compaction_notice",
             new_callable=AsyncMock,
             side_effect=RuntimeError("transport exploded"),
-        ):
+        ) as deliver:
             await cb("slack:1785370133.085469", 92.0, success=True)
+
+        assert deliver.await_args.args[1] == "slack:1785370133.085469"
 
     @pytest.mark.asyncio
     async def test_callback_noop_when_slot_missing(self, state: DashboardState) -> None:
         cb = self._captured_callback(state)
 
-        # No slot named chat-ghost exists.  Must not raise.
         await cb("dashboard:chat-ghost", 90.0, success=True)
+
+        assert state.get_slot("chat-ghost") is None
 
     @pytest.mark.asyncio
     async def test_callback_appends_assistant_notice(self, state: DashboardState) -> None:
@@ -1306,6 +1373,7 @@ class TestOwnerSourceStatusTransport:
         # frame field must be JSON-serializable — a bare MagicMock return
         # value does not slip through a fake send_json unserialized.
         state.folders_generation.return_value = 7
+        state.tags_generation.return_value = 7
 
         class Request(dict):
             def __init__(self) -> None:

@@ -18,7 +18,8 @@ import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
-import { SKILL_SORTS, sortSkills, type SkillSort } from './skillSort'
+import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
 
 import { Trans } from 'react-i18next'
@@ -356,13 +357,21 @@ export default function SkillsTab() {
   // selectedSkill is derived from the *unfiltered* skills array, so the
   // editor stays mounted even if the skill is filtered out of the list —
   // auto-reselecting here would silently discard unsaved form changes.
+  // A row the user clicked stays open while the filter still shows it. A row
+  // this effect opened by itself is only a default, so a new filter moves it
+  // to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(s => s.key === selectedKey)) {
-      setSelectedKey(allFiltered[0].key)
+    const visible = !!selectedKey && allFiltered.some(s => s.key === selectedKey)
+    if (visible && (userPickedRef.current || !skillFilter.trim())) return
+    const best = bestFilterMatch(allFiltered, skillFilter, s => [s.name, s.key, displayName(s)])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
     }
-  }, [allFiltered, selectedKey, detailEditing])
+  }, [allFiltered, selectedKey, detailEditing, skillFilter])
 
   // Moving on to another skill also retires a delete failure — but only one
   // the user could have SEEN: the test is the banner's own render gate
@@ -388,6 +397,7 @@ export default function SkillsTab() {
     if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
     if (!(detailEditing && showDetail)) setDeleteError(null)
     setEditReadError('')
+    userPickedRef.current = true
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
@@ -467,7 +477,7 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel />
+    <PendingSkillsPanel sort={skillSort} />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
@@ -518,6 +528,7 @@ export default function SkillsTab() {
               i18nT('pages.overview.skillsTab.sort_default'),
               i18nT('pages.overview.skillsTab.sort_most_used'),
               i18nT('pages.overview.skillsTab.sort_recently_used'),
+              i18nT('pages.overview.skillsTab.sort_newest_first'),
             ]}
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
@@ -567,10 +578,8 @@ export default function SkillsTab() {
         /* List-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className={PANE_SHELL_CLASS}>
-          {/* Pane 1 — skill list.  ``scrollbar-overlay`` keeps the scrollbar
-           *  hidden until hover and overlays it so the row width never shifts
-           *  between scrollable and non-scrollable states. */}
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
+          {/* Pane 1 — skill list. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
             {localSkills.map(renderRow)}
             {packageSkills.length > 0 && (
               <div className="mt-2">
@@ -830,6 +839,9 @@ interface PendingDetail {
   /** True when the live skill advanced past the version this was merged from. */
   stale_base?: boolean
   script_validation?: SkillScriptValidation
+  /** sha256 of the candidate as this read served it. Approve sends it back and
+   *  the server refuses (409 `pending_skill_changed`) if the file moved since. */
+  content_sha256?: string
 }
 
 /** A refused approve, parsed from the ApiError body (code + findings report). */
@@ -876,7 +888,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
-  onApprove: (slug: string) => void
+  onApprove: (slug: string, contentSha256: string) => void
   onDismiss: (slug: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -955,7 +967,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           // while it flies -- and stays there when it fails. Either way what is
           // shown is not known to be the file Approve would promote.
           const detailUnconfirmed = detailFetchStatus !== 'idle' || !!detailReadError
-          const approveDisabled = !open || !detail || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
+          const approveDisabled = !open || !detail || !detail.content_sha256 || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
           return (
             <Btn
               /* Non-primary while the candidate is flagged AND the button is
@@ -970,7 +982,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                  it would restate the already-visible hint. */
               primary={approveDisabled || p.script_validation?.ok !== false}
               disabled={approveDisabled}
-              onClick={() => onApprove(p.slug)}
+              onClick={() => { if (detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
         })()}
@@ -1146,7 +1158,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel() {
+function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1208,6 +1220,12 @@ function PendingSkillsPanel() {
   // Stable identity per fetch: the prune effect below depends on this, and a
   // fresh array every render would re-run it continuously.
   const pending: PendingSkill[] = useMemo(() => data?.pending ?? [], [data])
+  // Display order only: candidates carry no usage, so only Newest first
+  // reorders them; every lookup by slug keeps reading `pending`.
+  const shownPending = useMemo(
+    () => (sort === 'created' ? sortByCreated(pending, pendingCreatedAt) : pending),
+    [pending, sort],
+  )
   // Why the last Approve click was refused, per slug. Server prose stays out of
   // the UI: the coded body picks a catalog message, and the findings report
   // renders next to the card so the user learns WHAT was flagged.
@@ -1273,8 +1291,9 @@ function PendingSkillsPanel() {
     })
   }, [pending, isSuccess])
   const approve = useMutation({
-    mutationFn: (slug: string) => api.approvePendingSkill(slug),
-    onMutate: (slug: string) => {
+    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string }) =>
+      api.approvePendingSkill(slug, contentSha256),
+    onMutate: ({ slug }) => {
       // A retry starts clean; a stale refusal must not outlive the click that
       // supersedes it. The panel-level notice is cleared ONLY when it is about
       // THIS candidate: approving row A must not erase an unresolved failure
@@ -1288,7 +1307,7 @@ function PendingSkillsPanel() {
         return next
       })
     },
-    onError: (err, slug) => {
+    onError: (err, { slug }) => {
       let code: string | undefined
       let reason: string | undefined
       const report: Record<string, string[]> = {}
@@ -1313,6 +1332,8 @@ function PendingSkillsPanel() {
           ? i18nT('pages.overview.skillsTab.approve_failed_script_validation')
           : code === 'live_skill_exists'
             ? i18nT('pages.overview.skillsTab.approve_failed_live_exists')
+            : code === 'pending_skill_changed'
+            ? i18nT('pages.overview.skillsTab.approve_failed_changed')
             : code === 'pending_skill_not_found'
               ? i18nT('pages.overview.skillsTab.approve_failed_not_found')
               : i18nT('pages.overview.skillsTab.approve_failed_generic', {
@@ -1338,6 +1359,11 @@ function PendingSkillsPanel() {
           candidateCreatedAt: pending.find(p => p.slug === slug)?.created_at,
         },
       }))
+      // The file changed after the read the user approved: read it again so the
+      // panel shows what is on disk now; Approve waits for that read to land.
+      if (code === 'pending_skill_changed') {
+        qc.invalidateQueries({ queryKey: ['skills-pending-detail', slug] })
+      }
       // A refused approve can mean the queue moved under us (approved/dismissed
       // elsewhere) — refetch so a not-found card disappears instead of lingering.
       // The refetch UNMOUNTS the row and its per-row notice with it, which
@@ -1379,7 +1405,7 @@ function PendingSkillsPanel() {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, slug) => {
+    onSuccess: (_data, { slug }) => {
       setApproveRefusals(prev => {
         if (!(slug in prev)) return prev
         const next = { ...prev }
@@ -1601,14 +1627,14 @@ function PendingSkillsPanel() {
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
-            {pending.map(p => (
+            {shownPending.map(p => (
               <PendingCandidateRow
                 key={p.slug}
                 p={p}
                 autoOpen={p.slug === reviewSlug}
                 approveRefusal={approveRefusals[p.slug]}
                 mixedQueue={pending.some(c => c.script_validation?.ok === false)}
-                onApprove={s => approve.mutate(s)}
+                onApprove={(slug, contentSha256) => approve.mutate({ slug, contentSha256 })}
                 onDismiss={s => dismiss.mutate(s)}
               />
             ))}

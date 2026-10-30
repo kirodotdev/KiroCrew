@@ -94,8 +94,8 @@ tool. All stores share one model and inference worker. The interactive
 process may run on -- which a CPU-set restriction (`--cpuset-cpus`, `taskset`)
 narrows below the host's core count -- and never below one thread, so the event
 loop keeps a core wherever
-there is one to spare; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so pinning threads
-where the process may use 4 or fewer CPUs takes a different number; any other explicit setting is
+there is one to spare; where the process may use 12 or more CPUs the default is 6; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so 4 cannot be pinned
+where the process may use 4 or fewer, or 12 or more CPUs (there a 4 runs 6; set 3 or 5 to stay low); any other explicit setting is
 honored up to that same count. Bulk threads may be 0 to inherit the normal
 setting. Background jobs share the configured bulk
 duty cycle, while waiting interactive queries take priority. A full inference
@@ -105,13 +105,14 @@ members do not create unbounded native work.
 Private V2 execution requires `agent.sandbox=auto` and working Linux/WSL namespaces
 or macOS outer Seatbelt. Native Windows, unconfined execution, unsupported MCP
 backends and Kiro internal delegation refuse private member turns with a reason.
-The owner can still manage memory in the dashboard. Existing members, including
-the default assistant selection, keep their declared V1 memory after upgrading.
-To opt in, open Crew Manager, select the member, open **Workspace · Memory**, and
-choose **Create private memory**. The new V2 store starts empty; previous V1
-stores remain available for an explicit copy of selected starting knowledge.
-Check the execution requirements above before choosing V2. New members receive
-V2 automatically, and an existing V2 member never falls back to V1 on failure.
+The owner can still manage memory in the dashboard. A member's memory store is
+chosen when the member is created and cannot be rebound afterwards. Existing
+members, including the default assistant selection, keep their declared V1
+memory after upgrading. To give a crewmate private V2 memory, create a new crew
+member: new members receive V2 automatically, starting empty, and V1 stores
+remain available for an explicit copy of selected starting knowledge. Check the
+execution requirements above first. A V2 member never falls back to V1 on
+failure.
 
 ## Install paths
 
@@ -320,7 +321,10 @@ Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
 backend target refuses to build a venv from an interpreter older than 3.12,
 matching `pyproject.toml`'s `requires-python`, rather than letting dependency
-resolution backtrack or the package fail at import.
+resolution backtrack or the package fail at import. `ensure-python.sh` also
+skips any interpreter whose throwaway `--without-pip` venv cannot run python,
+such as a shared-libpython build behind a launcher wrapper (Toolbox's kirocrew
+Python), and moves on to the next candidate or mise.
 
 `make.ps1` resolves the same toolchain but installs none of it: the bootstrap
 scripts' install paths are `curl … | sh`, so on Windows it searches (`py`
@@ -469,8 +473,9 @@ and the three Linux formats come from one backend tree packaged three times.
 The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
-installs the next time you quit the app (closing the window only hides it to
-the tray; quit from the tray or the menu bar). To be asked first, turn off
+installs the next time you quit the app (by default closing the window only hides
+it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
 downloads it when you click Download, in the update popup or on the About page.
@@ -551,7 +556,11 @@ Linux, `.\make.ps1 <target>` on Windows.
 | `make clean` | Remove build artifacts, dists, and caches |
 
 Override the Python interpreter with `make PY=python3.12 build`, or
-`.\make.ps1 build -Py C:\path\to\python.exe`.
+`.\make.ps1 build -Py C:\path\to\python.exe`. Either one takes precedence over
+the `<data-home>/python-bin` marker `ensure-python.sh` records; a `PY` exported
+in the environment does not, so the marker still wins over it.
+
+`make wheel`, `make backend-bin` and `make desktop` take `EDITION=oss` or `EDITION=enterprise`, stamped into the built package's `kiro_crew/edition.py`. Only `EDITION=` on the `make` command line counts; an exported shell `EDITION` is ignored, even under `make -e`. Without it, the value comes from the `KIROCREW_BUILD_EDITION` environment variable, and then defaults to `oss`. Both set to different values, or any other value (wildcards such as `%` included), fails the build before it starts. On Windows, set `KIROCREW_BUILD_EDITION` before `.\make.ps1`. See [platform-context](../system-specs/modules/platform-context.md#build-time-edition-constant).
 
 Both desktop targets run `packaging/build-desktop.sh` on every platform,
 including Windows, where `make.ps1` invokes it through the Git for Windows bash:

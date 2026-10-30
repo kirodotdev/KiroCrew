@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
         McpScope,
         MemoryRoots,
         SessionPrincipal,
+        SttProvider,
+        TtsProvider,
         WorkloadIdentity,
     )
     from kiro_crew.security import DeniedCommandRule
@@ -36,6 +38,7 @@ from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
     BUILTIN_PROVISIONER_ID,
     CapabilityResult,
+    CloudInstancePolicy,
     InterceptDecision,
     MobileConnectMethod,
     OtlpDestination,
@@ -792,6 +795,34 @@ class DefaultBrowserCredentialProvider:
 
     def default_settings(self) -> Dict[str, Any]:
         return {}
+
+
+class DefaultSpeechProviderRegistry:
+    """No edition speech providers: only the built-in STT and TTS sets exist.
+
+    Empty tuples and ``None`` defaults, so the valid ``stt.provider`` and
+    ``voice_reply.provider`` sets, their defaults and their warning text are
+    exactly what they were before the seam existed.
+    """
+
+    def stt_providers(self) -> "Tuple[SttProvider, ...]":
+        return ()
+
+    def tts_providers(self) -> "Tuple[TtsProvider, ...]":
+        return ()
+
+    def default_stt(self) -> Optional[str]:
+        return None
+
+    def default_tts(self) -> Optional[str]:
+        return None
+
+
+class DefaultCloudInstancePolicyProvider:
+    """Nothing added: an EC2 crew's role carries Session Manager's policy only."""
+
+    def instance_policy(self) -> CloudInstancePolicy:
+        return CloudInstancePolicy()
 
 
 class DefaultRemoteProvisionerProvider:

@@ -17,7 +17,8 @@ import socket
 import tempfile
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pod_helpers import (  # noqa: F401 -- the fixtures register by import
@@ -536,14 +537,25 @@ class TestRuntimeHelpers:
                 return b'{"token":"tok-tcp"}'
 
         tcp_calls: list[object] = []
+        peer = {"pid": 4242}
 
-        def _tcp(req: object, timeout: float) -> "_Resp":
+        def _tcp(req: object, timeout: float, *, verify_peer: Any) -> "_Resp":
+            # As the real opener does: the hook runs on the connected socket
+            # before any byte, and a refusal sends nothing.
+            verify_peer(object())
             tcp_calls.append(req)
             return _Resp()
 
         monkeypatch.setattr(rt, "IS_WINDOWS", True)
         monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
-        monkeypatch.setattr(rt, "loopback_urlopen", _tcp)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("kiro_crew.cli_server._connected_tcp_peer_pid", lambda _s: peer["pid"])
+        monkeypatch.setattr(rt, "tcp_verified_urlopen", _tcp)
+        sel = MagicMock()
+        monkeypatch.setattr("kiro_crew.cli_server.sel", sel)
+        monkeypatch.setattr(
+            rt, "loopback_urlopen", lambda *a, **k: pytest.fail("the mint must prove its peer")
+        )
         monkeypatch.setattr(
             rt,
             "unix_socket_urlopen",
@@ -564,6 +576,18 @@ class TestRuntimeHelpers:
         assert len(tcp_calls) == 1
         req = tcp_calls[0]
         assert req.get_header("X-local-secret") == "s3cret"  # type: ignore[attr-defined]
+        assert sel.return_value.log_api_access.call_args.kwargs["outcome"] == "allowed"
+
+        # A different process on the far end of the connection receives nothing.
+        peer["pid"] = 4243
+        with pytest.raises(rt.PodError, match="not the currently attested gateway"):
+            rt.mint_token(c, "demo", "1h")
+        assert sel.return_value.log_api_access.call_args.kwargs["outcome"] == "denied"
+        # An unresolvable peer is refused the same way.
+        peer["pid"] = None  # type: ignore[assignment]
+        with pytest.raises(rt.PodError, match="unidentifiable process"):
+            rt.mint_token(c, "demo", "1h")
+        assert len(tcp_calls) == 1
 
     def test_mint_token_sends_the_secret_only_over_the_pod_socket(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

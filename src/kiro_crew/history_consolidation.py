@@ -55,11 +55,13 @@ from kiro_crew import history_consolidation_memory as _memory
 from kiro_crew import history_consolidation_pass as _pass
 from kiro_crew import history_consolidation_skills as _skills
 from kiro_crew import platform_compat
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
+    _CONSOLIDATION_EMPTY,
     AttemptedSpan,
     _LeaseLostMidRun,
     _no_pass_ran,
@@ -130,25 +132,15 @@ class _CountClaim:
         self.reader: asyncio.Future[Any] | None = None
 
 
-_OWNER_PREFIX = __name__ + "_"
-
-
-def _own_methods(cls: type) -> None:
-    """Make every member *cls* binds from an owner read as a method of *cls*.
-
-    An owner annotates ``self`` so mypy checks the body as a method body; here that
-    annotation is dropped from the run-time function and the function is named after the
-    class attribute, so its ``inspect.signature``, its ``__qualname__`` (coroutine and task
-    reprs read it) and its coroutine kind are the one-module class's. Only ``__module__``
-    moves: it names the owner that holds the body. A ``contextmanager`` wrapper is followed
-    through ``__wrapped__`` to the function it wraps.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        while getattr(function, "__module__", "").startswith(_OWNER_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-            function = getattr(function, "__wrapped__", None)
+#: The owner modules whose functions :class:`HistoryConsolidator` binds as its members.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.history_consolidation_lease",
+        "kiro_crew.history_consolidation_memory",
+        "kiro_crew.history_consolidation_pass",
+        "kiro_crew.history_consolidation_skills",
+    }
+)
 
 
 class HistoryConsolidator:
@@ -273,6 +265,11 @@ class HistoryConsolidator:
         self._idle_clean: dict[str, tuple[CacheIdentity, int]] = {}
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
+        # key -> (consecutive prefs passes with no usable answer, retry-at wall
+        # time). In memory like _prefs_offset: the preference-only window has no
+        # durable failure record, so this only spaces out re-sends of a prompt
+        # that keeps failing instead of re-sending it on every user turn.
+        self._prefs_retry: dict[str, tuple[int, float]] = {}
         # Session length at the last skill-detection pass, so an unchanged
         # (rotation_generation, message_count) at the last skill-detection
         # pass, so an unchanged session isn't re-judged on every history
@@ -565,9 +562,10 @@ class HistoryConsolidator:
         return True
 
     async def _note_environment_failure(self, key: str, reason: str) -> None:
-        """Arm the backoff for a consolidation that never reached the provider.
+        """Arm the backoff for a consolidation turn that spent nothing.
 
-        Deliberately does NOT touch the attempt cap. A pre-dispatch failure spends
+        Deliberately does NOT touch the attempt cap. A pre-dispatch failure, or a
+        turn the provider sent nothing back for and billed nothing, spends
         nothing, so abandoning the span over one would write the durable marker
         over messages no LLM has ever read — losing a memory pass to a broken
         kiro-cli install rather than to a genuinely unprocessable span. The
@@ -712,6 +710,8 @@ class HistoryConsolidator:
         # does. _count_rows repeats the check for a deadline armed meanwhile.
         if self._inside_retry_deadline(key):
             return
+        if _time.time() < self._prefs_retry.get(key, (0, 0.0))[1]:
+            return
         claim = self._claim_count(key)
         if claim is not None:
             self._start_counted(claim, self._threshold_pass(key, claim))
@@ -753,8 +753,28 @@ class HistoryConsolidator:
         # threshold test skips it until a whole new threshold of messages
         # accumulates — silently dropping its preference/project extraction.
         # A cancellation propagates and leaves the offset alone too.
+        if result is _CONSOLIDATION_EMPTY:
+            # No usable answer: the window stays pending, and the next attempt
+            # waits on the same widening interval the history path's failed
+            # attempts use, so a prompt that fails every time is not re-sent on
+            # every turn.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0] + 1
+            delay = min(
+                _CONSOLIDATION_BACKOFF_MAX_SECS,
+                _CONSOLIDATION_BACKOFF_BASE_SECS * (2 ** min(failures - 1, 64)),
+            )
+            self._prefs_retry[key] = (failures, _time.time() + delay)
+            self._logger.warning(
+                "Preference-only consolidation for %s produced no usable result "
+                "(failure #%d); retrying the same window in %.0fs",
+                key,
+                failures,
+                delay,
+            )
+            return
         if not _no_pass_ran(result):
             self._prefs_offset[key] = total
+            self._prefs_retry.pop(key, None)
 
     def _claim_count(self, key: str) -> _CountClaim | None:
         """Claim *key*'s transcript for one off-loop count; None when one is in flight."""
@@ -1124,7 +1144,7 @@ class HistoryConsolidator:
         return True
 
 
-_own_methods(HistoryConsolidator)
+own_methods(HistoryConsolidator, _MEMBER_OWNERS)
 #: BASE imports this module binds for its importers and for the patches the mirror
 #: routes through it, though its own code does not read them.
 _BOUND_FOR_IMPORTERS = (
@@ -1184,7 +1204,7 @@ _EXPORTS: dict[str, str] = {}
 _SURFACE = frozenset().union(globals(), *(vars(_sys.modules[o]) for o in _OWNERS)) - {
     n
     for n, m in vars(HistoryConsolidator).items()
-    if getattr(m, "__module__", "").startswith(_OWNER_PREFIX)
+    if getattr(m, "__module__", None) in _MEMBER_OWNERS
 }
 _EXPORTS.update(
     _facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=(), surface=_SURFACE).served
@@ -1209,6 +1229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LESSON_PASSTHROUGH_FIELDS,
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
+        _SEMANTIC_SNAPSHOT_PAGE,
         _bounded_semantic_table,
         _BoundedTable,
         _EmbedBudget,
@@ -1217,6 +1238,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LessonDeleteDecision,
         _recency,
         _reroute_lesson_semantic_keys,
+        _semantic_snapshot_in_pages,
         _session_facets,
         _withhold_unseen_deletes,
     )
@@ -1247,6 +1269,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _consolidation_head_content,
         _ConsolidationNotDispatched,
         _ConsolidationRefusedSentinel,
+        _ConsolidationReplyUnusable,
         _fmt_message,
         _head_exceeds_budget,
         _head_slice_ceiling_reached,

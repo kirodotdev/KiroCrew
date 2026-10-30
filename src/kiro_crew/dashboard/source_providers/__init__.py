@@ -16,6 +16,7 @@ order, each owner importing only owners earlier in this list:
 * ``adf`` -- Atlassian Document Format to markdown;
 * ``jira`` -- the REST-backed Jira reads;
 * ``bitbucket_server`` -- the REST-backed Bitbucket Server reads, served through the seam;
+* ``gerrit`` -- the REST-backed Gerrit change reads, served through the seam;
 * ``chip_status`` -- the sidebar chip cache, its deltas and the visibility gate;
 * ``cache`` -- the coalesced full-payload, checks, issue and contributor reads;
 * ``chip_refresh`` -- the background chip reads;

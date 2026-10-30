@@ -65,8 +65,10 @@ class TestPidfileHelpers:
         def _boom(*_a: Any, **_k: Any) -> None:
             raise OSError("read-only filesystem")
 
+        bmod._write_pidfile({"kept": {"pid": 7}})
         monkeypatch.setattr(bmod, "atomic_write", _boom)
-        bmod._write_pidfile({"app": {"pid": 1}})  # must not raise
+        bmod._write_pidfile({"app": {"pid": 1}})
+        assert bmod._read_pidfile() == {"kept": {"pid": 7}}
 
     def test_recording_a_pid_never_breaks_a_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(_pid: int) -> str:
@@ -80,8 +82,12 @@ class TestPidfileHelpers:
         def _boom() -> dict[str, dict[str, Any]]:
             raise RuntimeError("disk gone")
 
-        monkeypatch.setattr(bmod, "_read_pidfile", _boom)
-        bmod._forget_app_pid("app")  # must not raise
+        bmod._write_pidfile({"app": {"pid": 7}})
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(bmod, "_read_pidfile", _boom)
+            bmod._forget_app_pid("app")
+        assert not bmod._pidfile_lock.locked()
+        assert bmod._read_pidfile() == {"app": {"pid": 7}}
 
 
 class TestProcStartTime:

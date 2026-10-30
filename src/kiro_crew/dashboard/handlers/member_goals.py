@@ -674,3 +674,30 @@ async def api_member_self_goal_report(request: web.Request) -> web.Response:
     await _notify_report(request, member, label, saved)
     _audit(sk, OP_GOAL_WRITE, "ok", f"report:{kind}")
     return web.json_response({"ok": True, **saved})
+
+
+async def api_member_self_notes(request: web.Request) -> web.Response:
+    """POST /api/member/self/notes — ``{text}``: replace the crewmate's own notes.
+
+    The notes are its briefing (``members/<slug>/briefing.md``), injected as its
+    ``[CURRENT ASSIGNMENT]`` section. The conductor has no file tool, so this is
+    how it keeps them; the same caller check as the goal tools applies.
+    """
+    from kiro_crew import member_notes
+    from kiro_crew.dashboard.handlers.guide import _audit
+
+    who = await _agent_member(request, OP_GOAL_WRITE)
+    if isinstance(who, web.Response):
+        return who
+    sk, slug, _member = who
+    body = await _agent_body(request)
+    try:
+        written = await asyncio.to_thread(
+            member_notes.write_member_notes, slug, body.get("text", "")
+        )
+    except member_notes.NotesError as exc:
+        _audit(sk, OP_GOAL_WRITE, "denied", exc.code)
+        status = 400 if exc.code in ("invalid_notes", "notes_too_long") else 500
+        return _deny(status, exc.code, str(exc))
+    _audit(sk, OP_GOAL_WRITE, "ok", "notes")
+    return web.json_response({"ok": True, "chars": written})

@@ -19,6 +19,11 @@ interface Props {
    *  prefix so a sent chip and a composer token with the same seq never collide
    *  under one test id. */
   testIdPrefix?: string
+  /** Mark the open tooltip `data-escape-owner`. Set by callers whose own Escape
+   *  handler dismisses this preview (PasteHoverLayer, PastedChip) so the
+   *  composer's Escape-to-stop gate yields and one Escape does not both close
+   *  the preview AND stop the running turn (chat-input/escapeOwners.ts, #22315). */
+  escapeOwner?: boolean
   /** One short line naming what the user can do with the token (the composer
    *  passes its expand/remove gestures). Omitted, nothing is shown. */
   hint?: string
@@ -67,7 +72,7 @@ function countShownLines(pre: HTMLElement): number {
  * begin to read (less than half of the first row inside the box), measured before paint,
  * so shown + footer = total.
  */
-export default function PastePreviewTooltip({ open, panelId, anchor, content, seq, testIdPrefix = 'paste-preview', hint }: Props) {
+export default function PastePreviewTooltip({ open, panelId, anchor, content, seq, testIdPrefix = 'paste-preview', escapeOwner = false, hint }: Props) {
   const preRef = useRef<HTMLPreElement>(null)
   const [measured, setMeasured] = useState<{ content: string; shown: number } | null>(null)
   const allLines = content.split('\n')
@@ -91,6 +96,7 @@ export default function PastePreviewTooltip({ open, panelId, anchor, content, se
           id={panelId}
           role="tooltip"
           data-testid={`${testIdPrefix}-${seq}`}
+          {...(escapeOwner ? { 'data-escape-owner': '' } : {})}
           initial={{ opacity: 0, y: anchor.below ? 2 : -2 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}

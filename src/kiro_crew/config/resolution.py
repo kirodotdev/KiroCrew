@@ -75,6 +75,8 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "mcp",
         "taskrunner",
         "watchdog",
+        "work_ledger",
+        "power",
         "resource_limits",
         "messaging",
         "cron_history",
@@ -85,6 +87,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "monitoring",
         "skills",
         "session_summary",
+        "session_environments",
         "telemetry",
         "snapshot_dir",
         "timezone",
@@ -153,15 +156,18 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     "agent": frozenset({"dangerouslySkipPermissions", "yolo", "conductor_skill"}),
     # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
     # sections._read_auto_add_documents still reads the old spelling.
-    # RETIRED: auto_ingest_chunk_budget, auto_register_project_docs and
-    # max_sources all configured the automatic folder-registration paths, which
-    # are gone, so nothing reads any of them. They are not renames of a surviving
+    # RETIRED: auto_discover_folder, auto_discover_dirname,
+    # auto_ingest_chunk_budget, auto_register_project_docs and max_sources all
+    # configured the automatic folder-registration paths, which are gone, so
+    # nothing reads any of them. They are not renames of a surviving
     # field, so preserving them keeps dead settings in the file and lets the
     # close-match warning offer an unrelated field (e.g.
     # folder_ingest_chunk_budget) as a correction.
     "knowledge": frozenset(
         {
             "auto_ingest_doc_links",
+            "auto_discover_folder",
+            "auto_discover_dirname",
             "auto_ingest_chunk_budget",
             "auto_register_project_docs",
             "max_sources",

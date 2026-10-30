@@ -341,7 +341,7 @@ async def _clone_build_app_locked(
         restorable_stale = []
     # Captured BEFORE the clone so a refusal below can tell a checkout this run
     # created (delete: no residue) from a pre-existing app workspace (preserve).
-    checkout_preexisted = (pkg_dir / ".git").is_dir()
+    checkout_preexisted = await asyncio.to_thread((pkg_dir / ".git").is_dir)
     # And the pre-pull commit, so an admission rejection can ROLL BACK a
     # pre-existing checkout: the prefetch prefers the local checkout, so a
     # checkout left sitting at a policy-rejected commit would make every retry
@@ -436,7 +436,8 @@ async def _clone_build_app_locked(
     # `AppManifest.from_json_file(...).to_dict()`), so a second, differently
     # normalized reading of these bytes is exactly the disagreement to avoid.
     cloned_app_manifest = AppManifest.from_dict(cloned_manifest)
-    denied = app_admission_denied(
+    denied = await asyncio.to_thread(
+        app_admission_denied,
         app_name,
         manifest=cloned_app_manifest,
         action="install_from_registry",

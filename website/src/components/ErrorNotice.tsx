@@ -5,6 +5,7 @@ import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import { isGatewayConnected, subscribeGatewayConnected, type ErrorReport } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { withOriginLink } from './withOriginLink'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
@@ -281,6 +282,10 @@ export default function ErrorNotice({
    */
   showIcon?: boolean
 } & ErrorNoticeNoHandoff) {
+  // Subscribes to language switches: a parent compiled by the React Compiler
+  // caches this element while its props are unchanged, so without its own
+  // subscription the notice would keep the previous language's text.
+  useLanguageGeneration()
   if (!message) return null
   // The secondary line: smaller than the title, lighter than the lead, but still
   // the alert's own colour -- it is the failure's text, demoted, not a caption.

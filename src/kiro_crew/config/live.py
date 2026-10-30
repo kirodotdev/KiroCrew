@@ -10,25 +10,39 @@ the writer that happens to know about a copy can push -- which left every
 This module is the single mechanism that closes the gap:
 
 * **One poll.** :class:`ConfigWatch` runs a single background task that
-  compares the loader's file fingerprint (two ``stat`` calls, off the event
-  loop) on an interval. Nothing else in the gateway polls ``config.json``.
-* **One reload.** When the fingerprint moves -- or an in-process writer calls
-  :func:`notify_config_written` -- the watcher performs ONE
+  compares the loader's file fingerprints (a few ``stat`` calls, off the event
+  loop) on an interval. It watches ``config.json`` AND the credential ``.env``
+  file: the two are separate files with separate writers, so each has its own
+  fingerprint, but one cycle reads both. Nothing else in the gateway polls
+  either.
+* **One reload.** When the config fingerprint moves -- or an in-process writer
+  calls :func:`notify_config_written` -- the watcher performs ONE
   :meth:`KiroCrewConfig.load` off the loop. That load is the same call the rest
   of the tree makes, so the ``publish_*`` snapshots the loader maintains
   (compaction threshold, timezone, alias table, MCP path dirs) ride along for
-  free rather than needing a second reader.
+  free rather than needing a second reader. When the ``.env`` fingerprint moves,
+  the watcher re-reads the raw credential map (also off the loop) and diffs it
+  against the last one: the changed keys are pushed into ``os.environ`` (set/pop,
+  overriding an inherited value because an operator editing ``.env`` means the
+  edit) so a hand edit or a non-dashboard writer reaches a long-running gateway
+  without a restart.
 * **One dispatch.** The old and new documents are flattened to dotted leaf paths
   and diffed; every subscriber whose prefixes intersect the changed set is
   called, sequentially, on the loop, each guarded so one failing applier cannot
-  starve the rest. Subscribers receive a :class:`ConfigChange` carrying both
-  configs and the exact changed paths, so an applier can be as narrow as one
-  field or as wide as a section.
+  starve the rest. A ``.env`` credential change joins the SAME dispatch as a
+  synthetic ``credentials.<KEY>`` path (a namespace no config section owns),
+  which the channel-restart applier maps onto the channels whose credentials
+  moved -- so a rotated token restarts its channel exactly as a changed
+  ``config.json`` connection parameter does. Subscribers receive a
+  :class:`ConfigChange` carrying both configs and the exact changed paths, so an
+  applier can be as narrow as one field or as wide as a section.
 
 Design rules this module keeps (see ``docs/system-specs/modules/config.md``):
 
-* No filesystem I/O on the event loop: the fingerprint and the load run in
-  ``asyncio.to_thread``. :meth:`snapshot` is a plain attribute read.
+* No filesystem I/O on the event loop: the fingerprints, the config load and the
+  ``.env`` credential read all run in ``asyncio.to_thread``; the credential diff
+  and the ``os.environ`` apply are pure CPU on the loop. :meth:`snapshot` is a
+  plain attribute read.
 * Loads are serialized by the watcher, so the diff is always old-vs-newer and
   an applier never sees an out-of-order pair. Other ``load()`` callers are
   unaffected; the loader's own ticket ordering still governs its snapshots.
@@ -82,6 +96,17 @@ MIN_POLL_INTERVAL_SECS = 0.05
 #: and logged, but a call that never returns is not. This is a backstop, not a
 #: per-applier tuning knob: a well-behaved applier never approaches it.
 APPLIER_TIMEOUT_SECS = 10.0
+
+#: Synthetic dotted-path prefix for a ``.env`` credential change. The watcher
+#: does not fingerprint credentials into the config document (``.env`` is a
+#: separate file with its own writer, and the document fingerprint is the parsed
+#: config cache key), so a credential change cannot surface as a real config
+#: leaf. It is dispatched as ``credentials.<KEY>`` instead -- a path no config
+#: section owns -- which the channel-restart applier maps onto the channels
+#: whose ``credentials`` tuple names that key. ``ConfigChange.touched`` matching
+#: is prefix-based, so an applier can watch the whole namespace with
+#: ``"credentials"`` or one key with ``"credentials.SLACK_BOT_TOKEN"``.
+CREDENTIAL_CHANGE_PREFIX = "credentials"
 
 Applier = Callable[["ConfigChange"], Awaitable[None] | None]
 
@@ -339,6 +364,16 @@ class ConfigWatch:
         self._cfg: KiroCrewConfig | None = None
         self._doc: dict[str, Any] | None = None
         self._fingerprint: tuple | None = None
+        # The ``.env`` file is tracked separately from ``config.json``: its own
+        # fingerprint (``loader.env_fingerprint``) and the last raw credential
+        # map read from it. ``config.json`` and ``.env`` are two different files
+        # with two different writers, and the document fingerprint is also the
+        # parsed-config cache key, so folding ``.env`` into it would bust that
+        # cache on every credential edit. ``_creds`` is ``None`` until primed, so
+        # the first cycle diffs against the real boot credentials rather than
+        # replaying every key as a change.
+        self._env_fingerprint: tuple | None = None
+        self._creds: dict[str, str] | None = None
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None
@@ -351,6 +386,13 @@ class ConfigWatch:
         self._stale: dict[int, tuple[Subscription, frozenset[str]]] = {}
         self._cycle_lock: asyncio.Lock | None = None
         self.last_error: str | None = None
+        # The ``.env`` fingerprint a credential apply last FAILED on. A failed
+        # apply keeps the fingerprint unadvanced so the next tick retries, which
+        # means the same bad file re-fails every ~2s; this dedups the WARNING to
+        # once per distinct failing file state (like ``_warned_undecodable_env``
+        # for the undecodable case) and logs the retries at DEBUG, so a malformed
+        # ``.env`` line does not spew a full traceback into the log every tick.
+        self._apply_failed_fingerprint: tuple | None = None
 
     # ── registry ──────────────────────────────────────────────────────
 
@@ -618,10 +660,47 @@ class ConfigWatch:
         if initial is not None:
             self.prime(initial)
             self._fingerprint = None
+            # The boot credentials are the diff baseline. Take them from what
+            # boot's own ``load_credentials()`` actually read (recorded raw,
+            # before the environment-wins override), NOT a fresh disk read here:
+            # the gateway loads credentials well before this post-bind start, and
+            # a ``.env`` rotation in that window would otherwise be read off disk
+            # NOW and adopted as the baseline -- so the first cycle re-reads the
+            # same rotated value, sees no diff, and never pushes it into
+            # ``os.environ``, leaving the channel on the revoked credential until
+            # the next gateway restart. Seeding with the boot map makes that
+            # window edit a real diff the first cycle applies. The env
+            # fingerprint is left unset for the same reason the config one is
+            # above. If no boot map was recorded (a test driving the watcher
+            # directly), fall back to the off-loop read; a read failure there
+            # leaves the baseline empty and the first cycle sets it.
+            if self._creds is None:
+                from kiro_crew.config import loader
+                from kiro_crew.config.loader_credentials import take_boot_raw_env
+
+                # Adopt the boot map only if it was read from the ``.env`` this
+                # watcher is about to watch (resolved off-loop: ``env_path`` can
+                # touch the filesystem). A record from another data home is not
+                # this watcher's baseline.
+                try:
+                    watched = await asyncio.to_thread(loader.env_path)
+                except Exception:  # noqa: BLE001 - fall back to an unchecked take
+                    watched = None
+                booted = take_boot_raw_env(path=watched)
+                if booted is not None:
+                    self._creds = booted
+                else:
+                    await self._prime_creds_baseline()
+            self._env_fingerprint = None
         elif self._cfg is None:
             fingerprint = await asyncio.to_thread(self._current_fingerprint)
             cfg = await asyncio.to_thread(self._load)
             self.prime(cfg, fingerprint)
+            await self._prime_creds_baseline()
+            try:
+                self._env_fingerprint = await asyncio.to_thread(self._current_env_fingerprint)
+            except Exception:  # noqa: BLE001 - the first cycle re-reads it
+                self._env_fingerprint = None
         self._task = loop.create_task(self._run(), name="config-watch")
         self._task.add_done_callback(self._on_task_done)
 
@@ -726,10 +805,64 @@ class ConfigWatch:
             force, self._force = self._force, False
             hold_gen = self._hold_gen
             fingerprint = await asyncio.to_thread(self._current_fingerprint)
-            if not force and fingerprint == self._fingerprint:
+            env_fingerprint = await asyncio.to_thread(self._current_env_fingerprint)
+            config_changed = force or fingerprint != self._fingerprint
+            env_changed = force or env_fingerprint != self._env_fingerprint
+            if not config_changed and not env_changed:
                 if self._stale and self._cfg is not None:
                     await self._retry_stale(self._cfg)
                 return None
+            # Read the raw ``.env`` map off the loop whenever ``.env`` moved, so
+            # the diff and the ``os.environ`` apply below are pure CPU work. The
+            # second element says whether the read was definitive.
+            env_read = await asyncio.to_thread(self._read_env_credentials) if env_changed else None
+            # Expand/validate any PATH line OFF the loop too: a ``~otheruser``
+            # entry makes expansion call pwd.getpwnam / the SAM database, which
+            # an LDAP/SSSD/AD lookup can stall. Done here so only the os.environ
+            # mutation in the applier runs on the loop. A non-definitive read is
+            # not applied, so skip the prep for it.
+            env_path_additions = (
+                await asyncio.to_thread(self._prepare_path_additions, env_read[0])
+                if env_read is not None and env_read[1]
+                else None
+            )
+            if self._hold_depth > 0 or self._hold_gen != hold_gen:
+                # A transaction began during one of the off-loop reads above (a
+                # dashboard channel save writes ``config.json`` then ``.env``, both
+                # under ``live.hold()``). Applying now would pair the just-written
+                # credential with the pre-save authorization roster for the length
+                # of the hold. Adopt and dispatch nothing -- not even the credential
+                # diff, which mutates ``os.environ`` and advances the ``.env``
+                # fingerprint as a side effect -- and force a fresh cycle; the hold
+                # release re-runs this against whatever the transaction committed.
+                # The config-load path below keeps the same guard for its own read.
+                self._force = True
+                return None
+            if not config_changed:
+                # Only ``.env`` moved: ``config.json`` is unchanged, so the
+                # document snapshot stays as it is and only the credential diff
+                # is applied and dispatched. A synthetic change carries the
+                # ``credentials.*`` paths to the channel-restart applier, old and
+                # new being the same live config.
+                cred_paths = self._apply_credential_diff(
+                    env_fingerprint, env_read, env_path_additions
+                )
+                if not cred_paths or self._cfg is None:
+                    if self._stale and self._cfg is not None:
+                        await self._retry_stale(self._cfg)
+                    return None
+                change = ConfigChange(old=self._cfg, new=self._cfg, changed=cred_paths)
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the arguments are credentials.<KEY> path names, never a credential value
+                logger.info(
+                    ".env credential key(s) changed and applied to the process "
+                    "environment: %d (%s). A channel whose credential changed is "
+                    "restarted; already-running children (ACP sessions, MCP "
+                    "servers) keep their environment until they respawn.",
+                    len(cred_paths),
+                    ", ".join(sorted(cred_paths)),
+                )
+                await self._dispatch(change)
+                return change
             try:
                 cfg, doc, torn = await asyncio.to_thread(self._load_with_doc)
             except Exception as e:  # noqa: BLE001 - keep the previous snapshot
@@ -764,6 +897,15 @@ class ConfigWatch:
                 self._force = True
                 return None
             changed = diff_config_docs(self._doc, doc)
+            # ``.env`` moved in the same tick as ``config.json`` (the dashboard's
+            # two-file save, or two edits landing together): apply the credential
+            # diff too and fold its synthetic ``credentials.*`` paths in, so one
+            # dispatch covers both and a channel whose credential changed restarts
+            # alongside one whose config did.
+            if env_changed:
+                changed = changed | self._apply_credential_diff(
+                    env_fingerprint, env_read, env_path_additions
+                )
             old = self._cfg
             # Adopt before dispatch so an applier that reads snapshot() sees the
             # new config, and record the PRE-load fingerprint: a write landing
@@ -888,6 +1030,170 @@ class ConfigWatch:
         from kiro_crew.config import loader
 
         return loader._config_fingerprint()
+
+    @staticmethod
+    def _current_env_fingerprint() -> tuple:
+        from kiro_crew.config import loader
+
+        return loader.env_fingerprint()
+
+    @staticmethod
+    def _read_env_credentials() -> "tuple[dict[str, str], bool]":
+        """The raw ``.env`` credential map and whether the read was DEFINITIVE.
+
+        ``definitive`` is ``False`` for a file that could not be read or is
+        UTF-16/UTF-32: an empty map then means "unknown", not "every key gone",
+        so the diff must not read it as every credential cleared.
+        """
+        from kiro_crew.config import loader
+
+        definitive: list[bool] = []
+        creds = loader.read_env_credentials_raw(definitive=definitive)
+        return creds, bool(definitive and definitive[0])
+
+    @staticmethod
+    def _prepare_path_additions(creds: "dict[str, str]") -> "dict[str, tuple[str, ...]]":
+        """Expand/validate the PATH line(s) in *creds* OFF the event loop.
+
+        A ``PATH`` ``.env`` line holding a ``~otheruser`` entry makes expansion
+        call ``pwd.getpwnam`` / the SAM database synchronously, which an
+        LDAP/SSSD/AD lookup can stall. :meth:`_cycle` runs this in a worker
+        thread and hands the result to :meth:`_apply_credential_diff`, so the
+        applier only mutates ``os.environ`` on the loop. Keyed by the PATH key
+        name as it appears in ``.env`` (``PATH``, or a case variant on Windows),
+        matching what the applier's PATH carve-out iterates.
+        """
+        from kiro_crew import env, platform_compat
+
+        out: dict[str, tuple[str, ...]] = {}
+        for key, val in creds.items():
+            if val and platform_compat.env_key_allowed(key, ("PATH",)):
+                out[key] = env.prepare_env_path_additions(val)
+        return out
+
+    async def _prime_creds_baseline(self) -> None:
+        """Read the boot credential map off-loop as the diff baseline.
+
+        Only a DEFINITIVE read becomes the baseline; an unreadable or
+        wide-encoded file leaves :attr:`_creds` ``None`` so the first cycle
+        re-reads it rather than baselining on an empty map that a later readable
+        save would diff as every key added.
+        """
+        try:
+            creds, definitive = await asyncio.to_thread(self._read_env_credentials)
+        except Exception:  # noqa: BLE001 - the first cycle re-reads it
+            self._creds = None
+            return
+        self._creds = creds if definitive else None
+
+    def _apply_credential_diff(
+        self,
+        env_fingerprint: tuple,
+        read: "tuple[dict[str, str], bool] | None",
+        path_additions: "dict[str, tuple[str, ...]] | None" = None,
+    ) -> frozenset[str]:
+        """Diff ``.env`` credentials against the last read, apply them, return change paths.
+
+        Pure CPU work: *read* is ``(raw map, definitive)`` already read off the
+        loop (``None`` means re-read here, for the test/``refresh_now`` path).
+        *path_additions* is the PATH directories expanded and validated off the
+        loop (:meth:`_prepare_path_additions`), passed to the applier so the
+        blocking ``~otheruser`` expansion never runs on the loop; ``None`` lets
+        the applier expand inline (the test/``refresh_now`` path).
+        Diffs the map against :attr:`_creds`, pushes the changed keys into
+        ``os.environ`` through the loader's live applier (set/pop per key,
+        honouring the Docker scrub and PATH carve-outs), and returns one
+        synthetic dotted path per changed key -- ``credentials.<KEY>`` -- for the
+        channel-restart applier to map onto the channels whose credentials
+        moved. The baseline and the ``.env`` fingerprint advance ONLY after the
+        apply succeeds (or when there was nothing to apply): a failed apply
+        leaves both untouched and dispatches nothing, so the keys it did not
+        install are retried on the next tick rather than recorded as in force --
+        see the ``except`` below for why advancing on failure strands a channel.
+
+        A NON-definitive read (the file could not be decoded -- UTF-16/UTF-32 or
+        an invalid byte -- or could not be read) is NOT a diff: its empty map
+        would otherwise read as every credential cleared and tear down every
+        channel that depends on one. The ``.env`` FINGERPRINT IS NOT ADVANCED --
+        unlike a definitive read, which is cached by fingerprint, a non-definitive
+        one must be retried: leaving the fingerprint stale means the next tick
+        still sees ``env_changed`` and re-reads, so a one-off transient failure
+        (e.g. a Windows sharing violation mid-rotation) is retried on the very
+        next cycle instead of being silently and permanently skipped the moment
+        the file's mtime stops moving. A persistently bad file pays a repeated
+        but harmless re-read each tick (the undecodable warning still fires only
+        once, via ``_warned_undecodable_env``). The baseline is left as it was,
+        so the next readable save diffs against the last values that actually
+        loaded.
+
+        On the FIRST EVER definitive observation (:attr:`_creds` is ``None``) it
+        diffs against an EMPTY baseline rather than adopting silently: ``_creds``
+        is only ``None`` when no prior read ever became a baseline (boot's own
+        credential load failed the same way -- see :meth:`_prime_creds_baseline`
+        -- so nothing from ``.env`` ever reached ``os.environ``), so a key already
+        present in this first readable map was never actually applied and must be
+        diffed in, not assumed to already be in force. A map that happens to
+        equal the boot propagation (nothing to apply) costs one no-op diff, which
+        is cheap and only happens once.
+        Values are never logged, here or by the applier.
+        """
+        from kiro_crew.config import loader
+
+        if read is None:
+            read = self._read_env_credentials()
+        new_creds, definitive = read
+        if not definitive:
+            # Unreadable / wide-encoded / undecodable: keep the baseline and the
+            # fingerprint, change nothing, and let the next tick retry.
+            return frozenset()
+        old_creds = self._creds if self._creds is not None else {}
+        changed_keys = loader.changed_env_keys(old_creds, new_creds)
+        if not changed_keys:
+            # Nothing to apply, so nothing can fail: adopt the (identical) map
+            # and advance the fingerprint, the no-diff steady state.
+            self._env_fingerprint = env_fingerprint
+            self._creds = new_creds
+            return frozenset()
+        try:
+            # Pass the previous baseline so the apply can pop only what ``.env``
+            # itself propagated (never an inherited value) and warn only on a
+            # genuine inherited-value collision, not on a routine rotation. The
+            # PATH additions were expanded off the loop (see the caller): hand
+            # them in so the one call that can block -- a ``~otheruser``
+            # directory-service lookup -- is not run here on the event loop.
+            loader.apply_env_credential_changes(
+                changed_keys, new_creds, old_creds, path_additions=path_additions
+            )
+        except Exception:  # noqa: BLE001 - a bad apply must not kill the poll
+            # Leave the baseline AND the fingerprint exactly as they were, the
+            # same retry contract as a non-definitive read above: advancing
+            # either here would record a rotation that never reached
+            # ``os.environ`` as already in force, so a later repair that reverts
+            # the offending line would diff only that line and never re-apply the
+            # rotation -- stranding the channel after the fix. Unadvanced, the
+            # next tick re-reads the file (its fingerprint still looks changed)
+            # and retries the whole diff, and nothing is dispatched now so no
+            # restart is run against a credential the apply did not install.
+            #
+            # That retry means the SAME bad file re-fails every tick, so the
+            # WARNING (with its traceback) fires ONCE per distinct failing file
+            # state and the retries log at DEBUG -- the same warn-once shape the
+            # undecodable path uses -- rather than spamming ~43k tracebacks/day
+            # while a malformed line sits in ``.env``.
+            if self._apply_failed_fingerprint != env_fingerprint:
+                self._apply_failed_fingerprint = env_fingerprint
+                logger.warning("applying .env credential changes failed", exc_info=True)
+            else:
+                logger.debug("applying .env credential changes still failing", exc_info=True)
+            return frozenset()
+        # Apply succeeded: only now is the new map really in force, so advance
+        # the baseline and fingerprint and dispatch the restart for the keys that
+        # moved. Clear any prior apply-failure signature so a later failure warns
+        # afresh.
+        self._apply_failed_fingerprint = None
+        self._env_fingerprint = env_fingerprint
+        self._creds = new_creds
+        return frozenset(f"{CREDENTIAL_CHANGE_PREFIX}.{k}" for k in changed_keys)
 
     @staticmethod
     def _load() -> "KiroCrewConfig":
@@ -1023,7 +1329,16 @@ def notify_config_written() -> None:
 
 
 def reset_for_tests() -> None:
-    """Drop the process watcher so a test gets a fresh, unstarted one."""
+    """Drop the process watcher so a test gets a fresh, unstarted one.
+
+    Deliberately does NOT clear the once-per-process boot ``.env`` record
+    (``loader.reset_boot_raw_env``): the integration second-boot witness reuses
+    this between two boots of ONE process, where that record must survive
+    unchanged (it is recorded on the first ``load_credentials`` and never
+    rewritten) rather than be reset and re-recorded -- a reset here would make
+    it read as a second-boot change. A unit test that needs the record cleared
+    calls ``reset_boot_raw_env`` itself.
+    """
     global _WATCH
     with _WATCH_LOCK:
         w = _WATCH

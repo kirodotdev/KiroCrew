@@ -16,47 +16,25 @@ from kiro_crew.dashboard.state import _ChatSlot
 class TestBlockedSlashCommands:
     """Tests for _BLOCKED_SLASH_COMMANDS blocking dangerous commands."""
 
-    def test_quit_is_blocked(self):
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("/quit", id="quit_is_blocked"),
+            pytest.param("/exit", id="exit_is_blocked"),
+            pytest.param("/q", id="q_is_blocked"),
+            pytest.param("/editor", id="editor_is_blocked"),
+            pytest.param("/chat", id="chat_is_blocked"),
+            pytest.param("/paste", id="paste_is_blocked"),
+            pytest.param("/reply", id="reply_is_blocked"),
+            # kiro-cli's terminal checkpoint toggle (Ctrl+T); the dashboard's
+            # session model and /side cover its purpose, so it is inert here.
+            pytest.param("/tangent", id="tangent_is_blocked"),
+        ],
+    )
+    def test_is_blocked(self, command: str):
         from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
 
-        assert "/quit" in _BLOCKED_SLASH_COMMANDS
-
-    def test_exit_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/exit" in _BLOCKED_SLASH_COMMANDS
-
-    def test_q_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/q" in _BLOCKED_SLASH_COMMANDS
-
-    def test_editor_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/editor" in _BLOCKED_SLASH_COMMANDS
-
-    def test_chat_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/chat" in _BLOCKED_SLASH_COMMANDS
-
-    def test_paste_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/paste" in _BLOCKED_SLASH_COMMANDS
-
-    def test_reply_is_blocked(self):
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/reply" in _BLOCKED_SLASH_COMMANDS
-
-    def test_tangent_is_blocked(self):
-        # kiro-cli's terminal checkpoint toggle (Ctrl+T); the dashboard's
-        # session model and /side cover its purpose, so it is inert here.
-        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
-
-        assert "/tangent" in _BLOCKED_SLASH_COMMANDS
+        assert command in _BLOCKED_SLASH_COMMANDS
 
     def test_compact_is_not_blocked(self):
         from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS

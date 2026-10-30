@@ -12,8 +12,8 @@ Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_process``,
 ``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
 ``_spawn_work_dir``.
 
-Instance fields read: ``_descendant_scan_lock``, ``_exit_watch_task``, ``_pid``,
-``_reader_task``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir``.
+Instance fields read: ``_close_remote_workspace``, ``_descendant_scan_lock``,
+``_exit_watch_task``, ``_pid``, ``_reader_task``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -451,6 +451,7 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     finally:
         self._discard_sandbox_cleanup()
         await self._discard_bound_workspace()
+        await self._close_remote_workspace()
 
 
 async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str = "") -> None:

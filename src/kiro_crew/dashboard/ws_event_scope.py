@@ -235,8 +235,8 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "activity_event", "session_summary",
     # Voice
     "voice_chunk", "voice_complete", "voice_error",
-    # Approvals and question cards (carry a slot field)
-    "approval", "approval_resolved", "question_card",
+    # Approvals, question cards and an MCP elicitation answer (carry a slot field)
+    "approval", "approval_resolved", "question_card", "elicitation_resolved",
     # Subagent lifecycle. Every one of these is fired through
     # ``SubagentManager._fire_event`` and reaches the wire via
     # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``
@@ -390,6 +390,45 @@ def notification_source_app(source: str) -> str:
     if source.startswith(_APP_SOURCE_PREFIX):
         return source[len(_APP_SOURCE_PREFIX):]
     return ""
+
+
+def is_app_channel(channel: str) -> bool:
+    """Whether a notification channel belongs to an app rather than the system."""
+    owner = notification_channel_owner(channel)
+    return bool(owner) and owner != _SYSTEM_SOURCE
+
+
+def app_origin_frame(event_type: str, data: object) -> bool:
+    """Whether a frame carries an app's own output.
+
+    An app-published event, an app's push notification, or a setting on one of an
+    app's notification channels. A socket with no app surface (a relayed teammate's,
+    see ``kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG``) is withheld all three.
+    """
+    if event_type == _APP_EVENT_WS_TYPE:
+        return True
+    fields = data if isinstance(data, dict) else {}
+    if event_type in _SOURCE_FILTERED_EVENTS:
+        return bool(notification_source_app(str(fields.get("source", ""))))
+    if event_type == _CHANNEL_SETTINGS_EVENT:
+        return is_app_channel(str(fields.get("channel", "")))
+    return False
+
+
+#: Why a relayed teammate was withheld an app's output, on any transport.
+RELAY_TEAMMATE_APP_FRAME = "relay_teammate_app_frame"
+
+
+def audit_teammate_withheld(event_type: str) -> None:
+    """Record, best-effort, that a relayed teammate was withheld an app's output.
+
+    The one denied row every transport writes for that decision: the WebSocket
+    gate, the SSE stream and the notification reads.
+    """
+    try:
+        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, RELAY_TEAMMATE_APP_FRAME)
+    except Exception:
+        logger.debug("ws_event_scope: SEL audit for a teammate withhold failed", exc_info=True)
 
 
 _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {

@@ -165,10 +165,42 @@ def _canonical_glob(pattern: str, project_dir: str | Path | None = None) -> str:
     return _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
 
 
+def _spelled_canonically(pattern: str, project_dir: str | Path | None) -> bool:
+    """True when *pattern*'s literal prefix already resolves to itself (POSIX only).
+
+    :func:`_canonical_glob` then returns *pattern* whether the sensitive-path gate
+    admits the prefix or refuses it, so the gate's pooled check can be skipped
+    without changing the result. The ``realpath`` here is the one
+    ``validate_file_path`` runs on the same thread. Windows, and any UNC-shaped
+    prefix, always take the gate: ``realpath`` on a UNC prefix is the SMB probe the
+    gate screens first. A project-local prefix is never resolved, as in
+    :func:`_canonical_prefix`. Nothing is stored, so a prefix that later becomes
+    a link is caught on the next call.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if os.name == "nt":
+        return False
+    parts, literal = _literal_split(pattern)
+    if literal == 0:
+        return False
+    prefix = str(Path(*parts[:literal]))
+    if sk.hooks_module.is_unc_shape(prefix):
+        return False
+    try:
+        if project_dir and sk._within_any(os.path.abspath(prefix), (os.path.abspath(project_dir),)):
+            return False
+        return _glob_with_prefix(pattern, os.path.realpath(os.path.expanduser(prefix))) == pattern
+    except (OSError, ValueError):
+        return False
+
+
 def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
     """*globs* plus each one's canonical spelling, original order first, no duplicates."""
     out = list(globs)
     for glob in globs:
+        if _spelled_canonically(glob, project_dir):
+            continue
         canonical = _canonical_glob(glob, project_dir)
         if canonical not in out:
             out.append(canonical)
@@ -410,10 +442,11 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     The index file is an agent-WRITABLE crew-home leaf, so a stored row is not
     evidence that anything admitted the path it names. Two things therefore
     stand between a row and a read. Here, every unconfined row must name a path
-    under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
-    screened without a syscall — and rows that fail are dropped rather than
-    served. Then, because lexical containment does not say where the file
-    resolves now, ``_read_enumerated_skill_bytes`` checks each unconfined path
+    under :meth:`_snapshot_admitted_roots` or under this loader's own roots as
+    the walk spelled them — lexical, so a whole snapshot is screened without a
+    syscall — and a snapshot holding a row that fails is refused whole. Then,
+    because lexical containment does not say where the file resolves now,
+    ``_read_enumerated_skill_bytes`` checks each unconfined path
     before its first read: a stored row is never vetted
     (see :meth:`_vet_unconfined_path`).
     """
@@ -424,8 +457,17 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     stored = loader._search_index.catalog_snapshot(loader._catalog_scope_id(project_key))
     if stored is None:
         return None
-    admitted_roots = loader._snapshot_admitted_roots()
     own_roots = (loader._dir, *loader._extra_paths)
+    # A walk names its files in the spelling of the root it walked, and a root
+    # under a linked $HOME is not its own realpath. So the screen also admits
+    # those spellings, lexically, or every row a walk stored is refused and a
+    # restarted process serves no skills until a fresh walk finishes. This only
+    # admits a row; the read still vets what it resolves to against the
+    # resolved roots alone (see :meth:`_vet_unconfined_path`).
+    admitted_roots = (
+        *loader._snapshot_admitted_roots(),
+        *(os.path.abspath(root) for root in own_roots),
+    )
     provider_roots = sk._trusted_skill_roots()
     rows: list[tuple[str, Path, str | None]] = []
     for key, path, confine_root in stored.rows:
@@ -856,6 +898,102 @@ def _iter_visible(
     ]
 
 
+def _alias_selected(
+    entries: list[_ScopedSkillEntry],
+    selected: list[_ScopedSkillEntry],
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    loader_roots: list[Path],
+    real_roots: list[str],
+) -> list[_ScopedSkillEntry]:
+    """Catalog rows a mapping names through a second link to the same skill.
+
+    An app skill is linked twice under the skills directory, at
+    ``<app>/<skill>`` and usually at a flat ``<skill>``, and the catalog walk
+    keeps only the spelling it reaches first. For a skill whose name sorts
+    before the app's that is the flat link, which ``<app>/*/SKILL.md`` alone
+    does not match. A row the globs missed is still selected when the path one level
+    under the mapping's literal prefix, named like the row's directory,
+    matches the mapping and resolves to the row's target. Only prefixes inside
+    a loader-owned root, spelled or validated and resolved, are tried: the
+    catalog walk already resolved those links, and a project tree is never
+    resolved before consent.
+    """
+    roots = (*(os.path.abspath(root) for root in loader_roots), *real_roots)
+    candidates = _alias_candidates(only, heads, canonicals, roots)
+    if not candidates:
+        return []
+    taken = {id(entry) for entry in selected}
+    # A confined project row is never resolved: its path may be a swapped
+    # link or junction, and project paths stay lexical.
+    return [
+        entry
+        for entry in entries
+        if id(entry) not in taken
+        and entry.project_root is None
+        and _alias_hit(Path(entry[1]), candidates)
+    ]
+
+
+def _alias_candidates(
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    roots: tuple[str, ...],
+) -> list[tuple[Path, list[str]]]:
+    """``(prefix, globs)`` for each ``<prefix>/*/SKILL.md`` mapping inside *roots*."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    candidates: list[tuple[Path, list[str]]] = []
+    for pattern in only:
+        parts, literal = _literal_split(pattern)
+        if literal == 0 or literal != len(parts) - 2 or parts[-1] != "SKILL.md":
+            continue
+        globs = list(dict.fromkeys([pattern, canonicals[pattern]]))
+        for prefix in dict.fromkeys([str(Path(*parts[:literal])), heads[pattern]]):
+            if prefix and sk._within_any(os.path.abspath(prefix), roots):
+                candidates.append((Path(prefix), globs))
+    return candidates
+
+
+def _alias_hit(path: Path, candidates: list[tuple[Path, list[str]]]) -> bool:
+    """True when ``<prefix>/<leaf>/SKILL.md`` matches and resolves to *path*'s target."""
+    target: str | None = None
+    for base, globs in candidates:
+        alias = base / path.parent.name / "SKILL.md"
+        if not any(fnmatch.fnmatch(str(alias), g) for g in globs):
+            continue
+        if not os.path.lexists(alias):
+            continue
+        if target is None:
+            target = os.path.normcase(os.path.realpath(path))
+        if os.path.normcase(os.path.realpath(alias)) == target:
+            return True
+    return False
+
+
+def _alias_matches(path: Path, globs: list[str], loader_roots: list[Path]) -> bool:
+    """The :func:`_alias_selected` rule for one operator-owned path outside the catalog.
+
+    Readers that match a listed path against already-expanded globs call this so a
+    skill listed under its flat link still matches ``<app>/*/SKILL.md``. Both
+    *path* and the prefix must sit inside *loader_roots*, spelled or resolved.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    roots = (
+        *(os.path.abspath(root) for root in loader_roots),
+        *(real for root in loader_roots if (real := sk.validate_file_path(str(root)))),
+    )
+    if not sk._within_any(os.path.abspath(path), roots):
+        # A path outside the roots (a project row) is never resolved.
+        return False
+    heads: dict[str, str | None] = dict.fromkeys(globs)
+    candidates = _alias_candidates(globs, heads, {g: g for g in globs}, roots)
+    return bool(candidates) and _alias_hit(path, candidates)
+
+
 def _scoped_entries(
     loader: SkillsLoader,
     project_dir: str | Path | None,
@@ -892,6 +1030,9 @@ def _scoped_entries(
     # rows or probe a project skills junction before consent admission.
     excluded = tuple(
         dict.fromkeys([*(os.path.abspath(path) for path in catalog_roots), *real_roots])
+    )
+    selected.extend(
+        _alias_selected(entries, selected, only, heads, canonicals, loader_roots, real_roots)
     )
     # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
     # literal prefix through the same provider/sensitive-path fence as the

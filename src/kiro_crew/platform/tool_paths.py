@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import ntpath
 import os
+import posixpath
 import re
 from collections.abc import Mapping
 from types import MappingProxyType, ModuleType
+from typing import cast
+
+from kiro_crew.platform.guest_paths import GuestPathParams
 
 #: EVERY argument name a tool may carry its target file path under. Public because
 #: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
@@ -213,9 +217,11 @@ def is_workspace_edit_call(tool_kind: str, diff_path: str = "") -> bool:
     keep printing on one. This predicate is that narrower reading, so the badge
     consumer does not carry a private notion of an edit keyed on the ``kind``
     alone (the diff block still routes a kindless edit here) and the gates keep
-    theirs. Two readings, one module, both named for what they decide.
+    theirs. Two readings, one module, both named for what they decide. A
+    ``delete`` or ``move`` that ALSO carries a diff block (Copilot CLI's per-file
+    write prompt names one) is still not "easy to put back", so its kind wins.
     """
-    return tool_kind == "edit" or bool(diff_path)
+    return tool_kind == "edit" or (bool(diff_path) and tool_kind not in ("delete", "move"))
 
 
 def _is_literal_absolute(path: str) -> bool:
@@ -392,7 +398,14 @@ def edit_target_candidates(
         if candidates.truncated or candidates.unanchored:
             return candidates
     if diff_path:
-        if not _is_anchored(diff_path):
+        # A remote workspace's diff block names a guest file: anchored only when it
+        # is absolute as the guest reads it (POSIX, nothing expanded), whatever this
+        # gateway's os.path makes of ``/workspace/app/x``.
+        if isinstance(raw_params, GuestPathParams):
+            anchored = posixpath.isabs(diff_path)
+        else:
+            anchored = _is_anchored(diff_path)
+        if not anchored:
             candidates.unanchored = True
             return candidates
         if diff_path not in candidates:
@@ -497,15 +510,74 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
 #: unlisted tool, keeps the full scan. This is the narrow counterpart of
 #: :data:`DOCUMENT_WRITING_TOOLS`, which no MCP tool may join: a server-side
 #: tool can execute whatever it calls ``content``, so a row is admitted only
-#: for a tool of Kiro Crew's own core server whose handler is known to keep
-#: the field as non-executable document text. ``knowledge_add_document``
-#: ingests ``content`` into the knowledge library as the document body.
-#: Additive only.
+#: for a tool of Kiro Crew's own servers (``kirocrew-core``, ``kirocrew-cron``)
+#: whose handler is known to keep
+#: the field as non-executable text. ``knowledge_add_document`` ingests
+#: ``content`` into the knowledge library as the document body. The spawn tools
+#: hand their brief to a sub-agent MODEL as its prompt: ``spawn_run``'s
+#: ``task`` and each ``tasks`` entry (a prompt string, or an object's
+#: ``task``), ``spawn_continue``'s ``task``, ``spawn_steer``'s ``message`` and
+#: each ``spawn_sub_agents`` ``agents`` entry's ``prompt``. The host runs none
+#: of that text; whatever the sub-agent then runs is its own tool call and
+#: goes through its own deny gate.
+#:
+#: The same holds for the other core tools whose field is a prompt for a
+#: model or text for a person, never a command line:
+#:
+#: * ``kirocrew-cron`` ``cron_add`` ``message`` is the prompt the scheduled
+#:   agent turn receives. A script job reads it as its arguments instead, so
+#:   :func:`mcp_document_body_keys` drops the exemption for a call that names
+#:   ``script`` or ``command`` (or omits its params); those two fields always
+#:   keep the full scan. ``cron_update`` is not listed: it can retarget an existing script
+#:   job, whose kind the gate cannot see.
+#: * ``send_message`` ``text`` / ``title``, ``update_message`` ``text`` and
+#:   ``send_notification`` ``title`` / ``body`` are delivered to a person (or
+#:   injected into a dashboard session as a user turn). ``blocks`` and the
+#:   routing fields keep the full scan.
+#: * ``workflow_run`` / ``workflow_author`` ``intent`` is the goal handed to
+#:   the authoring model. The script it produces is validated import-free and
+#:   acts only through agents with their own gates; ``workflow_run``
+#:   ``source``, ``input`` and ``args`` keep the full scan.
+#: * ``monitor_start`` / ``monitor_update`` ``message`` is re-injected into the
+#:   same session as its next turn.
+#: * ``learn_add`` ``rule`` / ``negative`` are stored lesson text that later
+#:   turns read as prompt context.
+#: * ``artifact_post_comment`` / ``artifact_reply_comment`` ``text`` is a
+#:   stored comment. Artifact ``content`` is NOT listed: a webapp artifact's
+#:   content is deployable code.
+#:
+#: A field is a dotted path from the top of the params: a plain name is a
+#: top-level key, and ``name[]`` steps into each item of the list under
+#: ``name`` (``tasks[]`` is each string item, ``tasks[].task`` the ``task`` of
+#: each object item). Only a STRING at the end of a path is a body; any other
+#: shape there stays in the scanned half. Additive only. A row whose field
+#: stops being prose when some other argument is present (as ``cron_add``'s
+#: ``message`` does under ``script``/``command``) must add that condition to
+#: :func:`mcp_document_body_keys` in the same change, failing closed when the
+#: params are missing.
 MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
     {
         ("kirocrew-core", "knowledge_add_document"): frozenset({"content"}),
+        ("kirocrew-core", "spawn_run"): frozenset({"task", "tasks[]", "tasks[].task"}),
+        ("kirocrew-core", "spawn_continue"): frozenset({"task"}),
+        ("kirocrew-core", "spawn_steer"): frozenset({"message"}),
+        ("kirocrew-core", "spawn_sub_agents"): frozenset({"agents[].prompt"}),
+        ("kirocrew-cron", "cron_add"): frozenset({"message"}),
+        ("kirocrew-core", "send_message"): frozenset({"text", "title"}),
+        ("kirocrew-core", "update_message"): frozenset({"text"}),
+        ("kirocrew-core", "send_notification"): frozenset({"title", "body"}),
+        ("kirocrew-core", "workflow_run"): frozenset({"intent"}),
+        ("kirocrew-core", "workflow_author"): frozenset({"intent"}),
+        ("kirocrew-core", "monitor_start"): frozenset({"message"}),
+        ("kirocrew-core", "monitor_update"): frozenset({"message"}),
+        ("kirocrew-core", "learn_add"): frozenset({"rule", "negative"}),
+        ("kirocrew-core", "artifact_post_comment"): frozenset({"text"}),
+        ("kirocrew-core", "artifact_reply_comment"): frozenset({"text"}),
     }
 )
+
+#: The path step that means "each item of the list under the previous key".
+_EACH_ITEM = "[]"
 
 #: The separator transports put between a server name and a tool name in a
 #: qualified tool id: kiro-cli spells ``<server>___<tool>``, the canonical MCP
@@ -513,7 +585,11 @@ MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProx
 _MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
 
 
-def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -> frozenset[str]:
+def mcp_document_body_keys(
+    tool_name: str | None,
+    mcp_server_name: str | None,
+    params: Mapping | None = None,
+) -> frozenset[str]:
     """The :data:`MCP_DOCUMENT_BODY_FIELDS` keys for this call, else empty.
 
     Both arguments MUST come from the client's trusted identity caches, never
@@ -522,34 +598,88 @@ def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -
     tool of the same name resolves to a different ``mcp_server_name`` and gets
     no exemption. A server-qualified *tool_name* resolves only when its
     qualifier names that same server.
+
+    *params* are the call's arguments. A ``kirocrew-cron`` ``cron_add`` that
+    names ``script`` or ``command`` (any value) is a script job, which reads
+    ``message`` as its arguments, so it gets no exemption; omitting *params*
+    for it does the same (fail closed).
     """
     if not tool_name or not mcp_server_name:
         return frozenset()
+    bare = tool_name
     keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
-    if keys is not None:
-        return keys
-    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
-    if len(parts) >= 2 and parts[-2] == mcp_server_name:
-        return MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, parts[-1]), frozenset())
-    return frozenset()
+    if keys is None:
+        parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+        if len(parts) >= 2 and parts[-2] == mcp_server_name:
+            bare = parts[-1]
+            keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, bare))
+    if not keys:
+        return frozenset()
+    if (mcp_server_name, bare) == ("kirocrew-cron", "cron_add") and (
+        params is None or "script" in params or "command" in params
+    ):
+        return frozenset()
+    return keys
 
 
 def split_document_bodies(raw_params: Mapping, body_keys: frozenset[str]) -> tuple[dict, list[str]]:
     """Split *raw_params* into the non-body arguments and the body strings.
 
-    Only a TOP-LEVEL string under one of *body_keys* is a body; a mapping or a
-    list there, and every other argument, stays in the first half for the full
-    scan.
+    Each of *body_keys* is a field path in the :data:`MCP_DOCUMENT_BODY_FIELDS`
+    form. Only a STRING at the end of a path is a body; a mapping or a list
+    there, a path step that meets the wrong shape, and every other argument
+    stay in the first half for the full scan. *raw_params* is not modified.
     """
-    rest: dict = {}
+    rest: dict = dict(raw_params)
     bodies: list[str] = []
-    for key, value in raw_params.items():
-        if key in body_keys and isinstance(value, str):
-            if value:
-                bodies.append(value)
-        else:
-            rest[key] = value
+    for spec in sorted(body_keys):
+        # A path starts with a key name, so a mapping comes back a mapping.
+        rest = cast("dict", _strip_body_field(rest, _body_field_steps(spec), bodies))
     return rest, bodies
+
+
+def _body_field_steps(spec: str) -> tuple[str, ...]:
+    """``"tasks[].task"`` -> ``("tasks", "[]", "task")``."""
+    steps: list[str] = []
+    for part in spec.split("."):
+        if part.endswith(_EACH_ITEM):
+            steps.extend((part[: -len(_EACH_ITEM)], _EACH_ITEM))
+        else:
+            steps.append(part)
+    return tuple(steps)
+
+
+def _strip_body_field(node: object, steps: tuple[str, ...], bodies: list[str]) -> object:
+    """*node* with the body strings at *steps* moved into *bodies*.
+
+    Copy-on-write: a container on the path is rebuilt, never edited, so the
+    caller's params stay intact. A step that meets the wrong shape leaves the
+    node as it is, which keeps it in the scanned half.
+    """
+    head, tail = steps[0], steps[1:]
+    if head == _EACH_ITEM:
+        if not isinstance(node, list):
+            return node
+        kept: list[object] = []
+        for item in node:
+            if not tail and isinstance(item, str):
+                if item:
+                    bodies.append(item)
+                continue
+            kept.append(_strip_body_field(item, tail, bodies) if tail else item)
+        return kept
+    if not isinstance(node, Mapping) or head not in node:
+        return node
+    value = node[head]
+    if not tail:
+        if not isinstance(value, str):
+            return node
+        if value:
+            bodies.append(value)
+        return {k: v for k, v in node.items() if k != head}
+    rebuilt = dict(node)
+    rebuilt[head] = _strip_body_field(value, tail, bodies)
+    return rebuilt
 
 
 class ScanStrings(list):

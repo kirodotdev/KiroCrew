@@ -111,6 +111,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
+    drain_when_free,
     entries_queued_by,
     entry_channel,
     entry_person_origin,
@@ -331,8 +332,12 @@ class WebexDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
+        skill_trigger_text: str | None = None,
     ) -> None:
         """Drive one authorized inbound Webex message through TurnDriver.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands=False`` is used by the drain: a queued ``/new`` is
         turn content the user typed mid-turn, so it must reach the model as
@@ -581,6 +586,7 @@ class WebexDispatcher:
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
+                    skill_trigger_text=skill_trigger_text,
                     renderer=renderer,
                     # A GROUP space is a shared audience: the sender is allow-listed
                     # but the other members are not, and the operator's memory,
@@ -904,6 +910,24 @@ class WebexDispatcher:
             # drains; see the collapse test below for what its absence costs.
             defer_rest = False
             async with self._queue.lock:
+                # Another turn holds this session's lease (a dashboard, cron or
+                # auto-nudge turn, or another channel's under a unified scope).
+                # Replaying now only reaches the busy path, which queues the text
+                # again for this loop to dequeue straight back, flipping the receipt
+                # to "Now answering" each lap with no turn started. Leave the queue
+                # in order and drain once the lease is free.
+                if self.sessions.is_busy(session_key):
+                    drain_when_free(
+                        channel=_CHANNEL,
+                        session_key=session_key,
+                        is_busy=self.sessions.is_busy,
+                    )
+                    logger.debug(
+                        "webex: session %s is held by another turn; its queue drains "
+                        "once the lease is free",
+                        session_key,
+                    )
+                    return
                 while True:
                     item = self.sessions.dequeue(session_key)
                     if item is None:

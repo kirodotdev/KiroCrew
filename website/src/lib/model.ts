@@ -98,7 +98,7 @@ export function displayModel(
   if (shown !== 'auto') return shown
   const inherited = normalizeModelKey(effective)
   if (!inherited || inherited === 'auto') return shown
-  const row = models.find(m => normalizeModelKey(m.name) === inherited)
+  const row = models.find(m => m.name === effective) ?? models.find(m => normalizeModelKey(m.name) === inherited)
   return row ? row.name : shown
 }
 
@@ -122,8 +122,11 @@ function displayPinnedModel(
   // normalized (dotted vs dashed, case) but `ModelDropdownList` highlights on
   // exact `activeModel === m.name`, so handing back the raw pin would show a
   // model in the chip that checks no row — e.g. a config pin `claude-opus-4.8`
-  // against an advertised `claude-opus-4-8`.
-  const match = models.find(m => normalizeModelKey(m.name) === key)
+  // against an advertised `claude-opus-4-8`. An exact id match wins first,
+  // because two distinct advertised ids can share one normalized key (e.g.
+  // `fable` and `claude-fable-5`), and the first normalized match would check
+  // the wrong row.
+  const match = models.find(m => m.name === pinned) ?? models.find(m => normalizeModelKey(m.name) === key)
   // Verdict says runnable: show it even when the list omits the row. There is no
   // row to highlight in that case, which is inherent — a filtered-out model
   // cannot be a picker row — and naming the user's actual pin beats naming

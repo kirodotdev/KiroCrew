@@ -32,6 +32,7 @@ from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
+from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
 from kiro_crew.subagent import (
@@ -270,6 +271,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # (subagent id, note) pairs for a level only session start can judge: with
     # no model pinned the provider binds it to the model the backend serves.
     effort_pendings: list[tuple[str, tuple[str, str]]] = []
+    # (subagent id, note) pairs for a run a pin starts on its own runtime.
+    runtime_notes: list[tuple[str, tuple[str, str]]] = []
     agent_tasks: list[str] = []
     # Each accepted member's label, "" where the call gave none.
     agent_labels: list[str] = []
@@ -427,6 +430,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_applies.append((str(d.get("id", "?")), (t_effort, str(d["effort_applied"]))))
         if d.get("effort_pending"):
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
+        if d.get("runtime_note"):
+            runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
 
     def _receipt() -> str:
         return _spawn_run_receipt(
@@ -437,6 +442,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_drops=effort_drops,
             effort_applies=effort_applies,
             effort_pendings=effort_pendings,
+            runtime_notes=runtime_notes,
             queued_reasons=queued_reasons,
             errors=errors,
             transport_errors=transport_errors,
@@ -470,6 +476,7 @@ def _spawn_run_receipt(
     can_work: bool,
     keep: bool,
     agent_labels: list[str] | None = None,
+    runtime_notes: list[tuple[str, tuple[str, str]]] | None = None,
 ) -> str:
     """Render the accumulated background-run receipt without gateway requests."""
     spawn_lines: list[str] = []
@@ -492,6 +499,10 @@ def _spawn_run_receipt(
         # Neither a ✓ nor "dropped": the outcome is decided after this result.
         for pending_ids, (lvl, pending_note) in _collapse_effort_verdicts(effort_pendings):
             spawn_lines.append(f"ℹ reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
+        # Memory cost of a pin: it is the user's setting, not the call's, that
+        # usually carries it, so the receipt is where the caller first sees it.
+        for note_ids, (_unused, note) in _collapse_effort_verdicts(runtime_notes or []):
+            spawn_lines.append(f"ℹ {note_ids}: {note}")
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will
@@ -679,6 +690,12 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
             "arrives as a [Subagent completion event]; do not spawn it again unless "
             "you still need the work."
         )
+    if d.get("status") == "not_disposed":
+        return (
+            f"Not disposed: conversation {conv} was dropped from Crew's list, but its "
+            "backend keeps its own session store and that session was not deleted. "
+            "A later spawn_continue may still resume it."
+        )
     return f"Released conversation {conv} — it can no longer be continued."
 
 
@@ -723,6 +740,22 @@ def _live_adaptive_state() -> dict[str, Any] | None:
     return None
 
 
+def _caller_runs_remotely() -> bool:
+    """Whether the calling session is bound to a remote workspace; False if unknown.
+
+    Read from the durable placement choice, which this tool server can see, so
+    the spawn floor is not reported as holding children the gate prices without
+    it (``admission/gate.py``, ``remote_child``).
+    """
+    try:
+        from kiro_crew.session_environment import session_attached_remotely
+
+        return session_attached_remotely(mcp_core._resolve_session_key())
+    except Exception:
+        logger.debug("resource_status: session placement unreadable", exc_info=True)
+        return False
+
+
 def resource_status(name: str, args: dict[str, Any]) -> str:
     rstatus = host_status.probe()
     out = rstatus.summary_lines()
@@ -743,6 +776,12 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
                 f"  Sub-agent ceiling: {cap} (configured max; the cap actually in "
                 "force could not be read from the gateway)"
             )
+    out.extend(session_memory_lines())
+    # The posture reads a looser figure than the spawn gate and knows nothing of
+    # ``agent.spawn_min_memory_gb``, so it can read AMPLE while every start waits.
+    spawn = host_status.spawn_floor_reading(remote=_caller_runs_remotely())
+    out.append(spawn.summary_line())
+    blocked = spawn.blocked_sentence()
     if rstatus.posture == "critical":
         out.append(
             "\nGuidance: memory is critically low — do NOT start heavy work "
@@ -754,20 +793,34 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: memory is tight — prefer the lighter path (targeted "
             "tests, fewer sub-agents, deferred builds) for heavy work."
         )
+    elif blocked:
+        out.append(f"\nGuidance: {blocked}.")
+        blocked = ""  # said once, as the guidance itself
     elif rstatus.memory_pressure_held:
         # The posture is figure-based and can read AMPLE while the macOS kernel
-        # reports pressure; "heavy work is fine" would then contradict the gate.
+        # reports pressure; the AMPLE guidance would then contradict the gate.
         # The queue note itself is on the "Kernel memory pressure" line above.
         out.append(
             f"\nGuidance: {MEMORY_PRESSURE_PHRASE} — prefer the lighter path for heavy work."
         )
     elif rstatus.posture == "ample":
-        out.append("\nGuidance: ample headroom — heavy work is fine.")
+        out.append(
+            "\nGuidance: ample headroom right now — nothing is reserved, "
+            "so it can change before you act."
+        )
     else:
         out.append(
             "\nGuidance: headroom could not be measured on this host — "
             "proceed with normal caution."
         )
+    if blocked:
+        out.append(f"Spawning: {blocked}.")
+    # After the memory guidance, which stays about memory alone: a full /tmp
+    # fails a test run with ENOSPC however much RAM is free.
+    temp_lines = host_status.temp_headroom_lines()
+    if temp_lines:
+        out.append("")
+        out.extend(temp_lines)
     return "\n".join(out)
 
 
@@ -791,10 +844,12 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #
 #   ``spawn_parts.schemas`` -- every spawn descriptor and the agent roster they name.
 #   ``spawn_parts.listing`` -- spawn_list, spawn_status and the queued-wait wording.
+#   ``spawn_parts.session_memory`` -- resource_status's block on the caller's own memory.
 #   ``spawn_parts.wave`` -- spawn_sub_agents: submit a batch, wait for it off the MCP worker.
 _OWNERS = (
     "kiro_crew.mcp_tools.spawn_parts.schemas",
     "kiro_crew.mcp_tools.spawn_parts.listing",
+    "kiro_crew.mcp_tools.spawn_parts.session_memory",
     "kiro_crew.mcp_tools.spawn_parts.wave",
 )
 for _owner in _OWNERS:
@@ -815,7 +870,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parent_template_for_roster,
         schemas,
     )
+    from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
+        _MEMORY_HEADER,
+        _memory_count,
+        _memory_mb,
+        _memory_runtime_line,
+        render_session_memory,
+    )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
+        _MARK_COLLECTED_TIMEOUTS,
         _OWNER_UNRESOLVED_PREFIX,
         RESUME_HOLD_SECS,
         _audit_owner,
@@ -824,9 +887,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
-    from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, NO_TOOL_CALLS_NOTE  # noqa: F401
+    from kiro_crew.constants import (  # noqa: F401
+        DEFAULT_SUBAGENT_MAX_TURNS,
+        LEAKED_TOOL_CALL_NOTE,
+        NO_TOOL_CALLS_NOTE,
+    )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
+    from kiro_crew.platform import redact_log_via_context as redact_log  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401

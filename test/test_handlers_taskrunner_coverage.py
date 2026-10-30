@@ -58,7 +58,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_update_task,
 )
 from kiro_crew.hooks import FileTooLargeError
-from kiro_crew.taskrunner import Step, StepStatus, TaskRun
+from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 from kiro_crew.testing.wait import await_until
 
 # ── GET /api/taskrunner ──
@@ -331,9 +331,17 @@ class TestCancel:
 
     @pytest.mark.asyncio
     async def test_task_id_cancels_one(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
-        runner.cancel.assert_called_once_with("t9")
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        runner._runs = {
+            tid: TaskRun(spec_path="s.md", spec_content="s", status="running", task_id=tid)
+            for tid in ("t9", "t8")
+        }
+        resp = await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
+        assert resp.status == 200
+        assert {tid: run.status for tid, run in runner._runs.items()} == {
+            "t9": "cancelling",
+            "t8": "running",
+        }
 
 
 class TestPause:
@@ -933,9 +941,14 @@ class TestPlanCancel:
 
     @pytest.mark.asyncio
     async def test_delegates_to_runner(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        await api_taskrunner_plan_cancel(_request(_state(runner)))
-        runner.cancel_plan.assert_called_once_with()
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        plan = asyncio.ensure_future(asyncio.Event().wait())
+        runner._plan_task = plan
+        resp = await api_taskrunner_plan_cancel(_request(_state(runner)))
+        cancel_requests = plan.cancelling()
+        plan.cancel()
+        assert _body(resp) == {"ok": True}
+        assert cancel_requests == 1
 
 
 class TestUpdatePlan:

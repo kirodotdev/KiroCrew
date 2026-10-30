@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from auto_research_helpers import isolate_fixture  # noqa: F401 - fixture
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.auto_research.handlers import (
     CampaignStatus,
@@ -53,16 +56,35 @@ class TestRedaction:
 
 
 class TestAudit:
-    def test_audit_does_not_crash(self):
-        from kiro_crew.apps.builtins.auto_research.handlers import _audit
+    def test_audit_does_not_crash(self, monkeypatch, caplog):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
 
-        # Should not raise even if sel module is unavailable
-        _audit("test_operation", "a1b2c3d4")
+        monkeypatch.setattr(h, "sel", None)
+        with caplog.at_level("WARNING", logger=LOGGER_NAME):
+            h._audit("test_operation", "a1b2c3d4")
+        messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
+        assert messages == [
+            "SEL module unavailable — audit event for test_operation/a1b2c3d4 not recorded"
+        ]
 
-    def test_audit_with_extras(self):
-        from kiro_crew.apps.builtins.auto_research.handlers import _audit
+    def test_audit_with_extras(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
 
-        _audit("campaign_created", "a1b2c3d4", extra_field="value")
+        rows: list[dict] = []
+        monkeypatch.setattr(
+            h, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+        )
+        h._audit("campaign_created", "a1b2c3d4", extra_field="value")
+        assert rows == [
+            {
+                "caller": "auto_research",
+                "operation": "campaign_created",
+                "outcome": "success",
+                "resources": "a1b2c3d4",
+                "extra_field": "value",
+            }
+        ]
 
 
 # --- Campaign ID validation in handlers ---
@@ -117,19 +139,14 @@ class TestRequireAuth:
         request.query = {}
         assert _require_auth(request) is None
 
-    def test_returns_401_when_no_user(self):
-        from unittest.mock import MagicMock
-
-        from kiro_crew.apps.builtins.auto_research.handlers import _require_auth
-
-        request = MagicMock()
-        request.get.return_value = None
-        resp = _require_auth(request)
-        assert resp is not None
-        assert resp.status == 401
-
-    def test_rejects_raw_token(self):
-        # Raw token alone (without middleware-set user) is rejected — no fail-open.
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_returns_401_when_no_user"),
+            *named_cases("test_rejects_raw_token"),
+        ],
+    )
+    def test_a_request_without_a_user_gets_401(self):
         from unittest.mock import MagicMock
 
         from kiro_crew.apps.builtins.auto_research.handlers import _require_auth

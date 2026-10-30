@@ -20,6 +20,7 @@ import subprocess
 import sys
 
 import pytest
+from named_cases_helpers import named_cases
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "check_feature_map.py")
@@ -109,31 +110,34 @@ class TestNonFeatures:
     @pytest.mark.parametrize(
         "path",
         [
-            "website/src/pages/NewThing.test.tsx",
-            "website/src/pages/NewThing.spec.tsx",
-            "website/src/pages/chat/helpers.test.ts",
-            "website/src/pages/__snapshots__/NewThing.snap",
-            "src/kiro_crew/dashboard/handlers/__init__.py",
-            "src/kiro_crew/dashboard/handlers/_shared.py",
-            "website/src/pages/overview/index.ts",
+            *named_cases(
+                "test_ignored_inside_watched_trees",
+                "path",
+                [
+                    "website/src/pages/NewThing.test.tsx",
+                    "website/src/pages/NewThing.spec.tsx",
+                    "website/src/pages/chat/helpers.test.ts",
+                    "website/src/pages/__snapshots__/NewThing.snap",
+                    "src/kiro_crew/dashboard/handlers/__init__.py",
+                    "src/kiro_crew/dashboard/handlers/_shared.py",
+                    "website/src/pages/overview/index.ts",
+                ],
+            ),
+            *named_cases(
+                "test_outside_watched_trees",
+                "path",
+                [
+                    "website/src/components/NewThing.tsx",
+                    "website/src/surfaces/builtins.tsx",
+                    "src/kiro_crew/dashboard/chat_handlers.py",
+                    "src/kiro_crew/memory.py",
+                    "docs/guides/new.md",
+                    "test/test_new_thing.py",
+                ],
+            ),
         ],
     )
-    def test_ignored_inside_watched_trees(self, path):
-        assert not gate.is_feature_file(path)
-        assert gate.classify([path], [], 0, 0, False).ok
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "website/src/components/NewThing.tsx",
-            "website/src/surfaces/builtins.tsx",
-            "src/kiro_crew/dashboard/chat_handlers.py",
-            "src/kiro_crew/memory.py",
-            "docs/guides/new.md",
-            "test/test_new_thing.py",
-        ],
-    )
-    def test_outside_watched_trees(self, path):
+    def test_a_non_feature_path_is_not_a_feature(self, path):
         assert not gate.is_feature_file(path)
         assert gate.classify([path], [], 0, 0, False).ok
 

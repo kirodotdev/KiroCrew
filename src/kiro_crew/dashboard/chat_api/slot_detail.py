@@ -100,6 +100,14 @@ async def api_chat_slots(request: web.Request) -> web.Response:
             for p in payloads
             if member_owns_slot(state, state._slots.get(str(p.get("key") or "")), caller_key)
         ]
+    # A person's list leaves Crew Mode workers out; an agent's read keeps them
+    # (``crew_mode.list_view``). Imported here: this body is re-bound into the
+    # ``chat_handlers`` facade's namespace, so it may name only what it imports.
+    from kiro_crew import crew_mode
+
+    payloads = crew_mode.list_view(
+        payloads, request.query.get("crew", ""), agent=request.get("internal_auth") is True
+    )
     if include_check_status:
         # Only the OWNER's GET drives provider work. Both the visibility probe
         # and the status refresh run the operator's `gh`/`glab` credentials, so
@@ -341,7 +349,7 @@ def _same_persisted_body(
 
 
 def _is_answered_permission(m: dict) -> bool:
-    """True for a ``permission`` row whose approval has already been answered.
+    """True for a ``permission`` or ``elicitation`` row that has already been answered.
 
     A permission row is never persisted, so it is always owed and therefore always
     lands in the tail — i.e. after every row that DID reach disk. For a pending
@@ -357,7 +365,7 @@ def _is_answered_permission(m: dict) -> bool:
     ``!meta.resolved`` test (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so an
     empty decision still counts as pending and an actionable approval is never lost.
     """
-    if m.get("role") != "permission":
+    if m.get("role") not in ("permission", "elicitation"):
         return False
     meta = parse_cls_meta(m.get("cls", "")) or {}
     return bool(meta.get("resolved"))

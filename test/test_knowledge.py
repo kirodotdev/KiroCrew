@@ -620,7 +620,6 @@ class TestKnowledgeStore:
         assert store.get_item(item_id) is not None
         store.delete_item(item_id)
         assert store.get_item(item_id) is None
-        # FTS should also be clean
         assert store.search_items_fts("deleted") == []
 
     def test_find_entity_case_insensitive(self, store):
@@ -639,15 +638,12 @@ class TestKnowledgeStore:
 
         store.merge_entities(e_keep, e_merge)
 
-        # Merged entity should be gone
         assert store.find_entity("Auth Service") is None
-        # Relation should point to kept entity
         rels = store.db.execute(
             "SELECT * FROM entity_relations WHERE source_id = ?", (e_keep,)
         ).fetchall()
         assert len(rels) == 1
         assert rels[0]["target_id"] == e_other
-        # Mention should reference kept entity
         mentions = store.db.execute(
             "SELECT * FROM mentions WHERE entity_id = ?", (e_keep,)
         ).fetchall()
@@ -675,7 +671,6 @@ class TestHeadingAwareChunker:
         chunker = HeadingAwareChunker(target_size=500)
         chunks = chunker.chunk_code(code, language="python")
         assert len(chunks) >= 1
-        # All code should be present across chunks
         combined = "\n".join(c["content"] for c in chunks)
         assert "def foo():" in combined
         assert "def bar():" in combined
@@ -874,7 +869,8 @@ class TestFileReader:
         from kiro_crew.knowledge.ingestion import _run_chunker
 
         chunker = MagicMock()
-        _run_chunker(chunker, ".kts", "val x = 1", "file:///build.gradle.kts")
+        chunks = _run_chunker(chunker, ".kts", "val x = 1", "file:///build.gradle.kts")
+        assert chunks is chunker.chunk_code.return_value
         chunker.chunk_code.assert_called_once_with("val x = 1", language="kts")
         chunker.chunk.assert_not_called()
 
@@ -1107,7 +1103,6 @@ class TestHybridRetriever:
         ids = [item_id for item_id, _ in fused]
         # item2 appears in both lists at good ranks, should be top
         assert ids[0] == "item2"
-        # All 4 items should be present
         assert set(ids) == {"item1", "item2", "item3", "item4"}
 
     # --- Recall for natural-language queries ---

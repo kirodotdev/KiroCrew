@@ -318,6 +318,53 @@ def _interleave_foreign_lines(
     return merged
 
 
+def _drop_carried_foreign(foreign: list[str], entries: list[dict]) -> list[str]:
+    """*foreign* without the lines one of *entries* now carries itself.
+
+    A cached foreign line can be a same-process row whose window copy reached
+    the slot only after the save that preserved it took its snapshot: a
+    workflow result appended live and durably while a Regenerate swap's
+    snapshot was held. Once the window carries it, re-emitting the cached line
+    beside the window's own serialization writes the row twice. Identity is the
+    scan's id tier (pass 0): an equal ``meta.mid`` corroborated by
+    ``(role, content)`` or ``ts``, each entry absorbing at most one line. An
+    id-less line is kept, as the scan keeps any line it cannot place.
+    """
+    if not foreign:
+        return foreign
+    by_mid: dict[str, list[dict]] = {}
+    for e in entries:
+        mid = row_mid(e)
+        if mid:
+            by_mid.setdefault(mid, []).append(e)
+    if not by_mid:
+        return foreign
+    kept: list[str] = []
+    for line in foreign:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            kept.append(line)
+            continue
+        mid = row_mid(entry) if isinstance(entry, dict) else None
+        candidates = by_mid.get(mid) if mid else None
+        match = next(
+            (
+                e
+                for e in candidates or ()
+                if (entry.get("role"), entry.get("content", ""))
+                == (e.get("role"), e.get("content", ""))
+                or (entry.get("ts") and entry.get("ts") == e.get("ts"))
+            ),
+            None,
+        )
+        if match is None:
+            kept.append(line)
+        else:
+            candidates.remove(match)  # type: ignore[union-attr]
+    return kept
+
+
 def _frozen_prefix_and_foreign_appends(
     slot: _ChatSlot,
     path,
@@ -327,8 +374,17 @@ def _frozen_prefix_and_foreign_appends(
     collect_foreign: bool = True,
     bound_prefix: Callable[[list[str]], list[str]] | None = None,
     archive_dedup: Callable[[list[str]], object] | None = None,
+    retired_entries: list[dict] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
+
+    ``retired_entries`` are the serialized rows a rewrite removes on purpose
+    (a Regenerate's previous reply). They take part in the identity scan as
+    extra candidates, so their disk copies are matched and dropped, but they
+    are never emitted. Every other window-region line the window does not
+    carry is still a foreign append and is kept. Without them a rewrite skips
+    the scan (``collect_foreign=False``), since a truncated tail and a foreign
+    append cannot be told apart.
 
     ``frozen_prefix`` is the bytes of the first *disk_older* on-disk message
     lines — the turns OLDER than the in-memory window. They keep their count and
@@ -415,13 +471,23 @@ def _frozen_prefix_and_foreign_appends(
         # cached foreign lines (a copy, so the caller cannot mutate the cache)
         # keeps the fast path non-destructive: the already-preserved
         # cross-process append is re-emitted instead of silently dropped. No
-        # scan runs, so there are no fresh dedup drops to archive.
-        return (cache[3], list(cache[4]), [])
+        # scan runs, so there are no fresh dedup drops to archive. A cached line
+        # the window now carries itself is left out (_drop_carried_foreign).
+        carriers = [*window_entries, *(retired_entries or ())]
+        return (cache[3], _drop_carried_foreign(list(cache[4]), carriers), [])
     try:
-        existing = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        # Bytes, so a first line that is not UTF-8 (which the save is about to
+        # rewrite as CORRUPT) does not raise here; the rows decode strictly.
+        # Imported here: an owner's module scope may import only what the
+        # chat_persistence facade already does.
+        from kiro_crew.history_projection import _split_transcript_head
+
+        existing, head_undecodable = _split_transcript_head(path.read_bytes())
     except OSError:
         return ("", [], [])
-    if not existing or '"_type"' not in existing[0]:
+    # An undecodable first line is still the metadata line by position, so the
+    # rows after it stay in the frozen prefix rather than being dropped.
+    if not existing or ('"_type"' not in existing[0] and not head_undecodable):
         return ("", [], [])
     body = existing[1:]  # message lines only (metadata excluded)
     prefix_lines = body[:disk_older] if disk_older > 0 else []
@@ -475,6 +541,10 @@ def _frozen_prefix_and_foreign_appends(
     # genuine window line was mis-classified as a foreign append and DUPLICATED on
     # disk. The bounded multiset below matches them one-for-one regardless of
     # ``ts`` collisions.
+    # Retired rows are matched like window rows; a disk line they absorb is
+    # dropped exactly as a window row's own persisted copy is.
+    if retired_entries:
+        window_entries = [*window_entries, *retired_entries]
     mid_idx: dict[str, "deque[int]"] = {}
     exact_idx: dict[tuple[object, object, object], "deque[int]"] = {}
     ts_idx: dict[object, "deque[int]"] = {}
@@ -712,11 +782,16 @@ def compose_payload(
     meta_str: str,
     *,
     rewrite: bool,
+    retired_rows: list[dict] | None = None,
 ) -> tuple[str, str, list[str]]:
     """The file a full save writes: ``(payload, frozen_prefix, foreign_lines)``.
 
     Called under the transcript lock. Archives the ambiguous dedup drops and, for a
     rewrite, the dropped window tail before the caller's atomic replace.
+
+    ``retired_rows`` names the rows a rewrite removes. With it, the rewrite keeps
+    the foreign-append scan, so a row another writer appended after the caller's
+    snapshot survives the rewrite instead of being dropped with the retired rows.
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
@@ -759,12 +834,18 @@ def compose_payload(
     # A rewrite archives every old line its payload does not repeat, so a bound
     # applied on that save would archive the rewritten rows a second time; the
     # next ordinary save applies it instead.
+    retired_entries = (
+        [e for m in retired_rows if (e := build_entry(m, attachments=attachments)) is not None]
+        if retired_rows is not None
+        else None
+    )
     frozen_prefix, foreign_lines, _dedup_archived = _frozen_prefix_and_foreign_appends(
         slot,
         path,
         disk_older,
         window_entries,
-        collect_foreign=not rewrite,
+        collect_foreign=not rewrite or retired_entries is not None,
+        retired_entries=retired_entries,
         bound_prefix=(
             None if rewrite else _file_change_prefix_bound(state, history_key, window_entries)
         ),
@@ -813,7 +894,9 @@ def compose_payload(
     # the caller's replace, so a failed read or archive raises and nothing is
     # written: the slot keeps ``_pending_rewrite`` and the next save retries.
     if rewrite and path.exists():
-        old_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        from kiro_crew.history_projection import _split_transcript_bytes
+
+        old_lines = _split_transcript_bytes(path.read_bytes())
         new_lines = payload.splitlines(keepends=True)
         _archive_dropped_lines(state, history_key, old_lines, new_lines)
     return payload, frozen_prefix, foreign_lines

@@ -152,9 +152,10 @@ class S3TranscriptReader:
     boto3-shaped exceptions the tests would have to imitate here.
     """
 
-    def __init__(self, bucket: str, *, client=None) -> None:
+    def __init__(self, bucket: str, *, client=None, expected_owner: str | None = None) -> None:
         self._bucket = bucket
         self._client = client
+        self._expected_owner = expected_owner
 
     def _ensure_client(self):
         if self._client is None:
@@ -162,6 +163,12 @@ class S3TranscriptReader:
 
             self._client = boto3.client("s3")
         return self._client
+
+    def _owner(self) -> str:
+        """The task's own account, resolved once and sent as ``ExpectedBucketOwner``."""
+        if self._expected_owner is None:
+            self._expected_owner = objects.caller_account()
+        return self._expected_owner
 
     def get(self, key: str) -> bytes:
         """Fetch one object, bounded twice.
@@ -172,7 +179,9 @@ class S3TranscriptReader:
         A header is not a bound, which is the same reason the request-body limit on the
         turn route does not trust ``Content-Length`` either.
         """
-        resp = self._ensure_client().get_object(Bucket=self._bucket, Key=key)
+        resp = self._ensure_client().get_object(
+            Bucket=self._bucket, Key=key, ExpectedBucketOwner=self._owner()
+        )
         declared = resp.get("ContentLength")
         if isinstance(declared, int) and declared > MAX_TRANSCRIPT_BYTES:
             raise TranscriptTooLarge(
@@ -329,7 +338,7 @@ def _resolve_transcript_key(reader: TranscriptReader, settings: Settings, stem: 
     digest = _digest_for_stem(index_raw, stem)
     if digest is None:
         # The committed index does not name this stem: a genuinely new conversation (an
-        # UNINDEXED stem, GPT's permitted absence). NOT a refusal -- the index exists and
+        # UNINDEXED stem, a permitted absence). NOT a refusal -- the index exists and
         # simply has no entry, which is the fresh-conversation case.
         return None
     return keys.blob_key(settings, digest)
@@ -628,7 +637,9 @@ async def ensure_local_transcript(
         # rather than dropped: we cannot promise the conversation's history.
         raise TranscriptUnavailable(f"slot id does not map into the sessions dir: {stem!r}")
 
-    if _probe_local_entry(path):
+    # The probe opens and fstats the entry, so it runs off the event loop like every
+    # other filesystem step here; its refusals propagate out of the thread unchanged.
+    if await asyncio.to_thread(_probe_local_entry, path):
         # This task already served this conversation. The local copy leads S3 by
         # up to one backup interval, so re-fetching could only lose turns.
         logger.debug("transcript fetch: sid=%s already on disk; not re-fetching", stem)

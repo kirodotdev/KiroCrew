@@ -41,39 +41,57 @@ def _info(**overrides) -> SubagentInfo:
 # ── _is_startup_stalled ──────────────────────────────────────────────
 
 
-def test_stalled_true_when_execution_started_but_no_runtime_or_turn():
+_NOW = 1_000.0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        # Entered _run_inner 200s ago, never launched a runtime, never took a turn.
+        pytest.param(
+            {"_exec_started": _NOW - 200, "_pid": None, "turns": 0},
+            True,
+            id="test_stalled_true_when_execution_started_but_no_runtime_or_turn",
+        ),
+        # An agent awaiting spawn approval never entered _run_inner: with
+        # ``_exec_started`` None it must never trip the watchdog, even though it
+        # has been registered (``started``) far longer than the window.
+        pytest.param(
+            {"started": _NOW - 5_000, "_exec_started": None, "_pid": None, "turns": 0},
+            False,
+            id="test_stalled_false_when_awaiting_approval",
+        ),
+        # A runtime pid means startup is over; a slow first turn must not be reaped.
+        pytest.param(
+            {"_exec_started": _NOW - 600, "_pid": 4242, "turns": 0},
+            False,
+            id="test_stalled_false_when_runtime_launched",
+        ),
+        pytest.param(
+            {
+                "_exec_started": _NOW - 600,
+                "_first_stream_started": _NOW - 590,
+                "_pid": None,
+                "turns": 0,
+            },
+            False,
+            id="test_stalled_false_after_first_provider_stream_begins",
+        ),
+        pytest.param(
+            {"_exec_started": _NOW - 600, "_pid": None, "turns": 1},
+            False,
+            id="test_stalled_false_when_a_turn_was_produced",
+        ),
+        pytest.param(
+            {"_exec_started": _NOW - 30, "_pid": None, "turns": 0},
+            False,
+            id="test_stalled_false_within_startup_window",
+        ),
+    ],
+)
+def test_is_startup_stalled(overrides, expected):
     mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    # entered _run_inner 200s ago, never launched a runtime, never took a turn
-    info = _info(_exec_started=now - 200, _pid=None, turns=0)
-    assert mgr._is_startup_stalled(info, now) is True
-
-
-def test_stalled_false_when_awaiting_approval():
-    """An agent awaiting spawn approval never entered _run_inner.
-
-    ``_exec_started`` is None, so it must NEVER trip the watchdog even though
-    it has been registered (``started``) far longer than the window.
-    """
-    mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    info = _info(started=now - 5_000, _exec_started=None, _pid=None, turns=0)
-    assert mgr._is_startup_stalled(info, now) is False
-
-
-def test_stalled_false_when_runtime_launched():
-    mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    # runtime pid assigned -> past startup; a slow first turn must not be reaped
-    info = _info(_exec_started=now - 600, _pid=4242, turns=0)
-    assert mgr._is_startup_stalled(info, now) is False
-
-
-def test_stalled_false_after_first_provider_stream_begins():
-    mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    info = _info(_exec_started=now - 600, _first_stream_started=now - 590, _pid=None, turns=0)
-    assert mgr._is_startup_stalled(info, now) is False
+    assert mgr._is_startup_stalled(_info(**overrides), _NOW) is expected
 
 
 @pytest.mark.asyncio
@@ -120,20 +138,6 @@ async def test_recovery_execution_resets_the_first_stream_marker():
     await mgr._run_inner(info, "subagent:a1b2c3d4")
 
     assert marker_at_acquire == [None]
-
-
-def test_stalled_false_when_a_turn_was_produced():
-    mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    info = _info(_exec_started=now - 600, _pid=None, turns=1)
-    assert mgr._is_startup_stalled(info, now) is False
-
-
-def test_stalled_false_within_startup_window():
-    mgr = _make_manager(startup_timeout=120)
-    now = 1_000.0
-    info = _info(_exec_started=now - 30, _pid=None, turns=0)
-    assert mgr._is_startup_stalled(info, now) is False
 
 
 # ── _force_reap(reason="startup_timeout") ────────────────────────────

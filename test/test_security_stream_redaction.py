@@ -40,7 +40,7 @@ class TestRedactAndTruncate:
         assert redact_and_truncate(None) == ""
 
     def test_credential_straddling_boundary_not_leaked(self) -> None:
-        """A secret spanning the max_chars cut must not leak a partial (security-review e27617c6).
+        """A secret spanning the max_chars cut must not leak a partial.
 
         Redaction runs over the full text before truncation. Truncating first
         would slice AKIA...EXAMPLE in half, leaving an unredactable prefix that
@@ -243,7 +243,7 @@ class TestStreamRedactor:
         emitted += r.flush()
         assert emitted == blob, "content lost/altered across cap+flush"
 
-    # ── Split `Authorization: Bearer <token>` holdback (security-review a8e5fe6a) ──
+    # ── Split `Authorization: Bearer <token>` holdback ──
     # The Bearer credential pattern spans the whitespace after `:` and after
     # `Bearer`; whitespace is not in _CRED_CLASS, so without the partial-anchor
     # the header + spaces commit and the token leaks on the next chunk.
@@ -371,7 +371,7 @@ class TestStreamRedactor:
         r.flush()
         assert len(r._buf) == 0
 
-    # ── Terminal long-token un-bisect + fail-closed ceiling (round-2/round-3) ──
+    # ── Terminal long-token un-bisect + fail-closed ceiling ──
 
     def test_terminal_long_jwt_not_bisected(self) -> None:
         """A terminal JWT longer than the 512-char DoS floor stays fully redacted.
@@ -919,7 +919,7 @@ class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on
     ANY import-time failure — not only ImportError. A C-extension can raise
     OSError (or another Exception) at import; the old ``except ImportError``
-    let that crash the caller instead of skipping the scan (security-review 1fde6107 C2)."""
+    let that crash the caller instead of skipping the scan."""
 
     def test_non_importerror_degrades_to_empty(self, monkeypatch) -> None:
         import builtins

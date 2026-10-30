@@ -130,3 +130,78 @@ class TestNarrateAwsResolution:
         assert out.suffix == ".mp3"
         assert captured["argv"][0] == _RESOLVED
         assert captured["argv"][1:3] == ["polly", "synthesize-speech"]
+
+
+def _assert_utf8_text(kwargs: dict) -> None:
+    # Without an explicit encoding, text mode uses the locale code page: on
+    # Windows (cp1252) a non-Latin-1 narration character raises
+    # UnicodeEncodeError before piper starts, and accented text reaches piper
+    # (which reads UTF-8 on stdin) as invalid bytes.
+    assert kwargs.get("encoding") == "utf-8"
+    assert kwargs.get("errors") == "replace"
+
+
+class TestNarrateSubprocessUtf8:
+    def test_piper_stdin_is_utf8(self, monkeypatch, tmp_path, narrate_mod):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name, *a, **k: "/opt/piper/piper")
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            pathlib.Path(argv[argv.index("--output_file") + 1]).write_bytes(b"wav")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        narrate_mod.synthesize(
+            "piper",
+            "Café — Привет",
+            tmp_path / "line00",
+            voice="",
+            piper_binary="piper",
+            piper_model="model.onnx",
+            aws_profile="",
+            aws_region="",
+        )
+
+        assert captured["input"] == "Café — Привет"
+        _assert_utf8_text(captured)
+
+    def test_polly_output_is_utf8(self, monkeypatch, tmp_path, narrate_mod):
+        monkeypatch.setattr(narrate_mod, "resolve_aws_bin", lambda: _RESOLVED)
+        monkeypatch.chdir(tmp_path)
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            pathlib.Path(argv[-1]).write_bytes(b"mp3")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        narrate_mod.synthesize(
+            "polly",
+            "Café",
+            tmp_path / "line00",
+            voice="Matthew",
+            piper_binary="",
+            piper_model="",
+            aws_profile="",
+            aws_region="",
+        )
+
+        _assert_utf8_text(captured)
+
+    def test_ffprobe_output_is_utf8(self, monkeypatch, tmp_path, narrate_mod):
+        monkeypatch.setattr(narrate_mod, "tool", lambda name: "/opt/ffmpeg/" + name)
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(returncode=0, stderr="", stdout="1.5\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert narrate_mod.measure(tmp_path / "clip.wav") == 1.5
+        _assert_utf8_text(captured)

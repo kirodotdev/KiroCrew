@@ -28,6 +28,7 @@ from kiro_crew.config.sections import (
     SttConfig,
     transcribe_language_options,
     transcribe_vocabulary_name,
+    valid_stt_providers,
 )
 from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.dashboard.chat_utils import drained_to_thread
@@ -41,7 +42,8 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _stt_custom_model_refusal,
     _stt_positive_int,
 )
-from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS, PROVIDER_LOCAL
+from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, streaming_providers
+from kiro_crew.speech_languages import COMMON_LANGUAGE_CODES
 from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
@@ -81,7 +83,10 @@ def _stt_providers() -> list[str]:
     than shown as an option that cannot be selected. This is the single source of
     truth for which providers are advertised (GET) and accepted (PUT).
     """
-    providers = list(_VALID_STT_PROVIDERS)
+    # Through the loader's own set, so an edition-registered provider is offered
+    # and accepted too (ahead of ``off``). The default registry gives exactly
+    # ``_VALID_STT_PROVIDERS``.
+    providers = list(valid_stt_providers())
     if "apple" in providers:
         from kiro_crew import apple_speech
 
@@ -90,25 +95,61 @@ def _stt_providers() -> list[str]:
     return providers
 
 
+def _builtin_stt_rows(names: list[str]) -> dict[str, dict]:
+    """Capability rows for the built-in providers in *names*: ``{name, builtin}``.
+
+    No probe runs: the dashboard reads a row's status only for a registered
+    provider, and labels a built-in from its own catalog by ``name``. The
+    selected built-in's readiness is the response's own ``available`` / ``code``.
+    """
+    return {name: {"name": name, "builtin": True} for name in names if name in _VALID_STT_PROVIDERS}
+
+
+async def _stt_provider_rows(
+    names: list[str], built: dict[str, dict], stt_cfg: SttConfig
+) -> list[dict]:
+    """The ``providers`` list: one row per name in *names*, in that order.
+
+    *built* holds the built-in rows; the edition's providers are checked here, on
+    the loop, each bounded by ``speech_providers.CHECK_TIMEOUT_SECS``.
+    """
+    import dataclasses
+
+    from kiro_crew import speech_providers
+
+    registered = tuple(
+        p for n in names if n not in built and (p := speech_providers.stt_provider(n)) is not None
+    )
+    extra = {
+        row["name"]: row
+        for row in await speech_providers.registered_entries(
+            registered,
+            lambda provider: dataclasses.replace(stt_cfg, provider=provider.name, enabled=True),
+        )
+    }
+    return [row for n in names if (row := built.get(n) or extra.get(n)) is not None]
+
+
+# Built-in providers that identify the language of each segment among the
+# ``stt.transcribe_languages`` candidates. Only Amazon Transcribe does.
+_LANGUAGE_IDENTIFYING_PROVIDERS = ("transcribe",)
+
+
+def _language_identifying_providers() -> tuple[str, ...]:
+    """Who the mixed-language picker applies to: the built-ins, then each edition
+    provider that declared ``identifies_languages``."""
+    from kiro_crew import speech_providers
+
+    return speech_providers.language_identifying_stt_names(_LANGUAGE_IDENTIFYING_PROVIDERS)
+
+
 # Common BCP-47 language codes surfaced in the Chat Settings STT picker, and the
 # candidates the Transcribe mixed-language picker offers. The handler accepts any
 # string value on PUT; this list only drives the UI dropdowns, and GET adds the
 # stored values to it so a code set in config.json stays selectable. AWS
-# Transcribe supports many more.
-_STT_LANGUAGE_CODES: tuple[str, ...] = (
-    "en-US",
-    "en-GB",
-    "fr-FR",
-    "de-DE",
-    "es-ES",
-    "es-US",
-    "it-IT",
-    "pt-BR",
-    "ja-JP",
-    "ko-KR",
-    "zh-CN",
-    "vi-VN",
-)
+# Transcribe supports many more. The list lives in kiro_crew.speech_languages
+# because the Text-to-Speech Language picker offers the same codes.
+_STT_LANGUAGE_CODES: tuple[str, ...] = COMMON_LANGUAGE_CODES
 
 
 def _stt_language_codes(stt_cfg: SttConfig) -> list[str]:
@@ -375,7 +416,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
     # set outside the thread that exists to hold the lighter ones. Windows was
     # where this first showed up, as "event-loop heartbeat: lag".
 
-    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool, str]:
+    provider_names = _stt_providers()
+
+    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool, str, dict[str, dict]]:
         cmds = _stt_prereq_commands(provider)
         ensure_ffmpeg_in_path()
         # `_find_ffmpeg`, not a bare `which`: the settings panel must report on the
@@ -390,7 +433,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
         # api_stt_status uses) so the two fields cannot disagree, and the chat
         # modal can render the precise per-code reason from this one query.
         detail = availability_detail(cfg.stt)
-        return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code
+        builtin_rows = _builtin_stt_rows(provider_names)
+        return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code, builtin_rows
 
     (
         prereqs,
@@ -399,7 +443,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
         bundled_app,
         available,
         availability_code,
+        builtin_rows,
     ) = await asyncio.to_thread(_prereqs_and_probes)
+    provider_rows = await _stt_provider_rows(provider_names, builtin_rows, cfg.stt)
     return web.json_response(
         {
             "enabled": cfg.stt.enabled,
@@ -460,12 +506,19 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # a panel polls during a transfer — probing four files on every config
             # read would put that cost on the wrong request.
             "models": _STT_MODEL_SIZES,
-            "providers": _stt_providers(),
+            # One row per selectable provider: the built-ins in today's order, then
+            # the edition's (``PlatformContext.speech``), then ``off``. Each row is
+            # ``{name, label, builtin, available, reason, action}``, where
+            # ``action`` is a sign-in step a hosted provider asks for, or null.
+            "providers": provider_rows,
             # Which of those providers can stream partial results. Served from the
-            # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
+            # backend's own `streaming_providers()` so the Settings UI gates the
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
-            # name — the latter silently hid the toggle when `apple` was added.
-            "streaming_providers": list(_STREAMING_PROVIDERS),
+            # name, which would silently hide the toggle for a newly added provider.
+            "streaming_providers": list(streaming_providers()),
+            # Which providers identify languages among `transcribe_languages`, so
+            # the mixed-language picker is gated on that capability as well.
+            "language_identification_providers": list(_language_identifying_providers()),
             "language_codes": _stt_language_codes(cfg.stt),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
@@ -488,24 +541,16 @@ async def api_stt_config(request: web.Request) -> web.Response:
 
 
 def _transcribe_extra_importable() -> bool:
-    """True when AWS Transcribe's half of the ``voice`` extra imported here.
+    """True when AWS Transcribe's half of the ``voice`` extra imports here. BLOCKING.
 
-    Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
-    try/except sets ``boto3 = None`` on failure) rather than probing specs: a
-    partial installation whose dist-info exists but whose import fails must
-    surface the repair command, not suppress it. Runs off the event loop —
-    ``transcribe`` is already imported at module load, so this is an attribute
-    read, but callers batch it with the other filesystem probes anyway.
+    Asks ``transcribe_aws``'s own availability answer, which imports boto3 and
+    the streaming client rather than probing specs: a partial installation whose
+    dist-info exists but whose import fails must surface the repair command, not
+    suppress it. Runs off the event loop; the first call imports boto3.
     """
     from kiro_crew import transcribe
 
-    if transcribe.boto3 is None:
-        return False
-    try:
-        import amazon_transcribe  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return transcribe._aws_availability().ok
 
 
 def _ffmpeg_install_commands() -> list[str]:

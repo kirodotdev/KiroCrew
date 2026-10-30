@@ -6,18 +6,21 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_persistence import (
+    local_turn_prompt_within_bounds,
+    register_guarded_history_write,
+)
+from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.state import _is_turn_inject
+from kiro_crew.session import process_shutdown_requested
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         _ChatSlot,
-        _is_turn_inject,
-        local_turn_prompt_within_bounds,
         logger,
-        process_shutdown_requested,
-        register_guarded_history_write,
         run_to_completion,
         save_slot_off_loop,
-        slot_history_key,
     )
 
 

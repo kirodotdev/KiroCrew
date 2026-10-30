@@ -65,6 +65,8 @@ const TOPBAR_MAX_PX = 200
 // window (agent-chosen default; the overlay may also self-hide via
 // `theme:visibility` sooner, which the router already honours).
 const ACTIVATE_ONCE_MS = 8000
+// The input that resets an `idle-<N>s` overlay's countdown (see the idle effect).
+const IDLE_INPUT_EVENTS = ['keydown', 'pointerdown', 'wheel', 'touchmove'] as const
 
 const OVERLAY_POSITIONS: ReadonlySet<ThemeOverlayPosition> = new Set<ThemeOverlayPosition>([
   'top', 'bottom', 'left', 'right',
@@ -546,8 +548,16 @@ export default function ThemeExperienceLayer() {
     return () => timers.forEach((t) => clearTimeout(t))
   }, [featuresOn, reduced, overlayDecls])
 
-  // `idle-<N>s` overlays: mount after N seconds with no keydown/pointerdown;
-  // any activity hides them and restarts the countdown.
+  // `idle-<N>s` overlays: mount after N seconds with no input; any input hides
+  // them and restarts the countdown. Input is a key press, a pointer press, or a
+  // wheel or touch scroll, inside a scroll container too, so an overlay never
+  // lands on someone reading the transcript with the trackpad. The listeners sit
+  // in the CAPTURE phase because the built-in terminal (xterm) stops propagation
+  // of the keys and wheel events it consumes, so a bubble-phase listener on the
+  // window would not see typing there. Wheel and touchmove fire many times a second,
+  // so an event only records when it happened; a countdown that comes due checks
+  // that time and waits out the remainder, and state changes only when an
+  // overlay is actually showing.
   useEffect(() => {
     if (!featuresOn || reduced) {
       setIdleOverlayIds(new Set())
@@ -560,23 +570,36 @@ export default function ThemeExperienceLayer() {
       setIdleOverlayIds(new Set())
       return
     }
-    let timers: number[] = []
-    const arm = () => {
-      setIdleOverlayIds(new Set()) // activity → hide idle overlays
-      timers.forEach((t) => clearTimeout(t))
-      timers = idleDecls.map((d) =>
-        window.setTimeout(() => {
-          setIdleOverlayIds((prev) => new Set(prev).add(d.id))
-        }, d.secs * 1000),
-      )
+    const timers = new Map<string, number>()
+    let lastInputAt = Date.now()
+    let showing = false
+    const countDown = (d: { id: string; secs: number }, delayMs: number) => {
+      timers.set(d.id, window.setTimeout(() => {
+        const remainingMs = d.secs * 1000 - (Date.now() - lastInputAt)
+        if (remainingMs > 0) {
+          countDown(d, remainingMs)
+          return
+        }
+        showing = true
+        setIdleOverlayIds((prev) => new Set(prev).add(d.id))
+      }, delayMs))
     }
-    const onActivity = () => arm()
-    window.addEventListener('keydown', onActivity)
-    window.addEventListener('pointerdown', onActivity)
-    arm()
+    const armAll = () => idleDecls.forEach((d) => countDown(d, d.secs * 1000))
+    const onInput = () => {
+      lastInputAt = Date.now()
+      if (!showing) return
+      showing = false
+      timers.forEach((t) => clearTimeout(t))
+      timers.clear()
+      setIdleOverlayIds(new Set())
+      armAll()
+    }
+    const opts: AddEventListenerOptions = { capture: true, passive: true }
+    for (const type of IDLE_INPUT_EVENTS) window.addEventListener(type, onInput, opts)
+    setIdleOverlayIds(new Set())
+    armAll()
     return () => {
-      window.removeEventListener('keydown', onActivity)
-      window.removeEventListener('pointerdown', onActivity)
+      for (const type of IDLE_INPUT_EVENTS) window.removeEventListener(type, onInput, opts)
       timers.forEach((t) => clearTimeout(t))
     }
   }, [featuresOn, reduced, overlayDecls])

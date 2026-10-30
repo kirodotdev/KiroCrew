@@ -310,11 +310,14 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'context_usage', data: { slot: ACTIVE, pct: 42, used_tokens: 4200, window_tokens: 10000 } })
       ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE, status: 'Compacting…' } })
     })
+    // The status line lands with the frame's stream flush.
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(chat().slotContextPct[ACTIVE]).toBe(42)
     expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
 
     // A status frame with no text is ignored rather than clearing the detail.
     act(() => { ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE } }) })
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
   })
 
@@ -437,6 +440,37 @@ describe('useWebSocket frame router', () => {
     expect(testQueryClient.getQueryData(['session-automation', ACTIVE])).toBeNull()
   })
 
+  it('keeps a running loop the slot cold read landed while the seed was in flight', async () => {
+    // The chat page's cold read writes only the per-slot query, so a slot
+    // the seed protects because of that read must still reach the map the
+    // sidebar reads, or its row loses the loop chip the header still shows.
+    const loop = {
+      id: 'loop-1', slot_key: ACTIVE, message: 'go', idle_secs: 60,
+      active: true, cycle_count: 95, max_cycles: 400, last_fire_ts: 0,
+    }
+    let resolveList!: (value: { enabled: boolean; loops: unknown[] }) => void
+    vi.mocked(api.autonudgeList).mockImplementationOnce(() => new Promise(resolve => { resolveList = resolve }))
+    renderHook(() => useWebSocket(), { wrapper })
+    await act(async () => {
+      WS_INSTANCES[0].simulateOpen()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      testQueryClient.setQueryData(['session-automation', ACTIVE], normalizeAutomationRecord(loop))
+    })
+    await act(async () => {
+      resolveList({ enabled: true, loops: [loop] })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(chat().automations[ACTIVE]).toMatchObject({
+      kind: 'legacy_goal_loop', active: true, cycleCount: 95,
+    })
+  })
+
   it('ignores an autonudge frame with no slot', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage({ type: 'autonudge_state', data: { event: 'fired' } }) })
@@ -460,19 +494,6 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'refine', data: {} })
     })
     expect(dash().refreshTrigger).toBe(before + 2)
-  })
-
-  it('tracks aggregate subagent status and per-agent text', () => {
-    const { ws } = mount()
-    act(() => {
-      ws.simulateMessage({ type: 'subagent_status', data: { slot: ACTIVE, running: 2, agents: [] } })
-      ws.simulateMessage({ type: 'subagent_text', data: { slot: ACTIVE, id: 'ag-1', text: 'progress' } })
-      // Neither arm dispatches without the identifying fields.
-      ws.simulateMessage({ type: 'subagent_status', data: { running: 5 } })
-      ws.simulateMessage({ type: 'subagent_text', data: { slot: ACTIVE, text: 'no id' } })
-    })
-    expect(dash().subagentRunning[ACTIVE]).toBe(2)
-    expect(dash().subagentText[ACTIVE]?.['ag-1']).toBe('progress')
   })
 
   it('re-broadcasts every channel frame on one window event', () => {

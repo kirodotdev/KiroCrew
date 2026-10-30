@@ -97,8 +97,11 @@ async def test_not_re_emitted_when_already_stalled():
     mgr = _make_manager(stall_idle_secs=120)
     now = 1_000.0
     info = _info(turns=1, last_activity=now - 300, stalled=True)
+    mgr._stall_verdict = AsyncMock(return_value=("unknown", ""))  # type: ignore[method-assign]
     with patch("kiro_crew.subagent.record_slow_command") as rec:
         await mgr._maybe_flag_stall("a1b2c3d4", info, now)
+    assert info.stalled is True  # the flag stands
+    mgr._stall_verdict.assert_not_awaited()  # the oracle is not consulted again
     mgr._fire_event.assert_not_called()  # already flagged; no duplicate event
     rec.assert_not_called()  # and no duplicate record
 

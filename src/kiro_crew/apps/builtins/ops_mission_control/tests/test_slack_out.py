@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out, store
+from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, slack_out, store
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     STATUS_NEEDS_HUMAN,
     STATUS_RESOLVED,
@@ -231,6 +232,78 @@ class TestPublish(_HomeIsolated):
         incident = store.claim(_signal(id="sig-2", title="X" * 500), operating_mode="observe")
         assert incident is not None
         self.assertLess(len(slack_out.summary_line(incident)), 400)
+
+
+class TestSettingsAreReadOffTheLoop(_HomeIsolated):
+    """The mirror settings live in the keystone policy file on disk.
+
+    ``publish`` is awaited on the gateway loop by ``dispatch.run_cycle`` (through
+    ``publish_all``) for every changed incident, and ``post_detail`` for every
+    diagnosis or resolution. ``configured()`` and ``channel()`` each open and parse
+    that file, so reading them inline stalls every session for as long as the disk
+    takes. Every read must land on a worker thread.
+    """
+
+    incident: Incident
+
+    def setUp(self) -> None:
+        super().setUp()
+        slack_out.set_settings(enabled=True, channel_id="C0123456789")
+        claimed = store.claim(_signal(), operating_mode="observe")
+        assert claimed is not None
+        self.incident = claimed
+        self.read_threads: list[int] = []
+        real_read = policy_store._read
+
+        def _recording_read() -> dict[str, Any]:
+            self.read_threads.append(threading.get_ident())
+            return real_read()
+
+        patcher = mock.patch.object(policy_store, "_read", _recording_read)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _assert_read_off_the_loop(self) -> None:
+        # Called from the async test body, so this IS the loop's thread.
+        loop_thread = threading.get_ident()
+        self.assertTrue(self.read_threads, "the settings must still be read")
+        self.assertNotIn(loop_thread, self.read_threads)
+
+    async def test_first_publish_reads_the_settings_off_the_loop(self) -> None:
+        fake = _FakeSlack()
+        self.assertTrue(await slack_out.publish(self.incident, fake))
+        self.assertEqual(fake.posts[0]["channel"], "C0123456789")
+        self._assert_read_off_the_loop()
+
+    async def test_edit_in_place_reads_the_settings_off_the_loop(self) -> None:
+        with_ts = store.update_fields(self.incident.incident_id, slack_thread_ts="171000.5")
+        fake = _FakeSlack()
+        self.assertTrue(await slack_out.publish(with_ts, fake))
+        self.assertEqual(fake.updates[0]["channel"], "C0123456789")
+        self._assert_read_off_the_loop()
+
+    async def test_post_detail_reads_the_settings_off_the_loop(self) -> None:
+        with_ts = store.update_fields(self.incident.incident_id, slack_thread_ts="171000.5")
+        fake = _FakeSlack()
+        self.assertTrue(await slack_out.post_detail(with_ts, "root cause: disk full", fake))
+        self.assertEqual(fake.threads[0]["channel"], "C0123456789")
+        self._assert_read_off_the_loop()
+
+    async def test_disabled_reads_off_the_loop_and_sends_nothing(self) -> None:
+        slack_out.set_settings(enabled=False)
+        self.read_threads.clear()
+        fake = _FakeSlack()
+        self.assertFalse(await slack_out.publish(self.incident, fake))
+        self.assertEqual(fake.posts, [])
+        self._assert_read_off_the_loop()
+
+    async def test_no_client_reads_nothing(self) -> None:
+        """No Slack on the host: return before paying for a thread hop."""
+        with_ts = store.update_fields(self.incident.incident_id, slack_thread_ts="171000.5")
+        self.read_threads.clear()
+        self.assertFalse(await slack_out.publish(with_ts, None))
+        self.assertFalse(await slack_out.post_detail(with_ts, "detail", None))
+        self.assertEqual(self.read_threads, [])
 
 
 class TestRedaction(_HomeIsolated):

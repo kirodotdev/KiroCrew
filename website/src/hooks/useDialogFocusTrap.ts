@@ -4,7 +4,7 @@
 // An aria-modal dialog that lets focus wander behind the overlay would let
 // keyboard users activate obscured controls, so every dialog needs the same
 // three pieces. They live here rather than being re-implemented per dialog.
-import { useEffect, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, type RefObject } from 'react'
 import { useDocumentImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 
@@ -97,7 +97,10 @@ export function useDialogFocusTrap(
   const imeLatch = useDocumentImeLatch(enabled)
   const crewHidden = useLocalCrewHidden()
 
-  useEffect(() => {
+  // A layout effect, so Escape and the Tab trap are armed in the same commit
+  // that mounts the dialog: a passive effect can run a task later, and a key
+  // pressed in that gap was dropped (see Modal's Escape listener).
+  useLayoutEffect(() => {
     if (!enabled || crewHidden) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && handleEscape) {

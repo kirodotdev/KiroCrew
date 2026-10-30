@@ -1059,6 +1059,21 @@ async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
     asks = {"n": 0}
     counts = {"n": 0}
     enough = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    class _StayUpSaid(logging.Handler):
+        """Stops the run once the stay-up refusal is logged, not on a timer.
+
+        The refusal is said only after the drain, the re-entry check on its own
+        worker thread and the second drain, so a slow runner can take longer
+        than any fixed delay to get there.
+        """
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno == logging.CRITICAL and (
+                "an update stopped before restart" in record.getMessage()
+            ):
+                loop.call_soon(enough.set)
 
     def _check():
         asks["n"] += 1
@@ -1071,14 +1086,19 @@ async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
         if counts["n"] == (3 if standing else 1):
             # An update that will stay up ends while this pass drains.
             update_ownership.refuse_restart("the dependency sync did not complete")
-            asyncio.get_running_loop().call_later(0.2, enough.set)
             return 1
         return 0
 
-    with _gap():
-        fired = await _run_until(
-            shutdown, enough, reentry_check=_check, count_in_flight=_count, drain_poll=0.01
-        )
+    said = _StayUpSaid()
+    watchdog_logger = logging.getLogger(_WATCHDOG_LOGGER)
+    watchdog_logger.addHandler(said)
+    try:
+        with _gap():
+            fired = await _run_until(
+                shutdown, enough, reentry_check=_check, count_in_flight=_count, drain_poll=0.01
+            )
+    finally:
+        watchdog_logger.removeHandler(said)
 
     assert fired is False
     assert _records(caplog, level=logging.CRITICAL, text="an update stopped before restart")

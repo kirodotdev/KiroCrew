@@ -27,6 +27,7 @@ not.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline.caches import (
     _external_registry_cache_identity,
     _external_registry_cache_path,
+    _manifest_cache_path,
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer
@@ -133,9 +135,39 @@ def published_index() -> dict[str, tuple[str, float | None]]:
             continue
         mtime = _cache_mtime(_external_registry_cache_path(cache_name))
         for entry in cached:
-            _claim(entry.get("name"), entry.get("version"), mtime)
+            version, seen = entry.get("version"), mtime
+            if not publishable_version(version):
+                # A registry whose rows carry no version (the app's own app.json
+                # owns it) is answered from that app.json as the store last fetched
+                # it, the same file the store's own Update button reads.
+                found = _manifest_version(entry)
+                if found is not None:
+                    version, seen = found
+            _claim(entry.get("name"), version, seen)
 
     return index
+
+
+def _manifest_version(entry: dict[str, Any]) -> tuple[Any, float | None] | None:
+    """``(version, mtime)`` from the cached ``app.json`` of *entry*'s exact source, or None.
+
+    Read whatever its age, like the index caches above: this reader cannot
+    refresh, and ``checkedAt`` reports how old the answer is. The cache path is
+    derived from the row's full source coordinates, so another branch or
+    repository can never answer, and a manifest naming a different app is
+    ignored, the same mismatch install refuses. Advisory like everything here: a
+    planted file costs a wrong badge, never an install.
+    """
+    try:
+        path = _manifest_cache_path(entry)
+        if path.is_symlink():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(data, dict) or data.get("name") != entry.get("name"):
+        return None
+    return data.get("version"), _cache_mtime(path)
 
 
 def _status_for(

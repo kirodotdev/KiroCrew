@@ -34,7 +34,7 @@
         }
       }
     },
-    "agent_version": "0.93.0",
+    "agent_version": "0.94.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -159,7 +159,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      30865,
+      31180,
       1000000
     ],
     "usage_cost": null
@@ -170,7 +170,7 @@
       {
         "kind": "tool_call",
         "title": "ToolSearch",
-        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_call_id": "toolu_bdrk_011p1LWeKUJ2ScuxQq1NNfzn",
         "tool_kind": "other",
         "wire_title": "ToolSearch"
       }
@@ -186,7 +186,7 @@
         "raw_tool_params": {
           "query": "select:mcp__crew-probe__crew_probe_echo"
         },
-        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_call_id": "toolu_bdrk_011p1LWeKUJ2ScuxQq1NNfzn",
         "tool_input": "{\n  \"query\": \"select:mcp__crew-probe__crew_probe_echo\"\n}"
       }
     ],
@@ -202,7 +202,7 @@
           "max_results": 1,
           "query": "select:mcp__crew-probe__crew_probe_echo"
         },
-        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_call_id": "toolu_bdrk_011p1LWeKUJ2ScuxQq1NNfzn",
         "tool_input": "{\n  \"query\": \"select:mcp__crew-probe__crew_probe_echo\",\n  \"max_results\": 1\n}"
       }
     ],
@@ -221,7 +221,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      30978,
+      31287,
       1000000
     ],
     "usage_cost": null
@@ -231,7 +231,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_call_id": "toolu_bdrk_011p1LWeKUJ2ScuxQq1NNfzn",
         "tool_final": true,
         "tool_output": "Tool: mcp__crew-probe__crew_probe_echo",
         "tool_output_bytes": 38,
@@ -248,7 +248,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31130,
+      31439,
       1000000
     ],
     "usage_cost": null
@@ -259,7 +259,7 @@
       {
         "kind": "tool_call",
         "title": "mcp__crew-probe__crew_probe_echo",
-        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_call_id": "toolu_bdrk_01Ju5XmYET3oPuVP1sCN2BBy",
         "tool_kind": "other",
         "wire_title": "mcp__crew-probe__crew_probe_echo"
       }
@@ -289,7 +289,7 @@
         ],
         "shell_classified": true,
         "title": "mcp__crew-probe__crew_probe_echo",
-        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_call_id": "toolu_bdrk_01Ju5XmYET3oPuVP1sCN2BBy",
         "tool_kind": "other"
       }
     ],
@@ -306,7 +306,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31170,
+      31479,
       1000000
     ],
     "usage_cost": null
@@ -322,7 +322,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_call_id": "toolu_bdrk_01Ju5XmYET3oPuVP1sCN2BBy",
         "tool_final": true,
         "tool_output": "crew-member-mount-proved",
         "tool_output_bytes": 24,
@@ -339,7 +339,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31271,
+      31573,
       1000000
     ],
     "usage_cost": null
@@ -349,14 +349,30 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_zkklv6elajt4ac4qdyqlqqov7gacgsenmrw7y22rrwpb7jokufdq",
-        "text": "crew-member-mount-proved"
+        "message_id": "msg_bdrk_aurmehvqwarxuawz2h4mssrcpbhrmo7bf3txw36jbu7vn72w3twa",
+        "text": "`"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "crew-member-mount-proved",
+      "text": "`",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_bdrk_aurmehvqwarxuawz2h4mssrcpbhrmo7bf3txw36jbu7vn72w3twa",
+        "text": "crew-member-mount-proved`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "crew-member-mount-proved`",
       "thinking": false
     }
   },
@@ -366,7 +382,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31273,
+      31584,
       1000000
     ],
     "usage_cost": null
@@ -377,19 +393,19 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31273,
+      31584,
       1000000
     ],
-    "usage_cost": 0.1384863
+    "usage_cost": 0.0784485
   },
   {
     "frame": "response",
     "id": 5,
     "prompt_tokens": [
       7,
-      176,
-      61976,
-      31262
+      172,
+      80375,
+      13796
     ],
     "stop_reason": "end_turn"
   }

@@ -131,6 +131,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # (``handlers/spawn_resume.py``), registered before ``{agent_id}`` so
     # ``/api/spawn/lanes`` and ``/api/spawn/adaptive`` are not read as run ids.
     setup_spawn_resume_routes(app)
+    # The caller's own memory footprint, for ``resource_status``; a literal
+    # segment, so it too precedes ``{agent_id}``.
+    app.router.add_get(
+        "/api/spawn/session-memory",
+        _deferred("session_memory_scope", "api_spawn_session_memory"),
+    )
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)
     app.router.add_post("/api/spawn/{agent_id}/retry", handlers.api_spawn_retry)
@@ -148,6 +154,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
+    )
+    # Mediated-secret egress (kirocrew-secrets MCP tool). Both are MCP-only, loopback
+    # + gateway-IPC-secret callers — no browser posts to them (they are in
+    # ``_STRICT_INTERNAL_API_PATHS``). The capability endpoint redeems the single-use
+    # approval grant; the request endpoint does the host-side vault read + SSRF-pinned
+    # egress and always withholds the origin's response.
+    app.router.add_post(
+        "/api/mediated-secret-capability",
+        _deferred("mediated_secrets", "api_mediated_secret_capability"),
+    )
+    app.router.add_post(
+        "/api/mediated-secret-request",
+        _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
@@ -214,7 +233,16 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/agent-panel/dashboard/rollback", _deferred("agent_panel", "api_dashboard_rollback")
     )
+    app.router.add_get(
+        "/api/agent-panel/dashboard/snapshot", _deferred("agent_panel", "api_dashboard_snapshot")
+    )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/record", _deferred("agent_panel", "api_dashboard_record")
+    )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # The installed app's record door: an app token reaches it only through its
+    # ``permissions.api`` grant, and the handler admits nothing else.
+    app.router.add_post("/api/member-records/{slug}", _deferred("agent_panel", "api_member_record"))
     # The crewmate's dynamic dashboard. Registered through the deferred binder for the
     # reason the panel's routes are: calling the module's own
     # `register_member_dashboard_routes` would import it at boot, which the boot-path
@@ -277,6 +305,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/members/{slug}/self-changes/{change_id}/undo", "api_member_self_undo"),
     ):
         app.router.add_route(_method, _path, _deferred("member_self", _name))
+    # The crewmate's capability catalog (``find_capabilities``), MCP-only under
+    # the same strict prefix.
+    app.router.add_post(
+        "/api/member/self/capabilities",
+        _deferred("member_capability_catalog", "api_member_self_capabilities"),
+    )
     # A crewmate's goals (``member_goals``). The Goals tab's half is owner-only
     # cookie auth under the member's own "/api/members/{slug}"; the crewmate's
     # half (the kirocrew-mate goal tools) is MCP-only under the strict
@@ -306,6 +340,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/member/self/goals/read", "api_member_self_goals_read"),
         ("POST", "/api/member/self/goals/key-result", "api_member_self_key_result"),
         ("POST", "/api/member/self/goals/report", "api_member_self_goal_report"),
+        ("POST", "/api/member/self/notes", "api_member_self_notes"),
     ):
         app.router.add_route(_method, _path, _deferred("member_goals", _name))
     # Spelled with ``add_put``: the ``crewmate.goal``, ``crewmate.key_results``
@@ -322,6 +357,16 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_put(
         "/api/members/{slug}/goals/schedules",
         _deferred("member_goals", "api_member_goals_schedules"),
+    )
+    # A ``crewmate.import`` card's file step writes (and its Undo takes back) the
+    # carried files; card steps only, owner only.
+    app.router.add_post(
+        "/api/members/{slug}/import-files",
+        _deferred("crewmate_import_files", "api_member_import_files"),
+    )
+    app.router.add_delete(
+        "/api/members/{slug}/import-files",
+        _deferred("crewmate_import_files", "api_member_import_files_undo"),
     )
     # The ``crewmate.dashboard_page`` card's yes: it wakes the crewmate to write its page.
     app.router.add_post(
@@ -343,10 +388,30 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/cards/{card_id}/preview", "api_cards_preview"),
         ("POST", "/api/cards/{card_id}/cancel", "api_cards_cancel"),
         ("POST", "/api/cards/{card_id}/dismiss", "api_cards_dismiss"),
+        ("POST", "/api/members/import", "api_members_import"),
+        ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
     app.router.add_get(
         "/api/chat/slots/{slot}/dashboard", _deferred("member_dashboard", "api_session_dashboard")
+    )
+    # A Crew Mode root's workers for its side panel, under the same owner-only,
+    # no-app gate as the root's dashboard read above.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers", _deferred("crew_workers", "api_crew_workers")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/steer",
+        _deferred("crew_workers", "api_crew_worker_steer"),
+    )
+    # The conductor's approval card: a worker's pending tool approval, decided by the
+    # dashboard owner through the per-slot approve route on the WORKER slot.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/approve",
+        _deferred("crew_workers", "api_crew_worker_approve"),
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
     )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
@@ -411,6 +476,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_set_model"),
     )
     app.router.add_post(
+        "/api/session-control/set-color",
+        _deferred("session_control", "api_session_control_set_color"),
+    )
+    app.router.add_post(
         "/api/session-control/reload",
         _deferred("session_control", "api_session_control_reload"),
     )
@@ -445,6 +514,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/adopt", _deferred("session_control", "api_session_control_adopt")
+    )
+    app.router.add_post(
+        "/api/session-control/handoff",
+        _deferred("session_control", "api_session_control_handoff"),
     )
     app.router.add_post(
         "/api/session-control/release",

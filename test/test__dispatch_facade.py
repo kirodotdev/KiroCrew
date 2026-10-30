@@ -33,6 +33,10 @@ from kiro_crew.acp import _dispatch
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan__dispatch_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams",)
+
 FACADE = "kiro_crew.acp._dispatch"
 PARTS_DIR = Path(_dispatch.__file__).resolve().parent / "_dispatch_parts"
 FACADE_MODULE = _dispatch
@@ -95,11 +99,6 @@ def _corpus_patched_names() -> set[str]:
                 continue
             names |= facade_mirror_scan.names_by_target(events, {FACADE}).get(FACADE, set())
     return names
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:

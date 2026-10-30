@@ -24,8 +24,8 @@ longer history, a new kind of reading -- is a good reason to redesign the page
 once; it is never a reason to redraw it every turn.
 
 `dashboard_save` takes `model`, `view` and an optional `theme`. `view.html`
-holds the markup, CSS and script; a crewmate page uses HTML rather than
-`view.blocks`. Every field read by a binding or a script belongs in `model`.
+holds the markup, CSS and script; it is the only view, and a stored view of
+blocks is read back as `view.html`. Every field read by a binding or a script belongs in `model`.
 The gateway derives `kind` and `bound_to` from the caller. Saving stores a
 draft; `dashboard_apply` with no arguments makes it a new live version.
 
@@ -42,6 +42,16 @@ save before apply. A count above its total can be a synthetic-data mismatch;
 a missing field, null or wrong type is still a case the page needs to handle.
 A pass means the first paint raised no script errors: later pushes, small
 screens, visual quality and colour contrast still need their own checks.
+
+**Look at the page.** `dashboard_snapshot` draws your applied page in the
+same offline run, over your real data, and returns a PNG file path; open it
+with your file-read tool. It is one 1280x800 view of the top of the page, as
+the person's tab shows it in the default light theme, so judge what it says as
+well as layout, colour, type and fit; their own theme pack or dark mode can
+show other colours. A page you only saved has no picture: apply it first. When the
+run cannot start it answers "no image" with the reason and no file; an
+earlier picture is not the page as it is now. A template page has no picture.
+The file holds real values: leave it where it is.
 
 The gateway's secret filter also processes markup and script. A note reports
 how many places changed and the first line, without revealing the replaced
@@ -123,8 +133,8 @@ known target or a defined total. A state without a measure can still have
 a vivid visual presence and motion that means active, waiting or finished.
 Choose the form that helps this work make sense, with detail available
 where it is useful. A count can be part of a larger picture as well as a
-readable number. A distribution of task states is a measured comparison,
-not a claim that each task has completed a fraction of its work.
+readable number. A distribution of worker states is a measured comparison,
+not a claim that each worker has completed a fraction of its task.
 
 **Make it feel alive.** Subtle ambient motion and animation run constantly
 while the page is in view, not only when a value changes, and lift the whole
@@ -190,14 +200,14 @@ The page has both visual character and a useful view of the work:
 | Question | Available evidence |
 |---|---|
 | Where does the work stand? | work items, workstreams, relevant goal readings |
-| What is running right now? | workstreams, helpers in this session |
+| What is running right now? | workers, workstreams, helpers in this session |
 | What is stuck? | blocked work, failed helpers, outstanding dependencies |
 | What needs me? | waiting items and approvals |
 
 Anything waiting on the person is easy to find, never hidden. When nothing
 waits, the page says so. Include `waiting.count` and `waiting.items` in the
 model so a request arriving after the first paint is visible too. Choose
-vocabulary that keeps sessions,
+vocabulary that keeps worker sessions,
 accepted work items and project outcomes distinct. A closed session does not
 establish that its task was accepted. Decisions use the real `ask_question`
 and approval surfaces; a drawn control carries no approval authority.
@@ -211,6 +221,7 @@ repeating the Profile form is different from drawing a useful project view.
 
 | Evidence | Fold and shape |
 |---|---|
+| worker sessions and current states | `workers.items`, `counts`, `total`, `omitted` |
 | work items and their outcomes | `work`, `workstreams.items` |
 | hourly accepted work and measured spend | `workstreams.series`: `hour`, `accepted`, `credits` |
 | parallel work and task spans | each workstream's `tasks`: `created_at`, `closed_at`, `status` |
@@ -218,6 +229,7 @@ repeating the Profile form is different from drawing a useful project view.
 | recent recorded events | `timeline.moments`: `time`, `type`, optional event details |
 | things waiting on the person | `waiting.items`, `count`; `approvals` |
 | helpers, tool use and spend of the live session, since it started | `subagents`, `tools`, `usage` |
+| the latest result a script cron bound to you recorded | `custom.latest.<type>.data`, `at`, `writer` |
 
 `dashboard_types` publishes paths, `row_keys`, `names_the_row` and nested row
 hints. A path ends at an array: bind the whole array and read its rows in
@@ -225,7 +237,7 @@ script. Array length is a useful derived count, not the only possible binding.
 A map is read by its published keys. `folded_through` reports how far a fold
 has consumed its log; it is not a sample count or proof of nonempty data.
 
-A task's state is not a completion percentage. `goal` keeps a
+`workers` has states, not per-worker completion percentages. `goal` keeps a
 latest snapshot: its `target` and `current` strings may be prose rather than
 numbers. Show each milestone's reading beside its target, as text. Whether a
 milestone is reached is what you recorded in its reading with
@@ -242,6 +254,14 @@ continuous history. `usage`, `tools`, `timeline` and `subagents` describe the
 live session only, from when it last started; spend across the project is each
 workstream's `credits`, with `credits_reported` false where nothing was measured. Lists expose omitted counts; retain that
 meaning when drawing a subset. Unreported spend differs from measured zero.
+
+`custom` is what a script cron bound to you feeds without a model turn: each
+`ctx.crew_log_append(type, data)` call lands as the latest record under
+`custom.latest.<type>`, with the script's `data`, its ISO `at` and the `writer`
+(`cron:<job id>`) the gateway stamped. Bind `custom.latest.<type>.data.<key>` for
+a cell, or the whole `data` object for a script to draw. The record is the
+script's own words: draw it as text, and show its `at` so a stale poll reads as
+stale. Only a cron bound to you can write here, and it can never name who wrote.
 
 For a project fact absent from folds, first look for its recording tool or an
 existing project artifact. An agentic field can hold a verified snapshot as a
@@ -272,7 +292,7 @@ Values arrive in three ways:
 1. `data-dashboard-field="name"` fills an element with text. Useful for a
    scalar cell; arrays and objects appear as raw JSON through this path.
 2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
-   `seq` and `stale` beside them.
+   `seq` and `missing` beside them.
 3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name)` immediately
    and on each push. Its returned function unsubscribes. A chart or script-only
    field needs no extra text binding or hidden sink.
@@ -287,8 +307,10 @@ strings as `innerHTML` would turn somebody's data into page markup. Numerical
 geometry comes from validated numbers. Bindings and graphics read the same
 source, and labels say which subset they describe.
 
-The host retains the last resolved fields and shows a stale band when a
-source fails. Preserve that distinction rather than replacing an unread
+The host retains the last resolved field values, dims a cell named in
+`missing`, and shows the person no band; a field that does not resolve is
+reported to you in your `[DASHBOARD]` turn block. Draw no freshness or
+staleness badge of your own. Preserve the distinction rather than replacing an unread
 value with a made-up zero. Your words and graphics agree with the folded
 numbers; derive changing headlines from those values too.
 
@@ -310,8 +332,10 @@ are CSS heuristics, not measured contrast failures. Inspect the named surface
 in both schemes while preserving the intended design.
 
 A page fits from 320px through an expanded view, with wrapping or disclosure
-for dense detail. A banner has space without covering data. Links use
-`target="_blank" rel="noopener noreferrer"`. Data-driven changes stay readable
+for dense detail. A banner has space without covering data. A link to a web
+page or a dashboard path (`/chat?sid=...`) uses `target="_blank"
+rel="noopener noreferrer"`; the host opens it after the person's click.
+Data-driven changes stay readable
 while ambient layers give the page continuity. When a bound value moves or a
 new item lands, the `living-ui` skill says how that motion should feel. Skip
 the idle tour it describes for explainers: this page stays open all day.

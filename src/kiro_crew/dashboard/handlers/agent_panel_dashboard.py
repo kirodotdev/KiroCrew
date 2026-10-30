@@ -763,7 +763,7 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
                     f"{where} looks like a credential, and the page refuses a whole "
                     "read rather than rewriting such a name, because every name a "
                     "package declares is a JOIN KEY -- a field name joins the read's "
-                    "fields, the frame's blocks and the page's cells, and a theme "
+                    "fields and the page's cells, and a theme "
                     "token is the CSS variable the page's own style references. "
                     "Rename it to something a reader recognises -- a name is shown "
                     "to the person, so 'open_prs' and '--accent', not a token"
@@ -784,10 +784,7 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         with instance_store.package_save_lock(slug):
             art = _write_bound_package(store, content)
         parsed = _dashboard.parse_package(content)
-        counts = {
-            "fields": len((parsed.get("model") or {}).get("types") or {}),
-            "blocks": len((parsed.get("view") or {}).get("blocks") or []),
-        }
+        counts = {"fields": len((parsed.get("model") or {}).get("types") or {})}
         # The parsed canonical bytes go back too, for the page check below.
         return art, counts, parsed
 

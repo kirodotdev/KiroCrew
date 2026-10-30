@@ -561,22 +561,11 @@ def _emit_status_delta(url: str, status: dict[str, str], origin: str) -> None:
             sink(delta)
 
 
-def _record_merge_state(result: dict[str, str], mergeable: str, merge_state: str) -> None:
-    """Add the merge fields to a chip-status entry, each only once it is real.
-
-    An unanswered field is left out entirely rather than written as ``unknown``:
-    the chip cache is a short-TTL hint the client compares against its loaded
-    pull-request payload, and "still computing" must not read as a disagreement
-    with a real answer the payload already has. The two fields are recorded
-    independently because GitLab settles `need_rebase` and its branch-protection
-    gates in the detail field while ``mergeable`` stays ``unknown`` — dropping the
-    detail because its sibling is unknown would leave exactly those banners
-    invisible to the poll.
-    """
-    if projection._merge_state_real(mergeable):
-        result["mergeable"] = mergeable
-    if projection._merge_state_real(merge_state):
-        result["mergeStateStatus"] = merge_state
+_MERGE_STATE_FIELDS = ("mergeable", "mergeStateStatus")
+# Lifecycle states for which a merge answer is still meaningful. Once a source is
+# merged or closed the providers stop answering the merge pair at all, so a
+# carried-forward value could never be cleared again.
+_MERGE_STATE_LIVE_STATES = frozenset({"open", "draft"})
 
 
 def carry_known_ci(status: dict[str, str], previous: dict[str, str]) -> dict[str, str]:
@@ -587,13 +576,6 @@ def carry_known_ci(status: dict[str, str], previous: dict[str, str]) -> dict[str
     """
     carried = {key: previous[key] for key in projection.CI_STATUS_FIELDS if key in previous}
     return {**status, **carried}
-
-
-_MERGE_STATE_FIELDS = ("mergeable", "mergeStateStatus")
-# Lifecycle states for which a merge answer is still meaningful. Once a source is
-# merged or closed the providers stop answering the merge pair at all, so a
-# carried-forward value could never be cleared again.
-_MERGE_STATE_LIVE_STATES = frozenset({"open", "draft"})
 
 
 def _keep_known_merge_state(
@@ -680,7 +662,7 @@ def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     # would see a "change" and drop the full payload, which would write-through
     # and strip them again — the exact repeating chip↔full transition the flap
     # damper below exists to contain, spun by nothing but a projection gap.
-    _record_merge_state(
+    projection._record_merge_state(
         result,
         str(payload.get("mergeable") or ""),
         str(payload.get("mergeStateStatus") or ""),

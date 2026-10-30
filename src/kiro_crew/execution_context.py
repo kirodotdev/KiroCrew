@@ -54,8 +54,7 @@ _VOUCHED_EXECUTIONS: "OrderedDict[tuple[str, str], ExecutionContext]" = OrderedD
 # `_LIVE_EXECUTIONS` above is deliberately NOT bounded by these. It is main's map,
 # written only on the restricted branch and released by that session's own close,
 # and evicting a restricted session's carrier would drop the authority that path
-# reads instead of merely withdrawing this process's word. Bounding it is a
-# separate change to behaviour this PR does not own.
+# reads instead of merely withdrawing this process's word.
 _MAX_VOUCHED_EXECUTIONS = 4096
 _vouched_overflow_reported = False
 _vouched_overflow_count = 0
@@ -868,7 +867,8 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
             return read_run_execution(session_key.split(":", 1)[1])
     record, readable = ConversationLog().get_metadata_status(session_key)
     if not readable:
-        raise _unavailable("session record is unreadable")
+        reason = _unreadable_record_reason(ConversationLog(), session_key)
+        raise _unavailable(reason)
     execution = execution_from_record(record, required=required)
     if execution is not None:
         # The line's own ``memory_mode`` is the file's privacy contract and a
@@ -884,9 +884,7 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
         raise _missing_identity(_OPEN_A_NEW_CHAT_REMEDY)
     store = record.get("memory_store")
     if store and store != "default":
-        from kiro_crew.memory_stores import memory_store_version
-
-        if memory_store_version(store) == 2:
+        if _declared_store_version(store) == 2:
             backfilled = _backfill_legacy_member_record(session_key, record, store)
             if backfilled is not None:
                 return backfilled
@@ -894,9 +892,96 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
     return None
 
 
+def _declared_store_version(store: str) -> int:
+    """The declared memory version of a chat's recorded store, or a named refusal.
+
+    The chat still fails closed: ``memory_store_version`` alone decides whether the
+    store is usable. When it refuses, the refusal is re-raised naming the store and
+    the step that brings the chat back: restore the entry, correct its version, or
+    start a new chat. When a config file could not be read, the stores it declares
+    are missing for that reason, so the refusal names that file instead.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.memory_stores import (
+        UnknownMemoryStore,
+        memory_store_version,
+        validate_memory_store_name,
+    )
+
+    validate_memory_store_name(store)
+    try:
+        return memory_store_version(store)
+    except UnknownMemoryStore as refused:
+        config = KiroCrewConfig.load()
+        raise UnknownMemoryStore(
+            f"Memory store declaration is unavailable for {store!r}: "
+            f"{_undeclared_store_remedy(config, store)}; Global was not used"
+        ) from refused
+
+
+def _undeclared_store_remedy(config: object, store: str) -> str:
+    """The step that brings back a chat whose store has no usable declaration.
+
+    A present entry is named first. The overlay is deep-merged, so an unreadable
+    file may hold the rest of that entry; it is then named as well.
+    """
+    unreadable = [
+        name
+        for name, flag in (
+            ("config.json", getattr(config, "_base_unreadable", False)),
+            ("config.local.json", getattr(config, "_overlay_unreadable", False)),
+        )
+        if flag
+    ]
+    files = " and ".join(unreadable)
+    if store in getattr(config, "memory_stores", {}):
+        remedy = (
+            "its entry under memory_stores has no valid memory_version (1 or 2); "
+            "correct that entry, or open a new chat"
+        )
+        if unreadable:
+            remedy += f"; {files} could not be read and may hold the rest of that entry"
+        return remedy
+    if unreadable:
+        return (
+            f"{files} could not be read, so no memory store declared "
+            f"there is available; fix {'those files' if len(unreadable) > 1 else 'that file'}"
+        )
+    return (
+        "this chat's store is no longer declared; restore its entry under "
+        "memory_stores in config.json or config.local.json, or open a new chat"
+    )
+
+
 _OPEN_A_NEW_CHAT_REMEDY = (
     "open a new chat with the same member (its memory is intact) or archive this one"
 )
+
+
+#: The two refusals an unreadable session record answers with. Fixed text,
+#: like every reason here, because a caller shows it to the user unredacted.
+_UNREADABLE_RECORD_REASON = "session record is unreadable"
+_DAMAGED_RECORD_REASON = (
+    "session record is unreadable (its first line is damaged); start a new chat "
+    "(memory is intact) or archive this one"
+)
+
+
+def _unreadable_record_reason(log: Any, session_key: str) -> str:
+    """The refusal reason for a session record that could not be read.
+
+    A DAMAGED first line (bytes that are not JSON or not UTF-8) is told apart
+    from a read that failed this once: no retry reads damaged bytes, so its
+    reason names the step that works instead of reading as "try again". The
+    refusal itself is unchanged -- the member binding and privacy mode the line
+    held are unknowable, so nothing runs as an ordinary or Global chat in its
+    place.
+    """
+    from kiro_crew.history import METADATA_LINE_CORRUPT
+
+    if log.metadata_line_state(session_key) == METADATA_LINE_CORRUPT:
+        return _DAMAGED_RECORD_REASON
+    return _UNREADABLE_RECORD_REASON
 
 
 def _missing_identity(remedy: str):

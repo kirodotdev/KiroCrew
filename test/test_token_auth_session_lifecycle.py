@@ -60,7 +60,6 @@ def test_evict_expired_removes_old_entries() -> None:
     # Evict with current time > 1000
     _state.evict_expired(2000.0)
 
-    # Verify expired entries were removed
     with _state._lock:
         pin_key = _token_pin_key(token)
         assert pin_key not in _state._peer_bindings, "expired pin should be evicted"

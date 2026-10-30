@@ -1,12 +1,13 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ArrowUpRight, Check, ShieldCheck } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../../../api/client'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { appendSlotMessage, clearQuestionCard, isAnsweredQuestionEnding, markQuestionSettled, resolveQuestionCard, selectComposerBusy, setQuestionRequestInFlight } from '../../../store/chatSlice'
 import { restoreToComposer } from '../../../utils/composerRestore'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { answerFailureKey, answerRejectionReason, answerRestoredCommandCenterNotice, answersAsText, questionName } from '../../../utils/questionAnswers'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../../../components/chat-input/busySend'
@@ -18,6 +19,8 @@ import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import { ApiError, apiErrorCode, isTerminalApprovalRefusal } from '../../../api/apiError'
+import { useCrewRoot } from '../../../components/crew/useCrewRoot'
+import { reopenCrewSession } from './CrewWorkerList'
 
 export function RestoredQuestionNotice({ slot, question, title, onDismiss }: {
   slot: string
@@ -41,6 +44,70 @@ export function RestoredQuestionNotice({ slot, question, title, onDismiss }: {
     >
       {t('commandCenter.open_session')}<ArrowUpRight size={13} />
     </Link>
+  </section>
+}
+
+/** A Crew Mode worker's tool approval, outside the conductor's approval card:
+ *  information with a link to that card, never a decision (`crewApprovalDecidableHere`). */
+function CrewCardNotice({ item, title, onOpenSession }: {
+  item: AttentionItem
+  title: string
+  onOpenSession?: (slot: string) => void
+}) {
+  const { t } = useTranslation()
+  const dispatch = useAppDispatch()
+  const store = useAppStore()
+  const navigate = useNavigate()
+  const root = item.crewCard!
+  const rootRow = useAppSelector(state => state.dashboard.slots.find(slot => slot.key === root))
+  // A closed conductor's saved title, from the same worker-list read its crew
+  // members' views use; the generic Crew Mode name until that read answers.
+  const { rootTitle: savedRootTitle } = useCrewRoot(rootRow ? '' : root)
+  const rootTitle = rootRow ? sessionDisplayTitle(rootRow) : savedRootTitle
+  const [reopening, setReopening] = useState(false)
+  const [reopenFailed, setReopenFailed] = useState(false)
+  // False once this notice is gone (the person went elsewhere): a reopen that
+  // lands after that must not pull them back.
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  // A closed conductor is not a live slot, so a link to its key finds no session:
+  // reopen it from its saved transcript first, then go to its card. The
+  // reopen needs no leave guard (it changes no route); the hand-off after it
+  // takes the host's guarded exit when there is one. It moves the person only
+  // when the reopened conductor took the view: a session they picked while the
+  // reopen was pending wins, and so does a page they left for.
+  const openClosedRoot = () => {
+    if (reopening) return
+    setReopening(true)
+    setReopenFailed(false)
+    void reopenCrewSession(dispatch, store.getState, root, rootTitle, true).then(result => {
+      if (!mounted.current) return
+      setReopening(false)
+      if (!result.ok) { setReopenFailed(true); return }
+      if (!result.activated) return
+      if (onOpenSession) onOpenSession(result.key)
+      else navigate(`/chat?sid=${encodeURIComponent(result.key)}`)
+    })
+  }
+  const rollup = item.crewCount !== undefined
+  const heading = rollup
+    ? t('commandCenter.crew_approval_waiting', { count: item.crewCount })
+    : item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed') : t('commandCenter.approval_needed')
+  const linkClass = 'text-accent text-[12px] inline-flex items-center gap-1 shrink-0'
+  const linkLabel = <>{t('commandCenter.open_approval_card')}<ArrowUpRight size={13} /></>
+  return <section className="rounded-lg border border-border bg-card p-3 space-y-2" data-testid="crew-approval-notice">
+    <div className="flex items-center gap-2 min-w-0">
+      <h3 className="text-sm font-semibold break-words min-w-0 flex-1"><ShieldCheck size={15} className="lucide-inline" />{heading}</h3>
+      {!rootRow
+        ? <button type="button" onClick={openClosedRoot} disabled={reopening} className={`${linkClass} disabled:opacity-50 disabled:cursor-not-allowed`} data-testid="crew-approval-reopen-root">{linkLabel}</button>
+        : onOpenSession
+          ? <button type="button" onClick={() => onOpenSession(root)} className={linkClass}>{linkLabel}</button>
+          : <Link to={`/chat?sid=${encodeURIComponent(root)}`} className={linkClass}>{linkLabel}</Link>}
+    </div>
+    {!rollup && <p className="text-[12px] text-muted break-words">{t('commandCenter.from_session', { name: title })}</p>}
+    <p className="text-[12px] text-warn break-words">{t('commandCenter.crew_approval_on_card', { name: rootTitle })}</p>
+    {/* Nothing is lost: the request waits on the server, and a retry is one click. */}
+    {reopenFailed && <ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} askAgent />}
   </section>
 }
 
@@ -185,6 +252,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     mutation.mutate(action)
   }
   if (settledElsewhere) return null
+  if (item.crewCard) return <CrewCardNotice item={item} title={title} onOpenSession={onOpenSession} />
   return <section className="rounded-lg border border-border bg-card p-3 space-y-3">
     <div className="flex items-center gap-2 min-w-0">
       <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalHeading || title}</h3>

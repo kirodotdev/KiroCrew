@@ -999,7 +999,6 @@ def test_every_managed_writer_calls_begin_and_finalize(
     agent.rebuild_agent_config()
     assert target.exists()
 
-    # Patch to record calls.
     calls: list[str] = []
     real_begin = agent_state.begin_managed_write
     real_finalize = agent_state.finalize_managed_write

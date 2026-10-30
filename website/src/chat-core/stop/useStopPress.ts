@@ -53,9 +53,39 @@ export type StopOutcome =
   /** Declined while automatic compaction holds the session; nothing stops. */
   | { kind: 'declined' }
   /** The backend answered and said no: nothing was armed. */
-  | { kind: 'refused'; error: string }
+  | ({ kind: 'refused' } & StopRefusal)
   /** No answer: the request may have reached the backend and armed the cancel. */
   | { kind: 'lost' }
+
+/** What the transport read off a refused stop. `error` is the backend's own
+ *  text; `status`, `code` and `authRequired` say which known reason it is. */
+export interface StopRefusal {
+  error: string
+  status?: number
+  code?: string
+  authRequired?: boolean
+  /** An access proxy answered with its own sign-in page: `error` is already
+   *  the proxy remedy, and the gateway's sign-in cannot clear it. */
+  edgeChallenge?: boolean
+}
+
+/**
+ * The words a refused stop shows (#20398). A known reason gets a plain sentence
+ * that says what to do, and its backend text is dropped: it adds nothing the
+ * sentence does not say. Any other refusal keeps the backend text as
+ * `detail`, a secondary line, because then it is the only clue to the cause.
+ */
+export function stopRefusalCopy(r: StopRefusal): { message: string; detail: string } {
+  if (r.edgeChallenge) return { message: r.error, detail: '' }
+  if (r.authRequired) return { message: i18nT('components.chatPane.stop_failed_signed_out'), detail: '' }
+  if (r.code === 'slot_not_found' || r.status === 404) {
+    return { message: i18nT('components.chatPane.stop_failed_not_found'), detail: '' }
+  }
+  if (typeof r.status === 'number' && r.status >= 500) {
+    return { message: i18nT('components.chatPane.stop_failed_server'), detail: r.error }
+  }
+  return { message: i18nT('components.chatPane.stop_failed'), detail: r.error }
+}
 
 export interface UseStopPressOptions {
   slotKey: string
@@ -77,6 +107,8 @@ export function useStopPress({
   const softStopAtRef = useRef(0)
   const [optimistic, setOptimistic] = useState(false)
   const [error, setError] = useState('')
+  // The backend's own text under the plain message, for an unknown reason only.
+  const [errorDetail, setErrorDetail] = useState('')
   // When the last press was declined for a compaction (0 when it was not).
   const [declinedAt, setDeclinedAt] = useState(0)
   // Which press, and which turn of which slot, a reply is about.
@@ -166,11 +198,15 @@ export function useStopPress({
           return
         case 'lost':
           setError(i18nT('components.chatPane.stop_failed_network'))
+          setErrorDetail('')
           return
-        case 'refused':
+        case 'refused': {
           softStopAtRef.current = 0
           setOptimistic(false)
-          setError(i18nT('components.chatPane.stop_failed', { error: outcome.error }))
+          const copy = stopRefusalCopy(outcome)
+          setError(copy.message)
+          setErrorDetail(copy.detail)
+        }
       }
     })
   }, [slotKey, sendStop, turnScoped])
@@ -194,5 +230,5 @@ export function useStopPress({
 
   const dismissStopError = useCallback(() => setError(''), [])
 
-  return { stopState, onStop, stopError: error, dismissStopError, stopDeclined }
+  return { stopState, onStop, stopError: error, stopErrorDetail: error ? errorDetail : '', dismissStopError, stopDeclined }
 }

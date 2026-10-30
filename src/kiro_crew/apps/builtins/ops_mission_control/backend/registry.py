@@ -209,7 +209,11 @@ class OpsProviderRegistry:
            means "it cleared" if the poll that would have reported it actually
            succeeded; callers that resolve work on absence MUST consult this.
         """
-        sources = [s for s in self._signal_sources.values() if self._safe_configured(s)]
+        # Off the loop: an adapter's `configured()` reads config.json, checks the
+        # secret store and may walk PATH, once per adapter every heartbeat.
+        sources = await asyncio.to_thread(
+            lambda: [s for s in self._signal_sources.values() if self._safe_configured(s)]
+        )
         if not sources:
             return [], {}
 
@@ -249,7 +253,7 @@ class OpsProviderRegistry:
                     # CLEARED while they were still firing. Reported via the existing
                     # `snapshot=False` channel (built for the webhook spool's drain) rather
                     # than a new one, because the two cases are the same fact: this poll did
-                    # not see everything. Found in review (GPT 5.6).
+                    # not see everything.
                     logger.warning(
                         "ops-mission-control: %r returned %d signals, over the %d cap — "
                         "keeping the first %d and marking this poll non-authoritative so "
@@ -370,7 +374,9 @@ class OpsProviderRegistry:
         the failure a rotation exists to prevent. Verified against the pre-fix code
         (a real off-shift source resolved to ``on_shift=True``) before changing this.
         """
-        configured = [s for s in self._rotation_sources.values() if self._safe_configured(s)]
+        configured = await asyncio.to_thread(
+            lambda: [s for s in self._rotation_sources.values() if self._safe_configured(s)]
+        )
         # A fallback declares itself; a source that never heard of the flag is real.
         sources = [s for s in configured if not getattr(s, "is_fallback", False)]
         if not sources:
@@ -413,7 +419,9 @@ class OpsProviderRegistry:
         from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import redact_tokens
         from kiro_crew.platform.context import redact_via_context as core_redact
 
-        sources = [s for s in self._evidence_sources.values() if self._safe_configured(s)]
+        sources = await asyncio.to_thread(
+            lambda: [s for s in self._evidence_sources.values() if self._safe_configured(s)]
+        )
         if not sources:
             return []
 
@@ -468,7 +476,7 @@ class OpsProviderRegistry:
                         # `ClaimedIncident.to_dict()` — the dashboard JSON and the model brief.
                         # The body was redacted here while the title beside it was copied raw,
                         # the same title/body asymmetry the Slack and brief sinks each had.
-                        # Found in review. Titles are short, so no headroom/budget dance.
+                        # Titles are short, so no headroom/budget dance.
                         title=redact_tokens(core_redact(item.title)),
                         body=body,
                         url=item.url,
@@ -478,6 +486,11 @@ class OpsProviderRegistry:
 
     @staticmethod
     def _safe_configured(adapter: Any) -> bool:
+        """``adapter.configured()``, with a raise counted as not configured.
+
+        The fan-outs call this through ``asyncio.to_thread``: ``configured()`` does
+        file and secret-store I/O.
+        """
         try:
             return bool(adapter.configured())
         except Exception:  # noqa: BLE001

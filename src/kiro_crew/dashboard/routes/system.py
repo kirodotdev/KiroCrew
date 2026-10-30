@@ -20,6 +20,7 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.edition_locks import local_enable_locked
 
 
 def register(app: web.Application) -> None:
@@ -42,6 +43,10 @@ def register(app: web.Application) -> None:
     app.router.add_put(
         "/api/notifications/channels/settings", handlers.api_notification_channel_settings
     )
+    # Web Push (dashboard-user): browser subscription lifecycle + VAPID key.
+    app.router.add_get("/api/notifications/push/vapid-public-key", handlers.api_vapid_public_key)
+    app.router.add_post("/api/notifications/push/subscribe", handlers.api_push_subscribe)
+    app.router.add_post("/api/notifications/push/unsubscribe", handlers.api_push_unsubscribe)
     app.router.add_get("/api/update/check", handlers.api_update_check)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
@@ -71,9 +76,12 @@ def register(app: web.Application) -> None:
     # restart is valid everywhere and is how a wheel install picks up code a
     # terminal-run installer already replaced on disk.
     app.router.add_post("/api/restart", handlers.api_gateway_restart)
-    # Only expose the simulation endpoint in dev/debug environments
+    # Only expose the simulation endpoint in dev/debug environments. Both are local
+    # developer switches, which an enterprise build ignores (RFC D3).
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
-    if _is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE"):
+    if (_is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE")) and not local_enable_locked(
+        "developer_mode"
+    ):
         app.router.add_post("/api/update/simulate", handlers.api_update_simulate)
     app.router.add_get("/api/sessions", handlers.api_sessions)
     app.router.add_delete("/api/sessions", handlers.api_sessions_clear)
@@ -198,20 +206,8 @@ def register(app: web.Application) -> None:
     # strip's tooltip reads. Browser-called by the chat surface, like the consent
     # pair above.
     app.router.add_post("/api/decisions/feedback", handlers.api_decisions_feedback)
-    # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
-    # on the strict-internal list in server.py, because unlike the file_send legs
-    # its only legitimate caller IS the owner's browser.
-    app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
-    app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
-    app.router.add_get(
-        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
-    )
-    app.router.add_post(
-        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
-    )
-    app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
-    # Credential-redaction switch. Owner-gated in the handler, like the consent
-    # routes above: its only legitimate caller is the owner's browser.
+    # Credential-redaction switch. Owner-gated in the handler: its only
+    # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
     app.router.add_get("/api/approvals", handlers.api_approvals)

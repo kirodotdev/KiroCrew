@@ -6,6 +6,7 @@ import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { captureForkOrigin, deleteSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, listForkedSlot, requestSlotFolderOpen, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { slotLastTsOf } from '../store/slotLastTs'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -259,7 +260,7 @@ export function useSessionActions(mode?: string, opts?: {
         // The user opened another session while the fork ran: the fork stays
         // listed, and the view and its chrome (Split View) stay as they are.
         if (!forkMayOpen(store.getState(), started.origin)) return
-        dispatch(switchSlot(data.key))
+        dispatch(switchSlot({ key: data.key, requestSeq: started.origin.seq }))
         // The child inherits the source's folder, which can be collapsed (the
         // source row sits in the pinned group or a board lane, or another tab
         // collapsed the folder meanwhile): open that path so the active row shows.
@@ -463,7 +464,7 @@ export function useSessionActions(mode?: string, opts?: {
     // stays window-local — markSlotUnread's string form records the manual
     // sentinel, so no other window's relayed read can clear the reminder.
     if (isUnread) {
-      const slotTs = store.getState().dashboard.slots.find(s => s.key === slotKey)?.last_ts
+      const slotTs = slotLastTsOf(store.getState().dashboard, slotKey)
       emitSlotRead(slotKey, slotTs)
     }
   }, [dispatch])

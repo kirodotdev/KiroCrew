@@ -172,6 +172,49 @@ describe('SteeringTab', () => {
     )
   })
 
+  it('lists a link the dashboard may not read as linked, not shown, and never fetches it', async () => {
+    // kiro-cli loads a link wherever it points, so the tab lists it; the
+    // server sends no target or metadata and refuses to read it, so the tab
+    // must say so instead of asking for a body that will 404.
+    const NOT_SHOWN = 'Linked, not shown. This link points outside the folders the dashboard may read, so its contents are not opened here. Sessions can still load it.'
+    const outside = {
+      ...FILES.files[0],
+      key: 'user/context/probe.md', name: 'probe.md', rel: 'context/probe.md',
+      path: '~/.kiro/steering/context/probe.md', size: 0, description: '',
+      linked: true, editable: false, readable: false, target: '',
+    }
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, files: [outside, FILES.files[1]] })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('context/probe.md', { selector: '[role="listbox"] span' })).toBeInTheDocument())
+    expect(screen.getByText('Steering (2)')).toBeInTheDocument()
+    expect(screen.getByTestId('steering-linked-chip')).toHaveAttribute('title', NOT_SHOWN)
+    await waitFor(() => expect(screen.getByText(NOT_SHOWN)).toBeInTheDocument())
+    expect(screen.getByText('Edit')).toBeDisabled()
+    expect(screen.getByText('Delete')).toBeDisabled()
+    expect(screen.getByText('Edit')).toHaveAttribute('title', NOT_SHOWN)
+    // No body, no loading spinner and no guessed mode for a file never read.
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('md')).not.toBeInTheDocument()
+    expect(screen.queryByText('always')).not.toBeInTheDocument()
+    expect(mockApi.steeringFile).not.toHaveBeenCalled()
+
+    // A readable entry beside it still fetches and renders.
+    fireEvent.click(screen.getByRole('button', { name: 'Select api.md' }))
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    expect(mockApi.steeringFile).toHaveBeenCalledTimes(1)
+    expect(mockApi.steeringFile.mock.calls[0][0]).toBe('workspace/api.md')
+  })
+
+  it('shows a refused read instead of loading forever', async () => {
+    mockApi.steeringFile.mockRejectedValue(new FakeApiError(413, 'file too large (300000 bytes)'))
+    renderTab()
+    await waitFor(() => expect(screen.getByText('file too large (300000 bytes)')).toBeInTheDocument())
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    // View mode holds no draft, so the refused read hands off to the agent.
+    const notice = screen.getByText('file too large (300000 bytes)').closest('[role="alert"]') as HTMLElement
+    expect(within(notice).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
   it('keeps Edit and Delete live on a regular entry beside a linked one', async () => {
     const linked = {
       ...FILES.files[0],
@@ -1118,5 +1161,40 @@ describe('steeringBody', () => {
 
   it('handles CRLF', () => {
     expect(steeringBody('---\r\ninclusion: manual\r\n---\r\n# T\r\n')).toBe('# T\r\n')
+  })
+})
+
+describe('SteeringTab filter selection (#20262)', () => {
+  // A file listed first whose description mentions the query, then the file
+  // the user actually typed.
+  const MENTIONS = {
+    ...FILES,
+    files: [
+      { ...FILES.files[0], key: 'user/notes.md', name: 'notes.md', rel: 'notes.md', description: 'Notes on the api' },
+      FILES.files[1],
+    ],
+  }
+  const lastOpened = () => mockApi.steeringFile.mock.calls.at(-1)?.[0]
+
+  it('opens the file whose name matches the filter, not the first row', async () => {
+    mockApi.steeringFiles.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('user/notes.md'))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter steering/i), { target: { value: 'api' } })
+    // Both rows stay listed; the open file is the one that was typed.
+    await waitFor(() => expect(lastOpened()).toBe('workspace/api.md'))
+    expect(screen.getAllByText('notes.md').length).toBeGreaterThan(0)
+  })
+
+  it('keeps a file the user clicked while the filter still shows it', async () => {
+    mockApi.steeringFiles.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('user/notes.md'))
+    fireEvent.click(screen.getAllByText('notes.md')[0])
+
+    fireEvent.change(screen.getByPlaceholderText(/filter steering/i), { target: { value: 'api' } })
+    await waitFor(() => expect(screen.getByText('api.md')).toBeInTheDocument())
+    expect(lastOpened()).toBe('user/notes.md')
   })
 })

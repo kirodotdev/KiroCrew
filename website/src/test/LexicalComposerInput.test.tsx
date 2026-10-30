@@ -33,6 +33,7 @@ function ControlledHost({
   sentMessages,
   historyScope,
   showFullPastes,
+  readOnly,
   onEditLastRequest,
   onMentionKey,
   onEndUndoBurst,
@@ -48,6 +49,7 @@ function ControlledHost({
   sentMessages?: string[]
   historyScope?: string
   showFullPastes?: boolean
+  readOnly?: boolean
   onEditLastRequest?: () => void
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: { meta: boolean; ctrl: boolean; alt: boolean; shift: boolean }) => { value: string; caret: number } | null
   onEndUndoBurst?: () => void
@@ -62,6 +64,7 @@ function ControlledHost({
         onChange={setValue}
         onBlocksChange={setBlocks}
         showFullPastes={showFullPastes}
+        readOnly={readOnly}
         onSend={onSend}
         ariaLabel="Message input"
         placeholder="Write a message"
@@ -202,6 +205,48 @@ describe('LexicalComposerInput', () => {
     await user.keyboard('{Backspace}')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('xy'))
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+  })
+
+  // #23148: the Lexical composer (reached via Style Markdown While Typing) must
+  // expand a collapsed paste on double-click, matching the textarea composer.
+  it('expands a paste chip to its full text on double-click and drops the block', async () => {
+    render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    fireEvent.doubleClick(screen.getByTestId('paste-token-1'))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${block.content}y`))
+    expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
+  })
+
+  // A real double-click is click, click, dblclick: userEvent.dblClick sends the
+  // whole sequence, so each click handler runs before the dblclick one does.
+  // While read-only, none of them may touch the editor state.
+  it('does not change the editor on a real double-click while read-only', async () => {
+    const user = userEvent.setup()
+    const editorRef = createRef<LexicalEditor>()
+    const { rerender } = render(
+      <ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} editorRef={editorRef} />,
+    )
+    rerender(
+      <ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} editorRef={editorRef} readOnly />,
+    )
+    await waitFor(() => expect(editorRef.current?.isEditable()).toBe(false))
+    const chip = screen.getByTestId('paste-token-1')
+    const blocksBefore = screen.getByTestId('blocks').textContent
+    const updateSpy = vi.spyOn(editorRef.current!, 'update')
+    await user.dblClick(chip)
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y`)
+    expect(screen.getByTestId('blocks').textContent).toBe(blocksBefore)
+    expect(blocksBefore).toContain(block.id)
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+  })
+
+  it('a single click on a paste chip still only selects it, never expands', async () => {
+    const user = userEvent.setup()
+    render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    await user.click(screen.getByTestId('paste-token-1'))
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y`)
   })
 
   // #18186: the Lexical composer must delete a staged @mention as one atomic
@@ -730,8 +775,7 @@ describe('LexicalComposerInput', () => {
       )
     })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
-    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 }))
-    act(() => controlRef.current!.setSelection('second'.length))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 6, end: 6 }))
     act(() => {
       editorRef.current!.dispatchCommand(
         KEY_ARROW_DOWN_COMMAND,
@@ -752,6 +796,63 @@ describe('LexicalComposerInput', () => {
     })
     return handled
   }
+
+  it('leaves the caret at the end of a recall and walks a multi-line prompt by line', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const recalled = 'line1\nline2\nline3'
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={['first', recalled, 'third']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^third$/))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    // ↑ from the end of a one-line recall steps older with no Home press.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(recalled))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: recalled.length, end: recalled.length }))
+    // Last and middle lines: ↑ moves the caret; first and middle lines: ↓ does.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(8))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
+    expect(screen.getByTestId('value').textContent).toBe(recalled)
+    // Anywhere on the first line, ↑ steps older.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^first$/))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    // ↓ from the end steps newer at once, and lands on the recall's last line.
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(recalled))
+    act(() => controlRef.current!.setSelection(14))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^third$/))
+  })
+
+  it('keeps the caret in place when ↑ on the oldest multi-line prompt has nowhere older to go', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const oldest = 'line1\nline2'
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={[oldest, 'newest']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^newest$/))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(oldest))
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    // Let any deferred caret move run before asserting it did not happen.
+    await act(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+    expect(screen.getByTestId('value').textContent).toBe(oldest)
+    expect(controlRef.current!.getSelection()).toEqual({ start: 3, end: 3 })
+  })
 
   it('keeps the recalled prompt when older history loads in front mid-browse', async () => {
     const editorRef = createRef<LexicalEditor>()

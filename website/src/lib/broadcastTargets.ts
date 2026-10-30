@@ -146,7 +146,7 @@ export function matchesBroadcast(
   if (criteria.tagId && !(slot.tags ?? []).includes(criteria.tagId)) return false
   if (criteria.pinnedOnly && !slot.pinned) return false
   if (criteria.activeWithinMs) {
-    const ts = slot.last_ts ? Date.parse(slot.last_ts) : NaN
+    const ts = slot.last_ts ? Date.parse(slot.last_ts) : NaN // last-ts: BroadcastPanel passes withLiveLastTs rows
     if (!Number.isFinite(ts) || ctx.now - ts > criteria.activeWithinMs) return false
   }
   return true

@@ -55,13 +55,13 @@ const CONTENT_MIN_CHARS = 2
 /** Keystroke debounce before a content search leaves the browser. A filename
  *  filter is local and instant; a content search is a bounded walk on the
  *  gateway, so it waits for the typing to settle. */
-const CONTENT_DEBOUNCE_MS = 250
+export const CONTENT_DEBOUNCE_MS = 250
 
 /** Shortest name query the filename search answers (`api_file_search`). */
 const NAME_SEARCH_MIN_CHARS = 2
 
 /** Keystroke debounce before a filename search past the tree's cap leaves the browser. */
-const NAME_SEARCH_DEBOUNCE_MS = 200
+export const NAME_SEARCH_DEBOUNCE_MS = 200
 
 /** Rows one filename search past the cap asks for: enough to find a folder by a
  *  partial name, and well under the server's own ceiling. */
@@ -107,18 +107,20 @@ export type TreeState = 'no-dir' | 'error' | 'recoverable' | 'ready'
  *  error beside `useTreeState`'s verdict -- the hand-off on a tree notice is keyed on the server's
  *  message, which the verdict does not carry. Same key, so react-query dedupes a second observer
  *  into the one request. */
-export function useTreeQuery(projectDir: string | null | undefined) {
+export function useTreeQuery(projectDir: string | null | undefined, active = true) {
   return useQuery({
     queryKey: ['project-tree', projectDir ?? ''],
     queryFn: () => api.projectTree(projectDir ?? ''),
-    enabled: !!projectDir,
+    // Off while hidden, or a window focus would re-walk the project for a tab
+    // nobody is looking at: any one enabled observer of the key refetches it.
+    enabled: !!projectDir && active,
     retry: false,
     staleTime: 10_000,
   })
 }
 
-export function useTreeState(projectDir: string | null | undefined): TreeState {
-  const q = useTreeQuery(projectDir)
+export function useTreeState(projectDir: string | null | undefined, active = true): TreeState {
+  const q = useTreeQuery(projectDir, active)
   if (!projectDir) return 'no-dir'
   if (!q.isError) return 'ready'
   // A deadline or codeless failure can answer differently on Refresh. A refusal or missing
@@ -172,9 +174,10 @@ function HighlightedPreview({ text, query }: { text: string; query: string }) {
  * location badge for a document hit, and a one-line preview with the match
  * marked.
  */
-function ContentResults({ query, projectDir, onOpen }: {
+function ContentResults({ query, projectDir, active, onOpen }: {
   query: string
   projectDir: string
+  active: boolean
   onOpen: (hit: FileGrepHit) => void
 }) {
   const { t } = useTranslation()
@@ -183,7 +186,7 @@ function ContentResults({ query, projectDir, onOpen }: {
   const { data, isFetching, error } = useQuery({
     queryKey: ['file-grep', projectDir, settled],
     queryFn: () => fileGrep(projectDir, settled),
-    enabled: enabled && !!projectDir,
+    enabled: enabled && !!projectDir && active,
     retry: false,
     // The same query re-run on a re-mount is the same answer: the rail remounts
     // on tab navigation, and re-walking the project for a query already on
@@ -336,8 +339,9 @@ function ContentResults({ query, projectDir, onOpen }: {
  * folder in the tree (loading its own listing when it is past the cap); a file
  * hit opens the file.
  */
-function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealFolder }: {
+function NameSearchResults({ query, projectRoot, active, treeRows, onOpenFile, onRevealFolder }: {
   query: string
+  active: boolean
   /** The files the (cut) tree already holds. The search walks under its own
    *  budget and can miss one of them, so they join its hits (`mergeTreeMatches`). */
   treeRows: { paths: readonly string[] }
@@ -352,7 +356,7 @@ function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealF
   const { data, isFetching, error } = useQuery({
     queryKey: ['rail-name-search', projectRoot, settled],
     queryFn: ({ signal }) => api.fileSearch(settled, projectRoot, signal, undefined, NAME_SEARCH_LIMIT),
-    enabled,
+    enabled: enabled && active,
     retry: false,
     staleTime: 10_000,
     placeholderData: (previous, previousQuery) =>
@@ -513,13 +517,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     setReveal(null)
   }
 
-  const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir)
+  const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir, active)
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
-    enabled: !!projectDir,
-    refetchInterval: active ? 5_000 : false,
-    refetchOnWindowFocus: active,
+    enabled: !!projectDir && active,
+    refetchInterval: 5_000,
   })
   const changedCount = status?.files?.length ?? 0
   // The server caps the listing at 500 and says so. Unless the badge reads that
@@ -801,6 +804,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             <ContentResults
               query={query}
               projectDir={projectDir}
+              active={active}
               // A text hit carries the line it matched on. A document hit has no
               // navigable position (line 0), and passing 0 would ask for a line
               // that does not exist, so the file simply opens at its start.
@@ -824,6 +828,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                 <NameSearchResults
                   query={query}
                   projectRoot={projectRoot}
+                  active={active}
                   treeRows={{ paths: treeData?.paths ?? [] }}
                   onOpenFile={abs => onFileOpen(abs, false)}
                   onRevealFolder={rel => {
@@ -846,6 +851,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                   onOpenFolder={onOpenFolder ? folder => onOpenFolder(`${projectRoot}/${folder}`) : undefined}
                   reveal={reveal}
                   onRevealed={() => setReveal(null)}
+                  active={active}
                 />
               </div>
             </>

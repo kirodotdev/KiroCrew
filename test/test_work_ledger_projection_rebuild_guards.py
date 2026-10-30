@@ -91,9 +91,11 @@ async def test_a_nested_legacy_boards_baseline_carries_its_lineage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_reports(
+async def test_a_pruned_worker_unit_leaves_the_rebuilt_report_standing(
     monkeypatch,
 ):
+    """The board's copy of the report is in the conductor's log, so retention taking the
+    worker's unit costs the board nothing: the rebuild keeps the report."""
     from kiro_crew.crew_log import store
 
     _real_units(monkeypatch)
@@ -109,11 +111,7 @@ async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_r
 
     with eager.paused():
         shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.rebuild_from_projection(CONDUCTOR)
-    assert caught.value.code == "crew_log_incomplete"
-    # The refusal names its exit: keep the cache, or drop the item's files and rebuild.
-    assert "remove that item's cached files and rebuild" in str(caught.value)
+    wl.rebuild_from_projection(CONDUCTOR)
     after = wl.read_work_item(CONDUCTOR, item_id)
     assert (after.status, after.summary, after.last_report_at) == (
         before.status,
@@ -123,13 +121,13 @@ async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_r
 
 
 @pytest.mark.asyncio
-async def test_a_rebuild_keeps_the_completeness_marker_so_a_later_prune_still_refuses(
+async def test_a_rebuild_keeps_the_completeness_marker_and_a_later_prune_keeps_the_report(
     monkeypatch,
 ):
     """Entries never carry ``recorded_at``; a rebuild that copied the fold verbatim
-    would clear it, and the next completeness check would skip the item -- so a
-    rebuild, a retention prune and a second rebuild would erase the worker's
-    reports the first rebuild had just written. The stamp must survive the fold."""
+    would clear it, so the stamp must survive the fold. A retention prune of the
+    worker's unit and a second rebuild then keep the report, whose board copy is in
+    the conductor's log."""
     import shutil
 
     from kiro_crew import crew_log as lg
@@ -151,9 +149,7 @@ async def test_a_rebuild_keeps_the_completeness_marker_so_a_later_prune_still_re
 
     with eager.paused():
         shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.rebuild_from_projection(CONDUCTOR)
-    assert caught.value.code == "crew_log_incomplete"
+    wl.rebuild_from_projection(CONDUCTOR)
     after = wl.read_work_item(CONDUCTOR, item_id)
     assert after is not None
     assert (after.status, after.summary, after.last_report_at) == (
@@ -936,7 +932,8 @@ async def test_a_header_read_that_answers_none_once_still_carries_the_generation
 
     assert status == 200, body
     assert faulted == [CONDUCTOR], "the post-commit read is the one that must fault"
-    assert [data.get("generation") for _unit, data in recorded] == [stamped.generation]
+    # The worker's copy and the board's copy carry the same generation.
+    assert [data.get("generation") for _unit, data in recorded] == [stamped.generation] * 2
     landed = wl.read_work_item(CONDUCTOR, item_id)
     assert landed is not None and landed.status == "progress"
 
@@ -1000,6 +997,6 @@ async def test_a_board_with_no_generation_still_accepts_a_write(recorded):
     status, body = await _report(WORKER, {"status": "progress", "summary": "legacy board"})
 
     assert status == 200, body
-    assert [data.get("generation") for _unit, data in recorded] == [None]
+    assert [data.get("generation") for _unit, data in recorded] == [None, None]
     landed = wl.read_work_item(CONDUCTOR, item_id)
     assert landed is not None and landed.status == "progress"

@@ -237,9 +237,7 @@ class TestGlobalWritesAreOwnershipGated:
         assert "clientId" not in cc
 
     @pytest.mark.asyncio
-    async def test_a_managed_name_still_syncs_at_every_global_write_site(
-        self, mcp_env, tmp_path
-    ):
+    async def test_a_managed_name_still_syncs_at_every_global_write_site(self, mcp_env, tmp_path):
         """The gate must not disable the re-sync this change exists to deliver."""
         entry = await self._kiro_global(managed=True, mcp_env=mcp_env)
         assert entry["url"] == "https://kirocrew.example.com/mcp"
@@ -324,9 +322,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
         """
         from kiro_crew.mcp_provenance import stamp
 
-        written = await self._sync_over_global(
-            stamp({"url": "https://a.example.com/mcp"}), mcp_env
-        )
+        written = await self._sync_over_global(stamp({"url": "https://a.example.com/mcp"}), mcp_env)
         assert written["url"] == "https://b.example.net/mcp", (
             "a managed server's url legitimately moves; refusing to write it "
             "would strand kiro-cli on the old transport"
@@ -400,9 +396,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
         """
         from kiro_crew.mcp_provenance import is_marked, stamp, without_marker
 
-        settled = await self._sync_over_global(
-            stamp({"url": "https://b.example.net/mcp"}), mcp_env
-        )
+        settled = await self._sync_over_global(stamp({"url": "https://b.example.net/mcp"}), mcp_env)
         assert is_marked(settled), "precondition: an entry we wrote and re-synced"
 
         reclaimed = without_marker(settled)
@@ -434,9 +428,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("site", ["kiro_global", "cc_sidecar"])
-    async def test_a_marked_managed_url_move_reaches_both_surfaces(
-        self, site, mcp_env, tmp_path
-    ):
+    async def test_a_marked_managed_url_move_reaches_both_surfaces(self, site, mcp_env, tmp_path):
         """Both global surfaces re-sync a marked entry, and are asserted together.
 
         The base ref answered the exact-name shape differently at each: the
@@ -456,9 +448,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
             sidecar = tmp_path / "cc.json"
             sidecar.write_text(
-                json.dumps(
-                    {"mcpServers": {"collide": stamp({"url": "https://a.example.com/mcp"})}}
-                )
+                json.dumps({"mcpServers": {"collide": stamp({"url": "https://a.example.com/mcp"})}})
             )
             remote = McpServerInfo(
                 name="collide", url="https://b.example.net/mcp", source="discovered"
@@ -513,9 +503,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
         written = json.loads(sidecar.read_text())["mcpServers"]["handmade"]
         assert written == user_entry, "url and credential header survive the sync"
 
-    def test_a_managed_remote_re_syncs_to_the_sidecar_only_when_marked(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_managed_remote_re_syncs_to_the_sidecar_only_when_marked(self, tmp_path, monkeypatch):
         """A marked entry re-syncs here; an unmarked one still does not.
 
         The base ref declined both, because ownership was name-only: "our managed
@@ -550,9 +538,9 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
         to_sync = md.discover_servers_to_sync()
 
-        assert [s.name for s in to_sync] == ["owned"], (
-            "the divergence must still reach the agent config and kiro-global"
-        )
+        assert [s.name for s in to_sync] == [
+            "owned"
+        ], "the divergence must still reach the agent config and kiro-global"
         assert to_sync[0].url == "https://new.example.net/mcp"
 
         stale = {"url": "https://old.example/mcp", "disabledTools": ["danger"]}
@@ -624,9 +612,7 @@ class TestAPresentButUnreadableEntryIsNotACreate:
 
         sidecar = tmp_path / "cc.json"
         sidecar.write_text(json.dumps({"mcpServers": {"collide": "not-a-dict"}}))
-        remote = McpServerInfo(
-            name="collide", url="https://b.example.net/mcp", source="discovered"
-        )
+        remote = McpServerInfo(name="collide", url="https://b.example.net/mcp", source="discovered")
         with TestGlobalWritesAreOwnershipGated._own({"collide"}):
             assert register_servers_for_cc([remote], mcp_json_path=sidecar) is False
         assert json.loads(sidecar.read_text())["mcpServers"]["collide"] == "not-a-dict"
@@ -637,9 +623,7 @@ class TestAPresentButUnreadableEntryIsNotACreate:
 
         sidecar = tmp_path / "cc.json"
         sidecar.write_text(json.dumps({"mcpServers": {"collide": None}}))
-        remote = McpServerInfo(
-            name="collide", url="https://b.example.net/mcp", source="discovered"
-        )
+        remote = McpServerInfo(name="collide", url="https://b.example.net/mcp", source="discovered")
         with TestGlobalWritesAreOwnershipGated._own({"collide"}):
             assert register_servers_for_cc([remote], mcp_json_path=sidecar) is False
         assert json.loads(sidecar.read_text())["mcpServers"]["collide"] is None
@@ -1053,9 +1037,9 @@ class TestApiMcpSyncToolsUpdate:
                 source="discovered",
             )
             written = await _sync_one_remote(remote, mcp_env)
-            assert written["headers"] == {"Authorization": "Bearer user-typed"}, (
-                f"a malformed {type(bad).__name__} must preserve the on-disk map"
-            )
+            assert written["headers"] == {
+                "Authorization": "Bearer user-typed"
+            }, f"a malformed {type(bad).__name__} must preserve the on-disk map"
 
     def test_discovery_can_deliver_a_non_dict_header_map(self, tmp_path: Path):
         """The writer's guard is reachable: discovery does not coerce a truthy non-dict."""
@@ -1151,9 +1135,7 @@ class TestApiMcpSyncToolsUpdate:
             "headers": {"Authorization": "Bearer user-typed"},
         }
         mcp_json.write_text(json.dumps(data))
-        remote = McpServerInfo(
-            name="remote", url="https://new.example.net/v1", source="discovered"
-        )
+        remote = McpServerInfo(name="remote", url="https://new.example.net/v1", source="discovered")
         written = await _sync_one_remote(remote, mcp_env)
         assert written["url"] == "https://new.example.net/v1"
         assert "headers" not in written, (
@@ -1228,9 +1210,7 @@ class TestApiMcpSyncToolsUpdate:
             "disabledTools": ["write"],
         }
         mcp_json.write_text(json.dumps(data))
-        remote = McpServerInfo(
-            name="remote", url="https://mcp.example.com/v1", source="discovered"
-        )
+        remote = McpServerInfo(name="remote", url="https://mcp.example.com/v1", source="discovered")
         written = await _sync_one_remote(remote, mcp_env)
         assert without_marker(written) == {
             "url": "https://mcp.example.com/v1",
@@ -1256,9 +1236,7 @@ class TestApiMcpSyncToolsUpdate:
         mcp_json.write_text(json.dumps(data))
         from kiro_crew.mcp_discovery import McpServerInfo
 
-        remote = McpServerInfo(
-            name="remote", url="https://mcp.example.com/v1", source="discovered"
-        )
+        remote = McpServerInfo(name="remote", url="https://mcp.example.com/v1", source="discovered")
         written = await _sync_one_remote(remote, mcp_env)
         assert written["headers"] == {"Authorization": "Bearer user-typed"}
 
@@ -1406,6 +1384,40 @@ class TestApiMcpSyncHotReload:
         assert body["sessions_reset"] == 0
 
     @pytest.mark.asyncio
+    async def test_a_reinjecting_session_skips_the_reset_and_is_marked(self, monkeypatch, mcp_env):
+        """KAS declares no hot reload; it declares wire re-injection. The gate
+        skips the reset for it AND hands it the mark, and bumps the manager's fence
+        for a warm-pool fill in flight -- the skip is only correct with both."""
+        from kiro_crew.dashboard.handlers.mcp import api_mcp_sync
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp._mcp_hot_reload_active", _REAL_GATE)
+        kas = SimpleNamespace(
+            mcp_config_hot_reload=False,
+            mcp_config_wire_reinject=True,
+            mark_mcp_config_changed=MagicMock(),
+        )
+        sessions = MagicMock()
+        sessions.active_providers.return_value = [kas, self._provider(True)]
+        sessions.warm_providers.return_value = []
+        state = MagicMock()
+        state.sessions = sessions
+        req = MagicMock()
+        req.app = {"state": state}
+        reset = AsyncMock(return_value=3)
+        with (
+            patch("kiro_crew.mcp_discovery.discover_servers_to_sync", return_value=[]),
+            patch("kiro_crew.mcp_discovery.sync_to_agent_config", return_value=False),
+            patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent_batch"),
+            patch("kiro_crew.dashboard.handlers.sessions._reset_all_sessions", reset),
+        ):
+            resp = await api_mcp_sync(req)
+        assert resp.status == 200
+        assert json.loads(resp.body)["sessions_reset"] == 0
+        reset.assert_not_awaited()
+        kas.mark_mcp_config_changed.assert_called_once_with()
+        sessions.mark_mcp_config_changed.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_a_stale_warm_pool_process_still_resets(self, monkeypatch, mcp_env):
         """Version skew: the pool holds a process spawned before an in-place
         upgrade, which declares False on its own handshake version, so the gate
@@ -1424,13 +1436,15 @@ class TestApiMcpSyncHotReload:
             monkeypatch, active=[self._provider(True), self._provider(False)]
         )
         reset.assert_awaited_once()
+        assert body["sessions_reset"] == 3
 
     @pytest.mark.asyncio
     async def test_a_mocked_provider_never_reads_as_a_skip(self, monkeypatch, mcp_env):
         """Only a literal ``True`` counts: a MagicMock provider's truthy attribute
         must fall on the reset side."""
-        _body, reset = await self._run(monkeypatch, active=[MagicMock()])
+        body, reset = await self._run(monkeypatch, active=[MagicMock()])
         reset.assert_awaited_once()
+        assert body["sessions_reset"] == 3
 
     def test_gate_fails_closed_on_error(self):
         """A gate that cannot answer must not skip the reset."""

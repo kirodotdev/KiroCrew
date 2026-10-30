@@ -109,18 +109,26 @@ class TestApiTerminalDelete:
 
     @pytest.mark.asyncio
     async def test_closes_ws_before_kill(self):
+        order: list[str] = []
         ws = AsyncMock()
         ws.closed = False
+        ws.close = AsyncMock(side_effect=lambda *a, **k: order.append("close"))
         sess = _make_session(ws=ws)
         registry = {"abc123": sess}
         req = _make_request(registry=registry)
         with (
-            patch.object(terminal, "_kill_session", new_callable=AsyncMock),
+            patch.object(
+                terminal,
+                "_kill_session",
+                AsyncMock(side_effect=lambda _sess: order.append("kill")),
+            ),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
-            await terminal.api_terminal_delete(req)
-        ws.close.assert_awaited_once()
+            resp = await terminal.api_terminal_delete(req)
+        assert resp.status == 200
+        assert order == ["close", "kill"]
+        assert registry == {}
 
 
 # ── api_terminal_list ──

@@ -130,11 +130,40 @@ html:lang(ko) {
      user's message rides the accent, memory reuses its source hue so the tree
      and the chart agree, and rules / skills get hues of their own, mixed into
      the surface like the sources above. */
-  --ctx-cat-message:var(--accent);
-  --ctx-cat-memory:var(--ctx-src-memory);
-  --ctx-cat-rules:color-mix(in srgb, #9266cc 74%, var(--card));
-  --ctx-cat-skills:color-mix(in srgb, #d9a12b 74%, var(--card));
-  --ctx-cat-other:var(--ctx-src-mute);
+  --ctx-cat-message:color-mix(in srgb, #7c3aed 82%, var(--card));
+  --ctx-cat-memory:color-mix(in srgb, #a855f7 80%, var(--card));
+  --ctx-cat-rules:color-mix(in srgb, #c084fc 80%, var(--card));
+  --ctx-cat-skills:color-mix(in srgb, #d946ef 80%, var(--card));
+  --ctx-cat-other:color-mix(in srgb, #a99bd0 78%, var(--card));
+  /* The user's own words in the newest turn's breakdown and its trend chart. */
+  --ctx-your-message:color-mix(in srgb, #f59e0b 82%, var(--card));
+  /* The engine's own categories in the newest turn's one breakdown. No violet:
+     that family is this app's five blocks above, so a reader tells this app's
+     blocks from the engine's by hue. Other has a hue of its own, because grey is
+     kept for the rest of the context. Replies and Reasoning are deliberately far
+     apart (amber vs red). Mixed into the surface like the sources above so each
+     reads on light and dark themes alike. */
+  --ctx-eng-toolSpecs:color-mix(in srgb, #3b82f6 80%, var(--card));
+  --ctx-eng-toolIO:color-mix(in srgb, #f97316 80%, var(--card));
+  --ctx-eng-mcpTools:color-mix(in srgb, #06b6d4 80%, var(--card));
+  --ctx-eng-kiroInstructions:color-mix(in srgb, #10b981 80%, var(--card));
+  --ctx-eng-steering:color-mix(in srgb, #84cc16 80%, var(--card));
+  --ctx-eng-skillsIndex:color-mix(in srgb, #0f766e 85%, var(--card));
+  --ctx-eng-skills:color-mix(in srgb, #4ade80 80%, var(--card));
+  --ctx-eng-agentsIndex:color-mix(in srgb, #ca8a04 80%, var(--card));
+  --ctx-eng-powersIndex:color-mix(in srgb, #7dd3fc 80%, var(--card));
+  --ctx-eng-workspace:color-mix(in srgb, #a1887f 80%, var(--card));
+  --ctx-eng-memory:color-mix(in srgb, #1d4ed8 80%, var(--card));
+  --ctx-eng-attachedFiles:color-mix(in srgb, #fb7185 80%, var(--card));
+  --ctx-eng-other:color-mix(in srgb, #db2777 78%, var(--card));
+  --ctx-eng-history-user:color-mix(in srgb, #fcd34d 70%, var(--card));
+  --ctx-eng-history-assistant:color-mix(in srgb, #f59e0b 85%, var(--card));
+  --ctx-eng-history-thinking:color-mix(in srgb, #dc2626 80%, var(--card));
+  --ctx-eng-history-summary:color-mix(in srgb, #92400e 85%, var(--card));
+  --ctx-eng-unknown:color-mix(in srgb, var(--text) 18%, var(--card));
+  /* The rest of the context as ONE part, in the list when it was not split and as
+     its band in the chart: a neutral grey, which no named category shares. */
+  --ctx-eng-loop:color-mix(in srgb, var(--text) 24%, var(--card));
   /* Terminal ANSI hues with no semantic equivalent. The other fourteen entries
      are derived from --bg / --text / --danger / --ok / --warn / --info, which
      every theme already defines; only magenta and cyan need a value of their

@@ -61,7 +61,6 @@ describe('app shell composition', () => {
       'useShellKeyboard({',
       'useKiroUsageReadout()',
       'useMetricsReadout(isMobile, updateAvailable, topbarLevels.right)',
-      'useDeveloperMode(location.pathname)',
       'subscribeNativeNavigate(',
       'dispatch(fetchSlots())',
       'useWebSocket()',

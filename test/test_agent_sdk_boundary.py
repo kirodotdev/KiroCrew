@@ -163,41 +163,39 @@ def test_every_recorded_violation_still_exists(gate):
     )
 
 
-def test_a_violation_outside_the_baseline_is_caught(gate):
-    """The plain case: an ACP import in a file the baseline does not list."""
-    hits = gate._violations_in_source(
-        "src/kiro_crew/dashboard/brand_new.py",
-        "from kiro_crew.acp.types import AcpEvent\n",
-    )
-    assert hits, "a fresh ACP import must be flagged"
-
-
-def test_a_type_checking_only_import_is_still_refused(gate):
-    """A type-only dependency is still boundary knowledge."""
-    hits = gate._violations_in_source(
-        "src/kiro_crew/dashboard/brand_new.py",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n"
-        "    from kiro_crew.acp.runtime import AcpRuntime\n",
-    )
-    assert hits, "a TYPE_CHECKING import must not escape the scan"
-
-
-def test_a_dynamic_import_does_not_escape_the_scan(gate):
-    hits = gate._violations_in_source(
-        "src/kiro_crew/dashboard/brand_new.py",
-        "import importlib\nimportlib.import_module('kiro_crew.acp.client')\n",
-    )
-    assert hits, "importlib.import_module with a literal must be flagged"
-
-
-def test_a_relative_import_resolves_to_its_absolute_target(gate):
-    """`from ..acp.types import x` inside kiro_crew is the same violation."""
-    hits = gate._violations_in_source(
-        "src/kiro_crew/dashboard/brand_new.py",
-        "from ..acp.types import AcpEvent\n",
-    )
-    assert hits, "a relative ACP import must resolve and be flagged"
+@pytest.mark.parametrize(
+    ("source", "why"),
+    [
+        # The plain case: an ACP import in a file the baseline does not list.
+        pytest.param(
+            "from kiro_crew.acp.types import AcpEvent\n",
+            "a fresh ACP import must be flagged",
+            id="test_a_violation_outside_the_baseline_is_caught",
+        ),
+        # A type-only dependency is still boundary knowledge.
+        pytest.param(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from kiro_crew.acp.runtime import AcpRuntime\n",
+            "a TYPE_CHECKING import must not escape the scan",
+            id="test_a_type_checking_only_import_is_still_refused",
+        ),
+        pytest.param(
+            "import importlib\nimportlib.import_module('kiro_crew.acp.client')\n",
+            "importlib.import_module with a literal must be flagged",
+            id="test_a_dynamic_import_does_not_escape_the_scan",
+        ),
+        # `from ..acp.types import x` inside kiro_crew is the same violation.
+        pytest.param(
+            "from ..acp.types import AcpEvent\n",
+            "a relative ACP import must resolve and be flagged",
+            id="test_a_relative_import_resolves_to_its_absolute_target",
+        ),
+    ],
+)
+def test_an_acp_import_in_an_unlisted_file_is_flagged(gate, source: str, why: str):
+    hits = gate._violations_in_source("src/kiro_crew/dashboard/brand_new.py", source)
+    assert hits, why
 
 
 def test_a_neighbouring_name_is_not_a_violation(gate):
@@ -331,9 +329,7 @@ def test_dynamic_import_of_an_unrelated_module_is_clean(gate):
 def test_an_undecidable_fromlist_under_the_boundary_is_a_violation(gate):
     """The invariant, not a list of container shapes.
 
-    Three review rounds each closed one `fromlist` shape and revealed the next --
-    tuple/list, then set and dict keys, then starred unpacking, dict-unpack and
-    literal concatenation. Enumerating shapes cannot converge: `('acp',) * 1`,
+    Enumerating `fromlist` shapes cannot converge: `('acp',) * 1`,
     `('a' + 'cp',)`, `frozenset({'acp'})` and a comprehension all import the same
     package. So the rule is inverted: when `name` is an ancestor of a forbidden
     root, CLEAN requires proving the `fromlist` names none of it, and anything the

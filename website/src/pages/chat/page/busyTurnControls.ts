@@ -8,11 +8,13 @@ import { mintSendId } from '../../../chat-core/transport/sendTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
+import { useSteerRetract } from '../../../hooks/useSteerRetract'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
 import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { answerRejectedMessage } from '../../../utils/questionAnswers'
@@ -27,10 +29,11 @@ interface BusyTurnControlsOptions {
   activeSlotRef: MutableRefObject<string | null>
   slotRunning: boolean
   messages: ChatMessage[]
+  transcriptAuthoritative: boolean
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (turnActions.ts's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) => void }
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null; files?: string[] }) => void }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -53,8 +56,9 @@ interface BusyTurnControlsOptions {
 /**
  * The composer's controls for a turn that is already busy: steering the text
  * into the running turn (or starting a real turn when only sub-agents are
- * running), answering a question card raised by that turn, stopping it, and the
- * queued-message cards' cancel / interrupt / edit / reorder actions.
+ * running), taking back a steer that turn has not read yet, answering a question
+ * card raised by that turn, stopping it, and the queued-message cards' cancel /
+ * interrupt / edit / reorder actions.
  */
 export function useBusyTurnControls({
   activeSlot,
@@ -63,6 +67,7 @@ export function useBusyTurnControls({
   activeSlotRef,
   slotRunning,
   messages,
+  transcriptAuthoritative,
   send,
   steerMutation,
   messageQuote,
@@ -77,8 +82,8 @@ export function useBusyTurnControls({
   dispatch,
   onSlashRefused,
 }: BusyTurnControlsOptions) {
-  const { drafts, fileDrafts, pasteDrafts, saveDrafts } = stores
-  const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens, mergeSlotTokens } = staging
+  const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, saveDrafts } = stores
+  const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pendingSessionsRef, setPendingSessions, pickedFileTokens, mergeSlotTokens } = staging
   const allQueuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
   // Only user-typed queued messages get the interactive (edit/cancel) card
   // stack. System injections are excluded (isNonInteractiveQueued): sub-agent
@@ -147,6 +152,11 @@ export function useBusyTurnControls({
     const askAtSteer = capturePendingAskId(store.getState().chat.pendingQuestions, activeSlot)
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
+    // Dropped session references ride the steer as links, exactly as on a
+    // send. They are not a steer payload on their own: the busy send button
+    // is not offered for a refs-only composer (busySend.tsx), so a bare ref
+    // waits for the turn to end and rides the idle send.
+    const sessionRefs = pendingSessionsRef.current
     // A staged quote alone is a payload; a slash command is not a send, so the
     // quote stays staged through it.
     const steerQuote = isInterceptedSlashCommand(raw) ? null : messageQuote.consume('').quote
@@ -208,9 +218,18 @@ export function useBusyTurnControls({
     }
     // The text-only steer turn (`buildOutgoingTurn`): files inlined, folder
     // tokens kept in their `@rel/` form (a marker with no `meta.dirs` to
-    // replay against would truncate a spaced path), the live paste tokens
-    // expanded, the quote opening the text.
-    const llmTxt = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocksRef.current, quote: steerQuote }, 'steer').wire
+    // replay against would truncate a spaced path), staged session references
+    // appended as links, the live paste tokens expanded, the quote opening
+    // the text.
+    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocksRef.current, sessionRefs, quote: steerQuote }, 'steer')
+    const llmTxt = turn.wire
+    // `meta.files` is the ordered non-image list the `[attached_file N]`
+    // markers index into: the transcript chip resolves marker N to
+    // files[N-1]. Without it the renderer falls back to a whitespace-bounded
+    // path capture, which truncates a filename containing spaces. It rides
+    // both the optimistic bubble and the POST, so the echo that reconciles
+    // the bubble and the persisted row both carry it.
+    const steerFiles = turn.meta.files
     // Optimistically show the steered text immediately. Steer is the default
     // mid-turn action (split send button), so pressing Enter while a turn is
     // running routes here; without an optimistic bubble the message only appears
@@ -228,28 +247,25 @@ export function useBusyTurnControls({
     // no streaming row to freeze, so that text would flush BELOW this card
     // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
     drainPendingChunks()
-    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerQuote ? { quote: steerQuote } : {}) } }))
+    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerFiles ? { files: steerFiles } : {}), ...(steerQuote ? { quote: steerQuote } : {}) } }))
     // The optimistic bubble above stays a STEER bubble for an `auto` send: steer
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer })
-    // Staged session references are deliberately NOT part of steering: neither
-    // carried into the payload nor cleared. Only the TEXT has a restore path
-    // (steerMutation hands it back on a refused, failed or unconfirmed steer);
-    // attachments and pastes are still discarded, and adding refs to that set
-    // would lose a reference the user cannot recover except by dragging again.
-    // Leaving them staged is lossless and predictable: the chip stays in the
-    // composer and rides the next real send, which does have a full restore path.
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles })
+    // Staged session references were appended to `llmTxt` as links, so they
+    // are consumed with the rest of the composer. Nothing is lost on a
+    // refused, failed or unconfirmed steer: steerMutation hands the whole
+    // text back, links included, and a retry carries each link once.
     // Drops only this slot's own token sub-map -- see the same-shaped
     // comment at send()'s send-clear site in composerSend.ts.
-    setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
-    delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
+    setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([]); setPendingSessions([])
+    delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; delete sessionRefDrafts.current[activeSlot]
     saveDrafts()
   }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused,
     // Refs and state setters: stable, so none of these re-creates the callback.
-    activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
-    pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])
+    activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts,
+    pendingFilesRef, pasteBlocksRef, pendingSessionsRef, setPasteBlocks, setPendingFiles, setPendingSessions, pickedFileTokens])
 
   // The queue-card recipe is shared with every other host that draws a
   // QueueStack over this slot queue (#5891) — see useQueuedMessageActions for
@@ -260,25 +276,46 @@ export function useBusyTurnControls({
   // spelling and it destroyed text: cancelling two cards in a row overwrote the
   // first card's restored draft with the second's, and by then the first card had
   // already been optimistically retired, so that text existed nowhere else.
-  // Whatever lands here is persisted into this slot's draft by the draft
-  // commit (useComposerDraftLifecycle), so a recovered draft survives a slot switch.
+  // Update the refs and persisted slot stores before returning: useSteerRetract
+  // removes its recovery record after this callback, so a reload between this
+  // effect and the composer's next commit must still find the restored draft.
   const restoreQueuedDraft = useCallback(
     (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => {
       // The stash carries the quote the send consumed: back as a staged card
       // when the stage is free, else in the restored text.
-      setInput(prev => mergeRecoveredDraft(prev, messageQuote.recoverInto(text, quote ?? null)))
-      // Chips MERGE like the text does: paths join whatever is already staged,
-      // deduped, so a re-send serializes each attachment exactly once.
-      if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
+      const recoveredText = messageQuote.recoverInto(text, quote ?? null)
+      const slot = composerSlotRef.current
+      if (!slot) {
+        setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+        return false
+      }
+      // During a slot-switch commit the composer store already holds the
+      // incoming draft, but its refs still hold the outgoing one. Persist from
+      // the incoming slot stores, and merge the visible value through the
+      // composer store's pure updater so neither path can copy the old chat.
+      const restoredText = mergeRecoveredDraft(drafts.current[slot], recoveredText)
+      const slotFiles = fileDrafts.current[slot] ?? []
+      const restoredFiles = files.length
+        ? [...new Set([...slotFiles, ...files])]
+        : slotFiles
+      setDraft(drafts.current, slot, restoredText)
+      if (files.length) setFileDraft(fileDrafts.current, slot, restoredFiles)
       // The stash's alias snapshot comes back with them (fork GPT review), so
       // the restored mentions are reconciled again -- without it a
       // hand-deleted mention left a stale chip the next send re-attached.
-      if (aliases) {
-        const slot = composerSlotRef.current
-        if (slot) mergeSlotTokens(slot, aliases)
+      if (aliases) mergeSlotTokens(slot, aliases)
+      const stored = saveDrafts()
+      setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+      // Chips MERGE like the text does: paths join whatever is already staged,
+      // deduped, so a re-send serializes each attachment exactly once.
+      if (files.length) {
+        pendingFilesRef.current = restoredFiles
+        setPendingFiles(restoredFiles)
       }
+      return stored
     },
-    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef, messageQuote],
+    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef, messageQuote,
+      pendingFilesRef, drafts, fileDrafts, saveDrafts],
   )
   const {
     onCancel: handleCancelQueued,
@@ -296,6 +333,22 @@ export function useBusyTurnControls({
     stagedFiles: () => pendingFilesRef.current,
     // A mention written back for a project file is spelled relative to this
     // slot's project, the spelling the composer revives a chip for on undo.
+    project: () => currentSlot?.project,
+  })
+  // Unsend, Edit and Queue instead on a pending steer. An Edit's text comes back
+  // through the same merge a cancelled queue card's does.
+  const {
+    onSteerAction: handleSteerAction,
+    pending: steerActionPending,
+    refusals: steerActionRefusals,
+    requestFailures: steerActionRequestFailures,
+  } = useSteerRetract({
+    slot: activeSlot,
+    messages,
+    transcriptAuthoritative,
+    slotRunning,
+    restoreDraft: restoreQueuedDraft,
+    stagedFiles: () => pendingFilesRef.current,
     project: () => currentSlot?.project,
   })
   /** The composer's Stop press: soft stop, then an armed force stop. */
@@ -381,5 +434,6 @@ export function useBusyTurnControls({
   return {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
+    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   }
 }

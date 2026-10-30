@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import agent_panel
+from kiro_crew.crew_log.entry_types import SESSION_ENTRY_TYPES, validate_data
 from kiro_crew.crew_log.schema import (
     KIND_SESSION,
     MAX_ENTRY_BYTES,
@@ -56,15 +57,17 @@ SESSION_TYPES_DOC = _DOCS / "session-types.md"
 #: A live type's subsection heading: ``### `domain/action` ``.
 _SUBSECTION_RE = re.compile(r"^### `([a-z]+/[a-z_]+)`\s*$", re.MULTILINE)
 
-#: A summary-table row's first cell, which links to the subsection anchor.
-_SUMMARY_ROW_RE = re.compile(r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z]+\) \|", re.MULTILINE)
+#: A summary-table row's first cell, which links to the subsection anchor. The anchor
+#: keeps the action's underscores (`dashboard/agentic_value` -> `#dashboardagentic_value`),
+#: so it takes the same character class as the type.
+_SUMMARY_ROW_RE = re.compile(r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z_]+\) \|", re.MULTILINE)
 
 #: A fenced ``json`` block. Every one on this page is a single entry line.
 _JSON_BLOCK_RE = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 
 #: The count the page's own prose claims. Pinned so adding a subsection without
 #: updating the page's opening line fails here rather than misleading a reader.
-EXPECTED_LIVE_TYPES = 41
+EXPECTED_LIVE_TYPES = 50
 
 #: The only two emitters that write a session entry. Kept as a literal rather than
 #: read from ``FIXED_SOURCES``, which holds the crew-side values too.
@@ -107,6 +110,15 @@ def test_summary_table_matches_the_subsections() -> None:
     assert set(_SUMMARY_ROW_RE.findall(_doc_text())) == set(_documented_types())
 
 
+def test_summary_table_lists_every_declared_session_type() -> None:
+    """The page lists exactly the session types this build declares.
+
+    The other checks compare the page with itself, so a type missing from both the
+    table and the subsections passes them all. This compares it with the registry.
+    """
+    assert set(_SUMMARY_ROW_RE.findall(_doc_text())) == set(SESSION_ENTRY_TYPES)
+
+
 def test_every_documented_type_has_an_example() -> None:
     """A type documented without an example is a contract nobody can copy."""
     example_types = {json.loads(block)["type"] for block in _json_examples()}
@@ -132,6 +144,7 @@ def test_example_would_be_accepted_as_a_session_entry(block: str) -> None:
     assert entry is not None
     require_data(entry.data)
     check_ownership(KIND_SESSION, entry.type, entry.src)
+    validate_data(KIND_SESSION, entry.type, entry.data)
     require_entry_line(serialize(entry.to_dict()))
 
 
@@ -183,7 +196,7 @@ def test_session_examples_name_only_a_session_emitter(block: str) -> None:
 
 #: A summary row's type together with its ``Emitter`` cell (the third column).
 _EMITTER_CELL_RE = re.compile(
-    r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z]+\) \| [^|]*\| ([^|]*)\|", re.MULTILINE
+    r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z_]+\) \| [^|]*\| ([^|]*)\|", re.MULTILINE
 )
 
 

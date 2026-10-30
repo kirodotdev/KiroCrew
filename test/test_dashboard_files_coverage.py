@@ -37,6 +37,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,6 +50,7 @@ from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard.handlers import files as files_mod
+from kiro_crew.testing.wait import finished
 
 # ``api_file_raw`` and ``api_file_download`` open with ``os.O_NOFOLLOW``, which
 # only exists on POSIX; the whole code path is unreachable on Windows.
@@ -784,7 +786,7 @@ class TestFileWatch:
             assert resp.status == 200
             assert resp.headers["Content-Type"].startswith("text/event-stream")
             assert resp.headers["Cache-Control"] == "no-cache"
-            chunk = await asyncio.wait_for(resp.content.readuntil(b"\n\n"), timeout=10)
+            chunk = await finished(resp.content.readuntil(b"\n\n"), "the first change event")
             payload = json.loads(chunk.decode("utf-8").split("data: ", 1)[1].strip())
             assert payload["content"] == "first revision\n"
             assert payload["mtime"] > 0
@@ -814,7 +816,7 @@ class TestFileWatch:
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-watch?path={f}")
                 assert resp.status == 200
-                body = await asyncio.wait_for(resp.content.read(), timeout=10)
+                body = await finished(resp.content.read(), "the stream ending after the swap")
                 # Stream ends without ever emitting the file's contents.
                 assert body == b""
         assert len(seen) >= 2, "the watcher never re-resolved the path"
@@ -902,6 +904,40 @@ class TestOutboxList:
                 names = {f["filename"] for f in (await resp.json())["files"]}
         assert names == {"stable.txt"}
 
+    @pytest.mark.asyncio
+    async def test_scan_runs_off_the_event_loop_thread(self, outbox, mock_sel):
+        # The outbox grows with every file an agent sends, and a stat on a
+        # mount that stopped answering blocks for as long as the kernel does:
+        # on the loop that stalls every session, so the scan must not run there.
+        (outbox / "kept.txt").write_text("kept", encoding="utf-8")
+        (outbox / "a_subdir").mkdir()
+        (outbox / ("ghp_" + "b" * 36)).write_text("x", encoding="utf-8")
+        loop_thread = threading.get_ident()
+        scan_threads: set[int] = set()
+        real_iterdir = Path.iterdir
+        real_stat = Path.stat
+
+        def tracked_iterdir(self):
+            if self == outbox:
+                scan_threads.add(threading.get_ident())
+            return real_iterdir(self)
+
+        def tracked_stat(self, *a, **kw):
+            if outbox in (self, self.parent):
+                scan_threads.add(threading.get_ident())
+            return real_stat(self, *a, **kw)
+
+        with (
+            patch.object(Path, "iterdir", tracked_iterdir),
+            patch.object(Path, "stat", tracked_stat),
+        ):
+            async with TestClient(TestServer(self._client_app())) as client:
+                resp = await client.get("/api/outbox")
+                files = (await resp.json())["files"]
+        assert [(f["filename"], f["size"]) for f in files] == [("kept.txt", len("kept"))]
+        assert scan_threads, "the listing never scanned the outbox"
+        assert loop_thread not in scan_threads
+
 
 class TestOutboxDownload:
     """Driven by calling the handler directly: the refusals under test are keyed
@@ -912,6 +948,8 @@ class TestOutboxDownload:
     def _request(filename: str):
         req = MagicMock()
         req.match_info = {"filename": filename}
+        # A bare MagicMock answers headers.get("Range") with a truthy mock.
+        req.headers = {}
         return req
 
     @pytest.mark.asyncio
@@ -1275,6 +1313,56 @@ class TestNativePickers:
                 assert await resp.json() == {"path": ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("saved", [True, False], ids=["saved", "cancelled"])
+    async def test_screenshot_fs_calls_run_off_the_event_loop_thread(
+        self, tmp_path, mock_sel, monkeypatch, trusted_dialog_bin, saved
+    ):
+        # The screenshots directory lives in the data home, and a mkdir or stat
+        # on a mount that stopped answering blocks for as long as the kernel
+        # does: on the loop that stalls every session, so neither may run there.
+        shots = tmp_path / "screenshots"
+        monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", shots)
+        loop_thread = threading.get_ident()
+        fs_threads: dict[str, set[int]] = {"mkdir": set(), "exists": set()}
+        real_mkdir = Path.mkdir
+        real_exists = Path.exists
+
+        def tracked_mkdir(self, *a, **kw):
+            if self == shots:
+                fs_threads["mkdir"].add(threading.get_ident())
+            return real_mkdir(self, *a, **kw)
+
+        def tracked_exists(self, *a, **kw):
+            if self.parent == shots:
+                fs_threads["exists"].add(threading.get_ident())
+            return real_exists(self, *a, **kw)
+
+        async def fake_exec(*argv, **kwargs):
+            if saved:
+                Path(argv[2]).write_bytes(b"\x89PNG\r\n\x1a\n")
+            return _FakeProc()
+
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", fake_exec),
+            patch.object(Path, "mkdir", tracked_mkdir),
+            patch.object(Path, "exists", tracked_exists),
+        ):
+            async with TestClient(
+                TestServer(_app("POST", "/api/screenshot", files_mod.api_screenshot))
+            ) as client:
+                resp = await client.post("/api/screenshot")
+                assert resp.status == 200
+                path = (await resp.json())["path"]
+        if saved:
+            assert Path(path).parent == shots
+        else:
+            assert path == ""
+        for call, threads in fs_threads.items():
+            assert threads, f"the handler never ran {call} on the screenshots directory"
+            assert loop_thread not in threads, f"{call} ran on the event loop thread"
+
+    @pytest.mark.asyncio
     async def test_screenshot_timeout_returns_504(self, tmp_path, mock_sel, monkeypatch,
                                                   trusted_dialog_bin):
         monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", tmp_path / "shots")
@@ -1564,6 +1652,19 @@ class TestDashboardConfigPut:
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put(
                 "/api/dashboard/config", json={"restore_window_minutes": "soon"}
+            )
+            assert resp.status == 400
+            assert "must be an integer" in (await resp.json())["error"]
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_restore_window_minutes_rejects_infinite(self, config_client_app, raw):
+        """JSON reads ``1e999`` as an infinite float: the same 400, never a 500."""
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put(
+                "/api/dashboard/config",
+                data=f'{{"restore_window_minutes": {raw}}}',
+                headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
             assert "must be an integer" in (await resp.json())["error"]

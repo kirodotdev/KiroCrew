@@ -2,9 +2,9 @@
  * for when the gateway host cannot synthesize at all.
  *
  * Every TTS provider synthesizes on the gateway host (macOS `say`, Linux
- * espeak-ng, Piper, Amazon Polly). A desktop app connected to a HEADLESS remote
+ * espeak-ng, Amazon Polly). A desktop app connected to a HEADLESS remote
  * gateway — a dev desktop over SSH — reaches none of them: the host has no
- * speech engine, Piper is not installed, and Polly needs consent plus
+ * speech engine and Polly needs consent plus
  * credentials. The gateway reports that as `voice_unavailable`. The desktop
  * app's own machine does have a working engine (its webview's Web Speech API),
  * so on that one signal we speak the reply locally instead of only showing an

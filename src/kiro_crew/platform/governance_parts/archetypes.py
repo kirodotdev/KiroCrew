@@ -391,6 +391,75 @@ class OrdinalControl:
         return self.rank() >= ceiling.rank()
 
 
+def _unmatchable_glob(glob: str) -> str:
+    """Why a host glob can match no reading, or ``""`` when it might.
+
+    A character check only: a reading holds only a URL host's characters
+    (``matching._PLAIN_HOST_RE``), so a glob holding a ``[`` class, ``@``, ``/``,
+    ``\\``, whitespace, a zone, or a ``:`` outside a hex IPv6 glob can never match. How an IP glob spells its
+    numbers is not checked: it matches canonical readings as written (an
+    alternate numeric spelling is tracked in the deferral issue for these lists).
+    """
+    import re
+
+    from kiro_crew.platform.governance_parts.matching import _PLAIN_HOST_RE
+
+    if "[" in glob:
+        return "uses a [ ] character class; host lists take * and ? only"
+    body = glob.replace("*", "").replace("?", "")
+    if ":" in body and not re.fullmatch(r"[0-9a-f:]*", body):
+        return "is not an IPv6 glob in canonical form (hex groups only, no zone or port)"
+    if body and not _PLAIN_HOST_RE.fullmatch(body):
+        return "has a character no host reading holds ('@', '/', a backslash or a space)"
+    return ""
+
+
+def _refuse_unmatchable_host_entries(scope_name: str, ruleset: "ScopedRuleset") -> None:
+    """Refuse a ``host`` entry in a capability's list that no host reading can match.
+
+    A capability's ``host`` lists are asked about hosts as clients send them
+    (``matching.url_policy_hosts``): ASCII, no root dot, an IP literal in canonical
+    form. An exact entry in another spelling would match nothing, so a deny would
+    refuse nothing and an allow would admit nothing, silently. It fails to load
+    instead, and the message says which form to write. A glob gets a character
+    check only (``_unmatchable_glob``); how it spells IP numbers is not checked.
+    Top-level ``network.egress`` keeps its
+    own parsing; this applies only to lists inside a capability.
+    """
+    from kiro_crew.platform.governance_parts.matching import _PLAIN_HOST_RE, _canonical_ip
+
+    for listed, entries in (("allow", ruleset.allow), ("deny", ruleset.deny)):
+        for index, raw in enumerate(entries):
+            entry = raw.strip()
+            spelled = entry.lower()
+            why = ""
+            if not entry.isascii():
+                why = "is not ASCII; write the name in its xn-- (IDNA) form"
+            elif entry.endswith("."):
+                why = "ends in a root dot; write it without the dot"
+            elif entry.startswith("[") and ":" in entry:
+                why = "is a bracketed IPv6 literal; write the address without brackets"
+            elif any(c in entry for c in "*?["):
+                why = _unmatchable_glob(spelled)
+            else:
+                # Exactly the form a host is asked in, or the entry can never match.
+                ip = _canonical_ip(spelled)
+                if ip:
+                    asked = ip.split("%", 1)[0]
+                    if asked != spelled:
+                        why = f"is an IP literal not in the form hosts are asked in; write {asked}"
+                elif ":" in spelled or not _PLAIN_HOST_RE.fullmatch(spelled):
+                    why = (
+                        "is not a host as clients send it "
+                        "(brackets, a zone, a port, '/', '@', a backslash or a space)"
+                    )
+            if why:
+                # The position, never the value: an entry can be a pasted URL.
+                raise PlatformCompositionError(
+                    f"capability scope {scope_name!r} {listed}[{index}] {why}"
+                )
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Archetype 3 — CapabilityGate
 # ──────────────────────────────────────────────────────────────────────────
@@ -418,11 +487,23 @@ class CapabilityGate:
         if not isinstance(raw_scopes, dict):
             raise PlatformCompositionError("CapabilityGate.scopes must be an object")
         matchers = scope_matchers or {}
+        for k, v in raw_scopes.items():
+            # A declared list in the wrong shape would otherwise be dropped below,
+            # leaving the capability with no bound on that list at all.
+            if str(k) in matchers and not isinstance(v, dict):
+                raise PlatformCompositionError(
+                    f"CapabilityGate.scopes.{k} must be an object such as "
+                    '{"mode": "allow", "allow": [...]}, '
+                    f"got {type(v).__name__}"
+                )
         scopes: Dict[str, RulesetLike] = {
             str(k): ScopedRuleset.from_dict(v, matcher=matchers.get(str(k), _DEFAULT_MATCHER))
             for k, v in raw_scopes.items()
             if isinstance(v, dict)
         }
+        for name, ruleset in scopes.items():
+            if isinstance(ruleset, ScopedRuleset) and ruleset.matcher == "host":
+                _refuse_unmatchable_host_entries(name, ruleset)
         if "enabled" not in d:
             enabled_flag = default_enabled
         else:

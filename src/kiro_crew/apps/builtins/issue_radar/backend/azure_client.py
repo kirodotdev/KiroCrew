@@ -298,6 +298,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _wiql_literal,
     )
     from kiro_crew.apps.builtins.issue_radar.backend.azure_client_writes import (  # noqa: F401
+        _THREAD_ID_RE,
         _comment_text,
         _patch_work_item,
         _write_tags,
@@ -305,7 +306,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         add_issue_labels,
         add_pr_comment,
         create_label,
+        post_comment_batch,
         remove_issue_label,
+        reply_to_comment_thread,
         set_issue_assignees,
         set_issue_state,
     )
@@ -319,6 +322,7 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     from kiro_crew.apps.builtins.issue_radar.backend import (  # noqa: F401
         azure_transport as _transport,
     )
+    from kiro_crew.apps.builtins.issue_radar.backend import comment_batch  # noqa: F401
     from kiro_crew.apps.builtins.issue_radar.backend.errors import (  # noqa: F401
         ProviderCliError,
         ProviderInvalidInputError,

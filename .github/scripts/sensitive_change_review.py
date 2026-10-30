@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Callable
 
 # Paths whose change can break every command, leak a secret, or lock a user
@@ -58,6 +59,7 @@ SENSITIVE_GLOBS: tuple[str, ...] = (
     "src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json",
     "src/kiro_crew/builtin_skills/security-conductor/golden-paths.json",
     "src/kiro_crew/security_posture.py",
+    "src/kiro_crew/security_posture_*.py",
     "src/kiro_crew/computer_use/gate.py",
     "src/kiro_crew/dashboard/handlers/*redaction*.py",
     ".github/workflows/sensitive-change-review*.yml",
@@ -386,12 +388,52 @@ class PermissionReadError(RuntimeError):
     """The permission API did not answer; distinct from answering "no"."""
 
 
+# Waits between attempts of one API read. A read that still fails after the
+# last one raises, so the caller fails closed exactly as it would have.
+READ_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+_sleep: Callable[[float], None] = time.sleep
+
+
+def _is_transient(exc: subprocess.CalledProcessError) -> bool:
+    """A server error, a rate limit or no HTTP status at all (a dropped
+    connection) may pass on a second try. Any other 4xx is the API's answer,
+    and a 404 is one that permission_of reads as "not a collaborator"."""
+    err = str(exc.stderr or "")
+    match = re.search(r"\bHTTP (\d{3})\b", err)
+    if match is None:
+        return True
+    status = int(match.group(1))
+    return status >= 500 or status == 429 or "rate limit" in err.lower()
+
+
+def _gh_run(cmd: list[str]) -> str:
+    return subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+
+
+def _gh_read(cmd: list[str]) -> str:
+    for delay in READ_RETRY_DELAYS:
+        try:
+            return _gh_run(cmd)
+        except subprocess.CalledProcessError as exc:
+            if not _is_transient(exc):
+                raise
+            print(f"::warning::{' '.join(cmd[:3])} failed ({_first_line(exc)}); retrying.")
+            _sleep(delay)
+    return _gh_run(cmd)
+
+
+def _first_line(exc: BaseException) -> str:
+    """The first line of a failed command's stderr, capped, or the error type."""
+    err = str(getattr(exc, "stderr", "") or "").strip()
+    return err.splitlines()[0][:200] if err else type(exc).__name__
+
+
 def _gh_json(path: str, paginate: bool = False) -> Any:
     cmd = ["gh", "api", path]
     if paginate:
         # --slurp wraps each page's array into one outer array.
         cmd += ["--paginate", "--slurp"]
-    out = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+    out = _gh_read(cmd)
     data = json.loads(out)
     if paginate:
         return [item for page in data for item in page]
@@ -498,9 +540,10 @@ def main() -> int:
         comments = _gh_json(f"repos/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True)
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError) as exc:
         # A read failure is not a passing PR: fail closed and say why.
-        print(
-            f"::error::Could not read the PR from the API ({type(exc).__name__}); re-run this job."
-        )
+        detail = type(exc).__name__
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail += f": {_first_line(exc)}"
+        print(f"::error::Could not read the PR from the API ({detail}); re-run this job.")
         return 2
 
     # An incomplete file list is not a list with no sensitive file in it.

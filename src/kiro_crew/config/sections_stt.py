@@ -58,6 +58,43 @@ STT_LANGUAGE_FALLBACK = "en-US"
 #: ``stt_stream._STREAMING_PROVIDERS``, which grants by positive membership.
 _VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe", STT_PROVIDER_OFF)
 
+
+def valid_stt_providers() -> tuple[str, ...]:
+    """Every ``stt.provider`` a stored config may select: built-ins plus the edition's.
+
+    :data:`_VALID_STT_PROVIDERS` stays the built-in set. An edition's registered
+    names (``PlatformContext.speech``) join it ahead of ``off``, so ``off`` stays
+    last in every list a user reads. Boot refuses a registered name that collides
+    with a built-in, so the union never repeats a name. With the default registry
+    this IS :data:`_VALID_STT_PROVIDERS`.
+    """
+    # Imported here, not at module scope: ``config.sections`` mirrors this
+    # module's globals, and a module alias is not part of its surface.
+    from kiro_crew import speech_providers
+
+    registered = speech_providers.registered_stt_names()
+    if not registered:
+        return _VALID_STT_PROVIDERS
+    builtins = tuple(p for p in _VALID_STT_PROVIDERS if p != STT_PROVIDER_OFF)
+    extra = tuple(p for p in registered if p not in _VALID_STT_PROVIDERS)
+    return (*builtins, *extra, STT_PROVIDER_OFF)
+
+
+def default_stt_provider() -> str:
+    """What an absent ``stt.provider`` resolves to: the edition default, else ``local``.
+
+    Only the ABSENT key (or a JSON ``null``) reaches this. A stored value always
+    wins, and an unusable stored value keeps its own fallback, so an edition
+    default is never selected because a value was mistyped.
+    """
+    from kiro_crew import speech_providers
+
+    edition = speech_providers.edition_default_stt()
+    if edition is not None and edition in valid_stt_providers():
+        return edition
+    return field_default(SttConfig, "provider")
+
+
 #: Providers a stored config may still name. Each of these needed an out-of-band
 #: install the user had to perform themselves (a whisper CLI on ``PATH``, or an
 #: ``mlx``/``faster-whisper`` wheel), which is precisely the cost the resident
@@ -81,6 +118,23 @@ _VALID_STT_MODELS = tuple(m.name for m in _STT_CATALOG) + (_STT_CUSTOM_MODEL,)
 # for tests to reset.
 _WARNED_STT_PROVIDERS: set[str] = set()
 
+# Unknown provider values seen before boot on a host where a companion may still
+# register them, keyed like ``_WARNED_STT_PROVIDERS``. Boot re-checks each one.
+_DEFERRED_STT_PROVIDERS: dict[str, object] = {}
+
+
+def warn_deferred_stt_providers() -> None:
+    """Re-check the provider values held back before boot, now the registry is known.
+
+    Called by boot once the context is installed. A value the edition registered
+    is now valid and says nothing; anything else gets the usual unknown-provider
+    notice, once.
+    """
+    pending = list(_DEFERRED_STT_PROVIDERS.values())
+    _DEFERRED_STT_PROVIDERS.clear()
+    for value in pending:
+        _validated_stt_provider(value)
+
 
 def stt_provider_is_coerced(value: object) -> bool:
     """True when a stored ``stt.provider`` cannot take effect and is replaced.
@@ -89,7 +143,7 @@ def stt_provider_is_coerced(value: object) -> bool:
     offers to remove it (``kirocrew config defaults``) cannot come to disagree with
     the loader about which providers are dispatchable.
     """
-    return value not in _VALID_STT_PROVIDERS
+    return value not in valid_stt_providers()
 
 
 def stt_provider_resolution(value: object) -> str:
@@ -106,10 +160,10 @@ def stt_provider_resolution(value: object) -> str:
     the answer -- ``kirocrew config defaults --adopt`` deciding what to write --
     can ask without triggering, or having to suppress, the load-time notice.
     """
-    if value in _VALID_STT_PROVIDERS:
+    if value in valid_stt_providers():
         return str(value)
     if value is None:
-        return field_default(SttConfig, "provider")
+        return default_stt_provider()
     if value in _RETIRED_STT_PROVIDERS:
         return STT_PROVIDER_LOCAL
     return STT_PROVIDER_OFF
@@ -130,10 +184,19 @@ def _validated_stt_provider(value: object) -> str:
     key, not a wrong one.
     """
     resolved = stt_provider_resolution(value)
-    if value in _VALID_STT_PROVIDERS or value is None:
+    selectable = valid_stt_providers()
+    if value in selectable or value is None:
         return resolved
     seen = repr(value)
     if seen in _WARNED_STT_PROVIDERS:
+        return resolved
+    from kiro_crew import speech_providers
+
+    if value not in _RETIRED_STT_PROVIDERS and speech_providers.registry_pending():
+        # Before boot on a companion host the edition may register this name, so
+        # "unknown, drop it" could be false. Boot re-checks it
+        # (``warn_deferred_stt_providers``) once the registry is installed.
+        _DEFERRED_STT_PROVIDERS[seen] = value
         return resolved
     _WARNED_STT_PROVIDERS.add(seen)
     if value in _RETIRED_STT_PROVIDERS:
@@ -153,7 +216,7 @@ def _validated_stt_provider(value: object) -> str:
             "'kirocrew config defaults --adopt stt.provider' to drop the stored value.",
             value,
             resolved,
-            ", ".join(_VALID_STT_PROVIDERS),
+            ", ".join(selectable),
         )
     return resolved
 

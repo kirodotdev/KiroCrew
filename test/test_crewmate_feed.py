@@ -29,23 +29,40 @@ ASK = "Open a PR for the docs fix? [OPTIONS: Open the PR | Not yet]"
 SLOT = "member-dm:atlas"
 
 
+def _reset_feed_state() -> None:
+    """Clear every module-level cache in crewmate_feed between tests.
+
+    Includes the async-scheduling state (_keep, _pending, _timer) that
+    asyncio.run() does not guarantee to drain when its main coroutine returns
+    before the 0.4 s settle timer fires: the timer can fire during the cleanup
+    phase of asyncio.run() (after _cancel_all_tasks snapshots tasks), creating
+    _settle_grown -> _record_current_goal tasks whose _keep.discard callbacks
+    end up discarded when loop.close() clears the _ready queue.  Any stale Task
+    left in _keep from a closed loop causes _drain()'s asyncio.gather to hang
+    forever because Python 3.12 routes the gather's child-done callback through
+    the old closed loop, which never resolves the outer future.
+    """
+    if crewmate_feed._timer is not None:
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+    crewmate_feed._pending.clear()
+    crewmate_feed._keep.clear()
+    crewmate_feed._recorded_in.clear()
+    crewmate_feed._last.clear()
+    crewmate_feed._inflight.clear()
+    crewmate_feed._sessions.clear()
+    crewmate_feed._held_seq.clear()
+    crewmate_feed._held_goals.clear()
+    crewmate_feed._stale_goals.clear()
+
+
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     crew_log.forget_slot_folds()
-    crewmate_feed._last.clear()
-    crewmate_feed._inflight.clear()
-    crewmate_feed._sessions.clear()
-    crewmate_feed._held_seq.clear()
-    crewmate_feed._held_goals.clear()
-    crewmate_feed._stale_goals.clear()
+    _reset_feed_state()
     yield
-    crewmate_feed._last.clear()
-    crewmate_feed._inflight.clear()
-    crewmate_feed._sessions.clear()
-    crewmate_feed._held_seq.clear()
-    crewmate_feed._held_goals.clear()
-    crewmate_feed._stale_goals.clear()
+    _reset_feed_state()
 
 
 @pytest.fixture
@@ -716,10 +733,15 @@ def test_both_gateway_entrypoints_start_the_feed():
 def test_a_retired_question_refreshes_the_waiting_list_with_no_log_growth(appended, monkeypatch):
     """Dismissing or answering a card writes no log entry, so the retirement itself
     hands the thread to the settle pass."""
+    from kiro_crew import member_goals
+    from kiro_crew import members as members_mod
+
     slot = _Slot([])
     state = _State(slot)
     state.serving_loop = None
     monkeypatch.setattr(crewmate_feed, "_state", lambda: state)
+    monkeypatch.setattr(members_mod, "member_slug", lambda _n, _c=None: "atlas")
+    monkeypatch.setattr(member_goals, "read_goals", lambda _s, _m: {"goals": [], "key_results": []})
     _cards(monkeypatch, [])
 
     async def go() -> None:

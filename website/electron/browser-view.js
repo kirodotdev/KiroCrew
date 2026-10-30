@@ -25,7 +25,10 @@
 //      input in the dashboard (all chat composers, a modal's own field) looks
 //      alive and stays deaf. So whenever this view leaves the screen while it
 //      holds focus — overlay, inactive tab, collapsed panel, close — the
-//      manager hands focus back to the host view through `focusHost`.
+//      manager hands focus back to the host view through `focusHost`. The same
+//      hand-back runs when the page TAKES focus while it is already off screen
+//      (a load or an agent navigation in a panel nobody is looking at), where
+//      no hide happens to trigger it.
 //
 // Security posture: this view renders arbitrary untrusted web content, so it is
 // deliberately the most locked-down webContents in the app.
@@ -205,6 +208,18 @@ function viewHoldsFocus(view) {
 }
 
 /**
+ * The diagnostic line logged on every focus hand-back. Names the view that held
+ * keyboard focus and the path that moved it, and nothing about the page: no
+ * URL, no title, no panel or session id. Unknown triggers are reported as
+ * "unknown" rather than echoed.
+ */
+const FOCUS_TRIGGERS = new Set(["hide", "close", "window-focus", "hidden-view-focus", "hidden-view-load"]);
+function focusHandBackMessage(trigger) {
+  const t = FOCUS_TRIGGERS.has(trigger) ? trigger : "unknown";
+  return `[browser-panel] keyboard focus was held by the embedded browser view while off screen; handed back to the dashboard view (trigger=${t})`;
+}
+
+/**
  * Build the per-window manager for the embedded browser view.
  *
  * Dependencies are injected so the module stays unit-testable without a live
@@ -214,7 +229,11 @@ function viewHoldsFocus(view) {
  *   addView(view) / removeView(view) -> attach/detach from the window
  *   onEvent(name, payload) -> notify the host (navigation state, denied popups)
  *   focusHost()       -> give keyboard focus to the host (dashboard) view; called
- *                        only when the embedded view held it as it left the screen
+ *                        only when the embedded view held it while off screen
+ *   log(message)      -> one diagnostic line per hand-back, naming which view held
+ *                        focus and what triggered it (never the page URL or title)
+ *   hostActive()      -> is the host window the active one? Gates the hand-back
+ *                        for focus the page takes while already hidden
  */
 function createBrowserViewManager(deps) {
   const {
@@ -225,6 +244,8 @@ function createBrowserViewManager(deps) {
     onEvent = () => {},
     onCreate = () => {},
     focusHost = () => {},
+    hostActive = () => true,
+    log = () => {},
   } = deps || {};
 
   let view = null;
@@ -256,8 +277,14 @@ function createBrowserViewManager(deps) {
   };
 
   /** Hand keyboard focus to the host view. A courtesy that must never break
-   *  the visibility change it follows. */
-  function handBackFocus() {
+   *  the visibility change it follows. `trigger` names the path for the log
+   *  line, so a recurrence shows which view held focus and why it moved. */
+  function handBackFocus(trigger) {
+    try {
+      log(focusHandBackMessage(trigger));
+    } catch {
+      /* logging must never block the hand-back */
+    }
     try {
       focusHost();
     } catch {
@@ -265,8 +292,33 @@ function createBrowserViewManager(deps) {
     }
   }
 
+  /** The page took keyboard focus (or a load finished) while the view is
+   *  off screen: no hide will follow to trigger the hand-back, so give focus
+   *  back now. Only for the live view — a released one is never acted on. A
+   *  visible view keeps its focus, exactly as before. Skipped while the host
+   *  window is not the active one: focusing the host could then bring the
+   *  window forward, and the window-focus `reclaimFocus` heals it on return. */
+  function healHiddenFocus(wc, trigger, { needsCheck }) {
+    if (!view || view.webContents !== wc || isVisible()) return;
+    if (!isHostActive()) return;
+    // The 'focus' event is itself the signal; a finished load is not, so it
+    // asks the webContents (and skips when unsure, same rule as on hide).
+    if (needsCheck && !viewHoldsFocus(view)) return;
+    handBackFocus(trigger);
+  }
+
   function state() {
     return { open, overlayActive, inactive, bounds, url: currentUrl, visible: isVisible() };
+  }
+
+  /** Is the host window the active one? Unsure (a throwing probe) reads as
+   *  no, so the new hand-back paths stay quiet rather than guess. */
+  function isHostActive() {
+    try {
+      return hostActive() === true;
+    } catch {
+      return false;
+    }
   }
 
   function isVisible() {
@@ -297,7 +349,7 @@ function createBrowserViewManager(deps) {
       appliedBounds = bounds;
     }
     // After the hide, so nothing below can take focus back off the host.
-    if (reclaim) handBackFocus();
+    if (reclaim) handBackFocus("hide");
   }
 
   function ensureView() {
@@ -339,6 +391,13 @@ function createBrowserViewManager(deps) {
         wc.on("page-title-updated", (_event, title) => {
           emit("title-updated", { url: currentUrl, title });
         });
+        // Header note 3, the no-transition case: focus arriving on a view that
+        // is already hidden.
+        // Deferred one tick: focusing the host from inside the 'focus' event
+        // is overridden by the native focus change still in progress (seen
+        // in a real Electron window on Linux).
+        wc.on("focus", () => setImmediate(() => healHiddenFocus(wc, "hidden-view-focus", { needsCheck: false })));
+        wc.on("did-stop-loading", () => healHiddenFocus(wc, "hidden-view-load", { needsCheck: true }));
       }
     }
     // Host-side chrome that needs real Electron APIs (context menu, and
@@ -427,7 +486,7 @@ function createBrowserViewManager(deps) {
      */
     reclaimFocus() {
       if (!view || isVisible() || !viewHoldsFocus(view)) return false;
-      handBackFocus();
+      handBackFocus("window-focus");
       return true;
     },
 
@@ -453,7 +512,7 @@ function createBrowserViewManager(deps) {
         try {
           if (doomed.webContents) doomed.webContents.close();
         } catch { /* already gone */ }
-        if (reclaim) handBackFocus();
+        if (reclaim) handBackFocus("close");
       }
       return state();
     },
@@ -502,5 +561,6 @@ module.exports = {
   scaleRect,
   computeVisible,
   viewHoldsFocus,
+  focusHandBackMessage,
   createBrowserViewManager,
 };

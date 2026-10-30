@@ -281,7 +281,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         return denied
 
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
@@ -329,7 +329,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     async with app_lifecycle_lock(name):
         # A re-enable repeats every step but the Python hooks: the flag does not prove
         # onEnable ran (a file-only CLI enable skips it), while hook_reconcile loads hooks.
-        was_enabled = app_enabled_state(name) is True
+        was_enabled = await asyncio.to_thread(app_enabled_state, name) is True
         result = await asyncio.to_thread(
             enable_app,
             name,
@@ -542,7 +542,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
@@ -556,7 +556,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         if startup_refusal is not None:
             return startup_refusal
         # Teardown decides whether app code may run from `enabled`; read it under the lock.
-        if (enabled := app_enabled_state(name)) is not None:
+        if (enabled := await asyncio.to_thread(app_enabled_state, name)) is not None:
             info = {**info, "enabled": enabled}
 
         # `onDisable` is NOT run here: it runs inside `teardown_app_runtime`
@@ -669,7 +669,7 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if owner_denied is not None:
         return owner_denied
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not found"}, status=404)
 

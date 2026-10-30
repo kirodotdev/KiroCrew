@@ -31,6 +31,10 @@ from kiro_crew import _facade_mirror, mcp_dashboard
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_mcp_dashboard_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams",)
+
 FACADE = "kiro_crew.mcp_dashboard"
 SRC_DIR = Path(mcp_dashboard.__file__).resolve().parent
 
@@ -99,11 +103,6 @@ def _corpus_patched_names() -> set[str]:
                 continue
             names |= facade_mirror_scan.names_by_target(events, {FACADE}).get(FACADE, set())
     return names
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:

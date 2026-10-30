@@ -13,8 +13,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime
+from datetime import time as dt_time
+from datetime import timedelta
 from typing import Any
 
 # ``SLACK_NAMESPACE`` and ``CHANNEL_SESSION_NAMESPACES`` are RE-EXPORTED from
@@ -952,11 +954,15 @@ def should_rotate_generation(
     if idle_minutes > 0 and (now - last_active) >= idle_minutes * 60:
         return True
     if 0 <= daily_reset_hour <= 23:
-        lt = time.localtime(now)
-        midnight = now - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
-        boundary = midnight + daily_reset_hour * 3600
+        # A DST day is 23h or 25h long, so the boundary is built from the local
+        # wall-clock date and hour. A naive datetime's timestamp() resolves the
+        # offset for that date deterministically (fold=0): a repeated hour is
+        # its first occurrence, a skipped hour lands just after the gap.
+        today = datetime.fromtimestamp(now).date()
+        reset_at = dt_time(daily_reset_hour)
+        boundary = datetime.combine(today, reset_at).timestamp()
         if boundary > now:
-            boundary -= 86400
+            boundary = datetime.combine(today - timedelta(days=1), reset_at).timestamp()
         if last_active < boundary <= now:
             return True
     return False

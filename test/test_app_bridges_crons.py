@@ -52,7 +52,6 @@ class TestCronRegistration:
         assert len(registered) == 1
         assert "test-app/refresh" in registered
 
-        # Verify cron manifest written
         defs = load_app_cron_defs("test-app")
         assert len(defs) == 1
         assert defs[0]["name"] == "test-app/refresh"
@@ -586,6 +585,7 @@ class TestCronServiceBridge:
             skip_dates=["2026-12-25"],
             timeout=0,
             timeout_secs=0,
+            strict_schedule=False,
             folder_id="",
             app_manifest_digest=ANY,
         )
@@ -763,6 +763,7 @@ class TestCronServiceBridge:
             skip_dates=None,
             timeout=0,
             timeout_secs=0,
+            strict_schedule=False,
             folder_id="",
             app_manifest_digest=ANY,
         )

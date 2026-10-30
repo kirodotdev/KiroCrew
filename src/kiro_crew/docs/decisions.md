@@ -43,7 +43,7 @@ The configuration shape is:
     "model_route": {
       "simple": "claude-haiku-4.5",
       "medium": "claude-opus-4.8",
-      "complex": "claude-fable-5.1"
+      "complex": "claude-opus-5.5"
     },
 
     "provider": {

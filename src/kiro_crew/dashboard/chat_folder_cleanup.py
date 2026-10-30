@@ -62,7 +62,15 @@ logger = logging.getLogger(__name__)
 #: Folder fields that mean the person configured the folder on purpose. A row
 #: carrying any of them is kept even when it is empty: deleting it would throw
 #: the setting away along with the row.
-_KEEP_FIELDS = ("project_dir", "default_agent", "steering_dirs", "tags", "color", "icon")
+_KEEP_FIELDS = (
+    "project_dir",
+    "default_agent",
+    "default_destination_crew",
+    "steering_dirs",
+    "tags",
+    "color",
+    "icon",
+)
 
 
 def _order_key(folder: dict[str, Any]) -> int:

@@ -25,6 +25,7 @@ const START_FAILURE_WAIT = { timeout: 5000 }
 
 const MODULE_FAILED = 'hooks.useStreamingStt.audio_module_load_failed'
 const START_FAILED = 'hooks.useStreamingStt.audio_start_failed'
+const CONNECTION_LOST = 'hooks.useStreamingStt.stt_connection_lost'
 
 vi.mock('../hooks/mic', () => ({
   acquireMicStream: () => Promise.resolve(makeStream()),
@@ -42,7 +43,11 @@ function makeStream() {
   return { getAudioTracks: () => [track], getTracks: () => [track] }
 }
 
+/** Every socket the hook opened, newest last. */
+const sockets: MockSocket[] = []
+
 class MockSocket {
+  constructor() { sockets.push(this) }
   static readonly CONNECTING = 0
   static readonly OPEN = 1
   static readonly CLOSED = 3
@@ -85,6 +90,7 @@ class MockAudioContext {
 
 beforeEach(() => {
   trackStops.length = 0
+  sockets.length = 0
   audio.addModule = () => Promise.resolve()
   audio.state = 'running'
   audio.resume = () => Promise.resolve()
@@ -133,6 +139,26 @@ describe('audio start-up failures', () => {
     expect(started).toBe(false)
     expect(hook.result.current.recording).toBe(false)
     expect(trackStops.at(-1)).toHaveBeenCalled()
+  })
+
+  it('keeps the socket\'s own error when the server ends the session during the module load', async () => {
+    // The server closes /api/ws/stt while addModule is pending (a provider whose
+    // session failed to start). onclose reports that and cleanup() closes the
+    // context, which is what rejects the load. That rejection is a consequence,
+    // not a download failure, so it must not replace the real message.
+    audio.addModule = () => {
+      sockets.at(-1)?.close()
+      return Promise.reject(new DOMException('context closed', 'AbortError'))
+    }
+
+    const { onError, started } = await startAndCollectError()
+    // Let the rejected load settle; a second report would land here.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+    expect(started).toBe(false)
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(i18nT(CONNECTION_LOST))
+    expect(onError).not.toHaveBeenCalledWith(i18nT(MODULE_FAILED))
   })
 
   it('keeps the two messages distinct and resolved in the English catalog', () => {

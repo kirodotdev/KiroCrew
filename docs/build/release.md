@@ -191,10 +191,10 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
-   - *kiro-cli pin (read only by a `BUNDLE_KIRO_CLI=1` desktop build; a
-     default release has no reader, so this step is skipped unless such a
-     build is planned)*: compare `packaging/kiro-cli-version` with the
-     version the release manifest names today
+   - *kiro-cli pin (every release: the published Docker image installs exactly
+     this version, and a `BUNDLE_KIRO_CLI=1` desktop build bundles it)*:
+     compare `packaging/kiro-cli-version` with the version the release
+     manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
      release, never blind. A bump is two files in one commit: the version in
@@ -213,6 +213,31 @@ code.
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
      kiro-cli".
+   - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
+     `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
+     redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
+     beside `kiro-cli.exe`. Bump it when a newer kiro-cli needs a newer runtime
+     (it was built with a newer MSVC toolset), or for a Microsoft runtime fix.
+     Resolve `https://aka.ms/vs/17/release/vc_redist.x64.exe` to the immutable
+     `download.visualstudio.microsoft.com/download/pr/<id>/<SHA256>/VC_redist.x64.exe`
+     URL it redirects to (`curl -sI`), download it
+     (`curl -fsSLo VC_redist.x64.exe <that url>`), then run
+     `python3 packaging/vc_runtime.py pin <that url> VC_redist.x64.exe`: it
+     prints the new installer and DLL sha256 values; fill in `version` with the
+     redistributable's ProductVersion and replace the file in one commit. Run
+     `test/test_vc_runtime_pin.py`, and prove the bump with a
+     `BUNDLE_KIRO_CLI=1` Windows packaging probe, whose `--version` probe runs
+     the staged binary against the staged runtime. A sha mismatch fails the
+     build closed; a stale pin is not a failure, since the URL is immutable.
+   - *Installer tool pins*: the source installers download mise
+     (`scripts/lib/pinned-mise.sh`) and the AWS CLI and Session Manager plugin
+     (`packaging/pins/aws-tools.env`) at pinned versions and refuse a sha256
+     mismatch. Compare each pin with upstream and bump the stale ones: pick a
+     release at least 7 days old, record each artifact's sha256 (mise: its
+     release `SHASUMS256.txt`; AWS: two downloads that match), keep
+     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's, and run
+     `test/test_installer_tool_pins.py`. The procedure is in each file's header. A
+     stale pin is not a failure; the pinned artifacts stay downloadable.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; no `### Contributors` (the GitHub Release
@@ -272,7 +297,7 @@ concurrency group, and their version derivation.
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
-| `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
+| `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
@@ -284,7 +309,7 @@ Release-adjacent, deliberately outside the release path:
 
 | Workflow | Role |
 |---|---|
-| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
+| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips and the app relaunches. A second leg pads the update ZIP past 1.1 GiB with incompressible bytes, the size at which the macOS updater once crashed mid-install. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
 | `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
@@ -343,6 +368,16 @@ feed/<channel>/latest-cli.json                               pointer, no-cache
 feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
 cli.sh                                                       pointer, no-cache (only root object)
 ```
+
+Every `latest-mac.yml` also carries `minimumSystemVersion`, which electron-builder
+never writes but electron-updater enforces: a client whose `os.release()` is below it
+declines the update instead of installing a build it cannot launch. The publish job
+reads it from the notarized ZIP's own `Contents/Info.plist` (`LSMinimumSystemVersion`,
+which Electron stamps from its deployment target) through
+`scripts/feed_min_system_version.py`, and writes it as the Darwin kernel version the
+updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
+floor raises the declared one. The step fails closed when the ZIP names no floor, or
+one with no exact kernel version (a non-`.0` macOS 11+ floor).
 
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
@@ -863,6 +898,21 @@ do not consume either channel feed.
 ## Client auto-update
 
 The desktop updater is `electron-updater` in `website/electron/auto-update.js`.
+
+**Raising the `electron-updater` version is a deliberate re-verification event.**
+The updater's error attribution compares error *objects* — it tells a check's own
+failure apart from an install's by identity — and that works only because
+`AppUpdater.checkForUpdates()` hands the SAME object to the `error` event and to
+its own rejection. Nothing in the library documents that pairing, so
+`website/electron/test/electron-updater-error-identity.test.js` asserts it against
+the installed source rather than a mock. It fails, rather than passing vacuously,
+when `CI` is set and the library is not installed, and is skipped elsewhere. If
+that test fails after a bump, it is not flaky and it is not the test's problem: the library rewrapped the error, and
+the attribution scheme in `runtime/update/feed-lane.js` and the check lifecycle it reads from `runtime/update/freshness-gate.js` — not one line of it —
+needs re-reading before the bump lands. The version range stays a caret on purpose: `npm ci` builds
+from `package-lock.json`, so resolution is already exact in CI, and the canary is
+the general guard for the premise rather than a frozen version number.
+
 It runs in packaged macOS, Linux and Windows builds: `SUPPORTED_PLATFORMS` is
 exactly `{darwin, linux, win32}`.
 On macOS electron-updater's `MacUpdater` downloads the archive itself and serves
@@ -984,6 +1034,66 @@ platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
 bundle on ANY exit (including exits that skip the gateway teardown) and cannot
 be un-armed, so it would also defeat release retraction.
 
+**A stage is re-verified against the feed before it installs, so an install
+always applies the NEWEST build.** A download can sit staged for hours while
+newer releases publish, and installing it then applies a superseded build the
+user must immediately update again. Both install paths — the About panel's
+explicit install and the deferred install on quit — therefore call
+`verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
+It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
+and reads the verdict back out of the existing handlers, so the direction gate
+and the retraction path make the decision rather than a second copy of that
+rule. Three outcomes:
+
+- `latest` — the feed still serves the staged version, so the install proceeds.
+- `superseded` — a newer build published, or the release was retracted. The
+  install is REFUSED and the newer build pursued instead. On the manual path the
+  card moves to what the feed now serves (the newer build's `found` or
+  `downloading`, or "up to date" for a retraction) with no separate notice; the
+  quit path explains the refusal in a native notification (below).
+- `unknown` — **fail open.** The feed was unreachable, or answered nothing
+  within 8s. Bytes the user already downloaded must not become uninstallable
+  because the network went away, so the stage installs, exactly as an install
+  without the gate would. A check the gate stops waiting for is marked
+  abandoned, so its late answer or failure cannot touch the stage or the
+  dispatch.
+
+The gate's own re-check is kept off the renderer: its `checking`, a failure
+it folds into `unknown`, and a restated `downloaded` for a stage that is still
+the newest are not pushed, so the ready card stays up during the wait and, on the
+quit path, the `installing` overlay emitted before the gate stays up through the
+gateway stop.
+
+**A Download click re-checks the feed the same way before it spends the
+transfer.** With auto-download off, a `found` card can wait hours for its click,
+so `startDownload` in `feed-lane.js` re-checks, or waits for the check already in
+flight, before it downloads. The click is answered at once with `downloading` for
+the offered version, and the gate's own `checking` and `found` are not pushed. It
+then downloads whatever the check leaves offered: the newer build if one
+published, nothing if the release was retracted (the card ends on "up to date").
+The wait has the same 8s bound and fails open to the offered build; a check it
+stops waiting for is abandoned, so its late answer cannot redirect the download
+in progress. A later gate that joins that still-running check (an install, or a
+Retry of the download) lifts the abandonment, because no install is running then
+and its verdict needs the answer. If the channel preference changed during the
+wait, nothing downloads and the new lane is checked instead (the card shows
+`checking`), once the old check has fully settled; a second click that wakes
+behind that new-lane check stands down and leaves the answer to it. The
+automatic download is exempt: it starts from
+inside a check, so its discovery is already current.
+
+Two consequences worth knowing when reading a bug report. The quit path verifies
+`quiet`, so a newer build discovered as the app exits is *not* auto-downloaded —
+that would be a ~350MB fetch seconds before the process ends; it is offered on
+the next launch instead. And a refusal on the quit path still quits, with a
+native notification explaining why — separate copy for a withdrawn stage versus
+one deferred by a check still running at the dispatch (possible only when the
+stage carries no version, so the gate had nothing to wait for), because only the
+first is a retraction and the second re-offers the same build next launch. The
+dashboard's arm endpoint (`api_update_arm` in
+`src/kiro_crew/dashboard/handlers/updates.py`) re-checks the feed the same way,
+and awaits an already-running check rather than arming its cached verdict.
+
 Turning the preference off keeps bytes already fetched but **disarms the
 install-on-quit for a stage that was downloaded automatically**, so the update a
 user just declined does not land on their next quit; a stage they explicitly
@@ -1025,12 +1135,16 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
+- **An enterprise build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-enterprise-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
 (`POST /api/shutdown`, then SIGTERM, then SIGKILL) and disarms the liveness
 watchdog that would otherwise resurrect it mid-swap. Choosing "Later" defers to
-natural quit through a `before-quit` hook in the same stop-gateway-first order.
+natural quit through a `before-quit` hook in the same stop-gateway-first order,
+after the same `verifyStageIsLatest` re-check described above — so a "Later" that
+has been sitting for hours installs the newest build, or refuses with a
+notification saying why, rather than applying whatever was staged at the time.
 
 ## Windows
 
@@ -1294,7 +1408,16 @@ rather than replacing them — so the published body is always
 for one to appear.
 
 - **Remove the generated commit list.** `generate_release_notes: true` appends a
-  `## What's Changed` line per commit since the previous tag. On v0.5.0 that was
+  `## What's Changed` line per pull request since the previous tag. The step
+  names that tag itself (`scripts/release_previous_tag.py`): the previous
+  stable tag for a stable release, and the previous prerelease of the same
+  `X.Y.Z` line for a prerelease, or the previous stable for the first one.
+  It reads tags with `scripts/check_feed_advance.py::parse_version`, and if
+  listing tags or choosing one fails, GitHub chooses as before. A prerelease
+  tag whose run failed and published no page still counts as a base (#25077).
+  GitHub's own choice is the newest ancestor release tag, and since each
+  release is tagged on its own release branch that is a tag from the project's
+  first weeks. A stable list can still be long: on v0.5.0 it was
   **746 lines for 922 commits** — 65% of the body, and it pushed the whole thing
   to 125,219 characters, past GitHub's 125,000-character ceiling, so the body was
   published truncated mid-word. The page already links "N commits to main since

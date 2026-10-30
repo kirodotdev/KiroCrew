@@ -1,10 +1,11 @@
-"""Which audio decoder wheel each desktop backend installs.
+"""Which desktop backends get the pinned audio decoder installed.
 
-``packaging/build-desktop.sh`` installs ``imageio-ffmpeg`` into every backend but
-the macOS Intel one, which resolves a system FFmpeg instead.
-``desktop_decoder_requirement`` is the one place that decides this; the helpers
-are extracted from the shipped script rather than copied, so editing the real ones
-is what this test runs against.
+``packaging/build-desktop.sh`` installs the decoder into every backend but the
+macOS Intel one, which resolves a system FFmpeg instead.
+``install_desktop_decoder`` is the one place that decides this, and it must get
+the bytes from ``kiro_crew.stt.decoder``'s own pin table. The helpers are
+extracted from the shipped script rather than copied, so editing the real ones is
+what this test runs against.
 """
 
 from __future__ import annotations
@@ -28,15 +29,21 @@ def _extract(name: str) -> str:
     return match.group(0)
 
 
-def _requirement(os_name: str, host_arch: str, want_arch: str) -> str:
+def _install_argv(tmp_path: Path, os_name: str, host_arch: str, want_arch: str) -> str:
+    """The argv ``install_desktop_decoder`` hands the bundled interpreter, or ""."""
+    fake_python = tmp_path / "python"
+    # Records what it was asked to run instead of installing anything.
+    fake_python.write_text('#!/bin/sh\nprintf "%s " "$@"\n', encoding="utf-8")
+    fake_python.chmod(0o755)
     script = "\n".join(
         [
             "set -euo pipefail",
             f"OS={os_name}",
             f"HOST_ARCH={host_arch}",
+            "log() { :; }",
             _extract("is_macos_intel_backend"),
-            _extract("desktop_decoder_requirement"),
-            f'desktop_decoder_requirement "{want_arch}"',
+            _extract("install_desktop_decoder"),
+            f'install_desktop_decoder "{fake_python}" /sp "{want_arch}"',
         ]
     )
     result = subprocess.run(
@@ -53,8 +60,8 @@ def _requirement(os_name: str, host_arch: str, want_arch: str) -> str:
         ("darwin", "x86_64", "x86_64"),  # named Intel build on an Intel Mac
     ],
 )
-def test_the_macos_intel_backend_installs_no_decoder(os_name, host_arch, want_arch):
-    assert _requirement(os_name, host_arch, want_arch) == ""
+def test_the_macos_intel_backend_installs_no_decoder(tmp_path, os_name, host_arch, want_arch):
+    assert _install_argv(tmp_path, os_name, host_arch, want_arch) == ""
 
 
 @pytest.mark.parametrize(
@@ -66,7 +73,21 @@ def test_the_macos_intel_backend_installs_no_decoder(os_name, host_arch, want_ar
         ("linux", "aarch64", ""),
         # An x86_64 Linux build is not an Intel Mac, whatever the arch string says.
         ("linux", "x86_64", "x86_64"),
+        ("windows", "x86_64", ""),
     ],
 )
-def test_every_other_backend_installs_the_pinned_decoder(os_name, host_arch, want_arch):
-    assert _requirement(os_name, host_arch, want_arch) == "imageio-ffmpeg==0.6.0"
+def test_every_other_backend_installs_the_pinned_decoder(tmp_path, os_name, host_arch, want_arch):
+    argv = _install_argv(tmp_path, os_name, host_arch, want_arch)
+    # The pin table's own installer, into the directory the runtime resolves.
+    assert argv == "-s -m kiro_crew.stt.decoder --install-into /sp/kirocrew_ffmpeg/bin"
+
+
+def test_the_install_dir_is_the_one_the_runtime_resolves() -> None:
+    from kiro_crew.stt import decoder
+
+    assert "/".join(decoder.PACKAGED_DIR) == "kirocrew_ffmpeg/bin"
+    assert '"$2/kirocrew_ffmpeg/bin"' in _extract("install_desktop_decoder")
+
+
+def test_no_build_path_installs_imageio_ffmpeg() -> None:
+    assert "imageio-ffmpeg" not in SCRIPT.read_text(encoding="utf-8")

@@ -284,13 +284,20 @@ class TestSessionColor:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_set_color_bool_rejected(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "color_index",
+        [
+            pytest.param(True, id="set_color_bool_rejected"),
+            pytest.param(99999, id="set_color_large_index"),
+        ],
+    )
+    async def test_set_color_rejected(self, tmp_path, monkeypatch, color_index):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.get_or_create_slot("s1")
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.patch("/api/chat/slots/s1/color", json={"color_index": True})
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_index": color_index})
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -307,45 +314,27 @@ class TestSessionColor:
             assert data["color_index"] == 0
             assert slot.color_index == 0
 
-    @pytest.mark.asyncio
-    async def test_set_color_large_index(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        state.get_or_create_slot("s1")
-
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.patch("/api/chat/slots/s1/color", json={"color_index": 99999})
-            assert resp.status == 400
-
-    def test_color_zero_persisted(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "color_index",
+        [
+            pytest.param(0, id="color_zero_persisted"),
+            pytest.param(4, id="color_persisted_in_history"),
+        ],
+    )
+    def test_color_persisted(self, tmp_path, monkeypatch, color_index):
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        slot.color_index = 0
+        slot.color_index = color_index
         slot.append("user", "hello")
         slot.drain()
 
         _save_slot_to_history(state, slot, closed=True)
 
         meta = state.conversation_log._read_metadata("dashboard:s1")
-        assert meta.get("color_index") == 0
-
-    def test_color_persisted_in_history(self, tmp_path, monkeypatch):
-        from kiro_crew.dashboard.chat import _save_slot_to_history
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        slot = state.get_or_create_slot("s1")
-        slot.color_index = 4
-        slot.append("user", "hello")
-        slot.drain()
-
-        _save_slot_to_history(state, slot, closed=True)
-
-        meta = state.conversation_log._read_metadata("dashboard:s1")
-        assert meta.get("color_index") == 4
+        assert meta.get("color_index") == color_index
 
     def test_color_null_not_persisted(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat import _save_slot_to_history
@@ -560,17 +549,25 @@ class TestColorTheme:
     slug or junk value is coerced to "" (no persona path)."""
 
     @pytest.mark.asyncio
-    async def test_color_theme_set_on_slot(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "color_theme, stored",
+        [
+            pytest.param("custom-mypack", "custom-mypack", id="color_theme_set_on_slot"),
+            pytest.param("evil", "", id="invalid_color_theme_coerced_to_empty"),
+            pytest.param(42, "", id="non_string_color_theme_coerced"),
+        ],
+    )
+    async def test_color_theme(self, tmp_path, monkeypatch, color_theme, stored):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.chat_handlers._run_chat", new=AsyncMock()):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat?ws=1",
-                    json={"message": "hi", "slot": "theme-slot", "color_theme": "custom-mypack"},
+                    json={"message": "hi", "slot": "theme-slot", "color_theme": color_theme},
                 )
                 assert resp.status == 200
-                assert state._slots["theme-slot"].color_theme == "custom-mypack"
+                assert state._slots["theme-slot"].color_theme == stored
 
     @pytest.mark.asyncio
     async def test_color_theme_cleared_to_empty(self, tmp_path, monkeypatch):
@@ -602,29 +599,3 @@ class TestColorTheme:
                 )
                 assert resp.status == 200
                 assert slot.color_theme == "custom-mypack"
-
-    @pytest.mark.asyncio
-    async def test_invalid_color_theme_coerced_to_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        with patch("kiro_crew.dashboard.chat_handlers._run_chat", new=AsyncMock()):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.post(
-                    "/api/chat?ws=1",
-                    json={"message": "hi", "slot": "theme-slot", "color_theme": "evil"},
-                )
-                assert resp.status == 200
-                assert state._slots["theme-slot"].color_theme == ""
-
-    @pytest.mark.asyncio
-    async def test_non_string_color_theme_coerced(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        with patch("kiro_crew.dashboard.chat_handlers._run_chat", new=AsyncMock()):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.post(
-                    "/api/chat?ws=1",
-                    json={"message": "hi", "slot": "theme-slot", "color_theme": 42},
-                )
-                assert resp.status == 200
-                assert state._slots["theme-slot"].color_theme == ""

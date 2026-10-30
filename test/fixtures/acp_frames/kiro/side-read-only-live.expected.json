@@ -1,0 +1,418 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.34.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "probe--readonly",
+      "ids": [
+        "probe--readonly"
+      ]
+    },
+    "session_id": "kiro-side-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Read note.txt as requested.",
+          "operations": [
+            {
+              "mode": "Line",
+              "path": "note.txt"
+            }
+          ]
+        },
+        "title": "Reading note.txt:1",
+        "tool_call_id": "toolu_bdrk_01CJoCYXe8MneV1A9xByooFY",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Read note.txt as requested.\",\n  \"operations\": [\n    {\n      \"mode\": \"Line\",\n      \"path\": \"note.txt\"\n    }\n  ]\n}",
+        "tool_kind": "read",
+        "tool_name": "read",
+        "tool_purpose": "Read note.txt as requested.",
+        "wire_title": "Reading note.txt:1"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01CJoCYXe8MneV1A9xByooFY",
+        "tool_final": true,
+        "tool_output": "hello from the probe",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "d965d0cdbac630107d276fecc1f7cd102070f44e40732b540224a76f0bdd00ca",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Read note.txt as requested.",
+          "operations": [
+            {
+              "mode": "Line",
+              "path": "note.txt"
+            }
+          ]
+        },
+        "title": "Reading note.txt:1",
+        "tool_call_id": "toolu_bdrk_01CJoCYXe8MneV1A9xByooFY",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Read note.txt as requested.\",\n  \"operations\": [\n    {\n      \"mode\": \"Line\",\n      \"path\": \"note.txt\"\n    }\n  ]\n}",
+        "tool_kind": "read",
+        "tool_purpose": "Read note.txt as requested.",
+        "wire_title": "Reading note.txt:1"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search for the word hello in this folder.",
+          "pattern": "hello"
+        },
+        "title": "Searching for 'hello'",
+        "tool_call_id": "toolu_bdrk_01KDRNPvRf1ma8XwC8PZmiQX",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search for the word hello in this folder.\",\n  \"pattern\": \"hello\"\n}",
+        "tool_kind": "search",
+        "tool_name": "grep",
+        "tool_purpose": "Search for the word hello in this folder.",
+        "wire_title": "Searching for 'hello'"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01KDRNPvRf1ma8XwC8PZmiQX",
+        "tool_final": true,
+        "tool_output": "{\"numMatches\": 1, \"numFiles\": 1, \"truncated\": false, \"results\": [{\"file\": \"/work/note.txt\", \"count\": 1, \"matches\": [\"1:hello from the probe\"]}]}",
+        "tool_output_bytes": 144,
+        "tool_output_digest": "04f464696f79c26ff28b85188d86181bb293fd160b7d597d0d2df018f14a8255",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search for the word hello in this folder.",
+          "pattern": "hello"
+        },
+        "title": "Searching for 'hello'",
+        "tool_call_id": "toolu_bdrk_01KDRNPvRf1ma8XwC8PZmiQX",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search for the word hello in this folder.\",\n  \"pattern\": \"hello\"\n}",
+        "tool_kind": "search",
+        "tool_purpose": "Search for the word hello in this folder.",
+        "wire_title": "Searching for 'hello'"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run ls as requested.",
+          "command": "ls"
+        },
+        "title": "ls",
+        "tool_call_id": "toolu_bdrk_01DLm9eXC63AYAeabcdJQrY3",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run ls as requested.\",\n  \"command\": \"ls\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "tool_purpose": "Run ls as requested.",
+        "wire_title": "Running: ls"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run ls as requested.",
+          "command": "ls"
+        },
+        "request_id": "synthetic-id-1",
+        "shell_classified": true,
+        "title": "Running: ls",
+        "tool_call_id": "toolu_bdrk_01DLm9eXC63AYAeabcdJQrY3",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run ls as requested.\",\n  \"command\": \"ls\"\n}",
+        "tool_name": "shell",
+        "tool_purpose": "Run ls as requested."
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01DLm9eXC63AYAeabcdJQrY3",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run ls as requested.",
+          "command": "ls"
+        },
+        "title": "ls",
+        "tool_call_id": "toolu_bdrk_01DLm9eXC63AYAeabcdJQrY3",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run ls as requested.\",\n  \"command\": \"ls\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Run ls as requested.",
+        "wire_title": "shell"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "diff_path": "/work/created.txt",
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create created.txt containing x.",
+          "command": "create",
+          "content": "x",
+          "path": "created.txt"
+        },
+        "title": "Creating created.txt",
+        "tool_call_id": "toolu_bdrk_01Qr8iDRYLnEekDKkeGfHauu",
+        "tool_identity_trusted": true,
+        "tool_input": "--- /work/created.txt\n+++ /work/created.txt\n@@ -0,0 +1 @@\n+x",
+        "tool_kind": "edit",
+        "tool_name": "write",
+        "tool_purpose": "Create created.txt containing x.",
+        "wire_title": "Creating created.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create created.txt containing x.",
+          "command": "create",
+          "content": "x",
+          "path": "created.txt"
+        },
+        "request_id": "synthetic-id-2",
+        "shell_classified": true,
+        "title": "Creating created.txt",
+        "tool_call_id": "toolu_bdrk_01Qr8iDRYLnEekDKkeGfHauu",
+        "tool_input": "--- /work/created.txt\n+++ /work/created.txt\n@@ -0,0 +1 @@\n+x",
+        "tool_name": "write",
+        "tool_purpose": "Create created.txt containing x."
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Qr8iDRYLnEekDKkeGfHauu",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create created.txt containing x.",
+          "command": "create",
+          "content": "x",
+          "path": "created.txt"
+        },
+        "title": "write",
+        "tool_call_id": "toolu_bdrk_01Qr8iDRYLnEekDKkeGfHauu",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Create created.txt containing x.\",\n  \"command\": \"create\",\n  \"path\": \"created.txt\",\n  \"content\": \"x\"\n}",
+        "tool_kind": "edit",
+        "tool_purpose": "Create created.txt containing x.",
+        "wire_title": "write"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  }
+]

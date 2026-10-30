@@ -1,8 +1,8 @@
 /**
  * Settings > Security and the credential vault: posture and stats, denied
  * commands, redaction allowed hosts, third-party app trust, registry git-identity
- * trust, the read-only governance policy, vault secrets, and the paid-AWS,
- * flagged-file-delivery and credential-redaction consents.
+ * trust, the read-only governance policy, vault secrets, and the paid-AWS and
+ * credential-redaction consents.
  */
 
 import type { ClientTransport } from './transport'
@@ -59,33 +59,6 @@ export interface AwsConsentStatus {
   grant: { account: string; region: string; profile: string; granted_at: string } | null
 }
 
-/** One recorded consent to deliver scanner-flagged files to a destination class. */
-export interface FileDeliveryGrant {
-  destination_class: string
-  granted_at: string
-}
-
-/**
- * Which flagged-file delivery destinations the owner has confirmed.
- *
- * Every list here is SERVER-OWNED and rendered as returned. The panel keeps no
- * copy of which classes are grantable, so a class moving between `grantable` and
- * `never_grantable` cannot leave the UI offering a control the backend would
- * refuse — the handler validates `destination_class` against its own grantable
- * set and answers `unknown_destination_class` otherwise.
- *
- * `grants` is keyed by destination class with `null` meaning "not confirmed",
- * which is the same fail-closed reading the backend applies to a missing or
- * unparseable record.
- */
-export interface FileDeliveryConsentStatus {
-  ok?: boolean
-  grantable: string[]
-  never_grantable: string[]
-  labels: Record<string, string>
-  grants: Record<string, FileDeliveryGrant | null>
-}
-
 /**
  * The owner's credential-redaction switch (Settings > Security > Credential
  * redaction). `enabled` is the position as RECORDED by the backend, which reads a
@@ -95,18 +68,6 @@ export interface FileDeliveryConsentStatus {
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
-}
-
-/** The SPA-safe view of an armed grant request. The approval NONCE is never
- *  sent to the browser: finishing the grant needs `approve_command` run on the
- *  host, which is the human-presence proof an agent-driven browser cannot fake. */
-export interface ArmedFileDeliveryConsent {
-  ok?: boolean
-  armed: boolean
-  request_id?: string
-  destination_class?: string
-  expires_in?: number
-  approve_command?: string
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
@@ -512,35 +473,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     revokeAwsConsent: (service: string) =>
       del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
 
-    // Flagged-file delivery consent (Settings > Security > Flagged-file delivery).
-    // FOUR EXPLICIT VERBS, deliberately not one helper that takes a method: the
-    // handler re-applies the owner gate on each separately, and a caller that
-    // collapsed them onto a shared path would be expressing a read and a write as
-    // the same grant. Read #8514 for why that shape is a hazard -- a fence keyed on
-    // a path PREFIX cannot tell the verbs apart, so admitting the read admits the
-    // write in the same stroke.
-    //
-    // Recording a grant is a two-step STEP-UP (issue #7770): POST only ARMS a
-    // request (writing a host-only nonce the browser never sees), and the grant is
-    // recorded by `kirocrew file-delivery approve` on the machine. That closes the
-    // hole where an owner-authenticated but agent-DRIVEN browser could self-grant.
-    //
-    // The class travels in the query string, not a body, because that is what the
-    // handler reads (`request.query.get("destination_class")`) on the writes.
-    fileDeliveryConsent: () =>
-      fetch('/api/file-delivery/consent').then(j) as Promise<FileDeliveryConsentStatus>,
-    armFileDeliveryConsent: (destinationClass: string) =>
-      post('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
-        .then(j) as Promise<ArmedFileDeliveryConsent>,
-    fileDeliveryConsentArmStatus: () =>
-      fetch('/api/file-delivery/consent/arm').then(j) as Promise<ArmedFileDeliveryConsent>,
-    revokeFileDeliveryConsent: (destinationClass: string) =>
-      del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
-        .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
     // Credential-redaction switch (Settings > Security > Credential redaction).
-    // Two explicit verbs for the same reason the consent helpers above keep
-    // theirs: the handler applies the owner gate to the read and the write
-    // separately, and the write is the ONLY writer of the keystone.
+    // Two explicit verbs, not one helper that takes a method: the handler
+    // applies the owner gate to the read and the write separately, and the
+    // write is the ONLY writer of the keystone.
     credentialRedaction: () =>
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>

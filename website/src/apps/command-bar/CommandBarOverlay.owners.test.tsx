@@ -94,7 +94,7 @@ describe('CommandBarOverlay owners', () => {
       'const ime = useImeGuard()',
       'const settingsGovernance = useSettingsSearchGovernance({ fetch: false })',
       'const { navigate } = usePaletteActions()',
-      'const liveSlots = useAppSelector(s => s.dashboard.slots)',
+      'const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)',
       'useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })',
       'useCommandBarOverlayEngines(',
       'const t = setTimeout(() => setDebounced(query), DEBOUNCE_MS)',

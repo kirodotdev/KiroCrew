@@ -315,11 +315,9 @@ class TestGitStatus:
     def test_git_status_parsing(self, tmp_tree):
         """Test _git_status with a mocked spawn wrapper."""
         with patch.object(server, "run_limited") as mock_run:
-            # Mock branch
             branch_result = MagicMock()
             branch_result.returncode = 0
             branch_result.stdout = "main\n"
-            # Mock status
             status_result = MagicMock()
             status_result.returncode = 0
             status_result.stdout = " M file.txt\x00?? new.py\x00"

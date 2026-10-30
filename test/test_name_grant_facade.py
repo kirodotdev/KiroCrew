@@ -36,6 +36,10 @@ from kiro_crew import _facade_mirror, name_grant
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_name_grant_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "spelling_cases", "corpus_gate")
+
 FACADE = name_grant.__name__
 OWNERS = (
     "kiro_crew.name_grant_refusals",
@@ -159,41 +163,34 @@ def patched_names(source: str) -> set[str]:
     return facade_mirror_scan.patched_names(source, _spellings()).get(FACADE, set())
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew import name_grant\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(name_grant, 'A', 1)\n",
-            {"A"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.name_grant.B'):\n        pass\n",
-            {"B"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.slack.gateway.name_grant.C'):\n        pass\n",
-            {"C"},
-        ),
-        (
-            "from kiro_crew import llm_helpers\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(llm_helpers.name_grant, 'D', 1)\n",
-            {"D"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.name_grant_lookup.E'):\n        pass\n",
-            set(),
-        ),
-    ],
-    ids=["monkeypatch", "mock-patch-string", "gateway-binding-string", "helper-binding", "owner"],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: set[str]
-) -> None:
-    assert patched_names(source) == expected
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "monkeypatch": (
+        "from kiro_crew import name_grant\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(name_grant, 'A', 1)\n",
+        {"A"},
+    ),
+    "mock-patch-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.name_grant.B'):\n        pass\n",
+        {"B"},
+    ),
+    "gateway-binding-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.slack.gateway.name_grant.C'):\n        pass\n",
+        {"C"},
+    ),
+    "helper-binding": (
+        "from kiro_crew import llm_helpers\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(llm_helpers.name_grant, 'D', 1)\n",
+        {"D"},
+    ),
+    "owner": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.name_grant_lookup.E'):\n        pass\n",
+        set(),
+    ),
+}
 
 
 def _test_tree_files() -> list[Path]:
@@ -205,17 +202,6 @@ def _test_tree_files() -> list[Path]:
         if rel == "conftest.py" or path.is_relative_to(test_root) or "/tests/" in rel:
             out.append(path)
     return out
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
 
 
 @functools.lru_cache(maxsize=1)
@@ -231,11 +217,6 @@ def _corpus_patched_names() -> frozenset[str]:
         except SyntaxError:
             continue
     return frozenset(found)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that found nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def _owner_reach_gaps(patched: set[str], reads: dict[str, set[str]]) -> dict[str, list[str]]:

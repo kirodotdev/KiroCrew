@@ -15,7 +15,6 @@ import copy
 import hashlib
 import json
 import os
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -144,27 +143,10 @@ def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
 
 
 def _canonical_grant_pattern(ref: str) -> str | None:
-    """An MCP grant ref as the PATTERN it matches tools with, or ``None`` if it is not one.
+    """The shared MCP pattern, exposed through the agent facade."""
+    from kiro_crew.agent_sdk.mcp_refs import _canonical_grant_pattern as canonical
 
-    ``allowedTools`` entries are globs, not names: kiro-cli matches a tool against the
-    entry, so ``"@kirocrew-cron"``, ``"@kirocrew-cron/"`` and ``"@kirocrew-cron/*"``
-    all match every tool on that server, and ``"@kirocrew-cron/cron_*"`` matches a
-    subset nobody spelled out. Canonicalising the three whole-server spellings to one
-    pattern is what lets a single predicate reason about all of them.
-
-    ``None`` means "not an MCP server ref" -- a builtin (``"fs_read"``), a bare glob
-    (``"*"``), or a ref naming no server (``"@"``, ``"@/cron_add"``). It does NOT mean
-    "cannot reach an excluded verb", and reading it that way is what let a bare ``"*"``
-    auto-approve ``cron_add``: an entry with no ``@`` is a glob over the WHOLE tool
-    namespace, so it reaches further than any server-scoped ref, not less far. Classify
-    every entry through :func:`_grant_reaches_excluded`, which answers for both shapes.
-    """
-    if not ref.startswith("@"):
-        return None
-    server, _, tool = ref[1:].partition("/")
-    if not server:
-        return None
-    return f"@{server}/{tool or '*'}"
+    return canonical(ref)
 
 
 def _whole_server_ref(ref: str) -> str | None:
@@ -205,13 +187,10 @@ def _pattern_reaches_excluded(pattern: str) -> list[str]:
 
 
 def _glob_hits(concrete: str, pattern: str) -> bool:
-    """Would *pattern*, as an ``allowedTools`` entry, match the tool named *concrete*?
+    """The shared glob match, exposed through the agent facade."""
+    from kiro_crew.agent_sdk.mcp_refs import _glob_hits as glob_hits
 
-    One rule in one place, because two classifiers ask it: the raw pair and the
-    case-folded pair, matching MORE being the safe direction here -- a match only ever
-    withholds a grant, never adds one.
-    """
-    return fnmatchcase(concrete, pattern) or fnmatchcase(concrete.casefold(), pattern.casefold())
+    return glob_hits(concrete, pattern)
 
 
 def _excluded_verb(ref: str) -> str:
@@ -221,36 +200,10 @@ def _excluded_verb(ref: str) -> str:
 
 
 def _grant_reaches_excluded(entry: str) -> list[str]:
-    """The excluded refs an ``allowedTools`` ENTRY would auto-approve. Answers for ALL.
+    """The excluded refs an approval entry reaches under the shared grant matcher."""
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
 
-    The entry point, and it classifies every entry rather than only the ``@``-prefixed
-    ones. :func:`_canonical_grant_pattern` answers ``None`` for an entry that is not an
-    MCP server ref, and treating that as "reaches nothing" was a fail-OPEN hole: a bare
-    ``"*"`` is kiro-cli's spelling for "every tool", so it auto-approves
-    ``@kirocrew-cron/cron_add`` while skipping the predicate entirely. A non-``@`` entry
-    is a glob over the WHOLE namespace, which reaches further than any server-scoped
-    ref, so it is matched against each excluded ref in BOTH spellings the namespace
-    offers -- the full ``@server/verb`` ref and the bare verb -- and either hit counts.
-
-    Written with a single ``return`` at the end and no early exit, on the same discipline
-    :func:`_require_fresh_worker_spec` carries: every earlier version of this
-    subtraction grew a shortcut for a shape it did not want to think about, and each of
-    those shortcuts was a grant reaching an excluded verb unexamined. Falling off the end
-    is the only exit, so every entry leaves here classified.
-    """
-    pattern = _canonical_grant_pattern(entry)
-    reached: list[str] = []
-    for ref in sorted(agent_mod._WORKER_EXCLUDED_GRANTS):
-        if pattern is None:
-            # Namespace-wide glob: the ENTRY is the pattern, and the excluded tool is
-            # reachable under either spelling the namespace offers.
-            verb = _excluded_verb(ref)
-            hit = _glob_hits(ref, entry) or (verb != "" and _glob_hits(verb, entry))
-        else:
-            hit = _glob_hits(ref, pattern)
-        if hit:
-            reached.append(ref)
-    return reached
+    return [ref for ref in sorted(agent_mod._WORKER_EXCLUDED_GRANTS) if entry_reaches(entry, ref)]
 
 
 def _apply_worker_exclusions(granted: list[str], *, template_grants: list[str]) -> list[str]:
@@ -694,9 +647,9 @@ def _mirror_worker_skill_resources(config: dict, installed_default: dict[str, An
     """Append the default's ``skill://`` mappings to *config*'s ``resources``, by merge.
 
     A skill reaches a generated spec ONLY through a ``skill://`` entry in its
-    ``resources``: the scoping rule gives an agent other than the ``kirocrew``
-    template exactly its own ``skill://`` entries, so a worker whose spec carries
-    none sees an empty ``skill_search`` scope and no startup skills directory. The
+    ``resources``, so this function carries the default's mappings to the worker:
+    with them the worker sees exactly the default's mapped set, and with none it
+    takes the default's whole catalog (``WHOLE_CATALOG_TEMPLATES``). The
     mirror copies ``tools``, ``allowedTools``, ``excludedTools``, ``mcpServers`` and
     ``model``, and ``resources`` is not among them, so this function carries the
     skill mappings separately.

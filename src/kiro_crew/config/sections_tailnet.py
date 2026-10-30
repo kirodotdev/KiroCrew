@@ -227,7 +227,7 @@ def _tailscale_config_from(
         # A LIST whose entries are not usable logins, e.g. [1] or ["a@b", None].
         # The comprehension below silently drops them, so an all-invalid
         # narrowing parses to [] — indistinguishable from "no restriction
-        # configured", which is the exact silent widening this fix exists to
+        # configured", which is the exact silent widening this branch exists to
         # stop, and the same entry-level shape publish.allowed_destinations
         # already handles. An EMPTY list is NOT this case: that is a readable,
         # if mistaken, statement, and the trust_identity rule below already

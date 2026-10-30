@@ -270,16 +270,19 @@ class TestDisplayFormRedaction:
         segment against text that is not what gets sent.
         """
         import ast
-        from pathlib import Path
 
-        import kiro_crew
+        from source_corpus import parsed_candidates
+        from source_corpus import src_root as corpus_root
 
-        src_root = Path(kiro_crew.__file__).parent
+        src_root = corpus_root()
         offenders: list[str] = []
-        for path in sorted(src_root.rglob("*.py")):
+        # A sink spells the translator's name, so only the files whose text holds it
+        # are parsed.
+        for path, _text, tree in parsed_candidates(
+            require_any=("_md_to_telegram_html",), skip_syntax_errors=False
+        ):
             if path.name == "renderer.py" and path.parent.name == "telegram":
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 name = ""
                 if isinstance(node, ast.Call):

@@ -25,7 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from overload_fakes import Clock
 
-from kiro_crew import loopback_http, port_resolution
+from kiro_crew import cli_server, port_resolution
 from kiro_crew.adaptive import controller as ctl_mod
 from kiro_crew.adaptive.controller import AdaptiveController, HostSample
 from kiro_crew.config import loader
@@ -110,6 +110,12 @@ def _point_doctor_at(monkeypatch: pytest.MonkeyPatch, port: int, secret: str = _
         return secret if (asked_port, dial_host) == (port, "127.0.0.1") else ""
 
     monkeypatch.setattr(loader, "read_local_secret", _secret)
+    # The test server stands in for this install's recorded gateway: no owner-only
+    # socket, so the send takes the TCP arm, whose connected-peer verdict is MATCH.
+    monkeypatch.setattr(cli_server, "_existing_dashboard_socket", lambda _p: "")
+    monkeypatch.setattr(
+        cli_server, "_connected_peer_verdict", lambda _s: cli_server._ConnectedPeerVerdict.MATCH
+    )
 
 
 def _free_port() -> int:
@@ -194,7 +200,7 @@ def test_no_credential_sends_nothing_and_says_why(
     def _no_request(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("doctor dialled the gateway without a credential")
 
-    monkeypatch.setattr(loopback_http, "loopback_urlopen", _no_request)
+    monkeypatch.setattr("kiro_crew.cli_server._owner_verified_secret_urlopen", _no_request)
     workload._doctor_adaptive_live()
     out = capsys.readouterr().out
     assert out == (
@@ -216,6 +222,36 @@ async def test_a_refused_credential_is_named_with_its_status(
     assert "Execution cap" not in out
 
 
+@pytest.mark.asyncio
+async def test_an_unproven_peer_receives_nothing_and_is_named(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A listener that is not proven to be the recorded gateway gets no request."""
+    seen: list[str] = []
+
+    async def _record(request: web.Request) -> web.Response:
+        seen.append(request.path)
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_get("/api/spawn/adaptive", _record)
+    async with TestServer(app, host="127.0.0.1") as server:
+        port = int(server.port)
+        _point_doctor_at(monkeypatch, port)
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
+        )
+        await asyncio.to_thread(workload._doctor_adaptive_live)
+    assert seen == []
+    out = capsys.readouterr().out
+    assert out == (
+        f"  adaptive controller: not read on port {port}: "
+        "the answering process is not proven to be this install's gateway\n"
+    )
+
+
 def test_nothing_listening_reads_as_no_answer(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -229,7 +265,7 @@ def test_nothing_listening_reads_as_no_answer(
     def _refused(*_args: object, **_kwargs: object) -> None:
         raise ConnectionRefusedError("nothing listening")
 
-    monkeypatch.setattr(loopback_http, "loopback_urlopen", _refused)
+    monkeypatch.setattr("kiro_crew.cli_server._owner_verified_secret_urlopen", _refused)
     workload._doctor_adaptive_live()
     out = capsys.readouterr().out
     assert out == f"  adaptive controller: not read on port {port}: no gateway answered\n"
@@ -245,7 +281,7 @@ def test_a_slow_gateway_reads_as_busy_not_gone(
     def _times_out(*_args: object, **_kwargs: object) -> None:
         raise TimeoutError("read timed out")
 
-    monkeypatch.setattr(loopback_http, "loopback_urlopen", _times_out)
+    monkeypatch.setattr("kiro_crew.cli_server._owner_verified_secret_urlopen", _times_out)
     workload._doctor_adaptive_live()
     out = capsys.readouterr().out
     assert out == (
@@ -265,7 +301,7 @@ def test_a_connect_timeout_reads_as_no_answer_not_busy(
     def _connect_timeout(*_args: object, **_kwargs: object) -> None:
         raise urllib.error.URLError(TimeoutError("connect timed out"))
 
-    monkeypatch.setattr(loopback_http, "loopback_urlopen", _connect_timeout)
+    monkeypatch.setattr("kiro_crew.cli_server._owner_verified_secret_urlopen", _connect_timeout)
     workload._doctor_adaptive_live()
     out = capsys.readouterr().out
     assert out == f"  adaptive controller: not read on port {port}: no gateway answered\n"

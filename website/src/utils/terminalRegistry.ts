@@ -155,7 +155,8 @@ export function onTerminalReady(
   onReady: () => void,
   onFailure?: () => void,
 ): () => void {
-  if (conns.get(sessionId)?.invalidCwd) { onFailure?.(); return () => {} }
+  const known = conns.get(sessionId)
+  if (known?.invalidCwd || known?.wrongMachine) { onFailure?.(); return () => {} }
   if (getTerminalWs(sessionId)) { onReady(); return () => {} }
   let set = readyListeners.get(sessionId)
   if (!set) { set = new Set(); readyListeners.set(sessionId, set) }
@@ -236,6 +237,8 @@ interface Conn {
   term: Terminal
   fit: FitAddon
   cwd?: string | null
+  remoteSlot?: string
+  chatSlot?: string
   ws: WebSocket | null
   disposed: boolean
   retries: number
@@ -243,6 +246,13 @@ interface Conn {
   status: TerminalConnStatus
   /** A rejected open parks until the user explicitly retries. */
   invalidCwd: boolean
+  /** The gateway refused to open this shell on that machine (`terminal_wrong_machine`):
+   *  the chat runs elsewhere. */
+  wrongMachine?: boolean
+  /** Consecutive `terminal_placement_unavailable` refusals. The refused socket
+   *  still opens (so `onopen` would reset `retries`); this carries the backoff
+   *  across them until a shell is ready. */
+  placementRefusals?: number
   /**
    * Set when the user clicked "Reconnect" and cleared the moment the socket
    * next resolves (connected) or the redial chain gives up (disconnected). It
@@ -394,6 +404,20 @@ export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | u
   )
 }
 
+/** Whether the gateway refused to open this shell on its machine, published with the status. */
+export function useTerminalWrongMachine(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.wrongMachine ?? false,
+    () => false,
+  )
+}
+
 /** Whether the requested cwd was rejected, published with the connection status. */
 export function useTerminalInvalidCwd(sessionId: string): boolean {
   return useSyncExternalStore(
@@ -423,13 +447,14 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
   if (!c || c.disposed) return
   // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
   // revives must neither displace another window nor retry an unchanged path.
-  if (c.displaced || c.invalidCwd) {
+  if (c.displaced || c.invalidCwd || c.wrongMachine) {
     if (!manual) return
     // Only explicit recovery from a refused directory can change the target.
     // An empty override asks the server to use its terminal starting directory.
     if (c.invalidCwd && cwd !== undefined) c.cwd = cwd
     c.displaced = false
     c.invalidCwd = false
+    c.wrongMachine = false
     notifyStatus(sessionId)
   }
   if (manual) setManualRetry(sessionId, c)
@@ -442,9 +467,11 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
     // onclose redials promptly even if the chain was exhausted, and let it own
     // the dial.
     c.retries = 0
+    c.placementRefusals = 0
     return
   }
   c.retries = 0
+  c.placementRefusals = 0
   clearTimeout(c.reconnectTimer)
   c.reconnectTimer = undefined
   connect(sessionId, c)
@@ -470,7 +497,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed || c.invalidCwd) return
+  if (c.disposed || c.invalidCwd || c.wrongMachine) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -481,7 +508,16 @@ function connect(sessionId: string, c: Conn) {
   }
   setConnStatus(sessionId, c, 'reconnecting')
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const qs = c.cwd ? `?cwd=${encodeURIComponent(c.cwd)}` : ''
+  // A remote shell is resolved by the gateway from the chat slot; the local cwd
+  // does not apply, and the gateway refuses rather than falling back to local.
+  // A local shell opened for a chat names that chat, so the gateway can refuse
+  // it when the chat runs on a remote environment.
+  const query: Record<string, string> = c.remoteSlot
+    ? { remote_slot: c.remoteSlot }
+    : { ...(c.cwd ? { cwd: c.cwd } : {}), ...(c.chatSlot ? { slot: c.chatSlot } : {}) }
+  // `+` is how URLSearchParams spells a space; a literal `+` is already `%2B`.
+  const encoded = new URLSearchParams(query).toString().replace(/\+/g, '%20')
+  const qs = encoded ? `?${encoded}` : ''
   const ws = new WebSocket(`${proto}//${location.host}/api/ws/terminal/${sessionId}${qs}`)
   ws.binaryType = 'arraybuffer'
   c.ws = ws
@@ -515,6 +551,7 @@ function connect(sessionId: string, c: Conn) {
           return
         }
         if (m && m.type === 'ready' && !c.invalidCwd) {
+          c.placementRefusals = 0
           // Record the shell BEFORE registering: registerTerminalWs drains the
           // ready listeners synchronously, and Run-in-terminal's listener reads
           // the shell to decide how to hand over the snippet.
@@ -527,8 +564,15 @@ function connect(sessionId: string, c: Conn) {
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
         if (m && m.type === 'error' && m.code === 'displaced') c.displaced = true
-        if (m && m.type === 'error' && m.code === 'terminal_invalid_cwd') {
-          c.invalidCwd = true
+        if (m && m.type === 'error' && m.code === 'terminal_placement_unavailable') {
+          // Redial (Coder or the chat may be back soon), but back off: the
+          // refused socket opened, which reset `retries` to zero.
+          c.placementRefusals = (c.placementRefusals ?? 0) + 1
+          c.retries = c.placementRefusals - 1
+        }
+        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine')) {
+          if (m.code === 'terminal_invalid_cwd') c.invalidCwd = true
+          else c.wrongMachine = true
           clearTimeout(c.reconnectTimer)
           c.reconnectTimer = undefined
           unregisterTerminalWs(sessionId)
@@ -554,8 +598,8 @@ function connect(sessionId: string, c: Conn) {
       handleShellExit(sessionId, c, { status: null })
       return
     }
-    if (c.displaced || c.invalidCwd) {
-      // A deliberate handoff or rejected cwd needs an explicit user retry.
+    if (c.displaced || c.invalidCwd || c.wrongMachine) {
+      // A deliberate handoff, rejected cwd or refused machine needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')
@@ -602,9 +646,13 @@ function handleShellExit(sessionId: string, c: Conn, exit: TerminalExit): void {
  */
 export function ensureTerminalConnection(
   sessionId: string, term: Terminal, fit: FitAddon, cwd?: string | null,
+  /** A chat slot whose REMOTE workspace this shell opens in (gateway-side `coder ssh`). */
+  remoteSlot?: string,
+  /** The chat a LOCAL shell was opened for, so the gateway checks its placement. */
+  chatSlot?: string,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

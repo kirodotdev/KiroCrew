@@ -15,6 +15,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 from kiro_crew.messaging.link import ChannelLink, binding_token
+from kiro_crew.testing.wait import await_until
 
 #: Draining is a LOOP because a drained task may register another -- not because any
 #: current one does (``chat_slack`` has a single ``create_task``, and the backfill
@@ -148,7 +149,7 @@ async def run_as_slot_task(slot, coro) -> "asyncio.Task":
     """Run *coro* as ``slot.task``, the way a dispatcher does, and await it."""
     task = asyncio.ensure_future(coro)
     slot.task = task
-    await asyncio.wait_for(task, timeout=TURN_WAIT_SECS)
+    await await_until(task, what="the slot's turn")
     return task
 
 
@@ -156,7 +157,7 @@ async def await_successor(slot, predecessor) -> "asyncio.Task":
     """Await the turn *predecessor*'s queue hand-off published in ``slot.task``."""
     successor = slot.task
     assert successor is not None and successor is not predecessor, "no successor dispatched"
-    await asyncio.wait_for(successor, timeout=TURN_WAIT_SECS)
+    await await_until(successor, what="the successor turn")
     return successor
 
 
@@ -368,6 +369,7 @@ def _make_state(tmp_path, **kwargs):
     sessions.mirror_link_nonce = MagicMock(side_effect=_mirror_link_nonce)
     sessions.clear_mirror_link_if = MagicMock(side_effect=_clear_mirror_link_if)
     sessions.find_mirror_sessions = MagicMock(side_effect=_find_mirror_sessions)
+    sessions.mirror_accepts_inbound = MagicMock(side_effect=lambda key: key in _inbound_keys)
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),

@@ -406,6 +406,15 @@ def _dispatch(
             agent=agent,
             tool_name=tool_name,
         )
+    # A remote-bound session's desktop is another machine's, never this one. Not a
+    # governance scope; the server is also withheld from such a session entirely.
+    from kiro_crew.session_environment import refuse_local_only_tool
+
+    remote_refusal = refuse_local_only_tool(session_key, "kirocrew-computer", tool_name)
+    if remote_refusal:
+        return _static_refusal(
+            remote_refusal, session_key=session_key, agent=agent, tool_name=tool_name
+        )
     clean = validate_tool_args(
         coerce_mcp_tool_args(dict(args), MCP_COMPUTER_SCHEMAS[tool_name]),
         MCP_COMPUTER_SCHEMAS[tool_name],
@@ -417,7 +426,7 @@ def _dispatch(
     #     the operator's target policy, so a hand-edited file cannot be observed in
     #     two different states within a single dispatch.
     state = enable_state.load_state()
-    if not enable_state.is_enabled(state):
+    if not enable_state.is_enabled(state, audit_tool="computer_use_dispatch"):
         return _static_refusal(
             REFUSAL_DISABLED, session_key=session_key, agent=agent, tool_name=tool_name
         )

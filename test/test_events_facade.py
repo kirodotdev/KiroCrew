@@ -20,9 +20,7 @@ for it.
 from __future__ import annotations
 
 import ast
-import dataclasses
 import functools
-import importlib
 import json
 import os
 import re
@@ -41,6 +39,19 @@ from kiro_crew.slack import events
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_events_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = (
+    "known_seams",
+    "spelling_cases",
+    "corpus_gate",
+    "reach_routing",
+    "reach_scan_can_fail",
+    "owner_layering",
+    "home_manifest",
+    "logger_scan_can_fail",
+)
 
 FACADE = "kiro_crew.slack.events"
 OWNERS = (
@@ -201,54 +212,40 @@ def _run_child(code: str, workdir: Path) -> str:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew.slack import events as ev\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(ev, 'A', 1)\n",
-            {"A"},
-        ),
-        (
-            "import kiro_crew.slack.events as events\n"
-            "from unittest import mock\n"
-            "def t():\n    with mock.patch.object(events, 'B'):\n        pass\n",
-            {"B"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.slack.events.C'):\n        pass\n",
-            {"C"},
-        ),
-        (
-            "def t(monkeypatch):\n    monkeypatch.setattr('kiro_crew.slack.events.D', 1)\n",
-            {"D"},
-        ),
-        # An owner is not the facade, even bound under the facade's name.
-        (
-            "from kiro_crew.slack import events_inbound as events\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(events, 'X', 1)\n",
-            set(),
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.slack.events_queue.Y'):\n        pass\n",
-            set(),
-        ),
-    ],
-    ids=[
-        "monkeypatch-from-import",
-        "patch-object-import-as",
-        "mock-patch-string",
-        "dotted-setattr",
-        "owner-named-like-the-facade",
-        "owner-string",
-    ],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: set[str]
-) -> None:
-    assert patched_names(source) == expected
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "monkeypatch-from-import": (
+        "from kiro_crew.slack import events as ev\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(ev, 'A', 1)\n",
+        {"A"},
+    ),
+    "patch-object-import-as": (
+        "import kiro_crew.slack.events as events\n"
+        "from unittest import mock\n"
+        "def t():\n    with mock.patch.object(events, 'B'):\n        pass\n",
+        {"B"},
+    ),
+    "mock-patch-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.slack.events.C'):\n        pass\n",
+        {"C"},
+    ),
+    "dotted-setattr": (
+        "def t(monkeypatch):\n    monkeypatch.setattr('kiro_crew.slack.events.D', 1)\n",
+        {"D"},
+    ),
+    # An owner is not the facade, even bound under the facade's name.
+    "owner-named-like-the-facade": (
+        "from kiro_crew.slack import events_inbound as events\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(events, 'X', 1)\n",
+        set(),
+    ),
+    "owner-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.slack.events_queue.Y'):\n        pass\n",
+        set(),
+    ),
+}
 
 
 def _test_tree_files() -> list[Path]:
@@ -262,17 +259,6 @@ def _test_tree_files() -> list[Path]:
     return out
 
 
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
-
-
 @functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> frozenset[str]:
     """Every name the test trees patch through the facade, scanned once per worker."""
@@ -282,11 +268,6 @@ def _corpus_patched_names() -> frozenset[str]:
         if _SPELLS_THE_FACADE.search(text):
             found |= patched_names(text)
     return frozenset(found)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that found nothing would pass the reach tests over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -302,18 +283,6 @@ def _reach_gaps(names: set[str], index: _facade_mirror.MirrorIndex) -> list[str]
         for module in _family()[1:]
         if name in vars(module) and module.__name__ not in index.holders.get(name, ())
     ]
-
-
-def test_every_scanned_name_is_routed_to_every_owner_holding_it() -> None:
-    assert _reach_gaps(set(_corpus_patched_names()), _index()) == []
-
-
-def test_the_reach_scan_can_fail() -> None:
-    """The routing check reads the index: blind one name and the gap shows."""
-    index = _index()
-    name, holders = next((n, h) for n, h in sorted(index.holders.items()) if h)
-    blind = dataclasses.replace(index, holders={**index.holders, name: ()})
-    assert _reach_gaps({name}, blind) == [f"{owner}.{name}" for owner in holders]
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
@@ -476,11 +445,6 @@ def _layering_gaps(trees: dict[str, ast.Module]) -> dict[str, list[str]]:
     return gaps
 
 
-def test_each_owner_imports_only_owners_listed_before_it_and_never_the_facade() -> None:
-    trees = {name: _tree(sys.modules[name]) for name in OWNERS}
-    assert _layering_gaps(trees) == {}
-
-
 def test_the_layering_check_can_fail() -> None:
     trees = {name: _tree(sys.modules[name]) for name in OWNERS}
     trees[OWNERS[0]] = ast.parse("from kiro_crew.slack.events_inbound import SeenCache\n")
@@ -537,15 +501,6 @@ def _home_manifest() -> dict[str, tuple[str, str]]:
     return out
 
 
-def test_every_name_served_from_outside_the_family_is_visible_to_type_checkers() -> None:
-    """A name an owner imports from a project module and the facade serves without
-    binding is named from its home under ``TYPE_CHECKING`` (none today: the facade
-    keeps binding every project import it had)."""
-    assert _home_imports(), "the owners import nothing from the project -- the scan went blind"
-    served = set(_index().exports)
-    assert _home_manifest() == {n: h for n, h in _home_imports().items() if n in served}
-
-
 def test_every_base_public_name_type_checks_through_the_facade() -> None:
     missing = base_names._BASE_PUBLIC_NAMES[FACADE] - _statically_bound(_tree(events))
     assert sorted(missing) == []
@@ -578,11 +533,6 @@ def test_the_owners_log_under_the_facade_name() -> None:
     assert repr(_LOGGER_NAME) in names, "the scan found no owner logger -- it went blind"
     assert "__name__" not in names
     assert all(vars(sys.modules[owner])["logger"] is events.logger for owner in OWNERS)
-
-
-def test_the_logger_scan_can_fail() -> None:
-    tree = ast.parse("import logging\nlogging.getLogger(__name__).warning('x')\n")
-    assert _logger_names(tree) == ["__name__"]
 
 
 def _names_read_by_functions(tree: ast.Module) -> set[str]:

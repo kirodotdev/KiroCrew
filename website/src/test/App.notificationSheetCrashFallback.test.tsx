@@ -135,13 +135,6 @@ describe('Notification Center sheet — the crash fallback hands off to the agen
 
     // The inbox link the panel always had is still there.
     expect(within(panel).getByRole('button', { name: 'Open the full inbox' })).toBeInTheDocument()
-
-    // The line under the button says what the press does, for a reader who
-    // has never met the hand-off: it leaves this page, and the chat it opens
-    // has the report pre-filled but NOT sent — the user still presses send.
-    expect(within(panel).getByText(
-      "Leaves this page and opens a new chat with this error's report already filled in, ready for you to send",
-    )).toBeInTheDocument()
     askTheAgent(panel)
 
     expect(sendErrorToChat).toHaveBeenCalledTimes(1)

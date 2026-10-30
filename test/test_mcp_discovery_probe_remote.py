@@ -765,7 +765,6 @@ class TestProbeRemoteTimeout:
 
         assert result.status == "error"
         assert result.error == "timeout"
-        # Verify the configured timeout was actually used
         timeout_used = mock_session_cls.call_args.kwargs.get("timeout")
         assert timeout_used is not None
         assert timeout_used.total == 60
@@ -1514,5 +1513,5 @@ class TestProbeRemoteAgainstLoopbackStubs:
 
         assert reached == []
         assert result.status == "error"
-        assert result.error == "HTTP 307"
+        assert result.error == f"HTTP 307, redirects to http://127.0.0.1:{target_port}/mcp"
         assert result.tools == []

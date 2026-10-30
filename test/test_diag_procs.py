@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from kiro_crew import platform_compat, session_pid
+from kiro_crew import platform_compat, platform_compat_proctable, session_pid
 from kiro_crew.diag import procs
 
 NUL = b"\x00"
@@ -919,22 +920,27 @@ def test_darwin_uses_the_sanctioned_ps_snapshot() -> None:
     """
     parents = {GATEWAY: OUTSIDER, CHAT: GATEWAY, BROWSER: CHAT, OUTSIDER: 1, 4242: 1}
 
+    # The footprint reader is injected too. These pids are invented, and on a
+    # Mac the platform reader would measure whatever real process holds them.
     roster = procs.scan(
         platform_name="darwin",
         gateway_pid=GATEWAY,
         ps_snapshot_fn=lambda: parents,
+        footprint_fn=lambda pid: None,
     )
 
     assert set(roster.nodes) == {GATEWAY, CHAT, BROWSER}
     assert 4242 not in roster.nodes, "a sibling outside the gateway tree is not family"
     assert roster.nodes[GATEWAY].kind == "gateway"
     assert roster.nodes[CHAT].ppid == GATEWAY
-    # Everything the snapshot cannot carry is null, and the roster says so --
-    # including rss, which this snapshot reads no column for.
+    # Everything the snapshot cannot carry is null, and the roster says so.
+    # rss_kb is null here only because the injected reader answers None; the
+    # footprint tests below fill it.
     assert roster.nodes[CHAT].state is None
     assert roster.nodes[CHAT].cmdline == ""
     assert roster.nodes[CHAT].env == {}
     assert roster.nodes[CHAT].rss_kb is None
+    assert roster.nodes[CHAT].cpu_pct is None
     assert roster.nodes[CHAT].threads.count is None
     assert any("carries pid/ppid only" in note for note in roster.degraded_report())
     # orphans: 0 on macOS must read as UNMEASURED, never as a measured zero.
@@ -961,6 +967,120 @@ def test_the_darwin_adapter_reads_the_real_snapshot_row_field(monkeypatch) -> No
     edges = procs._darwin_parent_edges()
 
     assert edges == {GATEWAY: OUTSIDER, CHAT: GATEWAY}, "the adapter must read `ppid`"
+
+
+def _recording(calls: list[str], name: str, result: object = None) -> Callable[..., object]:
+    """A stand-in that records it was reached and answers *result*.
+
+    It records rather than raises on purpose. The footprint read sits inside a
+    blind ``except``, so a raising tripwire reached from there would be
+    swallowed into a null ``rss_kb`` -- the very value these tests expect.
+    """
+
+    def stand_in(*_args: object, **_kwargs: object) -> object:
+        calls.append(name)
+        return result
+
+    return stand_in
+
+
+def test_darwin_rss_kb_comes_from_the_platform_footprint_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default reader is the platform's ``phys_footprint``, floored to KiB.
+
+    Patched on the facade, so this goes through the production seam rather
+    than an injected one. None of the byte counts is a whole KiB and two of
+    them round up, so neither rounding nor ceiling reproduces the floor.
+    """
+    parents = {GATEWAY: OUTSIDER, CHAT: GATEWAY, BROWSER: CHAT, OUTSIDER: 1}
+    footprints = {GATEWAY: 5_000_000, CHAT: 1_049_000, BROWSER: 2_047}
+    monkeypatch.setattr(
+        platform_compat, "proc_phys_footprint_bytes_for_pid", footprints.get, raising=True
+    )
+
+    first = procs.scan(platform_name="darwin", gateway_pid=GATEWAY, ps_snapshot_fn=lambda: parents)
+    # A second scan against the first gives a rate every chance to appear.
+    roster = procs.scan(
+        first, platform_name="darwin", gateway_pid=GATEWAY, ps_snapshot_fn=lambda: parents
+    )
+
+    rss = {pid: node.rss_kb for pid, node in roster.nodes.items()}
+    assert rss == {GATEWAY: 4882, CHAT: 1024, BROWSER: 1}
+    assert not any("footprint" in category for category in roster.degraded_counts)
+    assert any("not a resident set" in note for note in roster.degraded_report())
+    # Memory is the only field this fills; cpu stays null on macOS.
+    assert all(node.cpu_pct is None for node in roster.nodes.values())
+
+
+def test_darwin_footprint_failures_leave_rss_null_and_keep_the_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unreadable or raising read nulls that node's ``rss_kb`` and nothing else.
+
+    Every other route to a memory figure is a recorder, so a fallback to
+    ``ps`` or to the generic RSS reader fails here as a call, whatever number
+    it would have produced.
+    """
+    parents = {GATEWAY: OUTSIDER, CHAT: GATEWAY, BROWSER: CHAT, RUNNER: GATEWAY, OUTSIDER: 1}
+
+    def reader(pid: int) -> int | None:
+        if pid == CHAT:
+            return None
+        if pid == BROWSER:
+            raise OSError("proc_pid_rusage failed")
+        return {GATEWAY: 8_192, RUNNER: 10_000}[pid]
+
+    monkeypatch.setattr(platform_compat, "proc_phys_footprint_bytes_for_pid", reader, raising=True)
+    other_sources: list[str] = []
+    monkeypatch.setattr(subprocess, "Popen", _recording(other_sources, "Popen"), raising=True)
+    for name, result in (
+        ("trusted_system_bin", "/bin/ps"),
+        ("proc_rss_bytes_for_pid", 7 * 1024 * 1024),
+        ("_posix_process_snapshot", None),
+    ):
+        monkeypatch.setattr(
+            platform_compat, name, _recording(other_sources, name, result), raising=True
+        )
+
+    roster = procs.scan(platform_name="darwin", gateway_pid=GATEWAY, ps_snapshot_fn=lambda: parents)
+
+    assert set(roster.nodes) == {GATEWAY, CHAT, BROWSER, RUNNER}
+    rss = {pid: node.rss_kb for pid, node in roster.nodes.items()}
+    assert rss == {GATEWAY: 8, CHAT: None, BROWSER: None, RUNNER: 9}
+    assert roster.degraded_counts["darwin footprint unreadable; rss_kb null"] == 1
+    assert roster.degraded_counts["darwin footprint reader raised; rss_kb null"] == 1
+    assert other_sources == [], "rss must come from the footprint reader alone"
+
+
+def test_darwin_footprint_seam_overrides_the_platform_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An injected *footprint_fn* REPLACES the platform reader; it is no fallback.
+
+    Off macOS the platform reader answers None, so a scan that read it first
+    and used the injected reader only on None would pass an equality check
+    alone. Every binding of the real reader is therefore a recorder answering
+    a figure of its own: reaching any of them fails, and so does using its
+    answer.
+    """
+    parents = {GATEWAY: OUTSIDER, CHAT: GATEWAY, OUTSIDER: 1}
+    real_reads: list[str] = []
+    for module in (platform_compat, platform_compat_proctable):
+        for name in ("proc_phys_footprint_bytes_for_pid", "_darwin_process_phys_footprint_bytes"):
+            stand_in = _recording(real_reads, f"{module.__name__}.{name}", 900 * 1024 * 1024)
+            monkeypatch.setattr(module, name, stand_in, raising=True)
+    injected = {GATEWAY: 3_000, CHAT: 70_000}
+
+    roster = procs.scan(
+        platform_name="darwin",
+        gateway_pid=GATEWAY,
+        ps_snapshot_fn=lambda: parents,
+        footprint_fn=injected.get,
+    )
+
+    assert real_reads == [], "the injected reader must stand in for the real one"
+    assert {pid: node.rss_kb for pid, node in roster.nodes.items()} == {GATEWAY: 2, CHAT: 68}
 
 
 def test_darwin_reports_an_unavailable_ps_rather_than_an_empty_family() -> None:

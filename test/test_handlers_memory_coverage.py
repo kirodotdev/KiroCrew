@@ -48,6 +48,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 )
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
@@ -417,7 +418,7 @@ class TestRunConfigWriteCancellation:
                 await first
             except asyncio.CancelledError:
                 cancelled = True
-            await asyncio.wait_for(second, timeout=10)
+            await await_until(second, what="the second writer running after the release")
             return early, cancelled, list(order)
 
         early, cancelled, seen = self._run(_drive())
@@ -515,6 +516,23 @@ class TestMemorySettings:
             resp = await mem_mod.api_memory_settings(req)
         assert resp.status == 400
         assert "history_max_days" in _body(resp)["error"]
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_put_rejects_infinite_max_days(self, tmp_path: Path, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float: the same 400, never a 500."""
+        cfg_path = tmp_path / "config.json"
+        state = _make_state()
+        body = json.loads(f'{{"history_max_days": {raw}}}')
+        req = _make_request(state, method="PUT", json_body=body)
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 400
+        assert _body(resp) == {"error": "history_max_days must be an integer"}
+        assert not cfg_path.exists()
 
     @pytest.mark.asyncio
     async def test_put_fails_closed_on_unreadable_config(self, tmp_path: Path) -> None:

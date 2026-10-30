@@ -1,9 +1,19 @@
-"""The status reactions a native Slack turn wears on the message it answers.
+"""The status reaction a native Slack turn wears on the message it answers.
 
-The phase ladder (queued, thinking, coding, browsing, tool, done, error) with its
-debounce and stall watchdog, the tool-to-phase mapping, and the one-shot reactions the
-``!`` commands add. The phase table itself is built at import in
-:mod:`kiro_crew.slack.handler`, where ``slack.reactions`` overrides are read.
+At most one reaction, and only where it says something nothing else does:
+
+* Where Slack shows the bot's native thread status
+  (``assistant.threads.setStatus`` accepted the "is working on your request"
+  line), that status IS the progress signal, so the message gets no reaction
+  while the turn runs.
+* Where it does not, the message gets the ``queued`` ack (👀) while the turn
+  runs, so the user can see it was picked up.
+* When the reply lands the ack is removed and nothing replaces it: the reply is
+  the done signal. A failed turn gets the ``error`` reaction instead, on either
+  surface, so a failure is never silent.
+
+The phase table itself is built at import in :mod:`kiro_crew.slack.handler`, where
+``slack.reactions`` overrides are read.
 
 Composed onto :mod:`kiro_crew.slack.handler`; see
 :mod:`kiro_crew.slack.handler_runtime`.
@@ -16,18 +26,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
-        _CODING_KINDS,
-        _CODING_TOOLS,
-        _IMMEDIATE_PHASES,
-        _PHASE_DEBOUNCE_SECS,
         _PHASE_EMOJIS,
-        _STALL_EMOJI_HARD,
-        _STALL_EMOJI_SOFT,
-        _STALL_HARD_SECS,
-        _STALL_SOFT_SECS,
-        _TERMINAL_PHASES,
-        _WEB_KINDS,
-        _WEB_TOOLS,
         SlackClientOps,
         _build_phase_emojis,
     )
@@ -59,43 +58,14 @@ def refresh_phase_emojis(overrides: dict[str, str | None] | None) -> list[str]:
     return unknown
 
 
-async def _add_phase_reaction(slack: SlackClientOps, channel: str, ts: str, phase: str) -> None:
-    """Add the reaction for *phase* if the user hasn't suppressed it.
-
-    Used by one-shot emoji-ack sites outside ``StatusReactionController``
-    (e.g. ``!command`` handlers).  Honours ``slack.reactions`` ``null``
-    suppression sentinels.
-    """
-    emoji = phase_emojis().get(phase)
-    if emoji is None:
-        return
-    await slack.add_reaction(channel, ts, emoji)
-
-
-def _tool_to_phase(tool_name: str, tool_kind: str = "") -> str:
-    """Map a tool name/kind to a reaction phase."""
-    kind_lower = tool_kind.lower()
-    if kind_lower:
-        if kind_lower in _CODING_KINDS:
-            return "coding"
-        if kind_lower in _WEB_KINDS:
-            return "browsing"
-    # Extract base tool name for MCP tools (mcp__example-mcp__Bash → Bash)
-    base = tool_name.split("__")[-1] if "__" in tool_name else tool_name
-    if base in _CODING_TOOLS:
-        return "coding"
-    if base in _WEB_TOOLS:
-        return "browsing"
-    return "tool"
-
-
 class StatusReactionController:
-    """Phase-aware Slack reaction controller with debounce and stall detection.
+    """The one reaction a Slack turn wears on the message it answers.
 
-    Provides richer emoji feedback than the old binary eyes/lobster pair.
-    Intermediate phases are debounced so rapid tool transitions don't spam
-    the Slack API.  A stall watchdog adds yawning/fearful reactions when
-    the agent appears stuck.
+    :meth:`start` adds the ``queued`` ack unless Slack is already showing the
+    native thread status; :meth:`finalize` takes the ack down when the turn
+    ends and, only on failure, adds the ``error`` reaction. A failure found
+    after a clean finalize (the reply itself failed to post) still upgrades to
+    the error reaction, so an error is never silent.
     """
 
     def __init__(
@@ -105,162 +75,70 @@ class StatusReactionController:
         self._slack = slack
         self._channel = channel
         self._ts = ts
-        self._loop = asyncio.get_running_loop()
-
         self._current_emoji: str | None = None
-        self._pending_phase: str | None = None
-        self._debounce_handle: asyncio.TimerHandle | None = None
-        self._stall_soft_handle: asyncio.TimerHandle | None = None
-        self._stall_hard_handle: asyncio.TimerHandle | None = None
-        self._stall_emoji: str | None = None
-        self._stall_paused = False
+        # Serializes the add/remove calls: the ack's add must reach Slack before
+        # the reply-time remove, or a fast reply leaves the ack on the message.
+        self._lock = asyncio.Lock()
+        self._started = False
         self._finalized = False
+        self._errored = False
+        # Strong references: the loop holds tasks weakly, and a collected task
+        # would drop the ack's removal or the error reaction.
+        self._tasks: set[asyncio.Future[None]] = set()
 
     # ── public API ──────────────────────────────────────────────────
 
-    def set_phase(self, phase: str) -> None:
-        """Request a phase transition (may be debounced)."""
-        if self._finalized or not self._enabled:
+    def start(self, *, native_status: bool) -> None:
+        """Acknowledge the message, unless Slack already shows native status.
+
+        *native_status* is whether ``assistant.threads.setStatus`` accepted the
+        working line for this turn's thread. Idempotent.
+        """
+        if self._started or self._finalized or not self._enabled:
             return
-
-        if phase in _TERMINAL_PHASES:
-            self.finalize(error=(phase == "error"))
+        self._started = True
+        if native_status:
             return
-
-        if phase in _IMMEDIATE_PHASES:
-            self._cancel_debounce()
-            emoji = phase_emojis().get(phase, phase)
-            asyncio.ensure_future(self._swap_emoji(emoji))
-            self._reset_stall_watchdog()
-            return
-
-        # Intermediate phase — debounce
-        self._pending_phase = phase
-        self._cancel_debounce()
-        self._debounce_handle = self._loop.call_later(_PHASE_DEBOUNCE_SECS, self._fire_debounce)
-
-    def on_progress(self) -> None:
-        """Reset stall watchdog — call on any LLM/tool activity."""
-        if not self._finalized and not self._stall_paused and self._enabled:
-            self._reset_stall_watchdog()
-
-    def pause_stall_watchdog(self) -> None:
-        """Pause stall detection (e.g. waiting for user approval)."""
-        self._stall_paused = True
-        self._cancel_stall_timers()
-
-    def resume_stall_watchdog(self) -> None:
-        """Resume stall detection after a pause."""
-        self._stall_paused = False
-        if not self._finalized and self._enabled:
-            self._reset_stall_watchdog()
+        self._spawn(phase_emojis().get("queued"))
 
     def finalize(self, error: bool = False) -> None:
-        """Swap to terminal emoji. Idempotent."""
-        if self._finalized or not self._enabled:
+        """Take the ack down; on *error*, add the error reaction.
+
+        Idempotent, except that ``error=True`` after a clean finalize upgrades
+        to the error reaction (the turn's reply failed after the turn ended).
+        """
+        if not self._enabled or (self._finalized and (self._errored or not error)):
             return
         self._finalized = True
-        self._cancel_debounce()
-        self._cancel_stall_timers()
-        # Clean up stall emoji before setting terminal
-        asyncio.ensure_future(self._do_finalize(error))
+        self._errored = error
+        self._spawn(phase_emojis().get("error") if error else None)
 
     # ── internal ────────────────────────────────────────────────────
 
-    async def _do_finalize(self, error: bool) -> None:
-        if self._stall_emoji:
-            try:
-                await self._slack.remove_reaction(self._channel, self._ts, self._stall_emoji)
-            except Exception:
-                pass
-            self._stall_emoji = None
-        terminal = phase_emojis()["error" if error else "done"]
-        await self._swap_emoji(terminal)
-
-    def _fire_debounce(self) -> None:
-        """Timer callback — bridge to async."""
-        asyncio.ensure_future(self._apply_pending())
-
-    async def _apply_pending(self) -> None:
-        if self._finalized or self._pending_phase is None:
-            return
-        emoji = phase_emojis().get(self._pending_phase, self._pending_phase)
-        self._pending_phase = None
-        await self._swap_emoji(emoji)
-        self._reset_stall_watchdog()
+    def _spawn(self, emoji: str | None) -> None:
+        task = asyncio.ensure_future(self._swap_emoji(emoji))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _swap_emoji(self, new_emoji: str | None) -> None:
-        """Remove old reaction and add new one (skip if same).
+        """Remove the current reaction and add *new_emoji* (skip if same).
 
-        ``new_emoji=None`` means the phase is suppressed by config: remove
-        any already-applied reaction but do not add a replacement.
+        ``new_emoji=None`` removes any applied reaction and adds nothing: the
+        ack coming down at reply time, or a reaction suppressed by config.
         """
-        if new_emoji == self._current_emoji:
-            return
-        old = self._current_emoji
-        self._current_emoji = new_emoji
-        if old:
+        async with self._lock:
+            if new_emoji == self._current_emoji:
+                return
+            old = self._current_emoji
+            self._current_emoji = new_emoji
+            if old:
+                try:
+                    await self._slack.remove_reaction(self._channel, self._ts, old)
+                except Exception:
+                    pass
+            if new_emoji is None:
+                return
             try:
-                await self._slack.remove_reaction(self._channel, self._ts, old)
+                await self._slack.add_reaction(self._channel, self._ts, new_emoji)
             except Exception:
                 pass
-        if new_emoji is None:
-            return
-        try:
-            await self._slack.add_reaction(self._channel, self._ts, new_emoji)
-        except Exception:
-            pass
-
-    def _cancel_debounce(self) -> None:
-        if self._debounce_handle is not None:
-            self._debounce_handle.cancel()
-            self._debounce_handle = None
-
-    def _cancel_stall_timers(self) -> None:
-        if self._stall_soft_handle is not None:
-            self._stall_soft_handle.cancel()
-            self._stall_soft_handle = None
-        if self._stall_hard_handle is not None:
-            self._stall_hard_handle.cancel()
-            self._stall_hard_handle = None
-
-    def _reset_stall_watchdog(self) -> None:
-        if not self._enabled:
-            return
-        self._cancel_stall_timers()
-        # Remove existing stall emoji
-        if self._stall_emoji:
-            emoji_to_remove = self._stall_emoji
-            self._stall_emoji = None
-            asyncio.ensure_future(self._remove_stall_emoji(emoji_to_remove))
-        if self._stall_paused or self._finalized:
-            return
-        self._stall_soft_handle = self._loop.call_later(_STALL_SOFT_SECS, self._on_stall_soft)
-        self._stall_hard_handle = self._loop.call_later(_STALL_HARD_SECS, self._on_stall_hard)
-
-    async def _remove_stall_emoji(self, emoji: str) -> None:
-        try:
-            await self._slack.remove_reaction(self._channel, self._ts, emoji)
-        except Exception:
-            pass
-
-    def _on_stall_soft(self) -> None:
-        asyncio.ensure_future(self._add_stall_emoji(_STALL_EMOJI_SOFT))
-
-    def _on_stall_hard(self) -> None:
-        asyncio.ensure_future(self._add_stall_emoji(_STALL_EMOJI_HARD))
-
-    async def _add_stall_emoji(self, emoji: str) -> None:
-        if self._finalized:
-            return
-        # Remove previous stall emoji if upgrading
-        if self._stall_emoji and self._stall_emoji != emoji:
-            try:
-                await self._slack.remove_reaction(self._channel, self._ts, self._stall_emoji)
-            except Exception:
-                pass
-        self._stall_emoji = emoji
-        try:
-            await self._slack.add_reaction(self._channel, self._ts, emoji)
-        except Exception:
-            pass

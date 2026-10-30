@@ -1,6 +1,7 @@
 """``kirocrew eval``: run the bundled multi-session scenarios and score them.
 
-``_run_eval`` loads the scenarios under ``eval/scenarios`` beside this file, runs them
+``_run_eval`` loads the scenarios under ``eval/scenarios`` beside this file (in a worker
+thread, through ``_load_eval_scenarios``), runs them
 (scoring with an LLM judge when ``--judge`` is given) and prints the results;
 ``write_eval_artifacts`` writes the run's Markdown report and JSON summary. It has a module of its own because it is its own
 command with its own imports, and it sits beside the other ``cli_commands_*`` owners
@@ -14,15 +15,21 @@ this module. This module never imports the facade.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew.config.loader import KiroCrewConfig, build_provider_factory
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+if TYPE_CHECKING:
+    from kiro_crew.eval.scenario import Scenario
 
 
 def write_eval_artifacts(
@@ -47,8 +54,12 @@ def write_eval_artifacts(
     return report_path, json_path
 
 
-async def _run_eval(args: argparse.Namespace) -> None:
-    """Run multi-session evaluation scenarios."""
+def _load_eval_scenarios(args: argparse.Namespace) -> list[Scenario] | None:
+    """Find and load the scenarios ``args`` names, or print why not and return None.
+
+    Sync on purpose: every step is a disk call, so ``_run_eval`` runs the whole
+    lookup in one worker thread rather than on the loop its sessions share.
+    """
 
     scenarios_dir = Path(__file__).resolve().parent / "eval" / "scenarios"
 
@@ -69,17 +80,33 @@ async def _run_eval(args: argparse.Namespace) -> None:
                     for f in scenarios_dir.iterdir()
                     if f.suffix in (".json", ".yaml", ".yml")
                 )
-                print(f"Error: scenario '{name}' not found.")
-                print(f"Available scenarios: {', '.join(available)}")
-                return
+                print(f"Error: scenario '{name}' not found.", file=sys.stderr)
+                print(f"Available scenarios: {', '.join(available)}", file=sys.stderr)
+                return None
             scenarios.append(load_scenario(resolved))
     else:
         scenarios = [load_scenario(scenarios_dir / "smoke_test.json")]
+    return scenarios
+
+
+async def _run_eval(args: argparse.Namespace) -> None:
+    """Run multi-session evaluation scenarios."""
+
+    scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
+    if scenarios is None:
+        # Nothing ran, so `kirocrew eval x && next` must stop.
+        sys.exit(1)
 
     total_turns = sum(len(sess.turns) for s in scenarios for sess in s.sessions)
     names = ", ".join(s.name for s in scenarios)
     print(f"Running: {names} ({total_turns} turns)\n")
 
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence before the
+    # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     config = KiroCrewConfig.load()
     provider_factory = build_provider_factory(config)
 
@@ -142,6 +169,8 @@ async def _run_eval(args: argparse.Namespace) -> None:
         "overall_passed": overall,
         "overall_total": len(results),
     }
-    report_path, json_path = write_eval_artifacts(results_dir, ts, report, json_data)
+    report_path, json_path = await asyncio.to_thread(
+        write_eval_artifacts, results_dir, ts, report, json_data
+    )
 
     print(f"\nResults saved to:\n  {report_path}\n  {json_path}")

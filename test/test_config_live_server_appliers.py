@@ -440,6 +440,7 @@ class TestServerAppliers:
             "agent.role_models.background",
             "agent.log_level",
             "browser.settings",
+            "agent.crew_mode_agent",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

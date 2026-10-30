@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Folder, File, Image, X, Plus } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../../hooks/useWheelToHorizontal'
 import { IMAGE_EXTS } from './constants'
 import { extOf, basename } from './utils'
 import type { FolderTab, FileTab } from './types'
@@ -26,7 +27,12 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
   const ime = useImeGuard()
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [attachScroller, fades, remeasure] = useScrollEdges<HTMLDivElement>()
+  const [attachEdges, fades, remeasure] = useScrollEdges<HTMLDivElement>()
+  const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+  const attachScroller = useCallback((node: HTMLDivElement | null) => {
+    attachEdges(node)
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
 
   // Opening a file appends a tab: the strip keeps its own box, so no resize is
   // observed and no scroll fires, and the cue would stay dark over tabs that

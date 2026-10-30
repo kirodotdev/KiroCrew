@@ -26,6 +26,7 @@ vi.mock('../store/chatSlice', () => ({
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   switchSlot: (arg: unknown) => ({ type: 'switchSlot', arg }),
   deleteSlot: (arg: unknown) => ({ type: 'deleteSlot', arg }),
+  requestSlotFolderOpen: (arg: unknown) => ({ type: 'requestSlotFolderOpen', arg }),
 }))
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('../api/client', () => ({ api: apiMock }))
@@ -97,6 +98,17 @@ describe.each([
     expect(record).not.toBeNull()
     expect(apiMock.createChatFolder).not.toHaveBeenCalled()
     expect(createdSlotArgs()[0]?.folder_id).toBe('f1')
+  })
+
+  it('opens the repo folder path after switching to the session, while it is in view', async () => {
+    // The repo folder can be collapsed, and /chat would then open on a session
+    // with no visible row. Asked after the switch, guarded on the live view.
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    await open()
+    const types = dispatch.mock.calls.map(c => (c[0] as { type: string }).type)
+    const asked = dispatch.mock.calls.map(c => c[0]).find(a => (a as { type: string }).type === 'requestSlotFolderOpen')
+    expect(asked).toEqual({ type: 'requestSlotFolderOpen', arg: { key: 'slot-1', folder_id: 'f1', onlyIfActive: true } })
+    expect(types.lastIndexOf('switchSlot')).toBeLessThan(types.indexOf('requestSlotFolderOpen'))
   })
 
   it('keeps finding the repo folder after the reader nests it under another one', async () => {

@@ -34,6 +34,7 @@ from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import replay as _replay
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import store_admission as _store_admission
+from kiro_crew.context_assembly import tool_names as _tool_names
 
 logger = logging.getLogger("kiro_crew.context")
 
@@ -171,11 +172,12 @@ def build_session_context(
     and hooks are injected for all agents.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
 
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
-    is_custom = agent and agent != "kirocrew"
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     # A harness that is not named is not assumed to be kiro-cli: the
     # essentials builder, the folder dedup and the ``is_cc`` gate all read
     # the value as given.
@@ -221,6 +223,9 @@ def build_session_context(
         # for installs on the default (auto) language.
         _min_cfg = ctx.KiroCrewConfig.load()
         parts.append(ctx._build_ui_language_section(_min_cfg))
+        # A minimal run still calls Kiro Crew's tools, so it gets the same
+        # spelling rule; nothing at all on a harness that needs none.
+        parts.append(_tool_names.tool_names_block(provider_type))
         logger.debug(
             "Minimal session context: agent=%s, %d chars",
             agent_label,
@@ -305,6 +310,13 @@ def build_session_context(
         runtime = ctx._runtime_display_name(session_key, runtime_source)
         append_required(_sections.runtime_identity_block(agent_label, runtime))
 
+    # How to spell an MCP tool call on a harness that resolves only qualified
+    # names (KAS). Required, not budgeted: without it a worker's first
+    # ``work_brief`` call fails and it never reports.
+    tool_names = _tool_names.tool_names_block(provider_type)
+    if tool_names:
+        append_required(tool_names)
+
     # Crew-member operating mode — injected only for a member's pinned DM
     # session (mode carries the slot's mode; "member" slots are born only
     # through the members thread route), and only where the member backend
@@ -332,7 +344,11 @@ def build_session_context(
     # deliberately silent there.
     effective_groups = ctx._config_scoped_groups(context_groups, _cfg)
 
-    if mode == _member_mode and ctx._member_dispatch_held(member_dispatch_mounted, _cfg):
+    from kiro_crew.crewmate_harness import crewmate_for_session
+
+    if mode == _member_mode and ctx._member_dispatch_held(
+        member_dispatch_mounted, _cfg, crewmate_for_session(_cfg, session_key)
+    ):
         append_required(_member.operating_mode_block(agent_label))
 
     # Legacy member-DM identity. Private V2 has already derived its owner
@@ -341,8 +357,8 @@ def build_session_context(
     # outranks everything injected below it):
     #   1. identity   — derived from the crew's own config, nobody hand-writes it
     #   2. behavior   — product-owned working protocol (the constant below)
-    #   3. rules      — user-owned, stored under the protected member-rules/
-    #                   subtree so the member's file tools cannot rewrite
+    #   3. rules      — user-owned, stored under the gateway-only member-records/
+    #                   directory so nothing the member runs can rewrite
     #                   its own safety boundary
     #   4. briefing   — member-owned working memory, agent-writable by design
     #
@@ -632,11 +648,7 @@ def build_session_context(
 
     if essentials:
         prefix = next(
-            (
-                r
-                for r in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                if context.startswith(r)
-            ),
+            (r for r in ctx._CRITICAL_RULES_VARIANTS if context.startswith(r)),
             "",
         )
         context = prefix + essentials + context[len(prefix) :]

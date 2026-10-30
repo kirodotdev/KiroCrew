@@ -522,8 +522,8 @@ class TestEveryCeilingFieldHasAComposeClass:
 
     #: Folded field-by-field by ``_intersect_ceilings`` (tighten-only). ``updates``
     #: folds its two restriction pins and keeps the commands the authority's; see
-    #: ``TestUpdatePinsFoldAsRestrictions``.
-    COMPOSED = frozenset({"boot", "controls", "updates"})
+    #: ``TestUpdatePinsFoldAsRestrictions``. ``yolo_max_seconds`` folds to the lower cap.
+    COMPOSED = frozenset({"boot", "controls", "updates", "yolo_max_seconds"})
     #: "Absence means no choice expressed": the highest tier that declared one wins,
     #: re-applied by ``compose_tier_ladder``.
     LOWER_MAY_SUPPLY = frozenset({"distribution"})
@@ -1234,3 +1234,79 @@ class TestAnUnreadableHomeFileBeneathAnAuthorityIsSkipped:
         _point_home(monkeypatch, _write_policy(tmp_path / "home.json", "operator"))
         with pytest.raises(RuntimeError, match="unanticipated"):
             load_security_policy()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# An unexpected exception while loading refuses boot, never boots ungoverned
+# ──────────────────────────────────────────────────────────────────────────
+class TestAnUnexpectedLoaderErrorRefusesBoot:
+    """Any non-composition exception from the loader is raised as a composition error.
+
+    Boot (``cli.main``, ``mcp_entry``) and ``safe_context_call`` re-raise a
+    ``PlatformCompositionError`` and DEGRADE anything else to the ungoverned default
+    context. A raw ``ValueError`` / ``KeyError`` escaping the env or central parse
+    path would therefore boot a fleet host with no ceiling at all.
+    """
+
+    @pytest.fixture(
+        params=[ValueError("bad shape"), KeyError("missing")], ids=["ValueError", "KeyError"]
+    )
+    def boom(self, request):
+        exc = request.param
+
+        def _raise(*_a, **_kw):
+            raise exc
+
+        return _raise
+
+    @staticmethod
+    def _refusal(call) -> str:
+        """Run *call*; assert it raised a composition error, and return its text.
+
+        Catches every exception rather than only the expected class, so a raw
+        ``ValueError`` escaping (the bug) fails an ASSERTION here instead of
+        erroring out of the test body.
+        """
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(Exception) as info:
+            call()
+        assert isinstance(info.value, PlatformCompositionError), (
+            f"raw {type(info.value).__name__} escaped the loader; boot would degrade "
+            "to the ungoverned default context"
+        )
+        assert "refusing to boot ungoverned" in str(info.value)
+        return str(info.value)
+
+    def test_env_path_parse_error_refuses(self, monkeypatch, tmp_path, boom):
+        env_file = _write_policy(tmp_path / "env.json", "env")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        monkeypatch.setattr(governance, "parse_policy", boom)
+        text = self._refusal(load_security_policy)
+        assert str(env_file) in text
+        assert _POLICY_ENV in text
+
+    def test_central_path_error_refuses(self, monkeypatch, boom):
+        monkeypatch.setenv("KIROCREW_POLICY_URL", _TEST_SOURCE)
+        monkeypatch.setattr(pd, "load_distributed_policy", boom)
+        assert "central policy" in self._refusal(load_security_policy)
+
+    def test_boot_composition_refuses_rather_than_defaulting(self, monkeypatch, tmp_path, boom):
+        # ``build_default_context`` is the chokepoint both a real boot and the lazy
+        # ``current_context`` default go through; its refusal is what boot re-raises.
+        from kiro_crew.platform.bootstrap import build_default_context
+
+        env_file = _write_policy(tmp_path / "env.json", "env")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        monkeypatch.setattr(governance, "parse_policy", boom)
+        self._refusal(lambda: build_default_context(object()))  # type: ignore[arg-type]
+
+    def test_a_composition_error_passes_through_unwrapped(self, monkeypatch, tmp_path):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        env_file = tmp_path / "env.json"
+        env_file.write_text("{ not json", encoding="utf-8")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        with pytest.raises(PlatformCompositionError, match="is unreadable") as info:
+            load_security_policy()
+        assert "refusing to boot ungoverned" not in str(info.value)

@@ -90,9 +90,16 @@ _THEME_CSS_VARS = (
     # Terminal ANSI hues. The other fourteen entries the built-in terminal needs
     # are derived from --bg / --text / --danger / --ok / --warn / --info above;
     # magenta and cyan carry no semantic meaning elsewhere in the UI, so a pack
-    # that wants its own terminal palette sets these two.
+    # that wants its own terminal palette sets these two. --term-bg / --term-fg /
+    # --term-cursor / --term-selection colour the terminal surface independently
+    # of the agent chat; each falls back to --bg / --text / --accent /
+    # --accent-subtle when a pack omits it.
     "--term-magenta",
     "--term-cyan",
+    "--term-bg",
+    "--term-fg",
+    "--term-cursor",
+    "--term-selection",
 )
 
 
@@ -341,6 +348,8 @@ _THEME_FILE_CAPS = {
     "logo": 100 * 1024,
     "favicon": 50 * 1024,
     "wordmark": 100 * 1024,
+    # Loader-art headroom: the welcome image may be an animated WebP/GIF.
+    "welcome": 256 * 1024,
     "preview": 512 * 1024,
     "overlay": 200 * 1024,
     "topbar": 100 * 1024,
@@ -542,6 +551,8 @@ def _classify_theme_file(rel: str) -> tuple[str | None, int]:
             return "favicon", 1
         if stem == "wordmark" and ext in ("svg", "png"):
             return "wordmark", 1
+        if stem == "welcome" and ext in ("svg", "png", "webp", "gif"):
+            return "welcome", 1
         if stem == "preview" and ext in ("png", "webp"):
             return "preview", 1
     if top == "overlays" and len(parts) == 2 and ext == "html":
@@ -1480,7 +1491,7 @@ def _theme_asset_descriptor(
     if level < 1:
         return desc
 
-    # Branding — bot name (plain text) + logo/favicon/wordmark by file presence.
+    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome by file presence.
     branding = manifest.get("branding")
     branding = branding if isinstance(branding, dict) else {}
     bres: dict[str, str] = {}
@@ -1493,6 +1504,7 @@ def _theme_asset_descriptor(
         ("logo", ("svg", "png")),
         ("favicon", ("ico", "png", "svg")),
         ("wordmark", ("svg", "png")),
+        ("welcome", ("svg", "png", "webp", "gif")),
     ):
         for ext in exts:
             rel = f"branding/{role}.{ext}"

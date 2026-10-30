@@ -54,8 +54,8 @@ ALL_CONFIG_CLASSES: list[type] = [
 def _all_fields_recursive(
     cls: type,
     prefix: str = "",
-) -> list[tuple[str, dataclasses.Field]]:  # type: ignore[type-arg]
-    """Yield (dot_path, field) for every field in the dataclass hierarchy.
+) -> list[tuple[str, dataclasses.Field, object]]:  # type: ignore[type-arg]
+    """Yield (dot_path, field, resolved_type) through the dataclass hierarchy.
 
     Private fields (leading underscore) are internal bookkeeping, not
     user-facing config — e.g. ``KiroCrewConfig._extra_sections``, which
@@ -64,25 +64,15 @@ def _all_fields_recursive(
     they carry no label/help metadata and never appear in SCHEMA_REGISTRY; skip
     them here for the same reason the builder does.
     """
-    result: list[tuple[str, dataclasses.Field]] = []  # type: ignore[type-arg]
+    result: list[tuple[str, dataclasses.Field, object]] = []  # type: ignore[type-arg]
+    hints = typing.get_type_hints(cls)
     for f in dataclasses.fields(cls):
         if f.name.startswith("_"):
             continue
         path = f"{prefix}.{f.name}" if prefix else f.name
-        result.append((path, f))
-        tp = f.type
-        if isinstance(tp, str):
-            # Evaluate in the sections facade's namespace: every section
-            # dataclass is defined in sections.py or in a section owner it
-            # re-exports (memory_sections, integration_sections, service_sections),
-            # so each annotation resolves there, while the loader facade's
-            # frozen re-export list does not carry every section type.
-            import kiro_crew.config.sections as _mod
-
-            try:
-                tp = eval(tp, vars(_mod))  # noqa: S307
-            except Exception:
-                continue
+        # Resolve in the class's defining module, including qualified aliases.
+        tp = hints[f.name]
+        result.append((path, f, tp))
         origin = typing.get_origin(tp)
         if origin is dict:
             # For dict[str, DataclassType], add wildcard path and recurse
@@ -107,20 +97,6 @@ def _all_fields_recursive(
         if dataclasses.is_dataclass(tp) and isinstance(tp, type):
             result.extend(_all_fields_recursive(tp, path))
     return result
-
-
-def _resolve_type(f: dataclasses.Field) -> type:  # type: ignore[type-arg]
-    """Resolve a field's type annotation to a runtime type."""
-    # Same defining-module namespace as _all_fields_recursive above.
-    import kiro_crew.config.sections as _mod
-
-    tp = f.type
-    if isinstance(tp, str):
-        try:
-            tp = eval(tp, vars(_mod))  # noqa: S307
-        except Exception:
-            return str
-    return tp  # type: ignore[return-value]
 
 
 # Expected Python type → JSON Schema type mapping
@@ -156,7 +132,7 @@ class TestConfigSchemaProperties:
         all_fields = _all_fields_recursive(KiroCrewConfig)
         assert len(all_fields) > 0, "Expected at least one field"
 
-        for path, f in all_fields:
+        for path, f, tp in all_fields:
             meta = dict(f.metadata) if f.metadata else {}
             assert "label" in meta, f"Field '{path}' missing 'label' in metadata"
             assert isinstance(
@@ -254,10 +230,9 @@ class TestConfigSchemaProperties:
         # Build set of all reachable paths from the dataclass hierarchy
         all_fields = _all_fields_recursive(KiroCrewConfig)
         reachable_paths: set[str] = set()
-        for path, f in all_fields:
+        for path, f, tp in all_fields:
             reachable_paths.add(path)
             # Also add wildcard child paths for list/dict fields
-            tp = _resolve_type(f)
             origin = typing.get_origin(tp)
             if origin is list or origin is dict:
                 reachable_paths.add(f"{path}.*")
@@ -304,7 +279,6 @@ class TestConfigSchemaProperties:
                 entry.type in valid_types
             ), f"Entry '{entry.path}' has invalid type '{entry.type}'"
 
-            # Verify kind is set
             assert entry.kind == "core", f"Entry '{entry.path}' has unexpected kind '{entry.kind}'"
 
     # Feature: config-schema, Property 4: Python-to-schema type mapping is correct
@@ -319,8 +293,7 @@ class TestConfigSchemaProperties:
         registry_by_path: dict[str, ConfigEntry] = {e.path: e for e in SCHEMA_REGISTRY}
 
         all_fields = _all_fields_recursive(KiroCrewConfig)
-        for path, f in all_fields:
-            tp = _resolve_type(f)
+        for path, f, tp in all_fields:
             optional_args = typing.get_args(tp)
             if len(optional_args) == 2 and type(None) in optional_args:
                 tp = next(arg for arg in optional_args if arg is not type(None))
@@ -653,6 +626,8 @@ class TestFieldTypeResolution:
     # Fields whose declared type is NOT a plain ``str`` — they must resolve to
     # their real JSON type, never silently degrade to "string".
     _NON_STRING_FIELDS: list[tuple[str, str]] = [
+        ("session_environments", "object"),
+        ("session_environments.profiles", "array"),
         ("slack.tracking_channels", "array"),
         ("slack.reactions", "object"),
         ("slack.trusted_bot_ids", "array"),

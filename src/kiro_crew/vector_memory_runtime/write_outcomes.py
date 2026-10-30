@@ -22,6 +22,10 @@ class SemanticRejectCode(str, Enum):
     VALUE_ENCODING = "value_encoding"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
+    #: A consolidation ``project.*`` item the model tagged ``state`` (status a real
+    #: source already holds), kept out of semantic memory by
+    #: ``memory.kind_routing = "enforce"`` (``kiro_crew.memory_kind_routing``).
+    WORK_STATE = "work_state"
 
 
 class LessonWriteOutcome(str, Enum):

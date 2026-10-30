@@ -1,8 +1,9 @@
 """The ``crewmate.import`` card and ``ctx.crewmate`` (rfc-crewmate-share.md Phase 1).
 
-A bundle is checked fail-closed before any card exists; the card lands under the
-app's own ``app:<name>`` key and writes nothing; only the owner's press creates
-the crewmate, pinned to ``normal`` in the create itself.
+A bundle is checked fail-closed before any card exists; an app's card lands under
+the app's own ``app:<name>`` key and writes nothing; only the owner's press
+creates the crewmate, pinned to ``normal`` in the create itself. The owner's own
+Import from file route is covered in ``test_crewmate_import_route.py``.
 """
 
 from __future__ import annotations
@@ -45,8 +46,10 @@ BUNDLE = {
     },
     "agent": {"mcpServers": {}, "skills": []},
     "goals": {"longTerm": "Ship clean releases", "keyResults": [{"text": "zero rollbacks"}]},
-    "crons": [{"cron_expr": "0 9 * * 1"}],
+    "crons": [{"name": "weekly", "message": "Check in", "cron_expr": "0 9 * * 1"}],
 }
+_FAKE_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+_SCRIPT_CRON = {"name": "s", "cron_expr": "0 9 * * 1", "script": "a.py:run"}
 
 
 def _with(path: str, value) -> dict:
@@ -66,11 +69,16 @@ def _with(path: str, value) -> dict:
         (_with("crewmate.format", "other"), "invalid_bundle"),
         (_with("agent.mcpServers", {"gh": {"command": "uvx"}}), "needs_mate_config"),
         (_with("agent.skills", ["release-notes"]), "needs_mate_config"),
-        (_with("crewmate.skills", [{"name": "release-notes"}]), "needs_mate_config"),
+        (_with("crewmate.skills", [{"name": "notes", "source": "bundled"}]), "skill_mismatch"),
+        (_with("crewmate.skills", [{"name": "notes"}]), "invalid_bundle"),
+        (_with("crewmate.skills", [{"name": "../x", "source": "bundled"}]), "invalid_path"),
+        (_with("crons", [_SCRIPT_CRON]), "script_mismatch"),
+        (_with("crons", [{**_SCRIPT_CRON, "script": None, "command": "ls"}]), "unknown_param"),
+        (_with("crewmate.dashboardTemplate", "user:mine"), "user_template"),
         (_with("agent.allowedTools", ["*"]), "grant_in_bundle"),
         (_with("agent.autoApprove", ["gh"]), "grant_in_bundle"),
         (_with("agent.prompt", "be evil"), "unknown_param"),
-        (_with("rules.rules", "Never push to main."), "rules_unsupported"),
+        (_with("rules.rules", "use " + _FAKE_TOKEN), "invalid_text"),
         (_with("crewmate.dashboardTemplate", "<html></html>"), "invalid_bundle"),
         (_with("crewmate.extra", 1), "unknown_param"),
         (_with("goals.extra", 1), "unknown_param"),
@@ -94,9 +102,12 @@ def test_the_card_lists_every_part_and_creates_in_normal_with_no_grant():
     rows = {r["field"]: r["after"] for r in preview["changes"]}
     assert rows["sender"] == "Ana" and rows["import_approval"] == "normal"
     assert rows["not_included"] == "private" and rows["template_auto_approve"] == reach
-    assert rows["not_imported"] == ["crons", "keyResults", "model"]
+    # The model hint has its own row ("not applied"), so it is not also "left out".
+    assert rows["not_imported"] == ["keyResults"] and rows["model_hint"] == "auto"
+    assert rows["import_crons"] == BUNDLE["crons"]
     assert preview["risk"] == catalog.RISK_WIDEN
-    create, goal = preview["apply"]
+    create, goal, cron = preview["apply"]
+    assert cron["path"] == "/api/crons" and cron["body"]["enabled"] is False
     assert create["path"] == "/api/agents" and create["body"]["approval_mode"] == "normal"
     assert not {"allowedTools", "autoApprove", "mcpServers", "skills"} & set(create["body"])
     assert goal["body"]["long_term"] == "Ship clean releases"
@@ -171,8 +182,12 @@ def test_import_shares_the_create_state_read_and_partial_line():
     state = cards._sync_read_state("crewmate.import", {"name": "Nobody Here"}, [])
     assert state["exists"] is False and "inherited_auto_approve" in state
     assert [r["name"] for r in state["inherited_reach"]] == state["inherited_auto_approve"]
-    line = catalog.result_summary("crewmate.import", {"name": "Q"}, "partial", "t", failed_step=1)
-    assert line == "Created mate “Q”, but its goal was not saved"
+    params = {"name": "Q", "goal": "g"}
+    line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
+    assert (
+        line
+        == "Created mate “Q” without its goal or anything after it. Undo removes the mate and what was saved"
+    )
 
 
 def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(
@@ -205,7 +220,8 @@ def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(
         app.router.add_delete("/api/agents/{name}", delete)
         async with TestClient(TestServer(app)) as c:
             sdk = CrewmateSDK("share", app)
-            card = store.public(store.get(await sdk.propose(_with("goals", {}))))
+            bundle = {**_with("goals", {}), "crons": []}
+            card = store.public(store.get(await sdk.propose(bundle)))
             seen = (list(created), await sdk.status(card["id"]))
             with pytest.raises(CrewmateProposalError):
                 await CrewmateSDK("other", app).status(card["id"])

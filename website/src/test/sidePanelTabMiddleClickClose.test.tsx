@@ -49,7 +49,6 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never

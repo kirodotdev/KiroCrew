@@ -32,6 +32,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_POLICY,
 )
+from kiro_crew.deny_notice import steer_notice_into_refused_turn
 from kiro_crew.hooks import (
     TOOL_DENY,
     HookManager,
@@ -78,10 +79,29 @@ _DEFAULT_KIRO_AGENT = "kirocrew"
 #: record is attributed to the CLI even if the key ever gains a suffix.
 _CLI_SEL_SOURCE = "cli"
 
-#: The only answer that approves a tool call, and the key advertised for
-#: refusing one. Matched exactly -- see :func:`_prompt_allows`.
-_ALLOW_KEY = "a"
-_DENY_KEY = "d"
+#: The answer that approves a tool call, the key advertised for refusing one,
+#: and the key that refuses it WITH a typed reply to the agent. Matched exactly
+#: -- see :func:`_prompt_answer`. ``y`` / ``n`` are Kiro CLI's own
+#: tool-permission keys (``crates/chat-cli/src/cli/chat/mod.rs``), so muscle
+#: memory from ``kiro-cli chat`` carries over instead of a habitual ``y`` being
+#: read as a denial.
+_ALLOW_KEY = "y"
+_DENY_KEY = "n"
+_OTHER_KEY = "o"
+#: An unadvertised alias for allow, so a user who learned ``a`` from this
+#: prompt is not suddenly refused. Temporary: it is removed one release after
+#: the ``y`` / ``n`` keys ship (tracked in the CLI spec). ``d`` needs no entry
+#: because every unrecognised answer already denies.
+_LEGACY_ALLOW_KEYS = frozenset({"a"})
+#: Kiro CLI's "trust this tool for the session". Not honoured here: this CLI
+#: has no persistent approval (see :func:`_answer_permission`), so ``t`` denies
+#: like any other unrecognised answer, but says why instead of looking like a
+#: misread allow.
+_TRUST_KEY = "t"
+_TRUST_UNSUPPORTED_NOTICE = (
+    "   Denied: trusting a tool for the session is not available in kirocrew chat. "
+    f"Answer {_ALLOW_KEY} to allow each call once."
+)
 
 #: Audit codes. Stable and machine-readable, mirroring the dashboard's own
 #: ``error="hook_deny"``: an audit record must not restate the path or command a
@@ -89,6 +109,11 @@ _DENY_KEY = "d"
 _HOOK_DENY_CODE = "hook_deny"
 _NONINTERACTIVE_CODE = "noninteractive"
 _USER_DENY_CODE = "user_denied"
+#: The person refused the call by typing a reply for the agent instead (``o``).
+#: Still a human refusal -- the tool does not run -- but distinct from a bare
+#: ``user_denied`` so an audit reader can tell the two apart. The reply text
+#: itself is never audited: it is the person's message, not a decision.
+_USER_REPLY_CODE = "user_replied"
 #: An ``execute``-kind request the trusted shell cache never confirmed, so no
 #: command could be recovered to gate on. Distinct from ``hook_deny``: the gate
 #: did not reject it, we refused to ASK about it.
@@ -306,6 +331,12 @@ def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None,
 
 async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
     """Run a single message or interactive chat session."""
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence here, before
+    # the config load below reads the pick. Probe-once, off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
     if model:
         cfg.agent.model = model
@@ -343,7 +374,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # makes: no content-matching auto-approve runs here. `_answer_permission`
     # is child-context fail-close (rejecting a low-fidelity child request
     # without a verified identity) -> hook gate -> `_unverifiable_shell`
-    # fail-close -> interactive human prompt, and `_prompt_allows` shows the
+    # fail-close -> interactive human prompt, and `_prompt_answer` shows the
     # human only non-model-authored context (the cached command, the
     # `_meta.kiro` MCP identity, the target path) -- a forged title has nothing
     # to satisfy. The non-interactive `-m` path stays fail-closed too: it
@@ -659,12 +690,35 @@ def _kind_text(event: LLMEvent) -> str:
     return kind.strip().lower() if isinstance(kind, str) else ""
 
 
-async def _prompt_allows(event: LLMEvent) -> bool:
-    """Ask the human, and return True ONLY for the exact allow token.
-    Matched exactly rather than by first letter: a prefix match reads ``abort``
-    as an allow, which is the opposite of what the person typing it means.
-    Anything else -- an unrecognised word, a blank line, EOF -- denies, so the
-    safe answer is the one a user gets by doing nothing.
+@dataclass(frozen=True)
+class _PromptAnswer:
+    """What the person at the terminal answered a permission prompt with.
+
+    ``allowed`` is True ONLY for an exact allow token. ``reply`` is non-empty
+    only when the person chose ``o`` and typed something: the call is refused
+    and that text goes back to the agent as their answer (see
+    :func:`_steer_user_reply`). Every other answer is a plain denial.
+    """
+
+    allowed: bool
+    reply: str = ""
+
+
+async def _prompt_answer(event: LLMEvent) -> _PromptAnswer:
+    """Ask the human, and allow ONLY on an exact allow token.
+    The allow tokens are ``y`` and the unadvertised legacy ``a``. Matched
+    exactly rather than by first letter: a prefix match reads ``yank`` or
+    ``abort`` as an allow, which is the opposite of what the person typing it
+    means. Anything else -- an unrecognised word, a blank line, EOF -- denies,
+    so the safe answer is the one a user gets by doing nothing. ``t`` (Kiro
+    CLI's trust-for-session) denies too, with a notice, because there is no
+    session grant here to honour it with.
+
+    The exact ``o`` token asks a second question: a free-text reply the agent
+    receives instead of a bare denial ("use the staging bucket instead", "show
+    me the diff first"). Choosing it never approves: the call is refused and the
+    reply rides along. A blank reply, or EOF, is an ordinary denial -- there is
+    nothing to send, and the safe answer is still the do-nothing one.
 
     A shell call also shows its command, and any call with a trusted identity
     shows that identity. ``title`` is LLM-authored prose, so approving on it
@@ -706,8 +760,65 @@ async def _prompt_allows(event: LLMEvent) -> bool:
     target = _target_path(event)
     if target:
         print(f"Path: {_display_path(target)}")
-    answer = await _read_line(f"   [{_ALLOW_KEY}] allow once  [{_DENY_KEY}] deny (default): ")
-    return answer.strip().lower() == _ALLOW_KEY
+    answer = await _read_line(
+        f"   [{_ALLOW_KEY}] allow once  [{_DENY_KEY}] deny (default)  "
+        f"[{_OTHER_KEY}] other (reply to the agent): "
+    )
+    choice = answer.strip().lower()
+    if choice == _ALLOW_KEY or choice in _LEGACY_ALLOW_KEYS:
+        return _PromptAnswer(allowed=True)
+    if choice == _TRUST_KEY:
+        print(_TRUST_UNSUPPORTED_NOTICE)
+        return _PromptAnswer(allowed=False)
+    if choice != _OTHER_KEY:
+        return _PromptAnswer(allowed=False)
+    reply = await _read_line("   Your reply (the tool will not run; blank to just deny): ")
+    return _PromptAnswer(allowed=False, reply=reply.strip())
+
+
+#: Opens the in-band message carrying the person's ``o`` reply. Distinct from
+#: the ``[Kiro Crew host notice]`` tag on purpose: that notice says "this was
+#: NOT a user action", and this one is exactly a user action.
+_USER_REPLY_TAG = "[Kiro Crew: the user replied to your permission request]"
+
+
+def _user_reply_notice(title: str, reply: str) -> str:
+    """The message the agent reads when the person answered with ``o``.
+
+    *title* is model-authored and redacted here, as every steered title is.
+    *reply* is the person's own words and is passed through as typed: it is the
+    content they chose to send, the same as a line typed at ``you>``.
+    """
+    safe_title = _redacted(title) or "tool call"
+    return (
+        f"{_USER_REPLY_TAG} The user did not approve the tool call "
+        f'"{safe_title}", so it did not run -- on kiro-cli its result reads '
+        '"User denied tool execution". Instead of a plain approve or deny, they '
+        f"answered:\n\n{reply}\n\n"
+        "Treat this as the user's answer to that request and continue in this "
+        "same turn."
+    )
+
+
+async def _steer_user_reply(provider: LLMProvider, event: LLMEvent, reply: str) -> bool:
+    """Deliver the person's ``o`` reply into the RUNNING turn. True when sent.
+
+    The same channel the host-deny notice uses (:mod:`kiro_crew.deny_notice`):
+    ACP's permission response carries only an option id, so free text cannot
+    ride on the answer itself. Steered while the request is still unanswered,
+    the turn is provably in flight, so the message is queued and the model reads
+    it right after the refused tool resolves -- inside the same turn.
+
+    Gated on ``supports_refusal_steer``, not ``supports_steer``: a harness can
+    take a mid-turn message and still discard one sent while a refused call is
+    being answered. False -- no capability, a steer failure, the bound expiring
+    -- means the reply did not reach the model, and the caller sends it as the
+    next message instead of losing it. ``CancelledError`` propagates under the
+    prompt's own session-abort contract (see :func:`_answer_permission`).
+    """
+    return await steer_notice_into_refused_turn(
+        provider, _user_reply_notice(event.title or "", reply)
+    )
 
 
 async def _audit_off_loop(
@@ -875,8 +986,13 @@ async def _answer_permission(
     *,
     interactive: bool,
     gate: _ToolGate | None = None,
+    undelivered_replies: list[str] | None = None,
 ) -> None:
     """Answer a pending permission request so the backend can resume the turn.
+
+    *undelivered_replies* collects an ``o`` reply that could not be steered into
+    the running turn (no steer channel, or the steer failed), so the caller can
+    send it as the next message rather than drop what the person typed.
 
     Answering one is an authorization decision, so Kiro Crew's own PreToolUse
     gate runs first and a human is asked only about what survives it. That gate
@@ -1072,7 +1188,7 @@ async def _answer_permission(
         return
 
     try:
-        allowed = await _prompt_allows(event)
+        answer = await _prompt_answer(event)
     except (StdinPoisonedError, asyncio.CancelledError):
         # The BACKEND is deliberately not answered here. Answering means awaiting
         # a transport, and a wedged one would park this teardown on a call that
@@ -1120,7 +1236,7 @@ async def _answer_permission(
         )
         return
 
-    if allowed:
+    if answer.allowed:
         # AUDIT-OR-DENY, and only here. ``critical=True`` writes the record
         # synchronously and re-raises a persistence failure (read-only SEL file,
         # full disk) instead of letting the background writer swallow it. Without
@@ -1176,7 +1292,16 @@ async def _answer_permission(
         #
         # The one bare reject in this module: the person said no, so kiro-cli's
         # "User denied tool execution" is true and no host notice is owed.
-        await _audit_refusal(gate, event, error=_USER_DENY_CODE)
+        #
+        # An ``o`` reply is the same human refusal with the person's own words
+        # attached. Audit first (the record cannot be erased by a transport
+        # failure), then the reply -- steered while the request is still
+        # unanswered so it lands in THIS turn -- then the wire.
+        reply = answer.reply
+        await _audit_refusal(gate, event, error=_USER_REPLY_CODE if reply else _USER_DENY_CODE)
+        if reply and not await _steer_user_reply(provider, event, reply):
+            if undelivered_replies is not None:
+                undelivered_replies.append(reply)
         await provider.reject_tool(event.request_id)
 
 
@@ -1198,6 +1323,9 @@ async def _send_and_print(
     builds the process default on first use, so a caller that never sees a
     request pays nothing for it.
     """
+    # ``o`` replies the backend could not take mid-turn. Sent as the next message
+    # once this turn ends, so what the person typed still reaches the agent.
+    undelivered: list[str] = []
     try:
         async for event in provider.stream(message):
             if event.kind == EVENT_TEXT_CHUNK:
@@ -1206,7 +1334,13 @@ async def _send_and_print(
                 # The backend holds the turn open until this is answered, so an
                 # unhandled request is not a missed prompt -- it is a turn that
                 # never ends.
-                await _answer_permission(provider, event, interactive=interactive, gate=gate)
+                await _answer_permission(
+                    provider,
+                    event,
+                    interactive=interactive,
+                    gate=gate,
+                    undelivered_replies=undelivered,
+                )
             elif event.kind == EVENT_COMPLETE:
                 # The text was printed as it streamed, so the error carries
                 # none: the timeout branch below must not print it twice.
@@ -1223,6 +1357,14 @@ async def _send_and_print(
     except AcpError as e:
         print(f"\n❌ {e}", file=sys.stderr)
         sys.exit(1)
+    if undelivered:
+        print(
+            "↪ This backend could not take your reply mid-turn; sending it as your next message.",
+            file=sys.stderr,
+        )
+        await _send_and_print(
+            provider, "\n\n".join(undelivered), interactive=interactive, gate=gate
+        )
 
 
 def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> float:

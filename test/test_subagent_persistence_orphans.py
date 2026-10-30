@@ -399,7 +399,6 @@ class TestOrphanReconciliation:
         create_agent_folder("already_dead", task="t")
         write_tombstone("already_dead", cause="timeout", recovery_action="delivered")
 
-        # Should not re-tombstone
         await manager._reconcile_orphans()
         ts = json.loads(
             (agent_root / "already_dead" / "tombstone.json").read_text(encoding="utf-8")
@@ -420,7 +419,6 @@ class TestOrphanReconciliation:
         manager._agents["tracked1"] = SubagentInfo(id="tracked1", task="t")
 
         await manager._reconcile_orphans()
-        # No tombstone — it's tracked
         assert not (agent_root / "tracked1" / "tombstone.json").exists()
 
 
@@ -561,7 +559,6 @@ class TestOrphanNotification:
         ):
             await manager._notify_orphan("notif_redact", state, True)
 
-        # _redact must have been called before injection
         mock_redact.assert_called()
         assert injected_msg is not None
         assert injected_msg.startswith("[REDACTED]")
@@ -662,7 +659,7 @@ class TestReaperPrunesTombstones:
             write_tombstone,
         )
 
-        # Create an old tombstoned folder (8 days)
+        # Eight days old: past the 7-day prune cutoff.
         create_agent_folder("old_tomb", task="t")
         write_tombstone("old_tomb", cause="timeout", recovery_action="delivered")
         ts_path = agent_root / "old_tomb" / "tombstone.json"
@@ -671,7 +668,7 @@ class TestReaperPrunesTombstones:
         ts["died"] = time.time() - (8 * 86400)
         ts_path.write_text(json.dumps(ts))
 
-        # Create a recent tombstoned folder (1 day)
+        # Fresh tombstone: inside the cutoff, so it is kept.
         create_agent_folder("new_tomb", task="t")
         write_tombstone("new_tomb", cause="timeout", recovery_action="delivered")
 

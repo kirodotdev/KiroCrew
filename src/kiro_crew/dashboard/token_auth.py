@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
+from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
@@ -103,6 +105,7 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
     _load_or_create_secret,
 )
 from kiro_crew.sel import sel as _sel_fn
+from kiro_crew.shared_crew.identity import publish_actor
 
 
 def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
@@ -207,6 +210,17 @@ def token_auth_middleware(
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
         path = request.path
+
+        # A relay-delivered request (``dashboard/kiro_relay``): the relay is its
+        # authentication, so the person it named is admitted (or refused) here,
+        # before any branch that weighs a Crew credential, a tailnet peer or a
+        # loopback address. No relayed request continues past this point.
+        _relay_caller = published_relay_caller(request)
+        if _relay_caller is not None:
+            _relay_refusal = admit_relay_caller(request, _relay_caller)
+            if _relay_refusal is not None:
+                return _relay_refusal
+            return await handler(request)  # type: ignore[operator,no-any-return]
 
         # Forwarded-peer resolution (RFC §2), once per request — the WebSocket
         # path therefore resolves once at upgrade, never per frame. ``None`` on
@@ -475,6 +489,9 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    await publish_actor(
+                        request, trust=tailnet_trust, serve_peer=None, internal=True
+                    )
                     return await handler(request)  # type: ignore[operator]
                 # Wrong secret → deny (don't fall through). An empty provided
                 # value means the gateway received no credential from this
@@ -568,6 +585,7 @@ def token_auth_middleware(
                     error="cookie auth (no secret header)",
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
+            await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
             return await handler(request)  # type: ignore[operator]
         elif _matches_internal:
             if _matches_mixed:
@@ -670,6 +688,7 @@ def token_auth_middleware(
                     "granted",
                     f"mixed non-loopback cookie auth for {_uid}",
                 )
+                await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
                 return await handler(request)  # type: ignore[operator]
             else:
                 # INVARIANT: non-loopback access to strict internal paths is
@@ -1037,6 +1056,8 @@ def token_auth_middleware(
         if _scope_deny is not None:
             return _scope_deny
 
+        # Attribution only, after every decision above: publishing never denies.
+        await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
         # Proceed to handler
         resp = await handler(request)  # type: ignore[operator]
 

@@ -258,7 +258,7 @@ class TestPublishWithdrawRoundTrip:
 
 class TestWithdrawalProtectsForeignMappings:
     def test_a_foreign_443_mapping_survives_down(self, env, capsys) -> None:
-        """The defect two review rounds were spent on, exercised for real.
+        """A foreign 443 mapping is protected, exercised for real.
 
         Someone else's service is on 443. `down` must refuse rather than run
         `serve --https 443 off`, and the foreign mapping must still be there

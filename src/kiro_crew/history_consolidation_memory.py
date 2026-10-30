@@ -94,6 +94,39 @@ class _BoundedTable(NamedTuple):
     visible_keys: frozenset[str]
 
 
+#: Rows per ``get_all_semantic`` call when a consolidation pass snapshots the table.
+_SEMANTIC_SNAPSHOT_PAGE = 500
+
+
+def _semantic_snapshot_in_pages(
+    vector_store: "VectorMemoryStore", page: int = _SEMANTIC_SNAPSHOT_PAGE
+) -> list[dict]:
+    """The active semantic table in key order, fetched one bounded page at a time.
+
+    A single unbounded ``get_all_semantic()`` holds the store's DB lock for the
+    whole table, so every memory read and write behind it waits out the copy.
+    Keyset pages (``key > cursor``) cost each call its own rows and
+    release the lock between calls. The result is the same rows in the same order
+    as the single read, short of rows written between two pages, which the
+    single read could not promise either once the model answers minutes later.
+
+    A page whose rows do not move the cursor ends the walk, so a store that
+    ignores ``after_key`` returns its rows once rather than looping.
+    """
+    rows: list[dict] = []
+    # ``""`` rather than no cursor, so the FIRST page takes the key-index plan too
+    # (``key > ?`` is what asks for it). A semantic key is never empty: every writer
+    # validates it, so ``key > ''`` leaves no row out.
+    cursor = ""
+    while True:
+        batch = vector_store.get_all_semantic(limit=page, after_key=cursor)
+        fresh = [r for r in batch if str(r.get("key", "")) > cursor]
+        rows.extend(fresh)
+        if len(batch) < page or not fresh:
+            return rows
+        cursor = str(fresh[-1].get("key", ""))
+
+
 def _recency(updated_at: object) -> tuple[int, float]:
     """Rank an ``updated_at`` for the newest-first cut.
 
@@ -729,7 +762,11 @@ def _write_structured_memory(
     # pass and either can arm the latch for the other.
     budget = _EmbedBudget(_EMBED_BUDGET_SECS_PER_PASS, self._logger)
 
+    from kiro_crew.memory_kind_routing import record_kind_routing, route_consolidation_by_kind
+
     result, withheld = _withhold_unseen_deletes(result, visible_keys, self._logger)
+    routing = route_consolidation_by_kind(result, self._logger)
+    result = routing.result
 
     # Semantic entries
     semantic_items = result.get("semantic")
@@ -943,6 +980,13 @@ def _write_structured_memory(
                 stale_skipped,
                 withheld,
             )
+
+    if routing.decisions:
+        # Under the same hold as every other write of this pass: a switch turned
+        # off, or a lease lost, before the run's first commit refuses the log too.
+        with self._publication_hold_checked(key, commit_state) as publication:
+            if record_kind_routing(vector_store, routing, source):
+                publication.mark_committed()
 
     # Episodic entries
     episodic_items = result.get("episodic")

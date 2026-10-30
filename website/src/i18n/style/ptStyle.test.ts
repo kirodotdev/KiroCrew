@@ -27,16 +27,29 @@ function report(bad: string[], limit = 6): string {
   return `${bad.length} violation(s):\n  ${bad.slice(0, limit).join('\n  ')}`
 }
 
+// Common European Portuguese words that should be Brazilian. `\b` is an
+// ASCII word boundary, so it never fires after `ã`; the screen pattern
+// spells its boundaries as Unicode letters instead, with an optional plural.
+const EU_SCREEN = /(?<!\p{L})ecr[ãa]s?(?!\p{L})/iu
+const EU_WORDS: Array<[RegExp, string]> = [
+  [/\bficheiro/i, 'arquivo (BR)'],
+  [EU_SCREEN, 'tela (BR)'],
+  [/\bdescarregar\b/i, 'baixar (BR)'],
+  [/\btelemovel\b/i, 'celular (BR)'],
+  [/\bordenador\b/i, 'computador (BR)'],
+]
+
 describe('pt regional variant (style/pt.md §1)', () => {
+  it('flags the European screen noun in singular and plural', () => {
+    expect(EU_SCREEN.test('bloquear o ecrã.')).toBe(true)
+    expect(EU_SCREEN.test('mantenha o ecrã desbloqueado')).toBe(true)
+    expect(EU_SCREEN.test('todos os ecrãs')).toBe(true)
+    expect(EU_SCREEN.test('Ecrãs, janelas')).toBe(true)
+    expect(EU_SCREEN.test('bloquear a tela')).toBe(false)
+    expect(EU_SCREEN.test('ecrãzinho')).toBe(false)
+  })
+
   it('uses Brazilian Portuguese vocabulary, not European', () => {
-    // Common European Portuguese words that should be Brazilian
-    const EU_WORDS: Array<[RegExp, string]> = [
-      [/\bficheiro/i, 'arquivo (BR)'],
-      [/\becr[ãa]\b/i, 'tela (BR)'],
-      [/\bdescarregar\b/i, 'baixar (BR)'],
-      [/\btelemovel\b/i, 'celular (BR)'],
-      [/\bordenador\b/i, 'computador (BR)'],
-    ]
     const bad: string[] = []
     for (const [key, value] of Object.entries(pt)) {
       for (const [pattern, preferred] of EU_WORDS) {

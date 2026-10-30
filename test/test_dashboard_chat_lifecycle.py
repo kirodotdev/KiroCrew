@@ -894,6 +894,42 @@ class TestBulkCleanup:
         assert "pinned1" in state._slots
 
     @pytest.mark.asyncio
+    async def test_cleanup_by_an_app_keeps_its_slot_linked_to_another_session(
+        self, tmp_path, monkeypatch
+    ):
+        """An app's own slot running on a channel's session is not the app's to archive.
+
+        The per-slot checkpoint refuses that slot on every ``/api/chat/slots/{slot}``
+        route (``app_owns_slot_session``); the bulk cleanup applies the same rule.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from slot_ownership_checkpoint_helpers import _as
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        for name in ("own", "linked"):
+            slot = state.get_or_create_slot(name, app="crew-keyboard")
+            slot.append("user", "old msg", ts=old_ts)
+            slot.drain()
+        state._slots["linked"].linked_session_key = "slack:1700000000.000100"
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _as("crew-keyboard"))
+        async with TestClient(TestServer(app)) as client:
+            dry = await client.post(
+                "/api/chat/slots/cleanup", json={"max_inactive_days": 3, "dry_run": True}
+            )
+            assert (await dry.json())["keys"] == ["own"]
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
+            data = await resp.json()
+            assert (data["archived"], data["keys"]) == (1, ["own"])
+
+        assert "own" not in state._slots
+        assert "linked" in state._slots
+
+    @pytest.mark.asyncio
     async def test_cleanup_skips_active_slot(self, tmp_path, monkeypatch):
         """The active slot is never archived even if stale."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -953,6 +989,63 @@ class TestBulkCleanup:
             resp = await client.post("/api/chat/slots/cleanup", json={})
             data = await resp.json()
             assert data["archived"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999", '"soon"'])
+    async def test_cleanup_falls_back_to_3_days_on_an_unparsable_value(
+        self, tmp_path, monkeypatch, raw
+    ):
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert.
+
+        It takes the same 3-day fallback as a non-numeric string: a slot idle for
+        2 days stays and one idle for 4 days is archived.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        for name, days in (("two-days", 2), ("four-days", 4)):
+            slot = state.get_or_create_slot(name)
+            slot.append("user", "hi", ts=(now - timedelta(days=days)).isoformat())
+            slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                data='{"max_inactive_days": %s}' % raw,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["archived"] == 1
+        assert state.get_slot("two-days") is not None
+        assert state.get_slot("four-days") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_with_a_huge_integer_archives_nothing(self, tmp_path, monkeypatch):
+        """A JSON integer too large for a float: no slot is that old, so nothing is
+        archived, and the cutoff arithmetic does not raise."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        slot = state.get_or_create_slot("ten-years")
+        slot.append(
+            "user", "hi", ts=(datetime.now(timezone.utc) - timedelta(days=3650)).isoformat()
+        )
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                data='{"max_inactive_days": 1%s}' % ("0" * 400),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["archived"] == 0
+        assert state.get_slot("ten-years") is not None
 
     @pytest.mark.asyncio
     async def test_cleanup_empty_slots_uses_created_at(self, tmp_path, monkeypatch):

@@ -19,6 +19,11 @@ import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
+  adoptServerLiquidGlass,
+  readLiquidGlass,
+  type TranslucentPanelsStored,
+} from '../utils/liquidGlass'
+import {
   clearCachedThemeData,
   readCachedThemeData,
   renderCacheProjection,
@@ -72,6 +77,8 @@ export interface ThemeBranding {
   logo?: string
   favicon?: string
   wordmark?: string
+  /** Welcome-screen hero mark (`branding/welcome.*`), shown in place of the logo there. */
+  welcome?: string
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -326,6 +333,7 @@ function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<Overri
 interface ResolvedThemeBranding {
   logo: string | null
   favicon: string | null
+  welcome: string | null
 }
 
 /** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
@@ -335,7 +343,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return { logo: null, favicon: null }
+  if (!b || !slug) return { logo: null, favicon: null, welcome: null }
 
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
   const favicon = fav ? `${assetBase(slug)}/${fav}` : null
@@ -352,7 +360,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   if (logoPath) {
     root.style.setProperty('--theme-logo', assetUrlValue(slug, logoPath))
   }
-  return { logo, favicon }
+  const welcomePath = b.welcome ? safeAssetPath(b.welcome) : ''
+  const welcome = welcomePath ? `${assetBase(slug)}/${welcomePath}` : null
+  return { logo, favicon, welcome }
 }
 
 /**
@@ -368,13 +378,13 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
  * installed pack or a `registerTheme()` caller supplies.
  *
  * Two kinds of entry live here:
- * - `High Contrast` names a rendering PROPERTY (the accessibility palette)
- *   rather than a palette identity, so it is copy in the same sense as every
- *   other settings label and each locale translates it.
- * - A proper-noun theme added after the strict i18n gate (Nu Disco). The gate
- *   refuses a new literal display string, so the name goes through the catalog
- *   and is pinned verbatim in every locale by its `glossary.json` do-not-translate
- *   entry, which `glossary.test.ts` enforces.
+ * - `High Contrast` and `Color-blind safe` name a rendering PROPERTY (an
+ *   accessibility palette) rather than a palette identity, so they are copy in
+ *   the same sense as every other settings label and each locale translates them.
+ * - A proper-noun theme added after the strict i18n gate (Nu Disco, Amethyst
+ *   OLED). The gate refuses a new literal display string, so the name goes
+ *   through the catalog and is pinned verbatim in every locale by its
+ *   `glossary.json` do-not-translate entry, which `glossary.test.ts` enforces.
  *
  * Keys, not strings: `THEMES` is evaluated at module load, so an `i18nT()` call
  * there would freeze whatever language was active at boot. The lookup happens in
@@ -385,6 +395,8 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
 export const THEME_LABEL_KEY: Record<string, string> = {
   highcontrast: 'hooks.theme.high_contrast',
   'nu-disco': 'hooks.theme.nu_disco',
+  'amethyst-oled': 'hooks.theme.amethyst_oled',
+  colorblind: 'hooks.theme.color_blind_safe',
 }
 
 export const THEMES: ThemeEntry[] = [
@@ -414,6 +426,12 @@ export const THEMES: ThemeEntry[] = [
   // Catalog-keyed like `highcontrast`: glyph-only fallback, full name in
   // `hooks.theme.nu_disco`.
   { value: 'nu-disco', label: '🪩' },
+  // Catalog-keyed: full name in `hooks.theme.amethyst_oled`.
+  { value: 'amethyst-oled', label: '💜' },
+  // Catalog-keyed like `highcontrast`, and for the same reason: it names an
+  // accessibility property, so each locale translates it. Full name in
+  // `hooks.theme.color_blind_safe`.
+  { value: 'colorblind', label: '👁️' },
 ]
 
 /**
@@ -544,6 +562,8 @@ export interface ThemeContextValue {
   brandLogo: string | null
   /** Active installed theme's browser favicon URL, or null for built-ins / L0. */
   brandFavicon: string | null
+  /** Active installed theme's welcome-screen image URL, or null when it ships none. */
+  brandWelcome: string | null
   customThemes: ThemeEntry[]
   customThemeDataMap: Map<string, CustomThemeData>
   themeVersion: number
@@ -843,6 +863,7 @@ function useThemeState(): ThemeContextValue {
   const [brandName, setBrandName] = useState<string | null>(null)
   const [brandLogo, setBrandLogo] = useState<string | null>(null)
   const [brandFavicon, setBrandFavicon] = useState<string | null>(null)
+  const [brandWelcome, setBrandWelcome] = useState<string | null>(null)
   // Lightweight "Applying…" indicator: true only while an INSTALLED theme's
   // async assets settle after a switch (built-ins/editor-customs are instant).
   const [themeSwitching, setThemeSwitching] = useState(false)
@@ -1048,6 +1069,7 @@ function useThemeState(): ThemeContextValue {
     mutationFn: (body: {
       mode?: string
       color?: string
+      translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
@@ -1074,6 +1096,16 @@ function useThemeState(): ThemeContextValue {
       if (bootData.color && bootData.color !== colorTheme) {
         safeSetItem('mc-color-theme', bootData.color)
         setColorThemeState(bootData.color)
+      }
+      // The Translucent panels switch, workspace-backed the same way. '' is a
+      // workspace that predates the key: the browser copy is then the only
+      // record of the choice, so an ON copy is published once, after which the
+      // workspace value is the one every browser adopts. The absent (off)
+      // copy is not published: it is also what a fresh browser holds.
+      if (bootData.translucent_panels === '' && readLiquidGlass()) {
+        persistTheme({ translucent_panels: 'on' })
+      } else {
+        adoptServerLiquidGlass(bootData.translucent_panels)
       }
       const hasOnboardingState =
         typeof bootData.onboarded === 'boolean'
@@ -1305,12 +1337,14 @@ function useThemeState(): ThemeContextValue {
       setBrandName(active?.assets?.branding?.botName ?? null)
       setBrandLogo(appliedBranding.logo)
       setBrandFavicon(appliedBranding.favicon)
+      setBrandWelcome(appliedBranding.welcome)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
       setBrandName(null)
       setBrandLogo(null)
       setBrandFavicon(null)
+      setBrandWelcome(null)
     }
     applyThemeOverrides(active)
       .then((report) => {
@@ -1487,6 +1521,7 @@ function useThemeState(): ThemeContextValue {
     brandName,
     brandLogo,
     brandFavicon,
+    brandWelcome,
     customThemes,
     customThemeDataMap,
     themeVersion,

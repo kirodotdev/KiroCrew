@@ -35,6 +35,10 @@ from kiro_crew.dashboard.handlers import sessions, sessions_parts
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_sessions_parts_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
+
 FACADE = "kiro_crew.dashboard.handlers.sessions"
 PARTS = "kiro_crew.dashboard.handlers.sessions_parts"
 
@@ -99,17 +103,6 @@ def _test_tree_files() -> list[Path]:
     return found
 
 
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
-
-
 def _corpus_patched_names() -> set[str]:
     spellings = {FACADE: FACADE}
     names: set[str] = set()
@@ -125,11 +118,6 @@ def _corpus_patched_names() -> set[str]:
                 continue
             names |= facade_mirror_scan.names_by_target(events, {FACADE}).get(FACADE, set())
     return names
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:

@@ -62,7 +62,13 @@ class _Runs:
 
     def __init__(self, parent: str, order: list[str], *, shared: bool = True) -> None:
         self.child = SimpleNamespace(
-            id="a1", parent_session_key=parent, conversation_key="", _stop_origin=""
+            id="a1",
+            parent_session_key=parent,
+            conversation_key="",
+            _stop_origin="",
+            _reap_reason="",
+            _reap_started=False,
+            done=False,
         )
         self.live = {"subagent:a1"} if shared else set()
         self.order = order
@@ -88,6 +94,7 @@ class _Runs:
     async def cancel(self, agent_id: str) -> bool:
         self.order.append("stop")
         self.stopped_reports.append((agent_id, self.child._stop_origin))
+        self.child.done = True
         self.finish()
         return True
 
@@ -395,7 +402,7 @@ async def test_a_restart_records_one_recycled_end(monkeypatch, fail_start):
     async def _ended(k, *, end_reason):
         calls.append(("end", end_reason))
 
-    async def _started(k):
+    async def _started(k, provider=None):
         calls.append(("start", ""))
 
     monkeypatch.setattr(sc, "record_session_ended", _ended)

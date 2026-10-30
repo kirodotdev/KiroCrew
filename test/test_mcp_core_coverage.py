@@ -480,8 +480,9 @@ class TestSpawnRunArgumentHandling:
     def test_counted_rejection_is_not_double_reconciled(self):
         rejected = {"error": "at capacity", "counted": True}
         with patch.object(mcp_core, "_post", return_value=rejected) as m:
-            _call_tool("spawn_run", {"tasks": ["one", "two"]})
+            out = _call_tool("spawn_run", {"tasks": ["one", "two"]})
         assert all(c[0][0] != "/api/spawn/lost" for c in m.call_args_list)
+        assert "none of the requested subagents were started" in out
 
     def test_lost_reconcile_delivery_failure_is_swallowed(self):
         def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
@@ -529,8 +530,9 @@ class TestSpawnRunArgumentHandling:
     def test_approval_mode_env_is_forwarded(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("KIROCREW_APPROVAL_MODE", "auto")
         with patch.object(mcp_core, "_post", return_value={"id": "ag1"}) as m:
-            _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
+            out = _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
         assert m.call_args[0][1]["approval_mode"] == "auto"
+        assert "ag1" in out
 
 
 class TestSpawnLifecycleTools:
@@ -553,10 +555,18 @@ class TestSpawnLifecycleTools:
         assert body["max_turns"] == 3
         assert "run9" in out and "END YOUR TURN" in out
 
-    def test_continue_propagates_backend_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "conversation_gone"}):
-            out = _call_tool("spawn_continue", {"conversation": "c", "task": "t"})
-        assert out == "Error: conversation_gone"
+    @pytest.mark.parametrize(
+        "tool,args,error",
+        [
+            ("spawn_continue", {"conversation": "c", "task": "t"}, "conversation_gone"),
+            ("spawn_steer", {"agent_id": "a1", "message": "m"}, "session_starting"),
+        ],
+        ids=["continue", "steer"],
+    )
+    def test_propagates_backend_error(self, tool, args, error):
+        with patch.object(mcp_core, "_post", return_value={"error": error}):
+            out = _call_tool(tool, args)
+        assert out == f"Error: {error}"
 
     def test_steer_posts_the_message_and_confirms(self):
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
@@ -566,11 +576,6 @@ class TestSpawnLifecycleTools:
         # "follow_up" queues for delivery after the run's turn completes.
         assert m.call_args[0][1] == {"message": "stop that", "mode": "interrupt"}
         assert "Steered run a1" in out
-
-    def test_steer_propagates_backend_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "session_starting"}):
-            out = _call_tool("spawn_steer", {"agent_id": "a1", "message": "m"})
-        assert out == "Error: session_starting"
 
     def test_release_confirms_and_propagates_error(self):
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
@@ -698,10 +703,15 @@ class TestWorkflowRun:
         assert "Started workflow run `r1`" in out
         assert "authoring the workflow" in out
 
-    def test_intent_path_propagates_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "no model"}):
-            out = _call_tool("workflow_run", {"intent": "ship it"})
-        assert out == "workflow_run failed: no model"
+    @pytest.mark.parametrize(
+        "args,error",
+        [({"intent": "ship it"}, "no model"), ({"source": "ctx.agent('x')"}, "sandbox denied")],
+        ids=["intent-path", "source-path"],
+    )
+    def test_propagates_error(self, args, error):
+        with patch.object(mcp_core, "_post", return_value={"error": error}):
+            out = _call_tool("workflow_run", args)
+        assert out == f"workflow_run failed: {error}"
 
     def test_source_path_posts_to_run_and_reports_name(self):
         resp = {"run_id": "r2", "name": "nightly"}
@@ -716,14 +726,10 @@ class TestWorkflowRun:
             out = _call_tool("workflow_run", {"source": "ctx.agent('x')"})
         assert "(name: —)" in out
 
-    def test_source_path_propagates_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "sandbox denied"}):
-            out = _call_tool("workflow_run", {"source": "ctx.agent('x')"})
-        assert out == "workflow_run failed: sandbox denied"
-
     def test_source_wins_over_intent(self):
         with patch.object(mcp_core, "_post", return_value={"run_id": "r4"}) as m:
-            _call_tool("workflow_run", {"source": "ctx.agent('x')", "intent": "ignored"})
+            out = _call_tool("workflow_run", {"source": "ctx.agent('x')", "intent": "ignored"})
+        assert "`r4`" in out
         assert m.call_args[0][0] == "/api/workflows/run"
         assert "intent" not in m.call_args[0][1]
 
@@ -912,8 +918,9 @@ class TestWorkflowListCancelRerun:
 
     def test_rerun_defaults_from_index_to_zero(self):
         with patch.object(mcp_core, "_post", return_value={"run_id": "r9"}) as m:
-            _call_tool("workflow_rerun_subtree", {"run_id": "r1"})
+            out = _call_tool("workflow_rerun_subtree", {"run_id": "r1"})
         assert m.call_args[0][1] == {"from_index": 0}
+        assert "Re-running `r1` as `r9`" in out
 
     def test_rerun_rejects_a_non_int_from_index(self):
         out = _call_tool("workflow_rerun_subtree", {"run_id": "r1", "from_index": "nope"})
@@ -1305,17 +1312,15 @@ class TestFileSend:
         out = _call_tool("file_send", {"path": str(tmp_path / "nope.txt")})
         assert "file not found or access denied" in out
 
-    def test_sensitive_content_aborts_the_send(self, tmp_path):
+    def test_sensitive_content_is_delivered_to_the_outbox(self, tmp_path):
+        # The owner's own outbox gets the bytes as-is; the Slack and channel
+        # upload legs scan on their own, server-side.
         src = tmp_path / "creds.txt"
         src.write_text("AKIA" + "P" * 16)
-        out = _call_tool("file_send", {"path": str(src)})
-        assert out.startswith("Error: file content contains sensitive data; send aborted")
-        # The refusal now names the remedy. A wall that does not say a consented
-        # path exists is the reported complaint, so this
-        # asserts MORE than the previous exact-equality pin, not less -- and it
-        # asserts the never-grantable legs are named as such.
-        assert "/api/file-delivery/consent" in out
-        assert "can never be granted" in out
+        with patch.object(mcp_core, "_post", return_value={"ok": True}):
+            out = _call_tool("file_send", {"path": str(src)})
+        assert out.startswith("File sent: creds.txt")
+        assert (mcp_core.outbox_dir() / "creds.txt").read_text() == "AKIA" + "P" * 16
 
     def test_disallowed_binary_mime_is_refused(self, tmp_path):
         src = tmp_path / "payload.bin"

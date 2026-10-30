@@ -800,7 +800,7 @@ class TestFramePayloadRegexIsLinear:
 
 
 class TestIncompleteScanSuppressesCapture:
-    """An incomplete secure-field scan must not permit pixels (reviewer finding).
+    """An incomplete secure-field scan must not permit pixels.
 
     ``has_secure`` covers every node the walk CLASSIFIED, including those past the
     reporting budget — but the walk has hard cutoffs of its own

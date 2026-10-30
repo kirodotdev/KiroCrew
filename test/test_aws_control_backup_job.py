@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.builtins.aws_control import hooks
@@ -545,8 +546,10 @@ def _isolated_backup_state(tmp_path, monkeypatch):
     # behaviour lives in test_aws_control_backup_retention.py.
     monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
     backup.clear_stop()
+    hooks._task = None
     yield
     backup.clear_stop()
+    hooks._task = None
 
 
 def _resolvable():
@@ -601,7 +604,10 @@ class TestRouteStartsAJob:
         # upload -- the second adopts the first. The SDK indexes on
         # (kind, dedupe_key), so snapshot and sessions stay independent.
         start = AsyncMock(return_value="c" * 32)
-        _post_run(backup.KIND_SESSIONS, start=start)
+        resp = _post_run(backup.KIND_SESSIONS, start=start)
+        assert resp.status == 200
+        assert _payload(resp)["runId"] == "c" * 32
+        assert _payload(resp)["kind"] == backup.KIND_SESSIONS
         start.assert_awaited_once_with(backup.KIND_SESSIONS, dedupe_key=ACCOUNT)
 
     def test_run_rejects_an_unknown_kind_before_claiming(self):
@@ -708,7 +714,9 @@ class TestRunnerResolvesItsTarget:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert run.error == ""
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[3] == "moved-bucket"
 
@@ -755,7 +763,14 @@ class TestRunnerResolvesItsTarget:
         assert secret not in run.error
         work.assert_not_called()
 
-    def test_an_unreachable_account_fails_without_falling_back(self, sdk):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_an_unreachable_account_fails_without_falling_back"),
+            *named_cases("test_the_owner_path_does_not_fall_back_on_an_expired_cache"),
+        ],
+    )
+    def test_an_unreachable_account_does_not_fall_back(self, sdk):
         # No healthy profile for this account. There must be no silent fallback
         # to another account's credentials -- the run fails and says to reconnect.
         with (
@@ -1082,7 +1097,8 @@ class TestRunnerReadsTheCallerFromParams:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
         assert work.call_args.kwargs["caller"] == backup.CALLER_OWNER
 
 
@@ -1118,22 +1134,6 @@ class TestScheduledPathFallsBackToTheVerifiedProfile:
         assert gate.call_args.args[1:] == (PROFILE, REGION)
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[1:3] == (PROFILE, REGION)
-
-    def test_the_owner_path_does_not_fall_back_on_an_expired_cache(self, sdk):
-        # The fallback is scheduled-only: an owner run carries no profile/region
-        # param and its route pre-flight has just warmed the snapshot, so an
-        # expired cache for it is the honest "reconnect" failure, not a fallback.
-        with (
-            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=None),
-            mock.patch.object(backup.storage, "find_drive") as find,
-            mock.patch.object(backup, "run_snapshot_backup") as work,
-        ):
-            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            run = _await_terminal(sdk, run_id)
-        assert run.status == job_sdk.FAILED
-        assert "no working connection" in run.error
-        find.assert_not_called()
-        work.assert_not_called()
 
     def test_a_scheduled_run_prefers_the_live_cache_when_it_is_warm(self, sdk):
         # When the cache IS warm the fallback must not shadow it: the per-run
@@ -1424,7 +1424,11 @@ class TestSharedDriveNoticeCostsOneListCall:
     pays at most this one call."""
 
     def test_the_notice_costs_exactly_one_paid_list_call(self):
-        with mock.patch.object(backup, "_install_folders", return_value=set()) as folders:
-            backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        mine = backup.install_identity()["id"]
+        seen = {mine, "b" * 32, "a" * 32}
+        with mock.patch.object(backup, "_install_folders", return_value=seen) as folders:
+            others = backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        # The one listing's folders, minus this install's own, in sorted order.
+        assert others == ["a" * 32, "b" * 32]
         assert folders.call_count == 1
         assert folders.call_args.args[3] == backup.KIND_SNAPSHOT

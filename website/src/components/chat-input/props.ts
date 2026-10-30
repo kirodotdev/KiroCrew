@@ -223,12 +223,18 @@ export interface ChatInputProps {
    * `useAnchoredTriggerRect`.
    */
   onAgentClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  /** Shown where the agent chip sits when the session has no agent picker (a
+   *  Crew Mode chat's conductor is Crew Mode's to choose): a label, not a control. */
+  agentBadge?: React.ReactNode
   /** `composerHadFocus` is whether the message editor held focus when the chip
    *  was pressed, read before the press moved focus onto the chip. The picker
    *  uses it to hand focus back to the editor after a pick, and only then: a
    *  user who was not typing does not get the composer focused under them. */
   onModelClick?: (rect: DOMRect, trigger?: HTMLElement, composerHadFocus?: boolean) => void
   onProjectClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
+   *  its own separated shelf group and renders nothing until profiles exist. */
+  environmentSlot?: string | null
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string
@@ -254,6 +260,7 @@ export interface ChatInputProps {
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
+  derivePctFromUsed?: boolean
   showContextPct?: boolean
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
@@ -396,7 +403,7 @@ export interface ChatInputProps {
    *  Composer preference; pass it only to override that (e.g. mobile). */
   sendOnEnter?: SendMode
   /** Follow-up options from assistant message */
-  followUpOptions?: string[]
+  followUpOptions?: readonly string[]
   /** Options the user has picked (visual highlight in FollowUpBar) */
   followUpPicked?: Set<string>
   /** Select a follow-up option — handler toggles text in input (see ChatPage wiring).

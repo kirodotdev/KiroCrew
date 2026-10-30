@@ -11,6 +11,7 @@ import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider } from '../../components/NavigationLeaveGuard'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
+import { sseSubagentQueued } from '../../store/chatSlice'
 import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { _resetViewedThreadForTests } from '../../lib/viewedThread'
 import {
@@ -31,7 +32,6 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -218,7 +218,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 // The profile settings write the live slot; the stub shows which slot the page
 // handed it, so a refused thread is proven to get none.
@@ -235,13 +234,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
       <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
         {slotKey}
-        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -315,9 +313,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -352,8 +347,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // door returning is a revert rather than a rewrite.
     const item = await openAddMenu()
     expect(item).toBeInTheDocument()
-    // New crewmate only; no team door.
-    expect(within(screen.getByTestId('member-add-menu')).getAllByRole('menuitem')).toHaveLength(1)
+    // New crewmate and Import from file only; no team door.
+    expect(within(screen.getByTestId('member-add-menu')).getAllByRole('menuitem')).toHaveLength(2)
     expect(screen.queryByTestId('member-add-team')).toBeNull()
     await closeAddMenu()
     expect(screen.queryByTestId('team-dialog-body')).toBeNull()
@@ -583,6 +578,49 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const counts = await within(await screen.findByTestId('team-view')).findByTestId('team-status-counts')
     expect(counts).toHaveTextContent('Runs: 1 today · 2 this week')
     expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(['hidden', 'sm:inline']))
+  })
+
+  it('the status strip counts a routed delegation once, by its run', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(2026, 8, 22, 12, 0, 0) })
+    const now = Date.now() / 1000
+    memberProjectionStore.apply('oncall', 'activity', {
+      recent: [
+        { ts: now - 60, via: 'spawn', project: '' },
+        { ts: now - 120, via: 'select_crew', project: '' },
+        { ts: now - 8 * 86400, via: 'spawn', project: '' },
+      ],
+      today: 2,
+      week: 2,
+    }, 1)
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const counts = await within(await screen.findByTestId('team-view')).findByTestId('team-status-counts')
+    expect(counts).toHaveTextContent('Runs: 1 today · 1 this week')
+  })
+
+  it('the week feed names a delegated run as a run, not a chat', async () => {
+    const now = Date.now() / 1000
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall',
+      member: 'oncall',
+      capped: false,
+      entries: [
+        { ts: now - 60, via: 'spawn', project: '' },
+        { ts: now - 120, via: 'spawn', project: '/home/me/crew/workspace' },
+      ],
+    })
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const rows = await within(await screen.findByTestId('team-view')).findAllByTestId('team-week-row')
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Delegated run'),
+      expect.stringContaining('Delegated run in project workspace'),
+    ])
+    expect(rows.some((r) => /Chat/.test(r.textContent ?? ''))).toBe(false)
   })
 
   it('a team with no mates keeps its header and opens an empty team view', async () => {
@@ -905,10 +943,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }))
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced'))[0])
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })
@@ -1053,6 +1091,26 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
         key: 'member-oncall', mode: 'member', running: false,
         subagents_running: false, messages: 0,
       }] as never))
+    })
+    expect(screen.queryByTestId('member-presence-dot')).toBeNull()
+  })
+
+  it('keeps a member present while its only children are queued, then clears it', async () => {
+    // A child held behind the spawn caps has not started, so the slots frame
+    // reports subagents_running false; the queued depth still marks the session busy.
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', running: false }),
+    ])
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall', mode: 'member', running: false,
+        subagents_running: false, messages: 0,
+      }] as never))
+      store.dispatch(sseSubagentQueued({ slot: 'member-oncall', queued: 2 } as never))
+    })
+    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+    act(() => {
+      store.dispatch(sseSubagentQueued({ slot: 'member-oncall', queued: 0 } as never))
     })
     expect(screen.queryByTestId('member-presence-dot')).toBeNull()
   })

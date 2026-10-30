@@ -459,6 +459,26 @@ SESSION_RENAME_SCHEMA = ToolSchema(
     ],
 )
 
+#: Swatches in the sidebar color menu. Mirrors ``PALETTE_SIZE`` in
+#: ``website/src/utils/sessionColors.ts``; a test pins the two together. The
+#: color route itself accepts a wider index range for older palettes, but an
+#: agent is held to what the menu offers.
+SESSION_PALETTE_SIZE = 7
+
+#: ``session_set_color``'s accepted values: "none" clears, "0".."6" name the
+#: sidebar color menu's swatches. The tool schema and the route's parser both
+#: read this one set. The clear value is a non-empty word so that an input
+#: sanitized down to "" is refused by ``required`` instead of reading as a clear.
+SESSION_COLOR_CHOICES: frozenset[str] = frozenset({"none", *map(str, range(SESSION_PALETTE_SIZE))})
+
+SESSION_SET_COLOR_SCHEMA = ToolSchema(
+    tool_name="session_set_color",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("color", str, required=True, allowed=SESSION_COLOR_CHOICES),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -503,6 +523,30 @@ SESSION_SEND_SCHEMA = ToolSchema(
     ],
 )
 
+#: ``work_dispatch``: ``action=create``'s two fields, ``session_create``'s fields
+#: under the same bounds, the session's own title and the seed ``session_send`` takes.
+WORK_DISPATCH_SCHEMA = ToolSchema(
+    tool_name="work_dispatch",
+    fields=[
+        FieldSpec("title", str, required=True, max_len=200),
+        FieldSpec("acceptance", dict, required=True),
+        FieldSpec("agent", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("agent_kind", str, required=False, allowed=frozenset({"template"})),
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("session_title", str, required=False, default="", max_len=200),
+        FieldSpec("seed", str, required=True, max_len=MAX_LONG_STRING),
+        FieldSpec(
+            "model",
+            str,
+            required=False,
+            default="",
+            max_len=MAX_SHORT_STRING,
+            pattern=_MODEL_NAME_RE,
+        ),
+        FieldSpec("reasoning_effort", str, required=False, max_len=32),
+    ],
+)
+
 SESSION_BROADCAST_SCHEMA = ToolSchema(
     tool_name="session_broadcast",
     fields=[
@@ -519,9 +563,11 @@ SESSION_BROADCAST_SCHEMA = ToolSchema(
             allowed=frozenset({"queue", "steer"}),
             max_len=MAX_SHORT_STRING,
         ),
-        # Omitted means every session this caller created. Bounded to the same
-        # number the API enforces, so an oversized list is refused at the schema
-        # with the field named rather than after a round trip.
+        # Names the audience. An absent, null or empty list selects nobody: the
+        # backend (``broadcast_to_targets``) is the one place that refuses a call
+        # with no audience, so the rule cannot drift between two copies. Bounded to
+        # the same number the API enforces, so an oversized list is refused at the
+        # schema with the field named rather than after a round trip.
         FieldSpec(
             "targets",
             list,
@@ -530,6 +576,9 @@ SESSION_BROADCAST_SCHEMA = ToolSchema(
             item_max_len=MAX_SHORT_STRING,
             max_items=MAX_BROADCAST_TARGETS,
         ),
+        # The explicit opt-in to every session this caller created. A boolean is a
+        # scalar, so it survives clients that drop empty containers.
+        FieldSpec("all", bool),
     ],
 )
 
@@ -542,6 +591,14 @@ SESSION_ADOPT_SCHEMA = ToolSchema(
     tool_name="session_adopt",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+SESSION_HANDOFF_SCHEMA = ToolSchema(
+    tool_name="session_handoff",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("to", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
 

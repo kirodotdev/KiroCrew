@@ -23,7 +23,9 @@ A LEAF symlink is listed and readable — read-only — when its resolved target
 passes the session loader's admission gate against the source's LINK trust
 base (:func:`kiro_crew.context.steering_target_admissible`: ``$HOME`` for
 ``user``, the steering root itself for ``workspace`` — ``_link_trust_base``);
-it never resolves for write.
+it never resolves for write. A leaf symlink whose target lies OUTSIDE that
+base is listed by name only (``readable: False``): kiro-cli still loads it, but
+the dashboard never reads or names its target.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from ._shared import (
     _read_session_key,
     active_project_dir,
     active_project_state,
+    body_not_object_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,9 +332,11 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
     Each file entry: ``{key, name, rel, source, path, size, description,
     inclusion, inclusion_declared, file_match_pattern, linked, editable,
-    target}`` where ``key`` is ``"<source>/<rel>"``. ``linked`` marks a leaf
-    symlink admitted read-only; ``target`` carries its resolved display path
+    readable, target}`` where ``key`` is ``"<source>/<rel>"``. ``linked``
+    marks a leaf symlink; ``target`` carries its resolved display path
     (``""`` otherwise) and ``editable`` is False exactly for linked entries.
+    ``readable`` is False for a link whose target is outside the link trust
+    base: it is listed by name only, and its key does not resolve for read.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
@@ -386,6 +391,20 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 # so the entry is not editable.
                 link_base = _link_trust_base(source, root, base_resolved)
                 if not steering_target_admissible(resolved, link_base):
+                    # kiro-cli follows a leaf link wherever it points, so a
+                    # target outside the link trust base still loads. List the
+                    # name so the tab does not under-report, but never open,
+                    # read or name the target: past the path resolution above,
+                    # the decision comes from the resolved path string alone,
+                    # and the entry carries no target, size or head metadata.
+                    # Listing does show that the target exists (a dangling
+                    # link stays hidden). A sensitive target stays
+                    # hidden, as does anything inside the base that failed the
+                    # gate (a directory, a sensitive file).
+                    if _target_outside(resolved, link_base) and not is_sensitive_path(
+                        str(resolved)
+                    ):
+                        files.append(_unshown_link_entry(source, root, entry))
                     continue
             elif not resolved.is_file() or is_sensitive_path(str(resolved)):
                 continue
@@ -417,6 +436,7 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
                 "linked": linked,
                 "editable": not linked,
+                "readable": True,
                 "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
     return {
@@ -461,6 +481,47 @@ def _link_trust_base(source: str, root: Path, base_resolved: Path) -> Path:
     return base_resolved if source == "user" else root
 
 
+def _target_outside(resolved: Path, link_base: Path) -> bool:
+    """True iff *resolved* lies outside *link_base*, judged from the path alone.
+
+    No ``stat`` of *resolved*: the caller lists such a link without opening
+    its target. A link to the base directory itself is not outside it, and an
+    unresolvable base answers False, so both stay hidden.
+    """
+    try:
+        base_real = link_base.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return resolved != base_real and not str(resolved).startswith(str(base_real) + os.sep)
+
+
+def _unshown_link_entry(source: str, root: Path, entry: Path) -> dict[str, Any]:
+    """Listing entry for a leaf link whose target is outside its trust base.
+
+    The name is listed so the tab matches what kiro-cli loads, but nothing
+    about the target travels: no path, size or head metadata, and
+    ``readable`` is False because the read path refuses the key.
+    """
+    rel = entry.relative_to(root).as_posix()
+    meta = _empty_meta()
+    return {
+        "key": f"{source}/{rel}",
+        "name": entry.name,
+        "rel": rel,
+        "source": source,
+        "path": _redact_meta(_display_path(entry)),
+        "size": 0,
+        "description": meta["description"],
+        "inclusion": meta["inclusion"],
+        "inclusion_declared": meta["inclusion_declared"],
+        "file_match_pattern": meta["file_match_pattern"],
+        "linked": True,
+        "editable": False,
+        "readable": False,
+        "target": "",
+    }
+
+
 def _deepest_existing(path: Path) -> Path | None:
     """Walk up until an existing directory is found (bounded by the fs root)."""
     probe = path
@@ -487,6 +548,12 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
         probe_resolved = probe.resolve(strict=True)
     except OSError:
         return False
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe_resolved = strip_extended_length_prefix(probe_resolved)
+    base_resolved = strip_extended_length_prefix(base_resolved)
     return probe_resolved == base_resolved or base_resolved in probe_resolved.parents
 
 
@@ -1015,6 +1082,8 @@ async def api_steering_create(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content is required"}, status=400)
@@ -1272,6 +1341,8 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content is required"}, status=400)

@@ -15,6 +15,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.appearance_packs import MAX_PACK_ID_LEN, safe_pack_id
 from kiro_crew.config.loader import (
@@ -98,7 +99,14 @@ class TestSafeAvatar:
         assert _safe_avatar({"kind": "image", "file": "0" * 16 + ".exe"}) == {"kind": "image"}
         assert _safe_avatar({"kind": "image", "file": 3}) == {"kind": "image"}
 
-    def test_missing_traits_collapses(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_missing_traits_collapses"),
+            *named_cases("test_bare_ghost_still_collapses"),
+        ],
+    )
+    def test_a_bare_ghost_collapses(self):
         assert _safe_avatar({"kind": "ghost"}) == {}
 
     def test_non_dict_traits_collapses(self):
@@ -1060,9 +1068,6 @@ class TestSafeAvatarGhostReactions:
         got = _safe_avatar({"kind": "ghost", "traits": {}, "sounds": {"done": "ding"}})
         assert got == {"kind": "ghost", "sounds": {"done": "ding"}}
 
-    def test_bare_ghost_still_collapses(self):
-        assert _safe_avatar({"kind": "ghost"}) == {}
-
     def test_ghost_whose_reactions_all_drop_out_collapses(self):
         """``kind`` alone is not an override -- it must read as "no override"."""
         assert _safe_avatar({"kind": "ghost", "motions": {"done": "airhorn"}}) == {}
@@ -1087,36 +1092,60 @@ class TestSafeAvatarGhostReactions:
         got = _safe_avatar({**_GHOST, "motions": {state: motion}})
         assert got["motions"] == {state: motion}
 
-    def test_a_motion_from_another_states_vocabulary_is_dropped(self):
-        """Each state has its OWN list, and crossing them changes the reaction.
+    @pytest.mark.parametrize(
+        ("key", "given", "kept"),
+        [
+            # Each state has its OWN list, and crossing them changes the reaction:
+            # ``shake`` is the error vocabulary, so accepted on ``done`` it would
+            # play a failure animation on success.
+            pytest.param(
+                "motions",
+                {"done": "shake", "error": "shake"},
+                {"error": "shake"},
+                id="test_a_motion_from_another_states_vocabulary_is_dropped",
+            ),
+            pytest.param(
+                "motions",
+                {"done": "backflip", "error": "droop"},
+                {"error": "droop"},
+                id="test_unknown_motion_is_dropped",
+            ),
+            pytest.param(
+                "sounds",
+                {"working": "airhorn", "done": "chime"},
+                {"done": "chime"},
+                id="test_unknown_preset_is_dropped",
+            ),
+        ],
+    )
+    def test_a_reaction_outside_its_states_vocabulary_is_dropped(self, key, given, kept):
+        got = _safe_avatar({**_GHOST, key: given})
+        assert got[key] == kept
 
-        ``shake`` is the error vocabulary: accepted on ``done`` it would play a
-        failure animation on success, which is not what the author wrote.
-        """
-        got = _safe_avatar({**_GHOST, "motions": {"done": "shake", "error": "shake"}})
-        assert got["motions"] == {"error": "shake"}
-
-    def test_unknown_motion_is_dropped(self):
-        got = _safe_avatar({**_GHOST, "motions": {"done": "backflip", "error": "droop"}})
-        assert got["motions"] == {"error": "droop"}
-
-    def test_motion_none_is_kept_as_explicit_stillness(self):
-        """Distinct from an absent state: one state can opt out of a fleet motion."""
-        got = _safe_avatar({**_GHOST, "motions": {"done": "none", "error": "shake"}})
-        assert got["motions"] == {"done": "none", "error": "shake"}
+    @pytest.mark.parametrize(
+        ("key", "given"),
+        [
+            # Distinct from an absent state: one state can opt out of a fleet motion.
+            pytest.param(
+                "motions",
+                {"done": "none", "error": "shake"},
+                id="test_motion_none_is_kept_as_explicit_stillness",
+            ),
+            pytest.param(
+                "sounds",
+                {"working": "none", "done": "chime"},
+                id="test_sound_none_is_kept_as_explicit_silence",
+            ),
+        ],
+    )
+    def test_none_is_kept_as_an_explicit_opt_out(self, key, given):
+        got = _safe_avatar({**_GHOST, key: given})
+        assert got[key] == given
 
     @pytest.mark.parametrize("preset", _AVATAR_SOUNDS)
     def test_every_shipped_preset_is_accepted(self, preset):
         got = _safe_avatar({**_GHOST, "sounds": {"working": preset}})
         assert got["sounds"] == {"working": preset}
-
-    def test_sound_none_is_kept_as_explicit_silence(self):
-        got = _safe_avatar({**_GHOST, "sounds": {"working": "none", "done": "chime"}})
-        assert got["sounds"] == {"working": "none", "done": "chime"}
-
-    def test_unknown_preset_is_dropped(self):
-        got = _safe_avatar({**_GHOST, "sounds": {"working": "airhorn", "done": "chime"}})
-        assert got["sounds"] == {"done": "chime"}
 
     def test_empty_objects_are_omitted_not_stored(self):
         got = _safe_avatar({**_GHOST, "motions": {}, "sounds": {}})

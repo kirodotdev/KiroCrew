@@ -35,6 +35,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.providers.acp")
 
 
+def _bound_remotely(session_key: str | None) -> bool:
+    """The runtime arm's test: no choices file is local without a read; unreadable is remote."""
+    from kiro_crew.providers.acp_runtime_start import _choices_file_may_exist
+    from kiro_crew.session_environment import session_runs_remotely
+
+    return (
+        bool(session_key)
+        and _choices_file_may_exist(session_key)
+        and session_runs_remotely(session_key)
+    )
+
+
 async def start(self: AcpProvider) -> None:
     if self.memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
@@ -67,6 +79,12 @@ async def start(self: AcpProvider) -> None:
             await self._note_zero_tool_servers()
     else:
         # ── CC path: legacy AcpClient ──
+        # Only the runtime arm can fence a remote workspace, so refuse here.
+        if await asyncio.to_thread(_bound_remotely, getattr(self._client, "_session_key", None)):
+            from kiro_crew.acp.runtime import AcpRuntimeError
+            from kiro_crew.session_environment import REMOTE_NEEDS_KAS
+
+            raise AcpRuntimeError(REMOTE_NEEDS_KAS)
         self._client.member_context = self.member_context
         await self._client.ensure_ready()
         # Startup records the advertised spelling of the pin, or the backend

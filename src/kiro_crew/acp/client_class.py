@@ -18,14 +18,17 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
+from kiro_crew.acp import client_copilot as _client_copilot
+from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
+from kiro_crew.acp import client_native_children as _client_native_children
 from kiro_crew.acp import client_permissions as _client_permissions
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
@@ -44,6 +47,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
 from kiro_crew.acp.client_timeouts import _CANCEL_GRACE_SECS
 from kiro_crew.acp.client_turn_control import _CLIENT_STEERING_REQUEST_METHODS, _ConcurrentSteerTurn
+from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
@@ -53,6 +57,7 @@ from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -76,6 +81,8 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.harness.pi_steer import PiSteerChannel
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
 #: The client's own logger: this code logged under that name before the split.
@@ -99,12 +106,32 @@ class AcpClient:
     _session_mcp_inline_settings: dict[str, Any] | None
     _stdin_lock: asyncio.Lock
     _steering_waiter_map: dict[int, asyncio.Future[Any]]
+    _unanswered_steering_id_set: set[int]
     _windows_tree_cleanup_failed: bool
     if TYPE_CHECKING:
         _native_skill_projection: NativeSkillProjection | None
     # The scrub this session applies to what a harness reports back, handed to the
     # host adapters that quote such a value (``ProcessSession._scrub_observed``).
     _scrub_observed = staticmethod(_scrub_observed)
+
+    # Idle reader state (see _maybe_start_idle_reader). Class-level so a client
+    # built without __init__ reads the idle defaults.
+    #: Called with this client when the agent starts a turn on its own between
+    #: prompts. The callee then reads that turn with ``stream_unsolicited``.
+    on_agent_turn: Callable[[AcpClient], None] | None = None
+    _idle_reader: asyncio.Task[None] | None = None
+    # Readers currently claiming stdout; the idle reader runs only at zero.
+    _stdout_claims: int = 0
+    # The frame the idle reader saw an agent-started turn begin with, which it
+    # left in _buffer (see _agent_turn_pending).
+    _agent_turn_start: JsonRpcMessage | None = None
+    # _install_idle_reader has bound its steps on this client.
+    _idle_reader_installed: bool = False
+    # Held by stream_unsolicited while it reads; a prompt waits on it (see
+    # _install_idle_reader).
+    _agent_turn_gate: asyncio.Lock | None = None
+    # Prompts past that gate and not yet finished.
+    _prompts_in_flight: int = 0
 
     def __init__(
         self,
@@ -228,6 +255,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
+        # A member session's spec ``tools`` allowlist on a mirror-less array host
+        # (pi), from the same parse; the pooled stubs pass through it.
+        self._member_stub_allowlist: ToolsAllowlist | None = None
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()
@@ -296,6 +326,21 @@ class AcpClient:
         # be republished before each request that starts a pi process and removed
         # once the session is established (``acp.harness.pi``).
         self._pi_mcp_handoff: tuple[str, bytes] = ("", b"")
+        # The pi launch's steer channel (``acp.harness.pi_steer``), or None, and the
+        # client's state for it (``acp.pi_steer_turn``): the open prompt turn, the
+        # steers written into it by sequence number, and the write/close lock.
+        self._pi_steer_channel: PiSteerChannel | None = None
+        self._pi_steer_turn: int | None = None
+        self._pi_steers_pending: dict[int, str] = {}
+        self._pi_steer_lock = asyncio.Lock()
+        # The Copilot CLI launch MCP config file this spawn wrote, removed once the
+        # session exists (``acp.harness.copilot``).
+        self._copilot_mcp_config_path = ""
+        # Length of the notification buffer when the routing write answered: the
+        # config reports below it were superseded by that answer.
+        self._routing_answer_floor = 0
+        # Mode reports the start's drain read, kept for the drift check after it.
+        self._drain_mode_reports: list = []
         # Every server name that handoff carried (the member mounts AND the pooled
         # stubs), which is what a pi MCP tool title is spelled after.
         self._pi_mcp_server_names: tuple[str, ...] = ()
@@ -477,6 +522,19 @@ class AcpClient:
         # half was refused, or ``""``. Set by ``_push_model_via_effort_split``.
         self.model_pin_partial: str = ""
         self._child_pids: dict[int, ChildRecord] = {}  # pid → (start_time, basename)
+        # Claude Code's native subagents (``client_native_children``): the child ids
+        # this session has seen, bounded by NATIVE_CHILD_ROSTER_CAP with the overflow
+        # counted, one card row per id, the Agent call each delegation came from,
+        # and the ids listed this turn, in arrival order.
+        self._native_child_sids: set[str] = set()
+        self._native_child_overflow = 0
+        self._native_child_rows: dict[str, dict[str, Any]] = {}
+        self._native_child_by_tool_use: dict[str, str] = {}
+        self._native_child_turn: dict[str, None] = {}
+        # One ``StreamRedactor`` per native child whose text is streaming, keyed by
+        # its tracked id (so bounded by the same cap), flushed and dropped when the
+        # roster reports the child done or failed (``client_turn``).
+        self._native_child_redactors: dict[str, Any] = {}
         self.last_prompt_stats = AcpPromptStats()
         # Credits kiro reported while no turn was running (a compaction waited
         # on between turns), held for the next turn's bill; see _track_metadata.
@@ -530,6 +588,11 @@ class AcpClient:
         # permission event can carry diff_path for the edit gate when the params
         # themselves carry no path key. Mirrors AcpSessionHandle's cache.
         self._tool_call_diff_path: dict[str, str] = {}
+        # Copilot CLI tool_call ids whose title more than one placed MCP server could
+        # have produced; their permission request is refused.
+        self._copilot_ambiguous_mcp_calls: set[str] = set()
+        # Copilot CLI kind-``other`` tool_call titles no placed server name matched.
+        self._copilot_unmatched_titles: dict[str, str] = {}
         # Map JSON-RPC request id → {"once": optionId, "always": optionId} so
         # the host can echo back the exact optionIds the agent advertised.
         # kiro-cli uses "allow_once"/"allow_always"; claude-agent-acp uses
@@ -540,6 +603,12 @@ class AcpClient:
         # put the request through the security floor (``permission_floor``)
         # whichever consumer answers it.
         self._permission_gate_events: dict[str | int, AcpEvent] = {}
+        # Consumers that can put an MCP elicitation to a person opt IN; for
+        # everyone else the client declines the request itself before it
+        # would be yielded (see client_elicitation). Request id -> the parsed
+        # ask, for every elicitation yielded and not yet answered.
+        self.accepts_elicitation: bool = False
+        self._pending_elicitations: dict[str | int, ElicitationRequest] = {}
         self._stderr_lines: deque[str] = deque(maxlen=20)
         # Latched on this process's FIRST non-thinking text chunk, tool call or
         # tool result, cleared with the rest of the process state on respawn:
@@ -677,6 +746,10 @@ class AcpClient:
         # tool_call_id — the RESULT event carries no title. See
         # _maybe_fire_post_tool_hooks.
         self._observed_tool_calls: dict[str, tuple[str, str]] = {}
+        # This turn's tool-call ids whose SEL record is settled: the call asked the
+        # host (its consumer writes the record) or the unasked-call audit wrote it.
+        # See _maybe_audit_unasked_tool_call.
+        self._sel_settled_tool_calls: set[str] = set()
         self._last_stop_reason: str = ""
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
@@ -695,6 +768,11 @@ class AcpClient:
         The version this process RUNS — see :attr:`AcpRuntime.agent_version`.
         """
         return getattr(self, "_agent_version", "")
+
+    @property
+    def initialize_result(self) -> dict:
+        """The agent's ``initialize`` result (``{}`` until then)."""
+        return getattr(self, "_initialize_result", {})
 
     @property
     def spec_zero_tools(self) -> bool:
@@ -729,9 +807,11 @@ class AcpClient:
     _claude_session_mcp_servers = _client_mcp_array._claude_session_mcp_servers
     _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
+    _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
+    _discard_copilot_mcp_config = _client_mcp_array._discard_copilot_mcp_config
     _goose_session_mcp_servers = _client_mcp_array._goose_session_mcp_servers
     _invalidate_session_mcp_projection = _client_mcp_array._invalidate_session_mcp_projection
     _prepare_session_mcp = _client_mcp_array._prepare_session_mcp
@@ -777,11 +857,17 @@ class AcpClient:
         case for a zero-tool agent) would otherwise leave ``_spec_denied_tools`` empty
         and this property False, which is exactly the auto-approve path the zero-tool
         ban exists to close.
+
+        Copilot CLI judges too: it publishes no identity channel, so its MCP identity is
+        recovered from the ``tool_call`` frame, which only the full extractor reads, and
+        a call whose identity cannot be established is refused on every answering site,
+        the auto-approve one included.
         """
         return (
             bool(self._spec_denied_tools)
             or self._enforces_zero_tool_ban
             or self.backend in ACP_BACKENDS_META_IDENTITY
+            or self._is_copilot
         )
 
     @property
@@ -803,6 +889,10 @@ class AcpClient:
     @property
     def _is_deepseek(self) -> bool:
         return self.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def _is_copilot(self) -> bool:
+        return self.backend == ACP_BACKEND_COPILOT
 
     @property
     def _model_registry_namespace(self) -> str:
@@ -862,6 +952,8 @@ class AcpClient:
     _settle_claude_settings_seed = _client_seed_ownership._settle_claude_settings_seed
     release_settings_seed_claim = _client_seed_ownership.release_settings_seed_claim
     _foreign_settings_owner = _client_seed_ownership._foreign_settings_owner
+    _foreign_settings_is_crew_seed = _client_seed_ownership._foreign_settings_is_crew_seed
+    settings_withheld_cause = _client_seed_ownership.settings_withheld_cause
     _settle_claude_settings_seed_locked = _client_seed_ownership._settle_claude_settings_seed_locked
 
     @staticmethod
@@ -1229,8 +1321,22 @@ class AcpClient:
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _note_goose_version = _client_permissions._note_goose_version
+    _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
     _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
+    _tripwire_session_config = _client_permissions._tripwire_session_config
+    _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
+    _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed
+    _confirm_copilot_mcp_identity = _client_copilot._confirm_copilot_mcp_identity
+    _tripwire_permission_state = _client_permissions._tripwire_permission_state
+    _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
+    _refuse_session_config_drift = _client_permissions._refuse_session_config_drift
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
+    # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
+    _handle_elicitation_request = _client_elicitation._handle_elicitation_request
+    _audit_elicitation_decision = _client_elicitation._audit_elicitation_decision
+    _decline_elicitation = _client_elicitation._decline_elicitation
+    answer_elicitation = _client_elicitation.answer_elicitation
+    cancel_pending_elicitations = _client_elicitation.cancel_pending_elicitations
     _audit_spec_restriction = _client_permissions._audit_spec_restriction
     _deny_zero_tools = _client_permissions._deny_zero_tools
     _deny_spec_disabled_tool = _client_permissions._deny_spec_disabled_tool
@@ -1254,6 +1360,16 @@ class AcpClient:
     _read_message = _client_transport._read_message
     _wait_for_response = _client_transport._wait_for_response
     _drain_notifications = _client_transport._drain_notifications
+    _install_idle_reader = _client_transport._install_idle_reader
+    _claiming_stdout = _client_transport._claiming_stdout
+    _read_turn = _client_transport._read_turn
+    _claim_stdout = _client_transport._claim_stdout
+    _release_stdout = _client_transport._release_stdout
+    _stop_idle_reader = _client_transport._stop_idle_reader
+    _cancel_idle_reader = _client_transport._cancel_idle_reader
+    _agent_turn_pending = _client_transport._agent_turn_pending
+    _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
+    _idle_read_loop = _client_transport._idle_read_loop
 
     # Prepare an ``AcpClient`` spawn before the process exists: ``kiro_crew.acp.client_spawn_env``.
     _prepare_spawn_workspace = _client_spawn_env._prepare_spawn_workspace
@@ -1276,9 +1392,23 @@ class AcpClient:
     send_message = _client_turn.send_message
     send_message_stream = _client_turn.send_message_stream
     stream_events = _client_turn.stream_events
+    stream_unsolicited = _client_turn.stream_unsolicited
     _dispatch_events = _client_turn._dispatch_events
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response
+
+    # Read Claude Code's native subagents on this session: ``kiro_crew.acp.client_native_children``.
+    _native_children_declared = _client_native_children._native_children_declared
+    _reset_native_child_turn = _client_native_children._reset_native_child_turn
+    _native_child_roster = _client_native_children._native_child_roster
+    _note_subagent_update = _client_native_children._note_subagent_update
+    _note_session_message = _client_native_children._note_session_message
+    _native_child_of = _client_native_children._native_child_of
+    _native_child_events = _client_native_children._native_child_events
+    # Their redaction before the turn yields them, and the flush of the text it
+    # holds for a turn cut short: ``kiro_crew.acp.client_turn``.
+    _redact_native_child_events = _client_turn._redact_native_child_events
+    flush_native_child_text = _client_turn.flush_native_child_text
 
     # Control an ``AcpClient`` turn from outside it: ``kiro_crew.acp.client_turn_control``.
     command_result = _client_turn_control.command_result
@@ -1289,6 +1419,7 @@ class AcpClient:
     steer = _client_turn_control.steer
     _steering_request_ready = _client_turn_control._steering_request_ready
     _steering_waiters = _client_turn_control._steering_waiters
+    _unanswered_steering_ids = _client_turn_control._unanswered_steering_ids
     _settle_steering_answer = _client_turn_control._settle_steering_answer
     _steer_via_steering_request = _client_turn_control._steer_via_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
@@ -1318,6 +1449,9 @@ class AcpClient:
     _steering_turn_req: int | None = None
     # Whether the adapter advertised ``_meta.steering.supported`` at ``initialize``.
     _steering_advertised: bool = False
+    # The whole ``initialize`` result, set by the handshake; read through
+    # :attr:`initialize_result`, which answers ``{}`` before it.
+    _initialize_result: dict
     # True while the turn's dispatch is parked on a permission event its consumer
     # has not answered: the answer to a steer sent then would not be read until
     # the approval is, past the steer's own wait.
@@ -1399,12 +1533,15 @@ class AcpClient:
     # Turn an ``AcpClient`` session's tool-call frames into events, and audit them: ``kiro_crew.acp.client_tool_events``.
     _extract_text_chunk = _client_tool_events._extract_text_chunk
     _maybe_audit_tool_call = _client_tool_events._maybe_audit_tool_call
+    _maybe_audit_unasked_tool_call = _client_tool_events._maybe_audit_unasked_tool_call
+    _note_asked_tool_call = _client_tool_events._note_asked_tool_call
     _maybe_fire_pre_tool_hooks = _client_tool_events._maybe_fire_pre_tool_hooks
     _maybe_fire_post_tool_hooks = _client_tool_events._maybe_fire_post_tool_hooks
     _emit_tool_interrupted_sel = _client_tool_events._emit_tool_interrupted_sel
     _track_tool_call = _client_tool_events._track_tool_call
     _extract_tool_event = _client_tool_events._extract_tool_event
     _extract_tool_call_update = _client_tool_events._extract_tool_call_update
+    _recover_copilot_mcp_identity = _client_tool_events._recover_copilot_mcp_identity
     _extract_tool_call_refinement = _client_tool_events._extract_tool_call_refinement
     _read_new_tool_results = _client_tool_events._read_new_tool_results
     _read_new_tool_results_sync = _client_tool_events._read_new_tool_results_sync

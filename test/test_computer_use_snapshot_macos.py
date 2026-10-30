@@ -56,6 +56,7 @@ import pytest
 from computer_use_snapshot_macos_helpers import (  # noqa: F401 -- the fixture is requested by name
     _APP,
     _req,
+    _stage_element,
     _stage_window,
     fakes_fixture,
 )
@@ -69,7 +70,7 @@ from computer_use_snapshot_macos_helpers import (  # noqa: F401 -- the fixture i
 # broke on the 3.10 shard. pytest inserts each test file's directory on
 # ``sys.path`` (rootdir-relative ``consider_namespace_packages``-free import mode),
 # so the bare module name is the form that always resolves.
-from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _Fakes
+from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _TID_ELEMENT, _FakeFn, _Fakes
 
 from kiro_crew.computer_use import (
     macos_driver,
@@ -246,6 +247,17 @@ class TestElectronOptIn:
         assert sets, "a tiny tree should have prompted the opt-in retry"
 
 
+def _copy_of_the_app_element(fakes: _Fakes) -> int:
+    """A fresh AXUIElement reference naming the application element.
+
+    The bare ``_H_ELEMENT`` handle is not on the fake heap, so ``ax_retained_elements``
+    would drop it as a non-element before any self-reference check ran. A real
+    ``AXWindows`` read hands back its own reference to the app, which ``CFEqual``
+    resolves to the app; ``origin`` models exactly that.
+    """
+    return fakes.heap.new(_TID_ELEMENT, None, origin=_H_ELEMENT)
+
+
 class TestWindowSelection:
     def test_selects_by_title_stem_when_ids_do_not_correlate(self, fakes: _Fakes):
         """AXWindows and the CGWindowList are independently ordered.
@@ -269,6 +281,45 @@ class TestWindowSelection:
         )
         snap = snapshot_macos.build_snapshot(app, _req())
         assert snap.window_title == "Quarterly Report"
+
+    def test_the_application_listed_as_its_own_window_is_not_walked(self, fakes: _Fakes):
+        """A degraded AX server answers ``AXWindows`` with the application element
+        first. The last-resort ``windows[0]`` must not pick it: the walk would then
+        render the whole app as one window, repeated down to the node budget."""
+        window = _stage_window(fakes, children=[{"role": "AXButton", "title": "OK"}])
+        itself = _copy_of_the_app_element(fakes)
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([itself, window])
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+        assert snap.window_title == "Fixture Window"
+        assert snap.truncated is False
+
+    def test_an_application_with_only_itself_as_a_window_says_so(self, fakes: _Fakes):
+        itself = _copy_of_the_app_element(fakes)
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([itself])
+        with pytest.raises(ComputerUseError) as excinfo:
+            snapshot_macos.build_snapshot(_APP, _req())
+        assert "listed the application itself" in str(excinfo.value)
+
+    def test_an_application_with_no_windows_keeps_the_ordinary_message(self, fakes: _Fakes):
+        """An empty ``AXWindows`` read back with success is an app whose last
+        window closed, not a malformed AX server."""
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([])
+        with pytest.raises(ComputerUseError) as excinfo:
+            snapshot_macos.build_snapshot(_APP, _req())
+        assert "exposed no accessible window (AX error 0)" in str(excinfo.value)
+        assert "listed the application itself" not in str(excinfo.value)
+
+    def test_an_element_listed_as_its_own_child_is_walked_once(self, fakes: _Fakes):
+        """``AXChildren`` naming the element itself would push it one level deeper
+        on every pass, so the tree would be one node repeated to the budget and
+        the screenshot would be suppressed as truncated."""
+        window = _stage_window(fakes)
+        button = _stage_element(fakes, {"role": "AXButton", "title": "OK"})
+        fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([window, button])
+        snap = snapshot_macos.build_snapshot(_APP, _req(max_nodes=8))
+        assert [rec.role for rec in snap.elements].count("AXWindow") == 1
+        assert any(rec.title == "OK" for rec in snap.elements)
+        assert snap.truncated is False
 
     def test_title_stem_keeps_only_the_text_before_the_cg_ellipsis(self):
         """CoreGraphics elides the MIDDLE of a long title with U+2026.
@@ -566,15 +617,225 @@ class TestMacOSDriverHappyPaths:
 
     def test_scroll_falls_back_to_a_wheel_event_when_the_ax_action_is_refused(self, fakes: _Fakes):
         """The live finding: an AXScrollArea ADVERTISED AXScrollDownByPage and then
-        returned kAXErrorActionUnsupported. The advertised list is never trusted."""
+        returned kAXErrorActionUnsupported. The advertised list is never trusted.
+
+        The wheel event is aimed at the element's centre: unaimed, it carried the
+        operator's pointer position, and a background TextEdit dropped it while the
+        tool reported "scrolled"."""
+        window = _stage_window(
+            fakes,
+            children=[{"role": "AXScrollArea", "frame": (100.0, 200.0, 400.0, 300.0)}],
+            bounds=(50.0, 60.0, 800.0, 600.0),
+        )
+        rec = next(
+            r
+            for r in snapshot_macos.build_snapshot(_APP, _req()).elements
+            if r.role == "AXScrollArea"
+        )
+        child = fakes.heap.payload(fakes.ax.attrs[(window, "AXChildren")])[0]
+        for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
+            fakes.ax.perform_results[(child, action)] = macos_ffi.AX_ERR_ACTION_UNSUPPORTED
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert result.ok is True
+        assert "wheel" in result.text
+        assert "not confirmed" in result.text
+        assert [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+        located = [args[1] for (n, args) in fakes.cg.calls if n == "CGEventSetLocation"]
+        assert located == [(300.0, 350.0)]
+
+    def test_scroll_refuses_a_wheel_event_it_cannot_aim(self, fakes: _Fakes):
+        """No on-screen frame means no point to aim at, and an unaimed wheel event
+        lands under the operator's pointer instead. So nothing is posted."""
         backend, rec, window = self._staged(fakes)
-        kids = fakes.ax.attrs[(window, "AXChildren")]
-        child = fakes.heap.payload(kids)[0]
+        child = fakes.heap.payload(fakes.ax.attrs[(window, "AXChildren")])[0]
         for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
             fakes.ax.perform_results[(child, action)] = macos_ffi.AX_ERR_ACTION_UNSUPPORTED
         result = backend.scroll(_APP, rec, "down", 1.0)
+        assert result.ok is False
+        assert "pagedown" in result.text
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def _staged_scroll_bar(
+        self,
+        fakes: _Fakes,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        position: float,
+        enabled: bool = True,
+        moves: bool = True,
+        stale_reads: int = 0,
+        max_moves: int = 99,
+    ):
+        """A TextEdit-shaped scroll area: its AX scroll action is refused, and its
+        vertical bar exposes both page areas. Each accepted increment press moves the
+        bar 0.6 toward the end when *moves*, so a long request reaches the bottom.
+        The bar's AXValue keeps reporting the old position for *stale_reads* reads
+        after each press, as an animated scroll does on a real Mac."""
+        monkeypatch.setattr(macos_driver, "_SCROLL_SETTLE_INTERVAL_SECS", 0.0)
+        area, bar = fakes.new_element(), fakes.new_element()
+        increment, decrement = fakes.new_element(), fakes.new_element()
+        _stage_window(
+            fakes,
+            children=[
+                {
+                    "handle": area,
+                    "role": "AXScrollArea",
+                    "frame": (100.0, 200.0, 400.0, 300.0),
+                    "children": [
+                        {
+                            "handle": bar,
+                            "role": "AXScrollBar",
+                            "children": [
+                                {
+                                    "handle": increment,
+                                    "role": "AXButton",
+                                    "subrole": "AXIncrementPage",
+                                },
+                                {
+                                    "handle": decrement,
+                                    "role": "AXButton",
+                                    "subrole": "AXDecrementPage",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+            bounds=(50.0, 60.0, 800.0, 600.0),
+        )
+        fakes.ax.attrs[(area, "AXVerticalScrollBar")] = bar
+        fakes.ax.attrs[(bar, "AXEnabled")] = fakes.new_bool(enabled)
+        fakes.ax.attrs[(bar, "AXValue")] = fakes.new_number(position)
+        for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
+            fakes.ax.perform_results[(area, action)] = macos_ffi.AX_ERR_ATTRIBUTE_UNSUPPORTED
+        presses: list[int] = []
+        pending: dict[str, float | int] = {}
+        perform = fakes.ax.AXUIElementPerformAction
+        copy_attr = fakes.ax.AXUIElementCopyAttributeValue
+
+        def press(elem, name_ref):
+            result = perform(elem, name_ref)
+            identity = fakes.heap.identity(elem)
+            if identity in (increment, decrement) and moves:
+                presses.append(identity)
+                if len(presses) > max_moves:
+                    return result
+                current = fakes.heap.payload(fakes.ax.attrs[(bar, "AXValue")])
+                value = (
+                    min(1.0, current + 0.6) if identity == increment else max(0.0, current - 0.6)
+                )
+                pending.update(value=value, stale=stale_reads)
+            return result
+
+        def read(elem, key, out_ref):
+            if (
+                fakes.heap.identity(elem) == bar
+                and fakes.heap.payload(key) == "AXValue"
+                and pending
+            ):
+                if pending["stale"]:
+                    pending["stale"] -= 1
+                else:
+                    fakes.ax.attrs[(bar, "AXValue")] = fakes.new_number(pending.pop("value"))
+                    pending.clear()
+            return copy_attr(elem, key, out_ref)
+
+        fakes.ax.AXUIElementPerformAction = _FakeFn(press)
+        fakes.ax.AXUIElementCopyAttributeValue = _FakeFn(read)
+        rec = next(
+            r
+            for r in snapshot_macos.build_snapshot(_APP, _req()).elements
+            if r.role == "AXScrollArea"
+        )
+        return rec, presses
+
+    def test_scroll_presses_the_scroll_bar_page_area_and_confirms_it_moved(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """TextEdit refuses AXScrollDownByPage (-25205) and ignores a wheel event
+        aimed at its centre. Its scroll bar's page area does scroll, and the bar's
+        position confirms it, so no wheel event is posted."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 20.0)
         assert result.ok is True
-        assert "wheel" in result.text
+        assert "2 of 20 page(s)" in result.text
+        assert "reaching the bottom" in result.text
+        assert "0% -> 100%" in result.text
+        assert len(presses) == 2
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_reports_a_disabled_scroll_bar_as_nothing_to_scroll(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """TextEdit disables the bar while the text fits. Posting a wheel event then
+        would report a scroll that cannot happen."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, enabled=False)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert result.ok is False
+        assert "already fits" in result.text
+        assert not presses
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_at_the_end_says_so_without_pressing(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=1.0)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 3.0)
+        assert result.ok is True
+        assert "already at the bottom" in result.text
+        assert not presses
+
+    @pytest.mark.parametrize(
+        ("position", "direction", "end"),
+        [(0.9995, "down", "bottom"), (0.0005, "up", "top")],
+    )
+    def test_scroll_near_the_end_still_presses_the_page_area(
+        self,
+        fakes: _Fakes,
+        monkeypatch: pytest.MonkeyPatch,
+        position: float,
+        direction: str,
+        end: str,
+    ):
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=position)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, direction, 1.0)
+        assert result.ok is True
+        assert f"reaching the {end}" in result.text
+        assert len(presses) == 1
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_waits_for_an_animated_scroll_bar_to_settle(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A press animates the scroll, so the bar still reads its old position right
+        after it. Read at once, the press looks like a no-op and the tool falls
+        through to a 20-page wheel scroll."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, stale_reads=3)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 20.0)
+        assert result.ok is True
+        assert "2 of 20 page(s)" in result.text
+        assert "0% -> 100%" in result.text
+        assert len(presses) == 2
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_counts_only_the_presses_that_moved_the_view(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A last press that moved nothing is not a page scrolled."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, max_moves=1)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 3.0)
+        assert result.ok is True
+        assert "1 of 3 page(s)" in result.text
+        assert "0% -> 60%" in result.text
+        assert len(presses) == 2
+
+    def test_scroll_falls_through_to_the_wheel_when_the_page_area_moves_nothing(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An unchanged position is not success: the press reached nothing."""
+        rec, _ = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, moves=False)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert "not confirmed" in result.text
         assert [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
 
     def test_scroll_rejects_an_unknown_direction(self, fakes: _Fakes):
@@ -917,14 +1178,14 @@ class TestReviewRegressions:
 
 
 class TestChildCapMarksTheWalkTruncated:
-    """The per-node child cap must not silently hide the tail (reviewer finding).
+    """The per-node child cap must not silently hide the tail.
 
-    ``MAX_CHILDREN_PER_NODE`` bounds one pathological container, but it dropped the
-    remaining children without setting any flag — so ``saw_secure`` reflected only
-    the first 512 while ``truncated`` stayed False, the walk reported itself
+    ``MAX_CHILDREN_PER_NODE`` bounds one pathological container. Dropping the
+    remaining children without setting any flag would leave ``saw_secure`` covering
+    only the first 512 while ``truncated`` stays False: the walk reports itself
     COMPLETE and non-secure, and ``capture_snapshot_image``'s fail-closed check (it
-    refuses to capture a truncated walk) had nothing to refuse on. A password field
-    as child 513 therefore left the whole window's pixels capturable.
+    refuses to capture a truncated walk) has nothing to refuse on. A password field
+    as child 513 would then leave the whole window's pixels capturable.
     """
 
     def _wide_window(self, fakes: _Fakes, count: int):
@@ -1163,10 +1424,9 @@ class TestReviewerFoundRegressions:
 class TestOverlayWindowsBlockPointerClicks:
     """A non-normal window over the target must REFUSE, not be skipped.
 
-    Reviewer finding, and a hole in the first version of ``pid_owns_point``: it
-    ``continue``d past non-layer-0 entries, so a notification banner or an open menu
-    sitting on top of the authorized app was ignored and the app UNDERNEATH granted
-    permission — for a click the overlay would actually have swallowed.
+    If ``pid_owns_point`` skipped non-layer-0 entries, a notification banner or an
+    open menu sitting on top of the authorized app would be ignored and the app
+    UNDERNEATH would grant permission — for a click the overlay actually swallows.
 
     ``list_apps`` still skips those layers, for the unrelated reason that they are
     not addressable TARGETS. The two functions answer different questions.

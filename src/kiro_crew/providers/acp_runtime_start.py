@@ -12,14 +12,15 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 ``_history_replay_needed``, ``_shared_scratch``.
 
-Instance fields read: ``_child_fidelity_aware``, ``_crew_agent``, ``_on_gate_acquired``,
-``_on_gate_queued``, ``_tool_search``, ``member_context``, ``memory_mode``,
-``start_priority``.
+Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
+``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
+``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -201,6 +202,26 @@ def _launch_agent(provider: AcpProvider) -> str:
     return launch if isinstance(launch, str) and launch and provider.is_kiro_backend else ""
 
 
+def _choices_file_may_exist(session_key: str | None = None) -> bool:
+    """Whether session choices may be on disk, or ``session_key`` keeps the marker of
+    a binding whose file is gone; a check that fails counts as yes. Never while the
+    developer flag is off: then every session runs here."""
+    from kiro_crew.coder.session_launch import SessionEnvironmentChoices
+    from kiro_crew.session_environment import choices_path, session_environments_enabled
+
+    if not session_environments_enabled():
+        return False
+    try:
+        choices_path().stat()
+    except (FileNotFoundError, NotADirectoryError):
+        if not session_key:
+            return False
+        return SessionEnvironmentChoices(choices_path()).may_be_bound(session_key)
+    except OSError:
+        return True
+    return True
+
+
 async def _start_kiro_runtime(self: AcpProvider) -> None:
     """Spawn an AcpRuntime + session; time the kiro cold-start split.
 
@@ -232,6 +253,11 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
         outcome = "auth_required"
         raise
     finally:
+        # A remote start's stage ends with the start, so a Stop never leaves one stale.
+        from kiro_crew.session_environment import clear_start_stage
+
+        key = meta.get("session_key")
+        clear_start_stage(key if isinstance(key, str) else None)
         self._emit_kiro_startup_metric(t0, phases, outcome, meta)
 
 
@@ -387,8 +413,14 @@ async def _load_session_with_retry(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    require_replay: bool = False,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
+
+    ``require_replay`` is passed through to ``AcpRuntime.load_session``: the
+    caller sets it for KAS, which answers a load of a missing record with a new
+    empty one that looks resumed, so only its replayed turns prove history came
+    back. A refused load takes the fresh-session-plus-replay path.
 
     F2 load-recovery (Phase 1). A kiro-cli holder killed uncleanly can leave
     its per-session lock held for a short window; re-issuing session/load a
@@ -415,6 +447,7 @@ async def _load_session_with_retry(
             member_session_key=member_session_key,
             session_key=session_key,
             channel_id=channel_id,
+            require_replay=require_replay,
         )
 
     swept = False
@@ -567,6 +600,81 @@ async def _start_kiro_runtime_impl(
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
     start_priority = self.start_priority
+    # Persisted choices, including inherited subagent choices, outlive configuration.
+    from kiro_crew.coder.session_launch import prepare_for_session
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.session_environment import report_start_stage, session_environments_enabled
+
+    config = live.snapshot()
+    if config is None:
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+    section = config.session_environments
+    # Who governance judges: a crew member runs on a template, and its own name
+    # is what a task profile binds to; a template-only session is its template.
+    governed_agent = self._crew_agent or agent or "kirocrew"
+    remote = (
+        await prepare_for_session(
+            session_key, before_compute=runtime.check_remote_workspace_supported
+        )
+        if session_environments_enabled()
+        and (
+            bool(
+                section.coder_url
+                or section.profiles
+                or getattr(section, "sprites_profiles", None)
+                or getattr(section, "boxd_profiles", None)
+            )
+            or await asyncio.to_thread(_choices_file_may_exist, session_key)
+        )
+        else None
+    )
+
+    async def attach_remote_workspace(target: AcpRuntime) -> None:
+        # A fresh guest worker per runtime: the bridge spends its one-use secret.
+        assert remote is not None
+        target.check_remote_workspace_supported()
+        report_start_stage(session_key, "connecting")
+        server = await remote.launch.workspace_server(remote.workdir)
+        relay = remote.launch.relay
+        target.set_remote_workspace(
+            {
+                "server": server,
+                "workdir": remote.workdir,
+                "write_token": relay.write_token,
+                # Awaited by the runtime's kill, so a reset returns only once the
+                # guest workers (and any command they ran) have stopped; the
+                # end-watcher below still covers a runtime that dies on its own.
+                "close": functools.partial(remote.launch.close_relay, relay),
+            }
+        )
+        # GitHub git from the workspace goes through this gateway, which holds
+        # the credential (remote_session/git_gateway.py). In the background:
+        # it never delays the start, and a failure only costs git access.
+        begin_git_proxy = getattr(remote.launch, "begin_git_proxy", None)
+        if callable(begin_git_proxy) and session_key:
+            begin_git_proxy(
+                session_key, agent=governed_agent, app=getattr(self, "owning_app", "") or ""
+            )
+        report_start_stage(session_key, "starting_agent")
+
+    from kiro_crew.session_environment import (
+        forget_remote_workspace,
+        remember_remote_workspace,
+    )
+
+    if remote is not None:
+        await attach_remote_workspace(runtime)
+        # Per-message context names the guest directory, not the gateway project.
+        remember_remote_workspace(session_key, remote.profile_name, remote.workdir, owner=runtime)
+        if remote.created and getattr(self._client, "_resume_session_id", None):
+            # A conversation that already ran got a new, empty workspace.
+            from kiro_crew.session_environment import mark_workspace_recreated
+
+            mark_workspace_recreated(session_key)
+    else:
+        forget_remote_workspace(session_key)
+    session_cwd: str | Path = work_dir
     _t_spawn = time.monotonic()
     try:
         await runtime.spawn(
@@ -612,6 +720,13 @@ async def _start_kiro_runtime_impl(
     finally:
         # subprocess launch + ACP `initialize` handshake
         phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
+        if remote is not None:
+            # Closed once this runtime ends (at once if the spawn failed); its
+            # placement entry goes with it, so the bounded table holds live ones.
+            remote.launch.close_relay_when_ended(
+                runtime.is_alive,
+                functools.partial(forget_remote_workspace, session_key, owner=runtime),
+            )
 
     # Everything AFTER a successful spawn() must be guarded: until the
     # AcpSessionProvider is constructed and assigned to self._client, NOTHING
@@ -668,11 +783,12 @@ async def _start_kiro_runtime_impl(
                         runtime,
                         str(session_file) if session_file else "",
                         resume_sid,
-                        work_dir,
+                        session_cwd,
                         agent,
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        require_replay=self.is_kas_backend,
                     )
                 finally:
                     phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
@@ -725,6 +841,11 @@ async def _start_kiro_runtime_impl(
                     shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     launch_agent=_launch_agent(self),
                 )
+                if remote is not None:
+                    await attach_remote_workspace(runtime)
+                    remember_remote_workspace(
+                        session_key, remote.profile_name, remote.workdir, owner=runtime
+                    )
                 try:
                     await runtime.spawn(
                         start_priority=start_priority,
@@ -746,9 +867,15 @@ async def _start_kiro_runtime_impl(
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         _name_credential_mask(runtime, exc)
                     raise
+                finally:
+                    if remote is not None:
+                        remote.launch.close_relay_when_ended(
+                            runtime.is_alive,
+                            functools.partial(forget_remote_workspace, session_key, owner=runtime),
+                        )
             try:
                 handle = await runtime.create_session(
-                    cwd=work_dir,
+                    cwd=session_cwd,
                     agent=agent or None,
                     member_session_key=self._member_session_key(),
                     memory_mode=self.memory_mode,
@@ -901,6 +1028,9 @@ async def _start_kiro_runtime_impl(
         # requests are fail-closed instead of shown as a card.
         if self._child_fidelity_aware:
             provider.child_fidelity_aware = True
+        # The elicitation opt-in travels the same way, for the same reason.
+        if self._accepts_elicitation:
+            provider.accepts_elicitation = True
         self._client = provider  # type: ignore[assignment]
         # The tree this session ACTUALLY has, read off the live process:
         # the runtime drops an inherited window that was swept and falls

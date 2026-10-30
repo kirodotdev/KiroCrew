@@ -1239,6 +1239,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _settle_carry_locked,
         _withdraw_tombstone_locked,
         exclude_units,
+        newest_work_unit,
         note_panel_unit_recorded,
         note_work_unit_recorded,
         panel_crew_log_units,

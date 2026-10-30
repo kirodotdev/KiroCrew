@@ -289,7 +289,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: hold, so leaf-only is the only hold available to them:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
-    #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #:   switch, on the same read-only floor as ``aws_service_consent.json``;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;
@@ -385,7 +385,31 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   data-home root beside writable siblings, exactly where the retired browser
     #:   CLI's one leaf sat, so leaf-only is the only hold. Three names in, one
     #:   out, both spellings of the data home: four more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 297, "cc": 304, "strict": 305}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``member-records`` -- each crewmate's permanent rules, goals and DM
+    #:   binding, which the gateway writes on a person's action. Masked at the
+    #:   data-home root beside ``crew-teams`` rather than under the sandbox
+    #:   read-write ``trust/``, so leaf-only for the same reason.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``web-push`` -- the Web Push VAPID key and device subscription secrets
+    #:   (``notifications/push_store.py``), masked as a whole directory so the
+    #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``secret-request-policy`` -- the mediated-secret request directory: the
+    #:   owner-signed egress policy ``kirocrew secrets authorize`` writes and its
+    #:   authorize lock, masked whole so an agent can neither read the allowlist nor
+    #:   plant an entry. Every publication renames INSIDE it, so the directory's own
+    #:   inode stays the same on a republish. It sits at the data-home root beside
+    #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
+    #:   is the only hold available, the same as ``member-records``.
+    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

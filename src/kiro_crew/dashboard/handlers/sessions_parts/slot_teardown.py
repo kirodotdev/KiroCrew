@@ -156,6 +156,19 @@ async def _remove_slot_for_history_key(
                 exc_info=True,
             )
 
+    # Remote dispatch: the hub item this transcript's slot was bound to closes with
+    # it, as on a plain close, whether the slot was live or already archived. Only
+    # an item bound to this key is touched, and not while a live slot holds the key.
+    # Imported here, never at boot.
+    from kiro_crew.session_ledger import ledger_key
+
+    worker_key = ledger_key(slot.key if slot is not None else key)
+    live_keys = {ledger_key(name) for name in tuple(state._slots)}
+    if worker_key not in live_keys and not live_slot_owns_session(worker_key):
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        await close_work_item_for_slot(worker_key)
+
     # Pins, work ledgers, and autocompact overrides are independent state. A
     # transcript can be created or restored by another process after any owner
     # scan, so deleting those sidecars cannot be made atomic here. Preserve them:

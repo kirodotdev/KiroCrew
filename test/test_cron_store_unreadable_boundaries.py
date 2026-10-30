@@ -35,6 +35,7 @@ from unittest.mock import Mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from source_corpus import candidate_sources, src_root
 
 from kiro_crew.cron import CronService, CronStoreBusy, CronStoreUnreadable
@@ -72,7 +73,7 @@ def _dashboard_client(svc: CronService) -> TestClient:
     app = web.Application()
     app["state"] = SimpleNamespace(crons=svc, push_refresh=lambda _k: None)
     app.router.add_post("/api/crons", api_crons_create)
-    return TestClient(TestServer(app))
+    return TestClient(TestServer(as_owner(app)))
 
 
 # ── Positive A: the dashboard REST boundary ──

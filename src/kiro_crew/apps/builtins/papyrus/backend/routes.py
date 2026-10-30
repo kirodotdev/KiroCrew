@@ -89,7 +89,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, store, tectonic
+from kiro_crew.apps.builtins.papyrus.backend import doc_title, gitops, latex, store, tectonic
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.slugs import refused_slug_char
 
@@ -480,6 +480,37 @@ async def _handle_create_project(request: web.Request) -> web.StreamResponse:
     return web.json_response({"name": name, "main_file": store.DEFAULT_MAIN_FILE}, status=201)
 
 
+def _name_from_document(project: Path, main_file: str, generation: str) -> None:
+    """BLOCKING — save a fresh clone's document title as its display name, once.
+
+    A cloned paper is named once, when it is created, like a paper created here.
+    The caller skips a request that named the folder; a display name the
+    repository ships is kept. *generation* is the one :func:`gitops.clone`
+    returned: a paper deleted and created again under this name since then has
+    another, and keeps its own name. Best effort: a missing or refused title, a
+    refused path, or an unwritable ``.papyrus.json`` leaves the folder name and
+    never fails the clone.
+    """
+    try:
+        title = doc_title.document_title(store.read_text_file(project, main_file))
+    except (store.PathRejected, OSError, ValueError):
+        return
+    if not title:
+        return
+    with store.config_lock(project):
+        # Checked under the lock a delete takes: the name is saved only while the
+        # folder still holds the paper this request cloned, so a title read from a
+        # paper that replaced it is never saved either.
+        if not generation or store.project_generation(project) != generation:
+            return
+        if store.read_project_config(project).get(store.PROJECT_TITLE_KEY):
+            return
+        try:
+            store.set_project_title_locked(project, title)
+        except (store.TitleRejected, store.ConfigWriteRefused, OSError):
+            return
+
+
 async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
     body = await _json_body(request)
     url = _str_field(body, "url")
@@ -494,7 +525,7 @@ async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
     project = await asyncio.to_thread(_project_for_create, name, requested)
 
     try:
-        await gitops.clone(url, project)
+        generation = await gitops.clone(url, project)
     except gitops.GitSandboxUnavailable as exc:
         # Narrower subclass first — see `_handle_git_commit`.
         return web.json_response(
@@ -517,6 +548,8 @@ async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
         # write racing the cleanup would otherwise recreate the rejected paper.
         await asyncio.to_thread(store.delete_project, project)
         return web.json_response({"error": "no .tex file found in repository", "code": "no_tex_in_repository"}, status=422)
+    if not _str_field(body, "name"):
+        await asyncio.to_thread(_name_from_document, project, main_file, generation)
     logger.info("papyrus: cloned project %s", name)
     return web.json_response({"name": name, "main_file": main_file}, status=201)
 

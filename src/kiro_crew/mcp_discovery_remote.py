@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -188,6 +189,45 @@ def _is_bearer_challenge(header_value: str) -> bool:
     return bool(params.get("scope", "").split())
 
 
+# A Location header is untrusted input too, and the row shows it.
+_MAX_REDIRECT_TARGET_LEN = 256
+
+
+def _redirect_error(status: int, resp_headers: Mapping[str, str], url: str) -> str:
+    """The row's error for a non-200 reply: ``HTTP <status>``, naming a redirect's target.
+
+    The probe never follows a redirect (see :func:`_probe_remote`), but kiro-cli
+    does, so a server that answers ``/mcp`` with a 307 to ``/mcp/`` (Starlette's
+    trailing-slash redirect) works in a session while its row reads ``HTTP 307``.
+    Naming where it points is the fix the operator needs: the configured url.
+
+    Only the scheme, host, port and path are shown. The target is resolved
+    against the configured url, whose userinfo or query can hold a credential the
+    server echoed back, so userinfo, query and fragment are dropped. A Location
+    that is not an http(s) url, or that does not parse, adds nothing.
+    """
+    error = f"HTTP {status}"
+    if not 300 <= status < 400:
+        return error
+    location = resp_headers.get("Location", "")
+    if not isinstance(location, str) or not location.strip():
+        return error
+    try:
+        target = urlsplit(urljoin(url, location.strip()))
+        host = target.hostname
+        port = target.port
+    except ValueError:
+        return error
+    if target.scheme not in ("http", "https") or not host:
+        return error
+    if ":" in host:
+        host = f"[{host}]"
+    shown = f"{target.scheme}://{host}{f':{port}' if port is not None else ''}{target.path or '/'}"
+    if len(shown) > _MAX_REDIRECT_TARGET_LEN:
+        return error
+    return f"{error}, redirects to {shown}"
+
+
 async def _runtime_grant_present(mcp_url: str, name: str) -> bool | None:
     """Whether the kiro-cli runtime holds an OAuth grant for ``mcp_url``.
 
@@ -327,7 +367,7 @@ async def _probe_remote(
             # is dialed without asking the pinned resolver, so a vetted public
             # host could hand the handshake to an unvetted address. The L1 smoke
             # probe (``connections/l1_smoke.py``) refuses redirects for the same
-            # handshake; a redirect here reports as its HTTP status.
+            # handshake; a redirect here reports as its HTTP status and target.
             async with session.post(
                 server.url, json=init_body, headers=hdrs, allow_redirects=False
             ) as resp:
@@ -361,7 +401,7 @@ async def _probe_remote(
                             )
                     else:
                         server.status = "error"
-                        server.error = f"HTTP {resp.status}"
+                        server.error = _redirect_error(resp.status, resp.headers, server.url)
                     _cache_probe(server)
                     return server
                 # A stateful Streamable HTTP server issues a session id on

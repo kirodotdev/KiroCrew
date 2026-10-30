@@ -18,6 +18,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
+    EVENT_ELICITATION_REQUEST,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -421,6 +422,21 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_kit_supported(self) -> bool:
+        """Whether a crewmate's worker session here runs with its per-session kit."""
+        return False
+
+    @property
+    def mate_worker_prompt_in_context(self) -> bool:
+        """Whether a crewmate worker here reads its prompt only from the context block."""
+        return False
+
+    @property
+    def mate_worker_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's single-tool limits are honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""
@@ -501,6 +517,16 @@ class LLMProvider(ABC):
         """
         return ""
 
+    def settings_withheld_cause(self) -> str:
+        """Why Crew's MCP tools are withheld from this session, or ``""``.
+
+        ``"session"`` when another open Crew session's settings seed holds the
+        session's settings file, ``"project"`` when the project's own file does.
+        May read a file: call it off the event loop. Default: ``""``, nothing
+        withheld.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
 
@@ -572,6 +598,15 @@ class LLMProvider(ABC):
         """
         return None
 
+    @property
+    def reports_turn_usage(self) -> bool:
+        """True when a turn's billing always reaches :meth:`billing_stats`.
+
+        Only then does a turn that reports none prove it billed nothing. The safe
+        default is False: a provider that never meters shows zero for a billed turn too.
+        """
+        return False
+
     # ── Turn-control and capability surface (harness-parity H14) ──
     # The session, shutdown-drain, steer, and dashboard layers read these off a
     # provider. Declaring them here with a safe default means a provider that
@@ -628,6 +663,22 @@ class LLMProvider(ABC):
         Narrower than :attr:`supports_steer`: a harness can take a user's mid-turn
         message and still discard one sent while a refused tool call is being
         answered. Default False, granted by opt-in like the steer itself.
+        """
+        return False
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer the turn has not read yet can be taken back with
+        :meth:`clear_pending_steers`. Default False, granted by opt-in."""
+        return False
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Ask the backend to drop every steer its turn has not read yet.
+
+        True when the backend answered the request, False when it refused it or
+        has none, None when no answer came in time. An answer is not evidence that
+        anything was dropped; the backend reports that separately, as
+        ``EVENT_STEER_DROPPED`` on the turn. Default False: nothing is sent.
         """
         return False
 
@@ -826,6 +877,31 @@ class LLMProvider(ABC):
         Consumers must act only on a literal ``True``, so a mocked provider's
         attribute never reads as a skip."""
         return False
+
+    @property
+    def mcp_config_wire_reinject(self) -> bool:
+        """True when this provider's LIVE session takes a changed MCP server set by
+        Crew re-sending its projected agent over the wire at the session's next
+        turn boundary, with the conversation kept -- the other way a dashboard MCP
+        write is applied without the all-sessions reset.
+
+        Default False, for the reason ``mcp_config_hot_reload`` defaults False:
+        a harness that has not demonstrated the re-injection must not inherit
+        the skip (harness-parity H6/H14). The ACP implementation answers from
+        ``ACP_BACKENDS_MCP_WIRE_REINJECT`` membership on a session that exists;
+        a provider whose session is still starting answers False and is reset
+        like one that cannot apply the change. Consumers act only on a literal
+        ``True``. A True answer is a promise the writer collects by calling
+        :meth:`mark_mcp_config_changed`."""
+        return False
+
+    def mark_mcp_config_changed(self) -> None:
+        """Note that the MCP config this session was projected from has changed.
+
+        A re-injecting provider applies the new set at its next turn boundary;
+        every other provider ignores the mark, because the reset the writer
+        would otherwise perform already covered it. Synchronous and never on
+        the wire, so a writer can mark every live provider under its own lock."""
 
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model

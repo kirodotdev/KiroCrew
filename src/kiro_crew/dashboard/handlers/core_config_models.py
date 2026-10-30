@@ -198,6 +198,17 @@ def _active_provider_and_pin_backend() -> tuple[str, str]:
     return str(getattr(agent, "provider", "") or ""), str(getattr(agent, "acp_backend", "") or "")
 
 
+def _no_kiro_id_reason(value: str, backend: str | None) -> str | None:
+    """Why *value* cannot be pinned on *backend*: a registered model kiro-cli has no id for."""
+    from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
+    from kiro_crew.model_registry import lacks_acp_id
+
+    on_kiro = capabilities_for(backend or "").model_id_namespace == MODEL_NAMESPACE_ACP
+    if on_kiro and lacks_acp_id(value):
+        return f"{value!r} is not a model kiro-cli serves; choose another model or 'auto'."
+    return None
+
+
 def _validate_role_model(
     value: str,
     request: web.Request,
@@ -213,7 +224,9 @@ def _validate_role_model(
     SAME entitlement predicate the session-init withhold uses
     (:func:`model_is_unusable`) so the picker and the wire cannot disagree.
     No advertised set => accept (entitlement unknowable; don't accuse on no
-    evidence), matching that predicate's own conservative default.
+    evidence), matching that predicate's own conservative default -- except a
+    pin on an ``acp``-namespace backend (kiro, kas, the empty default) that
+    ``lacks_acp_id`` flags.
 
     *provider* is the ``validate_fn`` hooks' shared third argument and is not
     read here. *backend* is the harness the edited agent will use: it decides
@@ -235,7 +248,7 @@ def _validate_role_model(
         else _active_advertised_ids(request, backend=backend)
     )
     if advertised is None:
-        return None
+        return _no_kiro_id_reason(value, backend)
     if model_is_unusable(value, advertised):
         usable = ", ".join(advertised[:8]) or "auto"
         return f"{value!r} is not available on your account; choose one of: {usable}, or 'auto'."

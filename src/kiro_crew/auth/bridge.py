@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from kiro_crew.auth.provider import KasAuthProvider
 from kiro_crew.auth.store import KasToken, TokenStore, TokenStoreError
+from kiro_crew.auth.whoami import recorded_start_url
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -51,25 +52,31 @@ def _usable(token: KasToken) -> bool:
     return token.is_usable()
 
 
-def vault_holds_identity() -> bool:
+def vault_holds_identity(*, warn: bool = True) -> bool:
     """True when Crew's own vault stores a USABLE Kiro identity (of any stored kind).
 
     The spawn-time question the KAS relay asks before choosing its auth owner
-    (:mod:`kiro_crew.acp.kas_host_auth`), also reported by ``kirocrew doctor``.
-    A plain read of the vault -- no refresh, no network -- that never raises: a
-    missing, unreadable, or linked vault directory is ``False`` (the unreadable
-    case logged at WARNING), and so is an identity whose access token has expired
-    with no refresh token to renew it -- that entry cannot answer a single
-    callback, so handing the spawn to it would only shadow a working ``kiro-cli
-    login``. Both degrade to the kiro-cli-owned spawn rather than failing the
-    spawn. Blocking file IO -- call off the loop.
+    (:mod:`kiro_crew.acp.kas_host_auth`), also reported by ``kirocrew doctor``
+    and asked by the dashboard's usage poll. A plain read of the vault -- no
+    refresh, no network -- that never raises: a missing, unreadable, or linked
+    vault directory is ``False`` (the unreadable case logged at WARNING), and so
+    is an identity whose access token has expired with no refresh token to renew
+    it -- that entry cannot answer a single callback, so handing the spawn to it
+    would only shadow a working ``kiro-cli login``. Both degrade to the
+    kiro-cli-owned spawn rather than failing the spawn. Blocking file IO -- call
+    off the loop.
+
+    ``warn=False`` logs those diagnostics at DEBUG instead of WARNING, for a
+    caller that asks on a timer (the usage poll) where a spawn-time diagnostic
+    would repeat on every tick; the verdict is the same either way.
     """
+    log = logger.warning if warn else logger.debug
     try:
         token = default_token_store().resolve()
         if token is None:
             return False
         if not _usable(token):
-            logger.warning(
+            log(
                 "Crew sign-in vault holds an expired %s identity with nothing to renew it; "
                 "KAS spawns cli-owned (sign in again or sign out to clear it)",
                 token.identity,
@@ -79,10 +86,10 @@ def vault_holds_identity() -> bool:
     except TokenStoreError as exc:
         # `exc` is a store-level reason (a path or a permissions verdict), never
         # a stored value -- the store raises before decrypting anything.
-        logger.warning("Crew sign-in vault unreadable; KAS spawns cli-owned: %s", exc)
+        log("Crew sign-in vault unreadable; KAS spawns cli-owned: %s", exc)
         return False
     except Exception as exc:  # noqa: BLE001 - a vault probe must never fail a spawn
-        logger.warning(
+        log(
             "Crew sign-in vault probe failed (%s); KAS spawns cli-owned",
             type(exc).__name__,
         )
@@ -105,6 +112,36 @@ _VAULT_IDENTITY_CLAIMS = (
 )
 
 
+#: The two fingerprinted claims that name a KIND of account and nothing else:
+#: the store slot the identity came from (``builder_id`` / ``identity_center`` /
+#: ``external_idp`` / ``social``) and the governance classification (``BuilderId``
+#: / ``Enterprise`` / ``ExternalIdp`` / ``Google`` / ``Github``). What
+#: :func:`vault_identity_claims` returns in the clear: the ARN, region and client
+#: registration stay inside the digest.
+_VAULT_PUBLIC_CLAIMS = ("identity", "provider")
+
+
+def _identity_digest(token: KasToken, signin_generation: str = "") -> str:
+    """The identity fingerprint of one resolved token (see :data:`_VAULT_IDENTITY_CLAIMS`).
+
+    *signin_generation* is the vault's sign-in marker
+    (:meth:`TokenStore.signin_generation`). It tells apart two same-kind accounts
+    the server answered with one ``profileArn``. Folded in only when set, so a
+    vault no sign-in has marked yet keeps the fingerprint it already had.
+    """
+    digest = hashlib.sha256()
+    for claim in _VAULT_IDENTITY_CLAIMS:
+        digest.update(claim.encode())
+        digest.update(b"=")
+        digest.update(str(getattr(token, claim, None) or "").encode())
+        digest.update(b"\n")
+    if signin_generation:
+        digest.update(b"signin_generation=")
+        digest.update(signin_generation.encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def vault_identity_fingerprint() -> str:
     """Digest naming which account Crew's own vault is signed in as, or ``""``.
 
@@ -117,19 +154,54 @@ def vault_identity_fingerprint() -> str:
     empty vault is ``""``, which the caller treats as "no Crew identity").
     Blocking file IO -- call off the loop.
     """
+    return vault_identity_claims()[0]
+
+
+def vault_identity_claims() -> tuple[str, dict[str, str]]:
+    """ONE vault read: the identity fingerprint and the claims naming the account's kind.
+
+    The dashboard labels a credit reading with the account it was read for, and
+    it brackets the credential read with the fingerprint to prove no sign-in
+    replaced that account meanwhile. Both halves come from the same ``resolve()``
+    so the labels a caller publishes describe the fingerprinted account, never
+    one that landed between a fingerprint read and a separate claims read. The
+    claims are :data:`_VAULT_PUBLIC_CLAIMS` -- the slot and the provider class,
+    which together say "a Builder ID sign-in", "a Google sign-in" -- plus the
+    Identity Center ``start_url`` the sign-in recorded, when it recorded one, and
+    no secret, ARN or registration detail. ``("", {})`` when nothing is stored or
+    the vault cannot be read; never raises. Blocking file IO -- call off the loop.
+    """
+    read: list[tuple[KasToken | None, str]] = []
+
+    def _read_token_and_marker() -> None:
+        token = store.resolve()
+        read.append((token, store.signin_generation() if token is not None else ""))
+
     try:
-        token = default_token_store().resolve()
+        store = default_token_store()
+        # Under the sign-out lock a login holds from its marker bump to its
+        # save, so the token and the marker always describe one sign-in: an
+        # unlocked read could pair the previous account's token with the new
+        # account's marker and fingerprint it as the new account.
+        store.with_signout_lock(_read_token_and_marker)
     except Exception:  # noqa: BLE001 - detection must never fail a turn
-        return ""
+        return "", {}
+    token, signin_generation = read[0] if read else (None, "")
     if token is None:
-        return ""
-    digest = hashlib.sha256()
-    for claim in _VAULT_IDENTITY_CLAIMS:
-        digest.update(claim.encode())
-        digest.update(b"=")
-        digest.update(str(getattr(token, claim, None) or "").encode())
-        digest.update(b"\n")
-    return digest.hexdigest()
+        return "", {}
+    claims = {
+        claim: value
+        for claim in _VAULT_PUBLIC_CLAIMS
+        if isinstance(value := getattr(token, claim, None), str) and value
+    }
+    # The Identity Center portal the sign-in was begun against, when it recorded
+    # one: the same field ``kirocrew kas whoami`` prints as ``startUrl``. A portal
+    # URL, not a secret, and outside the fingerprint (a token minted before the
+    # URL was recorded is the same account as one minted after).
+    start_url = recorded_start_url(token)
+    if start_url:
+        claims["start_url"] = start_url
+    return _identity_digest(token, signin_generation), claims
 
 
 def describe_vault_identity() -> str | None:

@@ -170,10 +170,10 @@ class TestTheStandupColumnsStayOnTheListedItems:
         assert with_gone == without
 
 
-#: The template version each page shipped at BEFORE the footer counted ``forgotten``.
+#: The template version each page shipped at BEFORE it counted ``forgotten``.
 #: A crewmate that adopted the page then holds a copy at this version, with the old
-#: undercounting footer frozen inside it.
-_PRE_FIX_VERSION = {"standup": 1, "pr-watch": 2}
+#: undercount frozen inside it (standup and pr-watch: the footer; flow: its tiles).
+_PRE_FIX_VERSION = {"standup": 1, "pr-watch": 2, "flow": 1}
 
 
 class TestAnAdoptedCopyOfTheOldFooterTurnsStale:

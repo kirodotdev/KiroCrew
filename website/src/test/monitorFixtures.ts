@@ -1,3 +1,5 @@
+import monitorContract from '../monitoring/contract.json'
+
 export const canonicalGitHubObservation = {
   blocking_review: 'none',
   checks: {
@@ -31,7 +33,7 @@ export const structuredMonitorLoop = (patch: Record<string, unknown> = {}) => {
     next_due_ts: 1_800_000_300,
     stopped_reason: '',
     monitor: {
-      version: 1,
+      version: monitorContract.monitorStateVersion,
       config_generation: 1,
       kind: 'github_pull_request',
       target: 'https://github.com/owner/repo/pull/123',

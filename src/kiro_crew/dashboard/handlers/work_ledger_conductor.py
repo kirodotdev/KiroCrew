@@ -25,6 +25,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard.handlers.work_ledger_caller import _caller_key, _own_ledger
+from kiro_crew.dashboard.handlers.work_ledger_read import worker_holds_open_item
 from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _WIDEST_COUNTER,
     _WIDEST_EVENT_TEXT,
@@ -62,7 +63,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import WORK_LEDGER_RECORD_SCHEMA, ValidationError, validate_tool_args
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS
+from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 
@@ -109,6 +110,24 @@ def _count_recorded(action: str, item: Any, header: Any) -> None:
         work_metrics.record_dispatch("session")
 
 
+async def _count_crew_mode_run(state: DashboardState, key: str, item: Any) -> None:
+    """A Crew Mode chat's run finished: count how it ended and the steers it took.
+
+    Only for a board a Crew Mode root owns (``metrics.crew_mode.board_is_crew_mode``);
+    the steer count is the item's own ``steer`` events. Never raises.
+    """
+    from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+    if not crew_mode_metrics.board_is_crew_mode(state, key):
+        return
+    try:
+        events = await asyncio.to_thread(work_ledger.read_events, key, item.item_id)
+        steers = sum(1 for event in events if getattr(event, "kind", "") == "steer")
+    except Exception:
+        steers = None
+    crew_mode_metrics.record_run_finished(getattr(item, "state", None), steers)
+
+
 async def _record_conductor_write(
     state: DashboardState,
     key: str,
@@ -118,6 +137,7 @@ async def _record_conductor_write(
     *,
     operation: str,
     before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
+    dispatch: bool = False,
 ) -> web.Response:
     """Probe, commit and record one conductor-owned write on *key*'s board.
 
@@ -126,7 +146,9 @@ async def _record_conductor_write(
     through it. *cleaned* is already validated and redacted. *operation* names
     the write in the audit trail. *before_write*, when given, runs under the
     board lock before the snapshot; a response from it stops the write and is
-    returned as is.
+    returned as is. *dispatch* marks a ``work_dispatch`` create: it never opens a
+    ledger, so it is judged under the board lock like every write on an existing
+    one, and refused ``no_ledger`` when the caller owns none.
     """
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
@@ -151,7 +173,7 @@ async def _record_conductor_write(
         generation=_WIDEST_HEX_ID,
         goal=cleaned.get("goal"),
         round=_WIDEST_COUNTER,
-        depth=work_ledger.MAX_DEPTH,
+        depth=WORK_MAX_DEPTH_MAX,
         parent_item=_WIDEST_ITEM_ID,
         title=cleaned.get("title"),
         acceptance=cleaned.get("acceptance"),
@@ -184,7 +206,7 @@ async def _record_conductor_write(
             item_id=cleaned.get("item_id") or _WIDEST_ITEM_ID,
             generation=_WIDEST_HEX_ID,
             round=_WIDEST_COUNTER,
-            depth=work_ledger.MAX_DEPTH,
+            depth=WORK_MAX_DEPTH_MAX,
             parent_item=_WIDEST_ITEM_ID,
             fails=_WIDEST_COUNTER,
             event=_WIDEST_EVENT_TEXT,
@@ -229,7 +251,13 @@ async def _record_conductor_write(
                 worker_session_key=folded_worker,
             )
         )
-        if action in ("goal", "create"):
+        if dispatch:
+            # Under the lock, so a purge cannot land between this read and the
+            # write; the store's own header check refuses one that lands later.
+            drefusal = await _refuse_dispatch_without_ledger(key)
+            if drefusal is not None:
+                return drefusal
+        elif action in ("goal", "create"):
             bootstrapped = await _bootstrap(key)
             if isinstance(bootstrapped, web.Response):
                 return bootstrapped
@@ -323,12 +351,24 @@ async def _record_conductor_write(
             )
         if item is not None:
             await asyncio.to_thread(_mark_recorded, key, item.item_id)
+        if action == "close" and item is not None and item.worker_session_key:
+            # A closed item reads no undelivered flag, so its record is dead. Dropped
+            # only now the close is recorded: an unrecorded close is undone above and
+            # its item, still open, keeps its flag.
+            await asyncio.to_thread(
+                work_ledger.forget_undelivered_for_item,
+                item.worker_session_key,
+                key,
+                item.item_id,
+            )
         if action == "goal":
             await asyncio.to_thread(_mark_goal_recorded, key)
         # Counted here and not a line earlier: every refusal above returns, and a
         # write whose record did not land is undone above, so this point is
         # reached once per write the route reports as successful.
         _count_recorded(action, item, header)
+        if action == "close" and item is not None:
+            await _count_crew_mode_run(state, key, item)
         crew_store = _crew_store(key) if action == "bind" else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:
@@ -364,6 +404,10 @@ async def _record_conductor_write(
             note = conductor_patrol.patrol_note(state, key, reason)
             if note:
                 payload["patrol_note"] = note
+        if action == "close" and item is not None:
+            warning = _close_warning(state, item.worker_session_key or "")
+            if warning:
+                payload["warning"] = warning
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()
@@ -397,6 +441,12 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     if bad is not None:
         return bad
     assert body is not None
+    # ``work_dispatch`` marks its create; the field never reaches the schema, which
+    # is also the ``work_ledger_record`` tool's input schema. The mark can only add
+    # a refusal, so ANY presence of the key counts as one (rfc-work-dispatch.md,
+    # record-route amendment).
+    dispatch = DISPATCH_FIELD in body
+    body = {k: v for k, v in body.items() if k != DISPATCH_FIELD}
     try:
         cleaned = validate_tool_args(_drop_nulls(body), WORK_LEDGER_RECORD_SCHEMA)
     except ValidationError as exc:
@@ -424,11 +474,38 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
 
     if action == "bind":
         refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
+        if refusal is None:
+            refusal = await _refuse_dispatched_worker(key, cleaned.get("worker_session_key"))
         if refusal is not None:
             return refusal
 
+    # A dispatch never opens a ledger: only ``kirocrew-work``'s own
+    # ``work_ledger_record`` does, so a session without that server is refused,
+    # whatever its backend.
     return await _record_conductor_write(
-        state, key, unit, action, cleaned, operation="work_ledger_record"
+        state, key, unit, action, cleaned, operation="work_ledger_record", dispatch=dispatch
+    )
+
+
+#: The body field ``work_dispatch`` marks its step-1 create with.
+DISPATCH_FIELD = "dispatch"
+
+
+async def _refuse_dispatch_without_ledger(key: str) -> web.Response | None:
+    """``no_ledger`` when *key* owns no ledger, else ``None``.
+
+    The one remedy is ``action=goal``: unlike ``_own_ledger``'s text, it does not
+    suggest ``action=create``, which ``work_dispatch`` would send marked again.
+    """
+    record = await asyncio.to_thread(work_ledger.read_conductor, key)
+    if record is not None:
+        return None
+    _audit(key, "work_dispatch", "denied", error=work_ledger.CODE_NO_LEDGER)
+    return _refuse_404(
+        work_ledger.CODE_NO_LEDGER,
+        "work_dispatch never opens a work ledger, and this session owns none. Open "
+        "it with work_ledger_record action=goal, then dispatch again. Nothing was "
+        "created.",
     )
 
 
@@ -487,17 +564,36 @@ async def api_work_ledger_rebuild(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, **counts})
 
 
-def _has_binding(worker_key: str) -> bool:
-    """Whether this worker session has EVER been bound. Fails closed.
+def _worker_slot(state: DashboardState, worker_session_key: str) -> Any:
+    """The open slot for *worker_session_key* under any spelling it is filed as."""
+    folded = session_ledger.ledger_key(worker_session_key)
+    for candidate in dict.fromkeys((worker_session_key, folded, f"dashboard_{folded}")):
+        try:
+            slot = state.get_slot(candidate)
+        except Exception:  # pragma: no cover - a slot-table read must not 500
+            logger.debug("slot lookup failed for %s", candidate, exc_info=True)
+            slot = None
+        if slot is not None:
+            return slot
+    return None
 
-    An unreadable binding counts as present: the alternative is admitting a rebind
-    on a store that could not answer, which is the case the refusal exists for.
+
+def _close_warning(state: DashboardState, worker_session_key: str) -> str:
+    """The note a ``close`` reply carries when its worker session is still open.
+
+    Closing the item cuts that worker's only upward channel: its ``work_report``
+    is refused ``item_closed``, and a session cannot ``session_send`` to the
+    session that created it. Said at close time because nothing else tells the
+    conductor, and a worker cut off this way goes silent rather than failing loudly.
     """
-    try:
-        return work_ledger.binding_path(worker_key).exists()
-    except Exception:  # pragma: no cover - a path/store error must not admit a bind
-        logger.debug("binding presence check failed for %s", worker_key, exc_info=True)
-        return True
+    if not worker_session_key or _worker_slot(state, worker_session_key) is None:
+        return ""
+    return (
+        f"Worker session {worker_session_key} is still open, and closing its item cut "
+        "its report channel: its work_report is now refused item_closed. If it still "
+        "has work, create a new item and bind it to that same session; otherwise "
+        "session_close it."
+    )
 
 
 def _refuse_unowned_worker(
@@ -525,16 +621,7 @@ def _refuse_unowned_worker(
     if not isinstance(worker_session_key, str) or not worker_session_key:
         return None  # the store's own invalid_value refusal is the better message
     state: DashboardState = request.app["state"]
-    folded = session_ledger.ledger_key(worker_session_key)
-    slot = None
-    for candidate in (worker_session_key, folded, f"dashboard_{folded}"):
-        try:
-            slot = state.get_slot(candidate)
-        except Exception:  # pragma: no cover - a slot-table read must not 500
-            logger.debug("slot lookup failed for %s", candidate, exc_info=True)
-            slot = None
-        if slot is not None:
-            break
+    slot = _worker_slot(state, worker_session_key)
     if slot is None:
         _audit(
             conductor_key,
@@ -548,33 +635,6 @@ def _refuse_unowned_worker(
             "That worker session is not open, so it cannot be bound. Create the "
             "session first and bind the key session_create returned — binding "
             "before the session exists is what leaves a worker running unbound.",
-        )
-    if _has_binding(folded):
-        # ONE binding per worker session, ever. The store permits replacing a
-        # binding whose item is terminal, which is how a session could be reused —
-        # but a report already in flight from the old work resolves its binding when
-        # it LANDS, so it would write the new item's status, summary, artifacts and
-        # pr, and there is no unbind path to undo it.
-        #
-        # An idle check on the worker slot does not guard that: it is a TOCTOU,
-        # since a turn can start during the awaits between it and the commit, and
-        # closing THAT would mean making turn admission and binding replacement
-        # atomic — a coordination mechanism across two subsystems, for a
-        # capability nothing needs. The RFC's lifecycle dispatches one session per
-        # item, so refusing reuse costs a conductor one ``session_create`` and makes
-        # the race UNREPRESENTABLE rather than guarded. The store keeps its
-        # staleness allowance for a future explicit unbind.
-        _audit(
-            conductor_key,
-            "work_ledger_record",
-            "denied",
-            resources="bind",
-            error="worker_already_dispatched",
-        )
-        return _refuse_409(
-            "worker_already_dispatched",
-            "That worker session has already been bound to a work item. A session "
-            "is dispatched for one item; create a new session for this one.",
         )
     # ``session_create`` stamps ``_created_by`` with the creator's SLOT key, while
     # this route addresses the conductor by its SESSION key. For a dashboard
@@ -628,16 +688,66 @@ def _refuse_unowned_worker(
     return None
 
 
+async def _refuse_dispatched_worker(
+    conductor_key: str, worker_session_key: Any
+) -> web.Response | None:
+    """Refuse a ``bind`` whose worker session is still bound to an OPEN item.
+
+    Asked after :func:`_refuse_unowned_worker`, so another conductor's session is
+    refused as not-owned whatever its binding says. The binding and item reads run
+    in a worker thread: they are store reads, and on the loop thread the store's
+    retry on a transient read error is skipped, so a valid rebind would be refused.
+    """
+    if not isinstance(worker_session_key, str) or not worker_session_key:
+        return None
+    folded = session_ledger.ledger_key(worker_session_key)
+    if await asyncio.to_thread(worker_holds_open_item, folded):
+        # ONE OPEN item per worker session. A worker has a single binding file, so a
+        # second bind would repoint its only report channel away from an item that
+        # is still waiting on it. Once that item is terminal its channel is already
+        # dead (reports are refused ``item_closed``), so a rebind loses nothing and
+        # is the only way to give a still-running worker its channel back. The
+        # predicate is the one slot retention asks, and it fails closed: an
+        # unreadable binding or item counts as open. The store re-checks under the
+        # worker's binding lock.
+        #
+        # A report the worker composed before the rebind lands on the new item, because a report
+        # resolves its binding when it lands; that is the point of a rebind -- the
+        # conductor is handing this worker's next words to the new item.
+        _audit(
+            conductor_key,
+            "work_ledger_record",
+            "denied",
+            resources="bind",
+            error="worker_already_dispatched",
+        )
+        return _refuse_409(
+            "worker_already_dispatched",
+            "That worker session is still bound to an open item. A session holds one "
+            "open item at a time: close that item first (the session can then be bound "
+            "to this one), or create a new session for this item.",
+        )
+    return None
+
+
 async def _bootstrap(key: str) -> None | web.Response:
     """Open this session's ledger if it has none, deriving depth from its parent.
 
     A session that is ITSELF bound to an item is a second-level conductor, so its
     depth is one past its parent's and its ``parent_item`` is the item it was
-    dispatched for. :func:`work_ledger.child_depth` refuses past the cap, which
+    dispatched for. An existing ledger is returned untouched. For a new one,
+    :func:`work_ledger.child_depth` refuses past the cap, which
     is how a grandchild is stopped from conducting — the refusal surfaces as
     ``depth_exceeded`` (409) at the moment the child tries to open a ledger,
     rather than later when it tries to create an item.
     """
+    # A ledger that already exists keeps working whatever the cap has become since it
+    # opened: lowering ``work_ledger.max_depth`` refuses NEW ledgers and new items past
+    # the cap (``child_depth`` below, ``create`` in the store), never a ``goal`` update
+    # of a ledger that is already open. An unreadable header reads as absent here, so it
+    # falls through to the normal path and its strict re-read.
+    if await asyncio.to_thread(work_ledger.read_conductor, key) is not None:
+        return None
     depth = 0
     parent_item: str | None = None
     binding = await asyncio.to_thread(work_ledger.read_binding, key)
@@ -667,7 +777,8 @@ async def _bootstrap(key: str) -> None | web.Response:
                 "readable.",
             )
         try:
-            depth = work_ledger.child_depth(parent.depth)
+            # Off the loop: the cap comes from the config file.
+            depth = await asyncio.to_thread(work_ledger.child_depth, parent.depth)
         except WorkLedgerError as exc:
             _audit(key, "work_ledger_record", "denied", resources="bootstrap", error=exc.code)
             return _refuse_store_error(exc)

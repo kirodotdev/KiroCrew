@@ -1008,7 +1008,15 @@ class _WarmMintRuntime:
             )
             handed_over = True
         except Exception as exc:  # noqa: BLE001 — degrade to the cold path
-            logger.warning("Shared mint process spawn failed: %s", type(exc).__name__)
+            # Carry the exception's OWN message, not only its class: AcpRuntimeError,
+            # SandboxUnavailableError and the spawn gates each author a sentence that
+            # names what failed and the remedy, and the cold path that follows hides the
+            # same failure per provider, so the class name alone leaves an operator no
+            # way to tell a missing kiro-cli from a sandbox a host cannot provide. The
+            # message text these classes build is operator-facing and carries no
+            # credential; the full traceback goes to debug for a developer.
+            logger.warning("Shared mint process spawn failed: %s: %s", type(exc).__name__, exc)
+            logger.debug("Shared mint process spawn failed", exc_info=True)
             return None
         finally:
             # A ``finally``, not an ``except Exception``: the stand-down above has already

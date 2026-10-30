@@ -9,7 +9,7 @@ With ``--check-body`` it also reads the PR body the skill writes --
 ``<git-dir>/prepare-pr-body.md``, with ``<git-dir>`` from
 ``git rev-parse --absolute-git-dir`` -- and runs four checks on it:
 
-* **Accounting (hard).** Every changed *area* -- the unit ``pr-scope.yml`` counts,
+* **Accounting (hard).** Every changed *area* -- the unit the ``PR Scope`` step of ``pr-policy.yml`` counts,
   a module directory for ``src/kiro_crew/`` and ``website/src/``, the top-level
   component elsewhere -- must be named somewhere in the body, by the area itself,
   by a changed file's path (or a ``dir/file`` tail of it), or by a changed file's
@@ -40,10 +40,25 @@ With ``--check-body`` it also reads the PR body the skill writes --
   step is in warn mode the findings print and the exit stays 0; once the script turns red
   for this pull request, the same findings are exit 23. A base without the script skips it.
 
+* **Proof line (advisory until CI enforces it).** On a ``fix`` title (the branch's first
+  commit subject) the body's ``Proof:`` line must sit inside ``## Tests``.
+  ``.github/scripts/proof_line_check.py``, also read from ``origin/<base>``, judges it, and
+  compares it with ``<git-dir>/prepare-pr-prove.json`` -- the record ``prove.py`` writes --
+  for the same tree, so a stale or invented line fails here though CI cannot see the
+  record. While CI's step is in warn mode the findings print and the exit stays 0; once the
+  script turns red for this pull request the same findings are exit 24. A base without the
+  script skips it.
+
 * **Gate proof (advisory).** A ``Gate proof:`` line in the body is a claim that
   ``pre_push_gate.py`` ran. It is checked against ``<git-dir>/prepare-pr-gate-proof.json``
   for HEAD's tree; a line the proof contradicts, or that has no proof behind it, is exit
   25. A body with no such line never fails: the proof is optional.
+
+* **Pattern harvest.** On a ``fix``/``revert`` title the body needs a
+  ``## Pattern harvest`` heading and a ``Rule candidate:`` or ``Not generalizable:``
+  line, the rule CI's PR Hygiene step enforces inline in ``code-review.yml`` (so there is
+  no script to run from the base). A miss prints CI's message and is exit 26. The
+  three ``HARVEST_*`` patterns are that step's; a test fails if the workflow's change.
 
 All checks run and print before any exit; when several breach, the lowest code wins.
 
@@ -57,11 +72,14 @@ the machine.
 Usage:  python3 diff_signals.py [base-branch] [--check-body] [--age]
 Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too long |
         22 template sections missing | 23 Sibling sweep missing or malformed (when enforced) |
+        24 Proof line missing, malformed or stale (when enforced) |
         25 a Gate proof: line the recorded proof contradicts |
+        26 Pattern harvest heading or line missing on a fix/revert |
         2 environment error
 """
 
 import argparse
+import importlib.machinery
 import importlib.util
 import os
 import re
@@ -115,6 +133,17 @@ TEMPLATE_CHECK = ".github/scripts/pr-description-check.sh"
 # CI's Sibling sweep check, read from origin/<base> by --check-body.
 SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
 
+# CI's Proof line check, read from origin/<base> by --check-body, and the record
+# prove.py writes for it to compare against (inside the git directory).
+PROOF_CHECK = ".github/scripts/proof_line_check.py"
+PROVE_RECORD = "prepare-pr-prove.json"
+
+# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/code-review.yml
+# (grep -qiE there, re.IGNORECASE | re.MULTILINE here). A test pins each to the workflow.
+HARVEST_TITLE_RE = r"^(fix|revert)([(!:]|$)"
+HARVEST_HEADING_RE = r"^##+ *Pattern harvest"
+HARVEST_LINE_RE = r"^ *(Rule candidate|Not generalizable) *:"
+
 # Bare file names that appear in many places at once; naming one of these does
 # not tell the reader WHICH one changed, so it never satisfies the accounting.
 GENERIC_BASENAMES = {
@@ -146,7 +175,7 @@ def err(msg):
 
 
 def area_of(path):
-    """The reviewer-sized unit a path belongs to; mirrors the awk in pr-scope.yml.
+    """The reviewer-sized unit a path belongs to; mirrors the PR Scope awk in pr-policy.yml.
 
     ``src/kiro_crew/a/b/c.py`` -> ``src/kiro_crew/a``; ``website/src/a/b.ts`` ->
     ``website/src/a``; anything else -> its first path component (a top-level file
@@ -267,12 +296,40 @@ def unaccounted_areas(paths, body):
     return missing
 
 
+class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
+    """Load shipped source normally while suppressing cache writes."""
+
+    def get_code(self, fullname):
+        path = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(path), path)
+
+    def set_data(self, path, data, *, _mode=0o666):
+        return None
+
+
+_CONTRACT: dict = {}
+
+
+def _review_contract():
+    """The shared contract module beside this script (the one fence reader), loaded once."""
+    if "module" not in _CONTRACT:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
+        loader = _NoBytecodeSourceLoader("_prepare_pr_diff_signals_contract", path)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        if spec is None:  # pragma: no cover - defensive
+            raise RuntimeError("cannot import kirocrew-prepare-pr sibling: " + path)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        _CONTRACT["module"] = module
+    return _CONTRACT["module"]
+
+
 def _what_changed_unfenced(body):
     """The ``## What changed`` section with fenced blocks removed, or None if absent."""
     m = re.search(r"^## +What changed[^\n]*\n(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL)
     if not m:
         return None
-    return re.sub(r"^```.*?^```[ \t]*$", "", m.group(1), flags=re.MULTILINE | re.DOTALL)
+    return _review_contract().drop_fenced_blocks(m.group(1))
 
 
 _TABLE_SEPARATOR = re.compile(r"^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
@@ -401,6 +458,30 @@ def gate_proof_check(body, gitdir):
     return 0
 
 
+def harvest_problem(title, body):
+    """CI's Pattern harvest message for ``title``/``body``, or None when it passes."""
+    flags = re.IGNORECASE | re.MULTILINE
+    if not re.search(HARVEST_TITLE_RE, title, re.IGNORECASE):
+        return None
+    if not re.search(HARVEST_HEADING_RE, body, flags):
+        return "Fix/revert PRs must carry a '## Pattern harvest' section."
+    if not re.search(HARVEST_LINE_RE, body, flags):
+        return "The Pattern harvest section must contain a 'Rule candidate:' or 'Not generalizable:' line."
+    return None
+
+
+def harvest_check(body, base):
+    """Apply CI's Pattern harvest rule to ``body``; return 0 or 26."""
+    # The same title the Sibling check reads: the branch's first commit subject.
+    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
+    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
+    problem = harvest_problem(title, body)
+    if problem:
+        print("PATTERN HARVEST: " + problem)
+        return 26
+    return 0
+
+
 def template_check(body, base):
     """Run the base ref's ``TEMPLATE_CHECK`` on ``body``; return 0 or 22.
 
@@ -485,6 +566,58 @@ def sibling_check(body, base):
         return 23
     if p.returncode != 0:
         print("WARN: {} could not run ({}) - skipped".format(SIBLING_CHECK, p.stderr.strip()))
+    return 0
+
+
+def proof_check(body, base, gitdir):
+    """Run the base ref's ``PROOF_CHECK`` on ``body``; return 0 or 24.
+
+    The script prints its findings and exits 1 only when it is enforcing, so a
+    warn-mode finding is shown here and never stops the loop. Absent on the base
+    (another repo, or before the check landed) is a silent skip.
+    """
+    rc, script, _ = run(["git", "show", "origin/{}:{}".format(base, PROOF_CHECK)])
+    if rc != 0:
+        return 0
+    # The pull request title is the squash message of a one-commit branch; with the
+    # permitted second (mechanical) commit it is still the first commit's subject.
+    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
+    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
+    tree = run(["git", "rev-parse", "HEAD^{tree}"])[1].strip()
+    if not (title and tree):
+        print("WARN: cannot resolve HEAD - proof line check skipped")
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = os.path.join(tmp, "proof_line_check.py")
+        with open(script_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(script)
+        env = dict(
+            os.environ,
+            PR_TITLE=title,
+            PR_BODY=body,
+            TREE_ID=tree,
+            PROVE_RECORD=os.path.join(gitdir, PROVE_RECORD),
+        )
+        env.pop("GITHUB_ACTIONS", None)  # plain lines here, not workflow annotations
+        env.pop("PR_CREATED_AT", None)
+        try:
+            p = subprocess.run(
+                [sys.executable, script_path],
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            print("WARN: cannot run {} ({}) - proof line check skipped".format(PROOF_CHECK, exc))
+            return 0
+    for line in p.stdout.splitlines():
+        print(line)
+    if p.returncode == 1:
+        return 24
+    if p.returncode != 0:
+        print("WARN: {} could not run ({}) - skipped".format(PROOF_CHECK, p.stderr.strip()))
     return 0
 
 
@@ -573,8 +706,10 @@ def main(argv):
         tpl = template_check(body, base)
         # Evaluated before the return: every check prints, then the lowest code wins.
         sibling = sibling_check(body, base)
+        proof = proof_check(body, base, gitdir)
         gate_proof = gate_proof_check(body, gitdir)
-        return rc or tpl or sibling or gate_proof
+        harvest = harvest_check(body, base)
+        return rc or tpl or sibling or proof or gate_proof or harvest
     return 0
 
 

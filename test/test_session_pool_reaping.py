@@ -12,6 +12,7 @@ shared fixture and stand-ins live in ``session_pool_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import threading
@@ -28,6 +29,7 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import async_wait_until, finished
 
 # ---------------------------------------------------------------------------
 # _pool_health_loop
@@ -166,10 +168,14 @@ class TestPoolHealthLoop:
         """pool_size=0 keeps the sweep a no-op: no refill for a disabled pool."""
         mgr, _ = _make_manager(pool_size=0)
         mgr._schedule_replenish = MagicMock()
+        expired = _make_provider()
+        mgr._warm_pool.put_nowait((expired, time.monotonic() - 10_000))
 
         await mgr._sweep_warm_pool_once()
 
         mgr._schedule_replenish.assert_not_called()
+        assert mgr._warm_pool.qsize() == 1, "a disabled pool's sweep reads nothing"
+        expired.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mixed_healthy_and_dead(self):
@@ -311,10 +317,12 @@ class TestDiscardReaping:
         self._expired_entry(mgr, clean)
 
         with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
-            await mgr._drain_and_claim("kirocrew")
+            result = await mgr._drain_and_claim("kirocrew")
 
         clean.shutdown.assert_awaited_once()
         mock_kill.assert_not_called()
+        assert result is None, "an expired provider is discarded, not claimed"
+        assert mgr._warm_pool.empty()
 
     @pytest.mark.asyncio
     async def test_shutdown_failure_falls_back_to_hard_kill(self):
@@ -357,8 +365,8 @@ class TestDiscardReaping:
         # cannot be cancelled — so a sibling test holding those threads (a wedged
         # PTY close, a real `taskkill` on Windows) makes this offload queue behind
         # them. That queue wait is unbounded and is NOT covered by
-        # `_POOL_DISCARD_TIMEOUT`, so it could consume the 5s budget below and
-        # fail with a TimeoutError naming the wedged shutdown — the one thing this
+        # `_POOL_DISCARD_TIMEOUT`, so it could consume the bounded wait below and
+        # fail naming the wedged shutdown — the one thing this
         # test had already bounded, to 0.05s. A dedicated executor keeps the
         # assertion about escalation ordering instead of about the shared pool's
         # spare capacity.
@@ -367,7 +375,7 @@ class TestDiscardReaping:
             patch("kiro_crew.session._sync_kill_provider") as mock_kill,
             patch("kiro_crew.session.subprocess_executor", return_value=private_executor),
         ):
-            pooled = await asyncio.wait_for(mgr._drain_and_claim("kirocrew"), timeout=5)
+            pooled = await finished(mgr._drain_and_claim("kirocrew"), "the drain and claim")
 
         assert pooled is None
         mock_kill.assert_called_once_with(wedged)
@@ -427,7 +435,7 @@ class TestDiscardReaping:
         assert mgr._warm_pool.qsize() == 0
 
     @pytest.mark.asyncio
-    async def test_hard_kill_never_signals_mock_or_sentinel_pids(self):
+    async def test_hard_kill_never_signals_mock_or_sentinel_pids(self, caplog):
         """A provider stand-in whose pid resolves to a non-int (Mock coerces
         to 1 via __index__) or to pid<=1 must never be signaled — an unguarded
         kill would SIGTERM init / the CI container entrypoint."""
@@ -437,11 +445,21 @@ class TestDiscardReaping:
         pid_one = _make_provider()
         pid_one._client = SimpleNamespace(_pid=1)
 
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.session_pid")
         with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
             _sync_kill_provider(mock_provider)
             _sync_kill_provider(pid_one)
 
         mock_kill.assert_not_called()
+        refusals = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.session_pid"
+            and r.getMessage().startswith("_sync_kill_provider: refusing to signal invalid pid")
+        ]
+        # Both stand-ins were turned away by the pid guard, not by some later gate.
+        assert len(refusals) == 2
+        assert refusals[1].endswith(" 1")
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX signal semantics")
     @pytest.mark.asyncio
@@ -473,11 +491,10 @@ class TestDiscardReaping:
 
             await mgr._drain_and_claim("kirocrew")
 
-            deadline = time.monotonic() + 5
-            # flake-ok: pre-existing 5 s poll for the real child's exit, moved verbatim; tracked for a de-flake pass
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            assert proc.poll() is not None, "survivor leaked behind lying bookkeeping"
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: "survivor leaked behind lying bookkeeping",
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -510,11 +527,10 @@ class TestDiscardReaping:
             pooled = await mgr._drain_and_claim("kirocrew")
             assert pooled is None
 
-            deadline = time.monotonic() + 5
-            # flake-ok: pre-existing 5 s poll for the real child's exit, moved verbatim; tracked for a de-flake pass
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            assert proc.poll() is not None, "discarded provider process leaked"
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: "discarded provider process leaked",
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()

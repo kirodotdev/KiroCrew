@@ -592,16 +592,21 @@ class TestTheTurnHandlerRefusesBeforeItForwards:
         assert _code(resp) == "bad_request"
 
     @pytest.mark.asyncio
-    async def test_a_body_that_is_not_an_object_is_refused(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(["not", "a", "dict"], id="test_a_body_that_is_not_an_object_is_refused"),
+            pytest.param({"message": "   ", "thread": "t"}, id="test_an_empty_message_is_refused"),
+            pytest.param({"message": "hi", "thread": "  "}, id="test_an_empty_thread_is_refused"),
+            pytest.param(
+                {"message": "hi", "thread": "t", "stream": "yes"},
+                id="test_a_non_boolean_stream_flag_is_refused",
+            ),
+        ],
+    )
+    async def test_a_malformed_body_is_refused(self, monkeypatch, body):
         _wire_handler(monkeypatch)
-        resp = await mod.api_crew_turn(_turn_request(["not", "a", "dict"]))
-        assert resp.status == 400
-        assert _code(resp) == "bad_request"
-
-    @pytest.mark.asyncio
-    async def test_an_empty_message_is_refused(self, monkeypatch):
-        _wire_handler(monkeypatch)
-        resp = await mod.api_crew_turn(_turn_request({"message": "   ", "thread": "t"}))
+        resp = await mod.api_crew_turn(_turn_request(body))
         assert resp.status == 400
         assert _code(resp) == "bad_request"
 
@@ -613,21 +618,6 @@ class TestTheTurnHandlerRefusesBeforeItForwards:
         resp = await mod.api_crew_turn(_turn_request(body))
         assert resp.status == 413
         assert _code(resp) == "message_too_large"
-
-    @pytest.mark.asyncio
-    async def test_an_empty_thread_is_refused(self, monkeypatch):
-        _wire_handler(monkeypatch)
-        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "  "}))
-        assert resp.status == 400
-        assert _code(resp) == "bad_request"
-
-    @pytest.mark.asyncio
-    async def test_a_non_boolean_stream_flag_is_refused(self, monkeypatch):
-        _wire_handler(monkeypatch)
-        body = {"message": "hi", "thread": "t", "stream": "yes"}
-        resp = await mod.api_crew_turn(_turn_request(body))
-        assert resp.status == 400
-        assert _code(resp) == "bad_request"
 
     @pytest.mark.asyncio
     async def test_a_crew_that_is_not_connected_is_refused_before_any_secret(self, monkeypatch):
@@ -1053,6 +1043,7 @@ class _ExplodingStream(_CapturingStream):
     """A stream whose every ``write`` fails, modelling a client already gone."""
 
     async def write(self, data):
+        self.frames.append(bytes(data))
         raise RuntimeError("broken pipe")
 
 
@@ -1075,6 +1066,13 @@ async def test_a_streamed_turn_whose_error_frame_also_fails_does_not_raise(monke
     )
     out = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
     assert isinstance(out, _ExplodingStream)
+    assert len(calls) == 1
+    # The relayed frame failed, then the error frame was attempted and failed too;
+    # the [DONE] frame after it is never reached.
+    assert out.frames == [
+        b"data: x\n\n",
+        b'data: {"error": {"code": "crew_unreachable"}}\n\n',
+    ]
 
 
 def _wire_resume(monkeypatch, *, state, raises=None, on_resume=None, on_lookup=None):

@@ -19,47 +19,21 @@
       "label": "Update the gateway automatically",
       "tab": "about",
       "route": "/settings/about?highlight=key%3Aauto_update",
-      "description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+      "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
       "configKey": "auto_update"
     },
     {
-      "id": "browser.max-frame-rate",
-      "label": "Max frame rate",
+      "id": "browser.attach-token",
+      "label": "Extension token (optional)",
       "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Abrowser.live.max_fps",
-      "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
-      "configKey": "browser.live.max_fps"
+      "route": "/settings/browser?highlight=browser.attach-token"
     },
     {
-      "id": "browser.quality",
-      "label": "Quality",
+      "id": "browser.use-the-built-in-browser",
+      "label": "Use the built-in browser",
       "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Abrowser.live.quality",
-      "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
-      "configKey": "browser.live.quality"
-    },
-    {
-      "id": "browser.run-with-no-window",
-      "label": "Run with no window",
-      "tab": "browser",
-      "route": "/settings/browser?highlight=browser.run-with-no-window",
-      "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window."
-    },
-    {
-      "id": "browser.show-the-live-view-in-chat",
-      "label": "Show the live view in chat",
-      "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Abrowser.live.enabled",
-      "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
-      "configKey": "browser.live.enabled"
-    },
-    {
-      "id": "browser.which-browser",
-      "label": "Which browser",
-      "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Abrowser.choice",
-      "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
-      "configKey": "browser.choice"
+      "route": "/settings/browser?highlight=key%3Adashboard.use_builtin_browser",
+      "configKey": "dashboard.use_builtin_browser"
     },
     {
       "id": "channels.allowed-emails-webex",
@@ -347,7 +321,7 @@
       "label": "Phase reactions (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.phase-reactions-slack",
-      "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages."
+      "description": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails."
     },
     {
       "id": "channels.reply-in-thread-webex",
@@ -467,7 +441,7 @@
       "label": "Auto-Compact Threshold",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Asession.autocompact_pct",
-      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
       "configKey": "session.autocompact_pct"
     },
     {
@@ -550,6 +524,13 @@
       "route": "/settings/chat/models?highlight=key%3Aagent.refusal_fallback_model",
       "hint": "Auto retries on the model the provider suggests in its refusal, when it names one. The retry is announced in chat. Disabled shows the refusal as before.",
       "configKey": "agent.refusal_fallback_model"
+    },
+    {
+      "id": "chat.copy-on-select",
+      "label": "Copy on select",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens."
     },
     {
       "id": "chat.default-memory-mode",
@@ -648,6 +629,13 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.jump-to-the-bottom-when-you-send",
+      "label": "Jump to the bottom when you send",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.jump-to-the-bottom-when-you-send",
+      "hint": "When off, sending a message leaves the transcript where it is."
+    },
+    {
       "id": "chat.keep-side-panel-open",
       "label": "Keep Side Panel Open",
       "tab": "chat",
@@ -740,7 +728,7 @@
       "label": "Prevent sleep while running",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Adashboard.prevent_sleep",
-      "hint": "Keep your computer awake while a task is running",
+      "hint": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen on for long tasks.",
       "configKey": "dashboard.prevent_sleep"
     },
     {
@@ -811,7 +799,7 @@
       "label": "Show Full Titles While Scrolling",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.show-full-titles-while-scrolling",
-      "hint": "While you scroll the session list, titles the sidebar cuts off show in full"
+      "hint": "While you scroll the session list, cut-off titles show in full"
     },
     {
       "id": "chat.show-pasted-text-in-full",
@@ -1028,45 +1016,45 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
-      "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
-      "label": "Also send screenshots of the agent's browser tab",
+      "id": "developer.agent-harness-per-mate",
+      "label": "Agent harness per mate",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-screenshots-of-the-agent-s-browser-tab",
-      "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only."
+      "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-per-mate",
+      "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
     },
     {
       "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
       "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
       "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
       "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
       "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
     },
     {
       "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
       "label": "Also send tool-call arguments so Jev can flag risky calls",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
       "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.artifact-deploy",
       "label": "Artifact Deploy",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.artifact-deploy",
+      "route": "/settings/developer/feature-previews?highlight=developer.artifact-deploy",
       "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
     },
     {
       "id": "developer.automatic-cards-for-all-sessions",
       "label": "Automatic cards for all sessions",
       "tab": "developer",
-      "route": "/settings/developer?highlight=key%3Adashboard.dynamic_dashboard_cards",
+      "route": "/settings/developer/feature-previews?highlight=key%3Adashboard.dynamic_dashboard_cards",
       "description": "Summaries of each session’s recent work and next steps, shown on the All Dashboards page, which the Sessions list’s ⋮ menu opens. A model call writes each one, so they use model credits.",
       "configKey": "dashboard.dynamic_dashboard_cards"
     },
@@ -1074,98 +1062,91 @@
       "id": "developer.chat-on-a-crew",
       "label": "Chat on a crew",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.chat-on-a-crew",
+      "route": "/settings/developer/feature-previews?highlight=developer.chat-on-a-crew",
       "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
       "id": "developer.composable-layout",
       "label": "Composable layout",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.composable-layout",
+      "route": "/settings/developer/feature-previews?highlight=developer.composable-layout",
       "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.decisions-jev",
+      "route": "/settings/developer/feature-previews?highlight=developer.decisions-jev",
       "description": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up."
-    },
-    {
-      "id": "developer.developer-mode",
-      "label": "Developer Mode",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.developer-mode",
-      "hint": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
     },
     {
       "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
       "label": "Earlier conversation one decision may carry, in characters",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
+      "route": "/settings/developer/feature-previews?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
       "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
     },
     {
       "id": "developer.folder-conductor",
       "label": "Folder conductor",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.folder-conductor",
+      "route": "/settings/developer/feature-previews?highlight=developer.folder-conductor",
       "description": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.jev-api-key",
+      "route": "/settings/developer/feature-previews?highlight=developer.jev-api-key",
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
-    },
-    {
-      "id": "developer.mates",
-      "label": "Mates",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.mates",
-      "hint": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
     },
     {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.model-for-the-small-model-judge",
+      "route": "/settings/developer/feature-previews?highlight=developer.model-for-the-small-model-judge",
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
       "id": "developer.reply-threads-on-mate-chat-messages",
       "label": "Reply threads on mate chat messages",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.reply-threads-on-mate-chat-messages",
+      "route": "/settings/developer/feature-previews?highlight=developer.reply-threads-on-mate-chat-messages",
       "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
     },
     {
       "id": "developer.run-a-local-gateway",
       "label": "Run a local gateway",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.run-a-local-gateway",
+      "route": "/settings/developer/feature-previews?highlight=developer.run-a-local-gateway",
       "description": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
     },
     {
       "id": "developer.run-kas-on-kiro-crew-s-own-engine",
       "label": "Run KAS on Kiro Crew's own engine",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
+      "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
+      "id": "developer.session-environments",
+      "label": "Session Environments",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.session-environments",
+      "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
     },
     {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.webhooks",
+      "route": "/settings/developer/feature-previews?highlight=developer.webhooks",
       "hint": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
     },
     {
       "id": "developer.which-judge-answers",
       "label": "Which judge answers",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.which-judge-answers"
+      "route": "/settings/developer/feature-previews?highlight=developer.which-judge-answers"
     },
     {
       "id": "display.command-completion",
@@ -1269,6 +1250,13 @@
       "hint": "Chat bubbles or CLI-style line-by-line output"
     },
     {
+      "id": "display.keep-running-in-the-background-after-closing-the-window",
+      "label": "Keep running in the background after closing the window",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.keep-running-in-the-background-after-closing-the-window",
+      "description": "Closing the window hides Kiro Crew and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running."
+    },
+    {
       "id": "display.language",
       "label": "Language",
       "tab": "display",
@@ -1296,6 +1284,13 @@
       "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.reuse_current",
       "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.show-unread-dot-on-session-cards",
+      "label": "Show unread dot on session cards",
+      "tab": "display",
+      "route": "/settings/display/sidebar?highlight=key%3Adashboard.show_unread_dot",
+      "configKey": "dashboard.show_unread_dot"
     },
     {
       "id": "display.theme",
@@ -1379,6 +1374,13 @@
       "tab": "notifications",
       "route": "/settings/notifications/alerts?highlight=notifications.mark-sessions-unread-only-when-they-need-you",
       "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
+    },
+    {
+      "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
+      "label": "Notify me even when Kiro Crew is closed",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.notify-me-even-when-kiro-crew-is-closed",
+      "description": "Sends alerts to this device even after you close Kiro Crew. System notifications stop once you close it."
     },
     {
       "id": "notifications.notify-when-a-background-chat-finishes",
@@ -1530,6 +1532,49 @@
       "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
     },
     {
+      "id": "session-environments.coder-url",
+      "label": "Coder URL",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.coder_url",
+      "description": "Use the deployment URL without credentials, query parameters, or fragments, for example https://coder.example.com.",
+      "configKey": "session_environments.coder_url"
+    },
+    {
+      "id": "session-environments.default-for-new-chats",
+      "label": "Default for new chats",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.default-for-new-chats",
+      "description": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now."
+    },
+    {
+      "id": "session-environments.machine-size",
+      "label": "Machine size",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.machine-size",
+      "description": "A snapshot keeps the size it was saved with, so this applies only to profiles without one. Larger sizes bill more while the machine runs."
+    },
+    {
+      "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
+      "label": "Secret name for the token (usually SPRITES_TOKEN)",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.secret-name-for-the-token-usually-sprites-token",
+      "description": "The name the token is stored under in Settings → Secrets. Change it only to use a different saved token."
+    },
+    {
+      "id": "session-environments.start-new-chats-on-a-profile",
+      "label": "Start new chats on a profile",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.default_profile",
+      "configKey": "session_environments.default_profile"
+    },
+    {
+      "id": "session-environments.stop-workspaces-when-kiro-crew-shuts-down",
+      "label": "Stop workspaces when Kiro Crew shuts down",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.stop_on_shutdown",
+      "configKey": "session_environments.stop_on_shutdown"
+    },
+    {
       "id": "shortcuts.enable-shortcuts",
       "label": "Enable shortcuts",
       "tab": "shortcuts",
@@ -1612,8 +1657,7 @@
       "id": "voice.aws-region-transcribe",
       "label": "AWS Region (Transcribe)",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.aws-region-transcribe",
-      "description": "AWS region for Transcribe"
+      "route": "/settings/voice?highlight=voice.aws-region-transcribe"
     },
     {
       "id": "voice.custom-model-file",
@@ -1684,6 +1728,13 @@
       "configKey": "stt.language_code"
     },
     {
+      "id": "voice.language-2",
+      "label": "Language",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.language-2",
+      "hint": "Language for spoken replies"
+    },
+    {
       "id": "voice.microphone",
       "label": "Microphone",
       "tab": "voice",
@@ -1695,7 +1746,7 @@
       "label": "Mixed languages",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.transcribe_languages",
-      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, Amazon Transcribe detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
+      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, dictation detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
       "configKey": "stt.transcribe_languages"
     },
     {
@@ -1705,20 +1756,6 @@
       "route": "/settings/voice?highlight=key%3Astt.model",
       "hint": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
       "configKey": "stt.model"
-    },
-    {
-      "id": "voice.piper-binary",
-      "label": "Piper Binary",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=voice.piper-binary",
-      "description": "Path to the piper executable. Leave blank to auto-detect on PATH or in a ~/piper-venv install"
-    },
-    {
-      "id": "voice.piper-model",
-      "label": "Piper Model",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=voice.piper-model",
-      "description": "Path to the Piper voice model (.onnx). Required — download from huggingface.co/rhasspy/piper-voices"
     },
     {
       "id": "voice.provider",
@@ -1733,7 +1770,7 @@
       "label": "Provider",
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.provider-2",
-      "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network"
+      "description": "The built-in engine needs no setup; Amazon Polly uses AWS credentials + network"
     },
     {
       "id": "voice.send-when-i-stop-recording",
@@ -1762,13 +1799,6 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.speed-2",
       "hint": "Speech rate for spoken replies (Amazon Polly)"
-    },
-    {
-      "id": "voice.speed-3",
-      "label": "Speed",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=voice.speed-3",
-      "hint": "Piper speech speed (length scale)"
     },
     {
       "id": "voice.streaming",

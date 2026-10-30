@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.config.schema import SCHEMA_REGISTRY
 
@@ -428,6 +429,7 @@ class TestCommittedBaselineParity:
         # Exercise real Git conversion without inheriting host/repository overrides.
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        env.update(git_maintenance_off_entries(env))
         git = [
             "git",
             "-c",

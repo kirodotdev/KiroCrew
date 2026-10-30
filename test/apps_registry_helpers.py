@@ -64,6 +64,19 @@ def unsandboxed_spawn(monkeypatch):
     monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
 
 
+@pytest.fixture(autouse=True)
+def _install_script_runs_on_this_host(_floor_monkeypatch):
+    """Let ``setup.onInstall`` reach its (mocked) spawn on every host.
+
+    On native Windows the install transaction refuses ``onInstall`` before any
+    spawn, because the hook runs through ``/bin/bash``. These suites drive the
+    POSIX script path with a faked subprocess and assert what follows it, so
+    they pin the platform refusal off; the refusal itself is covered by its own
+    tests in ``test_apps_registry_timeout_reaping.py``, which put it back.
+    """
+    _floor_monkeypatch.setattr(registry, "_install_script_platform_refusal", lambda: None)
+
+
 def _identity_harness(monkeypatch, src, *, cloned_manifest, prefetched=None):
     """Common monkeypatch set for driving install_from_registry to the identity gate."""
     entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}

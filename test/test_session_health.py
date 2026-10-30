@@ -432,6 +432,36 @@ class TestSnapshotFromObjects:
             "window_queued": 3,
         }
 
+    def test_children_keyed_by_the_effective_session_key_reach_their_slot(self):
+        # Production children carry ``dashboard:<slot>`` (or the channel key of a
+        # channel-born slot), never the bare slot key.
+        subagents = SimpleNamespace(
+            running=[
+                SimpleNamespace(parent_session_key="dashboard:chat-1-1"),
+                SimpleNamespace(parent_session_key="dashboard:chat-1-1"),
+                SimpleNamespace(parent_session_key="slack:C1-171"),
+            ]
+        )
+        state = SimpleNamespace(
+            subagents=subagents,
+            _slots={
+                "chat-1-1": SimpleNamespace(key="chat-1-1", running=True, messages=[]),
+                "chat-2-2": SimpleNamespace(
+                    key="chat-2-2",
+                    running=True,
+                    messages=[],
+                    linked_session_key="slack:C1-171",
+                ),
+                "chat-3-3": SimpleNamespace(key="chat-3-3", running=True, messages=[]),
+            },
+        )
+        snap = sh.snapshot_state(state, now=1.0, mono_now=2.0)
+        assert {s.key: s.children_running for s in snap.slots} == {
+            "chat-1-1": 2,
+            "chat-2-2": 1,
+            "chat-3-3": 0,
+        }
+
     def test_compute_session_health_uses_the_managers_store(self):
         store = _FakeStore(rows=[], by_state={"queued": 5}, oldest=12.0)
         state = SimpleNamespace(subagents=SimpleNamespace(running=[], _taskq=store), _slots={})

@@ -400,8 +400,7 @@ class TestOnlyACleanCallIsAnAnswer:
 
     Stated as a closed enumeration rather than a list of observed failures: a
     subprocess either never finished, finished badly, or finished with nothing
-    to say. Handling them one at a time cost three review rounds on this
-    function, so these tests pin the whole gate instead of the last instance.
+    to say. These tests pin the whole gate instead of one instance at a time.
 
     Model-free -- the "CLI" here is a Python one-liner, so this runs anywhere.
     """

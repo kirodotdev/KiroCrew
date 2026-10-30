@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../compo
 import type { NavIntent } from '../utils/popoutController'
 import { artifactReferencePrompt } from '../components/artifactReference.prompt'
 import { renderWithProviders, createTestStore } from './helpers'
-import { fetchSlots } from '../store/dashboardSlice'
+import { fetchSlots, touchSlotActivity } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { DRAFTS_KEY, saveDrafts } from '../utils/chatDrafts'
 import type { ChatSlot } from '../types'
@@ -43,7 +43,7 @@ function setup(slots: ChatSlot[], beforeSend: BeforeSend = (p) => { void p((go) 
   const onSend = vi.fn()
   const onError = vi.fn()
   renderWithProviders(<Harness onSend={onSend} onError={onError} beforeSend={beforeSend} />, { store })
-  return { onSend, onError }
+  return { onSend, onError, store }
 }
 
 const openMenu = async () => {
@@ -77,6 +77,20 @@ describe('ArtifactSendToSession', () => {
     expect(await screen.findByRole('menuitem', { name: 'Release prep' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Companion' })).toBeNull()
     expect(screen.getByRole('menuitem', { name: 'New session' })).toBeInTheDocument()
+  })
+
+  it('orders a session that is mid-turn by its newest message, not the row value', async () => {
+    const turn = { last_turn_ts: '2026-10-05T09:00:00Z', last_activity_ts: undefined }
+    const { store } = setup([
+      slot('chat-busy', 'Busy', { ...turn, last_ts: '2026-10-05T10:00:00Z' }),
+      slot('chat-quiet', 'Quiet', { ...turn, last_ts: '2026-10-05T11:00:00Z' }),
+    ])
+    // An unsettled bump goes to the recency overlay and leaves the row alone.
+    act(() => { store.dispatch(touchSlotActivity({ key: 'chat-busy', ts: '2026-10-05T12:00:00Z' })) })
+    await openMenu()
+    await screen.findByRole('menuitem', { name: 'Busy' })
+    const names = screen.getAllByRole('menuitem').map(el => el.textContent)
+    expect(names.indexOf('Busy')).toBeLessThan(names.indexOf('Quiet'))
   })
 
   it('seeds the chosen session with the reference appended to its stored draft', async () => {

@@ -831,6 +831,57 @@ jobs:
       - name: Type check (mypy)
         run: mypy src/kiro_crew/
 
+  # The optional native credential pre-filter (native/kc_native) is used by
+  # default wherever it is installed, and a wrong False from it would let a
+  # credential skip redaction. Its equivalence suite skips itself when the
+  # module is absent, which is every other job, so this one builds the module
+  # and runs that suite unskipped, plus the Python pre-filter suite with the
+  # native gate live.
+  native-redaction-gate:
+    name: Native Redaction Gate (kc_native)
+    needs: [changes, await-fast-gate, lint-gate]
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e . --group dev maturin==1.15.0
+
+      - name: Rust unit tests
+        working-directory: native/kc_native
+        run: cargo test --release --locked
+
+      - name: Build and install kc_native
+        working-directory: native/kc_native
+        run: |
+          maturin build --release --locked --out dist
+          uv pip install --system dist/kc_native-*.whl
+
+      - name: Equivalence with the Python gate
+        # The import check comes first: the suite skips itself when the module
+        # is missing, and a skip must not read as a pass here.
+        run: |
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log and never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          python -c "import kc_native"
+          python -m pytest -q test/test_native_redaction_gate.py test/test_native_redaction_fallback.py test/test_credential_prefilter.py
+
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate, lint-gate]
@@ -842,7 +893,10 @@ jobs:
     # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
-      max-parallel: 4
+      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
+      # fallback resolves to 'ubuntu-latest', so this correctly lifts only on CodeBuild.
+      max-parallel: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 8 || 4 }}
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
@@ -1087,7 +1141,10 @@ jobs:
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
-      max-parallel: 4
+      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
+      # fallback resolves to 'windows-latest', so this correctly lifts only on CodeBuild.
+      max-parallel: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
@@ -1292,7 +1349,7 @@ jobs:
   backend-test-kernel-lock-owner:
     name: Backend Tests (Kernel Lock Owner, hosted)
     needs: [changes, await-fast-gate, lint-gate]
-    if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -1405,13 +1462,20 @@ jobs:
     name: Pod Boot Canary (Windows)
     needs: [await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    # Hosted, and it cannot move. The Windows fleet is a CONTAINER
-    # (`ContainerAdministrator`), where `schtasks /Create` exits 1 on its own
-    # `/ST is earlier than current time` warning -- so the runner user cannot
-    # create a scheduled task, which is the single fact this canary exists to
-    # establish. Measured there: all 3 tests fail at the probe with
-    # `WindowsTaskError ... schtasks /Create rc=1`, before any pod boots.
-    runs-on: windows-latest
+    # Off the CodeBuild fleet, and that exclusion is specific to the fleet: the
+    # Windows fleet is a CONTAINER (`ContainerAdministrator`), where
+    # `schtasks /Create` exits 1 on its own `/ST is earlier than current time`
+    # warning -- so the runner user cannot create a scheduled task, which is the
+    # single fact this canary exists to establish. Measured there: all 3 tests
+    # fail at the probe with `WindowsTaskError ... schtasks /Create rc=1`, before
+    # any pod boots. A larger runner is an uncontainerized VM on the same
+    # Windows Server 2025 image family as `windows-latest`, so it creates the
+    # scheduled task the shared pool creates.
+    # `kirocrew-runners-windows` larger-runner group, targeted by GROUP not
+    # label; see "The Windows larger-runner group" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners-windows
     # A cold boot pays for the venv build, interpreter start, config seeding and
     # the health wait. The test's own bound is 180s; this is the job's. The
     # label opt-in measured 76s (boot canary) + 205s (55 scenarios) plus the SPA
@@ -1712,6 +1776,111 @@ jobs:
   # lane list.
   # test_macos_platform_tests_gate.py pins all of it.
 
+  # ── New-test stability gate ──────────────────────────────────────────────
+  # The leaf-test path (LEAF_REPEAT loop) already repeats changed test files
+  # on leaf PRs (test-only, modify-only diffs).  This job closes the gap for
+  # non-leaf PRs -- where source changes land alongside new or modified test
+  # files -- by running those test files LEAF_REPEAT times on both hosted
+  # platforms.  GitHub-hosted runners only: the CodeBuild fleet is saturated
+  # by the eight-shard backend-test matrix.
+  new-test-stability:
+    name: New-test stability (${{ matrix.os }})
+    needs: [changes, await-fast-gate, lint-gate]
+    if: >-
+      ${{ github.event_name == 'pull_request'
+      && !cancelled()
+      && needs.lint-gate.result == 'success'
+      && needs.changes.outputs.leaf_tests != 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pytest_timeout: "120"
+          - os: windows-latest
+            pytest_timeout: "180"
+    env:
+      KIROCREW_TMP_RESIDUE_STRICT: "1"
+      LEAF_REPEAT: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Widen git-operation timeout (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "MDNB_GIT_TIMEOUT_SEC=120" >> "$GITHUB_ENV"
+
+      - name: Select test files to repeat
+        id: scope
+        env:
+          STABILITY_BASE: ${{ github.event.pull_request.base.sha }}
+          TARGETS_FILE: ${{ runner.temp }}/stability-targets.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          # On fork-neutral PRs the Windows test lane is skipped; mirror that here.
+          if [ "${{ matrix.os }}" = "windows-latest" ] && [ "${{ needs.changes.outputs.windows_tests }}" = "false" ]; then
+            echo "Fork-neutral PR: skipping Windows stability."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python scripts/new_test_stability_scope.py > "$TARGETS_FILE"
+          if [ ! -s "$TARGETS_FILE" ]; then
+            echo "No added or modified test files; nothing to repeat."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Test files to repeat ($(wc -l < "$TARGETS_FILE" | tr -d ' ') file(s), $LEAF_REPEAT passes):"
+            sed 's/^/  /' "$TARGETS_FILE"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run test files ${{ env.LEAF_REPEAT }}x (stability check)
+        if: steps.scope.outputs.skip != 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TARGETS_FILE: ${{ runner.temp }}/stability-targets.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::remove-matcher owner=python::"
+          TARGETS=()
+          while IFS= read -r line; do
+            line="${line%$'\r'}"; if [ -n "$line" ]; then TARGETS+=("$line"); fi
+          done < "$TARGETS_FILE"
+          for pass in $(seq 1 "$LEAF_REPEAT"); do
+            echo "::group::stability pass $pass/$LEAF_REPEAT"
+            rc=0
+            pytest -q -n auto --timeout=${{ matrix.pytest_timeout }} --no-cov -m "not ipv6_required" \
+              --max-worker-restart=0 \
+              ${TARGETS[@]+"${TARGETS[@]}"} || rc=$?
+            echo "::endgroup::"
+            # Exit 5 means no tests were collected (all module-level skips).
+            # Treat that as an effectively empty scope, not a failure.
+            if [ "$rc" -eq 5 ]; then break; fi
+            if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          done
+
   # The job where Linux mount-namespace tests EXECUTE rather than skip. They need
   # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
   # AppArmor -- the same restriction codex-review.yml clears for its bwrap sandbox.
@@ -1735,11 +1904,11 @@ jobs:
   # pre-exec hardlink scan arming on every spawn (1.5s per sandboxed spawn), since fixed.
   # MEASURED afterwards under this job's own environment -- real sandbox, no gh token, no
   # user session bus -- all eleven: 694 passed, 1 skipped, 38s.
-  #
+
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
-    needs: [await-fast-gate, lint-gate]
-    if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    needs: [changes, await-fast-gate, lint-gate]
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1802,6 +1971,7 @@ jobs:
             test/test_snapshot_read_only_real_view.py \
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
+            test/test_member_records_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
@@ -1937,7 +2107,7 @@ jobs:
   backend-test-crew-container:
     name: Backend Tests (crew container)
     needs: [changes, await-fast-gate, lint-gate]
-    if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
@@ -2193,6 +2363,7 @@ jobs:
           pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
+            test/test_codex_session_mcp_approval.py \
             test/test_opencode_session_mcp.py \
             test/test_per_tool_mcp_deny_single_binary.py \
             test/test_pi_gate_extension_mcp.py \
@@ -2293,18 +2464,18 @@ jobs:
         run: uv pip install --system coverage==7.10.6
 
       - name: Download shard coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-shard-*
           merge-multiple: true
 
       - name: Download required IPv6 coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-ipv6
 
       - name: Download required kernel lock owner coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-kernel-lock-owner
 
@@ -2489,9 +2660,15 @@ jobs:
             exit 1
           fi
           # The hosted strict lane is required in every scope, like the IPv6
-          # lane: it always runs, so anything but success (failure, cancellation,
-          # skip, or an empty result) fails closed.
-          if [ "$KERNEL_LOCK_OWNER" != "success" ]; then
+          # lane, EXCEPT on a frontend-only diff where the kernel-lock-owner
+          # lane is skipped. backend-test and backend-test-ipv6 still run on
+          # a frontend-only diff (their scope narrows, but the jobs run).
+          if [ "$ONLY_FRONTEND" = "true" ]; then
+            if [ "$KERNEL_LOCK_OWNER" != "skipped" ]; then
+              echo "::error::backend-test-kernel-lock-owner=$KERNEL_LOCK_OWNER but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+          elif [ "$KERNEL_LOCK_OWNER" != "success" ]; then
             echo "::error::backend-test-kernel-lock-owner=$KERNEL_LOCK_OWNER -- failing closed."
             exit 1
           fi
@@ -2553,14 +2730,14 @@ jobs:
 
       - name: Download backend coverage
         if: needs.coverage-combine.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-backend
           path: backend-cov
 
       - name: Download frontend coverage
         if: needs.changes.outputs.only_backend != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-frontend
           path: frontend-cov
@@ -2988,21 +3165,18 @@ jobs:
         run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
 
   # The Electron shell (website/electron) has its own 460+ test node:test suite,
-  # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,
+  # and until now NOTHING ran it on a PR -- its only runner was ota-test.yml,
   # which is nightly/on-demand and called by no other workflow. So main-process
   # regressions (permission handling, packaging/entitlements contracts, the
   # updater IPC surface) could land green and surface a day later, or in a
   # shipped DMG. That is not hypothetical: the missing macOS microphone
-  # entitlement reached users this way. This job is deliberately tiny and fast —
+  # entitlement reached users this way. This job is deliberately tiny and fast --
   # pure unit tests, no Electron binary download, no packaging.
-  # NOT diff-gated, deliberately. The obvious gate (only_backend != 'true')
-  # is wrong: test/packaging.test.js pins the macOS entitlement contract
-  # against BOTH signing lanes, and one of them is
-  # packaging/signing/Entitlements.entitlements -- outside website/, so the
-  # paths-filter counts it as backend. A packaging-only diff would therefore
-  # skip the job whose absence already shipped a broken bundle once (the
-  # missing microphone entitlement above). Same for the
-  # packaging/installer-assets/* references it pins.
+  # NOT diff-gated: test/packaging.test.js pins packaging/ paths classified as
+  # backend; edition.test.js, auth-allowlist.test.js and external-scheme.test.js
+  # read src/kiro_crew/ Python files also classified as backend. A complete
+  # electron_packaging filter would have to cover those paths too, making it
+  # indistinguishable from the backend catch-all. The job stays always-on.
   electron-test:
     name: Electron Shell Tests
     needs: [changes, await-fast-gate, lint-gate]
@@ -3149,6 +3323,7 @@ jobs:
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface spec(s)."
 
       - name: Unit tests (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        id: unit
         working-directory: website
         env:
           # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
@@ -3198,6 +3373,29 @@ jobs:
             # this job's own log.
             npx vitest run --coverage --reporter=blob --reporter=default \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT"
+          fi
+
+      # A forks worker sometimes dies with no output of its own, and Vitest 4
+      # reports only "Worker exited unexpectedly": no exit code, no signal, no
+      # file (#23640). The kernel log is the one record of which kill it was --
+      # an OOM kill ("Out of memory: Killed process") or a native crash
+      # ("segfault at"). Failure-only and read-only. A runner that hides the
+      # kernel log (a CodeBuild container) says so, and the step stays green so
+      # the shard's own red is the only red.
+      - name: Kernel log on a failed shard
+        if: ${{ failure() && steps.unit.outcome == 'failure' }}
+        run: |
+          free -m || true
+          if klog="$(sudo -n dmesg -T 2>/dev/null || dmesg -T 2>/dev/null)" && [ -n "$klog" ]; then
+            hits="$(printf '%s\n' "$klog" | grep -iE 'out of memory|oom-kill|killed process|segfault|general protection|traps:' | tail -n 40 || true)"
+            if [ -n "$hits" ]; then
+              echo "::warning::The kernel logged a process kill or crash on this runner; see the lines below."
+              printf '%s\n' "$hits"
+            else
+              echo "Kernel log has no OOM-kill or crash line."
+            fi
+          else
+            echo "Kernel log is not readable on this runner."
           fi
 
       - name: Upload shard blob report
@@ -3257,7 +3455,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Download shard blob reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: website/.vitest-reports
           pattern: frontend-blob-*
@@ -3622,6 +3820,20 @@ jobs:
         shell: bash
         working-directory: website
         run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
+
+      - name: kiro-light cards carry their own edge (computed-style sweep)
+        # kiro-light paints --card and --bg the same #ffffff, so a borderless
+        # card there draws nothing while every other theme shows it. Renders
+        # the core dashboard routes and every built-in app page of the built
+        # SPA in kiro-light over loopback with fixture /api/** answers, and
+        # fails on any surface that is a card in `light` or `kiro-dark` but has
+        # no border, ring, shadow or outline in kiro-light. Same build,
+        # Chromium and no-gateway technique as the step above.
+        # docs/ci/kiro-light-card-gate.md has the rule and the exemption list.
+        timeout-minutes: 10
+        shell: bash
+        working-directory: website
+        run: node scripts/check-kiro-light-cards.mjs --json "$RUNNER_TEMP/kiro-light-cards.json"
 
       # Every step below runs as `runner` through ci-shell (the job default).
       # Nothing after this point writes a GitHub file command; the Playwright

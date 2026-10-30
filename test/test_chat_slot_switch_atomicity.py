@@ -226,11 +226,12 @@ class TestSlotModelSwitchAtomicity:
             )
 
     @pytest.mark.asyncio
-    async def test_mid_turn_switch_answers_409_without_reset(self):
+    async def test_mid_turn_switch_is_committed_and_deferred_without_reset(self):
         # _try_live_model_switch declines a mid-turn live switch, and the old
         # unlocked handler then fell through to the reset — tearing down the
-        # in-flight turn mid-stream. The handler must answer busy instead:
-        # no live switch, no reset, slot model untouched.
+        # in-flight turn mid-stream. The handler takes neither path: the pick
+        # is committed on the slot, marked for the turn boundary, and answered
+        # deferred; the live session is untouched and nothing is reset.
         from kiro_crew.providers.acp import AcpProvider
 
         slot = _ChatSlot("test")
@@ -243,19 +244,21 @@ class TestSlotModelSwitchAtomicity:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
             data = await resp.json()
-            assert resp.status == 409
-            assert data["code"] == "turn_in_flight"
-            assert slot.model == _MODEL_A
+            assert resp.status == 200
+            assert data["deferred"] is True
+            assert slot.model == _MODEL_B
+            assert slot._deferred_model_switch_key
             provider.client.set_model.assert_not_awaited()
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_cold_start_turn_answers_409_via_slot_running(self):
+    async def test_cold_start_turn_defers_via_slot_running(self):
         # A first message can be INSIDE the multi-second provider.start() when
         # the switch arrives: no session is registered yet, so the provider
         # pre-check sees nothing — but slot.running is set at dispatch, so the
-        # handler still answers 409 instead of committing a model the
-        # cold-starting session did not capture.
+        # handler still defers instead of resetting a session the
+        # cold-starting turn is about to register on the old model; the
+        # boundary moves that session once it is idle.
         slot = _ChatSlot("test")
         slot.model = _MODEL_A
         running_task = MagicMock()
@@ -265,9 +268,10 @@ class TestSlotModelSwitchAtomicity:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
             data = await resp.json()
-            assert resp.status == 409
-            assert data["code"] == "turn_in_flight"
-            assert slot.model == _MODEL_A
+            assert resp.status == 200
+            assert data["deferred"] is True
+            assert slot.model == _MODEL_B
+            assert slot._deferred_model_switch_key
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -673,8 +677,8 @@ class TestSlotModelSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rebind_during_raising_reset_rolls_back_to_409(self):
-        # The teardown-raise path must NOT bypass the rebind guard (GPT
-        # review finding): a slot rebound while the raising
+        # The teardown-raise path must NOT bypass the rebind guard: a slot
+        # rebound while the raising
         # reset awaited answers the same rollback + 409 as any other rebind —
         # never a 200 that advertises the committed model over a newly bound
         # session that never saw the switch.
@@ -911,7 +915,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_active_turn_is_refused_before_the_commit(self):
-        # GPT review finding: the reset path calls
+        # The reset path calls
         # _unblock_pending_waits BEFORE SessionManager.reset's atomic busy
         # decline, so a turn parked on a pending approval had that approval
         # rejected and only then got a 409. The model handler's early refusal
@@ -940,7 +944,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_cold_starting_turn_is_refused_via_slot_running(self):
-        # Opus review finding: slot.running is set at dispatch, before
+        # slot.running is set at dispatch, before
         # the multi-second provider.start() registers a session, so a
         # cold-starting turn is invisible to get_provider. Without this check
         # the switch reported success while that turn ran on the OLD project.
@@ -962,7 +966,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_busy_rollback_remarks_the_slot_dirty(self):
-        # GPT review finding: the unlocked periodic flush may have
+        # The unlocked periodic flush may have
         # written the PROVISIONAL bindings to disk during the reset await, so
         # a 409 rollback must re-mark the slot dirty or the rejected switch
         # survives a restart. Simulate the flush having cleared the flag
@@ -992,7 +996,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rollback_spares_a_concurrent_project_write(self):
-        # Opus review finding: slot.project has lock-free writers (the
+        # slot.project has lock-free writers (the
         # in-turn set_project directive) that can land during the reset await.
         # The rollback is identity-scoped -- it unwinds only THIS request's
         # commit token -- so a concurrent write of a different project stands
@@ -1241,8 +1245,8 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rebind_during_raising_reset_rolls_back_to_409(self):
-        # The teardown-raise path must NOT bypass the rebind guard (GPT
-        # review finding): a slot rebound while the raising
+        # The teardown-raise path must NOT bypass the rebind guard: a slot
+        # rebound while the raising
         # reset awaited answers the same rollback + 409 as any other rebind.
         slot = _ChatSlot("test")
         slot.workspace = "old-ws"

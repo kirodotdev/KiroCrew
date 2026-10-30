@@ -606,7 +606,6 @@ export function SpendTab({ c }: { c: Cost }) {
           title={i18nT('pages.telemetryPanel.top_sessions')}
           rows={sessionBars(c.conversations, c.navigable_category, SPEND_SESSION_ROWS)}
           labelClass="w-[46%]"
-          note={i18nT('pages.telemetryPanel.top_spenders_link_to_chat')}
         />
       </div>
       <div className="border-t border-border mt-4 pt-3">

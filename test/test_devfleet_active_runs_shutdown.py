@@ -169,7 +169,6 @@ async def test_run_after_snapshot_is_refused():
         patch.object(worktree_ops, "_reaper_task", None),
     ):
 
-        # Start cleanup in the background.
         cleanup_task = asyncio.create_task(instrumented_cleanup(app=None))
 
         # Wait until the critical section has completed.
@@ -338,7 +337,6 @@ async def test_old_code_without_admission_guard_escapes_cleanup():
     assert (
         rid_escaped in runtime._ACTIVE_RUNS
     ), "Expected old code to leave the escaped run in _ACTIVE_RUNS (the bug)"
-    # Cleanup: cancel the dangling task.
     task_escaped.cancel()
     try:
         await task_escaped

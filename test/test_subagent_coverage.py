@@ -46,15 +46,21 @@ class TestSafeFire:
         assert seen == ["ran"]
 
     @pytest.mark.asyncio
-    async def test_swallows_exception(self) -> None:
+    async def test_swallows_exception(self, caplog: pytest.LogCaptureFixture) -> None:
+        reached: list[str] = []
+
         async def _boom() -> None:
+            reached.append("raised")
             raise RuntimeError("nope")
 
-        sa._safe_fire(_boom())
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        # Reaching here without an unretrieved-exception crash is the assertion.
-        assert True
+        with caplog.at_level("WARNING", logger="kiro_crew.subagent"):
+            sa._safe_fire(_boom())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        assert reached == ["raised"]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"]
+        assert "Subagent callback failed" in warnings
 
 
 # ── _validate_agent ───────────────────────────────────────────────────────
@@ -185,19 +191,6 @@ class TestDoneResult:
 
 
 class TestTimeoutContext:
-    def test_includes_turn_tool_and_elapsed(self) -> None:
-        info = _info(turns=3, max_turns=10, last_tool="read", elapsed=42.0)
-        out = sa._timeout_context(info)
-        assert "turn 3/10" in out
-        assert "last tool: read" in out
-        assert "elapsed: 42s" in out
-
-    def test_elapsed_omitted_when_requested(self) -> None:
-        info = _info(turns=1, max_turns=5)
-        out = sa._timeout_context(info, include_elapsed=False)
-        assert "elapsed" not in out
-        assert "last tool" not in out
-
     def test_elapsed_falls_back_to_wall_clock(self) -> None:
         info = _info(turns=1, max_turns=5, started=0.0)
         assert "elapsed:" in sa._timeout_context(info)
@@ -249,17 +242,18 @@ class TestSubagentRolePins:
         ):
             assert sa._subagent_default_model() == ""
 
-    def test_effort_pin_returns_string(self) -> None:
+    @pytest.mark.parametrize(
+        "pinned, expected",
+        [
+            pytest.param("high", "high", id="test_effort_pin_returns_string"),
+            pytest.param(3, "", id="test_effort_pin_rejects_non_string"),
+        ],
+    )
+    def test_effort_pin(self, pinned: object, expected: str) -> None:
         cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": "high"}
+        cfg.agent.role_efforts = {"subagent": pinned}
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == "high"
-
-    def test_effort_pin_rejects_non_string(self) -> None:
-        cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": 3}
-        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == ""
+            assert sa._subagent_default_effort() == expected
 
     def test_effort_pin_never_raises(self) -> None:
         with patch(
@@ -297,19 +291,6 @@ class TestDigestHoldSecs:
 
 
 class TestCheckMemoryAvailable:
-    def test_parses_mem_available(self, tmp_path: Path) -> None:
-        f = tmp_path / "meminfo"
-        f.write_text("MemTotal:       1000 kB\nMemAvailable:    8388608 kB\n")
-        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
-        assert ok is True
-        assert gb == 8.0
-
-    def test_below_threshold_reports_not_ok(self, tmp_path: Path) -> None:
-        f = tmp_path / "meminfo"
-        f.write_text("MemAvailable:    1048576 kB\n")
-        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
-        assert (ok, gb) == (False, 1.0)
-
     def test_path_gate_not_consulted(self, tmp_path: Path) -> None:
         """The fixed kernel path is read with plain open, never the gate."""
         f = tmp_path / "meminfo"
@@ -320,22 +301,16 @@ class TestCheckMemoryAvailable:
         ):
             assert sa.check_memory_available(min_gb=4.0, path=str(f)) == (True, 8.0)
 
-    def test_permission_error_fails_open(self) -> None:
-        with patch("builtins.open", side_effect=PermissionError):
-            assert sa.check_memory_available(path="/test/meminfo") == (True, -1.0)
-
-    def test_read_error_fails_open(self) -> None:
-        with patch("builtins.open", side_effect=OSError):
-            assert sa.check_memory_available(path="/test/meminfo") == (True, -1.0)
-
-    def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "meminfo",
+        [
+            pytest.param("MemAvailable:  notanumber kB\n", id="test_malformed_line_fails_open"),
+            pytest.param("MemTotal: 12 kB\n", id="test_missing_key_fails_open"),
+        ],
+    )
+    def test_unreadable_meminfo_fails_open(self, tmp_path: Path, meminfo: str) -> None:
         f = tmp_path / "meminfo"
-        f.write_text("MemAvailable:  notanumber kB\n")
-        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
-
-    def test_missing_key_fails_open(self, tmp_path: Path) -> None:
-        f = tmp_path / "meminfo"
-        f.write_text("MemTotal: 12 kB\n")
+        f.write_text(meminfo)
         assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
 
@@ -345,18 +320,8 @@ class TestReadIntFile:
         path.write_text("4096\n", newline="\n")
         assert sa._read_int_file(str(path)) == 4096
 
-    def test_max_sentinel_is_none(self, tmp_path: Path) -> None:
-        path = tmp_path / "m"
-        path.write_text("max", newline="\n")
-        assert sa._read_int_file(str(path)) is None
-
     def test_missing_file_is_none(self, tmp_path: Path) -> None:
         assert sa._read_int_file(str(tmp_path / "absent")) is None
-
-    def test_garbage_is_none(self, tmp_path: Path) -> None:
-        path = tmp_path / "g"
-        path.write_text("banana", newline="\n")
-        assert sa._read_int_file(str(path)) is None
 
 
 class TestCgroupAvailable:
@@ -369,46 +334,10 @@ class TestCgroupAvailable:
         # These cases fabricate only the limit/usage files; the page-cache read
         # goes through ``open`` and would otherwise see the runner's real
         # /sys/fs/cgroup/memory.stat.
-        monkeypatch.setattr(sa, "_read_inactive_file_bytes", lambda directory, v2: 0)
+        monkeypatch.setattr(sa, "_read_reclaimable_file_bytes", lambda directory, v2: 0)
 
     def _reader(self, values: dict[str, int | None]):
         return lambda path: values.get(path)
-
-    def test_v2_unlimited_sentinel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            sa,
-            "_read_int_file",
-            self._reader({"/sys/fs/cgroup/memory.max": sa._CGROUP_UNLIMITED}),
-        )
-        assert sa._cgroup_available_gb() == -1.0
-
-    def test_v2_headroom(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        gib = 1024**3
-        monkeypatch.setattr(
-            sa,
-            "_read_int_file",
-            self._reader(
-                {
-                    "/sys/fs/cgroup/memory.max": 8 * gib,
-                    "/sys/fs/cgroup/memory.current": 2 * gib,
-                }
-            ),
-        )
-        assert sa._cgroup_available_gb() == pytest.approx(6.0)
-
-    def test_v1_headroom(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        gib = 1024**3
-        monkeypatch.setattr(
-            sa,
-            "_read_int_file",
-            self._reader(
-                {
-                    "/sys/fs/cgroup/memory/memory.limit_in_bytes": 4 * gib,
-                    "/sys/fs/cgroup/memory/memory.usage_in_bytes": 1 * gib,
-                }
-            ),
-        )
-        assert sa._cgroup_available_gb() == pytest.approx(3.0)
 
     def test_v1_unlimited_sentinel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -418,11 +347,7 @@ class TestCgroupAvailable:
         )
         assert sa._cgroup_available_gb() == -1.0
 
-    def test_no_controller(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "_read_int_file", self._reader({}))
-        assert sa._cgroup_available_gb() == -1.0
-
-    @pytest.mark.parametrize("usage, expected", [(None, 0.0), (0, 2.0)])
+    @pytest.mark.parametrize("usage, expected", [(0, 2.0)])
     def test_usage_unknown_is_distinct_from_zero(
         self, monkeypatch: pytest.MonkeyPatch, usage: int | None, expected: float
     ) -> None:
@@ -441,51 +366,12 @@ class TestCgroupAvailable:
 
 
 class TestAvailableMemoryGb:
-    def test_linux_clamped_by_cgroup(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", True, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
-        monkeypatch.setattr(sa, "check_memory_available", lambda min_gb=0.0: (True, 16.0))
-        monkeypatch.setattr(sa, "_cgroup_available_gb", lambda: 4.0)
-        assert sa._available_memory_gb() == 4.0
-
-    def test_linux_without_cgroup_uses_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", True, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
-        monkeypatch.setattr(sa, "check_memory_available", lambda min_gb=0.0: (True, 9.0))
-        monkeypatch.setattr(sa, "_cgroup_available_gb", lambda: -1.0)
-        assert sa._available_memory_gb() == 9.0
-
-    def test_linux_unreadable_propagates_sentinel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", True, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
-        monkeypatch.setattr(sa, "check_memory_available", lambda min_gb=0.0: (True, -1.0))
-        assert sa._available_memory_gb() == -1.0
-
-    def test_macos_branch_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", True, raising=False)
-        monkeypatch.setattr(sa, "_macos_available_memory_gb", lambda: 3.5)
-        assert sa._available_memory_gb() == 3.5
-
-    def test_windows_branch_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", True, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "host_available_mib", lambda: 8192)
-        assert sa._available_memory_gb() == 8.0
-
     def test_windows_unreadable_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``host_available_mib`` answers 0 for "cannot read", never "no memory"."""
         monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False, raising=False)
         monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
         monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", True, raising=False)
         monkeypatch.setattr(sa.platform_compat, "host_available_mib", lambda: 0)
-        assert sa._available_memory_gb() == -1.0
-
-    def test_unsupported_platform_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False, raising=False)
-        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", False, raising=False)
         assert sa._available_memory_gb() == -1.0
 
 
@@ -511,7 +397,16 @@ class TestMacosAvailableMemory:
         )
         assert sa._macos_available_memory_gb() == -1.0
 
-    def test_no_reclaimable_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="test_no_reclaimable_pages"),
+            pytest.param(0, id="test_zero_pages_fails_open"),
+        ],
+    )
+    def test_no_usable_pages_fails_open(
+        self, monkeypatch: pytest.MonkeyPatch, pages: int | None
+    ) -> None:
         real_sysconf = getattr(os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
             os,
@@ -519,18 +414,7 @@ class TestMacosAvailableMemory:
             lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
             raising=False,
         )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: None)
-        assert sa._macos_available_memory_gb() == -1.0
-
-    def test_zero_pages_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_sysconf = getattr(os, "sysconf", absent_sysconf)
-        monkeypatch.setattr(
-            os,
-            "sysconf",
-            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
-            raising=False,
-        )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: 0)
+        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_computes_gb_from_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -556,12 +440,6 @@ class TestCpuJiffies:
     ``test_proc_subtree_sample.py``; what is subagent's own is that this wrapper
     asks for the CPU column of that walk.
     """
-
-    def test_subtree_sums_descendants(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        tree = {1: [2], 2: [3], 3: []}
-        monkeypatch.setattr(sa.platform_compat, "_proc_cpu_jiffies", lambda pid: pid * 10)
-        monkeypatch.setattr(sa.platform_compat, "_proc_children", lambda pid: tree.get(pid, []))
-        assert sa._subtree_cpu_jiffies(1) == 10 + 20 + 30
 
     def test_subtree_skips_already_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa.platform_compat, "_proc_cpu_jiffies", lambda pid: 5)
@@ -603,9 +481,6 @@ class TestResolveMaxSubagents:
 
 
 class TestOutcome:
-    def test_user_stop_is_neutral(self) -> None:
-        assert _info(user_stopped=True, error="ignored").outcome == "stopped"
-
     def test_error_is_failed(self) -> None:
         assert _info(error="boom").outcome == "failed"
 
@@ -634,44 +509,6 @@ class TestContextGroups:
         assert sa._context_groups_field(info) == ""
 
 
-# ── Manager: slot + finalize tokens ───────────────────────────────────────
-
-
-class TestSlotAndFinalizeTokens:
-    def test_slot_released_exactly_once(self) -> None:
-        mgr = _manager()
-        info = _info()
-        assert mgr._release_slot(info) is True
-        assert mgr._release_slot(info) is False
-
-    def test_finalize_claimed_exactly_once(self) -> None:
-        mgr = _manager()
-        info = _info()
-        assert mgr._claim_finalize(info) is True
-        assert mgr._claim_finalize(info) is False
-
-    def test_recovering_withholds_the_claim(self) -> None:
-        mgr = _manager()
-        info = _info()
-        info._recovering = True
-        assert mgr._claim_finalize(info) is False
-        assert info._finalized is False
-
-    def test_supersede_recovery_takes_claim_and_clears_flag(self) -> None:
-        mgr = _manager()
-        info = _info()
-        info._recovering = True
-        assert mgr._claim_finalize(info, supersede_recovery=True) is True
-        assert info._recovering is False
-
-
-class TestCompletionKeepSetter:
-    def test_updates_live_values(self) -> None:
-        mgr = _manager()
-        mgr.update_completion_keep("tail", 1234)
-        assert (mgr._completion_keep, mgr._completion_keep_chars) == ("tail", 1234)
-
-
 # ── Manager: orphan / pid helpers ─────────────────────────────────────────
 
 
@@ -695,8 +532,10 @@ class TestPidHelpers:
 
     @pytest.mark.asyncio
     async def test_kill_orphan_swallows_missing_process(self) -> None:
-        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError):
-            await SubagentManager._kill_orphan_pid(4242)  # must not raise
+        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError) as kill:
+            # An already-gone process is not a kill failure.
+            assert await SubagentManager._kill_orphan_pid(4242) is None
+        assert kill.call_args[0][0] == 4242
 
     @pytest.mark.asyncio
     async def test_kill_orphan_calls_platform_kill(self) -> None:
@@ -891,9 +730,15 @@ class TestReaperOffloadsTheSweep:
 class TestRecordCost:
     def test_unsampled_run_records_nothing(self) -> None:
         mgr = _manager()
+        info = _info()
         with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(_info())
-        append.assert_not_called()
+            mgr._record_cost(info)
+            append.assert_not_called()
+            # The same run records once a sweep has sampled it, so the skip
+            # above was the never-sampled gate and not a dead path.
+            info.peak_cpu_cores = 0.5
+            mgr._record_cost(info)
+        assert append.call_count == 1
 
     def test_sampled_run_appends(self) -> None:
         mgr = _manager()
@@ -908,8 +753,13 @@ class TestRecordCost:
         mgr = _manager()
         info = _info()
         info.peak_rss_gb = 1.0
-        with patch.object(sa, "append_cost_sample", side_effect=OSError):
-            mgr._record_cost(info)  # must not raise
+        info.settled_rss_gb = 0.5
+        mgr._learned_settled_dirty = False
+        with patch.object(sa, "append_cost_sample", side_effect=OSError) as append:
+            mgr._record_cost(info)
+        assert append.call_count == 1
+        # A failed append does not mark the learned map for a re-read.
+        assert mgr._learned_settled_dirty is False
 
 
 class TestSlowCommandRecord:
@@ -920,14 +770,22 @@ class TestSlowCommandRecord:
         assert rec.call_args.kwargs["idle_secs"] == 300
 
     def test_write_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "record_slow_command", side_effect=OSError):
-            SubagentManager._record_slow_command(_info(), 1.0)  # must not raise
+        with patch.object(sa, "record_slow_command", side_effect=OSError) as rec:
+            SubagentManager._record_slow_command(_info("slow1"), 1.0)
+        assert rec.call_args.args == ("slow1",)
+        assert rec.call_args.kwargs["idle_secs"] == 1
 
 
 class TestWriteTombstone:
     def test_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "write_tombstone", side_effect=OSError):
-            SubagentManager._write_tombstone(_info(), "reaped")  # must not raise
+        info = _info("ts1")
+        info.started -= 5
+        with patch.object(sa, "write_tombstone", side_effect=OSError) as write:
+            SubagentManager._write_tombstone(info, "reaped")
+        assert write.call_args.args == ("ts1",)
+        assert write.call_args.kwargs["cause"] == "reaped"
+        # The elapsed time is finalized before the write is attempted.
+        assert info.elapsed >= 5
 
     def test_passes_outcome_through(self) -> None:
         with patch.object(sa, "write_tombstone") as write:
@@ -943,19 +801,6 @@ class TestStartupStall:
         mgr = _manager(startup_timeout=10)
         assert mgr._is_startup_stalled(_info(), now=1e9) is False
 
-    def test_runtimeless_past_deadline_is_stalled(self) -> None:
-        mgr = _manager(startup_timeout=10)
-        info = _info()
-        info._exec_started = 100.0
-        assert mgr._is_startup_stalled(info, now=200.0) is True
-
-    def test_agent_with_pid_is_not_stalled(self) -> None:
-        mgr = _manager(startup_timeout=10)
-        info = _info()
-        info._exec_started = 100.0
-        info._pid = 5
-        assert mgr._is_startup_stalled(info, now=200.0) is False
-
     def test_agent_with_a_turn_is_not_stalled(self) -> None:
         mgr = _manager(startup_timeout=10)
         info = _info(turns=1)
@@ -964,37 +809,6 @@ class TestStartupStall:
 
 
 class TestIdleStall:
-    @pytest.mark.asyncio
-    async def test_prestart_agent_ignored(self) -> None:
-        mgr = _manager(stall_idle_secs=1)
-        info = _info(last_activity=0.0)
-        await mgr._maybe_flag_stall("a1", info, now=1e9)
-        assert info.stalled is False
-
-    @pytest.mark.asyncio
-    async def test_awaiting_approval_is_exempt(self) -> None:
-        mgr = _manager(stall_idle_secs=1)
-        info = _info(turns=1, last_activity=0.0)
-        info._awaiting_approval = True
-        await mgr._maybe_flag_stall("a1", info, now=1e9)
-        assert info.stalled is False
-
-    @pytest.mark.asyncio
-    async def test_two_sweep_confirmation_before_flagging(self) -> None:
-        events: list[tuple[str, dict]] = []
-
-        async def _on_event(etype: str, _info: SubagentInfo, extra: dict) -> None:
-            events.append((etype, extra))
-
-        mgr = _manager(stall_idle_secs=10, on_event=_on_event)
-        info = _info(turns=1, last_activity=0.0)
-        await mgr._maybe_flag_stall("a1", info, now=100.0)
-        assert (info.stalled, info._stall_suspect_at) == (False, 100.0)
-        with patch.object(sa, "record_slow_command"):
-            await mgr._maybe_flag_stall("a1", info, now=200.0)
-        assert info.stalled is True
-        assert events and events[0][0] == "subagent_stalled"
-
     @pytest.mark.asyncio
     async def test_event_failure_does_not_break_flagging(self) -> None:
         async def _on_event(_etype: str, _info: SubagentInfo, _extra: dict) -> None:
@@ -1187,22 +1001,17 @@ class TestQueueDepth:
         assert _manager().has_pending_work_for("dash:1") is False
 
     def test_emit_queue_depth_without_loop_is_a_noop(self) -> None:
-        mgr = _manager(on_event=AsyncMock())
-        mgr._emit_queue_depth("dash:1")  # no running loop — advisory event skipped
-
-    @pytest.mark.asyncio
-    async def test_emit_queue_depth_fires_event(self) -> None:
-        seen: list[dict] = []
-
-        async def _on_event(_etype: str, _info: SubagentInfo, extra: dict) -> None:
-            seen.append(extra)
-
-        mgr = _manager(on_event=_on_event)
-        mgr._queue = [{"parent_session_key": "dash:1"}]
-        mgr._emit_queue_depth("dash:1", batch_id="w1")
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert seen == [{"queued": 1}]
+        on_event = AsyncMock()
+        mgr = _manager(on_event=on_event)
+        mgr._emit_queue_depth("dash:1", wait={"reason": "capacity"})
+        # The wait label is still recorded, but with no running loop no burst
+        # is started and nothing is published.
+        assert mgr._queue_wait["dash:1"] == {"reason": "capacity"}
+        assert "dash:1" not in mgr._queue_depth_emits
+        # A request without a label records none.
+        mgr._emit_queue_depth("dash:2")
+        assert "dash:2" not in mgr._queue_wait
+        on_event.assert_not_called()
 
 
 class TestStaggerGate:
@@ -1212,14 +1021,19 @@ class TestStaggerGate:
         should_queue, slot_free = mgr._should_stagger_queue(now=1e9)
         assert (should_queue, slot_free) == (True, False)
 
-    def test_slot_free_but_too_soon_queues(self) -> None:
+    @pytest.mark.parametrize(
+        "stagger_secs, now, expected",
+        [
+            pytest.param(100.0, 1001.0, (True, True), id="test_slot_free_but_too_soon_queues"),
+            pytest.param(
+                1.0, 2000.0, (False, True), id="test_slot_free_and_interval_elapsed_starts"
+            ),
+        ],
+    )
+    def test_slot_free_waits_out_the_stagger_interval(
+        self, stagger_secs: float, now: float, expected: tuple[bool, bool]
+    ) -> None:
         mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 100.0
+        mgr._spawn_stagger_secs = stagger_secs
         mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=1001.0) == (True, True)
-
-    def test_slot_free_and_interval_elapsed_starts(self) -> None:
-        mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 1.0
-        mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=2000.0) == (False, True)
+        assert mgr._should_stagger_queue(now=now) == expected

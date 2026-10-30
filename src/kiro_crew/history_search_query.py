@@ -1207,3 +1207,59 @@ def needles_match_text(
             if count_needle(needle, folded_text):
                 adjacency_hit = True
     return adjacency_hit or not has_adjacency or not adjacency_floor
+
+
+#: The query prefix that scopes a search to session titles (see :func:`split_title_scope`).
+_TITLE_SCOPE_PREFIX = "title:"
+
+
+class TitleScope(NamedTuple):
+    """A query's leading ``title:`` term, split off by :func:`split_title_scope`."""
+
+    #: The title term, casefolded with its whitespace collapsed; "" when the prefix
+    #: names nothing yet (``title:`` typed on its own).
+    term: str
+    #: True for ``title:"..."``: the term must appear in the title as typed.
+    quoted: bool
+    #: The query text after the term, searched as usual (title or content).
+    rest: str
+
+    def title_filter(self) -> Callable[[str], bool]:
+        """A predicate over one session title, parsed once for the whole scan.
+
+        An unquoted term goes through :func:`parse_search_query` and
+        :func:`needles_match_text`, the one-string form of the content gate, so
+        a forge reference or a CJK term matches a title the way the same term
+        matches a title in a plain search. A quoted term is an exact substring of
+        the title, compared with whitespace collapsed on both sides.
+        """
+        term = self.term
+        if not term:
+            return lambda _title: False
+        if self.quoted:
+            return lambda title: term in " ".join(title.split()).casefold()
+        needles, _phrase, adjacency_floor = parse_search_query(term)
+        return lambda title: needles_match_text(needles, title.casefold(), adjacency_floor)
+
+
+def split_title_scope(query: str) -> TitleScope | None:
+    """Split a leading ``title:`` term off *query*, or None when it has none.
+
+    The prefix is matched case-insensitively at the start of the query only, so
+    ``title:`` later in a query stays ordinary search text. Its term is the
+    next whitespace-delimited token (``title:parity``), or a double-quoted
+    phrase (``title:"wave plan"``) whose closing quote may still be missing
+    while the user types. Whitespace after the colon is skipped, so
+    ``title: parity`` reads the same. Whatever follows the term is returned as
+    ``rest`` for the normal search (``title:parity deploy``).
+    """
+    text = query.lstrip()
+    if text[: len(_TITLE_SCOPE_PREFIX)].casefold() != _TITLE_SCOPE_PREFIX:
+        return None
+    after = text[len(_TITLE_SCOPE_PREFIX) :].lstrip()
+    if after.startswith('"'):
+        inner, _quote, rest = after[1:].partition('"')
+        return TitleScope(" ".join(inner.split()).casefold(), True, rest.strip())
+    parts = after.split(None, 1)
+    term = parts[0].casefold() if parts else ""
+    return TitleScope(term, False, parts[1].strip() if len(parts) > 1 else "")

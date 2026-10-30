@@ -11,6 +11,42 @@ from __future__ import annotations
 
 BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
     {
+        # boxd lifecycle: resolved operator CLI, fixed machine verbs, validated
+        # generated names, saved snapshot/CPU and retention duration; no shell or
+        # agent cwd, stdin DEVNULL. Needs the host login.
+        "boxd_session/cli.py::_run",
+        # asyncio.run drives the terminal bridge in-process, not a child spawn.
+        "sprites_session/terminal.py::main",
+        # Coder lifecycle: resolved operator CLI, fixed verbs, saved template/preset
+        # and validated generated names; cwd the data home, stdin DEVNULL, no shell.
+        "coder/client.py::_run",
+        # Embedding child: this interpreter, -P, a fixed module; requests travel
+        # on its pipes as data, never as argv. No agent input reaches the spawn.
+        "embeddings_child.py::spawn",
+        # Gateway transport: argv from the resolved CLI, saved deployment and
+        # validated workspace; the shell text is a quoted GUEST command and payloads
+        # ride stdin. Host credential isolation would prevent coder login.
+        "coder/remote_worker.py::run_collect",
+        # The fixed coder ssh attach argv plus a numeric port; stdin is framed bytes.
+        "remote_session/client.py::dial",
+        # asyncio.run drives the CLI loop in-process; it is not a child spawn.
+        "remote_session/client.py::main",
+        "remote_session/worker.py::main",
+        # Guest-script rule, per execution function: these stdlib-only files run
+        # inside the remote workspace, never on the gateway, so the guest is the
+        # isolation boundary and the gateway sandbox is unavailable.
+        "remote_session/worker.py::run",
+        "remote_session/workspace_tools.py::run_command",
+        "remote_session/workspace_tools.py::_git_status",
+        # Gateway credential reads: the callers supply fixed CLI verbs and a
+        # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
+        # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
+        # the operator's global helpers remain available. No local shell parses
+        # guest input. Host logins must remain visible to these credential CLIs.
+        "remote_session/git_gateway.py::_run_quiet",
+        # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
+        # all three streams discarded. It reads no credential or guest cwd.
+        "remote_session/git_gateway.py::login_status",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has
@@ -142,9 +178,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandbox it would be denied exactly those reads, and a resolver answering
         # "cannot resolve" where the true answer is a credential symlink's target
         # would weaken the gate rather than harden it. ``-I`` drops ``PYTHONPATH``
-        # and the script directory from ``sys.path`` so nothing can be planted in
-        # front of its four stdlib imports; the cwd is inherited deliberately, so a
-        # path resolves in the child to what it resolves to in the parent.
+        # and the working directory ``-c`` would add from ``sys.path`` so nothing can
+        # be planted in front of the child's imports; the cwd is inherited
+        # deliberately, so a path resolves in the child to what it resolves to in the
+        # parent.
         "subprocess_pool/executor.py::_spawn",
         # The PDF extractor child: ONE fixed argv, ``sys.executable -P -m
         # kiro_crew.pdf_extract_child --max-chars=N --max-pages=M`` with both
@@ -443,6 +480,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands_app.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
+        # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
+        # login`` / ``kas logout`` verbs. No child process is created: the
+        # inputs are operator-typed flags (provider, start URL, region) that go
+        # into HTTPS requests to the issuer and into Crew's own vault, never
+        # into an argv. Same classification as ``cli_doctor.py::_doctor``.
+        "cli_kas_login.py::_login",
+        "cli_kas_login.py::_logout",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord
@@ -517,6 +563,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "kiro_cli.py::kas_relay_help",
+        # ``<kiro-cli> chat --help`` engine probe for the ``/usage`` scrape: fixed
+        # argv, 15s-capped, no shell, no agent-influenced arguments, no credential.
+        # It reads which ``--agent-engine`` values this kiro-cli accepts, so the
+        # scrape pins V2 only where V2 exists. Cached per binary path and mtime,
+        # and only ever called on ``pin_kiro_cli``'s own install, never a PATH hit.
+        "kiro_cli.py::chat_agent_engines_at",
         # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
         # fixed argv (the binary name is a module constant and the subcommand is a
         # literal), 10s-capped, no shell, no agent-influenced argument. It reads only
@@ -534,6 +586,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.
         "cli_doctor_parts/host_probes.py::_detect_userspace_oom_killer",
+        # ``systemd-tmpfiles --cat-config`` probe for the Temp directories row:
+        # fixed argv (the binary resolved through ``trusted_system_bin`` against
+        # the fixed system dirs, the subcommand a literal), no agent influence,
+        # 5s-capped, read-only query. Reads only stdout (the ageing config) to
+        # decide whether a tmpfiles rule ages the temp dir.
+        "doctor_checks/resources.py::_tmpfiles_ages",
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",
@@ -604,6 +662,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # in-process aiohttp sweep with asyncio.run.
         "connections/l1_smoke.py::main",
         "cloud/source.py::_git_tracked_files",
+        # `check-attr filter` over the same tracked list: reads attributes, runs
+        # no driver, fixed argv, the hardened env. Same classification.
+        "cloud/source.py::_tracked_attr_values",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
         # Release-tag probe before a packaged install's cloud launch: `<trusted
@@ -675,6 +736,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (_venv_pip_install removed — it now delegates the install to
         # dep_sync.sync_or_reinstall and spawns nothing itself.)
         "dashboard/handlers/updates_apply.py::api_update_apply",
+        # Fixed argv `git config --global --path --get core.excludesFile`: reads the
+        # operator's own config file for an ignore-list path, runs no program.
+        "dashboard/handlers/updates_apply.py::_user_excludes_file",
         "dashboard/handlers_system.py::_collect_system_metrics",
         # Split out of _collect_system_metrics above so the whole-machine process
         # walk can be cached on its own (much longer) TTL instead of the live
@@ -736,6 +800,18 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandbox-routed runner.
         "git_divergence.py::count_divergence",
         "git_divergence.py::count_divergence_sync",
+        # The shared isolated update fetch: a `git fetch <url> <branch>` into a
+        # throwaway bare git dir this function builds and owns, so the checkout's
+        # own config can name no hook that fires on the fetch's ref write. git is
+        # the trusted-bin absolute path the caller resolved (threaded as `git=`);
+        # the env is `git_command_env()` (trusted PATH, built-in transports only,
+        # every fixed-key exec vector pinned); the URL is the governance-validated
+        # `resolve_remote_url`, the branch git's own `branch.<b>.merge`. The
+        # spawn carries start_new_session and the shared kill-and-reap on timeout
+        # or cancellation. Same trust class as git_divergence.py::count_divergence;
+        # it replaced the inline fetch spawns in _check_git_checkout and
+        # _auto_apply_update.
+        "platform/update_governance.py::fetch_and_pin_upstream",
         "instances/diagnostics.py::_run_ok",
         "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
@@ -792,6 +868,16 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # It does carry `git_neutralizer_env()`, so repo config cannot make these
         # reads exec a program (`core.fsmonitor` and friends are pinned).
         "platform/update_governance.py::_git_probe",
+        # Same trusted (or caller's) git, fixed argv `check-attr -z --stdin filter
+        # diff` fed the tracked path list on stdin: reads attributes, runs no
+        # driver, the probe's env. Same classification as `_git_probe`.
+        "platform/update_governance.py::_bound_driver_names",
+        # `git config --system|--global --includes -z --get-all safe.directory`,
+        # run so `git_command_env` can forward those values after it stops git
+        # reading the home's config files. Fixed list-argv (no shell=True), no
+        # agent input, cwd is the filesystem root. Must NOT be sandboxed: it
+        # reads the operator's real config. Reading config runs no program.
+        "platform/update_governance.py::_read_protected_safe_directories",
         # Read-only `git rev-parse --show-toplevel` deciding whether the install
         # root IS a working tree. Fixed list-argv (no shell=True); the only
         # variable is the path, which comes from KIROCREW_PROJECT_DIR — an
@@ -1053,6 +1139,8 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandboxed_spawn_argv: codesign must read the system trust store and
         # evaluate the Apple certificate chain, which the OS sandbox denies.
         "transcribe_ffmpeg.py::_macos_developer_id_authentic",
+        # NOT a subprocess spawn: ``asyncio.run`` drives a coroutine; no process is spawned.
+        "speech_providers.py::_run",
         # `_pcm_via_ffmpeg` decodes a container the stdlib cannot read (a Slack
         # voice memo's ogg/Opus, an uploaded m4a) down to the 16 kHz mono PCM the
         # recogniser takes. Fixed argv, ffmpeg only; the sole variable part is a

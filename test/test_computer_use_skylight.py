@@ -86,7 +86,6 @@ class TestTheClickRecipe:
         assert steps[0].at_target is True
         # Then the primer pair, which is NOT at the target.
         assert [s.at_target for s in steps[1:3]] == [False, False]
-        # Then exactly one target pair.
         assert [s.at_target for s in steps[3:]] == [True, True]
 
     def test_a_double_click_adds_a_SECOND_target_pair_with_click_state_2(self):

@@ -113,8 +113,16 @@
    not equal to it: a flush 4px left the badge body exactly on the clip boundary,
    so sub-pixel rounding and the badge's glow shadow still squared its top and
    right edges. The 2px slack clears the box; keep both values equal, and only as
-   large as needed, since more lets real content escape into the header's padding. */
-.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 0 0;margin:-6px -6px 0 0}
+   large as needed, since more lets real content escape into the header's padding.
+   The same reserve sits below the controls. Without it the clip box ended
+   exactly on the bottom edge of the 28px pills and buttons, which cut their
+   glass shadow flat at that edge and, at any zoom where the edge lands on a
+   fractional device pixel, the bottom row of their border. The reserve keeps
+   the clip off the controls' own edges; it does not hold the shadow's whole
+   blur, which would need more room than the header has. Equal padding and
+   negative margin above and below keep the controls centred where they were,
+   and the header height does not change. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 6px 0;margin:-6px -6px -6px 0}
 
 /* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
    for the containment above, not just for centring. A side track sized `auto`
@@ -542,9 +550,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    browsers (no native window). */
 .host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
 
-/* Scrollbar-free scroll container (used by the side panel tab strip — the
-   strip scrolls horizontally but a visible scrollbar under the chips reads
-   as clutter). Referenced before Tailwind ever defined it; real rules here. */
-.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+/* Scrollbar-free scroll container. The global rule in index.css hides every
+   scrollbar, so on an ordinary box this adds nothing: it is the explicit form
+   for a box a third-party sheet also styles, because it is unlayered and so
+   wins where that sheet re-declares `scrollbar-width`. The sites that carry it
+   for no such reason are redundant, not wrong. */
+.scrollbar-none{scrollbar-width:none}
 .scrollbar-none::-webkit-scrollbar{display:none}
 

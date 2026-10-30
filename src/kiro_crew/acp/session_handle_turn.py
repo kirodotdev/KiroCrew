@@ -31,11 +31,13 @@ Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -50,11 +52,17 @@ from kiro_crew.acp.client import (
     _raise_acp_error,
     parse_slash_command,
 )
+from kiro_crew.acp.elicitation import (
+    ELICITATION_CANCEL,
+    elicitation_response,
+    is_elicitation_request,
+)
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_COMPACTION_STATUS,
@@ -180,7 +188,7 @@ async def prompt(
             self._session_id,
             summarize_prompt_structure(prompt_blocks),
         )
-        return METHOD_PROMPT, {
+        params: dict[str, Any] = {
             "sessionId": self._session_id,
             # An image reaches the model ONLY as an image block. Sending a
             # local image path as a single text block would ship a
@@ -190,6 +198,12 @@ async def prompt(
             # tool-openable reference rather than being dropped.
             "prompt": prompt_blocks,
         }
+        if getattr(self._runtime, "acp_backend", "") == ACP_BACKEND_KAS:
+            # The engine's per-turn context breakdown and time to first token
+            # (see ``kas_profile``). Positive KAS gate: no other harness is sent a
+            # ``_meta`` it never defined.
+            params["_meta"] = copy.deepcopy(kas_profile.PROMPT_META)
+        return METHOD_PROMPT, params
 
     # Explicit aclose in a finally: abandoning THIS wrapper (gen.aclose()
     # at any yield) must finalize the inner turn generator NOW — its
@@ -318,6 +332,12 @@ async def _run_turn(
         # Before the turn is marked active: a set_model the judgement sends
         # awaits its own answer on this queue.
         await self._served_default_after_set_mode()
+    # An elicitation the last turn left unanswered holds its tool call open on
+    # the engine; it is answered ``cancel`` rather than merely forgotten. Before
+    # the turn is marked active: the answer is a write that can be cancelled,
+    # and a cancellation after ``_turn_done.clear()`` would leave the handle
+    # turn-active with nothing left to set it again.
+    await self.cancel_pending_elicitations()
 
     self._cancelled = False
     self._cancel_ts = 0.0
@@ -560,6 +580,34 @@ async def _run_turn(
             # covered by the WARNING + SEL record.
             if _stale_sid and _stale_sid != self._session_id:
                 self._pending_reject_notices.append((_stale_sid, str(_stale_title)))
+        elif stale is not None and is_elicitation_request(stale):
+            # An MCP server's elicitation that arrived while no turn was
+            # reading (an abandoned turn's tool still running). Like a stranded
+            # permission it is a server->client REQUEST the engine waits on, so
+            # it is answered -- `cancel`, the answer nobody-was-asked takes --
+            # rather than dropped with the frames around it.
+            for _owed in _stale_owed:
+                self._queue.put_nowait(_owed)
+            _stale_owed.clear()
+            self._audit_elicitation_decision(
+                stale.id, ELICITATION_CANCEL, "stranded_request_pre_turn_drain"
+            )
+            try:
+                await self._runtime.send_response(
+                    stale.id, elicitation_response(ELICITATION_CANCEL)
+                )
+            except asyncio.CancelledError:
+                self._queue.put_nowait(stale)
+                self._turn_done.set()
+                raise
+            except Exception:
+                logger.exception("failed to answer stranded elicitation request")
+                self._runtime._mark_dead("pre-turn drain elicitation cancel failed")
+                continue
+            logger.warning(
+                "cancelled elicitation request id=%s stranded in the pre-turn drain",
+                _loggable_request_id(stale.id),
+            )
         else:
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but

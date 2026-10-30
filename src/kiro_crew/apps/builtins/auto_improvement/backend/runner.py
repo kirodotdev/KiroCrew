@@ -47,7 +47,7 @@ from typing import Any
 
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
-from . import clone_setup, store
+from . import clone_setup, deps, store
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class RunState:
     #: statuses). Resolving at write time could therefore file this run's outcome under a
     #: DIFFERENT repository and leave its own workspace with no record at all. Bound at the
     #: same instant as the driver's ``archive_root``, so the record and the archive can never
-    #: land in different workspaces. Raised by the GPT review of this branch.
+    #: land in different workspaces.
     record_path: Path | None = None
     #: True when this state was read back from the in-flight record of a run that is live
     #: outside this supervisor.
@@ -239,6 +239,17 @@ def _unsandboxed_agent_accepted() -> bool:
     """
     config = store.read_json(store.config_path(), {}) or {}
     return bool(config.get("acceptUnsandboxedAgentRisk") is True)
+
+
+def _refuse_without_gate_pytest() -> None:
+    """Refuse a run or calibration when the gate interpreter cannot run pytest.
+
+    Otherwise every candidate is recorded as the agent's invalid test while no test
+    ever ran. ``RuntimeError`` so the start route answers 409 with the message.
+    """
+    problem = deps.gate_pytest_problem()
+    if problem:
+        raise RuntimeError(f"refusing to start: {problem}")
 
 
 def _terminal_record_path() -> Path:
@@ -386,8 +397,8 @@ def _redact_activity(value: Any) -> Any:
     timestamps and every other field survive, so the operator still sees that a run is
     progressing and what kind of step it is on.
     """
-    # Function-local ON PURPOSE, not an oversight — review flagged it against
-    # `top-level-imports`. The `try/except` around the import IS the fail-closed mechanism: if
+    # Function-local ON PURPOSE despite `top-level-imports`. The `try/except` around
+    # the import IS the fail-closed mechanism: if
     # the redactor cannot be imported, this returns a placeholder and the run keeps going with
     # nothing unscanned served. Hoisted to module scope, the same failure becomes an
     # ImportError at MODULE LOAD, which takes the whole app's backend down instead of
@@ -503,7 +514,7 @@ class RunSupervisor:
                 # `GET /run` response as the literal `Infinity` -- not valid JSON, so the
                 # browser's `JSON.parse` rejects the WHOLE payload and the app shows nothing.
                 # Declining the record leaves the supervisor idle, which is what every other
-                # corrupt-record path already does. Raised by the GPT review of this branch.
+                # corrupt-record path already does.
                 logger.warning(
                     "%s: ignoring the terminal run record -- it carries a non-finite number",
                     store.APP_NAME,
@@ -713,6 +724,7 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
         # clone sits on the repo default (main); a run targeting another branch would
@@ -726,7 +738,7 @@ class RunSupervisor:
         # that diff comes back empty, `scoped_relpaths` returns None ("no scope"), and
         # the edit fence silently widens from "what this branch changed" to the whole
         # repo. Checking out first makes the scope reflect the branch actually under
-        # test. Raised by review of this branch.
+        # test.
         clone_dir = str(config.get("clone") or "").strip()
         branch = str(config.get("branch") or "").strip() or "main"
         if clone_dir:
@@ -756,7 +768,7 @@ class RunSupervisor:
                 # HEAD the clone happens to hold would discover, edit, and push the WRONG
                 # branch's code, the exact silent-wrong-branch harm the checkout exists to
                 # prevent. A scopeDiffBase makes it worse (a mis-scoped edit fence), but the
-                # base case is already unsafe. Raised by the GPT review of this branch.
+                # base case is already unsafe.
                 scoped = str(config.get("scopeDiffBase") or "").strip()
                 extra = (
                     " and the configured scopeDiffBase would resolve against the wrong HEAD"
@@ -976,11 +988,16 @@ class RunSupervisor:
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            admitted_at = self._stop_seq
+        _refuse_without_gate_pytest()
 
         run_id = f"cal-{int(time.time())}"
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            if self._stop_seq != admitted_at:
+                # A stop (or the app being disabled) landed during the pytest probe.
+                raise RuntimeError("the calibration was stopped before it started")
             self._stop_requested = False
             self._state = RunState(
                 status=STATUS_CALIBRATING, run_id=run_id, started_at=time.time(), stage="calibrate"
@@ -1023,7 +1040,6 @@ class RunSupervisor:
             # tree exposed — a manual draft mutating the clone mid-baseline yields a ruler
             # calibrated against two different revisions. `_build_driver`'s lock does NOT
             # cover this path: calibration has its own checkout and never goes through it.
-            # Raised by the GPT review.
             with clone_lock():
 
                 from ..profiles import build_profile
@@ -1046,7 +1062,7 @@ class RunSupervisor:
                         # RAISE rather than calibrate against an arbitrary HEAD: a ruler proven
                         # on the wrong branch's code is misleading, and `checkout_branch` only
                         # returns False when the branch exists nowhere. The operator fixes the
-                        # branch and re-runs. Raised by the GPT review of this branch.
+                        # branch and re-runs.
                         raise RuntimeError(
                             f"refusing to calibrate: could not check out {branch} ({note}) — "
                             "the ruler would be proven against the wrong revision"
@@ -1148,8 +1164,7 @@ class RunSupervisor:
                 # on a background thread: if the operator retargets (or starts another repo's
                 # calibration) while this one measures, the bare call would drop this ruler into
                 # a DIFFERENT workspace, overwriting its ruler with one calibrated on unrelated
-                # code. Deriving the path from the captured `config` pins it. Raised by the GPT
-                # review of this branch.
+                # code. Deriving the path from the captured `config` pins it.
                 ruler_path = (
                     store_mod.data_dir()
                     / "repos"

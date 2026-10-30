@@ -43,6 +43,8 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.apps.builtins.auto_research.campaign import publication
+from kiro_crew.apps.builtins.auto_research.campaign import workflow_mode as wm
 
 BASE = "/api/apps/auto-research"
 
@@ -416,3 +418,105 @@ class TestCancellationSettlesWorker:
         )
         assert result == 42
         assert observed == [], "on_settled must not fire on the uncancelled path"
+
+
+class TestWorkflowRunFileOffLoop:
+    """The ``workflow_run.json`` helpers must run in a worker, not on the loop.
+
+    ``_read_workflow_run_id`` / ``_read_workflow_cycle_offset`` /
+    ``_write_workflow_run_id`` are sync helpers, so the static ratchet above
+    cannot see the ``exists()`` / read / ``write_text`` behind the call; this
+    records the thread each one actually ran on. The poll is the case that
+    matters most: the watchdog runs it for the life of a workflow campaign.
+    """
+
+    @staticmethod
+    def _record(monkeypatch: pytest.MonkeyPatch, sink: dict[str, list[int]]) -> None:
+        for name in (
+            "_read_workflow_run_id",
+            "_read_workflow_cycle_offset",
+            "_write_workflow_run_id",
+        ):
+            original = getattr(wm, name)
+
+            def _wrapper(*args: Any, _name: str = name, _orig: Any = original) -> Any:
+                sink.setdefault(_name, []).append(threading.get_ident())
+                return _orig(*args)
+
+            monkeypatch.setattr(wm, name, _wrapper)
+
+    @staticmethod
+    def _state(**svc: Any) -> MagicMock:
+        return MagicMock(workflow_service=MagicMock(**svc))
+
+    @pytest.mark.asyncio
+    async def test_poll_reads_the_run_file_off_the_event_loop(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = h.create_campaign({"question": "q?", "execution_mode": "workflow"})["id"]
+        h.update_campaign_status(cid, h.CampaignStatus.RUNNING)
+        h._write_workflow_run_id(cid, "run-1")
+        snap = {
+            "status": "running",
+            "events": [
+                {"type": "agent_started", "data": {"agent_id": "a", "label": "investigate: x"}},
+                {"type": "agent_finished", "data": {"agent_id": "a", "ok": True}},
+            ],
+        }
+        monkeypatch.setattr(h, "_emit_sse", lambda _e: None)
+        calls: dict[str, list[int]] = {}
+        self._record(monkeypatch, calls)
+        loop_thread = threading.get_ident()
+
+        await h._poll_workflow_campaign(
+            cid, self._state(result=MagicMock(return_value=snap)), h.get_campaign(cid)["started_at"]
+        )
+
+        assert len(h._list_cycle_files(cid)) == 1, "the poll must still write the finding"
+        assert set(calls) == {"_read_workflow_run_id", "_read_workflow_cycle_offset"}
+        assert all(t != loop_thread for ts in calls.values() for t in ts), calls
+
+    @pytest.mark.asyncio
+    async def test_launch_and_stop_touch_the_run_file_off_the_event_loop(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = h.create_campaign({"question": "q?", "execution_mode": "workflow"})["id"]
+        cancel = AsyncMock()
+        state = self._state(start=AsyncMock(return_value={"run_id": "run-7"}), cancel=cancel)
+        req = _mk("x/action", app=_app(state=state), match={"id": cid})
+        calls: dict[str, list[int]] = {}
+        self._record(monkeypatch, calls)
+        loop_thread = threading.get_ident()
+
+        await h._launch_workflow(req, cid)
+        await h._stop_workflow(req, cid)
+
+        cancel.assert_awaited_once_with("run-7")  # the written id round-trips
+        assert set(calls) == {"_write_workflow_run_id", "_read_workflow_run_id"}
+        assert all(t != loop_thread for ts in calls.values() for t in ts), calls
+
+
+class TestKnowledgeCopyUriOffLoop:
+    """``_write_knowledge_copy`` must resolve the URI it returns in a worker.
+
+    The write already runs in a worker, but the ``Path.resolve()`` behind
+    ``_knowledge_uri`` sits in a sync helper, where the static ratchet above
+    cannot see it; this records the thread the resolve actually ran on.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uri_resolve_runs_off_the_event_loop(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        d = h.RESEARCH_DIR / "aaaa0008"
+        d.mkdir(parents=True)
+        copy = publication._knowledge_copy(d)
+        expected = str(copy.resolve())
+        resolves: list[str] = []
+        _spy(monkeypatch, "resolve", copy, resolves)
+
+        uri = await publication._write_knowledge_copy(d, "# findings\n")
+
+        assert uri == expected, "the returned URI must be unchanged"
+        assert copy.read_text() == "# findings\n", "the scrubbed copy must still be written"
+        assert resolves and all(t != "MainThread" for t in resolves), resolves

@@ -597,6 +597,7 @@ class TestDashboardUserGrantsAreAudited:
         state._yolo = True
         state._folders = []
         state.folders_generation.return_value = 1
+        state.tags_generation.return_value = 1
         return state
 
     def _dashboard_request(self, state):

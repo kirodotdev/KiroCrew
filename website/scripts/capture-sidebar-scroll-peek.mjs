@@ -198,7 +198,7 @@ async function boot(page) {
   const info = await rowHandle.evaluateHandle(row => row.querySelector('[data-settings-hint] > *'))
   const infoEl = info.asElement()
   if (infoEl) { await infoEl.hover(); await page.waitForTimeout(700) }
-  const hint = page.getByText('While you scroll the session list, titles the sidebar cuts off show in full')
+  const hint = page.getByText('While you scroll the session list, cut-off titles show in full')
   check('settings: new description renders', (await hint.count()) > 0 && (await hint.first().isVisible()))
   const rb = await rowHandle.evaluate(r => { const b = r.getBoundingClientRect(); return { x: b.x, y: b.y, r: b.right, b: b.bottom } })
   const hb = (await hint.count()) ? await hint.first().boundingBox() : null

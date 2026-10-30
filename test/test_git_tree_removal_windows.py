@@ -197,7 +197,7 @@ _GIT_TREE_SITES = [
     ("apps/registry_pipeline/recovery.py", "_sweep_stale_checkouts_sync", "child"),
     ("apps/registry_pipeline/install_rollback.py", "_unpoison_rejected_checkout", "pkg_dir"),
     ("apps/registry_pipeline/install_clone.py", "_clone_build_app_locked", "pkg_dir"),
-    ("apps/routes.py", "_run_uninstall", "ws_dir"),
+    ("apps/routes_uninstall.py", "_run_uninstall", "ws_dir"),
     ("apps/builtins/auto_improvement/backend/pr_watchers.py", "setup_isolated_clone", "dest"),
     (
         "apps/builtins/auto_improvement/backend/pr_watchers.py",

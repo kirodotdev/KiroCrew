@@ -1,21 +1,23 @@
 """The end of a dashboard turn's queue cycle: the per-exit record and its ordered tail, the
 hand-off to the next queued turn, the AutoNudge turn-end signal, and the pending synthesis turn
-with its re-check."""
+with its re-check, and the outcome a turn records for that tail when it ends
+(``_turn_record_outcome``, with the session-switch lock's hand-back)."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
+from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        SUBAGENT_SYNTHESIS_PROMPT,
         SYNTHESIS_CLEAR,
-        SYNTHESIS_HELD,
-        SYNTHESIS_UNKNOWN,
         DashboardState,
         StartPriority,
         _ChatSlot,
+        _note_mate_wakes,
         _run_chat,
         chat_done_payload,
         effective_session_key,
@@ -31,8 +33,11 @@ if TYPE_CHECKING:
         _mark_turn_end,
         _start_next_queued_turn,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import settle_regenerate
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
@@ -567,6 +572,16 @@ async def _end_turn_tail(
     """
     turn_exit.handed_off = True
     outcome = turn_exit.outcome
+    # A Regenerate replaces the previous reply only now that the turn is over
+    # and before a queued successor can start (``regenerate_swap``). Whatever
+    # the depth: the frame that runs this tail is the turn's end, since a
+    # ``/prompts get`` re-entry (depth 1) runs it for an outer frame that handed
+    # its tail off, and the hand-off below is not depth-gated either. The
+    # target's generation check keeps any other turn out.
+    try:
+        await settle_regenerate(state, slot)
+    except Exception:
+        logger.warning("Regenerate settle failed", exc_info=True)
     if outcome is not None:
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This
@@ -578,6 +593,15 @@ async def _end_turn_tail(
         # hand-off below, silently stranding queued work at the end of an
         # otherwise successful turn.
         try:
+            # A model pick the picker took during THIS turn lands first: the
+            # session is idle now, so the harness's live switch can take it
+            # (no teardown, no replay); where it cannot, the helper arms the
+            # same deferred reset the consume below spends. Before the
+            # consume for exactly that reason.
+            # circular import: session_control imports this package's modules at module level.
+            from kiro_crew.dashboard.session_control import apply_deferred_model_switch
+
+            await apply_deferred_model_switch(state, slot)
             # The consume tore down the session for a mid-turn project change or
             # conversation discard; without a respawn the NEXT message pays the
             # full cold start the eager path exists to hide. Keyed on what
@@ -628,6 +652,13 @@ async def _end_turn_tail(
     # (Re)arm the AutoNudge idle timer on EVERY exit: a turn that ends via
     # timeout, AcpProcessDied, AcpError or a cancel would otherwise orphan it.
     _notify_autonudge_turn_end(slot, **(outcome.nudge_facts if outcome is not None else {}))
+    if turn_exit.depth == 0:
+        # A crewmate's worker reports back to the crewmate's thread on its own.
+        _note_mate_wakes(state, slot, outcome.nudge_facts["reply_text"] if outcome else None)
+        # A crewmate session owed a reload onto an updated spec while it was busy.
+        from kiro_crew.dashboard.crewmate_worker_reload import note_turn_end
+
+        note_turn_end(state, slot)
     if turn_exit.reached_provider:
         slot._cycle_reached_provider = True
     memory_admitted = (
@@ -660,6 +691,77 @@ async def _end_turn_tail(
     )
 
 
+def _hand_off_unstarted_turn(
+    state: DashboardState,
+    slot: _ChatSlot,
+    task: "asyncio.Task",  # type: ignore[type-arg]
+) -> None:
+    """End the queue cycle of a dispatch that held *slot* but never started its turn.
+
+    Every ``_run_chat`` exit hands the queue off (:func:`_end_turn_tail`), but a
+    dispatch can end without entering ``_run_chat``: a dashboard monitor wake
+    refused before its runner (``nudge_dashboard_fire._run_dashboard_turn``), or
+    an unattended turn whose wait for a background-turn permit gave up or was
+    cancelled (``DashboardState.run_background_turn``). It held ``slot.task``
+    while it waited, so a send queued behind it; without this, that entry waits
+    for the next send (on an app-owned slot with no other sender, indefinitely)
+    and the cycle never sends ``chat_done``.
+
+    Called from the dispatch's done callback (``turn_dispatch.spawn_guarded_turn``),
+    so *task* has ended. Owed only while *task* still holds ``slot.task``, the
+    exit marked its turn unstarted (``turn_dispatch.mark_turn_unstarted``), no
+    send has reserved the floor, and the slot is still the registered, open,
+    local one. Never while the gateway is going away: the queue stays for the
+    history save, as the parked drain leaves it. The cycle's end runs on a task
+    that takes ``slot.task`` before this returns, as :func:`_launch_synthesis`
+    does, so a send arriving meanwhile queues behind it and
+    :func:`_finish_queue_cycle` hands it the floor.
+    """
+    if (
+        slot.task is not task
+        or slot._unstarted_generation != slot._turn_generation
+        # *task* has ended, so this reads a send's admission reservation.
+        or slot.running
+        or state._slots.get(slot.key) is not slot
+        or slot.is_closing
+        or slot.executor == "remote"
+        or _gateway_shutdown_requested(state)
+    ):
+        return
+    cycle_end = asyncio.create_task(_end_unstarted_cycle(state, slot))
+    slot.task = cycle_end
+    state._background_tasks.add(cycle_end)
+    cycle_end.add_done_callback(state._background_tasks.discard)
+
+
+async def _end_unstarted_cycle(state: DashboardState, slot: _ChatSlot) -> None:
+    """The queue hand-off :func:`_end_turn_tail` gives a turn with no outcome, alone.
+
+    The rest of that tail does not apply: no session was acquired, so there is
+    no reset to consume, wait to retire or sign-in outcome to record, and the
+    AutoNudge re-arm stays with the fire that dispatched the turn, which settles
+    its own result. The holds are the tail's: memory preparation that is still
+    running or did not succeed holds the queue and parks it for preparation's
+    end, and a recorded sign-in failure holds it until the next send.
+    """
+    try:
+        memory_admitted = _memory_preparation_settled(state)
+        if slot._queue and not memory_admitted:
+            _arm_parked_queue_drain(state, slot, notice=False)
+        await _hand_off_queue(
+            state,
+            slot,
+            drain=memory_admitted and not slot._last_turn_auth_required,
+            allow_automatic_successor=memory_admitted,
+        )
+    except Exception:
+        logger.warning(
+            "queue hand-off after an unstarted turn failed for slot %s",
+            slot.key,
+            exc_info=True,
+        )
+
+
 #: Meta key on the error row of a turn that raised before its main ``try``. The
 #: cycle still ends with a ``done`` row, so an HTTP reader that waits for
 #: ``done`` reads this key to report the failure instead of an empty reply.
@@ -680,4 +782,49 @@ def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:
         f"{failed} The gateway log has the details.",
         "msg msg-err",
         meta={TURN_FAILED_META: True},
+    )
+
+
+async def _turn_record_outcome(turn: _ChatTurn) -> None:
+    """Hand back the session-switch lock and record the turn's outcome for its tail."""
+    _directive_self_wake = turn._directive_self_wake
+    _turn_flushed_visible_text = turn._turn_flushed_visible_text
+    _turn_priority = turn._turn_priority
+    _turn_tool_calls = turn._turn_tool_calls
+    _turn_tool_identities = turn._turn_tool_identities
+    turn_exit = turn.turn_exit
+    # First: hand back the session-switch lock if this turn exited between
+    # its acquire and its post-registration release. Before anything that
+    # can await, and before _restore_refusal_fallback (chat_turn/model_fallback.py) takes the
+    # same lock -- otherwise a turn that failed to register would block
+    # every switch on its session until the gateway restarts.
+    if turn._dispatch_lock_held:
+        turn._dispatch_lock_held = False
+        turn._dispatch_lock.release()
+    # Second: record this turn's outcome for its tail. Everything the tail
+    # needs is known by now, and any later step of _run_chat's finally can raise or
+    # be cut short by a second cancel; recorded first, the exit guard then runs the
+    # tail with THIS turn's policy rather than an early exit's.
+    # The AutoNudge facts are the ones only this frame holds: what the turn
+    # dispatched and what it answered. The wake judge's feedback loop labels
+    # its own verdict from them -- a woken turn that changed nothing and
+    # answered short is the quiet-cycle shape the judge should have
+    # suppressed. The IDENTITIES go with the count because a count alone
+    # cannot tell a read from a write, which made that label constant-true;
+    # this is the same tuple the read-only-preparation check already reads,
+    # so the names cost nothing extra to collect. None is retained: the
+    # service reduces them to one boolean and two numbers. A nudge turn
+    # labels its verdict only when its response lands; failed and cancelled
+    # turns keep the retry unlabelled.
+    turn_exit.outcome = _TurnOutcome(
+        auth_required=turn._auth_required,
+        memory_admitted=turn._memory_preparation_admitted,
+        start_priority=_turn_priority,
+        nudge_facts={
+            "tool_calls": _turn_tool_calls,
+            "tool_identities": tuple(_turn_tool_identities),
+            "reply_text": turn.assistant_text if isinstance(turn.assistant_text, str) else "",
+            "reply_flushed": _turn_flushed_visible_text,
+            "nudge_turn": _directive_self_wake and turn._turn_landed,
+        },
     )

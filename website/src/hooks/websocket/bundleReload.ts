@@ -8,7 +8,7 @@
  *  step, which the next reconnect consumes, so the tab that watched the
  *  update reloads at once, before any status frame arrives. */
 import { useMemo, useRef } from 'react'
-import type { AppDispatch } from '../../store'
+import type { AppDispatch, RootState } from '../../store'
 import { sseStatus, setUpdateProgress } from '../../store/dashboardSlice'
 import type { StatusData } from '../../types'
 import type { FrameData } from './frames'
@@ -62,13 +62,32 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   }
 }
 
+/**
+ * Status fields that move on every push while the dashboard is idle, and that
+ * no dashboard surface reads from the store. The gateway sends them for the
+ * CLI and other `/api/status` clients; Overview and Services derive uptime
+ * from `start_time` with their own clock.
+ */
+const VOLATILE_STATUS_KEYS: ReadonlySet<string> = new Set([
+  'uptime', 'uptime_secs', 'messages_received', 'cron', 'stats', 'stats_summary',
+  'gateway_rss_mb', 'yolo_remaining_secs',
+])
+
+/** A comparable key for a frame's non-volatile fields. */
+function stableStatusKey(data: StatusData): string {
+  return JSON.stringify(data, (key, value) => (VOLATILE_STATUS_KEYS.has(key) ? undefined : value))
+}
+
 export interface BundleReload {
   /** A `dashboard` status frame: reload on a new version or bundle, else
    *  store the status. */
   onDashboardStatus(data: StatusData): void
 }
 
-export function useBundleReload(dispatch: AppDispatch): BundleReload {
+export function useBundleReload(
+  dispatch: AppDispatch,
+  getDashboard?: () => Pick<RootState['dashboard'], 'status' | 'connected'>,
+): BundleReload {
   // The last status frame's version and served-bundle hash. Kept across
   // reconnects on purpose, so a restarted gateway with a new version or
   // bundle reloads this tab on its first status frame. A same-version
@@ -79,6 +98,11 @@ export function useBundleReload(dispatch: AppDispatch): BundleReload {
   // unknown" and is never treated as a change in either direction.
   const lastVersionRef = useRef<string | null>(null)
   const lastBundleIdRef = useRef<string | null>(null)
+  // The non-volatile key of the last frame this hook stored, and the status
+  // object the store held right after it. A frame is skipped only while both
+  // still describe the store: the socket is marked connected and no other
+  // writer (an `/api/status` reply, a disconnect) has replaced the status.
+  const lastStoredRef = useRef<{ key: string; status: StatusData | null } | null>(null)
 
   return useMemo<BundleReload>(() => ({
     onDashboardStatus(data) {
@@ -97,7 +121,18 @@ export function useBundleReload(dispatch: AppDispatch): BundleReload {
         window.location.reload()
         return
       }
+      // The gateway pushes every 5 s and each frame differs from the last only
+      // in its counters. Storing such a frame replaces `status` and runs every
+      // store subscriber for no visible change, hidden tabs included. Skip it
+      // when nothing a surface reads has changed.
+      const key = stableStatusKey(data)
+      const held = getDashboard?.()
+      const last = lastStoredRef.current
+      if (held && last && held.connected && held.status != null && held.status === last.status && last.key === key) {
+        return
+      }
       dispatch(sseStatus(data))
+      lastStoredRef.current = { key, status: getDashboard?.().status ?? null }
     },
-  }), [dispatch])
+  }), [dispatch, getDashboard])
 }

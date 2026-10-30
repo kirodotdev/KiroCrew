@@ -472,18 +472,25 @@ function queryComposerForSlot(key: string | undefined): HTMLElement | null {
  * `focusComposerAfter` gives: the slice records it, and there is no new
  * composer to focus.
  *
- * No still-active read here: `resumeFromHistory` moves the active slot only in
- * its fulfilled reducer, at the moment this promise settles, so there is no
- * provisional window for a keystroke to land in, and the slot the reducer
- * entered IS the one the gesture named.
+ * A displayable answer is still not proof the view moved: the reducer also
+ * declines to open a resume that answers after the user opened another session
+ * or clicked a newer row. So the store is read on the focus frame, and the
+ * caret moves only when `key` is the active slot then. On the single-chat
+ * surface the one composer belongs to the session the user moved to.
  *
  * `key` is the thunk's own payload field -- the slot the gateway resumed, which
  * is the one the reducer entered -- and names the pane to focus in split view
  * (#15937).
  */
-export function focusComposerForResumedSession(resumed: Promise<{ ok: boolean; surface?: string; key: string }>): void {
+export function focusComposerForResumedSession(
+  resumed: Promise<{ ok: boolean; surface?: string; key: string }>,
+  store: { getState(): { chat: { activeSlot: string | null } } },
+): void {
   void resumed
-    .then(result => { if (result.ok && isChatPageSurface(result.surface)) requestAnimationFrame(() => focusComposerNow(result.key)) })
+    .then(result => {
+      if (!result.ok || !isChatPageSurface(result.surface)) return
+      requestAnimationFrame(() => { if (store.getState().chat.activeSlot === result.key) focusComposerNow(result.key) })
+    })
     .catch(() => {})
 }
 

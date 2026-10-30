@@ -161,6 +161,18 @@ describe('dedupResourceLinks', () => {
       .toBe(resourceKey('https://github.com/acme/repo/pull/274/commits'))
   })
 
+  it('treats a GitLab work-item URL as an issue and keys it like one', () => {
+    const links = extractChatLinks([msg('user', 'see https://gitlab.com/acme/service/-/work_items/9')])
+    expect(links[0].type).toBe('issue')
+    expect(links[0].label).toBe('#9')
+    // A note fragment collapses onto the bare work item, as `/-/issues/` does.
+    expect(resourceKey('https://gitlab.com/acme/service/-/work_items/9#note_1'))
+      .toBe('https://gitlab.com/acme/service/-/work_items/9')
+    // Merge requests are unchanged.
+    expect(extractChatLinks([msg('user', 'https://gitlab.com/acme/service/-/merge_requests/4')])[0].type)
+      .toBe('cr')
+  })
+
   it('collapses root-level review paths and their sub-path variants', () => {
     // A registered provider may serve reviews at the path root; a revision pin
     // must key to the same base as the bare mention (issue #7250).

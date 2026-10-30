@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         DashboardState,
         _is_slack_ts,
         _sel,
+        body_not_object_error,
         logger,
     )
 
@@ -45,6 +46,9 @@ async def api_slack_pins(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     action = body.get("action", "")
     if action not in ("add", "remove", "list"):
@@ -142,6 +146,9 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     action = body.get("action", "")
     if action not in ("add", "remove"):
@@ -241,6 +248,9 @@ async def api_slack_profile(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     raw_user = body.get("user", "")
     if not isinstance(raw_user, str):

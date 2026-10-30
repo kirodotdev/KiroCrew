@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.sel import sel
 
@@ -134,7 +134,16 @@ class AppStorage:
     def __init__(self, app_name: str, data_dir: Path) -> None:
         self._app_name = app_name
         self._kv_dir = data_dir / "kv"
-        self._kv_dir.mkdir(parents=True, exist_ok=True)
+        # The directory is created lazily on the first ``set`` (see that method),
+        # not here. The constructor runs inside the sync ``build_app_context``
+        # factory, which the hook-context builders call on the gateway event
+        # loop, so a blocking ``mkdir`` in it would run on the loop for a
+        # storage-enabled app's every lifecycle event. The write path -- where
+        # the store already does disk I/O -- is the place for it, the pattern the
+        # sibling ``JobStore`` follows (``JobStore.write`` mkdirs, its reads
+        # tolerate a missing dir). Every read path here also treats a missing
+        # directory as empty: ``get``/``delete`` gate on ``is_file`` and
+        # ``list_keys`` returns ``[]`` when the dir is absent.
 
     @property
     def app_name(self) -> str:
@@ -192,6 +201,13 @@ class AppStorage:
         only one file ever holds the current value.
         """
         path = self._key_path(key)
+        # Create the kv dir on the write path, not in ``__init__`` (which runs on
+        # the event loop). The same plain ``Path.mkdir`` gives the directory the
+        # mode an ordinary create produces: ``atomic_write`` would otherwise make
+        # a missing parent owner-only (0700) inside the data home, but it finds
+        # the dir already present and leaves an existing directory untouched, so
+        # the permission model is unchanged.
+        self._kv_dir.mkdir(parents=True, exist_ok=True)
         if _is_digest_stem(path.stem):
             content = json.dumps({"key": key, "value": value}, indent=2)
         else:
@@ -291,7 +307,7 @@ class AppStorage:
         every :meth:`list_keys` call until somebody deleted it.
         """
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, dict) and isinstance(payload.get("key"), str):

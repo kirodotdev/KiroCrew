@@ -18,19 +18,48 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.queue_drain import unregister_drain
 from kiro_crew.messaging.spawn_approval_delivery import (
+    SpawnApprovalDeliveryHook,
     register_channel_delivery,
     unregister_channel_delivery,
 )
 from kiro_crew.telegram.client import TelegramAuthError, TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.transport import TelegramTransport
-from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
+from kiro_crew.telegram.transport_dispatch import _CHANNEL, TelegramDispatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _client_close_hook(
+    dispatcher: TelegramDispatcher, delivery_hook: SpawnApprovalDeliveryHook
+) -> "Callable[[], None]":
+    """What the client runs when it closes: retire this dispatcher's two registrations.
+
+    Its spawn-approval delivery, so the host spawn gate stops routing to it. And its
+    queue drain, so nothing calls it after the channel is off: a drain waiting on a
+    held lease (``messaging.queue_drain.drain_when_free``) looks the drain up when the
+    lease frees, and a stale dispatcher would dequeue and answer queued messages on a
+    channel the operator disabled -- its HTTP session reopens on the next request.
+
+    Both are compare-and-drop against this dispatcher's own objects, so a restart
+    whose replacement already registered keeps its registrations. The drain compares
+    equal across bound-method accesses, so a fresh ``dispatcher._drain_queue`` names
+    the one ``__init__`` registered.
+    """
+    drain_hook = dispatcher._drain_queue
+
+    def _on_close() -> None:
+        unregister_channel_delivery("telegram", delivery_hook)
+        unregister_drain(_CHANNEL, drain_hook)
+
+    return _on_close
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -120,7 +149,7 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         # the slot is not unregistered by this (older) client's close.
         delivery_hook = dispatcher.deliver_spawn_approval
         register_channel_delivery("telegram", delivery_hook)
-        client.on_close = lambda: unregister_channel_delivery("telegram", delivery_hook)
+        client.on_close = _client_close_hook(dispatcher, delivery_hook)
 
         # Prove the token with an authenticated call BEFORE reporting the
         # channel as connected — transport.connect() only schedules the

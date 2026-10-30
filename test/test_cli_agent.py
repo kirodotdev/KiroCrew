@@ -14,6 +14,13 @@ import pytest
 
 from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
+from kiro_crew.validation import (
+    _MODEL_NAME_RE,
+    MAX_SHORT_STRING,
+    MODEL_NAME_HINT,
+    TEMPLATE_NAME_HINT,
+    TEMPLATE_NAME_RE,
+)
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -98,10 +105,10 @@ class TestAgentCreate:
         out = capsys.readouterr().out
         assert "Created agent: research" in out
 
-        # Verify persisted to disk
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "research" in saved["agents"]
-        assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
+        # Create gives the crew its own file and binds it there.
+        assert saved["agents"]["research"]["kiro_agent"] == "research"
         store = saved["agents"]["research"]["memory_store"]
         assert store != "default"
         assert saved["memory_stores"][store]["owner_member"] == "research"
@@ -232,7 +239,51 @@ class TestAgentCreate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
+
+    def test_create_refuses_another_template_before_writing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A crewmate starts as the built-in worker; the template's limits would be lost."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "locked-down")
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Mates start from the built-in worker" in captured.err
+        assert "Created agent" not in captured.out
+        assert cfg_path.read_text(encoding="utf-8") == before
+        assert not (data_home() / "workspace-member-research").exists()
+
+    def test_create_accepts_the_builtin_worker_by_name(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "kirocrew")
+
+        assert "Created agent: research" in capsys.readouterr().out
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "research" in saved["agents"]
+
+    def test_create_naming_its_own_key_is_not_the_template_refusal(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The start-template rule admits the crew's own key; the same-name rule answers it."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "research")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Mates start from the built-in worker" not in err
+        assert "a template is already named 'research'" in err
+        assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_create_rejects_credential_shaped_member_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -345,7 +396,7 @@ class TestAgentUpdate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
 
 
 def _run_agent_cli(cfg_path: Path, *argv: str) -> None:
@@ -790,7 +841,26 @@ class TestAgentModel:
         # The default row's " *" marker is one extra token before MODEL.
         assert rows["default"][column + 1] == "(inherit)"
 
-    @pytest.mark.parametrize("bad", ["-rf", "a b", "x" * 501, "../model"])
+    def test_an_over_long_model_is_refused_naming_the_length_cap(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Well-formed but over the cap: the shape hint would describe a shape it has.
+        bad = "x" * (MAX_SHORT_STRING + 1)
+        assert _MODEL_NAME_RE.match(bad)
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", f"--model={bad}")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert f"invalid model format (expected at most {MAX_SHORT_STRING} characters)" in err
+        assert MODEL_NAME_HINT not in err
+        assert bad not in err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("bad", ["-rf", "a b", "../model", "a/" + "b" * 255])
     def test_a_malformed_model_is_refused_without_echoing_it(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
     ) -> None:
@@ -802,7 +872,7 @@ class TestAgentModel:
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
-        assert "invalid model format" in err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in err
         assert bad not in err
         assert cfg_path.read_text(encoding="utf-8") == before
 
@@ -816,7 +886,7 @@ class TestAgentModel:
             _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "a b")
 
         assert exc_info.value.code == 1
-        assert "invalid model format" in capsys.readouterr().err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_a_wrong_flavour_spelling_is_refused_with_the_served_id(
@@ -832,6 +902,31 @@ class TestAgentModel:
         assert exc_info.value.code == 1
         assert repr(served) in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_a_pin_kiro_cli_has_no_id_for_is_refused_and_names_the_spelling(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", "--model", "claude-fable-5-1")
+
+        assert exc_info.value.code == 1
+        assert "'claude-fable-5-1' is not a model kiro-cli serves" in capsys.readouterr().err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    def test_a_pin_kiro_cli_has_no_id_for_is_stored_on_the_claude_backend(
+        self, tmp_path: Path
+    ) -> None:
+        config = _labelled_config()
+        config["agent"] = {"acp_backend": "claude", "member_acp_backend": "claude"}
+        cfg_path = _write_config(tmp_path, config)
+
+        _run_agent_cli(cfg_path, "update", "research", "--model", "claude-fable-5-1")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["model"] == "claude-fable-5-1"
 
     def test_a_display_only_canonical_key_is_refused(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
@@ -869,3 +964,38 @@ class TestAgentModel:
 
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert saved["agents"]["oncall"]["model"] == "fable-5-1m"
+
+
+class TestRefusalHintsMatchTheirGrammar:
+    """The hint a refusal prints describes what its pattern actually admits."""
+
+    @pytest.mark.parametrize("name", ["a", "a" * 63, "dr.eggbot", "my_agent-2"])
+    def test_template_hint_admits(self, name: str) -> None:
+        assert TEMPLATE_NAME_RE.fullmatch(name)
+
+    @pytest.mark.parametrize("name", ["", "a" * 64, "-agent", "agent.", "dr. eggbot"])
+    def test_template_hint_refuses(self, name: str) -> None:
+        assert not TEMPLATE_NAME_RE.fullmatch(name)
+
+    def test_template_hint_states_the_length_bound(self) -> None:
+        assert "1-63" in TEMPLATE_NAME_HINT
+
+    @pytest.mark.parametrize(
+        "model", ["auto", "test-model-1", "gpt-6-astra[high]", "ollama/qwen3:8b", "a/b/c"]
+    )
+    def test_model_hint_admits(self, model: str) -> None:
+        assert _MODEL_NAME_RE.match(model)
+
+    @pytest.mark.parametrize("model", ["-rf", "a b", "../model", "/abs", "a[x][y]"])
+    def test_model_hint_refuses(self, model: str) -> None:
+        assert not _MODEL_NAME_RE.match(model)
+
+    def test_model_hint_names_auto_and_the_qualified_form(self) -> None:
+        assert "'auto'" in MODEL_NAME_HINT
+        assert "provider/model" in MODEL_NAME_HINT
+
+    def test_model_hint_states_the_qualified_length_bound(self) -> None:
+        # The bound the hint names is the one the pattern enforces.
+        assert "at most 256 characters" in MODEL_NAME_HINT
+        assert _MODEL_NAME_RE.match("a/" + "b" * 254)
+        assert not _MODEL_NAME_RE.match("a/" + "b" * 255)

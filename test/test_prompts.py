@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from chat_test_helpers import _make_state
 from prompts_helpers import _isolate_home  # noqa: F401
 from prompts_helpers import _no_turn_tail  # noqa: F401
 from prompts_helpers import aim_dir_fixture  # noqa: F401
@@ -1160,23 +1161,29 @@ class TestRunChatPrompts:
         asyncio.run(_run_chat(s, sl, "/prompts get agent-sop:secret"))
         assert any("blocked" in m[1].lower() for m in sl.messages)
 
-    @pytest.mark.skip(
-        reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow."
-    )
-    def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch):
+    def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch, tmp_path):
         """@mention prompt blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})
+        # The owners of chat_turn run on the runner's globals, so the runner's
+        # name is the one the read-time check calls.
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
-        # @prompt path runs after session acquisition — needs full mock
-        captured = []
-        slot = MagicMock(key="t", agent="kirocrew", model=None, _trust=False, _queue=[])
-        slot.append = lambda r, t, c: captured.append((r, t, c))
-        slot._pending_subagent_failures = []
-        state = MagicMock(_hook_store=None, _yolo=False)
-        state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
-        state.sessions.get_pid = MagicMock(return_value=None)
+        # The @mention path runs after session acquisition, so it needs a real
+        # DashboardState and slot rather than the minimal stubs.
+        state = _make_state(tmp_path)
+        client = MagicMock()
+        client.shutdown = AsyncMock()
+        state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        state.sessions.release = MagicMock()
+        state.sessions.record_failure = AsyncMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state._background_tasks = set()
+        slot = state.get_or_create_slot("t")
         asyncio.run(_run_chat(state, slot, "@agent-sop:secret"))
-        assert any("blocked" in m[1].lower() for m in captured)
+        texts = [m.get("content", "") for m in slot.messages]
+        assert any("Prompt blocked" in t for t in texts), texts
+        # A blocked mention never reaches the model.
+        client.stream.assert_not_called()
 
     def test_api_prompts_does_not_corrupt_cache(self, aim_dir, mock_sel):
         """GET /api/prompts must not mutate cached paths (regression)."""
@@ -1282,7 +1289,8 @@ class TestPromptExpansionStaysOffTheEventLoop:
         ]
         offloaded = [
             node
-            for node in ast.walk(tree)
+            for module_tree in trees
+            for node in ast.walk(module_tree)
             if isinstance(node, ast.Call)
             and ast.unparse(node.func) == "asyncio.to_thread"
             and node.args

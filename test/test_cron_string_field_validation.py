@@ -150,7 +150,6 @@ class TestUpdateJobFieldValidation:
         job = svc.add_job(name="j", message="m", every_secs=3600)
         with pytest.raises(ValueError, match="max length"):
             svc.update_job(job.id, **{field_name: oversize_value})
-        # Job unchanged
         reloaded = svc.list_jobs()[0]
         assert getattr(reloaded, field_name) == getattr(job, field_name)
 
@@ -166,7 +165,6 @@ class TestUpdateJobFieldValidation:
         job = svc.add_job(name="j", message="m", every_secs=3600)
         with pytest.raises(ValueError, match="must be a string"):
             svc.update_job(job.id, **{field_name: non_string_value})
-        # Job unchanged
         reloaded = svc.list_jobs()[0]
         assert getattr(reloaded, field_name) == getattr(job, field_name)
 

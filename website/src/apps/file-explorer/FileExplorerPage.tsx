@@ -10,6 +10,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '../../components/ui/context-menu'
 import { fileExplorerApi } from './api'
+import { apiErrorCode } from '../../api/apiError'
 import { basename, dirname, loadState, saveState, isShortcut } from './utils'
 import { FILE_EXPLORER_PATH_PARAM, underRoot, parentDir, revealChain } from './deepLink'
 import { isAbsolutePath } from '../../utils/fileReadUrl'
@@ -452,7 +453,16 @@ export default function FileExplorerPage() {
   }, [tabGitMap, activeFolder?.rootPath])
 
   // ── Render ──
-  if (!initialized) return <div className="mc-fe-root"><style>{FE_CSS}</style><div className="mc-fe-empty" style={{ height: '100%' }}><Skeleton className="h-full w-full" /></div></div>
+  // A disabled app is a setting, not a network failure: say so and link to Apps.
+  const appDisabled = (healthError as { status?: number } | null)?.status === 403 && apiErrorCode(healthError) === 'app_not_enabled'
+  const healthBanner = healthError && (appDisabled
+    ? <ErrorNotice variant="block" title={i18nT('components.appHost.this_app_is_disabled')} message={i18nT('components.appHost.enable_this_app_from_apps_to_use_it')} askAgent
+        footer={<Btn onClick={() => navigate('/apps')}>{i18nT('components.appHost.apps')}</Btn>} />
+    : <ErrorNotice variant="block" title={i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} message={(healthError as Error).message} askAgent />)
+
+  // A health failure before the first success (e.g. 403 app_not_enabled) never
+  // initializes the page, so show the banner instead of an endless skeleton.
+  if (!initialized) return <div className="mc-fe-root"><style>{FE_CSS}</style>{healthBanner || <div className="mc-fe-empty" style={{ height: '100%' }}><Skeleton className="h-full w-full" /></div>}</div>
   if (!activeFolder) return null
 
   const currentFileTabs = fileTabs.filter((ft) => ft.folderId === activeFolder.id)
@@ -479,7 +489,7 @@ export default function FileExplorerPage() {
         onNewFolder={newFolderTabAction}
         onRenameFolder={renameFolderTab}
       />
-      {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} {(healthError as Error).message}</div>}
+      {healthBanner}
       {treeError && <ErrorNotice variant="block" title={i18nT('apps.fileExplorer.fileExplorerPage.cannot_open_folder')} message={(treeError as Error).message} askAgent />}
       {/* A link the backend could not open: refused (403), vanished, or not a
           file/folder. The reason sits BELOW the lead: it is the backend's own

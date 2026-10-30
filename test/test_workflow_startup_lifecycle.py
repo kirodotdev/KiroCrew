@@ -293,6 +293,7 @@ async def test_api_only_gateway_forwards_existing_context_builder(monkeypatch):
         slack=None,
         _owner_id="",
         _test_mode=True,
+        _boot_kiro_service=None,
         conv_log=None,
         _schedule_memory_preparation=lambda: None,
         _no_crons=True,

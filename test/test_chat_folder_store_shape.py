@@ -8,6 +8,7 @@ snapshot shape consumed by ``mutate_folders``.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import patch
 
@@ -71,18 +72,24 @@ class TestLoadFoldersDropsWhatNothingCanUse:
         value rather than becoming a dict the consumers would iterate as keys."""
         assert _load_with(tmp_path, {"id": "f1"}) == []
 
-    def test_load_warning_uses_the_current_state_logger(self, tmp_path: Any) -> None:
+    def test_load_warning_uses_the_current_state_logger(self, tmp_path: Any, caplog) -> None:
         (tmp_path / "folders.json").write_text('{"id": "f1"}', encoding="utf-8")
         state = DashboardState.__new__(DashboardState)
         state._folders = []
 
+        # A real logger swapped in after import: the warning must reach it.
+        current_logger = logging.getLogger("test.folder_store_shape.current")
         with patch("kiro_crew.dashboard.state.config_dir", return_value=tmp_path):
-            with patch("kiro_crew.dashboard.state.logger") as current_logger:
+            with (
+                patch("kiro_crew.dashboard.state.logger", current_logger),
+                caplog.at_level("WARNING", logger=current_logger.name),
+            ):
                 DashboardState.load_folders(state)
 
-        current_logger.warning.assert_called_once_with(
-            "folders.json is a %s, not a list — ignoring it", "dict"
-        )
+        assert [r.getMessage() for r in caplog.records if r.name == current_logger.name] == [
+            "folders.json is a dict, not a list — ignoring it"
+        ]
+        assert state._folders == []
 
     def test_a_healthy_file_is_unchanged(self, tmp_path: Any) -> None:
         good = [{"id": "f1", "name": "Work", "parent_id": ""}, {"id": "f2", "name": "Home"}]

@@ -15,7 +15,7 @@ state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
 Instance fields read (a call on one included): ``_allowed_threads``, ``_model_pickers``,
-``_session_resume``, ``client``.
+``_session_resume``, ``client``, ``transport``.
 
 Instance fields assigned, or whose mapping is changed: ``_model_pickers``.
 """
@@ -229,7 +229,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         # edit is issued, which is the same contract the client's own mid-send
         # predicate states. Read here even on the arm that already read it above,
         # rather than carrying that answer forward: a value taken before a
-        # suspension is exactly the defect this change exists to close, and on an
+        # suspension can be stale by now, and on an
         # ungoverned install the read permits without writing a row, so the second
         # reading costs a row only where an operator asked for the audit trail.
         #
@@ -364,8 +364,14 @@ async def _interaction_actionable(self: DiscordDispatcher, user_id: str, thread_
     if not thread_id:
         return True
     client = self.client
-    if client is None or thread_id not in self._allowed_threads:
+    if client is None:
         return False
+    if thread_id not in self._allowed_threads:
+        # A thread `auto_thread` opened before a restart is re-derived from
+        # Discord by the transport, which also pushes it into this set.
+        transport = self.transport
+        if transport is None or not await transport.readmit_own_thread(thread_id, user_id):
+            return False
     try:
         return bool(await client.is_thread_channel(thread_id))
     except Exception:

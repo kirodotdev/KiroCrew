@@ -37,6 +37,12 @@ On Webex, use the finite legacy path even for a supported pull request.
 Never use an agent cron or `HEARTBEAT.md` to fix and push review findings. Cron
 has no owning chat slot's trust and can time out at tool approval while still
 recording `last_status: ok`; heartbeat's allowlist has no shell or push.
+For work that should run outside this session with fresh context, or where
+monitor tools are unavailable (cron and webhook sessions), append a checklist
+entry to `HEARTBEAT.md` with `kiro_crew.heartbeat.append_heartbeat_task(entry)`;
+never edit the file directly, because the helper shares the service's
+cross-process lock. Include `HEARTBEAT_KEEP` to keep a task for another cycle, and
+omit it when the task is complete.
 Use one session-owned driver, not two watchers.
 
 A gated `monitor_start` hands its whole pull-request reading, comment and review
@@ -51,6 +57,19 @@ the two tool descriptions say and refuses neither tool, so the row that matters
 never moves: evidence the typed provider cannot see -- generic comments, advisory
 findings, a required final report -- stays on `monitor_start` in either
 position. Read the descriptions you were given rather than assuming a position.
+
+### In-turn wait and poll
+
+For a user who is waiting and work that fits in about 30 minutes, stay in this
+turn rather than arming a loop:
+
+1. Make the change and publish it (push the revision, submit the review).
+2. `wait(seconds=300, reason="Waiting for <what> on <target>")`.
+3. Read the host state below; fix and publish again within your authorization, or
+   report done when it is clean.
+4. Stop with an open-findings report when three settled polls read the same
+   progress key with no push between them (the stall tripwire below), or the
+   30 minutes run out.
 
 ### Structured pull-request watch
 
@@ -146,6 +165,9 @@ security. Fix, commit and push only within the user's authorization.
 
 - Name ONE public GitHub PR by full URL in `message` to select gating. A
   bare `PR <n>` gates only if this session already named its URL.
+- A conductor patrolling workers it dispatched on work-ledger items arms
+  `monitor_start` with `watch="work-ledger"`: a quiet cycle costs no turn, and a
+  worker's blocked, question or done report wakes it within seconds.
 - `gate=true` is the default. Quiet subjects avoid turns, with eventual delivery
   after enough quiet intervals. A merge or close ends a gated loop with a notice,
   no turn. Use `gate=false` for a required final turn or for acting on silence,
@@ -257,48 +279,8 @@ stop with the blocking review quoted.
 
 ### Optional GitHub helper
 
-If kirocrew-prepare-pr is installed, run its complete script bundle from the TARGET repo,
-not the skill directory. Resolve an absolute `SKILL_DIR` first from the active
-installation; never use an unresolved default expansion as a path argument.
-
-```bash
-python3 "$SKILL_DIR/scripts/pr_status.py" <pr#> --json --reviewers <known-lanes>
-python3 "$SKILL_DIR/scripts/pr_findings.py" <pr#>
-python3 "$SKILL_DIR/scripts/green_age.py" --pr <pr#>
-```
-
-Pin a known fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`; discovery mode only
-checks stamps it finds and cannot detect an absent lane. Set the repo's aggregate
-via `--readiness-context` / `PREPARE_PR_READINESS_CONTEXT` where needed. The scripts
-require sibling `_review_contract.py`; missing scripts are not permission to
-pretend the helper ran. Use the host interfaces above for general monitoring.
-
-- `0`: checks clean, but still apply the readiness conditions below.
-- `10`: genuinely running. End the cycle silently, without rereading bot bodies,
-  logs or diffs; it neither counts nor resets the stall streak.
-- `20`: use findings and the reason before acting. Terminal PR state means stop;
-  stale reviewer stamps can mean a comment-triggered bot has not posted yet,
-  not a code defect. `?`/JSON `null` threads mean unknown, never zero.
-- `2`: environment error, escalate rather than loop on it.
-
-`green_age.py` answers the separate question of whether a clean rollup still
-describes today's base: `0` fresh, `30` the base moved in files this PR also
-touches since the commit this head's CI ran on (an authorized sync, per the
-conflict rule above), `2` could not measure — which is neither fresh nor stale.
-`pr_status.py --json` carries the same reading in `advisory.green_age`, so a
-cycle that already polled does not need a second call. Keep it out of the stall
-key: on a busy repository the base moves constantly, and a commit count in the
-key would reset the streak forever.
-
-`--json` appends a last-line object without changing the exit code. Compare ONLY
-`progress_key` for stalls. Its `advisory` fields include unresolved threads,
-findings, stale/blocking reviewers and `elided_stamp_reviewers`. Report an elided
-stamp once per head as a lane-quality note, not a new blocker; the script already
-checks whether that shortened stamp matches the current head.
-
-Always use the target checkout even for a full PR URL: thread lookup also uses
-cwd, so a foreign checkout can mix two repositories. An unreadable/discarded CI
-rollup is an environment blocker, not a bug count or a passing empty list.
+If kirocrew-prepare-pr is installed, its `pr_status.py`, `pr_findings.py` and `green_age.py` read this state for you. Read
+[references/github-helper.md](references/github-helper.md) before the first run: it covers where to run them, their exit codes and the `progress_key` the stall tripwire compares.
 
 ### Readiness and handoff
 
@@ -322,6 +304,13 @@ For comment-aware legacy monitoring, declare review-ready only when all hold:
 Never stop silently with an unanswered finding. A blocker, budget or user stop
 requires an open-findings handoff, not a success claim. Structured success proves
 only the provider facts above; it does not satisfy this comment-aware contract.
+
+## Durable work state
+
+Record the workstream's goal, phase and concrete `next` with
+`session_ledger_record`, and resume with `session_ledger_read`. Its `[work ledger]`
+snapshot is re-injected after a compaction and into each cycle, and it outranks
+your recollection of earlier cycles. The stall key below is a separate file.
 
 ## Stall tripwire
 

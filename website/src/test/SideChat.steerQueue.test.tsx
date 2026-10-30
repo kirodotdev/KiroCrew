@@ -32,6 +32,13 @@ const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connec
 const SLOT = 'test-slot-1'
 const initial = reducer(undefined, { type: '@@INIT' })
 
+// Two tests give `sideQueueEdit` an implementation of their own, and
+// `vi.clearAllMocks()` keeps it, so the next test's edit would get their answer
+// (one never settles). Reset it and seed the default before every test.
+beforeEach(() => {
+  vi.mocked(api.sideQueueEdit).mockReset().mockResolvedValue({ ok: true, depth: 1 })
+})
+
 /** A side that is mid-turn: the answer is streaming, so a submit can only
  *  steer or queue. */
 function busyState(extra: Record<string, unknown> = {}) {
@@ -436,7 +443,7 @@ describe('chatSlice steer frame placement', () => {
   })
 
   it('repairs the card even when it arrives BEFORE the steer response resolves', async () => {
-    // The other order. `submittedRaw` is a ref, so writing it triggers no render and the
+    // The other order. Recording submitted steer text does not trigger a render, so the
     // queue effect will not re-run — the repair has to happen in `onSuccess` too. A
     // deferred response reproduces the race deterministically.
     const raw = 'rotate AKIAIOSFODNN7EXAMPLE now'

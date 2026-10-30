@@ -114,6 +114,51 @@ class TestNoteEndpoint:
         assert entry["source"] == "board-sync"
 
     @pytest.mark.asyncio
+    async def test_immediate_note_seats_no_context_when_row_write_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failed visible-row write leaves no orphaned context for the next turn."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+
+        def _failing_append(self_slot, *args, **kwargs):
+            raise RuntimeError("row write failed")
+
+        monkeypatch.setattr(_ChatSlot, "append", _failing_append)
+        async with self._make_client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/note", json={"content": "hello"})
+            assert resp.status == 500
+
+        assert slot.messages == []
+        assert slot._pending_context == []
+
+    @pytest.mark.asyncio
+    async def test_immediate_note_seats_context_after_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The context half is queued only once the visible row has landed."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+        seen_at_row: list[int] = []
+        real_append = _ChatSlot.append
+
+        def _append(self_slot, *args, **kwargs):
+            seen_at_row.append(len(self_slot._pending_context))
+            return real_append(self_slot, *args, **kwargs)
+
+        monkeypatch.setattr(_ChatSlot, "append", _append)
+        async with self._make_client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/note", json={"content": "hello"})
+            assert resp.status == 200
+            assert (await resp.json())["contextSkipped"] is False
+
+        assert seen_at_row == [0]
+        assert len(slot.messages) == 1
+        assert len(slot._pending_context) == 1
+
+    @pytest.mark.asyncio
     async def test_note_defaults_24h_max_age(self, tmp_path: Path):
         """Context half gets a 24h maxAge by default so a stale note self-expires."""
         state = _make_state(tmp_path)

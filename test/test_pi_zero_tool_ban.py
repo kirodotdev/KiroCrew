@@ -8,7 +8,7 @@ the advertised reject option before any consumer sees it.
 
 The permission frames below are REPLAYED from
 ``test/fixtures/acp_frames/pi/zero-tools-refused-live.jsonl``, recorded while a real
-pi-acp 0.0.34 over pi 1.2.0 ran under ``AcpClient`` on a zero-tool spec.
+pi-acp 0.0.34 over pi 1.3.0 ran under ``AcpClient`` on a zero-tool spec.
 """
 
 from __future__ import annotations

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { readIndexCss } from './indexCssSource'
 
 /**
  * A phone keyboard used to hide the caret you were typing at.
@@ -38,7 +37,6 @@ const CHAT_PAGE = [
 ].join('\n')
 const SUBAGENT_BAR = readFileSync(resolve(__dirname, '../pages/chat/SubagentProgressBar.tsx'), 'utf8')
 const QUEUE_STACK = readFileSync(resolve(__dirname, '../components/QueueStack.tsx'), 'utf8')
-const INDEX_CSS = readIndexCss()
 const INDEX_HTML = readFileSync(resolve(__dirname, '../../index.html'), 'utf8')
 
 /** The title-row overlay: `absolute top-0 … ${editingTitle ? 'z-[47]' : 'z-[45]'}`. */
@@ -79,30 +77,6 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     const pb = Number(/pb-\[(\d+)px\]/.exec(STACK![1])![1])
     const mb = Number(/mb-\[-(\d+)px\]/.exec(STACK![1])![1])
     expect(pb).toBe(mb)
-  })
-
-  it('keeps the thumb out of the way instead of carrying the global always-on bar', () => {
-    // Asserted across BOTH files: the wrapper opts in, AND the utility it opts
-    // into is still the hover-revealed kind. Redefining the utility to paint a
-    // permanent thumb would leave the class assertion passing and this failing.
-    expect(STACK![1]).toContain('scrollbar-overlay')
-    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:transparent/)
-    // The token is --muted, matching the coarse-pointer rung: WCAG 1.4.11 grants
-    // hover no exemption, so the revealed thumb clears the same 3:1 floor as the
-    // persistent one. What this line pins is the hover-REVEAL shape (transparent
-    // base, painted on :hover); scrollbarThumbContrast.test.ts owns the floor.
-    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--muted\)/)
-  })
-
-  it('restores a persistent thumb on coarse pointers, so a capped box has a touch affordance', () => {
-    // A finger never produces the :hover that reveals the thumb, so on touch
-    // (.scrollbar-overlay on a capped `max-h-[Nsvh]` stack) the scroller would
-    // show no cue that it scrolls. The utility must scope its persistent thumb
-    // to @media (pointer: coarse) — a permanent (unscoped) thumb would trip the
-    // hover-revealed assertion above on fine pointers. Precedence: the house
-    // already carries @media (pointer: coarse) blocks in index.css.
-    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay\{scrollbar-color:var\(--muted\) transparent\}/)
-    expect(INDEX_CSS).toMatch(/@media \(pointer: coarse\) \{[\s\S]*?\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:var\(--muted\)\}/)
   })
 
   it('caps the bar stack and scrolls it internally, so it never climbs into the band', () => {

@@ -27,10 +27,13 @@ jobs:
   rerun:
     name: Re-run Sensitive Change Review
     # Only the PR author's comment can count, so nobody else's comment spends
-    # a run. The checker re-checks the author, the head SHA and the template.
+    # a run. An EDIT counts only when the author made it (the event sender is
+    # the comment's author), so someone else changing the author's words
+    # does not. The checker re-checks the author, the head SHA and the template.
     if: >-
       github.event.issue.pull_request != null
       && github.event.comment.user.login == github.event.issue.user.login
+      && github.event.sender.login == github.event.comment.user.login
       && contains(github.event.comment.body, '## Sensitive change review')
     # Hosted, not the fleet: any commenter can fire issue_comment, and a
     # non-allowlisted actor's fleet dispatch would queue forever.

@@ -54,13 +54,15 @@
     "@kirocrew-mate/set_model",
     "@kirocrew-mate/set_approval_mode",
     "@kirocrew-mate/request_capabilities",
+    "@kirocrew-mate/find_capabilities",
     "@kirocrew-mate/goal_read",
     "@kirocrew-mate/set_goal",
     "@kirocrew-mate/set_key_results",
     "@kirocrew-mate/set_check_ins",
     "@kirocrew-mate/offer_dashboard_page",
     "@kirocrew-mate/key_result_progress",
-    "@kirocrew-mate/save_goal_report"
+    "@kirocrew-mate/save_goal_report",
+    "@kirocrew-mate/save_notes"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

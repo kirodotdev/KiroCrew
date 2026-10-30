@@ -42,7 +42,6 @@ if (await skip.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () 
   await skip.waitFor({ state: 'hidden', timeout: 10000 })
 }
 await page.evaluate(async () => {
-  localStorage.setItem('mc-preview-crew', '1')
   localStorage.setItem('mc-lang', 'en')
   localStorage.setItem('mc-theme', 'dark')
   await fetch('/api/config/theme', {

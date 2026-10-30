@@ -268,7 +268,6 @@ async def test_font_files_served_with_correct_content_type(
     routes — verify it works end-to-end through the aiohttp test client.
     """
     dist = _make_dist(tmp_path, "assets", "fonts")
-    # Create a dummy font file with some arbitrary bytes.
     (dist / "fonts" / filename).write_bytes(b"\x00wOFF" * 4)
 
     app = web.Application()

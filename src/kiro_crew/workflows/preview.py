@@ -75,7 +75,14 @@ RUNNER_PROMPT_LABEL_CHARS = 40
 
 # Every ``ctx`` method this module draws something for. Read by ``_visit_call``, so it
 # cannot drift from the dispatch it describes.
-MODELLED_CTX_METHODS = frozenset({"agent", "parallel", "pipeline", "workflow", "phase"})
+MODELLED_CTX_METHODS = frozenset(
+    {"agent", "parallel", "pipeline", "workflow", "phase", "open_session", "send_to_session"}
+)
+
+#: Methods that start work in ANOTHER session. That work runs outside the run and
+#: reports nowhere in its stream, so each call draws one ``unknown`` marker rather
+#: than a box the run would never fill.
+SESSION_CTX_METHODS = frozenset({"open_session", "send_to_session"})
 
 # Methods that draw nothing on purpose: narration and side channels, not units of work.
 # Enumerated rather than implied so each one is a decision on the record.
@@ -87,7 +94,9 @@ MODELLED_CTX_METHODS = frozenset({"agent", "parallel", "pipeline", "workflow", "
 # The parity test in test_workflows_preview.py closes that gap, and ``_visit_call``
 # degrades an unclassified method to an unpredictable marker so the runtime is honest
 # even if the pin is ever relaxed.
-NARRATION_CTX_METHODS = frozenset({"log", "nudge", "approve", "send_slack", "send_message"})
+NARRATION_CTX_METHODS = frozenset(
+    {"log", "nudge", "approve", "send_slack", "send_message", "set_session_mode"}
+)
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -414,6 +423,9 @@ class _Planner:
             return True
         if method == "workflow":
             self._add("unknown", "nested", certain=False)
+            return True
+        if method in SESSION_CTX_METHODS:
+            self._add("unknown", "session", certain=False)
             return True
         if method is not None:
             if method not in NARRATION_CTX_METHODS and method not in MODELLED_CTX_METHODS:

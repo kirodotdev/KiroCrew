@@ -155,6 +155,12 @@ const coordsOf = (inst: InstanceView): CloudCoords => ({
 /** The one line that says what a crew's on/off switch does; every switch points at it. */
 export const CREW_SWITCH_HINT_ID = 'remote-crew-switch-hint'
 
+/** The "on but not active yet" banner that mutes Connect. The disabled Connect
+ *  button points its `aria-describedby` here, so a keyboard or screen-reader
+ *  user gets the restart reason a hover `title` on a disabled button never
+ *  surfaces. */
+export const CREW_NEEDS_RESTART_BANNER_ID = 'remote-crew-needs-restart'
+
 export function CrewRow({
   inst,
   cloudTag,
@@ -162,6 +168,7 @@ export function CrewRow({
   deleting,
   confirmDelete,
   confirmRemove,
+  connectBlocked,
   onConnect,
   onDisconnect,
   onSetEnabled,
@@ -194,6 +201,11 @@ export function CrewRow({
   deleting: boolean
   confirmDelete: boolean
   confirmRemove: boolean
+  /** The gateway was enabled but not yet restarted, so connecting cannot work
+   *  until it restarts (the same `active === false` state that shows the
+   *  "not active yet" banner). Mutes Connect so the button agrees with the
+   *  banner instead of looking fully clickable. */
+  connectBlocked: boolean
   onConnect: (id: string) => void
   onDisconnect: (id: string) => void
   onSetEnabled: (id: string, enabled: boolean) => void
@@ -351,7 +363,17 @@ export function CrewRow({
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
         ) : inst.disabled ? null : (
-          <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
+          <Btn
+            primary
+            onClick={() => onConnect(inst.id)}
+            disabled={!!busy || deleting || connectBlocked}
+            // A `title` on a disabled button is unreliable: many browsers never
+            // show it on hover, and it is not keyboard- or screen-reader-reachable.
+            // While connecting is blocked, point the button at the restart banner
+            // so the reason is in its accessible description too.
+            title={connectBlocked ? i18nT('pages.settings.instancesPanel.connect_disabled_needs_restart') : undefined}
+            aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}
+          >
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}

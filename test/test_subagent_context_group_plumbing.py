@@ -183,24 +183,38 @@ class TestContinuationInheritsScope:
         mgr._agents["conv1"] = original
         assert mgr._inherited_context_groups("conv1") == (False, True, False)
 
-    def test_falls_back_to_persisted_scope(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            pytest.param(
+                {"context_groups": "lessons,project"},
+                (False, True, True),
+                id="test_falls_back_to_persisted_scope",
+            ),
+            # An empty recorded scope means "all withheld", not "unknown".
+            pytest.param(
+                {"context_groups": ""},
+                (False, False, False),
+                id="test_all_groups_withheld_is_not_confused_with_a_legacy_run",
+            ),
+            pytest.param(
+                {"id": "old"},
+                (True, True, True),
+                id="test_run_predating_the_field_defaults_to_all_on",
+            ),
+        ],
+    )
+    def test_falls_back_to_the_persisted_record(self, monkeypatch, state, expected):
         mgr = _mgr()
-        monkeypatch.setattr(
-            "kiro_crew.subagent.read_state",
-            lambda _id: {"context_groups": "lessons,project"},
-        )
-        assert mgr._inherited_context_groups("gone") == (False, True, True)
+        seen: list[str] = []
 
-    def test_all_groups_withheld_is_not_confused_with_a_legacy_run(self, monkeypatch):
-        """An empty recorded scope means "all withheld", not "unknown"."""
-        mgr = _mgr()
-        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"context_groups": ""})
-        assert mgr._inherited_context_groups("stripped") == (False, False, False)
+        def _read_state(agent_id):
+            seen.append(agent_id)
+            return state
 
-    def test_run_predating_the_field_defaults_to_all_on(self, monkeypatch):
-        mgr = _mgr()
-        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"id": "old"})
-        assert mgr._inherited_context_groups("old") == (True, True, True)
+        monkeypatch.setattr("kiro_crew.subagent.read_state", _read_state)
+        assert mgr._inherited_context_groups("gone") == expected
+        assert seen == ["gone"]
 
     def test_continue_conversation_forwards_the_inherited_scope(self, monkeypatch):
         """End-to-end: the flags reach spawn(), not just the helper."""

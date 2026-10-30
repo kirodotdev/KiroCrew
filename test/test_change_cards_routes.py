@@ -402,7 +402,10 @@ def test_server_route_table_matches_the_card_module():
         encoding="utf-8"
     )
     server = set(
-        re.findall(r'\("(GET|POST)", "(/api/cards/[a-z_{}/]+)", "api_cards_[a-z_]+"\)', text)
+        re.findall(
+            r'\("(GET|POST)", "(/api/(?:cards|members)/[a-z0-9_{}/]+)", "api_(?:cards|members)_[a-z_]+"\)',
+            text,
+        )
     )
     assert server == mine
 

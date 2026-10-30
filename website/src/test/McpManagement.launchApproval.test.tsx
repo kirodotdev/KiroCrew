@@ -1,30 +1,29 @@
-// MCP Management: approving the command a stubbed server will run.
+// MCP Management: the approval gate on a refused launch.
 //
-// This page no longer shows launch commands anywhere. The operator approves by
-// name; the exact-launch compare-and-set on the write is what pins the approval
-// to the command the gateway resolved.
+// Restored from main (McpManagement.launchApproval.test.tsx) after the one-switch
+// redesign, in the page's current vocabulary. A launch the gateway refused (a
+// changed command, or one declared outside the dashboard) runs nothing shared
+// until the person approves it on its own button:
+// - the row's switch reads off and, when pressed, writes NOTHING and reads
+//   nothing: it moves focus to the row's Approve button
+// - Approve re-sends stub=true pinned to the refusal's own expected_launch
+// - a refusal with no approvable identity has no approve control, only a
+//   Remove button that takes the mark off (stub=false), never an approval
+// - an older gateway that sends no `launch_refused` keeps the plain states
 //
-// Contract under test:
-// - turning the STUB switch ON is ONE click: it reads the launch and, if that
-//   launch can be approved, writes the stub straight away carrying its
-//   expected_launch. No command is shown, and there is no review panel or second
-//   button.
-// - a launch that cannot be approved (incomplete display, no identity) turns
-//   nothing on and says so.
-// - a refused row (changed command, or added outside the dashboard) shows its
-//   reason and an Approve button, and NO command, environment, before/after, or
-//   "declared in" text.
-// - the switch of a row waiting for approval moves the keyboard to that row's
-//   Approve button rather than reading the launch again.
-// - a row the panel cannot approve has no button, so its switch turns the stub off.
-// - the approve action re-sends stub=true with the launch identity.
-// - an older gateway that sends no `launch_refused` keeps the plain states.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+// Every label is read from the catalog.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
-import { api, ApiError } from '../api/client'
+import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
+
+const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
+const rowName = (labelKey: string, name = 'alpha-mcp') => `${M(labelKey)} ${name}`
 
 const server = {
   name: 'alpha-mcp',
@@ -37,19 +36,6 @@ const server = {
   denylisted: false,
 }
 
-/** The same server before the operator has opted in: what the switch acts on. */
-const stubbable = { ...server, stub: false }
-
-/** What `GET /servers/launch` answers while the switch is being turned on. */
-const preview = (over: Record<string, unknown> = {}) => ({
-  name: 'alpha-mcp',
-  commands: [['npx', '-y', 'alpha-mcp@2']],
-  envs: [['TOKEN_PATH=/tmp/t']],
-  complete: true,
-  expected_launch: 'command-hash:env-hash',
-  ...over,
-})
-
 const status = (over: Record<string, unknown> = {}) => ({
   enabled: true,
   stub: ['alpha-mcp'],
@@ -60,363 +46,132 @@ const status = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
+const changed = {
+  reason: 'changed_needs_reapproval',
+  commands: [['npx', '-y', 'alpha-mcp@2']],
+  envs: [['MODE=fast']],
+  approved_commands: [['npx', '-y', 'alpha-mcp@1']],
+  approved_envs: [['MODE=fast']],
+  complete: true,
+  expected_launch: 'a:b',
+}
+
 function mount() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-  })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <McpManagement />
+        <McpManagement initialAdvancedOpen />
       </QueryClientProvider>
     </MemoryRouter>,
   )
 }
 
-/** No command, environment, before/after, or "declared in" text renders anywhere. */
-function expectNoCommandText() {
-  expect(screen.queryByText('Command')).toBeNull()
-  expect(screen.queryByText('Environment')).toBeNull()
-  expect(screen.queryByText('Approved before')).toBeNull()
-  expect(screen.queryByText('Would run now')).toBeNull()
-  expect(screen.queryByText(/Declared in the config of/)).toBeNull()
-  expect(screen.queryByText(/Your STUB opt-in is kept/)).toBeNull()
-  expect(screen.queryByText(/Approve to let one shared backend run this exact command/)).toBeNull()
-  expect(screen.queryByText(/was not recorded/)).toBeNull()
-}
-
 beforeEach(() => {
   vi.restoreAllMocks()
+  // The hero's memory read: answered with no figures unless a test says otherwise.
+  vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue({ using_now_bytes: null, with_sharing_bytes: null, open_chats: 0, stale_chats: [] } as never)
+  answerBatchPreviewsPerName()
 })
 afterEach(cleanup)
 
-describe('McpManagement launch approval', () => {
-  it('shows a refused changed-command row as needing approval, with no command text', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': {
-            reason: 'changed_needs_reapproval',
-            commands: [['npx', '-y', 'alpha-mcp@2']],
-            envs: [['LD_PRELOAD=/tmp/x.so', 'MODE=fast']],
-            approved_commands: [['npx', '-y', 'alpha-mcp@1']],
-            approved_envs: [[]],
-            expected_launch: 'a:b',
-          },
-        },
-      }) as never,
-    )
+describe('a refused launch', () => {
+  it('sends the switch of a refused row to its Approve button, reading nothing and writing nothing', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-
-    mount()
-    expect(await screen.findByText('command changed', { selector: 'span' })).toBeTruthy()
-    expect(screen.getByText(/Its command changed after you approved it/)).toBeTruthy()
-    expect(
-      screen.getByRole('button', { name: 'Approve sharing for alpha-mcp' }),
-    ).toBeTruthy()
-    // Nothing from the command itself is on screen.
-    expect(screen.queryByText('alpha-mcp@2')).toBeNull()
-    expect(screen.queryByText('alpha-mcp@1')).toBeNull()
-    expect(screen.queryByText(/LD_PRELOAD/)).toBeNull()
-    expectNoCommandText()
-    expect(screen.queryByText('shared', { selector: 'span' })).toBeNull()
-    expect(screen.getByRole('switch', { name: 'Put a stub in front of alpha-mcp' })).toHaveAttribute(
-      'aria-checked',
-      'false',
-    )
-  })
-
-  it('sends the switch of a refused row to its Approve button, reading nothing', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': {
-            reason: 'changed_needs_reapproval',
-            commands: [['npx', '-y', 'alpha-mcp@2']],
-            envs: [['MODE=fast']],
-            approved_commands: [['npx', '-y', 'alpha-mcp@1']],
-            approved_envs: [['MODE=fast']],
-            expected_launch: 'a:b',
-          },
-        },
-      }) as never,
-    )
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(preview() as never)
+    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview')
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
-    const stubSwitch = await screen.findByRole('switch', {
-      name: 'Put a stub in front of alpha-mcp',
-    })
-    stubSwitch.click()
+    const control = await screen.findByRole('switch', { name: rowName('share_toggle') }, { timeout: 5000 })
+    expect(control.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(control)
 
-    const approve = await screen.findByRole('button', {
-      name: 'Approve sharing for alpha-mcp',
-    })
+    const approve = screen.getByRole('button', { name: rowName('new_command_button') })
     expect(document.activeElement).toBe(approve)
-    expectNoCommandText()
+    // The press is synchronous: it only moves focus, so nothing can be in flight.
     expect(read).not.toHaveBeenCalled()
     expect(setStub).not.toHaveBeenCalled()
   })
 
-  it('approves by re-sending stub=true for that name', async () => {
+  it('approves by re-sending stub=true pinned to the refused launch', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
+    expect(setStub).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no approve control for a refusal with no approvable identity, only a Remove button', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': {
-            reason: 'added_outside_dashboard',
-            commands: [['alpha']],
-            envs: [[]],
-            expected_launch: 'command-hash:env-hash',
-          },
-        },
-      }) as never,
+      status({ launch_refused: { 'alpha-mcp': { reason: 'changed_needs_reapproval', complete: false } } }) as never,
     )
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
-      ok: true,
-      name: 'alpha-mcp',
-      stub: true,
-      restart_required: true,
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: false } as never)
+
+    mount()
+    const control = await screen.findByRole('button', { name: rowName('remove_mark') }, { timeout: 5000 })
+    expect(screen.queryByRole('switch', { name: rowName('share_toggle') })).toBeNull()
+    expect(screen.queryByRole('button', { name: rowName('new_command_button') })).toBeNull()
+    expect(screen.queryByRole('button', { name: rowName('approve_button') })).toBeNull()
+    expect(screen.getByText(M('approval_not_approvable_here'))).toBeTruthy()
+    fireEvent.click(control)
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined), { timeout: 5000 })
+  })
+
+  it('closes the Turn on sharing confirm on Escape and turns nothing on', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const enable = vi.spyOn(api, 'mcpGatewayEnable')
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
+
+    mount()
+    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(sharing)
+    const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 5000 })
+    expect(enable).not.toHaveBeenCalled()
+    expect(setStub).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing when the Enable all list is cancelled', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ stub: [] }) as never)
+    const declared = { strength: 'declared', recommendStub: true, recommendShare: true, reasons: [] }
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [{ ...server, stub: false, in_allowlist: false, recommendation: declared }],
     } as never)
-
-    mount()
-    const approve = await screen.findByRole('button', {
-      name: 'Approve sharing for alpha-mcp',
-    })
-    expect(approve.textContent).toBe('Approve sharing for alpha-mcp')
-    approve.click()
-    await waitFor(() =>
-      expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'command-hash:env-hash'),
-    )
-  })
-
-  it.each([
-    [409, 'launch_changed_since_display', 'alpha-mcp: its command changed after it was read, so nothing was approved. Try again.'],
-    [409, 'launch_unresolved', 'This server has no command to approve. Nothing was saved.'],
-    [409, 'launch_over_cap', 'This server starts too many different commands to use a shared backend. Nothing was saved.'],
-    [503, 'approval_write_failed', 'The approval could not be saved. The server keeps running inside each session.'],
-  ] as const)('shows the specific approval failure for %s %s', async (statusCode, code, message) => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': {
-            reason: 'added_outside_dashboard',
-            commands: [['alpha']],
-            envs: [[]],
-            expected_launch: 'command-hash:env-hash',
-          },
-        },
-      }) as never,
-    )
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-    vi.spyOn(api, 'mcpGatewaySetStub').mockRejectedValue(
-      new ApiError(statusCode, message, JSON.stringify({ error: message, code })),
-    )
-
-    mount()
-    const approve = await screen.findByRole('button', {
-      name: 'Approve sharing for alpha-mcp',
-    })
-    approve.click()
-    expect(await screen.findByText(message)).toBeTruthy()
-  })
-
-  it('offers no approve control when the refusal carries no approvable identity', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': { reason: 'added_outside_dashboard', commands: [['alpha']], envs: [[]] },
-        },
-      }) as never,
-    )
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-
-    mount()
-    expect(await screen.findByText('needs approval', { selector: 'span' })).toBeTruthy()
-    expect(screen.getByText('Declared in a config file, and never approved here.')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Approve the command/ })).toBeNull()
-    expectNoCommandText()
-    expect(screen.queryByText('alpha')).toBeNull()
-  })
-
-  it('turns the stub off from the switch of a row nothing here can approve', async () => {
-    // With no approve button to hand the keyboard to, the switch is the only
-    // control the operator has over this opt-in. It has to act.
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({
-        launch_refused: {
-          'alpha-mcp': { reason: 'added_outside_dashboard', commands: [['alpha']], envs: [[]] },
-        },
-      }) as never,
-    )
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(preview() as never)
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
-      ok: true,
-      name: 'alpha-mcp',
-      stub: false,
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue({
+      name: 'alpha-mcp', commands: [['/opt/a']], envs: [[]], complete: true, expected_launch: 'a-id',
     } as never)
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
-    const stubSwitch = await screen.findByRole('switch', {
-      name: 'Put a stub in front of alpha-mcp',
-    })
-    expect(screen.queryByRole('button', { name: /Approve the command/ })).toBeNull()
-    stubSwitch.click()
-
-    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined))
-    // Turning off does not read the launch.
-    expect(read).not.toHaveBeenCalled()
+    const all = await screen.findByRole('button', { name: M('enable_all') }, { timeout: 5000 })
+    await waitFor(() => expect((all as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(all)
+    const list = await screen.findByRole('region', { name: M('share_all_list_aria') }, { timeout: 5000 })
+    expect(list.textContent).toContain('alpha-mcp')
+    fireEvent.click(screen.getByRole('button', { name: M('share_all_cancel') }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: M('share_all_list_aria') })).toBeNull(), { timeout: 5000 })
+    expect(setStub).not.toHaveBeenCalled()
   })
 
   it('keeps the plain state when the gateway sends no launch_refused', async () => {
+    // An older gateway: the field is absent, which must read as "nothing refused".
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
 
     mount()
-    expect(await screen.findByText('shared', { selector: 'span' })).toBeTruthy()
-    expect(screen.queryByText('needs approval', { selector: 'span' })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Approve the command/ })).toBeNull()
-  })
-})
-
-describe('McpManagement first stub approval (one click)', () => {
-  const idle = () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
-      status({ stub: [], stub_count: 0, enabled: false }) as never,
-    )
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [stubbable] } as never)
-  }
-
-  const turnOn = async () => {
-    mount()
-    const sw = await screen.findByRole('switch', { name: 'Put a stub in front of alpha-mcp' })
-    sw.click()
-  }
-
-  it('reads the launch and writes the stub in one click, with no command shown', async () => {
-    idle()
-    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(preview() as never)
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
-      ok: true,
-      name: 'alpha-mcp',
-      stub: true,
-      restart_required: true,
-    } as never)
-
-    await turnOn()
-
-    // The read gates the write; the write carries the launch identity.
-    await waitFor(() =>
-      expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'command-hash:env-hash'),
-    )
-    expect(read).toHaveBeenCalledWith('alpha-mcp')
-    // No review panel, no command text.
-    expect(screen.queryByRole('group', { name: 'Check what alpha-mcp will run' })).toBeNull()
-    expect(screen.queryByText('alpha-mcp@2')).toBeNull()
-    expect(screen.queryByText(/TOKEN_PATH/)).toBeNull()
-    // The restart notice is the only outcome the operator sees.
-    expect(await screen.findByText(/Restart the gateway for this to take effect/)).toBeTruthy()
-  })
-
-  it('does not turn the stub on when the launch cannot be approved', async () => {
-    idle()
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(
-      preview({ complete: false, expected_launch: undefined }) as never,
-    )
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
-
-    await turnOn()
-
-    // The one-line text says it cannot be approved; nothing is written.
-    expect(await screen.findByText(/cannot be approved for sharing/)).toBeTruthy()
-    expect(setStub).not.toHaveBeenCalled()
-    expect(screen.queryByText('alpha-mcp@2')).toBeNull()
-    expect(screen.getByRole('switch', { name: 'Put a stub in front of alpha-mcp' })).toHaveAttribute(
-      'aria-checked',
-      'false',
-    )
-  })
-
-  it.each([
-    ['launch_unresolved', 'alpha-mcp has no command to show, so it cannot use a shared backend. Nothing was turned on.'],
-    ['launch_over_cap', 'alpha-mcp starts too many different commands to use a shared backend. Nothing was turned on.'],
-    ['invalid_server_name', 'alpha-mcp is not a name Kiro Crew can read as a server. Nothing was turned on.'],
-    ['launch_resolve_failed', 'The command alpha-mcp would run could not be read. Nothing was turned on.'],
-  ] as const)('says nothing was turned on when the read fails with %s', async (code, message) => {
-    idle()
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockRejectedValue(
-      new ApiError(409, code, JSON.stringify({ error: code, code })),
-    )
-    const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
-
-    await turnOn()
-
-    expect(await screen.findByText(message)).toBeTruthy()
-    expect(setStub).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    [409, 'expected_launch_required', /command could not be checked/],
-    [409, 'launch_display_incomplete', /too long to show in full/],
-    [400, 'batch_stub_requires_individual', /approved from its own command/],
-  ] as const)('reports the write refusal %s %s in its own words', async (statusCode, code, matcher) => {
-    idle()
-    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue(preview() as never)
-    vi.spyOn(api, 'mcpGatewaySetStub').mockRejectedValue(
-      new ApiError(statusCode, code, JSON.stringify({ error: code, code })),
-    )
-
-    // One click reads the launch and fires the write, which is refused.
-    await turnOn()
-
-    expect(await screen.findByText(matcher)).toBeTruthy()
-  })
-})
-
-describe('McpManagement changed-command row shows no command', () => {
-  const changed = (over: Record<string, unknown> = {}) =>
-    status({
-      launch_refused: {
-        'alpha-mcp': {
-          reason: 'changed_needs_reapproval',
-          commands: [['npx', '-y', 'alpha-mcp@3']],
-          envs: [['MODE=fast']],
-          approved_commands: [['npx', '-y', 'alpha-mcp@2']],
-          approved_envs: [[]],
-          complete: true,
-          expected_launch: 'a:b',
-          ...over,
-        },
-      },
-    })
-
-  it('renders no before/after, command or environment text', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(changed() as never)
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-
-    mount()
-    // The reason and the Approve button are all that is on the sub-row.
-    expect(await screen.findByText(/Its command changed after you approved it/)).toBeTruthy()
-    expect(
-      screen.getByRole('button', { name: 'Approve sharing for alpha-mcp' }),
-    ).toBeTruthy()
-    expect(screen.queryByText('alpha-mcp@3')).toBeNull()
-    expect(screen.queryByText('alpha-mcp@2')).toBeNull()
-    expectNoCommandText()
-  })
-
-  it('puts the reason in a full-width sub-row, with the pill still in the state column', async () => {
-    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(changed() as never)
-    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-
-    mount()
-    const reason = await screen.findByText(/Its command changed after you approved it/)
-    const cell = reason.closest('td')
-    expect(cell?.getAttribute('colspan')).toBe('4')
-    // The pill stays where a column value belongs.
-    expect(screen.getByText('command changed', { selector: 'span' }).closest('td')).not.toBe(cell)
+    const control = await screen.findByRole('switch', { name: rowName('share_toggle') }, { timeout: 5000 })
+    expect(control.getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByText(M('state_shared'), { selector: 'span' })).toBeTruthy()
+    expect(screen.queryByText(M('state_needs_reapproval'))).toBeNull()
+    expect(screen.queryByRole('button', { name: rowName('new_command_button') })).toBeNull()
+    expect(screen.queryByRole('button', { name: M('review_approve') })).toBeNull()
   })
 })

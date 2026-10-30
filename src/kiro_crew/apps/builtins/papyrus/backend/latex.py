@@ -21,7 +21,7 @@ Security notes that must not be relaxed:
   :func:`kiro_crew.sandbox.create_subprocess_limited`, so a runaway macro expansion
   gets a kernel-enforced ceiling instead of the host's whole memory.
 * Every invocation is bounded by a wall-clock timeout and the process tree is
-  killed on expiry.
+  killed on expiry, or when the run is cancelled.
 """
 
 from __future__ import annotations
@@ -344,7 +344,8 @@ async def _run(
 
     Returns ``(returncode, combined_output)``. On timeout the whole process tree
     is killed and ``(-1, "")`` is returned — the caller reports a timeout rather
-    than an empty success.
+    than an empty success. On cancel the tree is killed too, then the cancel
+    propagates.
 
     ``mode="strict"``, NOT the ``"standard"`` default. Standard mode deliberately
     leaves ``~/.aws`` and ``~/.ssh`` readable so git-over-SSH and the AWS CLI keep
@@ -442,6 +443,13 @@ async def _run(
                 logger.warning("papyrus: %s did not exit after SIGKILL", operation)
         _audit(operation, argv[0], "failure", error=f"timeout after {timeout}s")
         return -1, ""
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except OSError as exc:
         _audit(operation, argv[0], "failure", error=str(exc))
         raise

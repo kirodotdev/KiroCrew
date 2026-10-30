@@ -12,6 +12,8 @@ importable without it.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
 import logging
 import os
 import sys
@@ -42,13 +44,47 @@ logger = logging.getLogger("kiro_crew.transcribe")
 # the Credentials class are only invoked when stt.provider == "transcribe" and
 # a profile is configured, so absence here is harmless for non-STT use. The
 # local recogniser (default STT provider) needs neither.
+#
+# boto3 itself (~200 ms with botocore and s3transfer) is imported on the first
+# attribute access rather than here: this module is on the dashboard server's
+# import chain, and most gateways never make an AWS Transcribe call. Only whether
+# it is installed is decided now, so ``boto3 is None`` keeps its meaning; whether
+# it actually imports is ``_boto3_importable``'s answer.
+class _DeferredBoto3:
+    """Stands in for the ``boto3`` module and imports it on first attribute access."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(importlib.import_module("boto3"), name)
+
+
 try:
-    import boto3
+    if importlib.util.find_spec("boto3") is None or importlib.util.find_spec("botocore") is None:
+        raise ImportError("No module named 'boto3'")
+    boto3 = _DeferredBoto3()
     from amazon_transcribe.auth import CredentialResolver, Credentials
 except ImportError:  # pragma: no cover — covered by cli_doctor tests
     boto3 = None  # type: ignore[assignment,misc]
     CredentialResolver = object  # type: ignore[assignment,misc]
     Credentials = None  # type: ignore[assignment,misc]
+
+
+def _boto3_importable() -> bool:
+    """Whether boto3 actually imports. BLOCKING: the first call is the import.
+
+    A partial install (boto3 found, one of its dependencies missing) passes the
+    module-scope check above, so every gate that decides "the extra is missing"
+    asks here, and the user is shown the repair command instead of a session that
+    fails later. Anything bound in place of the stand-in is used as it is.
+    """
+    if boto3 is None:
+        return False
+    if not isinstance(boto3, _DeferredBoto3):
+        return True
+    try:
+        importlib.import_module("boto3")
+    except ImportError:
+        return False
+    return True
 
 
 #: What to do about a missing AWS Transcribe client. Named once because doctor,
@@ -66,7 +102,7 @@ def _aws_availability() -> stt.Availability:
     with refusals nobody requested. The paid-service gate stays at the point
     where audio would actually leave the host.
     """
-    if boto3 is None:
+    if not _boto3_importable():
         return stt.Availability(False, stt.CODE_EXTRA_MISSING, _VOICE_EXTRA_HINT)
     try:
         import amazon_transcribe  # noqa: F401
@@ -84,7 +120,7 @@ class _ProfileCredentialResolver(CredentialResolver):
     """
 
     def __init__(self, profile: str) -> None:
-        if boto3 is None:  # pragma: no cover (the optional 'voice' extra is absent)
+        if not _boto3_importable():  # pragma: no cover (the optional 'voice' extra is absent)
             raise RuntimeError(
                 "AWS Transcribe support is not available: install the optional "
                 f"dependencies ({install_hint('voice-aws')})."
@@ -172,7 +208,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
 
     # amazon-transcribe + boto3 are the optional 'voice' extra. Absent on a
     # vanilla install → report not available rather than raising ImportError.
-    if boto3 is None:
+    if not await asyncio.to_thread(_boto3_importable):
         logger.error("AWS Transcribe not available: %s", install_hint("voice-aws"))
         return None
     try:
@@ -212,6 +248,10 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                     *demux_args,
                     "-i",
                     audio_path,
+                    # Audio only: a Slack video/webm clip also carries a video
+                    # track, and ogg's default video encoder (theora) is not in
+                    # the audio-only decoder, so mapping it fails the remux.
+                    "-vn",
                     "-c:a",
                     "copy",
                     tmp_ogg,
@@ -467,10 +507,10 @@ def list_custom_vocabularies(profile: str, region: str) -> CustomVocabularyListi
     message stays in the log, because an access-denied message names the caller's
     ARN and the caller only needs to know which fix applies.
     """
-    if boto3 is None:
+    if not _boto3_importable():
         logger.warning("Custom vocabularies need the AWS packages: %s", install_hint("voice-aws"))
         raise VocabularyListError(VOCABULARIES_LIST_FAILED)
-    # botocore ships with boto3, which is present by this point.
+    # botocore ships with boto3, which imported by this point.
     from botocore.config import Config
     from botocore.exceptions import BotoCoreError, ClientError
 

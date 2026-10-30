@@ -25,6 +25,7 @@ from typing import Awaitable, Callable
 from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
 from kiro_crew.sel import sel
 from kiro_crew.subagent_manager.admission.types import TASK_STORE_UNAVAILABLE_CODE
+from kiro_crew.subagent_wait_reasons import stopped_before_start
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +276,10 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             # fault no cooldown fixes, raised undeclined.
             declined = str(getattr(info, "error_code", "")) == TASK_STORE_UNAVAILABLE_CODE
             raise SpawnError(str(info.error), declined=declined)
+        if stopped_before_start(info):
+            # Stopped while it waited: its id never runs or finishes, so handing
+            # it back would leave the app polling a run that does not exist.
+            raise SpawnError("the spawn was stopped before it started; nothing ran")
         return str(getattr(info, "id", "") or "")
 
     # Ride the probe on the impl callable rather than adding a second parameter

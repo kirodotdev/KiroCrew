@@ -428,8 +428,8 @@ def _commit_generation(
             # The newer incarnation that fences this task is a PROVISIONAL CLAIM, not a real
             # commit: a replacement bumped the pointer BEFORE restoration and has not yet
             # committed anything (it may never -- its backend can fail readiness and abort,
-            # releasing the claim). Treating that as a permanent supersession is the outage
-            # Opus named: a healthy predecessor serving turns at its 60s interval would read
+            # releasing the claim). Treating that as a permanent supersession is an outage:
+            # a healthy predecessor serving turns at its 60s interval would read
             # the claim, raise SidecarSuperseded and be torn down LONG before the failed
             # replacement's abort path (gated on a 180s readiness timeout) releases the claim
             # -- killing the only live task and losing its turns since the last commit. So a

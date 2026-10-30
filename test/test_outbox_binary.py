@@ -12,7 +12,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew import file_delivery_consent
 from kiro_crew.dashboard.handlers import api_outbox_download, api_outbox_notify
 
 
@@ -20,7 +19,7 @@ def _synth_flagged_png() -> bytes:
     """PNG-shaped bytes that fail UTF-8 decode and carry key-SHAPED material.
 
     Assembled at runtime from fragments rather than checked in as a literal, the
-    same convention ``test_file_delivery_consent`` documents: a diff carrying
+    same convention the credential tests use: a diff carrying
     literal PEM headers reads as an exfiltration recipe to a review provider, and
     the scanner sees identical bytes either way. The body is deterministic base64
     over a digest, so it is private-key-SHAPED without being a private key.
@@ -101,27 +100,6 @@ def mock_sel():
         yield instance
 
 
-@pytest.fixture(autouse=True)
-def isolated_consent_store(tmp_path, monkeypatch):
-    """Point the consent store at a tmp file so the host's real grant cannot leak in.
-
-    Without this a machine that happens to hold an ``owner_dashboard`` grant would
-    turn every "refused without a grant" assertion below green for the wrong
-    reason.
-    """
-    store = tmp_path / "file_delivery_consent.json"
-    monkeypatch.setattr(
-        file_delivery_consent, "file_delivery_consent_path", lambda: store, raising=True
-    )
-    return store
-
-
-def _grant() -> None:
-    file_delivery_consent.record_grant(
-        file_delivery_consent.CLASS_OWNER_DASHBOARD, granted_at="2026-09-05T00:00:00+00:00"
-    )
-
-
 @pytest.fixture
 def outbox(tmp_path):
     # Not ``tmp_path``: on macOS pytest's basetemp carries the per-user
@@ -192,8 +170,8 @@ class TestOutboxNotifyBinary:
             assert "not allowed" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_text_with_secrets_rejected(self, outbox, mock_sel):
-        """Text file with AWS key is rejected."""
+    async def test_text_with_secrets_is_delivered(self, outbox, mock_sel):
+        """The card goes to the owner's own dashboard, so content is not scanned."""
         txt = outbox / "secrets.txt"
         txt.write_text("key=AKIAIOSFODNN7EXAMPLE")
         async with TestClient(TestServer(_make_app())) as client:
@@ -206,9 +184,8 @@ class TestOutboxNotifyBinary:
                     "size": txt.stat().st_size,
                 },
             )
-            assert resp.status == 400
-            data = await resp.json()
-            assert "sensitive" in data["error"]
+            assert resp.status == 200
+            assert (await resp.json())["ok"] is True
 
 
 class TestOutboxDownloadBinary:
@@ -274,6 +251,63 @@ class TestOutboxDownloadBinary:
             assert "inline" in resp.headers["Content-Disposition"]
 
 
+_MP4 = b"\x00\x00\x00\x1cftyp\xff\xfe\x80\x81" + bytes(range(256)) * 4
+
+
+class TestOutboxDownloadRange:
+    """A media element seeks with a ``Range`` request; a 200 for the whole file
+    leaves the native progress bar unable to move."""
+
+    @pytest.mark.asyncio
+    async def test_full_response_advertises_byte_ranges(self, outbox, mock_sel):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4")
+            assert resp.status == 200
+            assert resp.headers["Accept-Ranges"] == "bytes"
+            assert await resp.read() == _MP4
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("header", "start", "end"),
+        [
+            ("bytes=100-199", 100, 199),
+            ("bytes=500-", 500, len(_MP4) - 1),
+            ("bytes=-64", len(_MP4) - 64, len(_MP4) - 1),
+            ("bytes=1000-999999", 1000, len(_MP4) - 1),
+        ],
+    )
+    async def test_range_request_returns_partial_content(
+        self, outbox, mock_sel, header, start, end
+    ):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4", headers={"Range": header})
+            assert resp.status == 206
+            assert resp.headers["Content-Range"] == f"bytes {start}-{end}/{len(_MP4)}"
+            assert resp.headers["Content-Type"] == "video/mp4"
+            assert "inline" in resp.headers["Content-Disposition"]
+            assert await resp.read() == _MP4[start : end + 1]
+
+    @pytest.mark.asyncio
+    async def test_unsatisfiable_range_is_416(self, outbox, mock_sel):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/outbox/clip.mp4", headers={"Range": f"bytes={len(_MP4)}-"}
+            )
+            assert resp.status == 416
+            assert resp.headers["Content-Range"] == f"bytes */{len(_MP4)}"
+
+    @pytest.mark.asyncio
+    async def test_range_does_not_bypass_the_content_scan(self, outbox, mock_sel):
+        """The scan reads the whole file even when the range names a clean slice."""
+        (outbox / "leak.png").write_bytes(_synth_flagged_png())
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/leak.png", headers={"Range": "bytes=0-7"})
+            assert resp.status == 400
+
+
 class TestGeneratedBinaryActuallyTrips:
     """A fixture the scanner ignores would make every case below vacuous."""
 
@@ -293,38 +327,19 @@ class TestGeneratedBinaryActuallyTrips:
                 raw.decode("utf-8")
 
 
-class TestOwnerFacingGatesScanBinaryContent:
-    """An allow-listed media type carrying a credential is not waved through.
+class TestOwnerFacingGatesAndBinaryContent:
+    """The owner gets their own files as-is; anyone else meets the content scan.
 
-    The type allow-list answers "can the browser render these bytes safely", which
-    is a different question from "do these bytes contain a secret". Both
-    owner-facing HTTP gates decide the second question with the same recorded
-    grant their text branch already consults, so one file cannot be refused as
-    text and accepted as a PNG.
+    The notify card renders in the owner's dashboard, so it never scans. The
+    outbox download needs authentication, which a Slack allow-listed non-owner
+    also has, so for them an allow-listed media type carrying a credential is
+    still refused.
     """
 
     @pytest.mark.asyncio
-    async def test_notify_refuses_a_flagged_media_file_without_a_grant(self, outbox, mock_sel):
+    async def test_notify_delivers_a_flagged_media_file(self, outbox, mock_sel):
         png = outbox / "shot.png"
         png.write_bytes(_synth_flagged_png())
-        async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.post(
-                "/api/outbox/notify",
-                json={
-                    "path": str(png),
-                    "filename": "shot.png",
-                    "description": "screenshot",
-                    "size": png.stat().st_size,
-                },
-            )
-            assert resp.status == 400
-            assert "embedded credentials" in (await resp.json())["error"]
-
-    @pytest.mark.asyncio
-    async def test_notify_delivers_the_card_under_the_owners_grant(self, outbox, mock_sel):
-        png = outbox / "shot.png"
-        png.write_bytes(_synth_flagged_png())
-        _grant()
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(
                 "/api/outbox/notify",
@@ -339,7 +354,7 @@ class TestOwnerFacingGatesScanBinaryContent:
             assert (await resp.json())["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_download_refuses_flagged_media_without_a_grant(self, outbox, mock_sel):
+    async def test_download_refuses_flagged_media_to_an_anonymous_caller(self, outbox, mock_sel):
         png = outbox / "shot.png"
         png.write_bytes(_synth_flagged_png())
         async with TestClient(TestServer(_make_app())) as client:
@@ -348,19 +363,16 @@ class TestOwnerFacingGatesScanBinaryContent:
             assert "embedded credentials" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
-    async def test_download_refuses_flagged_media_for_a_non_owner_holding_a_grant(
-        self, outbox, mock_sel
-    ):
-        """The grant releases bytes to the OWNER, not to every authenticated caller.
+    async def test_download_refuses_flagged_media_for_a_non_owner(self, outbox, mock_sel):
+        """Only the OWNER skips the scan, not every authenticated caller.
 
-        Same second conjunct the text branch carries: this route needs
-        authentication, which a Slack allow-listed non-owner running ``!dashboard``
-        also has. The collaborator is patched rather than an identity forged onto
-        the request, so what is pinned is the route's decision and not the harness.
+        This route needs authentication, which a Slack allow-listed non-owner
+        running ``!dashboard`` also has. The collaborator is patched rather than an
+        identity forged onto the request, so what is pinned is the route's decision
+        and not the harness.
         """
         png = outbox / "shot.png"
         png.write_bytes(_synth_flagged_png())
-        _grant()
         with patch(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             return_value=False,
@@ -370,11 +382,10 @@ class TestOwnerFacingGatesScanBinaryContent:
                 assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_download_serves_flagged_media_to_the_owner_under_a_grant(self, outbox, mock_sel):
+    async def test_download_serves_flagged_media_to_the_owner(self, outbox, mock_sel):
         png = outbox / "shot.png"
         raw = _synth_flagged_png()
         png.write_bytes(raw)
-        _grant()
         with patch(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             return_value=True,
@@ -385,8 +396,8 @@ class TestOwnerFacingGatesScanBinaryContent:
                 assert await resp.read() == raw
 
     @pytest.mark.asyncio
-    async def test_a_clean_media_file_needs_no_grant_on_either_gate(self, outbox, mock_sel):
-        """The scan must not turn ordinary media into a consent prompt."""
+    async def test_a_clean_media_file_passes_both_gates(self, outbox, mock_sel):
+        """The scan must not refuse ordinary media to anyone."""
         png = outbox / "clean.png"
         png.write_bytes(_clean_png())
         async with TestClient(TestServer(_make_app())) as client:
@@ -429,17 +440,12 @@ class TestOwnerFacingGatesScanBinaryContent:
 
 
 class TestWideEncodedCredentialInAUtf8DecodableFile:
-    """A wide-encoded credential in bytes that DECODE must still be refused.
+    """A wide-encoded credential in bytes that DECODE is still refused to a non-owner.
 
     NUL-interleaved ASCII is itself valid UTF-8, so these bytes take each gate's
     TEXT branch rather than its binary one, and ``redact`` matches contiguous
     ASCII so it matches none of the key. A gate whose wide pass sits behind a
     decode failure therefore never scans this file at all.
-
-    A negative answer from the scan does not degrade to "owner only" on the
-    download route -- it skips the owner conjunct entirely, so the bytes leave to
-    any authenticated caller, and the completed-download record notes the
-    handover without undoing it.
 
     The first test is the control that keeps the rest honest: it asserts the
     buffer really does decode as UTF-8 and that the text pass really does miss
@@ -472,7 +478,7 @@ class TestWideEncodedCredentialInAUtf8DecodableFile:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
-    async def test_notify_refuses_it_without_a_grant(self, outbox, mock_sel, encoding):
+    async def test_notify_delivers_it(self, outbox, mock_sel, encoding):
         pdf = outbox / "report.pdf"
         pdf.write_bytes(_synth_wide_utf8_pdf(encoding))
         async with TestClient(TestServer(_make_app())) as client:
@@ -485,12 +491,11 @@ class TestWideEncodedCredentialInAUtf8DecodableFile:
                     "size": pdf.stat().st_size,
                 },
             )
-            assert resp.status == 400
-            assert "sensitive" in (await resp.json())["error"]
+            assert resp.status == 200
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
-    async def test_download_refuses_it_without_a_grant(self, outbox, mock_sel, encoding):
+    async def test_download_refuses_it_to_a_non_owner(self, outbox, mock_sel, encoding):
         pdf = outbox / "report.pdf"
         pdf.write_bytes(_synth_wide_utf8_pdf(encoding))
         async with TestClient(TestServer(_make_app())) as client:
@@ -577,7 +582,7 @@ _STANDARD_AC_HUFFVAL = bytes.fromhex(
 
 
 class TestContainerSymbolTablesAreNotCredentials:
-    """A container's own symbol table must not spend the owner's delivery grant.
+    """A container's own symbol table must not read as a credential.
 
     A standard baseline JPEG writes its Huffman symbol table as a fixed list of
     byte values, and the printable tail of that list reads as six digits, a colon
@@ -585,12 +590,9 @@ class TestContainerSymbolTablesAreNotCredentials:
     entropy floor scores the character multiset and the table's characters are all
     distinct, so it scores what a generated secret scores.
 
-    The cost is not the refusal. The three owner-facing gates read one durable
-    grant, so the owner's only way past a refused photo is to record a grant that
-    is class-wide: once recorded it disarms the refusal for every content kind on
-    all three gates, and a genuine key afterwards leaves with an audit entry and
-    no refusal. Noise on this path spends the control, which is why a table has to
-    be invisible to the scan rather than merely rare.
+    The Slack and channel upload legs, and a non-owner's outbox download, still
+    scan, so a false positive there refuses an ordinary photo. That is why a
+    table has to be invisible to the scan rather than merely rare.
 
     Masking is pinned to that one fixed constant, and the tests here are written
     around what that buys: the first is the control that keeps the rest honest,
@@ -1085,7 +1087,7 @@ class TestContainerSymbolTablesAreNotCredentials:
 
     @pytest.mark.asyncio
     async def test_notify_delivers_a_container_carrying_only_its_table(self, outbox, mock_sel):
-        """The owner is never sent to the grant panel for a clean container."""
+        """A clean container is delivered."""
         jpeg = outbox / "photo.jpg"
         jpeg.write_bytes(_clean_jpeg())
         async with TestClient(TestServer(_make_app())) as client:

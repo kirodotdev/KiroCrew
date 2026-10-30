@@ -138,7 +138,6 @@ class TestPauseSource:
             data = await resp.json()
             assert data["status"] == "paused"
 
-        # Verify DB state
         row = store.db.execute("SELECT properties, sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         props = json.loads(row["properties"])
         assert props["scan_paused"] is True

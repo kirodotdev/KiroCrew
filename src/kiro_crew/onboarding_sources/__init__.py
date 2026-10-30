@@ -1,7 +1,7 @@
 """The import-source registry, and the explicit adapters it dispatches to.
 
 Every foreign agent the engine can read is an adapter module in this package --
-``codex``, ``claude_code``, ``gemini``, ``openclaw``, ``hermes`` -- plus
+``codex``, ``claude_code``, ``gemini``, ``openclaw``, ``hermes``, ``amazon_quick`` -- plus
 ``lineage``, the reader for an install of Kiro Crew's own layout that an
 edition registers through the ``ImportSourceProvider`` CPP seam. An adapter
 knows ONE layout: where its files are, which configs outrank which, and which
@@ -36,6 +36,7 @@ from kiro_crew import onboarding_scan, platform_compat
 from kiro_crew.onboarding_plan import _MAX_WORKSPACE_COMPONENT_CHARS, _deduplicate_items
 from kiro_crew.onboarding_scan import _expand_root, _Scan
 from kiro_crew.onboarding_sources import lineage
+from kiro_crew.onboarding_sources.amazon_quick import _scan_amazon_quick
 from kiro_crew.onboarding_sources.claude_code import _scan_claude
 from kiro_crew.onboarding_sources.codex import _scan_codex
 from kiro_crew.onboarding_sources.gemini import _scan_gemini
@@ -151,7 +152,8 @@ def _source_context(
 #: Ids that are never an import source, whatever a descriptor claims. ``quick`` is
 #: the first-run setup MODE — the spec requires it never appear as an import
 #: option — so accepting it here would register a source the dashboard is obliged
-#: to hide, i.e. one that imports nothing and cannot be diagnosed.
+#: to hide, i.e. one that imports nothing and cannot be diagnosed. The Amazon Quick
+#: app is a source, and is registered as ``amazon_quick`` for that reason.
 _RESERVED_SOURCE_IDS = frozenset({"quick"})
 
 
@@ -306,6 +308,13 @@ def _core_sources() -> tuple[_Builtin, ...]:
             scan=_scan_hermes,
             env_vars=("HERMES_HOME", "HERMES_AGENT_HOME", "HERMES_CONFIG_DIR"),
             home_dir=".hermes",
+        ),
+        # The app documents no override for its root, so it declares none.
+        _Builtin(
+            id="amazon_quick",
+            display_name="Amazon Quick",
+            scan=_scan_amazon_quick,
+            home_dir=".quickwork",
         ),
     )
 

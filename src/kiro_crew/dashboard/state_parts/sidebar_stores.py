@@ -1,18 +1,19 @@
-"""The durable sidebar stores: chat folders, cron folders, chat pins, pinned order, tags, boards.
+"""The durable sidebar stores: chat folders, cron folders, chat pins, chat reactions, pinned order, tags, boards.
 
 Each store's load, serialised read-modify-write and confirmed write under the
 data home, the strict JSON writers they share, and the durable tag snapshot.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
-Writes: ``_chat_pins``, ``_cron_folders``, ``_folders``, ``_folders_generation``,
-``_pinned_order_rev``, ``_pinned_session_order``, ``_pinned_session_order_loaded``,
-``_pinned_session_order_stored``, ``_tag_boards``, ``_tags``, ``_tags_authoritative``,
-``_unparsed_chat_pin_entries``, ``_unparsed_cron_folder_entries``,
+Writes: ``_chat_pins``, ``_chat_reactions``, ``_cron_folders``, ``_folders``,
+``_folders_generation``, ``_pinned_order_rev``, ``_pinned_session_order``,
+``_pinned_session_order_loaded``, ``_pinned_session_order_stored``, ``_tag_boards``,
+``_tags``, ``_tags_authoritative``, ``_tags_generation``, ``_unparsed_chat_pin_entries``,
+``_unparsed_chat_reaction_entries``, ``_unparsed_cron_folder_entries``,
 ``_unparsed_tag_board_entries``, ``_unparsed_tag_entries``.
-Reads only: ``_CHAT_PINS_FILE``, ``_CRON_FOLDERS_FILE``, ``_DEFAULT_TAGS``,
-``_FOLDERS_FILE``, ``_TAGS_FILE``, ``_TAG_BOARDS_FILE``, ``_chat_pins_lock``,
-``_folders_lock``, ``_slots``, ``crons``.
+Reads only: ``_CHAT_PINS_FILE``, ``_CHAT_REACTIONS_FILE``, ``_CRON_FOLDERS_FILE``,
+``_DEFAULT_TAGS``, ``_FOLDERS_FILE``, ``_TAGS_FILE``, ``_TAG_BOARDS_FILE``,
+``_chat_pins_lock``, ``_chat_reactions_lock``, ``_folders_lock``, ``_slots``, ``crons``.
 
 A function whose first parameter is ``self`` is a ``DashboardState`` method: the
 class binds it under the same name (``state_parts/dashboard_state.py``), so it reads
@@ -446,6 +447,112 @@ async def remove_chat_pins_for_slots(self: DashboardState, slot_keys: set[str]) 
         return removed
 
 
+def load_chat_reactions(self: DashboardState) -> None:
+    """Load message reactions from disk, dropping malformed records.
+
+    Mirrors :func:`load_chat_pins`'s error classification and the
+    unparsed-entry preservation so a hand-edited ``chat_reactions.json`` with
+    one bad record cannot lose the rest on the next save.
+
+    - Missing file: normal (first run) -> empty list.
+    - Malformed JSON / invalid shape: tolerated for compatibility -> empty list.
+    - Transient I/O errors (PermissionError, OSError): re-raised so callers
+      know load failed rather than silently replacing valid in-memory state.
+    """
+    path = config_dir() / self._CHAT_REACTIONS_FILE
+    try:
+        if not path.exists():
+            self._chat_reactions = []
+            self._unparsed_chat_reaction_entries = []
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        logger.warning("chat_reactions.json has malformed content: %s", exc)
+        self._chat_reactions = []
+        return
+    except OSError:
+        logger.warning("Transient I/O error reading chat_reactions.json", exc_info=True)
+        raise
+
+    if not isinstance(raw, list):
+        logger.warning("chat_reactions.json is not a list (%s); ignoring", type(raw).__name__)
+        self._chat_reactions = []
+        return
+
+    from kiro_crew.dashboard.chat_reactions import (
+        _MAX_MID_CHARS,
+        _MAX_SLOT_KEY_CHARS,
+        _VALID_EMOJI,
+    )
+
+    def _is_valid(reaction: Any) -> bool:
+        # ``emoji`` must be confirmed a str BEFORE the ``in _VALID_EMOJI``
+        # membership test: a hand-edited record with a non-hashable value
+        # (``"emoji": []``) would otherwise raise an uncaught TypeError here,
+        # and _partition_preserving does not guard the predicate, so the whole
+        # gateway would fail to start. A bad record goes to the unparsed
+        # partition instead. slot_key and mid carry the same length bounds the
+        # create route enforces, so a hand-edited record cannot reintroduce an
+        # unbounded retained field on the next load.
+        emoji = reaction.get("emoji") if isinstance(reaction, dict) else None
+        return (
+            isinstance(reaction, dict)
+            and all(
+                isinstance(reaction.get(key), str) and reaction.get(key)
+                for key in ("id", "slot_key", "mid")
+            )
+            and len(reaction["slot_key"]) <= _MAX_SLOT_KEY_CHARS
+            and len(reaction["mid"]) <= _MAX_MID_CHARS
+            and isinstance(emoji, str)
+            and emoji in _VALID_EMOJI
+            and isinstance(reaction.get("reacted_at"), str)
+            and bool(reaction.get("reacted_at"))
+        )
+
+    valid, unparsed = self._partition_preserving(
+        raw, _is_valid, "chat reaction record(s)", self._CHAT_REACTIONS_FILE
+    )
+    self._chat_reactions = valid
+    self._unparsed_chat_reaction_entries = unparsed
+
+
+def save_chat_reactions(self: DashboardState, records: list[dict] | None = None) -> None:
+    """Persist message reactions with an atomic, owner-only file replacement.
+
+    Writes ``records`` (a staged snapshot the caller persists before swapping
+    into ``_chat_reactions``, so a failed write never publishes), defaulting to
+    the live list, plus any malformed entries preserved at load time. Mirrors
+    :func:`save_chat_pins`.
+    """
+    active = self._chat_reactions if records is None else records
+    path = config_dir() / self._CHAT_REACTIONS_FILE
+    unparsed = getattr(self, "_unparsed_chat_reaction_entries", [])
+    atomic_write(
+        path,
+        json.dumps([*active, *unparsed]),
+        fsync=True,
+        mode=0o600,
+    )
+
+
+async def ensure_chat_reactions_loaded(self: DashboardState) -> None:
+    """Load ``chat_reactions.json`` once, off-loop, on first reaction request.
+
+    Moved off the gateway boot path: the parse + per-record validation of a
+    stored-data-sized file must not run before either server starts listening
+    (``no-new-work-on-gateway-boot-path``). The first reaction request pays it
+    instead, memoized under ``_chat_reactions_lock`` so concurrent first
+    callers load exactly once.
+    """
+    if getattr(self, "_chat_reactions_loaded", False):
+        return
+    async with self._chat_reactions_lock:
+        if getattr(self, "_chat_reactions_loaded", False):
+            return
+        await asyncio.to_thread(self.load_chat_reactions)
+        self._chat_reactions_loaded = True
+
+
 def folders_generation(self: DashboardState) -> int:
     """Monotonic counter identifying the current folder-tree snapshot.
 
@@ -465,6 +572,31 @@ def folders_generation(self: DashboardState) -> int:
     ``__init__`` (several endpoint suites build their fixture that way).
     """
     return int(getattr(self, "_folders_generation", 0) or 0)
+
+
+def tags_generation(self: DashboardState) -> int:
+    """Monotonic counter for the tag vocabulary and the board columns.
+
+    The tag twin of :func:`folders_generation`, on the same ``slots`` frame.
+    ``['chat-tags']`` and ``['tag-columns']`` carry the app-wide
+    ``staleTime: Infinity``, so a write an agent makes through the dashboard MCP
+    tools stayed invisible to an open tab until a reload. Bumped by
+    every save of either store (the four ``save_tag*`` writers), so a new writer
+    cannot forget it. Read through ``getattr`` for the same ``__new__``-built
+    states as the folder counter.
+    """
+    return int(getattr(self, "_tags_generation", 0) or 0)
+
+
+def bump_tags_generation(self: DashboardState) -> None:
+    """Advance :func:`tags_generation`: the tag vocabulary or a column changed.
+
+    Each store writer calls it after its write, and a handler whose change
+    commits outside those writers (a grant minted after the vocabulary save, an
+    adoption) calls it once that change is committed, before it pushes the
+    frame. A spare bump costs one refetch; a missing one strands the tab.
+    """
+    self._tags_generation = self.tags_generation() + 1
 
 
 async def mutate_folders(
@@ -727,6 +859,7 @@ def save_tags(self: DashboardState) -> None:
     """
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json(config_dir() / self._TAGS_FILE, [*self._tags, *unparsed])
+    self.bump_tags_generation()
 
 
 def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
@@ -746,6 +879,7 @@ def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
     """
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAGS_FILE, [*snapshot, *unparsed])
+    self.bump_tags_generation()
 
 
 def save_tag_boards(self: DashboardState) -> None:
@@ -760,6 +894,7 @@ def save_tag_boards(self: DashboardState) -> None:
         config_dir() / self._TAG_BOARDS_FILE,
         [*self._tag_boards, *unparsed],
     )
+    self.bump_tags_generation()
 
 
 def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
@@ -780,6 +915,7 @@ def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None
     """
     unparsed = getattr(self, "_unparsed_tag_board_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAG_BOARDS_FILE, [*snapshot, *unparsed])
+    self.bump_tags_generation()
 
 
 def _partition_preserving(

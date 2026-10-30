@@ -11,7 +11,10 @@ name: Docker Smoke Test
 #      HEALTHCHECK depends on it,
 #   4. kiro-cli is installed and runnable inside the image,
 #   5. channel credentials passed as container env are moved into the data
-#      home's .env and scrubbed from every long-lived process environ.
+#      home's .env and scrubbed from every long-lived process environ,
+#   6. the default image carries no KAS engine, and a BUNDLE_KAS=1 build
+#      stages the pinned one where `docker exec ... kirocrew kas status`
+#      finds it.
 #
 # amd64-only and load-to-daemon (no push, no registry, no credentials):
 # multi-arch assembly is the publish lane's job; this check verifies the
@@ -52,7 +55,15 @@ jobs:
     # Skip while the PR is a draft; `ready_for_review` above runs it once the
     # PR is ready. Non-PR events have no pull_request, so they always run.
     if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
+    # Larger-runner group `kirocrew-runners` (currently `kirocrew-linux-4-core`).
+    # Targets the GROUP, not the runner label: this definition has already been
+    # renamed once, and a group reference survives a rename where every label
+    # reference would break at once. Same 4 vCPU / 16 GB as a public-repo
+    # `ubuntu-latest`, with roughly ten times the disk, but drawn from the
+    # separate larger-runner concurrency ceiling instead of the shared standard
+    # pool this repository saturates.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -194,6 +205,37 @@ jobs:
             echo "::error::env var overrode the baked stamp (got '${SPOOFED}')"; exit 1; }
           echo "env-var override correctly ignored"
 
+      - name: Assert the default image carries no KAS engine
+        run: |
+          set -euo pipefail
+          # BUNDLE_KAS defaults to 0 while the route is in shadow testing, so the
+          # default image's bundled root is an empty directory and nothing reads
+          # as built in.
+          docker exec smoke sh -c 'test -d "$KIROCREW_BUNDLED_KAS_DIR" && test -z "$(ls -A "$KIROCREW_BUNDLED_KAS_DIR")"'
+          if docker exec smoke kirocrew kas status | grep -F "(built into the app)"; then
+            echo "::error::the default image reports a bundled KAS engine"; exit 1
+          fi
+          echo "default image: no bundled KAS engine"
+
+      # The opt-in bake, built on top of the layers the default build cached:
+      # only the KAS step and what follows it run again. It fetches the pinned
+      # engine from the project's CDN and checks it against the release's pin.
+      # Read back through `docker exec`, which skips the entrypoint, so the
+      # image ENV is what has to carry the root.
+      - name: Build with the KAS engine baked in and read it back
+        run: |
+          set -euo pipefail
+          docker build --build-arg BUNDLE_KAS=1 -f docker/Dockerfile -t kirocrew-smoke:kas .
+          docker run -d --name smoke-kas kirocrew-smoke:kas
+          STATUS=$(docker exec smoke-kas kirocrew kas status)
+          echo "${STATUS}"
+          echo "${STATUS}" | grep -F "(built into the app)" || {
+            echo "::error::the BUNDLE_KAS=1 image does not report its baked KAS engine"; exit 1; }
+          echo "${STATUS}" | grep -F "engine: /usr/local/share/kirocrew/kas/" || {
+            echo "::error::the baked KAS engine is not read from /usr/local/share/kirocrew/kas"; exit 1; }
+          docker rm -f smoke-kas
+          docker image ls kirocrew-smoke
+
       - name: Container logs (post-mortem aid)
         if: always()
         run: docker logs smoke 2>&1 | tail -60 || true
@@ -208,7 +250,12 @@ jobs:
     # Skip while the PR is a draft; `ready_for_review` above runs it once the
     # PR is ready. Non-PR events have no pull_request, so they always run.
     if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
+    # Larger-runner group `kirocrew-runners` (currently `kirocrew-linux-4-core`),
+    # same reasoning as the `smoke` job above. The arm64 cross-build is the
+    # disk-hungriest job in this file, so it is also the one that benefits most
+    # from the larger image.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

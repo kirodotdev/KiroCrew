@@ -16,13 +16,6 @@ except ImportError:
     Presentation = None  # type: ignore[assignment,misc]
 
 try:
-    from docx import Document  # type: ignore[import-untyped]
-    from docx.oxml.ns import qn  # type: ignore[import-untyped]
-    from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
-except ImportError:
-    Document = None  # type: ignore[assignment,misc]
-
-try:
     import html2text as _html2text_mod
 except ImportError:
     _html2text_mod = None  # type: ignore[assignment]
@@ -394,7 +387,14 @@ class FileReader:
             return _read_error(e)
 
     def _read_docx(self, path: str) -> tuple[str, dict]:
-        if Document is None:
+        # Imported here, not at module scope: this module is on the gateway's
+        # boot import chain and python-docx (+ lxml) costs ~75 ms to import,
+        # which only a .docx read needs.
+        try:
+            from docx import Document  # type: ignore[import-untyped]
+            from docx.oxml.ns import qn  # type: ignore[import-untyped]
+            from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
+        except ImportError:
             return _missing_dep('DOCX', 'python-docx')
         try:
             doc = Document(path)

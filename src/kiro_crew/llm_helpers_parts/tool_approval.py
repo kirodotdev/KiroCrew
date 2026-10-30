@@ -216,12 +216,14 @@ async def _resolve_permission(
     session_key: str = "",
     agent: str = "",
     app: str = "",
-    on_decision: Callable[[str, str], None] | None = None,
+    on_decision: Callable[[str, str, str], None] | None = None,
 ) -> bool:
     """Resolve a tool permission request. Returns True if approved.
 
-    *on_decision*, when given, receives ``(outcome, mechanism)`` for the single
-    decision this call makes — the same pair that reaches the SEL audit row.
+    *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
+    single decision this call makes — the same values that reach the SEL audit
+    row (``reason`` is the row's ``error``: the refusal text naming the rule that
+    matched, empty for an approval).
     ``mechanism`` is one of ``"always_deny"`` / ``"always_deny_input"`` (the
     unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
     ``"policy_deny"`` (the governance ceiling, whether reached through the hook
@@ -240,7 +242,9 @@ async def _resolve_permission(
         if on_decision is not None:
             _meta = extra.get("metadata") or {}
             try:
-                on_decision(outcome, str(_meta.get("mechanism") or ""))
+                on_decision(
+                    outcome, str(_meta.get("mechanism") or ""), str(extra.get("error") or "")
+                )
             except Exception:
                 logger.debug("on_decision sink failed", exc_info=True)
         sel().log_tool_invocation(
@@ -453,8 +457,9 @@ async def _resolve_permission(
         )
         else None
     )
-    # A Kiro Crew core MCP tool listed in ``platform.tool_paths.
-    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``)
+    # A Kiro Crew MCP tool listed in ``platform.tool_paths.
+    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``, a
+    # spawn brief, a cron prompt, a message for a person, ...)
     # stores that field as document text, so the field skips the command-text
     # rules -- the deny list and the argv floor -- that read a page mentioning a
     # product subcommand as an attempt to run it. The body keeps the size
@@ -471,7 +476,9 @@ async def _resolve_permission(
     # kind still sets ``is_shell`` and is refused the exemption.
     _mcp_body_keys = (
         mcp_document_body_keys(
-            getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+            getattr(event, "tool_name", ""),
+            getattr(event, "mcp_server_name", ""),
+            event.raw_tool_params,
         )
         if (
             _edit_params is None

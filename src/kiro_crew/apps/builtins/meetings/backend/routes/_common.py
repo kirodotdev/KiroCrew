@@ -354,10 +354,10 @@ async def json_body(
     A non-object body (list, string, number) is rejected rather than coerced —
     every handler indexes the result by key, so a list would surface as a 500.
 
-    *max_bytes* exists for the ONE route whose body is a whole document rather than
-    a short field (the minutes edit; see
-    :data:`constants.MAX_MINUTES_BODY_BYTES` for the arithmetic). Raising it per
-    route rather than raising the default keeps every other body small.
+    *max_bytes* exists for the routes whose bodies contain whole documents rather
+    than short fields (the minutes and personal-note edits; see their constants for
+    the byte-limit arithmetic). Raising it per route rather than raising the default
+    keeps every other JSON body small.
     """
     if request.content_length is not None and request.content_length > max_bytes:
         raise BadRequest("request body is too large", status=413)
@@ -485,6 +485,12 @@ def error_response(exc: Exception) -> web.Response:
     # traversal). Not 503 — no configuration change or retry will make it work.
     if exc.status == HTTPStatus.NOT_IMPLEMENTED:
         return web.json_response({"error": str(exc), "code": exc.code}, status=501)
+    # 500: the request was fine and OUR side failed — the note read that cannot be
+    # reported as an empty note, because the client would overwrite it. Without this
+    # branch the fall-through answered 400, which tells the user to fix a request
+    # that had nothing wrong with it.
+    if exc.status == HTTPStatus.INTERNAL_SERVER_ERROR:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=500)
     return web.json_response({"error": str(exc), "code": exc.code}, status=400)
 
 

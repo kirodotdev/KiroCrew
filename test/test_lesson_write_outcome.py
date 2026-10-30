@@ -35,6 +35,7 @@ from lesson_write_outcome_helpers import (
     _rule_of,
     _store,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
@@ -89,13 +90,48 @@ class TestVolatileLessonWriteBoundary:
     @pytest.mark.parametrize(
         "rule",
         [
-            "the selected model is gpt-5.6-sol",
-            "the session model is gpt-5.6-sol",
+            *named_cases(
+                "test_selected_or_session_identity_is_refused_in_knowledge",
+                "rule",
+                [
+                    "the selected model is gpt-5.6-sol",
+                    "the session model is gpt-5.6-sol",
+                ],
+            ),
+            *named_cases(
+                "test_sentence_boundary_behavioral_pin_cannot_bypass_through_knowledge",
+                "rule",
+                [
+                    "Compatibility varies. Select gpt-5.6-sol for reviews",
+                    "Compatibility varies! Select gpt-5.6-sol for reviews",
+                    "Compatibility varies? Select gpt-5.6-sol for reviews",
+                    "Compatibility varies\nSelect gpt-5.6-sol for reviews",
+                ],
+            ),
+            *named_cases(
+                "test_prefixed_direct_imperative_cannot_bypass_through_knowledge",
+                "rule",
+                [
+                    "Please use gpt-5.6-sol for reviews",
+                    "Kindly select gpt-5.6-sol for reviews",
+                    "Do choose gpt-5.6-sol for reviews",
+                    "Please do prefer gpt-5.6-sol for reviews",
+                ],
+            ),
+            *named_cases(
+                "test_model_identity_controls_are_refused",
+                "rule",
+                [
+                    "This session is running as the current backend",
+                    "This session is running as the model backend",
+                    "This session is running as gpt-5.6-sol",
+                    "This session is running as the backend gpt-5.6-sol",
+                    "The active model is opus-4.8",
+                ],
+            ),
         ],
     )
-    def test_selected_or_session_identity_is_refused_in_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
+    def test_a_volatile_model_identity_is_refused_in_knowledge(self, tmp_path, rule: str) -> None:
         store = _store(tmp_path)
         try:
             result = store.write_lesson(rule, "knowledge")
@@ -155,48 +191,6 @@ class TestVolatileLessonWriteBoundary:
                 "in cron jobs, always use gpt-5.6-sol",
                 "knowledge",
             )
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "Compatibility varies. Select gpt-5.6-sol for reviews",
-            "Compatibility varies! Select gpt-5.6-sol for reviews",
-            "Compatibility varies? Select gpt-5.6-sol for reviews",
-            "Compatibility varies\nSelect gpt-5.6-sol for reviews",
-        ],
-    )
-    def test_sentence_boundary_behavioral_pin_cannot_bypass_through_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "Please use gpt-5.6-sol for reviews",
-            "Kindly select gpt-5.6-sol for reviews",
-            "Do choose gpt-5.6-sol for reviews",
-            "Please do prefer gpt-5.6-sol for reviews",
-        ],
-    )
-    def test_prefixed_direct_imperative_cannot_bypass_through_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
 
             assert result.outcome is LessonWriteOutcome.REFUSED
             assert result.reason == "volatile_session_fact"
@@ -625,26 +619,6 @@ class TestDurableModelVersionReferences:
         ("Run the worker as the backend user, never as root", "preference"),
     )
     TOOLING_RULES = MODEL_TOOLING_RULES + BACKEND_PROCESS_RULES
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "This session is running as the current backend",
-            "This session is running as the model backend",
-            "This session is running as gpt-5.6-sol",
-            "This session is running as the backend gpt-5.6-sol",
-            "The active model is opus-4.8",
-        ],
-    )
-    def test_model_identity_controls_are_refused(self, tmp_path: Path, rule: str) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
 
     @pytest.mark.parametrize(
         "rule,category,negative",

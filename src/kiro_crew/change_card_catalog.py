@@ -53,6 +53,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_CREWMATE_CREATE,
     KIND_CREWMATE_DASHBOARD_PAGE,
     KIND_CREWMATE_GOAL,
+    KIND_CREWMATE_IMPORT,
     KIND_CREWMATE_KEY_RESULTS,
     KIND_CREWMATE_UPDATE,
     KIND_DENIED_COMMAND,
@@ -71,6 +72,10 @@ from kiro_crew.change_card_catalog_kinds import (
 from kiro_crew.change_card_catalog_plans import (
     DASHBOARD_KEYS,
     DASHBOARD_LIST_OP_KEYS,
+    IMPORT_STEP_CRON,
+    IMPORT_STEP_FILES,
+    IMPORT_STEP_GOAL,
+    IMPORT_STEP_RULES,
     LEGACY_CREWMATE_CREATE_SCHEDULE_STEP,
     UNDO_NO_IDENTITY_CHECK,
     _capability_plan,
@@ -86,6 +91,8 @@ from kiro_crew.change_card_catalog_plans import (
     _short,
     _toggle_step,
     capability_inverse,
+    import_step_roles,
+    import_undo,
     list_op_step,
     offers_no_undo,
     setting_write_step,
@@ -116,6 +123,10 @@ def extract_evidence(
         return pick("id")
     if kind in CREWMATE_CREATING_KINDS and step_index == 0:
         return pick("member_id", "name")
+    if kind == KIND_CREWMATE_IMPORT and op == OP_APPLY:
+        # A cron step's job id and the fingerprint of the job as it made it; the
+        # import's Undo reads them only at a cron step.
+        return pick("id", "revision")
     if kind == KIND_CREWMATE_GOAL and op == OP_APPLY:
         # The goal the write added or changed, so the Undo of an added goal can
         # remove exactly that one.
@@ -233,6 +244,8 @@ def _build_undo(
         if not job_id:
             return None, "identity_unknown"
         return [step("DELETE", f"/api/crons/{_q(str(job_id))}")], None
+    if kind == KIND_CREWMATE_IMPORT:
+        return import_undo(p, evidence, applied_steps), None
     if kind in CREWMATE_CREATING_KINDS:
         plan = []
         at = _create_schedule_index(evidence)
@@ -337,7 +350,9 @@ def _build_undo(
         # above. The inverse binds to the revision the PUT returned (step 1's
         # evidence), never a fresh read's — a write another tab landed after ours
         # would otherwise become the baseline and Undo would overwrite it.
-        ops = capability_inverse(p["draft"], before.get("rows") or [])
+        ops = capability_inverse(
+            p["draft"], before.get("rows") or [], severed=before.get("mode") == "mate"
+        )
         revision = ev(1).get("revision")
         if ops is None:
             return None, "redacted_server_definition"
@@ -409,6 +424,20 @@ def result_summary(
     if status == "partial":
         if kind in CREWMATE_CREATING_KINDS:
             name = params.get("name")
+            if kind == KIND_CREWMATE_IMPORT and failed_step:
+                # The import's steps depend on what the file holds: name the
+                # part that failed, not the create plan's fixed step 1.
+                roles = import_step_roles(params)
+                part = {
+                    IMPORT_STEP_GOAL: "its goal",
+                    IMPORT_STEP_RULES: "its rules",
+                    IMPORT_STEP_FILES: "its skills, scripts and picture",
+                    IMPORT_STEP_CRON: "its schedules",
+                }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
+                return (
+                    f"Created mate “{name}” without {part} or anything after it. "
+                    "Undo removes the mate and what was saved"
+                )
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
@@ -564,6 +593,9 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/api/members/{slug}/goals/long-term"),
         ("PUT", "/api/members/{slug}/goals/key-results"),
         ("PUT", "/api/members/{slug}/goals/schedules"),
+        ("PUT", "/api/members/{slug}/rules"),
+        ("POST", "/api/members/{slug}/import-files"),
+        ("DELETE", "/api/members/{slug}/import-files"),
         ("POST", "/api/members/{slug}/dashboard/page-offer"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
@@ -582,16 +614,29 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/security/denied-commands/user/{id}"),
         ("DELETE", "/api/security/denied-commands/user/{id}"),
         ("PATCH", "/api/chat/folders/{id}"),
+        ("POST", "/api/workflows/definitions"),
+        ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
     }
 )
 #: The folder PATCH is hooked only so a ``folder.steering`` card can be applied
 #: through it; it is sidebar organization, not a setting, so it writes no
-#: memory line.
+#: memory line. The rules PUT and the import-files routes are hooked so a
+#: ``crewmate.import`` card can write a new crewmate's rules and files; the
+#: rules are the owner's private boundary and the files are code, so neither
+#: is described in Global memory. The workflow-library routes are hooked so a
+#: ``workflow.save`` or ``workflow.update`` card can be applied through them; a
+#: saved script is code, not a setting, and an ordinary save from the Workflows
+#: tab stays off the hook entirely, so neither writes a memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("POST", "/api/agents/{name}/capabilities/preview"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),
+    ("PUT", "/api/members/{slug}/rules"),
+    ("POST", "/api/members/{slug}/import-files"),
+    ("DELETE", "/api/members/{slug}/import-files"),
+    ("POST", "/api/workflows/definitions"),
+    ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
 }
 
 
@@ -610,6 +655,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_EXPR_RE,
         _CRON_FIELDS,
         _ID_RE,
+        _IMPORT_MAX_CRONS,
+        _IMPORT_MAX_SKILLS,
+        _IMPORT_PART_RE,
+        _IMPORT_SCRIPT_RE,
+        _IMPORT_SKILL_SOURCE_RE,
+        _IMPORT_TEMPLATE_RE,
         _KR_TEXT_MAX,
         _KR_VALUE_MAX,
         _LIST_ITEM_MAX,
@@ -625,18 +676,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER,
         _SETTING_ID_RE,
         _SETTING_ORDER,
+        _SHA256_RE,
         _SLUG_RE,
         _STR,
         _TEMPLATE_LIST_FIELDS,
         _TEMPLATE_NAME_RE,
         _TEXT_MAX,
+        _WORKFLOW_GAP_MIN,
+        _WORKFLOW_HIDDEN_BREAKS,
+        _WORKFLOW_MARKS_MAX,
+        _WORKFLOW_SLUG_RE,
         APP_ONLY_KINDS,
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
-        KIND_CREWMATE_IMPORT,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
         KINDS,
         NOT_IMPORTED_CODES,
         OP_UNDO,
@@ -646,6 +703,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_TIGHTEN,
         RISK_WIDEN,
         SELF_ONLY_KINDS,
+        WORKFLOW_INDENT_MAX,
+        WORKFLOW_KINDS,
+        WORKFLOW_LINE_MAX,
+        WORKFLOW_SOURCE_MAX,
         CardCatalogError,
         KindDef,
         _check_mcp_spec_shapes,
@@ -655,15 +716,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _clean_str,
         _fail,
         _goal_text,
+        _import_parts,
         _member_name,
         _obj,
         _only,
+        _refuse_hidden_line_tails,
+        _refuse_non_ascii_code,
         _str_list,
         _template_clear,
+        _workflow_source,
         check_editable,
+        escape_hidden_characters,
         list_kinds,
         valid_mcp_name,
         validate_params,
+        workflow_save_slug,
     )
     from kiro_crew.change_card_catalog_plans import (  # noqa: F401
         _BOOL_VALUES,
@@ -672,6 +739,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DASHBOARD_LIST_KEYS,
         DASHBOARD_LIST_SETTINGS,
         DASHBOARD_SETTINGS,
+        IMPORT_STEP_CREATE,
         LIST_SETTING_WORDING,
         PATH_FILL_VALUE,
         STORE_DASHBOARD,
@@ -681,6 +749,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_body,
         _display,
         _impact_rows,
+        _import_cron_step,
+        _import_files_step,
+        _import_member_fills,
+        _import_message_crons,
+        _import_preview,
+        _import_rules_step,
         _kr_line,
         _launched_servers,
         _list_diff,
@@ -692,8 +766,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _step_fill,
         _step_path_fill,
         _user_fill,
+        _widening_row,
         _with_fills,
+        _workflow_save_body,
         build_preview,
+        import_files_path,
         is_path_fill,
         legacy_create_apply,
         list_after,
@@ -702,12 +779,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,
     )
+    from kiro_crew.terminal_safe import _is_invisible  # noqa: F401
 
 # This module is the facade of the change-card catalog: every name is reached through it
 # as ``kiro_crew.change_card_catalog.<name>``. A read is served by the owner that binds

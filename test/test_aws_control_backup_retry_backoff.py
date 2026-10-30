@@ -442,13 +442,13 @@ class TestNightlyRetryBackoff:
     # -- a run that lands during the attempt supersedes the failure ----------
 
     def test_a_run_recorded_during_the_attempt_refuses_the_failure_write(self):
-        # The race a reviewer found on the first head. Both writers serialize under the
-        # sidecar lock, but each mutate re-reads fresh state, so an unconditional write
-        # here lands AFTER a concurrent manual success cleared the count and records a
-        # failure against a kind that just succeeded. Measured cost: not a withheld
-        # attempt (the raced write restarts at 1, which earns zero delay) but a false
-        # `nightly_failures` row for an account that just backed up. The witness is read
-        # BEFORE the attempt, so the run that lands inside it is detectable.
+        # Both writers serialize under the sidecar lock, but each mutate re-reads fresh
+        # state, so an unconditional write here lands AFTER a concurrent manual success
+        # cleared the count and records a failure against a kind that just succeeded.
+        # Measured cost: not a withheld attempt (the raced write restarts at 1, which
+        # earns zero delay) but a false `nightly_failures` row for an account that just
+        # backed up. The witness is read BEFORE the attempt, so the run that lands
+        # inside it is detectable.
         backup.set_nightly(ACCOUNT, True)
         witness = backup.nightly_run_witness(ACCOUNT, backup.KIND_SNAPSHOT)
         # ... the owner's manual run succeeds while the nightly attempt is still failing.

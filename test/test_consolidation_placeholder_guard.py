@@ -73,7 +73,7 @@ class TestIsPlausibleMemoryFile:
         ],
     )
     def test_header_plus_placeholder_body_rejected(self, body):
-        # GPT 5.6 review finding: a header line followed by a placeholder body
+        # A header line followed by a placeholder body
         # must be rejected too — the header alone does not make it a file.
         # Markdown emphasis wrapping must not bypass the set.
         for header in (_PREFS_HEADER, _PROJECTS_HEADER):
@@ -96,7 +96,7 @@ class TestIsPlausibleMemoryFile:
     def test_header_with_tiny_substantive_body_passes(self):
         # No size floor: a single tiny bullet is a legitimate memory file, and
         # rejecting it would silently lose the learned preference while the
-        # consolidation marker advances past it (GPT 5.6 review finding).
+        # consolidation marker advances past it.
         assert _is_plausible_memory_file("# User Preferences\n\n- Vim\n", _PREFS_HEADER)
 
     def test_header_with_substantive_body_passes(self):

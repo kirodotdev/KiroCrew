@@ -234,10 +234,17 @@ class TestKiroHooksMerge:
 
     # -- Direct unit tests for _validate_hook_command --
 
-    def test_validate_rejects_relative_path(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("relative/hook.sh", id="test_validate_rejects_relative_path"),
+            pytest.param("/nonexistent/hook.sh", id="test_validate_rejects_nonexistent_file"),
+        ],
+    )
+    def test_validate_rejects_a_path_that_names_no_hook_file(self, command: str):
         from kiro_crew.agent import _validate_hook_command
 
-        assert _validate_hook_command("relative/hook.sh", "test") is None
+        assert _validate_hook_command(command, "test") is None
 
     def test_validate_rejects_shell_metacharacters(self, tmp_path: Path):
         from kiro_crew.agent import _validate_hook_command
@@ -246,11 +253,6 @@ class TestKiroHooksMerge:
         assert _validate_hook_command(hook + "; rm -rf /", "test") is None
         assert _validate_hook_command(hook + " | cat", "test") is None
         assert _validate_hook_command(hook + " $(evil)", "test") is None
-
-    def test_validate_rejects_nonexistent_file(self):
-        from kiro_crew.agent import _validate_hook_command
-
-        assert _validate_hook_command("/nonexistent/hook.sh", "test") is None
 
     def test_validate_accepts_valid_hook(self, tmp_path: Path):
         from kiro_crew.agent import _validate_hook_command

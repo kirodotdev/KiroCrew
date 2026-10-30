@@ -17,14 +17,17 @@ precompressed ``.br``/``.gz`` sibling (a regular file, never a link) chosen by
 ``412`` and ``304`` they decide; one byte range (``206``, ``416``, ``If-Range``),
 which the bundled feature videos under ``/app-assets`` need to seek and, on
 WebKit, to play at all; ``403`` for an unreadable file and ``404`` for a missing
-one.
+one. Unlike ``FileResponse``, a file that exists but cannot be opened logs one
+warning naming it and the OS error, so it does not look like a missing build.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import os
+import time
 from email.utils import formatdate
 from pathlib import Path
 from stat import S_ISREG
@@ -35,6 +38,8 @@ from aiohttp.abc import AbstractStreamWriter
 
 from kiro_crew.dashboard.conditional_get import is_not_modified
 from kiro_crew.executors import static_asset_executor
+
+logger = logging.getLogger(__name__)
 
 # aiohttp's own table, the one the font types are registered on, so a build file
 # gets the type ``FileResponse`` gave it. It exists from aiohttp 3.10; the declared
@@ -52,6 +57,33 @@ _FALLBACK_CONTENT_TYPE = "application/octet-stream"
 
 # Futures of the fire-and-forget closes, held so they are not collected early.
 _PENDING_CLOSES: set[asyncio.Future[None]] = set()
+
+# When a build file that exists but cannot be opened was last logged, per errno
+# (monotonic seconds). A process that cannot open files fails every asset of a
+# page load with the same errno, so one line per errno per interval names the
+# first path and the error without repeating it for each chunk.
+_UNOPENABLE_LAST_LOGGED: dict[int | None, float] = {}
+_UNOPENABLE_LOG_INTERVAL_S = 600.0
+
+
+def _log_unopenable(path: Path, error: OSError) -> None:
+    """Warn that ``path`` exists but cannot be opened, at most once per errno per interval.
+
+    Without it the answer is a 404 (403 for a permission error) that looks
+    exactly like a missing file, and the log says nothing an operator can act on.
+    """
+    now = time.monotonic()
+    last = _UNOPENABLE_LAST_LOGGED.get(error.errno)
+    if last is not None and now - last < _UNOPENABLE_LOG_INTERVAL_S:
+        return
+    _UNOPENABLE_LAST_LOGGED[error.errno] = now
+    logger.warning(
+        "Build file %r cannot be read: %s. Requests for it answer 404 (403 for a "
+        "permission error). Logged once per error every %d seconds.",
+        str(path),
+        error,
+        int(_UNOPENABLE_LOG_INTERVAL_S),
+    )
 
 
 def _open_variant(path: Path, accept_encoding: str) -> tuple[IO[bytes], os.stat_result, str | None]:
@@ -172,10 +204,13 @@ class DistFileResponse(web.StreamResponse):
             fobj, st, encoding = await loop.run_in_executor(
                 pool, _open_variant, self._path, accept_encoding
             )
-        except PermissionError:
+        except PermissionError as exc:
+            _log_unopenable(self._path, exc)
             self.set_status(403)
             return await super().prepare(request)
-        except OSError:
+        except OSError as exc:
+            if not isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+                _log_unopenable(self._path, exc)
             self.set_status(404)
             return await super().prepare(request)
         try:

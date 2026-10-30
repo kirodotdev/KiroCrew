@@ -72,6 +72,7 @@ from kiro_crew.acp.skill_projection_parts.view_sources import (
 )
 from kiro_crew.agent_discovery import (
     SCOPE_PROJECT,
+    WHOLE_CATALOG_TEMPLATES,
     _read_agent_spec,
     can_inherit_skills,
     inherited_skill_globs,
@@ -112,6 +113,32 @@ logger = logging.getLogger("kiro_crew.acp.skill_projection")
 # ceiling is tripped in this process and never reset.
 _CEILING_FALLBACK_WARNED = False
 _CEILING_FALLBACK_WARNED_LOCK = threading.Lock()
+
+
+def _projection_enabled() -> bool:
+    """Whether a spawn that did not specify ``enabled`` projects at all.
+
+    Either control turns it off: ``KIROCREW_NATIVE_SKILL_PROJECTION=0`` in the
+    process environment, or ``agent.native_skill_projection: false`` in
+    ``config.json``. The config key exists because a GUI-launched gateway never
+    sees an environment variable set after login. A config file with bad JSON
+    still loads, with this key at its default. If loading the config raises,
+    projection is off, as ``mcp_gateway.apps_enabled`` does: the spawn still
+    runs, under the authored agent, and nothing is written to the shared kiro
+    files for an operator who may have opted out.
+    Blocking on a config cache miss; the caller is already off the loop.
+    """
+    if os.environ.get("KIROCREW_NATIVE_SKILL_PROJECTION", "1") == "0":
+        return False
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return bool(KiroCrewConfig.load().agent.native_skill_projection)
+    except Exception:  # noqa: BLE001 - config must never break a spawn
+        logger.warning(
+            "skill projection: config could not be loaded; projection off", exc_info=True
+        )
+        return False
 
 
 def _count_projected_aliases(directory: Path) -> int:
@@ -216,9 +243,12 @@ def project_agent_view(
     # one keeps the view it had and gets no search: it never relied on it, and
     # it is not a search agent, so no session of it is refused either.
     inherited_only = (
-        agent_name != "kirocrew" and not mapped and inherits_skills and can_inherit_skills(spec)
+        agent_name not in WHOLE_CATALOG_TEMPLATES
+        and not mapped
+        and inherits_skills
+        and can_inherit_skills(spec)
     )
-    if agent_name == "kirocrew" or mapped or inherited_only:
+    if agent_name in WHOLE_CATALOG_TEMPLATES or mapped or inherited_only:
         refusal = skill_search_refusal(view)
         if refusal is not None:
             return None, False, refusal
@@ -335,7 +365,7 @@ def prepare_native_skill_projection(
     # next boot drain.
     ceiling_tripped = False
     if enabled is None:
-        enabled = os.environ.get("KIROCREW_NATIVE_SKILL_PROJECTION", "1") != "0"
+        enabled = _projection_enabled()
         # The ceiling is a spawn-time admission decision, applied ONLY on this
         # ``enabled is None`` path -- the one that chooses whether to project at
         # all. An explicit ``enabled=True`` is NOT a request to re-decide: the

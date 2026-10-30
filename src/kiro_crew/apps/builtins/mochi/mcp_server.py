@@ -490,6 +490,10 @@ def _tool_perform_pet_action(args: dict[str, Any]) -> str:
             cached = json.loads((_data_dir() / "mochi-displays.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
+        # A file that parses but is not an object (a hand edit) is as unusable
+        # as malformed JSON: answer "no data yet" rather than fail the query.
+        if not isinstance(cached, dict):
+            cached = {}
         displays = cached.get("displays", [])
         active_id = cached.get("activeId")
         current = next(

@@ -89,6 +89,7 @@ from kiro_crew.session_pid import (
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
     _prune_stale_session_pid_files,
+    _prune_stale_session_token_files,
     _rss_mb_from_tree,
     cleanup_orphaned_session_roots,
     find_orphan_mcp_candidates,
@@ -96,6 +97,7 @@ from kiro_crew.session_pid import (
     kill_orphan_mcps,
 )
 from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
+from kiro_crew.session_staging_sweep import sweep_session_staging_temps
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
@@ -130,7 +132,9 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         cleanup_orphaned_session_roots=lambda: cleanup_orphaned_session_roots(),
         cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(data_home=data_home),
         prune_session_pid_mappings=lambda: _prune_stale_session_pid_files(),
+        prune_session_token_mappings=lambda: _prune_stale_session_token_files(),
         prune_member_pid_bindings=lambda: prune_legacy_member_pid_bindings(),
+        sweep_session_staging_temps=lambda: sweep_session_staging_temps(),
         # Same resolved home as the sandbox sweep, for the same reason: the
         # step runs on the maintenance pool, and the hook's own expansion of
         # ``${KIROCREW_HOME:-$HOME/.kiro/crew}`` is this path.

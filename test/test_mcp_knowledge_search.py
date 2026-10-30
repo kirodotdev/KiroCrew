@@ -29,17 +29,12 @@ class TestKnowledgeSearchDBMissing:
 
 
 class TestKnowledgeSearchValidation:
-    def test_empty_query_raises_validation_error(self):
+    @pytest.mark.parametrize("query", ["", "   "], ids=["empty", "whitespace"])
+    def test_blank_query_raises_validation_error(self, query):
         from kiro_crew.mcp_core import _call_tool_inner
 
         with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": ""})
-
-    def test_whitespace_query_raises_validation_error(self):
-        from kiro_crew.mcp_core import _call_tool_inner
-
-        with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": "   "})
+            _call_tool_inner("local_knowledge_search", {"query": query})
 
     def test_limit_over_max_raises_validation_error(self):
         from kiro_crew.mcp_core import _call_tool_inner
@@ -127,10 +122,11 @@ class TestKnowledgeSearchResults:
 
         from kiro_crew.mcp_core import _call_tool_inner
 
-        _call_tool_inner("local_knowledge_search", {"query": "test"})
+        result = _call_tool_inner("local_knowledge_search", {"query": "test"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
             "test", limit=3, source_id=None, namespace=None
         )
+        assert "No relevant knowledge found" in result
 
     @patch("kiro_crew.mcp_core.config_dir")
     @patch("kiro_crew.mcp_core.HybridRetriever")
@@ -238,12 +234,11 @@ class TestKnowledgeSearchResults:
 
 
 class TestKnowledgeSearchToolDefinition:
-    def test_tool_listed(self):
+    @pytest.mark.parametrize("name", ["local_knowledge_search", "knowledge_list_sources"])
+    def test_tool_listed(self, name):
         from kiro_crew.mcp_core import _list_tools
 
-        tools = _list_tools()
-        names = [t["name"] for t in tools]
-        assert "local_knowledge_search" in names
+        assert name in [t["name"] for t in _list_tools()]
 
     def test_tool_has_required_query(self):
         from kiro_crew.mcp_core import _list_tools
@@ -252,103 +247,63 @@ class TestKnowledgeSearchToolDefinition:
         tool = next(t for t in tools if t["name"] == "local_knowledge_search")
         assert "query" in tool["inputSchema"]["required"]
 
-    def test_source_id_is_optional(self):
+    @pytest.mark.parametrize("field", ["source_id", "namespace"])
+    def test_filter_field_is_optional(self, field):
         from kiro_crew.mcp_core import _list_tools
 
         tools = _list_tools()
         tool = next(t for t in tools if t["name"] == "local_knowledge_search")
-        assert "source_id" in tool["inputSchema"]["properties"]
-        assert "source_id" not in tool["inputSchema"]["required"]
-
-    def test_namespace_is_optional(self):
-        from kiro_crew.mcp_core import _list_tools
-
-        tools = _list_tools()
-        tool = next(t for t in tools if t["name"] == "local_knowledge_search")
-        assert "namespace" in tool["inputSchema"]["properties"]
-        assert "namespace" not in tool["inputSchema"]["required"]
-
-    def test_list_sources_tool_listed(self):
-        from kiro_crew.mcp_core import _list_tools
-
-        tools = _list_tools()
-        names = [t["name"] for t in tools]
-        assert "knowledge_list_sources" in names
+        assert field in tool["inputSchema"]["properties"]
+        assert field not in tool["inputSchema"]["required"]
 
 
 class TestKnowledgeSearchSourceFilter:
-    def test_source_id_rejects_non_string(self):
+    @pytest.mark.parametrize("field", ["source_id", "namespace"])
+    def test_filter_rejects_non_string(self, field):
         from kiro_crew.mcp_core import _validate_args
 
         # At the MCP entry point: a genuinely wrong type (list) on a string
         # field is still rejected, while a number is defensively converted to
         # its string form (the re-typed-numeric-string repair).
         with pytest.raises(ValidationError):
-            _validate_args("local_knowledge_search", {"query": "q", "source_id": [7]})
-        coerced = _validate_args("local_knowledge_search", {"query": "q", "source_id": 7})
-        assert coerced["source_id"] == "7"
+            _validate_args("local_knowledge_search", {"query": "q", field: [7]})
+        coerced = _validate_args("local_knowledge_search", {"query": "q", field: 7})
+        assert coerced[field] == "7"
 
-    def test_source_id_rejects_overlong_value(self):
+    @pytest.mark.parametrize("field", ["source_id", "namespace"])
+    def test_filter_rejects_overlong_value(self, field):
         from kiro_crew.mcp_core import _call_tool_inner
 
         with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": "q", "source_id": "x" * 65})
+            _call_tool_inner("local_knowledge_search", {"query": "q", field: "x" * 65})
 
+    # The store mock answers the source_id existence probe; a namespace needs no
+    # such probe (it does not have to exist as a source) and flows straight through.
+    @pytest.mark.parametrize(
+        "extra,expected",
+        [
+            ({"source_id": "src-1"}, {"source_id": "src-1", "namespace": None}),
+            ({"namespace": "client-a"}, {"source_id": None, "namespace": "client-a"}),
+        ],
+        ids=["source_id", "namespace"],
+    )
     @patch("kiro_crew.mcp_core.config_dir")
     @patch("kiro_crew.mcp_core.HybridRetriever")
     @patch("kiro_crew.mcp_core._get_knowledge_search")
-    def test_source_id_passed_through_to_retriever(
-        self, mock_get_search, mock_retriever_cls, mock_config_dir, mock_db_exists
+    def test_filter_passed_through_to_retriever(
+        self, mock_get_search, mock_retriever_cls, mock_config_dir, mock_db_exists, extra, expected
     ):
         mock_config_dir.return_value = mock_db_exists
         mock_store = MagicMock()
-        mock_store.db.execute.return_value.fetchone.return_value = (1,)  # source exists
+        mock_store.db.execute.return_value.fetchone.return_value = (1,)
         mock_get_search.return_value = (mock_store, None)
         mock_retriever_cls.return_value.search.return_value = []
 
         from kiro_crew.mcp_core import _call_tool_inner
 
-        _call_tool_inner("local_knowledge_search", {"query": "auth", "source_id": "src-1"})
-        mock_retriever_cls.return_value.search.assert_called_once_with(
-            "auth", limit=3, source_id="src-1", namespace=None
-        )
-
-    def test_namespace_rejects_non_string(self):
-        from kiro_crew.mcp_core import _validate_args
-
-        # At the MCP entry point: a genuinely wrong type (list) on a string
-        # field is still rejected, while a number is defensively converted to
-        # its string form (the re-typed-numeric-string repair).
-        with pytest.raises(ValidationError):
-            _validate_args("local_knowledge_search", {"query": "q", "namespace": [7]})
-        coerced = _validate_args("local_knowledge_search", {"query": "q", "namespace": 7})
-        assert coerced["namespace"] == "7"
-
-    def test_namespace_rejects_overlong_value(self):
-        from kiro_crew.mcp_core import _call_tool_inner
-
-        with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": "q", "namespace": "x" * 65})
-
-    @patch("kiro_crew.mcp_core.config_dir")
-    @patch("kiro_crew.mcp_core.HybridRetriever")
-    @patch("kiro_crew.mcp_core._get_knowledge_search")
-    def test_namespace_passed_through_to_retriever(
-        self, mock_get_search, mock_retriever_cls, mock_config_dir, mock_db_exists
-    ):
-        # A namespace does not need to exist as a source, so no sources probe
-        # is required (unlike source_id): it flows straight to the retriever.
-        mock_config_dir.return_value = mock_db_exists
-        mock_store = MagicMock()
-        mock_get_search.return_value = (mock_store, None)
-        mock_retriever_cls.return_value.search.return_value = []
-
-        from kiro_crew.mcp_core import _call_tool_inner
-
-        _call_tool_inner("local_knowledge_search", {"query": "auth", "namespace": "client-a"})
-        mock_retriever_cls.return_value.search.assert_called_once_with(
-            "auth", limit=3, source_id=None, namespace="client-a"
-        )
+        result = _call_tool_inner("local_knowledge_search", {"query": "auth", **extra})
+        mock_retriever_cls.return_value.search.assert_called_once_with("auth", limit=3, **expected)
+        assert "No relevant knowledge found" in result
 
     @patch("kiro_crew.mcp_core.config_dir")
     @patch("kiro_crew.mcp_core._get_knowledge_search")

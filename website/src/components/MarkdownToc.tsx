@@ -305,7 +305,7 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
           `focused` highlight via the focusable ticks behind it. */}
       <div
         ref={flyoutRef}
-        className={`${expanded ? 'pointer-events-auto opacity-100 translate-x-0' : 'opacity-0 translate-x-2'} absolute top-1/2 right-2 -translate-y-1/2 w-[230px] max-h-[80%] overflow-y-auto scrollbar-overlay rounded-lg border border-border bg-bg-elevated shadow-xl py-1.5 transition-all duration-150`}
+        className={`${expanded ? 'pointer-events-auto opacity-100 translate-x-0' : 'opacity-0 translate-x-2'} absolute top-1/2 right-2 -translate-y-1/2 w-[230px] max-h-[80%] overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1.5 transition-all duration-150`}
         aria-hidden
       >
         <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{i18nT('components.markdownToc.contents')}</div>

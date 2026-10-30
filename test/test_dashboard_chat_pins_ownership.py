@@ -502,7 +502,6 @@ async def test_own_app_create_list_delete_success(tmp_path):
     state.get_or_create_slot("slot-own", app="app-x")
 
     async with _client(tmp_path, state=state, app_name="app-x") as client:
-        # Create
         resp = await client.post(
             "/api/chat/pins",
             json={

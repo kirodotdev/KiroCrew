@@ -7,6 +7,8 @@ records the rows it was handed, or raises to prove a failure is swallowed.
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -268,6 +270,50 @@ async def test_each_note_schedules_one_fire_and_forget_send(
 
     release.set()
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "produce",
+    [
+        lambda: heartbeats.note_coding_activity("/tmp/repo", config=cast(Any, _Cfg())),
+        lambda: heartbeats.note_coding_cadence("/tmp/repo"),
+    ],
+    ids=["activity", "cadence"],
+)
+async def test_scheduled_send_survives_garbage_collection(
+    monkeypatch: pytest.MonkeyPatch, produce: Any
+) -> None:
+    # The event loop keeps only a weak reference to a task. A send that is
+    # parked on a future nothing else holds is reachable from no root, so
+    # unless the module keeps the task, a collection destroys it mid-send and
+    # the heartbeat is silently lost.
+    async def _parked_send(_hb: dict[str, Any]) -> None:
+        await asyncio.get_running_loop().create_future()
+
+    monkeypatch.setattr(heartbeats, "send_heartbeat", _parked_send)
+    loop = asyncio.get_running_loop()
+    real_create_task = loop.create_task
+    refs: list[weakref.ref[asyncio.Task[Any]]] = []
+
+    def _spy(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        task = real_create_task(coro, **kwargs)
+        refs.append(weakref.ref(task))
+        return task
+
+    monkeypatch.setattr(loop, "create_task", _spy)
+    produce()
+    monkeypatch.setattr(loop, "create_task", real_create_task)
+    assert len(refs) == 1
+    await asyncio.sleep(0)  # let the send start and park on its future
+    gc.collect()
+
+    task = refs[0]()
+    assert task is not None, "the scheduled heartbeat send was garbage-collected"
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 def test_zero_ai_fields_are_dropped_not_sent_as_zero() -> None:

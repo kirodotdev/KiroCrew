@@ -1,8 +1,10 @@
 """Client for live app lifecycle changes using ordinary dashboard authentication.
 
 The local credential mint and the authenticated app action travel exclusively over
-the dashboard's owner-only Unix socket. The gateway kernel-verifies the socket peer,
-so neither credential can reach a foreign process bound to the resolved TCP port.
+the dashboard's owner-only Unix socket, and each connection is checked, before any
+byte is sent, to be answered by the gateway process recorded for the port. Neither
+credential can reach a foreign process bound to the resolved TCP port or to a
+rebound socket path.
 There is deliberately no TCP fallback and no MCP/internal-secret authorization path.
 """
 
@@ -120,6 +122,41 @@ def install_app(source: str) -> dict[str, object] | None:
     )
 
 
+def _gateway_peer_check(port: int):
+    """A connect-time check that the socket is answered by the gateway recorded for *port*.
+
+    The socket file sits in a directory its owner can rewrite, so a same-UID
+    process could rebind it. Before any byte is written, the kernel-reported peer
+    pid must equal the gateway recorded for *port* with a matching start token
+    (``cli_server_peer._connected_unix_peer_is_recorded_gateway``, the same
+    recorded-identity check the unix arm of ``_owner_verified_secret_urlopen``
+    applies). Raises :class:`AppGatewayError`, which is not
+    an ``OSError``, so the refusal is never read as "no gateway" and never drops the
+    CLI to its file-only path.
+    """
+    from kiro_crew.cli_server_peer import (
+        _audit_peer_allowed,
+        _audit_peer_denied,
+        _connected_unix_peer_is_recorded_gateway,
+    )
+
+    def _verify(sock: object) -> None:
+        # Both arms of this permission decision are audited, in the same SEL
+        # shape the CLI's other connection-bound proofs emit.
+        if not _connected_unix_peer_is_recorded_gateway(sock, port):
+            _audit_peer_denied(
+                "app_lifecycle", port, "connected socket peer is not this install's gateway"
+            )
+            raise AppGatewayError(
+                "the dashboard socket is not answered by this install's recorded "
+                "gateway; nothing was sent. If this is your own gateway, restart it "
+                "to re-publish its identity record."
+            )
+        _audit_peer_allowed("app_lifecycle", port)
+
+    return _verify
+
+
 def _post_lifecycle_action(
     route: str, action: str, subject: str, *, payload: dict[str, object] | None
 ) -> dict[str, object] | None:
@@ -142,12 +179,15 @@ def _post_lifecycle_action(
         return None
 
     socket_path = dashboard_socket_path(port)
+    verify_peer = _gateway_peer_check(port)
     base = "http://127.0.0.1:%d" % port
     mint = urllib.request.Request(
         f"{base}/api/token/local?ttl=2m", headers={"X-Local-Secret": secret}
     )
     try:
-        with unix_socket_urlopen(mint, timeout=5, socket_path=socket_path) as response:
+        with unix_socket_urlopen(
+            mint, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+        ) as response:
             minted = _read_json(response)
     except AppGatewayError:
         raise
@@ -178,7 +218,10 @@ def _post_lifecycle_action(
     )
     try:
         with unix_socket_urlopen(
-            request, timeout=_ACTION_TIMEOUT_SECS, socket_path=socket_path
+            request,
+            timeout=_ACTION_TIMEOUT_SECS,
+            socket_path=socket_path,
+            verify_peer=verify_peer,
         ) as response:
             result = _read_json(response)
     except AppGatewayError:

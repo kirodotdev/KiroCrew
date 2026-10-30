@@ -64,6 +64,37 @@ async def test_foreign_holder_is_never_touched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_identity_gate_is_the_argv_check(monkeypatch) -> None:
+    """argv is reclaim's gate: with no injected checker, a stale
+    holder the argv check declines is never terminated."""
+    import kiro_crew.cli_server as cli_server
+
+    seen: list[int] = []
+
+    def _declines(pid: int) -> bool:
+        seen.append(pid)
+        return False
+
+    monkeypatch.setattr(cli_server, "_is_kirocrew_process", _declines)
+    terminate_called = False
+
+    async def _terminate(_pids: list[int]) -> bool:
+        nonlocal terminate_called
+        terminate_called = True
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [4321],
+        probe_healthy=_unhealthy,
+        terminate=_terminate,
+    )
+    assert outcome == pr.FOREIGN_HOLDER
+    assert seen == [4321]
+    assert terminate_called is False
+
+
+@pytest.mark.asyncio
 async def test_healthy_peer_is_never_killed() -> None:
     terminate_called = False
 

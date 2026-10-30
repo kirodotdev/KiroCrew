@@ -87,7 +87,6 @@ class TestCancelInFlight:
     async def test_cancel_sends_notifications_for_in_flight_requests(self):
         """cancel_in_flight_for_stub sends MCP notifications/cancelled."""
         backend = _make_mock_backend()
-        # Simulate in-flight requests
         backend._pending_requests = {
             "gw-1-1": _PendingRequest(stub_uuid="stub-A", original_id=1, method="tools/call"),
             "gw-1-2": _PendingRequest(stub_uuid="stub-A", original_id=2, method="tools/call"),
@@ -105,7 +104,6 @@ class TestCancelInFlight:
         assert len(cancelled) == 2
         assert "gw-1-1" in cancelled
         assert "gw-1-2" in cancelled
-        # Verify the notification format
         assert all(w["method"] == "notifications/cancelled" for w in written)
         assert written[0]["params"]["requestId"] in ("gw-1-1", "gw-1-2")
 

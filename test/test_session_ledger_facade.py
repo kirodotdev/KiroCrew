@@ -23,7 +23,6 @@ from __future__ import annotations
 import ast
 import dis
 import functools
-import importlib
 import logging
 import sys
 import traceback
@@ -38,6 +37,10 @@ import test_campaign_facades_base_public_names as base_names
 from kiro_crew import _facade_mirror, session_ledger
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_ledger_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "spelling_cases", "corpus_gate", "owner_layering")
 
 FACADE = session_ledger.__name__
 OWNERS = ("kiro_crew.session_ledger_layout", "kiro_crew.session_ledger_control")
@@ -123,36 +126,29 @@ def patched_names(source: str) -> set[str]:
     return facade_mirror_scan.patched_names(source, _spellings()).get(FACADE, set())
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew import session_ledger as sl\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(sl, 'A', 1)\n",
-            {"A"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.session_ledger.B'):\n        pass\n",
-            {"B"},
-        ),
-        (
-            "from kiro_crew.crew_log import projection\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(projection.session_ledger, 'C', 1)\n",
-            {"C"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.session_ledger_control.D'):\n        pass\n",
-            set(),
-        ),
-    ],
-    ids=["monkeypatch-alias", "mock-patch-string", "projection-binding", "owner-string"],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: set[str]
-) -> None:
-    assert patched_names(source) == expected
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "monkeypatch-alias": (
+        "from kiro_crew import session_ledger as sl\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(sl, 'A', 1)\n",
+        {"A"},
+    ),
+    "mock-patch-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.session_ledger.B'):\n        pass\n",
+        {"B"},
+    ),
+    "projection-binding": (
+        "from kiro_crew.crew_log import projection\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(projection.session_ledger, 'C', 1)\n",
+        {"C"},
+    ),
+    "owner-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.session_ledger_control.D'):\n        pass\n",
+        set(),
+    ),
+}
 
 
 def _test_tree_files() -> list[Path]:
@@ -164,17 +160,6 @@ def _test_tree_files() -> list[Path]:
         if rel == "conftest.py" or path.is_relative_to(test_root) or "/tests/" in rel:
             out.append(path)
     return out
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
 
 
 @functools.lru_cache(maxsize=1)
@@ -190,11 +175,6 @@ def _corpus_patched_names() -> frozenset[str]:
         except SyntaxError:
             continue
     return frozenset(found)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that found nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
@@ -276,11 +256,6 @@ def _layering_gaps(trees: dict[str, ast.Module]) -> dict[str, list[str]]:
         if bad:
             gaps[owner] = bad
     return gaps
-
-
-def test_each_owner_imports_only_owners_listed_before_it_and_never_the_facade() -> None:
-    trees = {name: _tree(sys.modules[name]) for name in OWNERS}
-    assert _layering_gaps(trees) == {}
 
 
 def test_the_layering_check_can_fail() -> None:

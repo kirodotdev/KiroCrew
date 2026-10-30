@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
@@ -14,8 +14,15 @@ from kiro_crew.acp.client import AcpClient, _make_unified_diff
 class TestMakeUnifiedDiff:
     """Tests for _make_unified_diff helper."""
 
-    def test_both_empty_returns_empty(self):
-        assert _make_unified_diff("", "", "file.py") == ""
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            pytest.param("", "", id="both_empty_returns_empty"),
+            pytest.param("same\n", "same\n", id="identical_returns_empty"),
+        ],
+    )
+    def test_no_change_returns_empty(self, old, new):
+        assert _make_unified_diff(old, new, "file.py") == ""
 
     def test_addition(self):
         result = _make_unified_diff("", "new line\n", "file.py")
@@ -31,9 +38,6 @@ class TestMakeUnifiedDiff:
         assert "-old" in result
         assert "+new" in result
         assert "@@" in result
-
-    def test_identical_returns_empty(self):
-        assert _make_unified_diff("same\n", "same\n", "file.py") == ""
 
     def test_truncation(self):
         result = _make_unified_diff("", "x\n" * 5000, "file.py", max_len=100)
@@ -266,38 +270,24 @@ class TestExtractToolEvent:
         event = client._extract_tool_event(msg)
         assert event is None
 
-    def test_tool_purpose_extracted(self):
-        client = AcpClient()
-        from kiro_crew.acp.types import JsonRpcMessage
-
-        msg = JsonRpcMessage(
-            method="session/update",
-            params={
-                "update": {
-                    "sessionUpdate": "tool_call",
+    @pytest.mark.parametrize(
+        ("update", "expected"),
+        [
+            pytest.param(
+                {
                     "title": "shell",
                     "kind": "tool_use",
                     "toolCallId": "tc-4",
                     "input": {"__tool_use_purpose": "run tests", "command": "pytest"},
-                }
-            },
-        )
-        event = client._extract_tool_event(msg)
-        assert event is not None
-        assert event.tool_purpose == "run tests"
-
-    def test_tool_purpose_extracted_camel_case_key(self):
-        """kiro-cli echoes the reserved purpose arg back camelCased on some tool
-        calls. Reading only the snake_case spelling dropped the purpose, which
-        made the dashboard's concise tool pill fall back to the raw command."""
-        client = AcpClient()
-        from kiro_crew.acp.types import JsonRpcMessage
-
-        msg = JsonRpcMessage(
-            method="session/update",
-            params={
-                "update": {
-                    "sessionUpdate": "tool_call",
+                },
+                "run tests",
+                id="tool_purpose_extracted",
+            ),
+            # kiro-cli echoes the reserved purpose arg back camelCased on some tool
+            # calls. Reading only the snake_case spelling dropped the purpose, which
+            # made the dashboard's concise tool pill fall back to the raw command.
+            pytest.param(
+                {
                     "title": "Running: node kc-shot.mjs",
                     "kind": "execute",
                     "toolCallId": "tc-5",
@@ -305,12 +295,23 @@ class TestExtractToolEvent:
                         "__toolUsePurpose": "check harness render errors",
                         "command": "node kc-shot.mjs",
                     },
-                }
-            },
+                },
+                "check harness render errors",
+                id="tool_purpose_extracted_camel_case_key",
+            ),
+        ],
+    )
+    def test_tool_purpose(self, update, expected):
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method="session/update",
+            params={"update": {"sessionUpdate": "tool_call", **update}},
         )
         event = client._extract_tool_event(msg)
         assert event is not None
-        assert event.tool_purpose == "check harness render errors"
+        assert event.tool_purpose == expected
 
 
 class TestBuildPermissionEvent:
@@ -783,11 +784,11 @@ class TestApproveTool:
         client = AcpClient(work_dir=tmp_path)
         client._permission_options[43] = {"once": "allow", "always": "allow_always"}
         client._send_response = AsyncMock()
-        await client.approve_tool(43)
-        client._send_response.assert_awaited_once_with(
-            43,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow"}},
-        )
+        assert await client.approve_tool(43) is True
+        assert client._send_response.await_args_list == [
+            call(43, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow"}})
+        ]
+        assert 43 not in client._permission_options
 
     @pytest.mark.asyncio
     async def test_no_recorded_falls_back_to_literal(self, tmp_path):
@@ -799,16 +800,12 @@ class TestApproveTool:
 
         client = AcpClient(work_dir=tmp_path)
         client._send_response = AsyncMock()
-        await client.approve_tool(44)
-        client._send_response.assert_awaited_with(
-            44,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}},
-        )
-        await client.approve_tool(45, always=True)
-        client._send_response.assert_awaited_with(
-            45,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}},
-        )
+        assert await client.approve_tool(44) is True
+        assert await client.approve_tool(45, always=True) is True
+        assert client._send_response.await_args_list == [
+            call(44, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}}),
+            call(45, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}}),
+        ]
 
     @pytest.mark.asyncio
     async def test_explicit_option_id_skips_recorded_pop(self, tmp_path):
@@ -899,11 +896,13 @@ class TestRejectTool:
 
         client = AcpClient(work_dir=tmp_path)
         client._send_response = AsyncMock()
+        assert client._turn_permission_denied is False
         await client.reject_tool(62)
-        client._send_response.assert_awaited_once_with(
-            62,
-            {"outcome": {"outcome": OUTCOME_CANCELLED}},
-        )
+        assert client._send_response.await_args_list == [
+            call(62, {"outcome": {"outcome": OUTCOME_CANCELLED}})
+        ]
+        # The denial can end the turn, which the steer settle reads.
+        assert client._turn_permission_denied is True
 
 
 class TestHandlePermission:
@@ -919,10 +918,14 @@ class TestHandlePermission:
             method="session/requestPermission",
             params={"toolCall": {"title": "bash"}, "options": []},
         )
-        client.approve_tool = AsyncMock()
+        client.approve_tool = AsyncMock(return_value=True)
+        client.reject_tool = AsyncMock()
+        client._send_error = AsyncMock()
 
-        await client._handle_permission(msg)
-        client.approve_tool.assert_awaited_once_with(55)
+        assert await client._handle_permission(msg) is None
+        assert client.approve_tool.await_args_list == [call(55)]
+        assert client.reject_tool.await_count == 0
+        assert client._send_error.await_count == 0
 
 
 class TestReadNewToolResultsSync:
@@ -934,14 +937,16 @@ class TestReadNewToolResultsSync:
         """Redirect Path.home to tmp_path so JSONL writes are isolated."""
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    def test_no_session_returns_empty(self):
+    @pytest.mark.parametrize(
+        "session_id",
+        [
+            pytest.param(None, id="no_session_returns_empty"),
+            pytest.param("nonexistent-session-xyz", id="missing_file_returns_empty"),
+        ],
+    )
+    def test_nothing_to_read_returns_empty(self, session_id):
         client = AcpClient()
-        client._session_id = None
-        assert client._read_new_tool_results_sync() == []
-
-    def test_missing_file_returns_empty(self):
-        client = AcpClient()
-        client._session_id = "nonexistent-session-xyz"
+        client._session_id = session_id
         assert client._read_new_tool_results_sync() == []
 
     def test_reads_tool_results(self, tmp_path):
@@ -949,7 +954,6 @@ class TestReadNewToolResultsSync:
         client._session_id = "test-sess"
         client._jsonl_pos = 0
 
-        # Create fake JSONL
         session_dir = Path.home() / ".kiro" / "sessions" / "cli"
         session_dir.mkdir(parents=True, exist_ok=True)
         jsonl_path = session_dir / "test-sess.jsonl"

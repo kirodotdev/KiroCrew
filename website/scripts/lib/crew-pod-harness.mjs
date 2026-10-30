@@ -30,7 +30,7 @@ export function check(label, ok, detail = '') {
   console.log('ok  ', label)
 }
 
-/** Prime the pod: preview flag on (Crew Members is preview-gated), theme, and a
+/** Prime the pod: theme, and a
  *  crew to edit. The crew is created through the REAL endpoint so the roster,
  *  the editor and the members page all read the same record. The chip's
  *  dismissal flag is cleared so each run starts from a first-visit state. */
@@ -46,7 +46,6 @@ export async function primeCrewPod(page, authed, crew, theme) {
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async ([name, th]) => {
-    localStorage.setItem('mc-preview-crew', '1')
     localStorage.removeItem('mc-avatar-edit-hint-dismissed')
     // The server is the source of truth for the theme mode (useTheme re-reads
     // /api/theme/boot on every load), so a localStorage write alone would be
@@ -84,18 +83,15 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async ([th, lg]) => {
-    localStorage.setItem('mc-preview-crew', '1')
     localStorage.setItem('mc-lang', lg)
     localStorage.setItem('mc-theme', th)
     await fetch('/api/config/theme', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      // `crewmates_onboarded` too: without it the Meet CrewMates first-run
-      // dialog opens over the Crewmates page on a fresh pod home and swallows
-      // every click meant for the roster.
+      // `crewmates_onboarded` too: without it the Crewmates feature intro can
+      // open over the page on a fresh pod home and swallow every click.
       body: JSON.stringify({ mode: th, language: lg, onboarded: true, import_onboarded: true, privacy_acked: true, crewmates_onboarded: true }),
     })
-    localStorage.setItem('mc-crewmates-onboarded', '1')
   }, [theme, lang])
   await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
   const row = page.locator('#main-content li button', { hasText: member }).first()
@@ -107,15 +103,14 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
 /**
  * Open one crewmate's DM on a primed pod and return its header identity pill.
  * Shared by the two pill harnesses so the boot dance is not inlined twice
- * (jscpd flags the copy). A fresh pod home fires the Meet CrewMates first-run
- * chapter over the page once the pod has a crewmate; mark it seen server-side
- * and dismiss by name if it is already up, never by a blind Escape. Refuses to
+ * (jscpd flags the copy). A fresh pod home can open the Crewmates feature intro
+ * over the page; mark it seen server-side and dismiss by name if it is already
+ * up, never by a blind Escape. Refuses to
  * return while any dialog is open: a first-run gate over the page would still
  * pass every DOM check while hiding the header in the frame.
  */
 export async function openMemberPill(page, BASE, crew) {
   await page.evaluate(async () => {
-    localStorage.setItem('mc-crewmates-onboarded', '1')
     await fetch('/api/config/theme', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crewmates_onboarded: true }) })
   })
   await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })

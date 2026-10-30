@@ -2,7 +2,6 @@
  *  ephemeral) and a new chat inside a folder. */
 import { useState, useRef, useCallback, type Dispatch, type SetStateAction } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { type ErrorReport, findReport } from '../../utils/errorReport'
 import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../../utils/folderAgent'
 import { unwrapResult } from '@reduxjs/toolkit'
@@ -15,10 +14,7 @@ import type { ChatFolder } from '../../types'
 import type { FolderMutations } from './folders'
 import type { BoardColumnMutations } from './board'
 import { errMessage } from '../../utils/thunkError'
-import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
-import { settingsPath } from '../../components/settingsPath'
-import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../../hooks/useSettingHighlight'
+import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
@@ -64,7 +60,10 @@ function plainCreateKey(folderId: string, columnId?: string, memoryMode?: string
  */
 async function createSlotWithOrigin(dispatch: AppDispatch, args: Parameters<typeof createSlot>[0]): Promise<{ slot: Slot; origin: ForkOrigin }> {
   const action = await dispatch(createSlot(args))
-  if (createSlot.fulfilled.match(action)) return { slot: action.payload, origin: { activeSlot: action.meta.originActiveSlot ?? null, moves: action.meta.originActiveSlotMoves, autoMoves: action.meta.originActiveSlotAutoMoves } }
+  if (createSlot.fulfilled.match(action)) {
+    const m = action.meta
+    return { slot: action.payload, origin: { activeSlot: m.originActiveSlot ?? null, moves: m.originActiveSlotMoves, autoMoves: m.originActiveSlotAutoMoves, requestMoves: m.originActiveSlotRequestMoves, seq: m.originRequestSeq, burst: m.originRequestBurst } }
+  }
   unwrapResult(action)
   throw new Error('createSlot settled without fulfilling or rejecting')
 }
@@ -77,7 +76,7 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
   mode: string | undefined
   dispatch: AppDispatch
   dropSlotMutation: BoardColumnMutations['dropSlotMutation']
-  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
+  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; requestSeq?: number } | undefined) => void) | undefined
   // A plain create ACTIVATES the new session, so the host must leave Split View
   // and show it — the same callback a row click fires (ChatSidebar's
   // `onSelectSlot`). Without it the grid keeps drawing the old split over a
@@ -174,7 +173,7 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       if (inNewTab && onOpenSlotInNewTab && slot?.key) {
         // Adds a tab beside the active one; `foreground` also switches to it,
         // same as the header New button's gestures (see createChatMutation).
-        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background' })
+        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background', ...(inNewTab === 'foreground' ? { requestSeq: origin.seq } : {}) })
         // A foreground tab switches the view onto the new session, so leave
         // Split View too — the same guarded callback the header New fires
         // after its own foreground switch (createChatMutation). The plain
@@ -278,7 +277,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   setNewChatError: Dispatch<SetStateAction<string>>
   dispatch: AppDispatch
   mode: string | undefined
-  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
+  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; requestSeq?: number } | undefined) => void) | undefined
   // Leave Split View on a plain create so the new, now-active session shows
   // instead of the old split (#21935). Same callback a row click fires; the
   // background-tab gesture does not fire it (the split is kept on purpose).
@@ -296,25 +295,6 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   // the failed click a silent no-op again, which is the defect being fixed.
   // `errMessage` already reads the RTK SerializedError a rejected thunk carries.
   const onNewChatError = (err: unknown) => setNewChatError(errMessage(err) || i18nT('pages.chatSidebar.folder_create_failed'))
-  // Crew Members: the create menu's crew entry no longer creates anything. Crew
-  // Mode (a `mode: 'crew'` session fanning topics out to sub-sessions) is
-  // retired in favour of the Crew Members page, where each member is a
-  // standing agent with its own DM thread — so the entry is a DOOR to that
-  // page, kept in this menu because this is where people learned to look
-  // for "crew".
-  //
-  // Always rendered, even while the page is still preview-gated: the flag
-  // only decides WHERE the click lands. On, it opens `/members`. Off, it
-  // opens Settings > Developer > Feature Previews with the crew card scrolled
-  // into view and ringed (`useSettingHighlight`), so the user turns the page
-  // on from the very switch that holds it instead of reading a toast about
-  // one. `usePreviewFlag` rather than a bare read because the sidebar does
-  // not remount when that toggle flips.
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
-  const navigate = useNavigate()
-  const openCrewMembers = () => {
-    navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
-  }
   // Separate flag, separate feature: this one holds "New chat on crew", which
   // dispatches a session to another MACHINE. The same switch shows the crew
   // groups in the sidebar (`sessionSources.ts`), so a chat started here has a
@@ -344,7 +324,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     onSuccess: ({ slot, origin }, { inNewTab: requested }) => {
       const inNewTab = settledTabMode(store, requested, origin)
       if (inNewTab && onOpenSlotInNewTab) {
-        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background' })
+        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background', ...(inNewTab === 'foreground' ? { requestSeq: origin.seq } : {}) })
         // Background: the user stays on their transcript, so its composer keeps
         // whatever focus it had — no `focusComposer`, same as the row gesture.
         if (inNewTab === 'background') return
@@ -429,7 +409,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     onError: onNewChatError,
   })
   return {
-    crewPreview, openCrewMembers, remoteCrewChatPreview,
+    remoteCrewChatPreview,
     createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
   }
 }

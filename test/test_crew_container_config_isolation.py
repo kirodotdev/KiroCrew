@@ -243,7 +243,7 @@ def _schema_enum(field_name: str) -> tuple:
 def test_the_permissive_value_rule_has_something_to_stand_on(sandbox_keys) -> None:
     """Non-vacuity: the rule above must have a boolean to require and a mode to refuse.
 
-    A ratchet that cannot fail is the defect this PR exists to fix, so the rule's own
+    A ratchet that cannot fail protects nothing, so the rule's own
     anchors are checked rather than assumed. If the gateway stopped declaring a disabling
     mode, or stopped having boolean sandbox settings, the rule would pass everything and
     nothing else would say so.

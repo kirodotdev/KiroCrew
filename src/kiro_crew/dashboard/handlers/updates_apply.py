@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -29,7 +30,12 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import UNREADABLE_TIMEOUT, DivergenceUnreadable, count_divergence
 from kiro_crew.platform.update_capability import MANAGED_BY_GIT, derive_capability
-from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
+from kiro_crew.platform.update_governance import (
+    git_command_env,
+    repo_exec_config_reason,
+    resolve_remote_url,
+    update_blocked_reason,
+)
 from kiro_crew.platform_compat import (
     exit_after_failed_restart_exec,
     reexec_launcher,
@@ -370,6 +376,66 @@ async def _snapshot_memory_or_refuse(state: DashboardState) -> web.Response | No
     return web.json_response({"error": message, "code": "memory_snapshot_failed"}, status=500)
 
 
+def _user_excludes_file(proj: str, env: dict[str, str]) -> str:
+    """The operator's global/system ``core.excludesFile`` path, or ``""`` if none or unreadable.
+
+    Read from git's effective view with ``--includes``, so a value set through a
+    global ``include``/``includeIf`` counts, and kept only from the operator's own
+    scopes: a repository-local value names a path the agent chose.
+    """
+    try:
+        done = subprocess.run(
+            [
+                "git",
+                "config",
+                "--includes",
+                "--show-scope",
+                "--path",
+                "-z",
+                "--get-all",
+                "core.excludesFile",
+            ],
+            cwd=proj,
+            env=env,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    # `-z --show-scope` prints `<scope>\0<value>\0` per entry; git uses the last.
+    fields = done.stdout.decode("utf-8", "surrogateescape").split("\0")
+    user_values = [
+        value for scope, value in zip(fields[0::2], fields[1::2]) if scope in ("global", "system")
+    ]
+    return user_values[-1] if user_values else ""
+
+
+async def _repo_exec_config_refusal(proj: str) -> web.Response | None:
+    """409 when *proj*'s own git config names a program git would run, else ``None``.
+
+    Offloaded: the probe shells out to git.
+    """
+    exec_config = await asyncio.get_running_loop().run_in_executor(
+        # The bare `git` this handler spawns, and the human-run transport rule
+        # that pairs with `git_command_env(human_transport=True)` below.
+        None,
+        lambda: repo_exec_config_reason(proj, git="git", human_transport=True),
+    )
+    if not exec_config:
+        return None
+    logger.warning("Update refused: %s, which git would run during the update", exec_config)
+    return web.json_response(
+        {
+            "error": f"Update refused: {exec_config}, which git would run during the "
+            "update. Remove it from the checkout's git config, then retry.",
+            "code": "repo_exec_config",
+        },
+        status=409,
+    )
+
+
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update — git pull, rebuild, restart gateway."""
     owner_denied = await require_owner_dashboard_request(request, "update.apply")
@@ -446,12 +512,41 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # no "updating" spinner behind. A dashboard token proves the caller is the
     # operator, not that the fleet permits this host to pull from this remote.
     # Offloaded: the seam shells out to git.
+    # One env for the pin check and the fetch below, so the URL judged is the
+    # URL fetched. It reads the operator's global git config (their credential
+    # helper and ssh command), as this fetch did before, plus the repo-level
+    # exec pins; the repository's own transport values are refused below.
+    # Offloaded like `git_env` below: resolving the pinned programs can walk PATH.
+    fetch_env = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), lambda: git_command_env(human_transport=True)
+    )
     blocked = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: update_blocked_reason(resolve_remote_url(proj))
+        None, lambda: update_blocked_reason(resolve_remote_url(proj, fetch_env=fetch_env))
     )
     if blocked:
         logger.warning("Update refused: %s", blocked)
         return web.json_response({"error": blocked, "governance": True}, status=403)
+
+    # Every git call below runs in a checkout an agent can write, and `status`,
+    # `fetch` and `merge` EXEC programs the repository names in its own config
+    # (`core.fsmonitor`, hooks, `filter.<name>.smudge`). The fixed-name keys are
+    # pinned by `git_command_env`; a repo-NAMED driver has no key to pin, so the
+    # update is refused instead -- the same two halves the unattended gateway
+    # apply uses. Checked before any state is pushed, like the source pin.
+    refused = await _repo_exec_config_refusal(proj)
+    if refused is not None:
+        return refused
+    # Every other git call reads no agent-writable global config. Offloaded:
+    # building the isolated env can shell out to git (safe-directory read).
+    git_env = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), git_command_env
+    )
+    # The isolated env drops a GLOBAL `core.excludesFile`, so files the operator
+    # ignores there would read as untracked changes. An ignore list runs nothing,
+    # so their own one is passed back to the dirty-tree check.
+    excludes = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), lambda: _user_excludes_file(proj, fetch_env)
+    )
 
     # Signal updating state via SSE
     state.push_refresh("updating")
@@ -459,9 +554,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # Check for dirty working tree before updating
     dirty = await asyncio.create_subprocess_exec(
         "git",
+        *(["-c", f"core.excludesFile={excludes}"] if excludes else []),
         "status",
         "--porcelain",
         cwd=proj,
+        env=git_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -505,7 +602,14 @@ async def api_update_apply(request: web.Request) -> web.Response:
         "git",
         "fetch",
         "--quiet",
+        # The flag beats every remote's configured upload-pack; an env pin does
+        # not (git takes the first value it reads, the repository's), and this
+        # fetch follows the TRACKED remote, which need not be `origin`. The bare
+        # name is what an ssh server accepts, and a local transport resolves it
+        # from git's own exec-path.
+        "--upload-pack=git-upload-pack",
         cwd=proj,
+        env=fetch_env,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -534,7 +638,8 @@ async def api_update_apply(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    counts = await count_divergence(proj, "@{u}")
+    # Counted under the same env as the merge, so both judge the same repository.
+    counts = await count_divergence(proj, "@{u}", env=git_env)
     if isinstance(counts, DivergenceUnreadable):
         if counts.reason == UNREADABLE_TIMEOUT:
             return web.json_response(
@@ -577,6 +682,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
         "--verify",
         "@{u}^{commit}",
         cwd=proj,
+        env=git_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -614,7 +720,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
     try:
         floor_breach = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
-            lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
+            lambda: dep_sync.incoming_python_floor_breach(
+                Path(proj), target, Path(sys.executable), env=git_env
+            ),
         )
     except dep_sync.IncomingFloorUnreadable as exc:
         # The pinned revision is real, but its floor could not be read. That is
@@ -635,6 +743,14 @@ async def api_update_apply(request: web.Request) -> web.Response:
             {"error": f"Update refused: {floor_breach}", "code": "python_floor"},
             status=409,
         )
+
+    # Re-read the repo-named driver config right before the merge: the fetch
+    # above can take its full timeout, and a driver planted in that window would
+    # otherwise reach the merge's checkout (a `filter.<name>.smudge` ran on a
+    # fast-forward, measured on git 2.47). Same re-check the gateway apply does.
+    refused = await _repo_exec_config_refusal(proj)
+    if refused is not None:
+        return refused
 
     # Last check before the fast-forward rewrites the install: every refusal
     # above leaves the tree alone, so none of them spends a copy.
@@ -664,6 +780,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 "--ff-only",
                 target,
                 cwd=proj,
+                env=git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=platform_compat.IS_POSIX,
@@ -763,6 +880,10 @@ async def api_update_simulate(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
 
     # Simulate a pre-flight rejection (e.g. dirty working tree)
     if body.get("reject"):

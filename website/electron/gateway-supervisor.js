@@ -17,6 +17,7 @@ const {
   bundledKasEnvironment,
   gatewayBytecodeEnvironment,
 } = require("./gateway-env");
+const { readSystemProxyEnvironment } = require("./system-proxy-env");
 const {
   launchBlockingBundleParts,
   describeIncompleteBundle,
@@ -48,6 +49,10 @@ const {
   tailLines,
   isPortInUse,
 } = require("./gateway-wait");
+const { readBakedEdition } = require("./edition");
+
+// Read once: the edition is part of the build, not of any one launch.
+const BAKED_EDITION = readBakedEdition();
 const { createLivenessMonitor, createBackendProbe } = require("./gateway-liveness");
 const {
   chooseRecoveryStrategy,
@@ -81,6 +86,7 @@ const { createFailureDialog } = require("./runtime/gateway/failure-dialog");
 const { createHolderDecision } = require("./runtime/gateway/holder-decision");
 const { createShutdown } = require("./runtime/gateway/shutdown");
 const { createReconnect } = require("./runtime/gateway/reconnect");
+const { createRemoteSwitch } = require("./runtime/gateway/remote-switch");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -136,6 +142,11 @@ function createGatewaySupervisor({
   error,
   logPath,
   predictLocalPort = () => port,
+  // Told every time a stale bundle sends the backend back to the candidate
+  // list. A backend that comes back says nothing about the shell: the same
+  // prune that removed the bundled backend can have removed this app's own
+  // files, and only the caller decides what to do about that.
+  onStaleBundleRespawn = () => {},
   fsMod = defaultFs,
   osMod = defaultOs,
   pathMod = defaultPath,
@@ -216,6 +227,9 @@ function createGatewaySupervisor({
   // Set before updater shutdown begins. It keeps an intentional stop from being
   // read as a wedge and resurrected while the bundle is being replaced.
   let installingUpdate = false;
+  // Set while first-run setup's switch to a remote crew stops the gateway this
+  // app started, for the same reason: that exit is intended, not a crash.
+  let switchingToRemote = false;
   // Re-resolves spent on the current stale-bundle incident (see
   // shouldReresolveBackend). Reset whenever a fresh gateway is asked for,
   // whenever one reaches handoff, and whenever a monitored backend answers
@@ -425,6 +439,21 @@ function createGatewaySupervisor({
     waitForIncumbentExit, startGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
     probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness, getGatewayOwnership, setGatewayOwnership,
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
+  });
+  const {
+    canSwitchToRemoteCrew,
+    switchToRemoteCrew,
+  } = createRemoteSwitch({
+    store, port: PORT, backendUrl: BACKEND_URL, dialog, path, dirname, isWindows: IS_WIN, log: glog,
+    mainWindow, quitting, promptRemoteCrew, splashQuery, currentThemeAccent, sendStatus,
+    getGatewayProcess: () => gatewayProcess,
+    getGatewayOwnership, setGatewayOwnership,
+    getLivenessMonitor: () => livenessMonitor,
+    setLivenessMonitor: (monitor) => { livenessMonitor = monitor; },
+    setSwitchingToRemote: (value) => { switchingToRemote = value; },
+    setRunLocalGateway: (value) => { runLocalGateway = value; },
+    setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
+    stopGatewayGracefully, waitForPortFree, startGateway, showLoadingThenConnect,
   });
 
   function sendStatus(message) {
@@ -738,6 +767,15 @@ function createGatewaySupervisor({
     // A GUI-launched macOS app appends only the launchd domain's additions.
     const gatewayPath = recoverLaunchdPath(cleanEnv.PATH || "");
 
+    // Built per spawn, not at module load: reading the system proxy shells
+    // out (one bounded scutil round-trip), and gateway-env.js skips it
+    // entirely whenever the inherited environment already names any standard
+    // proxy variable. The gateway — not the short-lived `stop`/`gateway-pid`
+    // helpers — is the process whose whole child tree talks to the model
+    // backend, so this is the one spawn that discovers it (issue #19821).
+    const discoverGatewayProxyEnv = () =>
+      readSystemProxyEnvironment({ execFileSync, platform: processObj.platform });
+
     // Write child stdout/stderr directly to a file descriptor. A JS pipe could
     // backpressure a long-running gateway; the descriptor also preserves Python
     // tracebacks which otherwise disappear on clean recipient machines.
@@ -790,7 +828,7 @@ function createGatewaySupervisor({
           path.join(kirocrewDir, "cache", "pycache"),
           app.isPackaged,
         ),
-      }, { bundled, platform: processObj.platform }),
+      }, { bundled, platform: processObj.platform, discoverProxyEnv: discoverGatewayProxyEnv }),
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";
@@ -827,7 +865,7 @@ function createGatewaySupervisor({
         spawnErrorCode,
         attempts: reresolveAttempts,
         quitting: quitting(),
-        installingUpdate,
+        installingUpdate: installingUpdate || switchingToRemote,
         relaunchTargetExists,
       });
       const cause = exitCode === null ? `spawn ${spawnErrorCode}` : `exit ${exitCode}`;
@@ -849,6 +887,8 @@ function createGatewaySupervisor({
         spawnedExecutablePaths = [];
         gatewayStartFailure = null;
         spawnGateway(resolve);
+        try { onStaleBundleRespawn(); }
+        catch (error) { glog(`stale bundle: respawn hook threw: ${error && error.message}`); }
         return true;
       }
       glog(`stale bundle persists after re-resolve (${cause} on bin=${bin}) — starting a fresh copy of the app from ${processObj.execPath}`);
@@ -870,7 +910,7 @@ function createGatewaySupervisor({
     child.on("exit", (code, signal) => {
       const exitMessage = `gateway child exited code=${code} signal=${signal}`;
       const currentChild = gatewayProcess === child;
-      const expectedExit = !currentChild || quitting() || installingUpdate;
+      const expectedExit = !currentChild || quitting() || installingUpdate || switchingToRemote;
       if (expectedExit) glog(exitMessage);
       else userError(exitMessage);
       // Node's Windows kill maps both signal names to TerminateProcess. The
@@ -922,6 +962,7 @@ function createGatewaySupervisor({
       maxWaitMs: gatewayWaitTimeoutMs({
         platform: processObj.platform,
         watchSpawn: watchSpawn && gatewayOwnership === "spawned",
+        edition: BAKED_EDITION,
       }),
       pollIntervalMs: POLL_INTERVAL_MS,
     });
@@ -982,6 +1023,9 @@ function createGatewaySupervisor({
           livenessMonitor = null;
         }
         if (quitting() || installingUpdate) return;
+        // First-run setup's switch to a remote crew stops this gateway on
+        // purpose (runtime/gateway/remote-switch.js).
+        if (switchingToRemote) return;
         recoverWedgedGateway(window)
           .catch((error) => glog(`liveness recovery failed: ${error && error.message}`));
       },
@@ -1513,6 +1557,7 @@ function createGatewaySupervisor({
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,
+    isCurrentBundleGateway,
     stopForUpdate: stopGatewayForUpdate,
     stopOnQuit: stopGatewayOnQuit,
     // After sleep the old forward can look alive while carrying nothing, so a
@@ -1521,8 +1566,14 @@ function createGatewaySupervisor({
     // A remote-crew edit re-applies the launch port's tunnel choice at once:
     // start, replace (new host or port) or stop the forward to match it.
     syncTunnel: () => tunnelKeeper.start(),
+    // First-run setup's "only crews on other machines" exit (remote-switch.js).
+    canSwitchToRemoteCrew,
+    switchToRemoteCrew,
     onInstallDispatched,
     onInstallFailed,
+    // Read-only view of the update handoff, for watchers that must stay quiet
+    // while the updater owns the bundle.
+    isInstallingUpdate: () => installingUpdate,
   });
 }
 

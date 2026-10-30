@@ -167,23 +167,23 @@ def test_the_record_is_name_scoped_and_never_written_over_for_another_name() -> 
     assert _goal(member_goals.read_goals(slug, ORDINARY)) == "Keep the release notes current"
 
 
-def test_the_goal_lives_under_trust_and_never_in_the_rules_file() -> None:
+def test_the_goal_lives_in_the_member_records_and_never_in_the_rules_file() -> None:
     _seed()
     slug = _slug(ORDINARY)
     member_goals.set_goal(slug, ORDINARY, "Ship it", by="user")
     path = member_goals.member_goals_path(slug)
-    assert path.parent == (data_home() / "trust" / member_goals.GOALS_DIR_NAME).resolve()
+    assert path.parent == (data_home() / "member-records" / member_goals.GOALS_DIR_NAME).resolve()
     assert path.is_file()
     assert not _rules_dir().exists() or not any(_rules_dir().iterdir())
     assert members_mod.member_dir(slug) not in path.parents
 
 
-@pytest.mark.parametrize("linked", ["member-goals", "trust"])
+@pytest.mark.parametrize("linked", ["member-goals", "member-records"])
 @pytest.mark.parametrize("pinned", [True, False], ids=["openat", "lstat-fallback"])
 def test_a_symlinked_goal_directory_never_redirects_the_gateways_write(
     linked: str, pinned: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sandboxed shell can plant a link in ``trust/``; the gateway must not follow it."""
+    """A link at the records leaf or the goals directory is never followed by the gateway."""
     if pinned and not member_goals._PINNED:
         pytest.skip("no openat/O_NOFOLLOW on this platform")
     monkeypatch.setattr(member_goals, "_PINNED", pinned)
@@ -192,16 +192,16 @@ def test_a_symlinked_goal_directory_never_redirects_the_gateways_write(
     home = data_home()
     sealed = home / "profiles"
     sealed.mkdir(parents=True, exist_ok=True)
-    (home / "trust").mkdir(parents=True, exist_ok=True)
-    if linked == "trust":
-        real_trust = home / "trust"
-        for child in list(real_trust.iterdir()):
+    records = home / "member-records"
+    records.mkdir(parents=True, exist_ok=True)
+    if linked == "member-records":
+        for child in list(records.iterdir()):
             child.rename(home / f"moved-{child.name}")
-        real_trust.rmdir()
+        records.rmdir()
         (sealed / member_goals.GOALS_DIR_NAME).mkdir()
-        (home / "trust").symlink_to(sealed, target_is_directory=True)
+        records.symlink_to(sealed, target_is_directory=True)
     else:
-        (home / "trust" / member_goals.GOALS_DIR_NAME).symlink_to(sealed, target_is_directory=True)
+        (records / member_goals.GOALS_DIR_NAME).symlink_to(sealed, target_is_directory=True)
     with pytest.raises(member_goals.GoalsUnreadable):
         member_goals.set_goal(slug, ORDINARY, "Ship it", by="user")
     with pytest.raises(member_goals.GoalsUnreadable):
@@ -220,7 +220,7 @@ def test_the_fallback_treats_a_junction_as_a_link(monkeypatch: pytest.MonkeyPatc
     home = data_home()
     sealed = home / "profiles"
     sealed.mkdir(parents=True, exist_ok=True)
-    junction = home / "trust" / member_goals.GOALS_DIR_NAME
+    junction = home / "member-records" / member_goals.GOALS_DIR_NAME
     junction.mkdir(parents=True, exist_ok=True)
     real = platform_compat.is_link_or_junction
     monkeypatch.setattr(
@@ -654,6 +654,51 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
     ((args, kwargs),) = sent
     assert args[1] is slot
     assert kwargs == {"human_seen": False}
+
+
+@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly", "heartbeat"])
+@pytest.mark.parametrize("language", ["zh-CN", ""])
+def test_a_check_in_carries_the_users_language(
+    _floor_monkeypatch, cadence: str, language: str
+) -> None:
+    """A check-in has no tab behind it: the configured language rides in its prompt."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = FakeState()
+    slot = _thread(state, ORDINARY, user_sent=False)
+    slot.task = None
+    member_goals.set_goal(slug, ORDINARY, "Keep docs current", by="user")
+    member_goals.set_schedules(slug, ORDINARY, {cadence: True})
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    _floor_monkeypatch.setattr(mate_welcome, "hidden_turn_language", lambda *a: language)
+
+    class Job:
+        managed_by = goal_reminder.managed_key(slug, cadence)
+
+    assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
+    ((args, _kwargs),) = sent
+    # One language sentence: the configured tag replaces the preamble's own.
+    if language:
+        assert mate_welcome.LANGUAGE_DEFAULT not in args[2]
+        assert args[2].count("BCP-47 tag zh-CN") == 1
+        assert "in this thread" in args[2]
+    else:
+        assert args[2].count(mate_welcome.LANGUAGE_DEFAULT) == 1
+
+
+def test_hidden_turn_language_reads_the_configured_dashboard_language(
+    _floor_monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(language="zh-CN"))
+    _floor_monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    assert mate_welcome.hidden_turn_language() == "zh-CN"
 
 
 @pytest.mark.parametrize(
@@ -1402,7 +1447,8 @@ def test_the_daily_reminder_asks_for_a_page_only_while_there_is_none(
 def test_the_build_line_is_an_html_page_saved_and_applied() -> None:
     line = goal_reminder.DASHBOARD_BUILD_LINE
     assert "view.html" in line and "dashboard_save" in line and "dashboard_apply" in line
-    # Crewmate wording: "your work items", never "your worker".
+    # Crewmate wording: "your work items", never "your worker". The fold that lists
+    # the sessions it created is named `workers`, and the line names it.
     assert "your worker" not in line and "conductor" not in line
     assert goal_reminder.dashboard_line("", {"goals": [{"text": "x"}], "key_results": [{}]}) == ""
 
@@ -1527,3 +1573,40 @@ def test_the_goal_section_carries_no_reading_so_progress_does_not_resend_it() ->
     assert "17 pages" not in after and "pages reviewed" in after and "40" in after
     prompt = goal_reminder.reminder_prompt(member_goals.read_goals(slug, ORDINARY), "daily")
     assert "17 pages" in prompt
+
+
+def test_a_hidden_turn_may_raise_a_card_only_for_servers_the_gateway_runs(
+    _floor_monkeypatch,
+) -> None:
+    """A worker report naming a missing capability arrives on a turn the user did not
+    send; the card for a server this gateway already runs is the next step in that
+    chain, and still changes nothing until the user presses it. Outside code
+    (a registry install), a skill, or a raw draft stays user-turn only."""
+    _capture_proposals(_floor_monkeypatch)
+    _seed()
+    state = FakeState()
+    slot = _thread(state, ORDINARY, user_sent=False)
+
+    def ask(draft):
+        return {"request": "capabilities", "params": {"draft": draft}}
+
+    gateway = {"additions": [{"server": "teamchat", "source": "gateway"}]}
+    status, body = _call(state, PROPOSE, ask(gateway), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    # An auto-approval is admitted too: the card then carries its own
+    # "runs without asking" acknowledgement for the user to tick.
+    approving = {
+        "additions": [{"server": "teamchat", "source": "gateway", "auto_approve": ["post"]}]
+    }
+    status, body = _call(state, PROPOSE, ask(approving), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    for draft in (
+        {"additions": [{"server": "x", "source": "registry", "registry_id": "io.x/x"}]},
+        {"additions": [{"server": "x", "source": "registry"}]},
+        {"additions": [{"skill": "pdf"}]},
+        {"additions": [{"server": "teamchat", "source": "gateway"}, {"skill": "pdf"}]},
+        {"mcpServers": {"x": {"command": "x"}}},
+        {"additions": []},
+    ):
+        status, body = _call(state, PROPOSE, ask(draft), slot.key)
+        assert (status, body["code"]) == (403, "not_user_turn"), draft

@@ -429,20 +429,28 @@ async def test_a_stop_recorded_during_the_recycle_window_does_not_strand_a_claim
 
 
 @pytest.mark.asyncio
-async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_spares_the_subagents():
+async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_leaves_the_subagents_to_it():
     """The failure arm waits for sub-agents for seconds before it pops the session.
     A force Stop landing inside that wait resets the session and hands the permit
     to a parked claimant; the compaction's cleanup must not release it again
-    under that claimant, and its stale restart must neither cancel the live
-    sub-agents nor recycle again."""
+    under that claimant, and its stale restart must neither cancel the
+    sub-agents (the Stop already stopped the ones sharing its process) nor
+    recycle again."""
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
     gate = asyncio.Event()
 
     class _Runs:
         child = SimpleNamespace(
-            id="a1", parent_session_key=key, conversation_key="", _stop_origin=""
+            id="a1",
+            parent_session_key=key,
+            conversation_key="",
+            _stop_origin="",
+            _reap_reason="",
+            _reap_started=False,
+            done=False,
         )
+        stopped_by: list[str] = []
 
         @property
         def running(self):
@@ -455,6 +463,8 @@ async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_spares
             return ()
 
         async def cancel(self, _i):
+            self.stopped_by.append(self.child._stop_origin)
+            self.child.done = True
             gate.set()
             return True
 
@@ -486,9 +496,10 @@ async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_spares
     assert mgr._sessions.get(key) is not session
     # The Stop already reset the parent and respawned its successor; this
     # compaction's restart is stale, so it settles as cancelled WITHOUT waiting
-    # out the cotenants or cancelling them: the sub-agent stays live.
+    # out the cotenants or cancelling them. The one cancel is the Stop's own,
+    # for the sub-agent on the process the Stop reset.
     assert await await_until(task, what="the compaction settling") == "cancelled"
-    assert not gate.is_set(), "the live sub-agent was not cancelled"
+    assert _Runs.stopped_by == ["stopped by a hard Stop of the parent"]
     assert notices[-1] == (False, COMPACT_OUTCOME_CANCELLED)
     assert (
         await await_until(claimant, what="the claimant releasing the permit") == "released-cleanly"
@@ -1289,7 +1300,7 @@ async def test_a_registration_cancelled_before_it_commits_keeps_the_parked_entri
     bob = ("ts-b", "bob's", {"queued_owner": "bob"})
     sl._park_queue(mgr, key, (bob,))
 
-    async def _boom(_key):
+    async def _boom(_key, _provider=None):
         raise asyncio.CancelledError()
 
     # Scoped: the stub must be gone before the second get_or_create below, and

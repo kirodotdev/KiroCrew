@@ -229,7 +229,7 @@ async def _consolidate_bg(ns: str) -> None:
         # worker produces nothing would apply that stale output over the live
         # ruleset and clear the candidate that was never merged.
         try:
-            Path(out_path).unlink()
+            await asyncio.to_thread(Path(out_path).unlink, missing_ok=True)
         except OSError:
             pass
 

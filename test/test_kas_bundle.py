@@ -832,7 +832,10 @@ class TestOldGlibcRefusal:
         # The refusal is Linux-only; a non-Linux host never reads glibc.
         with _patch_glibc((2, 26)) as reader:
             kas_bundle._require_loadable_glibc("Darwin", "arm64")
-        reader.assert_not_called()
+            reader.assert_not_called()
+            # The same old glibc on Linux is refused, so the Darwin pass is the OS gate.
+            with pytest.raises(kas_bundle.KasBundleError, match="2.26"):
+                kas_bundle._require_loadable_glibc("Linux", "x86_64")
 
 
 # ── the copy an app ships: one universal Node, trimmed to what runs ─────────────

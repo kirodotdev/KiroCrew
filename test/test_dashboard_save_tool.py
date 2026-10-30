@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib
+import inspect
 import json
 import re
 import sys
@@ -36,8 +37,6 @@ from kiro_crew import platform_compat
 from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND, parse_package
 from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.testing.wait import async_wait_until, await_until
-
-pytestmark = pytest.mark.asyncio
 
 CREW = "fleet-crew"
 SLUG = "fleet-crew"
@@ -227,7 +226,7 @@ async def test_a_save_stores_the_page_and_apply_puts_it_live(monkeypatch, store)
         reply = await applied.json()
 
     saved = payload["saved"]
-    assert (saved["fields"], saved["blocks"]) == (2, 0)
+    assert saved["fields"] == 2 and "blocks" not in saved
     [record] = store.records.values()
     assert record.kind == DASHBOARD_KIND
     assert parse_package(record.content)["bound_to"] == f"crewmate:{SLUG}"
@@ -576,19 +575,17 @@ async def test_the_binding_comes_from_the_caller_and_the_body_cannot_carry_one(m
 # --------------------------------------------------------------------------- #
 
 
-async def test_a_block_layout_is_refused_for_a_crewmate_page(monkeypatch, store):
-    """A crewmate's page is drawn from view.html only, so a view of blocks is refused
-    at the save, before anything is stored, with the field-binding rule to follow."""
+async def test_a_block_layout_is_saved_as_its_page(monkeypatch, store):
+    """One way: a view of blocks is stored as the page it becomes, never as blocks."""
     body = _package_body()
     body["view"] = {"blocks": [{"id": "lead", "type": "stat", "fields": ["open_prs"]}]}
     async with _client(monkeypatch) as client:
         resp = await _save(client, body)
-        assert resp.status == 400
-        payload = await resp.json()
-    assert payload["code"] == "invalid_package"
-    assert "view.html only" in payload["error"]
-    assert "data-dashboard-field" in payload["error"]
-    assert store.records == {}
+        assert resp.status == 200, await resp.text()
+    [record] = store.records.values()
+    view = parse_package(record.content)["view"]
+    assert list(view) == ["html"]
+    assert 'data-dashboard-field="open_prs"' in view["html"]
 
 
 async def test_an_oversized_package_is_refused(monkeypatch, store):
@@ -903,7 +900,6 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
                 "package_version": 1,
                 "instance_version": 3,
                 "fields": 2,
-                "blocks": 2,
             },
             "dashboard": "[DASHBOARD]\nYour Dashboard tab shows the page you saved.",
         }
@@ -920,7 +916,7 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
 
 
 def test_the_tool_hands_back_a_refusal_whole(monkeypatch):
-    """The refusal names the key and the catalog, which is what the agent fixes from."""
+    """The refusal names the key and the reason, which is what the agent fixes from."""
     from kiro_crew import mcp_panel
 
     monkeypatch.setattr(mcp_panel, "_strict_session_key", lambda: ("sk", ""))
@@ -928,13 +924,13 @@ def test_the_tool_hands_back_a_refusal_whole(monkeypatch):
         mcp_panel,
         "_post",
         lambda *_a, **_k: {
-            "error": "dashboard package: view.blocks[0].type: unknown block type 'hologram'",
+            "error": "dashboard package: view.html: binds ['hologram'], which model.types does not declare",
             "code": "invalid_package",
         },
     )
     out = mcp_panel._call_tool_inner("dashboard_save", _package_body())
     assert "hologram" in out
-    assert "view.blocks[0].type" in out
+    assert "view.html" in out
 
 
 # --------------------------------------------------------------------------- #
@@ -1316,8 +1312,8 @@ def test_the_model_reaches_the_copy_as_the_route_serves_it(glue):
     assert list(ran.model["types"]) == ["state"], "a name was rewritten"
 
 
-def test_a_block_package_is_not_run(glue):
-    assert glue.module.verify_package_page(SLUG, CREW, "slot-1", {"view": {"blocks": []}}) is None
+def test_a_package_with_no_page_is_not_run(glue):
+    assert glue.module.verify_package_page(SLUG, CREW, "slot-1", {"view": {}}) is None
     assert _FakeLivePage.built == []
 
 
@@ -1381,7 +1377,7 @@ def test_the_tool_hands_the_verification_to_the_agent(monkeypatch):
         mcp_panel,
         "_post",
         lambda *_a, **_k: {
-            "saved": {"fields": 2, "blocks": 0},
+            "saved": {"fields": 2},
             "verification": _verdict(
                 "failed",
                 errors=[{"kind": "exception", "message": "Error: boom", "line": 3, "column": 1}],
@@ -1847,10 +1843,12 @@ async def test_a_save_whose_limit_has_passed_starts_no_browser_and_says_timed_ou
 
 def test_only_a_save_of_a_written_page_can_start_a_check():
     """The browser is for ``dashboard_save`` of a page written as ``view.html`` and for
-    nothing else: not a ``dashboard_write``, a preview, an apply, or the load of a page.
+    the crewmate's own ``dashboard_snapshot`` of one, and for nothing else: not a
+    ``dashboard_write``, a preview, an apply, or the load of a page.
 
-    Every module that names the runner or the glue is listed, and within the route module
-    the one function that starts a check is the save.
+    Every module that names the runner or the glue is listed; within the route module the
+    one function that starts a check is the save, and within the snapshot's module it is
+    the snapshot route, through the glue's picture-taking entry.
     """
     from source_corpus import iter_candidate_sources, src_root
 
@@ -1862,7 +1860,9 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
     )
     assert users == [
         "dashboard/handlers/agent_panel_dashboard.py",
+        "dashboard/handlers/agent_panel_snapshot.py",
         "dashboard/handlers/member_dashboard_fields.py",
+        "dashboard_page_image.py",
         "dashboard_verify.py",
     ]
     # a mirror facade: its code is in the owners it lists
@@ -1881,6 +1881,15 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_page_check"
     }
     assert starters == {"api_dashboard_save"}
+    snapshot = importlib.import_module("kiro_crew.dashboard.handlers.agent_panel_snapshot")
+    picture_takers = {
+        fn.name
+        for fn in ast.walk(ast.parse(Path(snapshot.__file__).read_text(encoding="utf-8")))
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Attribute) and node.attr == "snapshot_package_page"
+    }
+    assert picture_takers == {"api_dashboard_snapshot"}
 
 
 async def test_a_skipped_run_says_so_and_the_gateway_checks_shapes_and_schemes(monkeypatch, store):
@@ -1958,3 +1967,11 @@ def test_the_tool_sends_the_empty_theme_when_the_client_dropped_it(monkeypatch):
     monkeypatch.setattr(mcp_panel, "_post", _post)
     mcp_panel._call_tool_inner("dashboard_save", {"model": {"types": {}}, "view": {"html": "x"}})
     assert sent and sent[0]["theme"] == {"tokens": {}}
+
+
+# Mark only the async tests: a module-wide ``pytestmark`` also lands on the sync
+# ones and warns. One loop, because a decorator per test would push this file
+# past the 2,000-line cap.
+for _name, _test in list(globals().items()):
+    if _name.startswith("test_") and inspect.iscoroutinefunction(_test):
+        globals()[_name] = pytest.mark.asyncio(_test)

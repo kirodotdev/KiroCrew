@@ -30,7 +30,6 @@ from kiro_crew.history_projection_contract import (
     _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS,
     _TRANSCRIPT_PAGE_INDEX_STRIDE,
     _TRANSCRIPT_PAGE_READ_ATTEMPTS,
-    DISPLAY_ONLY_ROLES,
     METADATA_LINE_CORRUPT,
     METADATA_LINE_READABLE,
     METADATA_LINE_TRANSIENT,
@@ -60,6 +59,23 @@ class TranscriptReadProjection:
 
     def __init__(self, log: ConversationLog) -> None:
         self._log = log
+
+    def forget_page_index(self, path: Path) -> None:
+        """Remove *path*'s persisted page index (see :mod:`kiro_crew.history_page_index`)."""
+        from kiro_crew import history_page_index
+
+        history_page_index.forget(path)
+
+    def carry_index_over_head_rewrite(
+        self, key: str, before: os.stat_result, old_head: str, new_head: str
+    ) -> None:
+        """Move *key*'s row-index base onto the file a first-line rewrite just wrote.
+
+        See :func:`kiro_crew.history_page_index.carry_over_head_rewrite`.
+        """
+        from kiro_crew import history_page_index
+
+        history_page_index.carry_over_head_rewrite(self._log, key, before, old_head, new_head)
 
     def recent(
         self,
@@ -112,7 +128,13 @@ class TranscriptReadProjection:
         *,
         exclude_last_n: int = 0,
     ) -> list[dict]:
-        """Return recent source-bearing entries for cross-session citation."""
+        """Return recent source-bearing entries for cross-session citation.
+
+        Only what was said is cited: the user's and the assistant's rows. A
+        channel turn also records its tool steps with the turn's provenance, and
+        a step's title in one of these few slots would push the question it
+        answered out of the next session's context.
+        """
         messages = self._log._read_messages(key)
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
@@ -121,7 +143,7 @@ class TranscriptReadProjection:
             item
             for item in messages
             if item.get("source_thread")
-            and item.get("role") not in DISPLAY_ONLY_ROLES
+            and item.get("role") in ("user", "assistant")
             and not is_warm_task_brief_message(item)
         ]
         for message in cited[-max_messages:]:
@@ -498,10 +520,9 @@ class TranscriptReadProjection:
             prev_seg_rows = seg_rows
         if complete:
             if not rows:
-                # Segments exist yet no rotate rows parsed — the exact signature
-                # of the live incident where the transcript head went missing.
-                # Loud on purpose: this state should be impossible for a healthy
-                # rotation archive.
+                # Segments exist yet no rotate rows parsed — the signature of a
+                # transcript head gone missing. Loud on purpose: this state should be
+                # impossible for a healthy rotation archive.
                 _HISTORY_LOGGER.warning(
                     "rotated archive for %s: %d segment(s) matched but 0 rows parsed",
                     key,
@@ -697,13 +718,16 @@ class TranscriptReadProjection:
 
         Judged on the handle the caller then scans, never on the path, so a file
         replaced between the check and the scan cannot be resumed from another
-        file's offsets. Same device and inode, longer than the saved boundary, and
-        the bytes just before the boundary unchanged. Atomic rewrites (compaction,
+        file's offsets. Same device and inode, at least as long as the saved
+        boundary (equal is a file nothing was appended to since, which resumes with
+        no bytes to scan), and the bytes just before the boundary unchanged. Atomic rewrites (compaction,
         rotation, metadata updates) replace the inode, so they never pass; the
         digest covers an in-place rewrite that reuses an inode.
         """
         info = os.fstat(handle.fileno())
-        if (info.st_dev, info.st_ino) != (base.dev, base.ino) or info.st_size <= base.scanned_end:
+        if (info.st_dev, info.st_ino) != (base.dev, base.ino) or info.st_size < base.scanned_end:
+            return False
+        if base.scanned_end == 0:
             return False
         lo = max(0, base.scanned_end - _TRANSCRIPT_INDEX_FINGERPRINT_BYTES)
         handle.seek(lo)
@@ -715,6 +739,8 @@ class TranscriptReadProjection:
 
     def _row_index(self, key: str) -> _TranscriptRowIndexEntry:
         """Return a sparse valid-message-row index for one file revision."""
+        from kiro_crew import history_page_index
+
         path = self._log._path(key)
         generation = self._log._cache_gen(key)
         stamp = self._file_stamp(path)
@@ -736,7 +762,16 @@ class TranscriptReadProjection:
         with open(path, "rb") as handle:
             file_identity = os.fstat(handle.fileno())
             base = self._log._page_index_base.get(key)
-            if base is not None and self._handle_extends_base(handle, base):
+            if base is None or not self._handle_extends_base(handle, base):
+                # Nothing in memory for this file -- a new process, or a rewrite
+                # this instance did not carry -- so try the persisted base before
+                # framing from byte 0. It passes the same check or is ignored.
+                base = history_page_index.load(path)
+                if base is not None and self._handle_extends_base(handle, base):
+                    self._log._page_index_base[key] = base
+                else:
+                    base = None
+            if base is not None:
                 # An append-only file: its saved prefix is still the same bytes,
                 # so only the rows added since need scanning.
                 row_count = base.row_count
@@ -768,7 +803,7 @@ class TranscriptReadProjection:
                 handle.seek(lo)
                 window = handle.read(scanned_end - lo)
                 if len(window) == scanned_end - lo:
-                    self._log._page_index_base[key] = _TranscriptIndexBase(
+                    saved = _TranscriptIndexBase(
                         file_identity.st_dev,
                         file_identity.st_ino,
                         scanned_end,
@@ -776,6 +811,8 @@ class TranscriptReadProjection:
                         row_count,
                         tuple(checkpoints),
                     )
+                    self._log._page_index_base[key] = saved
+                    history_page_index.persist(path, saved, force=False)
 
         entry = _TranscriptRowIndexEntry(
             stamp,
@@ -1514,9 +1551,11 @@ class TranscriptReadProjection:
                 cached = self._log._meta_cache.get(key)
                 if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                     return cached[2], METADATA_LINE_READABLE
-                with open(path, encoding="utf-8") as handle:
-                    first = handle.readline().strip()
-            except (OSError, UnicodeError):
+                # Bytes, decoded below: a first line that is not UTF-8 is a
+                # damaged line no retry will ever read, not a read in flight.
+                with open(path, "rb") as handle:
+                    raw_first = handle.readline()
+            except OSError:
                 if attempt + 1 < attempts:
                     self._log._pause_for_transient_retry()
                     continue
@@ -1528,6 +1567,15 @@ class TranscriptReadProjection:
                     exc_info=True,
                 )
                 return {}, METADATA_LINE_TRANSIENT
+            try:
+                first = raw_first.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                # Every line writer encodes UTF-8, so bytes that do not decode
+                # are damage (a torn or foreign write), exactly like bytes that
+                # are not JSON. Reporting them TRANSIENT made every writer defer
+                # for good, so the line could never be rewritten and the session
+                # refused every turn.
+                return {}, METADATA_LINE_CORRUPT
             if not first:
                 return {}, METADATA_LINE_READABLE
             try:

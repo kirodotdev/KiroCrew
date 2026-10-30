@@ -362,7 +362,7 @@ class TestAcpProcessDiedRecoveryRequeue:
 
         await _run_chat(state, slot, "test message")
 
-        state.sessions.reset.assert_awaited_once()
+        state.sessions.reset.assert_awaited_once_with(f"dashboard:{slot.key}")
 
     @pytest.mark.asyncio
     async def test_stop_state_suppresses_requeue(self, tmp_path: Path) -> None:

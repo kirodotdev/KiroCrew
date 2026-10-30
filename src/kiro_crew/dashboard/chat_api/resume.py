@@ -281,6 +281,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         "memory_mode": existing.memory_mode,
         "mode": existing.mode,
         "surface": existing.mode,
+        "folder_id": existing.folder_id,
     }
 
 
@@ -745,6 +746,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "memory_mode": slot.memory_mode,
             "mode": slot.mode,
             "surface": slot.mode,
+            # The folder the session is filed in, so the client can open a
+            # collapsed folder path and show the resumed row it switched to.
+            # The slots push carries it too, but can arrive after the switch.
+            "folder_id": slot.folder_id,
         }
     )
 
@@ -763,6 +768,7 @@ async def resume_slot_from_history(
     request_title: str = "",
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
+    rebind_manager: bool = True,
 ) -> ResumeOutcome:
     """Load an archived (history) session back into a live slot.
 
@@ -804,6 +810,11 @@ async def resume_slot_from_history(
     immediately before the publish, for the hook's store-free answers (slot
     fields, caps); a refusal there restores the marker the deferred clear just
     dropped. Nothing is published on any refusal. A human click passes neither.
+
+    After the publish, a ``session_handoff`` record for the session is moved to the
+    new tab id (:func:`session_managers.rebind_resumed`), or its manager would lose
+    it. ``rebind_manager=False`` leaves that to the caller, which session control's
+    revive uses to write its allowed audit row first.
 
     Refusals come back as :class:`ResumeOutcome.refusal` rather than being
     raised, because the wire wrapper reproduces each one's historical body and
@@ -887,6 +898,8 @@ async def resume_slot_from_history(
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
+    # The archived tab id, read before anything rebuilds the slot under a new one.
+    archived_tab = str(meta.get("tab_id") or "")
 
     # An app may open only a transcript it owns, and only under a name it may
     # hold. A persisted conversation has no live slot for the per-slot checkpoint
@@ -987,6 +1000,9 @@ async def resume_slot_from_history(
         folder_checked_id = meta["folder_id"]
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
     cleared_closed: bool = False
+    # Remote-workspace retention this resume cancelled before publishing; a
+    # refusal after that archives the still-closed session again.
+    kept_remote: tuple[str, ...] = ()
     cleared_closed_at: Any = meta.get("closed_at")
     # The reopen write (clearing ``closed``) is DEFERRED to the reserved window
     # after construction, with or without a hook: every refusal before it has no
@@ -1468,6 +1484,11 @@ async def resume_slot_from_history(
                 )
             state._restricted_keys.discard(f"dashboard:{slot.key}")
             state.end_slot_construction(slot.key)
+            if kept_remote:
+                # Still closed, so its remote workspace goes back on retention.
+                from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+                schedule_archived(kept_remote, feed_notifier(state))
             return rollback
 
         def _identity_refusal(post: dict, readable: bool) -> ResumeRefusal | None:
@@ -1592,6 +1613,29 @@ async def resume_slot_from_history(
             refusal = _identity_refusal(_post_hook, _post_readable)
             if refusal is not None:
                 return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # Cancel the archived session's remote-workspace retention BEFORE the
+            # reopen write and the publish: a reopened tab edited only through
+            # Files never starts, so nothing would retry a cancellation that
+            # failed and the workspace would be deleted under it. Nothing is
+            # created or woken. Ahead of the identity re-reads and the hook's
+            # second pass below, so those stay the last awaits before the publish.
+            from kiro_crew.coder.retention import keep_reopened
+
+            kept_keys = tuple(dict.fromkeys((history_key, effective_session_key(slot))))
+            if defer_clear:
+                # Only a session this resume reopens from closed goes back on
+                # retention when refused: an open one was never archived.
+                kept_remote = kept_keys
+            kept_reason = await keep_reopened(kept_keys)
+            if kept_reason is not None:
+                return ResumeOutcome(
+                    refusal=(await _discard())
+                    or ResumeRefusal(
+                        f"the session could not be reopened: {kept_reason}",
+                        "reopen_retention_failed",
+                        503,
+                    )
+                )
             if defer_clear:
                 # The reopen write, after the hook (when there is one) and before
                 # the publish. A clear that cannot land refuses: publishing a tab
@@ -1725,8 +1769,18 @@ async def resume_slot_from_history(
     # resume resolved it and hit the idempotency guard) but hidden from the
     # payload while under construction. End construction and push once: this is
     # the first frame any client sees, and it shows a fully hydrated session.
-    # Nothing awaits between here and the return.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
     state.push_slots_update()
+    if rebind_manager:
+        from kiro_crew.dashboard import session_managers
+
+        # Shielded: a request cancelled here must not leave the record on the old tab.
+        await asyncio.shield(session_managers.rebind_resumed(slot, archived_tab))
+    if not reserved:
+        # Never closed, so never archived: no deadline is expected. Best effort,
+        # in case one stands anyway; it never creates or wakes the workspace.
+        from kiro_crew.coder.retention import schedule_reopened
+
+        schedule_reopened((history_key, effective_session_key(slot)))
     return ResumeOutcome(slot=slot, total=total)

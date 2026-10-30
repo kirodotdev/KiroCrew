@@ -219,12 +219,13 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
  * pressed in that window finds stop_turn=idle and settles the card as "stopped"
  * instead of driving the expiry or pulsing path.
  *
- * Cross-spec isolation: each spec waits for the slot to be idle (armed button
- * absent) before sending its own prompt, preventing a prior spec's lingering
- * turn from receiving our Stop. Each spec also includes a per-run unique marker
- * in the prompt. Waiting for that marker to appear in the transcript proves our
- * user bubble landed BEFORE we check for chunks, preventing an old turn's chunk
- * paragraph from matching the `transcript.locator('p').last()` wait early.
+ * Cross-spec isolation: every spec runs on the one slot `/chat` opens, so each
+ * starts with `openChatOnIdleSlot`, which waits until the gateway reports that
+ * slot idle before the spec sends. Each spec also includes a per-run unique
+ * marker in the prompt. Waiting for that marker to appear in the transcript
+ * proves our user bubble landed BEFORE we check for chunks, preventing an old
+ * turn's chunk paragraph from matching the `transcript.locator('p').last()`
+ * wait early.
  */
 const STOP_CARD = '[data-testid="stop-event-card"]'
 
@@ -233,9 +234,61 @@ const STOP_CARD = '[data-testid="stop-event-card"]'
 // session/prompt, so its presence in the transcript proves the turn is live.
 const FIRST_SLOW_CHUNK = 'fake slow chunk 0'
 
-// Per-test time budget: nav/load + MCP drain (FIRST_REPLY_CEILING_MS) + stop
-// resolution (3x the 5s soft_stop_budget_secs). Generous for loaded runners.
-const SOFT_STOP_TEST_TIMEOUT_MS = 5_000 + FIRST_REPLY_CEILING_MS + 15_000
+// Ceiling for the turn the spec before left on the shared slot to end
+// (`openChatOnIdleSlot`).
+const PRIOR_TURN_SETTLE_CEILING_MS = 30_000
+
+// Per-test time budget: the prior turn settling, nav/load + MCP drain
+// (FIRST_REPLY_CEILING_MS) + stop resolution (3x the 5s soft_stop_budget_secs).
+const SOFT_STOP_TEST_TIMEOUT_MS =
+  PRIOR_TURN_SETTLE_CEILING_MS + 5_000 + FIRST_REPLY_CEILING_MS + 15_000
+
+/**
+ * Open the chat page on its default slot once the gateway reports that slot
+ * idle, and return the slot key.
+ *
+ * The spec before can leave its turn running on this slot: the pulsing spec
+ * ends while its turn still waits for the late ack, the soft-ack spec ends the
+ * moment its card settles, and the budget spec ends on a hard kill that resets
+ * the session. A prompt sent while that turn winds down is queued behind it or
+ * steered into it instead of starting a turn of its own, so the spec then waits
+ * on a user bubble that never lands, or on an armed Stop that never appears.
+ *
+ * The page cannot tell idle apart from busy here: an absent armed Stop also
+ * means "stopping" (the button pulses or spins) and "not loaded yet". So the
+ * wait reads the gateway's own record of the slot, then reopens the page so it
+ * renders from that idle state rather than from whatever it loaded while the
+ * earlier turn was winding down.
+ */
+async function openChatOnIdleSlot(page: Page): Promise<string> {
+  await page.goto('/chat', { waitUntil: 'domcontentloaded' })
+  const activeRow = page.locator('.session-row.session-active').first()
+  await expect(activeRow).toBeVisible({ timeout: 30_000 })
+  const slot = await activeRow
+    .locator('xpath=ancestor::*[@data-slot-key][1]')
+    .getAttribute('data-slot-key')
+  if (!slot) throw new Error('the active session row names no slot')
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`/api/chat/slots/${encodeURIComponent(slot)}?limit=1`)
+        if (!res.ok()) return `HTTP ${res.status()}`
+        const s = (await res.json()) as { running?: boolean; stopping?: boolean; queue?: unknown[] }
+        const queued = s.queue?.length ?? 0
+        return s.running || s.stopping || queued
+          ? `running=${s.running} stopping=${s.stopping} queued=${queued}`
+          : 'idle'
+      },
+      { message: `slot ${slot} did not go idle`, timeout: PRIOR_TURN_SETTLE_CEILING_MS },
+    )
+    .toBe('idle')
+  await page.goto(`/chat?sid=${encodeURIComponent(slot)}`, { waitUntil: 'domcontentloaded' })
+  await expect(page.locator(`[data-slot-key="${slot}"] .session-row.session-active`)).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(page.getByPlaceholder(/message/i)).not.toHaveAttribute('placeholder', /offline/i)
+  return slot
+}
 
 /**
  * Wait until the stub's first chunk is visible in the CURRENT turn's response.
@@ -266,11 +319,8 @@ async function waitForCurrentTurnFirstChunk(
 
 test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
-    // Ensure the slot is idle before the test sends its own prompt.
-    // A prior spec may have left a turn winding down on this shared slot.
-    await expect(page.getByTestId('stop-button-armed')).not.toBeVisible({ timeout: 30000 })
+    test.setTimeout(SOFT_STOP_TEST_TIMEOUT_MS)
+    await openChatOnIdleSlot(page)
   })
 
   /**
@@ -292,7 +342,6 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
    * cooperatively and nothing leaks into the spec that follows.
    */
   test('stop mid-tool-call triggers pulsing', async ({ page }) => {
-    test.setTimeout(SOFT_STOP_TEST_TIMEOUT_MS)
     const marker = `pulsing-${Date.now()}`
     const messageInput = page.getByPlaceholder(/message/i)
     await messageInput.fill(`Run a long command: sleep 30 ${SLOW_LATEACK} ${marker}`)
@@ -308,7 +357,6 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   })
 
   test('stop resolves to Stopped on soft ack', async ({ page }) => {
-    test.setTimeout(SOFT_STOP_TEST_TIMEOUT_MS)
     const marker = `softack-${Date.now()}`
     const messageInput = page.getByPlaceholder(/message/i)
     await messageInput.fill(`Hello, please respond slowly ${SLOW} ${marker}`)
@@ -351,14 +399,12 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
  * See TestStopCardTeardownRace in test/test_stop_handler_idempotent.py.
  */
 test.describe('Soft-Stop budget expiry', { tag: '@needs-agent' }, () => {
-  test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     test.setTimeout(SOFT_STOP_TEST_TIMEOUT_MS)
-    await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await openChatOnIdleSlot(page)
+  })
 
-    // Idle guard: wait for any prior spec\'s turn to finish before we proceed.
-    await expect(page.getByTestId('stop-button-armed')).not.toBeVisible({ timeout: 30000 })
-
+  test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
     const marker = `budgetexpiry-${Date.now()}`
     const messageInput = page.getByPlaceholder(/message/i)
     await messageInput.fill(`Run a very long command: sleep 120 ${SLOW_NOACK} ${marker}`)

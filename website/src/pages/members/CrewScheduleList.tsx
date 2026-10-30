@@ -13,8 +13,9 @@ const SCHEDULE_STATE_KEYS = {
   running: 'pages.membersPage.schedule_state_running',
 } as const
 
-/** `remaining` seconds as the largest two non-zero units, the goal chip's reading. */
-function inDuration(remaining: number): string {
+/** `remaining` seconds as the largest two non-zero units, the goal chip's reading.
+ *  Shared with the patrol row above this list, so both say "next in" the same way. */
+export function inDuration(remaining: number): string {
   const d = Math.floor(remaining / 86400)
   const h = Math.floor((remaining % 86400) / 3600)
   const m = Math.floor((remaining % 3600) / 60)
@@ -37,7 +38,7 @@ function lastRunFailed(job: CronJob): boolean {
  * opens that job's detail on the Schedule page (`/schedule?job=<id>`), where it
  * is edited, paused or run; the footer opens the create form.
  */
-export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onCreate }: {
+export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onCreate, selfWaking = false }: {
   jobs: CronJob[]
   loading: boolean
   error?: boolean
@@ -46,6 +47,9 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
   /** Open one job's detail on the Schedule page. */
   onOpenJob: (id: string) => void
   onCreate: () => void
+  /** The mate already wakes on its own (its Heartbeat is on, the row above
+   *  this list): the empty line then says only that there are no schedules. */
+  selfWaking?: boolean
 }) {
   const { t } = useTranslation()
   const sorted = [...jobs].sort((a, b) => (a.next_run_ts ?? Infinity) - (b.next_run_ts ?? Infinity))
@@ -81,7 +85,7 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
       ) : jobs.length === 0 ? (
         !error && (
           <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-8 text-center text-[13px] text-muted" data-testid="crew-schedule-empty">
-            {t('pages.membersPage.schedule_none')}
+            {t(selfWaking ? 'pages.membersPage.schedule_none_self_waking' : 'pages.membersPage.schedule_none')}
           </div>
         )
       ) : (

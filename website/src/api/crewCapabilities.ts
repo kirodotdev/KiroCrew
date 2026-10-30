@@ -9,21 +9,28 @@ export interface CapabilityRow extends CapabilityRef {
   value: unknown
   managed?: boolean
   shared_reference?: boolean
+  /** On a crewmate worker row: the stored editor row a Remove drops, or `null`
+   *  when the row has none of its own (it goes with its server, or stays). */
+  remove?: CapabilityRef | null
 }
 export interface CapabilityView {
   schema_version: 1
   member: string
-  mode: 'shared' | 'legacy_snapshot' | 'inherited'
+  // 'mate': the crewmate's own file, edited in place; it has no parent.
+  mode: 'shared' | 'legacy_snapshot' | 'inherited' | 'mate'
   revision: string
-  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project'; available: boolean; error_code?: string }
+  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project' | 'mate'; available: boolean; error_code?: string }
   rows: CapabilityRow[]
   connections: { id: string; label: string; managed: boolean }[]
   skills: { id: string; label: string; shared_reference: boolean }[]
   parent_changes: (CapabilityRef & { kind: 'added' | 'changed' | 'removed'; conflict: boolean; requires_approval: boolean; before: unknown; after: unknown })[]
-  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified'; saved_revision: string; sessions: unknown[]; error_code?: string }
+  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified' | 'owned'; saved_revision: string; sessions: unknown[]; error_code?: string }
   /** Set when a member chat on the backend `setting` resolves to would refuse
    * this spec. A warning only: the save still lands. */
   backend_warning?: CapabilityBackendWarning | null
+  /** A crewmate that owns its file: what its WORKER carries (base merged with
+   * the file), as the rows Built From both lists and counts. */
+  worker?: { rows: CapabilityRow[] } | null
   /** Set when Stop following would be refused for this saved setup, so the pane can say so up front. */
   detach_blocked?: 'detach_tool_limits_unkept' | 'detach_removal_unkept' | null
   /** Stopping would turn the global mcp.json merge off for the kept copy; the owner confirms it. */
@@ -65,4 +72,42 @@ export const crewCapabilitiesApi = {
     put(endpoint(member), draft).then(j) as Promise<CapabilityView>,
 }
 export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', member] as const
+
+/** A crewmate's worker kit: abilities added to its own file from other agents. */
+export interface WorkerKitView {
+  member: string
+  revision: string
+}
+export interface WorkerKitChange {
+  /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
+  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools'
+  id: string
+  /** `added`: written by the add. `skipped`: already present, so left alone. */
+  /** `replaced`: the behaviour-directions slot already holds other directions. */
+  change: 'added' | 'replaced' | 'skipped'
+}
+export interface WorkerKitPreview {
+  member: string
+  template: string
+  revision: string
+  runs_unasked: boolean
+  /** The behaviour directions the add writes; `""` when the agent has none. */
+  directions?: string
+  /** The directions the slot holds now, which a `replaced` row overwrites; `""` when empty. */
+  current_directions?: string
+  changes: WorkerKitChange[]
+}
+export interface WorkerKitRequest {
+  template: string
+  revision?: string
+}
+const workerKitEndpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/worker-kit`
+export const crewWorkerKitApi = {
+  get: (member: string): Promise<WorkerKitView> => get(workerKitEndpoint(member)).then(j) as Promise<WorkerKitView>,
+  preview: (member: string, body: WorkerKitRequest): Promise<WorkerKitPreview> =>
+    post(`${workerKitEndpoint(member)}/preview`, body).then(j) as Promise<WorkerKitPreview>,
+  apply: (member: string, body: WorkerKitRequest & { revision: string }): Promise<WorkerKitView> =>
+    put(workerKitEndpoint(member), body).then(j) as Promise<WorkerKitView>,
+}
+export const crewWorkerKitKey = (member: string) => ['crew-worker-kit', member] as const
 export const capabilityKey = (row: CapabilityRef) => JSON.stringify([row.section, row.id])

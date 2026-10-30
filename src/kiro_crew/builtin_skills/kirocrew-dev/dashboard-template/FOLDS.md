@@ -54,6 +54,9 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
 | `goal` | slot | This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
 | `waiting` | slot | What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
+| `custom` | slot | The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it |
+| `workers` | slot | The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
+| `worker` *(internal)* | slot | One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
 
 ## `status`
@@ -91,7 +94,7 @@ Moved by **every** entry in the log.
 
 Tokens, credits, context, compactions and duration, broken down per model.
 
-Moved by: `background/completed`, `compaction/applied`, `context/composed`, `request/configured`, `session/opened`, `step/completed`, `subagent/completed`, `subagent/failed`, `turn/completed`, `turn/refused`.
+Moved by: `background/completed`, `compaction/applied`, `context/composed`, `context/measured`, `request/configured`, `session/opened`, `step/completed`, `subagent/completed`, `subagent/failed`, `turn/completed`, `turn/refused`.
 
 | Field | Type | Optional |
 |---|---|---|
@@ -335,7 +338,7 @@ Moved by: `dashboard/agentic_refused`.
 
 Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session.
 
-Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/recorded`.
+Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subagent/failed`, `turn/completed`, `work/charged`, `work/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|
@@ -381,6 +384,42 @@ Moved by: `dashboard/waiting_changed`.
 | `newest` | `string` | no |
 | `omitted` | `number` | no |
 | `updated_at` | `string` | no |
+
+## `custom`
+
+The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it.
+
+Moved by: `dashboard/custom_value`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `latest` | `object` | no |
+| `types_omitted` | `number` | no |
+| `wrote` | `number` | no |
+
+## `workers`
+
+The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said.
+
+Moved by: `message/received`, `message/sent`, `session/adopted`, `session/closed`, `session/opened`, `session/released`, `session/spawned`, `turn/completed`, `turn/started`, `work/recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `counts` | `object` | no |
+| `items` | `array` | no |
+| `omitted` | `number` | no |
+| `total` | `number` | no |
+
+## `worker`
+
+One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page.
+
+Moved by: `message/received`, `message/sent`, `session/adopted`, `session/closed`, `session/opened`, `session/released`, `turn/completed`, `turn/started`, `work/recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `parent` | `string` | no |
+| `row` | `object` | no |
 
 ## `worktree`
 

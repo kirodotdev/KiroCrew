@@ -167,14 +167,14 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
     return keys[Math.floor(Math.random() * keys.length)] ?? keys[0]
   })
 
-  // Per-theme brand mark: a registered theme (via the themeBranding seam) may
-  // supply its own logo — render it here too, not just in the App shell, so the
-  // welcome screen matches the active theme. Falls back to the stock KiroGhost
-  // when the theme registers no logo (the standalone build always does).
-  const { colorTheme } = useTheme()
-  const brandLogo = getThemeBranding(colorTheme)?.logo
-  const brandMark = brandLogo
-    ? <img src={brandLogo} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
+  // Per-theme brand mark, resolved in the shell's order: compiled edition
+  // branding (the themeBranding seam) first, then the installed pack's own
+  // welcome image, then its left-rail logo, then the stock KiroGhost (what the
+  // standalone build shows on its built-in themes).
+  const { colorTheme, brandWelcome, brandLogo } = useTheme()
+  const heroImage = getThemeBranding(colorTheme)?.logo ?? brandWelcome ?? brandLogo
+  const brandMark = heroImage
+    ? <img src={heroImage} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
   // The memory chip sits above the composer (ComposerDockView renders it).

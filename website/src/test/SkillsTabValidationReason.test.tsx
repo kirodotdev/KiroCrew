@@ -87,6 +87,7 @@ const FLAGGED_DETAIL = {
   content: '## Steps\n1. go\n',
   scripts: [{ filename: 'evil.py', content: "x = eval('1+1')\n" }],
   script_validation: { ok: false, report: REPORT },
+  content_sha256: 'c'.repeat(64),
 }
 
 /** The flagged candidate as it appears in the LIVE list once approved elsewhere. */
@@ -107,6 +108,9 @@ const SETTLED_DISMISSED =
   'Candidate “auto/evil-helper” is no longer pending — it was dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.'
 const SETTLED_APPROVED =
   'Candidate “auto/evil-helper” is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below, so there was nothing left to approve.'
+
+/** Ceiling for a wait that spans chained queries (Skills → pending list → detail). */
+const CHAINED_QUERY_TIMEOUT_MS = 5000
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -218,7 +222,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/good-helper',
       content: 'body',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
       script_validation: { ok: true, report: {} },
     })
     const body = JSON.stringify({ error: 'a live skill with this name already exists', code: 'live_skill_exists' })
@@ -238,6 +242,48 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     )
     // No findings list for a non-validation refusal.
     expect(screen.queryByText("dynamic exec/import: eval()")).not.toBeInTheDocument()
+  })
+
+  it('explains a changed-since-read refusal and reads the candidate again', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [CLEAN_ROW] })
+    mockApi.skillPendingDetail.mockResolvedValue({
+      name: 'auto/good-helper',
+      content: 'body',
+      scripts: [],
+      script_validation: { ok: true, report: {} },
+      content_sha256: 'd'.repeat(64),
+    })
+    const body = JSON.stringify({ error: 'changed', code: 'pending_skill_changed' })
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('conflict'), { status: 409, body }),
+    )
+    renderWithQuery()
+    // Two chained queries: the Skills query must settle before the pending
+    // panel mounts and starts the pending-list query that renders this row.
+    await waitFor(() => expect(screen.getByText('auto/good-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    fireEvent.click(screen.getByText('Review'))
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    const readsBefore = mockApi.skillPendingDetail.mock.calls.length
+    fireEvent.click(approve)
+    await waitFor(() =>
+      expect(mockApi.approvePendingSkill).toHaveBeenCalledWith(CLEAN_ROW.slug, 'd'.repeat(64)),
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'Approval refused: this candidate changed after you read it. It has been read again. Review it, then approve.',
+        ),
+      ).toBeInTheDocument(),
+    )
+    // The refusal invalidates the detail query, which then reads again.
+    await waitFor(
+      () => expect(mockApi.skillPendingDetail.mock.calls.length).toBeGreaterThan(readsBefore),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
   })
 
   it('dismissing the candidate clears its refusal, so a re-staged slug starts clean', async () => {

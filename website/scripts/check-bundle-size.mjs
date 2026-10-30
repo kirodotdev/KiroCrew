@@ -302,6 +302,31 @@ export const CHUNK_BUDGETS = {
 
   // The SPA entry chunk: router, providers, and the eager page skeleton.
   main: 594 * KB, // measured 566 KB
+
+  // The shared chat-route chunk Rolldown names after the composer's model/effort
+  // picker: 163 modules, split off the App chunk by the bundler's own grouping
+  // rather than by a `codeSplitting` entry in vite.config.ts.
+  // Measured 2026-10-24 on pristine main @ 0dab198632, whose tip alone -- no PR
+  // code in the tree -- builds it at 517,094 B (505.0 KB) against the 500 KB
+  // (512,000 B) default, 5,094 B over, so the gate fails on the merge ref of
+  // every open website PR (#23618 first) rather than on a new library or
+  // surface. Attribution is measured per main commit since fada42f7b3, where the
+  // chunk was 502,179 B (162 modules): eight website commits of ordinary
+  // chat-route growth added 5,664 B between them, and #23271 (MCP elicitation on
+  // both ACP wires, 1a7190c711) added the one new module and the 9,251 B that
+  // took it over. Both are website/src commits: no dependency joined the chunk
+  // (the only package.json change since fada42f7b3 is #23634's React Compiler
+  // toolchain, with an empty opt-in list), so this is first-party growth of a
+  // chunk that is already lazy, not a library to move behind an `import()`. The
+  // ~5% convention over the measurement (517,094 B * 1.05 = 542,949 B), rounded
+  // up to this table's whole-KB unit, leaves 26,650 B (5.15%) of headroom.
+  // Re-measured 2026-10-29: by then main's own chat-route growth had used all but
+  // about 1 KB of that headroom, and the workflow change cards (the line-by-line
+  // script diff and script block in cards/CardChanges.tsx, about 4.5 KB of
+  // first-party code in this already-lazy chunk, no new dependency) built it at
+  // 543,975 B, 231 B over. The same ~5% convention over that measurement
+  // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
+  ModelEffortDropdown: 558 * KB, // measured 543,975 B on 2026-10-29 (~5% headroom)
 }
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')

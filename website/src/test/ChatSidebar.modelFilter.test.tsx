@@ -78,7 +78,7 @@ const STORAGE_KEY = 'mc-session-model-filter'
 const SLOTS = [
   { key: 'k-fable-a', title: 'fable alpha', running: false, messages: 2, model: 'claude-fable-5' },
   { key: 'k-fable-b', title: 'fable beta', running: false, messages: 2, model: 'global.anthropic.claude-fable-5[1m]' },
-  { key: 'k-opus', title: 'opus session', running: false, messages: 2, model: 'claude-opus-5.5' },
+  { key: 'k-opus', title: 'opus session', running: false, messages: 2, model: 'claude-opus-9.9' },
   { key: 'k-default', title: 'default session', running: false, messages: 2 },
 ]
 const ALL_TITLES = SLOTS.map(s => s.title)
@@ -148,7 +148,7 @@ describe('chat sidebar — filter menu Models section', () => {
     expect(fable).toHaveTextContent('claude-fable-5')
     expect(fable).toHaveTextContent('2')
     // An id the registry does not know keeps its id as the label.
-    expect(await utils.findByTestId('model-filter-row-claude-opus-5-5')).toHaveTextContent('claude-opus-5.5')
+    expect(await utils.findByTestId('model-filter-row-claude-opus-9-9')).toHaveTextContent('claude-opus-9.9')
     // Sessions with no pin group under one Default row.
     expect(await utils.findByTestId('model-filter-row-auto')).toHaveTextContent('No model chosen (agent default)')
     // Most-used first: the section doubles as a read of what the fleet runs on.
@@ -209,7 +209,7 @@ describe('chat sidebar — filter menu Models section', () => {
     expect(stored()).toEqual({ keys: ['fable-5-1m'], exclude: true })
     // The ticked row now reads as hidden: its label is marked excluded.
     expect(utils.getByTestId('model-filter-row-fable-5-1m').querySelector('[data-excluded="true"]')).not.toBeNull()
-    expect(utils.getByTestId('model-filter-row-claude-opus-5-5').querySelector('[data-excluded="true"]')).toBeNull()
+    expect(utils.getByTestId('model-filter-row-claude-opus-9-9').querySelector('[data-excluded="true"]')).toBeNull()
     // Deselecting the last model drops the direction with it: a lone invert
     // flag would otherwise come back and surprise the next selection.
     fireEvent.click(await utils.findByTestId('model-filter-row-fable-5-1m'))
@@ -218,7 +218,7 @@ describe('chat sidebar — filter menu Models section', () => {
   })
 
   it('persists the selection and its direction so both survive a remount', async () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ keys: ['claude-opus-5-5'], exclude: true }))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ keys: ['claude-opus-9-9'], exclude: true }))
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('fable alpha')).not.toBeNull())
     await waitFor(() => expect(utils.queryByText('opus session')).toBeNull())
@@ -272,7 +272,7 @@ describe('chat sidebar — filter menu Models section', () => {
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('fable alpha')).toBeNull())
     openFilterMenu(utils)
-    expect(await utils.findByTestId('model-filter-row-claude-opus-5-5')).toHaveAttribute('title', 'Hide sessions using claude-opus-5.5')
+    expect(await utils.findByTestId('model-filter-row-claude-opus-9-9')).toHaveAttribute('title', 'Hide sessions using claude-opus-9.9')
     expect(await utils.findByTestId('model-filter-row-fable-5-1m')).toHaveAttribute('title', 'Stop filtering by claude-fable-5')
   })
 
@@ -330,8 +330,8 @@ describe('useSidebarModels — peer rows', () => {
     // The composer shows such a session as `auto` because the pin cannot run;
     // the filter is about what the session is pinned to, so the row stays.
     const withheld = { ...SLOTS[2], model_withheld: true } as unknown as Slot
-    expect(slotModelKey(withheld)).toBe('claude-opus-5-5')
-    expect(slotModelKey({ ...SLOTS[2], model_withheld: null } as unknown as Slot)).toBe('claude-opus-5-5')
+    expect(slotModelKey(withheld)).toBe('claude-opus-9-9')
+    expect(slotModelKey({ ...SLOTS[2], model_withheld: null } as unknown as Slot)).toBe('claude-opus-9-9')
     expect(slotModelKey(SLOTS[3] as Slot)).toBe(DEFAULT_MODEL_FILTER_KEY)
   })
 

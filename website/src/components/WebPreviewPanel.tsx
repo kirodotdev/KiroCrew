@@ -22,6 +22,7 @@ import {
 } from './webPreviewPanelUrl'
 import { useWebPreviewPanelAnnotate } from './useWebPreviewPanelAnnotate'
 import { useFrameNavigationBlock } from './useFrameNavigationBlock'
+import { useRelayCookieRefusal } from './useRelayCookieRefusal'
 import WebPreviewPanelNativeSurface from './WebPreviewPanelNativeSurface'
 
 import { i18nT } from '../i18n/t'
@@ -494,6 +495,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     !!url && allowed === true && !selfOrigin && !pending && active,
     reloadKey,
   )
+  // The relay path's own failure: a cookie-checking front door refuses the
+  // opaque-origin frame's asset fetches, so the view never boots (#23180).
+  const viewCookieRefused = useRelayCookieRefusal(
+    viewUrl || '',
+    viewIsRelay && viewRunning && showBrowserView && active,
+    viewProbeKey,
+  )
 
   /**
    * True exactly when the body renders the preview iframe — the one state in
@@ -729,7 +737,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               <button
                 type="button"
                 onClick={() => commit(pending)}
-                className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none"
+                className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-accent-fg hover:opacity-90 transition-opacity cursor-pointer border-none"
               >
                 <Globe size={13} /> {i18nT('components.webPreviewPanel.load_preview')}
               </button>

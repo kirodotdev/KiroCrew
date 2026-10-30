@@ -73,6 +73,10 @@ pytestmark = [
     pytest.mark.timeout(300),
 ]
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("corpus_gate",)
+
 
 @pytest.fixture
 def family(
@@ -686,16 +690,6 @@ def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
     assert source_corpus.repo_root() / "conftest.py" in walked
     assert any("/container_tests/" in path.as_posix() for path in walked)
     assert len(walked) > 1000
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
 
 
 def facade_spellings() -> dict[str, str]:

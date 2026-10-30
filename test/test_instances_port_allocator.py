@@ -15,21 +15,22 @@ class TestPortAllocator:
         with pytest.raises(ValueError):
             PortAllocator(base_port=0)
 
-    def test_skips_bound_and_excluded(self):
+    def test_skips_bound_and_excluded(self, monkeypatch):
+        """The allocator skips a bound port and a caller-supplied exclusion window.
+
+        Uses a fixed base (41000) with a monkeypatched probe so this test is
+        not sensitive to OS ephemeral port assignments near 65535.  Real socket
+        binding is verified separately in test_is_port_free_detects_live_listener*.
+        """
+        import kiro_crew.instances.port_allocator as pa_mod
         from kiro_crew.instances.port_allocator import PortAllocator
 
-        # Bind an OS-assigned free port so the test never collides with a port
-        # something else already holds (the old hard-coded base was flaky).
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        s.listen(1)
-        base = s.getsockname()[1]
-        try:
-            pa = PortAllocator(base_port=base)
-            assert pa.allocate() > base  # base is bound -> skipped
-            assert pa.allocate(exclude={base, base + 1, base + 2}) >= base + 3
-        finally:
-            s.close()
+        base = 41000
+        # Simulate base as occupied (as if a socket is actively listening there).
+        monkeypatch.setattr(pa_mod, "_is_port_free", lambda p: p != base)
+        pa = PortAllocator(base_port=base)
+        assert pa.allocate() > base  # base is occupied -> skipped
+        assert pa.allocate(exclude={base, base + 1, base + 2}) >= base + 3
 
     def test_preferred_port_is_returned_when_free(self):
         """A free, in-range ``preferred`` is handed back unchanged.
@@ -57,20 +58,23 @@ class TestPortAllocator:
         # Even though a lower free port exists, the preferred one is returned.
         assert pa.allocate(preferred=high) == high
 
-    def test_preferred_port_falls_back_when_excluded_or_out_of_range(self):
+    def test_preferred_port_falls_back_when_excluded_or_out_of_range(self, monkeypatch):
         """A ``preferred`` that is excluded, below base, or occupied yields.
 
         The preference is honoured, never enforced: a port another instance now
         holds (``exclude``) or one outside the allocator's range must not be
         handed back — allocation falls through to first-free instead.
+
+        Uses a fixed base (41000) with a monkeypatched probe so this test is
+        not sensitive to OS ephemeral port assignments near 65535.
         """
+        import kiro_crew.instances.port_allocator as pa_mod
         from kiro_crew.instances.port_allocator import PortAllocator
 
-        # flake-ok: bind-close OS port only seeds the allocator scan; both asserts hold if that port is taken; moved verbatim
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        base = s.getsockname()[1]
-        s.close()
+        base = 41000
+        # All ports appear free; the test exercises only the exclude-set and
+        # out-of-range logic, not real socket occupancy.
+        monkeypatch.setattr(pa_mod, "_is_port_free", lambda p: True)
         pa = PortAllocator(base_port=base)
         # Preferred is reserved by another instance -> not returned.
         got = pa.allocate(exclude={base}, preferred=base)

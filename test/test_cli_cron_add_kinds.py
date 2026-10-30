@@ -24,7 +24,8 @@ import pytest
 
 from kiro_crew.cli_commands import _cron, _format_schedule
 from kiro_crew.config.loader import config_dir
-from kiro_crew.cron import CronSchedule
+from kiro_crew.cron import CronSchedule, CronService
+from kiro_crew.validation import MODEL_NAME_HINT
 
 
 def test_at_schedule_uses_configured_timezone_when_job_timezone_is_unset(monkeypatch):
@@ -93,6 +94,14 @@ def _write_script(body: str = "def run(ctx):\n    return None\n") -> Path:
     return path
 
 
+def _stored_after_add(args: argparse.Namespace):
+    """Run ``cron add`` against the real store in *home* and return the one row it wrote."""
+    with patch("kiro_crew.cli_commands.sel"):
+        _cron(args)
+    (job,) = CronService(base_dir=config_dir()).list_jobs(include_disabled=True)
+    return job
+
+
 def _refused(args: argparse.Namespace, capsys) -> str:
     """Run the verb, assert the refusal contract, return stderr."""
     with pytest.raises(SystemExit) as exc:
@@ -154,14 +163,8 @@ class TestSingleTransaction:
     def test_absolute_script_spec_round_trips_unchanged(self, home):
         script = _write_script()
         spec = f"{str(Path(script).resolve())}:run"
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job("s3")
-            _cron(_ns(message="", every=3600, script=spec))
-            assert svc.add_job.call_args.kwargs["script"] == spec
+        job = _stored_after_add(_ns(message="", every=3600, script=spec))
+        assert job.script == spec
 
     def test_command_job_forwards_timeouts_and_defaults(self, home):
         with (
@@ -236,14 +239,8 @@ class TestSingleTransaction:
     def test_model_auto_sentinel_is_stored_as_unset(self, home):
         # "auto" is the inherit sentinel with no pinned provider id; the CLI
         # normalises it to "" exactly as cron_add and the dashboard POST do.
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job()
-            _cron(_ns(every=300, model="auto"))
-            assert svc.add_job.call_args.kwargs["model"] == ""
+        job = _stored_after_add(_ns(every=300, model="auto"))
+        assert job.model == ""
 
     def test_audit_line_names_the_job_kind(self, home):
         script = _write_script()
@@ -403,14 +400,9 @@ class TestOneShot:
         assert "--timezone applies to --cron and --at only" in err
 
     def test_timezone_with_cron_still_succeeds(self, home):
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job()
-            _cron(_ns(cron_expr="0 9 * * *", timezone="Asia/Tokyo"))
-            assert svc.add_job.call_args.kwargs["timezone"] == "Asia/Tokyo"
+        job = _stored_after_add(_ns(cron_expr="0 9 * * *", timezone="Asia/Tokyo"))
+        assert job.timezone == "Asia/Tokyo"
+        assert job.schedule.cron_expr == "0 9 * * *"
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +437,11 @@ class TestRefusals:
                 "--timeout 3000 plus cleanup exceeds the 1800s wake budget",
             ),
             ({"every": 300, "channel": "not a channel"}, "invalid channel ID format"),
-            ({"every": 300, "model": "bad model!"}, "invalid model format"),
+            ({"every": 300, "model": "bad model!"}, f"invalid model format ({MODEL_NAME_HINT})"),
+            (
+                {"every": 300, "model": "x" * 501},
+                "invalid model format (expected at most 500 characters)",
+            ),
         ],
         ids=[
             "no schedule",
@@ -460,6 +456,7 @@ class TestRefusals:
             "timeout exceeds default wake budget",
             "bad channel",
             "bad model",
+            "over-long model",
         ],
     )
     def test_validation_failures_exit_1_before_any_write(self, overrides, needle, home, capsys):
@@ -653,9 +650,11 @@ class TestDenialAudit:
             patch("kiro_crew.cli_commands.sel") as sel,
         ):
             sel.return_value.log_api_access.side_effect = RuntimeError("sel unavailable")
-            _refused(_ns(message="", every=300, shell_command="echo $(id)"), capsys)
+            err = _refused(_ns(message="", every=300, shell_command="echo $(id)"), capsys)
             svc_cls.return_value.add_job.assert_not_called()
             sel.return_value.log_api_access.assert_called_once()
+        assert "command substitution" in err
+        assert "sel unavailable" not in err
 
     @pytest.mark.parametrize(
         "spec",
@@ -753,15 +752,19 @@ class TestDenialAudit:
         assert denial["resources"] == "kind=script"
         assert "must be a valid Python identifier" in denial["error"]
 
-    def test_valid_script_function_name_reaches_add_job(self, home):
+    def test_valid_script_function_name_reaches_add_job(self, home, capsys):
         script = _write_script()
         with (
             patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
+            patch("kiro_crew.cli_commands.sel") as sel,
         ):
             svc_cls.return_value.add_job.return_value = _mock_job()
             _cron(_ns(message="", every=300, script=f"{script}:run"))
             svc_cls.return_value.add_job.assert_called_once()
+        stored = svc_cls.return_value.add_job.call_args.kwargs["script"]
+        assert stored == f"{script.resolve()}:run"
+        assert self._denials(sel) == []
+        assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
     def test_blocked_script_body_leaves_a_denied_sel_event(self, home, capsys):
         script = _write_script("import os\nopen(os.path.expanduser('~/.aws/credentials'))\n")
@@ -811,18 +814,20 @@ class TestDenialAudit:
         (denial,) = self._denials(sel)
         assert denial["resources"] == f"kind={kind}"
 
-    def test_permitted_capability_lets_the_create_through(self, home):
+    def test_permitted_capability_lets_the_create_through(self, home, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
+            patch("kiro_crew.cli_commands.sel") as sel,
             patch(
                 "kiro_crew.cli_commands._vet_cron_capability_governance", return_value=None
             ) as gate,
         ):
             svc_cls.return_value.add_job.return_value = _mock_job()
             _cron(_ns(every=300))
-            gate.assert_called_once()
+            gate.assert_called_once_with("cron:cli_add")
             svc_cls.return_value.add_job.assert_called_once()
+        assert self._denials(sel) == []
+        assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
 
 # ---------------------------------------------------------------------------

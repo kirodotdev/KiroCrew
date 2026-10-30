@@ -781,6 +781,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pod_up_locked,
         _read_pin_strict,
         _reclaim_pod_locked,
+        _same_checkout,
         _token_windows,
     )
     from kiro_crew.apps.builtins.dev_fleet.worktree_ops_removal import (  # noqa: F401

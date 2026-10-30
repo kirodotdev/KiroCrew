@@ -541,6 +541,83 @@ class TestDiscoveryGate:
         assert result is sentinel
         assert (tmp_path / "admission_policy.json").exists()
 
+    def test_deleted_policy_rejection_names_the_marker_remedy(self, monkeypatch, tmp_path):
+        """A policy deleted after the seed ran fails closed (unchanged), but the
+        refusal must say the policy is MISSING and how to restore it: restarting
+        does not re-seed, so 'not on the approved allowlist' alone is a dead end."""
+        import kiro_crew.platform.admission as adm
+
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        _patch_admission_paths(monkeypatch, adm, tmp_path)
+        assert adm.seed_default_policy() is True
+        (tmp_path / "admission_policy.json").unlink()
+
+        ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: object())
+        monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
+        with pytest.raises(PluginAdmissionError) as exc:
+            discover_companion_context("amazon", None)
+        msg = str(exc.value)
+        assert "no admission policy at" in msg
+        assert str(tmp_path / ".migrations" / "seeded") in msg  # the marker to delete
+        # Still fail-closed: the deletion is not silently undone.
+        assert not (tmp_path / "admission_policy.json").exists()
+
+    def test_marker_from_env_override_run_names_the_marker_remedy(self, monkeypatch, tmp_path):
+        """A first run with KIROCREW_ADMISSION_POLICY set stamps the marker with no
+        file; a later start without the override gets the same actionable refusal."""
+        import kiro_crew.platform.admission as adm
+
+        _patch_admission_paths(monkeypatch, adm, tmp_path)
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(tmp_path / "fleet.json"))
+        assert adm.seed_default_policy() is False  # marker only, no file
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY")
+
+        ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: object())
+        monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
+        with pytest.raises(PluginAdmissionError) as exc:
+            discover_companion_context("amazon", None)
+        assert str(tmp_path / ".migrations" / "seeded") in str(exc.value)
+
+    def test_failed_seed_write_names_the_write_remedy(self, monkeypatch, tmp_path):
+        """When the seed cannot write the file at all (no marker), the refusal points
+        at the write, not at the marker."""
+        import kiro_crew.platform.admission as adm
+
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        _patch_admission_paths(monkeypatch, adm, tmp_path)
+
+        def _refuse(*_a, **_k):
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr(adm, "write_text_owner_only", _refuse)
+        ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: object())
+        monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
+        with pytest.raises(PluginAdmissionError) as exc:
+            discover_companion_context("amazon", None)
+        msg = str(exc.value)
+        assert "could not write it" in msg
+        assert ".migrations" not in msg
+
+    def test_present_policy_rejection_carries_no_missing_policy_text(self, monkeypatch, tmp_path):
+        """A rejection by a policy that EXISTS is the policy's verdict: no remedy text."""
+        import kiro_crew.platform.admission as adm
+
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        pol = tmp_path / "admission_policy.json"
+        _patch_admission_paths(monkeypatch, adm, tmp_path, policy_path=pol)
+        pol.write_text(json.dumps({"mode": "open", "banned": ["amazon"]}))
+        ep = _FakeEntryPoint(name="amazon", loaded=lambda _cfg: object())
+        monkeypatch.setattr(discovery_mod, "plugin_entry_points", lambda: [ep])
+        monkeypatch.setattr(
+            "kiro_crew.platform.admission._read_plugin_manifest",
+            lambda e: PluginManifest(name="amazon", publisher="p13n", version="1"),
+        )
+        with pytest.raises(PluginAdmissionError) as exc:
+            discover_companion_context("amazon", None)
+        assert "kill-switch" in str(exc.value)
+        assert "no admission policy" not in str(exc.value)
+        assert adm.missing_policy_remedy() is None
+
 
 class TestPolicySignatureTrustRoot:
     """``require_policy_signature`` + ``trust_keys`` as the security-policy trust root.

@@ -224,7 +224,7 @@ def test_strip_python_env_covers_dont_write_bytecode(monkeypatch):
 def test_strip_python_env_holds_on_fail_open_path(monkeypatch):
     """On the opted-in no-backend path wrap_argv returns argv unmodified (no
     launcher strips PYTHONPATH), so sandboxed_spawn_argv MUST strip the Python
-    env vars from the returned env itself (review-bot finding on security-review 92e24570)."""
+    env vars from the returned env itself."""
     _reset_warned()
     _neutralize_passthrough(monkeypatch)
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")

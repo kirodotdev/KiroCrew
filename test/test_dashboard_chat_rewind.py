@@ -72,7 +72,6 @@ class TestRewindSlot:
             "dashboard:src", skip_if_busy=True
         )
         state.sessions.remove.assert_not_awaited()
-        # Cleanup runs
         if slot.task:
             slot.task.cancel()
 
@@ -1476,15 +1475,30 @@ class TestRewindSlot:
             pending.set_result(None)
 
     @pytest.mark.asyncio
-    async def test_rewind_empty_content_400(self, tmp_path):
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"at_message_index": 0, "content": ""}, id="rewind_empty_content_400"),
+            pytest.param(
+                {"at_message_index": 99, "content": "x"}, id="rewind_index_out_of_range_400"
+            ),
+            # Booleans are int subclasses in Python -- reject them explicitly.
+            pytest.param(
+                {"at_message_index": True, "content": "x"}, id="rewind_bool_index_rejected"
+            ),
+            # Index pointing at an assistant message must be rejected.
+            pytest.param(
+                {"at_message_index": 1, "content": "x"}, id="rewind_assistant_index_rejected"
+            ),
+            pytest.param({"ts": "no-such-ts", "content": "x"}, id="rewind_unknown_ts_400"),
+        ],
+    )
+    async def test_rewind_bad_request_400(self, tmp_path, body):
         state = _make_state(tmp_path)
         _populate_slot(state)
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/slots/src/rewind",
-                json={"at_message_index": 0, "content": ""},
-            )
+            resp = await client.post("/api/chat/slots/src/rewind", json=body)
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -1514,18 +1528,6 @@ class TestRewindSlot:
                 assert resp.status == 400, f"expected 400 for content={bad_content!r}"
 
     @pytest.mark.asyncio
-    async def test_rewind_index_out_of_range_400(self, tmp_path):
-        state = _make_state(tmp_path)
-        _populate_slot(state)
-        app = _make_app(state)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/slots/src/rewind",
-                json={"at_message_index": 99, "content": "x"},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
     async def test_rewind_negative_index_400(self, tmp_path):
         state = _make_state(tmp_path)
         _populate_slot(state)
@@ -1534,44 +1536,6 @@ class TestRewindSlot:
             resp = await client.post(
                 "/api/chat/slots/src/rewind",
                 json={"at_message_index": -1, "content": "x"},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_rewind_bool_index_rejected(self, tmp_path):
-        """Booleans are int subclasses in Python — reject them explicitly."""
-        state = _make_state(tmp_path)
-        _populate_slot(state)
-        app = _make_app(state)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/slots/src/rewind",
-                json={"at_message_index": True, "content": "x"},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_rewind_assistant_index_rejected(self, tmp_path):
-        """Index pointing at an assistant message must be rejected."""
-        state = _make_state(tmp_path)
-        _populate_slot(state)
-        app = _make_app(state)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/slots/src/rewind",
-                json={"at_message_index": 1, "content": "x"},
-            )
-            assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_rewind_unknown_ts_400(self, tmp_path):
-        state = _make_state(tmp_path)
-        _populate_slot(state)
-        app = _make_app(state)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.post(
-                "/api/chat/slots/src/rewind",
-                json={"ts": "no-such-ts", "content": "x"},
             )
             assert resp.status == 400
 

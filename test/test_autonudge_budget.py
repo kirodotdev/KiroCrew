@@ -33,6 +33,11 @@ from kiro_crew.autonudge import (
 from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.models import MonitorBudgets
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
 
 @pytest.mark.asyncio
 async def test_max_cycles_deactivates(svc, monkeypatch):
@@ -661,7 +666,9 @@ async def test_revival_runs_a_fresh_budget_and_a_running_save_keeps_the_old_one(
 
     async def settle(loop_id: str) -> None:
         # A loop the timer re-stops cancels its own task; the count below is the verdict.
-        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+        await asyncio.wait_for(
+            asyncio.gather(svc._timers[loop_id], return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
 
     capped = await svc.add(slot_key="chat-1-301", message="go", idle_secs=15, max_cycles=1)
     await settle(capped.id)
@@ -720,7 +727,9 @@ async def test_a_bare_revival_keeps_the_count_so_a_reconciler_cannot_mint_a_fres
     await svc.start()
 
     async def settle(loop_id: str) -> None:
-        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+        await asyncio.wait_for(
+            asyncio.gather(svc._timers[loop_id], return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
 
     capped = await svc.add(slot_key="research-c1", message="go", idle_secs=15, max_cycles=1)
     await settle(capped.id)

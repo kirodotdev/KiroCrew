@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,7 +33,7 @@ from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.dashboard.handlers import agents, sessions
-from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, PrerequisiteStatus
 
 _RESOLVE_TARGET = "kiro_crew.acp.client._resolve_kiro_bin_for_spawn"
 _FAKE_KIRO_BIN = "/usr/bin/kiro-cli"
@@ -454,3 +455,114 @@ async def test_a_ready_gateway_logs_no_refusal() -> None:
             await agents.api_models(request)
 
     warn.assert_not_called()
+
+
+# ── readiness max-age: polled reads vs destructive reruns ─────────────────
+#
+# ``/api/sessions/usage`` is polled every 30 s and reads a max-age longer than
+# that, so a healthy latch authorizes many polls without an inline ``whoami``
+# probe. Everything else (destructive reruns, ``/v1/chat/completions``, the
+# degraded-only ``/api/models`` poll) keeps the tight 30 s max-age.
+
+
+class _Clock:
+    """A monotonic clock a test advances by hand."""
+
+    def __init__(self) -> None:
+        self._now = 1000.0
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+def _probed_ready_service(clock: _Clock) -> KiroPrerequisiteService:
+    """A ready service whose latch was stamped at the clock's current time."""
+
+    service = KiroPrerequisiteService(assume_ready=False, clock=clock, home=None)
+    service._status = PrerequisiteStatus(
+        platform="linux",
+        installed=True,
+        authenticated=True,
+        ready=True,
+        initial_setup_complete=True,
+    )
+    service._has_probed = True
+    service._last_probe_at = clock()
+    return service
+
+
+@pytest.fixture
+def _empty_catalog_cache(_floor_monkeypatch: pytest.MonkeyPatch):
+    # ``api_models`` serves a warm module-level catalog before it reaches the
+    # unresolved-binary 503; a fresh cache keeps the outcome independent of order.
+    _floor_monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
+
+
+@pytest.mark.asyncio
+async def test_api_models_keeps_the_tight_bound_and_reprobes_a_stale_latch(
+    _empty_catalog_cache: None,
+) -> None:
+    """``/api/models`` has no spawn cooldown, so a latch a minute old must re-probe
+    before it can authorize the browser-opening spawn."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    # Older than the 30 s bound /api/models reads.
+    clock.advance(60.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        with patch(
+            "kiro_crew.acp.client._resolve_kiro_bin_for_spawn",
+            AsyncMock(return_value=""),
+        ):
+            resp = await agents.api_models(_request(service))
+
+    probe.assert_awaited_once()
+    # The stubbed probe left the latch ready=True, so the gate authorizes and
+    # falls through to the degraded branch (binary unresolved).
+    assert resp.status == 503
+    assert json.loads(cast(bytes, resp.body)) == {
+        "error": "kiro binary not resolved",
+        "code": "model_list_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_usage_does_not_reprobe_within_the_poll_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A latch a minute old still authorizes ``/api/sessions/usage`` with no probe."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    clock.advance(60.0)
+    monkeypatch.setattr(sessions, "_usage_cache_ts", 0.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        with patch.object(sessions, "_fetch_usage_bg", AsyncMock()):
+            resp = await sessions.api_sessions_usage(_request(service))
+
+    probe.assert_not_awaited()
+    assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_destructive_rerun_gate_still_reprobes_a_stale_latch() -> None:
+    """The 30 s max-age survives for the paths that rewrite persisted history."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    clock.advance(60.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        blocked = await kiro_readiness.reject_if_kiro_unverified(_request(service))
+
+    probe.assert_awaited_once()
+    # The stubbed probe left the latch ready=True, so the gate authorizes.
+    assert blocked is None
+
+
+@pytest.mark.asyncio
+async def test_poll_gate_max_age_is_longer_than_the_poll_interval() -> None:
+    """The constant ``/api/sessions/usage`` reads must exceed its 30 s poll cadence."""
+    assert kiro_readiness._POLL_GATE_MAX_AGE_SECS > 30.0

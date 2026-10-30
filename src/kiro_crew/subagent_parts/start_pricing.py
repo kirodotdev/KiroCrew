@@ -310,14 +310,22 @@ def _startup_memory_reserve_gb(
         price = info._start_price_gb
         if price is None and not info._session_sharing:
             price = _dedicated_start_price_gb(
-                cost, settled_gb, _cost_bucket(info.agent, info.execution_context)
+                cost,
+                settled_gb,
+                _cost_bucket(
+                    info.agent, info.execution_context, remote=bool(info._remote_workspace)
+                ),
             )
         gaps += max(0.0, price or 0.0)
     next_start = cost if next_start_gb is None else max(0.0, next_start_gb)
     return next_start + sum(claimed) + cost * (unregistered - len(claimed)) + gaps
 
 
-def _cost_bucket(agent: str, execution: Any) -> str:
+#: Suffix on the cost bucket of a run whose workspace is remote (see _cost_bucket).
+REMOTE_COST_BUCKET_SUFFIX = "@remote"
+
+
+def _cost_bucket(agent: str, execution: Any, *, remote: bool = False) -> str:
     """The cost-store key one run's samples are written under.
 
     The explicit ``agent`` when the spawn named one, else the template the run
@@ -327,7 +335,28 @@ def _cost_bucket(agent: str, execution: Any) -> str:
     (``_record_cost``) and the reads that price a start against it (the gate,
     the reserve, the dedicated top-up), so the two sides cannot key apart. Empty
     when neither is known; the store normalizes that to its default agent.
+
+    A run in a remote session environment (*remote*) gets its own
+    ``<bucket>@remote`` key: its builds and tests run in the remote workspace,
+    so what it weighs here is its engine alone, and mixing those samples with
+    local runs would misprice both.
     """
-    if agent:
-        return agent
-    return str(getattr(execution, "template_id", "") or "")
+    base = agent or str(getattr(execution, "template_id", "") or "")
+    if remote:
+        return (base or "kirocrew") + REMOTE_COST_BUCKET_SUFFIX
+    return base
+
+
+def _parent_runs_remotely(parent_session_key: str | None) -> bool:
+    """True while the parent session's runtime works in a remote workspace.
+
+    In-memory and lock-free (set at each runtime start), so the spawn guard can
+    ask it on the event loop. A child of such a session inherits that workspace
+    (``inherit_environment_for_subagent``), so its file and shell work runs
+    there, not on this machine.
+    """
+    if not parent_session_key:
+        return False
+    from kiro_crew.session_environment import remote_workspace_for
+
+    return remote_workspace_for(parent_session_key) is not None

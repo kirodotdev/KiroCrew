@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         is_proxied_request,
         logger,
         mark_audit_claimed,
+        published_relay_caller,
         safe_context_call,
         sel,
         sel_is_warm,
@@ -83,9 +84,19 @@ def audit_actor(request: web.Request, caller: str) -> str:
     label, ``<caller>:<app>``, so it is never filed as the app's own client. A
     request that carries no claim (the claim is ``""`` for the dashboard user,
     absent before token auth runs) keeps ``caller``.
+
+    A request the Kiro relay delivered is filed under the relayed person,
+    ``relay:<Kiro user ID>``, in place of ``caller``, and still carries the proxy
+    suffix: the relay names who, and the suffix says it arrived through a
+    forwarder.
     """
     request_app = request.get("app", "")
     actor = caller
+    relay_caller = published_relay_caller(request)
+    if relay_caller is not None:
+        # A relay-delivered request names its person: the relay verified them, so
+        # the record says who rather than the label the chain was built with.
+        actor = relay_caller.audit_label
     if isinstance(request_app, str) and request_app:
         actor = f"{caller}:{request_app}" if request.get("internal_auth") is True else request_app
     return f"{actor}{_VIA_PROXY_SUFFIX}" if is_proxied_request(request) else actor

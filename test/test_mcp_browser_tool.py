@@ -22,6 +22,7 @@ import io
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.mcp_tools import browser as mod

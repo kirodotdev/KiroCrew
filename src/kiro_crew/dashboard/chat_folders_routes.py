@@ -11,6 +11,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
     _CHAT_FOLDER_PENDING_ICON_TASKS,
@@ -58,6 +59,7 @@ from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.dashboard.token_auth import effective_request_app as _effective_request_app
 from kiro_crew.dashboard.token_auth import folder_principal
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
@@ -210,6 +212,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             parent_id=parent_id,
             project_dir=str(body.get("project_dir") or ""),
             default_agent=str(body.get("default_agent") or "").strip(),
+            default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -318,16 +321,18 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "order" in body:
         # A non-numeric, null, or non-finite order is caller error, not a server
         # fault: int() would raise and surface as a 500 (no middleware maps
-        # handler exceptions). OverflowError covers JSON infinities such as
-        # 1e309, which int() rejects with neither TypeError nor ValueError.
-        # Skip the field instead, matching api_chat_tag_update.
+        # handler exceptions). body_int turns a JSON infinity such as 1e309
+        # into a ValueError. Skip the field instead, matching
+        # api_chat_tag_update.
         try:
-            changes["order"] = int(body["order"])
-        except (TypeError, ValueError, OverflowError):
+            changes["order"] = body_int(body["order"])
+        except (TypeError, ValueError):
             pass
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "default_destination_crew" in body:
+        changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
@@ -552,16 +557,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
-        if refuse_duplicate_name and "name" in changes:
+        current_parent = str(target.get("parent_id") or "")
+        final_parent = new_parent if reparenting else current_parent
+        if refuse_duplicate_name and ("name" in changes or final_parent != current_parent):
             # Same rule and same place as create_folder_record's: an agent never
             # makes a same-name sibling, because the two then share one path and
-            # neither can be addressed by it. Decided here, under the lock, over
-            # the whole tree -- a crew member's own GET is filtered, so a check
-            # against what the caller can read would miss a folder it cannot
-            # see. The folder's own row is excluded, so re-casing its own name
-            # is allowed. The browser keeps a person's freedom to name two alike.
-            final_parent = new_parent if reparenting else str(target.get("parent_id") or "")
-            folded = str(changes["name"]).strip().casefold()
+            # neither can be addressed by it. A rename and a move both make one
+            # (chat_folder_move sends a parent_id-only PATCH), so both are
+            # checked; a write that keeps both the name and the parent is not.
+            # Decided here, under the lock, over the whole tree -- a crew
+            # member's own GET is filtered, so a check against what the caller
+            # can read would miss a folder it cannot see. The folder's own row
+            # is excluded, so re-casing its own name is allowed. The browser
+            # keeps a person's freedom to name two alike.
+            folded = str(changes.get("name", target.get("name")) or "").strip().casefold()
             if any(
                 str(f.get("id")) != fid
                 and str(f.get("parent_id") or "") == final_parent
@@ -657,7 +666,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             outcome="denied",
             source="duplicate_name",
             resources=fid,
-            error="agent rename would duplicate a sibling folder name",
+            error="agent rename or move would duplicate a sibling folder name",
         )
         return web.json_response(
             {

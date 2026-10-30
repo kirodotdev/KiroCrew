@@ -4,6 +4,7 @@ import { Search, X, Pin, MessageSquare, Clock, Plus, RotateCw } from 'lucide-rea
 import { useQuery } from '@tanstack/react-query'
 
 import { useAppSelector } from '../store'
+import { selectSlotsWithLiveLastTs } from '../store/slotLastTs'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import type { Result, ResourceProvider } from './commandPalette/types'
@@ -362,7 +363,7 @@ export default function CommandPalette({
   // change — a re-memoized provider identity alone does nothing. Fold a
   // fingerprint of that live state into the key so status dots and MRU order
   // update while the palette is open instead of freezing at open-time.
-  const slots = useAppSelector((s) => s.dashboard.slots)
+  const slots = useAppSelector(selectSlotsWithLiveLastTs)
   const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   // Rows render a tool status through toolStatusLabel, so the purpose-vs-raw-title
@@ -375,16 +376,14 @@ export default function CommandPalette({
       activeProvider.id === 'recents'
         ? slots
             .map((s) => {
-              const detail = slotStatusDetail[s.key]
-              // The status string that can change under a stable `kind`: a tool
-              // phase's agent-written purpose, any other phase's label. Only a
-              // fingerprint input — the row itself renders via toolStatusLabel.
-              const detailText = detail?.kind === 'tool' ? detail.purpose ?? '' : detail?.label ?? ''
+              // Every status field, not just `kind`: the row renders through
+              // toolStatusLabel, which reads the purpose, the raw tool name, the
+              // derived title or action and a phase's label, and any of them
+              // can change under a stable `kind`.
+              const detail = JSON.stringify(slotStatusDetail[s.key] ?? null)
               return `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
                 s.pinned ? 1 : 0
-              }:${slotRecency(s).timestamp ?? ''}:${
-                detail?.kind ?? ''
-              }:${detailText}:${detail?.ts ?? ''}`
+              }:${slotRecency(s).timestamp ?? ''}:${detail}`
             })
             .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',
@@ -429,7 +428,7 @@ export default function CommandPalette({
     [dispatchEnter],
   )
 
-  const { selected, setSelected, selectedRef, itemRefs, claimKey } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, claimKey, hoverSelect } = useListKeyboardNav({
     open,
     count: results.length,
     wrap: true,
@@ -718,7 +717,7 @@ export default function CommandPalette({
                         isRecents ? '' : 'flex items-start gap-3'
                       }`}
                       title={r.subtitle || r.title}
-                      onMouseEnter={() => setSelected(i)}
+                      onMouseMove={e => hoverSelect(i, e)}
                       onMouseDown={(e) => {
                         e.preventDefault()
                         dispatchEnter(r, e.metaKey || e.ctrlKey)
@@ -771,8 +770,8 @@ export default function CommandPalette({
                               r.statusStyle === 'pill' ? (
                                 <div className="text-[12px] leading-snug truncate mt-0.5 flex items-center gap-1.5 min-w-0">
                                   <span
-                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                                    style={{ backgroundColor: `var(${r.statusColorVar})` }}
+                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                                    style={{ backgroundColor: `var(${r.statusColorVar})`, color: `var(${r.statusColorVar}-fg)` }}
                                   >
                                     {r.statusLabel}
                                   </span>

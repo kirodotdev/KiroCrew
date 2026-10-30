@@ -422,6 +422,65 @@ def session_manager_plugin_install_hint() -> str:
     )
 
 
+#: The next step for a refused ``aws`` CLI or plugin with no fix command, by
+#: refusal code. A root gateway and the strict policy are not cleared by an
+#: ownership change, and another account's file must not be made trusted: the
+#: step for it is a copy from AWS, in folders only root or this account own.
+REFUSAL_NEXT_STEP = {
+    "other_owner": (
+        "Install a copy with AWS's own installer, then rerun. That copy runs only if "
+        "it and every folder above it belong to root or to the account the gateway "
+        "runs as. If a folder such as /usr/local/bin belongs to the other account, an "
+        "administrator must make root its owner first (see the Remote Crew on EC2 guide)."
+    ),
+    "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
+    "strict_policy": (
+        "Install it where only root can change the file and its folders, at a path "
+        "with no symbolic links, then rerun."
+    ),
+    "": "Fix the file's ownership or permissions so the check passes, then rerun.",
+}
+
+
+def session_manager_plugin_unavailable_message() -> str:
+    """Why the plugin cannot be used: the refusal when one was found, else the install hint.
+
+    A plugin that is installed but refused by the provenance check is not "not
+    installed", and the install hint would hide the reason. The message then
+    names the file, the check's reason and, when one is known, the command that
+    clears it. Changes nothing about what is accepted.
+    """
+    refusal = session_manager_plugin_refusal()
+    if refusal is None:
+        return session_manager_plugin_install_hint()
+    message = (
+        f"session-manager-plugin is installed at {refusal.path} but was refused: "
+        f"{refusal.reason}."
+    )
+    if refusal.remedy_command:
+        # Making the tree root-owned turns whatever binary is in it into an
+        # accepted credential receiver, so the user confirms it is AWS's first.
+        return (
+            f"{message} Reinstalling does not change its ownership. "
+            "If you did not install it from AWS yourself, or are not sure, "
+            "reinstall it from AWS first. Then make its install directory root-owned "
+            f"and rerun: {refusal.remedy_command}"
+        )
+    return f"{message} {REFUSAL_NEXT_STEP.get(refusal.code, REFUSAL_NEXT_STEP[''])}"
+
+
+def reinstall_cannot_clear_refusal() -> bool:
+    """True when the refused plugin sits in AWS's own install tree with a known fix.
+
+    That is the one refusal reinstalling cannot clear: the installer rewrites the
+    same file and leaves its ownership as it was. A refused copy elsewhere (a
+    second account's Homebrew) can still be shadowed by a fresh AWS install, so
+    the install offer stays for it.
+    """
+    refusal = session_manager_plugin_refusal()
+    return refusal is not None and bool(refusal.remedy_command)
+
+
 def session_manager_plugin_install_command() -> str:
     """A copy-pasteable install command for THIS host, or "" if none fits.
 
@@ -484,6 +543,10 @@ def install_session_manager_plugin() -> PluginInstallResult:
     """Install the local AWS Session Manager plugin for SSM port-forwarding."""
     if session_manager_plugin_installed():
         return PluginInstallResult(ok=True, message="session-manager-plugin already installed")
+    if reinstall_cannot_clear_refusal():
+        # Refused inside AWS's own install tree: the installer rewrites that same
+        # file without fixing its ownership.
+        return PluginInstallResult(ok=False, message=session_manager_plugin_unavailable_message())
 
     import tempfile
 
@@ -508,6 +571,9 @@ def install_session_manager_plugin() -> PluginInstallResult:
 
     if session_manager_plugin_installed():
         return PluginInstallResult(ok=True, message="session-manager-plugin installed")
+    if session_manager_plugin_refusal() is not None:
+        # The install ran, but what the resolver finds is still refused.
+        return PluginInstallResult(ok=False, message=session_manager_plugin_unavailable_message())
     return PluginInstallResult(
         ok=False,
         message=(
@@ -520,7 +586,7 @@ def install_session_manager_plugin() -> PluginInstallResult:
 def require_session_manager_plugin() -> None:
     """Fail fast before starting an SSM port-forward without the local plugin."""
     if not session_manager_plugin_installed():
-        raise aws.AWSError(session_manager_plugin_install_hint(), action="ssm:StartSession")
+        raise aws.AWSError(session_manager_plugin_unavailable_message(), action="ssm:StartSession")
 
 
 def open_port_forward(

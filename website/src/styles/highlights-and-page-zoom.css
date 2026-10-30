@@ -48,6 +48,24 @@
   background-color: var(--accent-subtle, rgba(99, 102, 241, 0.15));
 }
 
+/* The comment shown beside the pointer over a highlighted passage or a box on
+   an image (MarkdownPanel). It follows the pointer, so it takes no events. */
+.mc-comment-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg-elevated, #1e1e2e);
+  color: var(--text, #e0e0e0);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 300px;
+  overflow-wrap: break-word;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+
 /* Anchored-comment highlights on the markdown / text artifact body are drawn
    as a real overlay layer (InlineCommentOverlay), NOT the CSS Custom Highlight
    API — real elements always paint and support box-shadow + a persistent active

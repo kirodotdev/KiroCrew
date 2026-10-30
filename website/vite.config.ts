@@ -8,7 +8,8 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 /// <reference types="vitest" />
-import react from '@vitejs/plugin-react'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
 import tailwindcss from '@tailwindcss/vite'
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { execSync } from 'child_process'
@@ -24,6 +25,7 @@ import { precompressPlugin } from './scripts/precompress.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
+import { REACT_COMPILER_OPTIONS, reactCompilerIdFilter } from './react-compiler.config.mjs'
 import { resolveBuildBase, vendorImportMap, withoutServiceWorker } from './scripts/lib/basePath.mjs'
 import {
   parseBrandingConfig,
@@ -34,6 +36,16 @@ import {
 
 /** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
 type EditionBranding = { title?: string; themeColor?: string }
+
+/**
+ * The React Compiler Babel pass, scoped to the listed files. An empty list
+ * adds no plugin, so no module goes through Babel.
+ */
+function reactCompilerPlugins() {
+  const include = reactCompilerIdFilter(fileURLToPath(new URL('.', import.meta.url)))
+  if (!include) return []
+  return [babel({ include, presets: [reactCompilerPreset(REACT_COMPILER_OPTIONS)] })]
+}
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -766,6 +778,10 @@ export default defineConfig({
       readFile: (f: string) => readFileSync(f, 'utf-8'),
       exists: existsSync,
     }),
+    // React Compiler on the opt-in list in react-compiler.config.mjs only, so
+    // the Babel pass costs per listed file instead of per module. After the
+    // stamp (it reads source offsets), before react() (it needs JSX intact).
+    ...reactCompilerPlugins(),
     react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).

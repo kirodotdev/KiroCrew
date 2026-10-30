@@ -1080,12 +1080,12 @@ def _legend(progress: Any, round_value: Any = UNSAID) -> str:
     # progress line wants.
     #
     # SETTLED is every terminal state, not just `accepted`: an item that was rejected or
-    # abandoned has finished too. An earlier version read "N still to settle" as
-    # `total - accepted`, which both miscounted (rejected and abandoned were counted as still
-    # moving) and, once corrected to `total - terminal`, became the OPEN band exactly -- and
-    # "still to settle" is open by definition, so a corrected count there just restated the open
-    # head. Counting the settled side instead is the aggregate no head carries and is correct
-    # the moment it is phrased: an item is settled iff it is in a terminal band.
+    # abandoned has finished too. "N still to settle" as `total - accepted` would miscount
+    # (rejected and abandoned counted as still moving), and as `total - terminal` it is the
+    # OPEN band exactly -- "still to settle" is open by definition, so that count would just
+    # restate the open head. Counting the settled side instead is the aggregate no head
+    # carries and is correct the moment it is phrased: an item is settled iff it is in a
+    # terminal band.
     settled = terminal
     # WITH ITS DENOMINATOR, like every other count here: a bare "3" on a card of counts says
     # nothing about whether that is most of the board or a corner of it. The repetition a reader

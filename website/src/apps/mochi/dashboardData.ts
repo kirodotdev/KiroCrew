@@ -10,6 +10,7 @@
 import { TERMINAL_STATUSES } from './api'
 import type { ActivityEntry, MochiPlan, PlanTask, WatchItem } from './api'
 import { fmtDate, fmtDateFields } from '../../i18n/format'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -123,7 +124,7 @@ export function formatActivity(
     .map((e) => ({
       time: hhmm(e.ts),
       type: str(e.type),
-      content: str(e.content).slice(0, 150),
+      content: sliceCodePoints(str(e.content), 0, 150),
     }))
   if (narrative && narrative !== '—' && narrative !== 'Active') {
     rows.unshift({ time: 'now', type: 'plan', content: narrative })

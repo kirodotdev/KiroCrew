@@ -174,9 +174,9 @@ async def test_a_normal_turn_gate_decides_as_without_the_stamp(tool, kind, polic
     assert (stamped.approved, stamped.rejected) == (bare.approved, bare.rejected)
 
 
-# --- In-cwd reads reach the gate (live capture, claude-agent-acp 0.93.0) ---
+# --- In-cwd reads reach the gate (live capture, claude-agent-acp 0.94.0) ---
 
-_CAPTURES = Path(__file__).parent / "fixtures" / "claude_side_read_ask"
+_CAPTURES = Path(__file__).parent / "fixtures" / "acp_frames" / "claude"
 
 
 def _capture(name: str) -> tuple[dict, list[dict]]:
@@ -207,13 +207,13 @@ def test_every_claude_read_builtin_carries_a_side_ask_rule():
 
 
 def test_the_capture_was_recorded_under_the_shipped_ask_rules():
-    meta, _ = _capture("with-read-ask")
+    meta, _ = _capture("side-read-ask-live")
     assert meta["ask"] == list(_CLAUDE_SIDE_READ_ONLY_ASK_RULES)
 
 
 def test_without_the_read_ask_rules_in_cwd_reads_never_ask():
     """Why the rules exist: ``default`` mode runs in-cwd reads natively."""
-    meta, frames = _capture("without-read-ask")
+    meta, frames = _capture("side-read-no-ask-live")
     assert "Read" not in meta["ask"]
     in_cwd = [c for c in _calls(frames).values() if c["path"].startswith("/work")]
     assert len(in_cwd) == 4
@@ -221,17 +221,17 @@ def test_without_the_read_ask_rules_in_cwd_reads_never_ask():
 
 
 def test_with_the_read_ask_rules_every_read_asks_and_a_denied_path_is_refused_first():
-    _, frames = _capture("with-read-ask")
+    _, frames = _capture("side-read-ask-live")
     calls = list(_calls(frames).values())
     denied = [c for c in calls if c["path"].startswith("/denied")]
-    assert [(c["asked"], c["status"]) for c in denied] == [(False, "failed")]
+    assert [(c["asked"], c["status"]) for c in denied] == [(False, "failed")] * 3
     rest = [c for c in calls if c not in denied]
     assert len(rest) == 5 and all(c["asked"] for c in rest)
 
 
 @pytest.mark.asyncio
 async def test_each_captured_side_read_gets_a_read_only_decision_and_an_sel_row():
-    _, frames = _capture("with-read-ask")
+    _, frames = _capture("side-read-ask-live")
     names: dict = {}
     events = []
     for frame in frames:
@@ -268,7 +268,7 @@ def test_no_other_claude_call_has_its_search_kind_changed(tool):
 
 def _captured_search_event(tool: str, path: str):
     """The captured Grep or Glob request, re-aimed at *path*."""
-    _, frames = _capture("with-read-ask")
+    _, frames = _capture("side-read-ask-live")
     names: dict = {}
     raw: dict = {}
     for frame in frames:

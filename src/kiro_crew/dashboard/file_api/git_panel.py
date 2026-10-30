@@ -26,12 +26,14 @@ if TYPE_CHECKING:
         _slot_git_repo_snapshot,
         config_hook_disable_args_sandboxed,
         deny_app_slot_session_access,
+        effective_session_key,
         is_sensitive_path,
         load_window_off_loop,
         popen_limited,
         redact,
         redact_path_segments,
         sandboxed_spawn_argv,
+        session_runs_remotely,
         slot_not_found,
         worktree_probe_failure_is_empty_scope,
     )
@@ -934,6 +936,11 @@ async def api_project_git_repos(request: web.Request) -> web.Response:
         return denied
     if slot is None:
         return slot_not_found()
+
+    # A remote session works in its workspace, not in this gateway's project
+    # or local repositories, so it lists none (an unreadable choice counts as remote).
+    if await asyncio.to_thread(session_runs_remotely, effective_session_key(slot)):
+        return web.json_response({"repos": [], "omitted": 0, "listed": 0, "incomplete": False})
 
     if not getattr(slot, "_git_repos_seeded", False):
         await load_window_off_loop(slot)

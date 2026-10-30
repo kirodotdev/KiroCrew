@@ -134,7 +134,6 @@ async def _handle_agent(
         await respond("⛔ Only the owner can switch agents.")
         return
 
-    # Direct switch if arg provided
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
@@ -782,12 +781,10 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         _spawn(_respond("⚠️ Owner not configured."))
         return
 
-    # Parse sub-command and args
     parts = cmd_text.split(maxsplit=1)
     sub_cmd = parts[0].lower() if parts else ""
     args = parts[1] if len(parts) > 1 else ""
 
-    # Registry lookup
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:
         handler, _ = entry

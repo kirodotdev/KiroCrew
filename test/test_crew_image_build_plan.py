@@ -74,32 +74,55 @@ def _fake_tree(root: Path, recipe_text: str, *, producer: str = "scripts/p.sh") 
 # ── the derivation ───────────────────────────────────────────────────────────
 
 
-def test_a_concrete_from_is_a_base(tmp_path: Path) -> None:
-    recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nFROM python:3.12-slim\n")
-    assert plan_mod.classify(recipe, tmp_path).role == "base"
+@pytest.mark.parametrize(
+    "text, role",
+    [
+        pytest.param(
+            "# built by scripts/p.sh\nFROM python:3.12-slim\n",
+            "base",
+            id="test_a_concrete_from_is_a_base",
+        ),
+        pytest.param(
+            "# built by scripts/p.sh\nARG BASE\nFROM \\\n  ${BASE}\n",
+            "layer",
+            id="test_a_continuation_joined_from_is_read",
+        ),
+    ],
+)
+def test_the_first_from_decides_the_role(tmp_path: Path, text: str, role: str) -> None:
+    recipe = _fake_tree(tmp_path, text)
+    assert plan_mod.classify(recipe, tmp_path).role == role
 
 
-def test_a_pre_from_arg_is_a_digest_pinned_layer(tmp_path: Path) -> None:
-    recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nARG BASE\nFROM ${BASE}\n")
+@pytest.mark.parametrize(
+    "text, base_arg",
+    [
+        pytest.param(
+            "# built by scripts/p.sh\nARG BASE\nFROM ${BASE}\n",
+            "BASE",
+            id="test_a_pre_from_arg_is_a_digest_pinned_layer",
+        ),
+        # The rule is "the first FROM interpolates an ARG declared above it", not
+        # "the ARG is called BASE": a lane keyed on the literal name would
+        # silently stop recognising a renamed one.
+        pytest.param(
+            "# built by scripts/p.sh\nARG PARENT_IMAGE\nFROM $PARENT_IMAGE\n",
+            "PARENT_IMAGE",
+            id="test_the_base_arg_name_is_not_hard_coded",
+        ),
+        # A ``--platform`` option is dropped, so the ARG behind it is still the
+        # pinned base.
+        pytest.param(
+            "# built by scripts/p.sh\nARG BASE\nFROM --platform=$BUILDPLATFORM ${BASE}\n",
+            "BASE",
+            id="test_a_from_option_does_not_hide_a_layer",
+        ),
+    ],
+)
+def test_a_pre_from_arg_makes_a_layer(tmp_path: Path, text: str, base_arg: str) -> None:
+    recipe = _fake_tree(tmp_path, text)
     got = plan_mod.classify(recipe, tmp_path)
-    assert (got.role, got.base_arg) == ("layer", "BASE")
-
-
-def test_the_base_arg_name_is_not_hard_coded(tmp_path: Path) -> None:
-    """A recipe pinning through some other ARG name is still a layer.
-
-    The rule is "the first FROM interpolates an ARG declared above it", not "the
-    ARG is called BASE" -- a lane keyed on the literal name would silently stop
-    recognising a renamed one.
-    """
-    recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nARG PARENT_IMAGE\nFROM $PARENT_IMAGE\n")
-    got = plan_mod.classify(recipe, tmp_path)
-    assert (got.role, got.base_arg) == ("layer", "PARENT_IMAGE")
-
-
-def test_a_continuation_joined_from_is_read(tmp_path: Path) -> None:
-    recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nARG BASE\nFROM \\\n  ${BASE}\n")
-    assert plan_mod.classify(recipe, tmp_path).role == "layer"
+    assert (got.role, got.base_arg) == ("layer", base_arg)
 
 
 @pytest.mark.parametrize(
@@ -123,16 +146,6 @@ def test_a_from_option_is_not_mistaken_for_the_image(tmp_path: Path, flag: str) 
     assert operand == "python:3.12-slim", f"read {operand!r} as the image of `FROM {flag} ...`"
     recipe = _fake_tree(tmp_path, text)
     assert plan_mod.classify(recipe, tmp_path).role == "base"
-
-
-def test_a_from_option_does_not_hide_a_layer(tmp_path: Path) -> None:
-    """The option is dropped, so the ARG behind it is still the pinned base."""
-    recipe = _fake_tree(
-        tmp_path,
-        "# built by scripts/p.sh\nARG BASE\nFROM --platform=$BUILDPLATFORM ${BASE}\n",
-    )
-    got = plan_mod.classify(recipe, tmp_path)
-    assert (got.role, got.base_arg) == ("layer", "BASE")
 
 
 def test_a_stage_alias_is_not_mistaken_for_the_image(tmp_path: Path) -> None:
@@ -171,28 +184,38 @@ def test_an_arg_declared_after_from_is_refused(tmp_path: Path) -> None:
         plan_mod.classify(recipe, tmp_path)
 
 
-def test_a_recipe_naming_no_producer_is_refused(tmp_path: Path) -> None:
-    recipe = _fake_tree(tmp_path, "FROM python:3.12-slim\n")
-    with pytest.raises(plan_mod.PlanError, match="names no scripts"):
-        plan_mod.classify(recipe, tmp_path)
-
-
-def test_a_recipe_mentioning_two_scripts_is_refused(tmp_path: Path) -> None:
-    """Which of two mentioned scripts builds the recipe is not guessable.
-
-    The refusal carries the remedy, because the alternative -- a declaration
-    syntax -- would be a second way to say the same thing with no recipe using
-    it. The first genuinely ambiguous recipe is what should buy that.
-    """
-    recipe = _fake_tree(tmp_path, "# scripts/p.sh and scripts/q.sh\nFROM python:3.12-slim\n")
-    with pytest.raises(plan_mod.PlanError, match="mentions several scripts"):
-        plan_mod.classify(recipe, tmp_path)
-
-
-def test_an_absent_producer_is_refused(tmp_path: Path) -> None:
-    """The defect this lane exists for: a recipe citing a script nobody wrote."""
-    recipe = _fake_tree(tmp_path, "# built by scripts/gone.sh\nFROM python:3.12-slim\n")
-    with pytest.raises(plan_mod.PlanError, match="does not exist"):
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        pytest.param(
+            "FROM python:3.12-slim\n",
+            "names no scripts",
+            id="test_a_recipe_naming_no_producer_is_refused",
+        ),
+        # Which of two mentioned scripts builds the recipe is not guessable. The
+        # refusal carries the remedy instead of a declaration syntax that no
+        # recipe would use yet.
+        pytest.param(
+            "# scripts/p.sh and scripts/q.sh\nFROM python:3.12-slim\n",
+            "mentions several scripts",
+            id="test_a_recipe_mentioning_two_scripts_is_refused",
+        ),
+        # The defect this lane exists for: a recipe citing a script nobody wrote.
+        pytest.param(
+            "# built by scripts/gone.sh\nFROM python:3.12-slim\n",
+            "does not exist",
+            id="test_an_absent_producer_is_refused",
+        ),
+        pytest.param(
+            "# built by scripts/p.sh\nRUN true\n",
+            "no FROM",
+            id="test_a_recipe_without_a_from_is_refused",
+        ),
+    ],
+)
+def test_an_unbuildable_recipe_is_refused(tmp_path: Path, text: str, match: str) -> None:
+    recipe = _fake_tree(tmp_path, text)
+    with pytest.raises(plan_mod.PlanError, match=match):
         plan_mod.classify(recipe, tmp_path)
 
 
@@ -234,12 +257,6 @@ def test_an_absent_producer_is_still_refused_on_windows(
     recipe = _fake_tree(tmp_path, "# built by scripts/gone.sh\nFROM python:3.12-slim\n")
     monkeypatch.setattr(plan_mod.os, "name", "nt")
     with pytest.raises(plan_mod.PlanError, match="does not exist"):
-        plan_mod.classify(recipe, tmp_path)
-
-
-def test_a_recipe_without_a_from_is_refused(tmp_path: Path) -> None:
-    recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nRUN true\n")
-    with pytest.raises(plan_mod.PlanError, match="no FROM"):
         plan_mod.classify(recipe, tmp_path)
 
 

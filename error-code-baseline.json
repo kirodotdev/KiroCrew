@@ -1,11 +1,11 @@
 {
   "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
   "_totals": {
-    "missing_code": 1037,
+    "missing_code": 1030,
     "opaque_body": 18,
     "dynamic_status": 38
   },
-  "_compliant": 2752,
+  "_compliant": 2885,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,
@@ -46,21 +46,19 @@
     "apps/route_registry.py": {
       "missing_code": 3
     },
-    "apps/routes.py": {
-      "dynamic_status": 1,
-      "missing_code": 22,
-      "opaque_body": 2
+    "apps/routes_art.py": {
+      "missing_code": 11
     },
     "apps/routes_enable.py": {
       "missing_code": 5,
       "opaque_body": 2
     },
     "apps/routes_install.py": {
-      "missing_code": 5,
-      "opaque_body": 3
+      "missing_code": 8,
+      "opaque_body": 4
     },
     "apps/routes_listing.py": {
-      "missing_code": 2
+      "missing_code": 7
     },
     "apps/routes_proxy.py": {
       "missing_code": 7
@@ -74,7 +72,9 @@
       "missing_code": 6
     },
     "apps/routes_uninstall.py": {
-      "missing_code": 2
+      "dynamic_status": 1,
+      "missing_code": 5,
+      "opaque_body": 1
     },
     "dashboard/agent_admin/agent_config.py": {
       "missing_code": 1
@@ -164,7 +164,7 @@
       "missing_code": 12
     },
     "dashboard/file_api/outbox.py": {
-      "missing_code": 11
+      "missing_code": 10
     },
     "dashboard/file_api/pinned_io.py": {
       "missing_code": 6
@@ -244,7 +244,7 @@
       "missing_code": 10
     },
     "dashboard/handlers/knowledge_sources.py": {
-      "missing_code": 26
+      "missing_code": 24
     },
     "dashboard/handlers/knowledge_sync.py": {
       "missing_code": 7
@@ -257,7 +257,7 @@
       "missing_code": 18
     },
     "dashboard/handlers/mcp_discover.py": {
-      "missing_code": 19
+      "missing_code": 14
     },
     "dashboard/handlers/mcp_gateway_routes.py": {
       "missing_code": 4
@@ -367,6 +367,9 @@
     "dashboard/messaging_api/agent_push.py": {
       "missing_code": 7
     },
+    "dashboard/messaging_api/browser_routes.py": {
+      "missing_code": 2
+    },
     "dashboard/messaging_api/discord_settings.py": {
       "dynamic_status": 1
     },
@@ -404,7 +407,7 @@
       "dynamic_status": 1
     },
     "dashboard/openai_compat.py": {
-      "missing_code": 17
+      "missing_code": 16
     },
     "deploy/handlers.py": {
       "dynamic_status": 5,

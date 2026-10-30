@@ -975,6 +975,7 @@ class AdaptiveController:
                     "rss_mb": round(last.rss_mb, 1),
                     "fd_count": last.fd_count,
                     "running": last.running,
+                    "saturating": last.saturating,
                     "queued": last.queued,
                     "attributable_timeout_rate": round(last.attributable_timeout_rate, 3),
                     "completion_rate": round(last.completion_rate, 3),

@@ -146,8 +146,8 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // Inline: no flyout to open, so the row must not advertise one.
     expect(recentRow.getAttribute('aria-haspopup')).toBeNull()
 
-    // The whole picker is reachable in the one open menu.
-    expect(screen.getByText('Within')).toBeInTheDocument()
+    // The whole picker is reachable in the one open menu (it has no caption of
+    // its own; the custom-amount field and the preset chips are the picker).
     expect(screen.getByLabelText('Custom recency amount')).toBeInTheDocument()
     expect(screen.getByLabelText('Custom recency unit')).toBeInTheDocument()
     const presets = ['1 hour', '6 hours', '1 day', '1 week']
@@ -165,7 +165,7 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // was not having. Picking now enables it, so the gate's reason is gone — and
     // a gate on one viewport was the per-modality thinking that caused the bug.
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
-    expect(screen.getByText('Within')).toBeInTheDocument()
+    expect(screen.getByLabelText('Custom recency amount')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '1 week' })).toBeInTheDocument()
   })
 
@@ -219,7 +219,6 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(recentRow).toHaveAttribute('aria-haspopup', 'menu')
     expect(screen.getByTestId('stale-collapse-menu')).toHaveAttribute('aria-haspopup', 'menu')
     // The picker lives in the closed submenu, so nothing of it is in the DOM yet.
-    expect(screen.queryByText('Within')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Custom recency amount')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '1 week' })).not.toBeInTheDocument()
   })
@@ -242,7 +241,7 @@ describe('sessions filter menu — duration pickers at phone width', () => {
         // submenu-open handler (Enter/Space toggle the filter instead).
         fireEvent.keyDown(row, { key: 'ArrowRight' })
       }
-      await screen.findByText('Within')
+      await screen.findByLabelText('Custom recency amount')
       // Reaching the picker must not have enabled anything by itself.
       expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
 

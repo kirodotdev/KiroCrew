@@ -34,7 +34,7 @@
         }
       }
     },
-    "agent_version": "0.93.0",
+    "agent_version": "0.94.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -159,7 +159,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      28952,
+      31155,
       1000000
     ],
     "usage_cost": null
@@ -169,7 +169,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_kacgv3lxyrsycnau2crrdslpnxfrxrqmc2a3biat637u7i22jtea",
+        "message_id": "msg_bdrk_43dazcss3hpkzq2kgygodnfcu5mgnyv2umllblmv44xsxsddncya",
         "text": "ok"
       }
     ],
@@ -186,7 +186,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      28955,
+      31158,
       1000000
     ],
     "usage_cost": null
@@ -197,10 +197,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      28955,
+      31158,
       1000000
     ],
-    "usage_cost": 0.048380099999999995
+    "usage_cost": 0.0555615
   },
   {
     "frame": "response",
@@ -208,8 +208,8 @@
     "prompt_tokens": [
       3,
       4,
-      17462,
-      11486
+      17775,
+      13376
     ],
     "stop_reason": "end_turn"
   },
@@ -219,7 +219,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31164,
+      31250,
       1000000
     ],
     "usage_cost": null
@@ -229,7 +229,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_uwivwve2vyqibyjhfylb5ag66wpollrj5mqdds25ordi4m4ee2wq",
+        "message_id": "msg_bdrk_da6lqh6sn745urtkidxfwxqsm35kecsv6v7flnmyh3kxw3v2ikrq",
         "text": "ok"
       }
     ],
@@ -246,10 +246,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      31164,
+      31250,
       1000000
     ],
-    "usage_cost": 0.06541725
+    "usage_cost": 0.0653208
   },
   {
     "frame": "response",
@@ -257,8 +257,8 @@
     "prompt_tokens": [
       3,
       4,
-      28948,
-      2209
+      31151,
+      92
     ],
     "stop_reason": "end_turn"
   },
@@ -301,9 +301,9 @@
       {
         "kind": "tool_result",
         "tool_call_id": "claude-tool-1",
-        "tool_output": "{\"trigger\": \"manual\", \"preTokens\": 31164, \"postTokens\": 4257, \"durationMs\": 5609}",
+        "tool_output": "{\"trigger\": \"manual\", \"preTokens\": 31250, \"postTokens\": 4148, \"durationMs\": 5053}",
         "tool_output_bytes": 81,
-        "tool_output_digest": "478303b0152a32e33c7a6b495024385ff3830ddd1953cafbc0ec77ebf353e748"
+        "tool_output_digest": "cb1d333f919082c0ce964cdd21e81128346799b5764ebc5f3116e8eab11dd1d1"
       }
     ],
     "frame": "session/update",
@@ -315,7 +315,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      4257,
+      4148,
       1000000
     ],
     "usage_cost": null
@@ -337,7 +337,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      25931,
+      26165,
       1000000
     ],
     "usage_cost": null
@@ -347,7 +347,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_jir4ndqfr2z454nvwhikly5ilxjzjcfisx6idyttwfk5rhnshcoq",
+        "message_id": "msg_bdrk_xgfmyas74ju5g65pzuqn25meiva6wieqai2ziy5muvigmzmmojfa",
         "text": "amber"
       }
     ],
@@ -363,7 +363,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_jir4ndqfr2z454nvwhikly5ilxjzjcfisx6idyttwfk5rhnshcoq",
+        "message_id": "msg_bdrk_xgfmyas74ju5g65pzuqn25meiva6wieqai2ziy5muvigmzmmojfa",
         "text": ","
       }
     ],
@@ -379,7 +379,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_jir4ndqfr2z454nvwhikly5ilxjzjcfisx6idyttwfk5rhnshcoq",
+        "message_id": "msg_bdrk_xgfmyas74ju5g65pzuqn25meiva6wieqai2ziy5muvigmzmmojfa",
         "text": " cob"
       }
     ],
@@ -395,7 +395,7 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_jir4ndqfr2z454nvwhikly5ilxjzjcfisx6idyttwfk5rhnshcoq",
+        "message_id": "msg_bdrk_xgfmyas74ju5g65pzuqn25meiva6wieqai2ziy5muvigmzmmojfa",
         "text": "alt"
       }
     ],
@@ -412,7 +412,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      25937,
+      26171,
       1000000
     ],
     "usage_cost": null
@@ -423,10 +423,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      25937,
+      26171,
       1000000
     ],
-    "usage_cost": 0.1293167
+    "usage_cost": 0.1219348
   },
   {
     "frame": "response",
@@ -434,8 +434,8 @@
     "prompt_tokens": [
       3,
       7,
-      17462,
-      8465
+      17775,
+      8386
     ],
     "stop_reason": "end_turn"
   }

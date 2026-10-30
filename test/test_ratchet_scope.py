@@ -30,6 +30,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS, git_command_env
 
@@ -75,6 +76,8 @@ def _fixture_git_env() -> dict[str, str]:
     env[f"GIT_CONFIG_KEY_{count}"] = "init.templateDir"
     env[f"GIT_CONFIG_VALUE_{count}"] = ""
     env["GIT_CONFIG_COUNT"] = str(count + 1)
+    # Last, so the entry lands after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 
@@ -534,6 +537,141 @@ class TestExplicitBase:
         assert "::notice::" in out
         assert resolved in out
         assert "::warning::" not in out
+
+
+class TestPrMergeCommitScope:
+    """The env-base gates must scope to the PR's OWN diff on a CI pull_request checkout.
+
+    ``actions/checkout`` on a ``pull_request`` event produces a synthetic merge
+    commit: ``HEAD^1`` = base-branch tip, ``HEAD^2`` = PR head.  Diffing from
+    ``resolve_base(base.sha)`` to the working tree (= the merge commit) therefore
+    includes every file the base branch changed after the PR was opened -- on a
+    stale PR that is hundreds of test files (observed case: 268 files, 3 passes).
+
+    The fix: on that checkout shape, ``changed_paths_at`` uses ``git diff HEAD^1
+    HEAD`` instead of a base-to-working-tree diff.  ``HEAD^1`` is the base-branch
+    tip; ``HEAD`` is the merge commit; the diff is exactly what the PR contributes.
+    ``resolve_base`` is unchanged.  These tests build the CI merge-commit shape
+    and verify that ``changed_paths_at`` scopes to that narrower ``HEAD^1..HEAD``
+    diff while ``resolve_base`` returns the same value it always did.
+    """
+
+    def _make_ci_pr_merge_commit(self, repo: Path) -> dict[str, str]:
+        """Create a CI-style merge commit and return the relevant SHAs.
+
+        The fixture tree already has::
+
+            A = base.txt committed on main (the branch point)
+            B = feature.py added on feature (PR head)
+            C = mainline.txt added on main AFTER the branch point
+
+        We add::
+
+            D = stale.txt added on main AFTER the PR was "opened" (base.sha = C)
+
+        Then detach HEAD at main and merge feature in, replicating what
+        ``actions/checkout`` does for a ``pull_request`` event::
+
+            M = merge commit; HEAD^1 = D, HEAD^2 = B, origin/main = D
+
+        base.sha is set to C (main tip when the PR was "opened"), so D is the
+        stale change that the old implementation wrongly included.
+        """
+        _set_origin_main(repo)
+        # Add the stale main commit (D) -- landed after the PR was "opened".
+        _git(repo, "checkout", "main")
+        _commit_file(repo, "stale.txt", "stale main commit after PR was opened")
+        _git(repo, "update-ref", "refs/remotes/origin/main", "main")  # origin/main = D
+        d_sha = _git(repo, "rev-parse", "HEAD")
+        # C is now HEAD~1 on main (= main tip when PR was opened = base.sha).
+        c_sha = _git(repo, "rev-parse", "HEAD~1")
+        # Create the CI merge commit: detach at main tip, merge feature in.
+        _git(repo, "checkout", "--detach", "main")
+        _git(repo, "merge", "--no-ff", "-m", "CI merge ref", "feature")
+        return {"base_sha": c_sha, "d_sha": d_sha}
+
+    def test_pr_own_head_returns_head2_on_ci_merge_commit(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        _set_origin_main(repo)
+        _git(repo, "checkout", "--detach", "main")
+        _git(repo, "merge", "--no-ff", "-m", "CI merge ref", "feature")
+
+        assert scope._pr_own_head() == "HEAD^2"
+
+    def test_pr_own_head_returns_head_on_plain_branch(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        _git(repo, "checkout", "feature")
+
+        assert scope._pr_own_head() == "HEAD"
+
+    def test_pr_own_head_returns_head_outside_ci_pr_event(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local merges and push events never take the committed-endpoint path.
+
+        Even when HEAD is a CI-shaped merge commit, a non-pull_request
+        GITHUB_EVENT_NAME (or no env var at all) must return "HEAD" so that
+        local gate runs see uncommitted edits and push-event runs diff to the
+        working tree.
+        """
+        monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+        _set_origin_main(repo)
+        _git(repo, "checkout", "--detach", "main")
+        _git(repo, "merge", "--no-ff", "-m", "local merge", "feature")
+
+        assert scope._pr_own_head() == "HEAD"
+
+    def test_resolve_base_unchanged_on_pr_merge_commit(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """resolve_base(base.sha) is unchanged on a PR merge commit.
+
+        resolve_base still calls merge-base(base_sha, HEAD), which on a PR
+        merge commit returns base_sha itself (since base_sha is an ancestor of
+        the merge commit through HEAD^1).  Only changed_paths_at is narrowed,
+        so resolve_base remains compatible with added_lines_at and the ratchet
+        gates that rely on it.
+        """
+        shas = self._make_ci_pr_merge_commit(repo)
+        base_sha = shas["base_sha"]
+
+        resolved = scope.resolve_base(base_sha)
+
+        # resolve_base on a PR merge commit returns merge-base(base_sha, HEAD).
+        # base_sha is an ancestor of HEAD (through HEAD^1), so merge-base = base_sha.
+        expected = _git(repo, "merge-base", base_sha, "HEAD")
+        assert resolved == expected
+
+    def test_changed_paths_at_scopes_to_pr_own_diff_on_stale_pr(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale PR must not include files the base branch added after it was opened.
+
+        changed_paths_at uses git diff HEAD^1 HEAD on a PR merge-commit
+        checkout.  HEAD^1 is the base-branch tip; HEAD is the merge commit.
+        That diff spans only what the PR contributes to the merge, using
+        merged path names that exist in the working tree.  Main-only commits
+        (stale.txt) and commits already on main at PR-open time (mainline.txt)
+        are both excluded.
+        """
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        shas = self._make_ci_pr_merge_commit(repo)
+        resolved = scope.resolve_base(shas["base_sha"])
+
+        paths = scope.changed_paths_at(resolved)
+
+        assert "feature.py" in paths, "PR's own file must be in scope"
+        assert "stale.txt" not in paths, (
+            "stale.txt was added to main AFTER the PR was opened and must not appear "
+            "in the PR's own diff"
+        )
+        assert (
+            "mainline.txt" not in paths
+        ), "mainline.txt was already on main when the PR was opened and is not the PR's change"
 
 
 class TestParseAddedLines:

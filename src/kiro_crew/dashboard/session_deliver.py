@@ -131,7 +131,9 @@ async def deliver(
 ) -> str:
     """Deliver *text* from *origin* into *slot*; return a ``DELIVERED_*`` outcome.
 
-    Idle slot: append :func:`origin_row` and start the turn. Running slot: an
+    Idle slot: a cron or app message is queued and the queue drain starts it
+    (:func:`_deliver_idle`); a slot that is closing or the gateway is shutting
+    down answers :data:`NOT_DELIVERED` and the caller falls back. Running slot: an
     automation wake is steered into the turn (its row is the same nudge row,
     written by ``steer_into_running_turn``), and a cron or app message is queued
     behind it with a ``queued`` card, so an injection never starts a second
@@ -143,7 +145,10 @@ async def deliver(
     records it for a requeue, and an app message's queue entry carries it so the
     drain re-checks it. :data:`QUEUE_FULL` means the live queue had no room and
     nothing was written. *evict_oldest* makes a cron notification on a full live
-    queue drop the oldest entry and its card instead, so the newest report waits.
+    queue drop the oldest queued cron notification no person edited, and its card,
+    so the newest report waits; with none, nothing else gives way, nothing is
+    written and the answer is :data:`QUEUE_FULL`, which each cron caller turns into
+    its out-of-session fallback.
     """
     if origin.kind == ORIGIN_PEER:
         return await _deliver_peer(state, slot, text, origin, admission, queue_meta)
@@ -151,26 +156,50 @@ async def deliver(
         return await _deliver_running(state, slot, text, origin, admission, evict_oldest)
     if origin.kind == ORIGIN_AUTOMATION:
         return NOT_DELIVERED
-    from kiro_crew.dashboard.chat_runner import _run_chat
-    from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+    return await _deliver_idle(state, slot, text, origin, admission, evict_oldest)
 
-    write_origin_row(slot, text, origin)
-    # Not the person's speech: no human exemption from the drain's linked drop.
-    # An app's text is a synthetic payload, which keeps it off a linked
-    # channel mirror where it would read as the human's own words.
-    slot.task = spawn_guarded_turn(
-        state,
-        slot,
-        _run_chat(
-            state,
-            slot,
-            text,
-            _directive_user_origin=False,
-            _synthetic_payload=origin.kind == ORIGIN_APP,
-            _turn_actor=origin.kind,
-        ),
+
+async def _deliver_idle(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    text: str,
+    origin: Origin,
+    admission: dict | None,
+    evict_oldest: bool,
+) -> str:
+    """The idle-slot half of :func:`deliver` for a cron or app message.
+
+    The message is queued as the running-slot half queues it, then the queue
+    drain starts it, so it takes the checks every queued message takes before
+    its turn: memory preparation still running, a Stop being resolved, a sign-in
+    hold and an entry already waiting ahead of it. When one of them refuses, the
+    card waits for the next drain. A slot that is closing, was replaced while
+    this waited for its lock, or receives the message during gateway shutdown
+    takes nothing: its queued card would not survive this process, so the caller
+    falls back as for a gone session.
+    """
+    from kiro_crew.dashboard.chat_runner import (
+        _gateway_shutdown_requested,
+        _start_next_queued_turn,
+        idle_slot_admits_drain,
     )
-    return DELIVERED_TURN
+
+    async with slot._lock:
+        if (
+            slot.is_closing
+            or state.get_slot(slot.key) is not slot
+            or _gateway_shutdown_requested(state)
+        ):
+            return NOT_DELIVERED
+        outcome = _queue_entry(state, slot, text, origin, admission, evict_oldest)
+        if outcome != DELIVERED_QUEUED or not idle_slot_admits_drain(state, slot):
+            return outcome
+        slot._turn_admission_reserved = True
+        try:
+            started = await _start_next_queued_turn(state, slot)
+        finally:
+            slot._turn_admission_reserved = False
+    return DELIVERED_TURN if started else DELIVERED_QUEUED
 
 
 async def _deliver_running(
@@ -202,17 +231,58 @@ async def _deliver_running(
         if outcome == STEER_REQUEUED:
             return DELIVERED_REQUEUED
         return NOT_DELIVERED
+    return _queue_entry(state, slot, text, origin, admission, evict_oldest)
+
+
+def _queue_entry(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    text: str,
+    origin: Origin,
+    admission: dict | None,
+    evict_oldest: bool,
+) -> str:
+    """Queue a cron or app message as a card and return the delivery outcome."""
     if origin.kind == ORIGIN_CRON:
         from kiro_crew.dashboard.cron_inject import queue_cron_notification
 
         if evict_oldest:
-            from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+            from kiro_crew.dashboard.chat_utils import (
+                CRON_NOTIFICATION_KIND,
+                _remove_queued_by_id,
+            )
             from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 
             if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
-                evicted = slot.queue_pop(0)
-                logger.warning("Queue full for slot %s: evicting oldest message", slot.key)
+                # Only another cron notification gives way: a person's prompt, an
+                # app's message or a peer's send is never dropped by automation,
+                # and neither is a cron card a person edited (its words are theirs
+                # now, though it keeps the cron kind).
+                index = next(
+                    (
+                        i
+                        for i, entry in enumerate(slot._queue)
+                        if entry.get("kind") == CRON_NOTIFICATION_KIND
+                        and not entry.get("_directive_user_origin")
+                        and not entry.get("_directive_channel_origin")
+                    ),
+                    None,
+                )
+                if index is None:
+                    logger.warning(
+                        "Queue full for slot %s with no cron notification to evict: "
+                        "dropping this one",
+                        slot.key,
+                    )
+                    return QUEUE_FULL
+                evicted = slot.queue_pop(index)
+                logger.warning(
+                    "Queue full for slot %s: evicting the oldest cron notification", slot.key
+                )
                 _remove_queued_by_id(slot.messages, evicted["id"])
+                # Open dashboards render queue cards from WebSocket frames, not
+                # from this slot's message list.
+                state.broadcast_ws("queue_cancel", {"slot": slot.key, "queue_id": evicted["id"]})
         queue_cron_notification(slot, text, origin.label)
         return DELIVERED_QUEUED
     if origin.kind == ORIGIN_APP:

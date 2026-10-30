@@ -120,7 +120,7 @@ _BASE_NAMES = frozenset("""
         ensure_channel_folder extract_options format_overflow generate_token
         guard_owner_surface_routes internal_memory_scope is_direct_local_request
         is_proxied_request is_sensitive_path live logger mint_options_token
-        parent_template_allowlists parent_work_supported persisted_replay_denial_reason
+        parent_project_dirs parent_template_allowlists parent_work_supported persisted_replay_denial_reason
         persisted_snapshot_denial_reason pip_extra_install_command platform_compat
         read_bounded_json read_config_text read_panel_records read_state read_tombstone
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
@@ -1420,7 +1420,7 @@ def _facade_in(root: Path) -> str:
 def test_the_parked_run_ratchet_reads_the_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import test_subagent_spawn_approval_parked_6484 as guard
+    import test_subagent_spawn_approval_parked as guard
 
     root = _mirror(tmp_path)
     monkeypatch.setattr(msg, "__file__", _facade_in(root))

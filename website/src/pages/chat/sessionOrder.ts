@@ -108,7 +108,7 @@ export function compareManual(
 export function slotActivityTs(
   slot: { last_turn_ts?: string; last_ts?: string; created?: string },
 ): string | undefined {
-  return slot.last_turn_ts || slot.last_ts || slot.created
+  return slot.last_turn_ts || slot.last_ts || slot.created // last-ts: reached only without last_turn_ts, whose rows take every bump
 }
 
 /** ISO-string -> epoch-seconds parse cache. A sidebar sort runs the comparator

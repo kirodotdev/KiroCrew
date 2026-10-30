@@ -220,6 +220,36 @@ export const messageReducers = {
     }
     if (!mark(state.messages)) mark(state.slotMessages[safeKey(slot)])
   },
+  /** Remove a row nothing proves landed, as the user's own explicit outcome.
+   *
+   *  Guarded on the absence of proof rather than on the caller: a row confirmation has cleared
+   *  `optimistic` on is the transcript's, and splicing it out would delete a delivered message
+   *  while the server's copy comes straight back on the next fetched page. Scans BOTH arrays as
+   *  `confirmOptimisticSend` does, for the same in-flight slot switch. */
+  dropUnconfirmedRow(state: ChatState, action: PayloadAction<{ slot: string; sendId: string }>) {
+    const { slot, sendId } = action.payload
+    if (isUnsafeKey(slot)) return
+    const drop = (msgs: ChatMessage[] | undefined, active = false): boolean => {
+      if (!msgs) return false
+      const splice = (at: number) => {
+        msgs.splice(at, 1)
+        if (active && state._switchLiveFrom !== undefined && at < state._switchLiveFrom) state._switchLiveFrom -= 1
+      }
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
+        if (!m.meta?.optimistic) return false
+        splice(i)
+        for (let j = msgs.length - 1; j >= 0; j--) {
+          if (msgs[j].role === 'notice' && msgs[j].meta?.deliveryNoticeFor === sendId) splice(j)
+        }
+        return true
+      }
+      return false
+    }
+    drop(state.messages, true)
+    drop(state.slotMessages[safeKey(slot)])
+  },
   /** Resolve an optimistic steer bubble against the steer POST's own receipt.
    *
    *  `meta.steer` draws the "Steered into the running turn" badge, so it is an
@@ -272,16 +302,47 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean }>) {
-    const { id, slot, registry, allPending } = action.payload
+  /** Drop the rows a committed Regenerate swap retired, before the refetch the
+   *  swap triggers. That refetch re-seats decided rows (permissions,
+   *  elicitations) from the client's own copies, so a decided card of the
+   *  replaced turn would otherwise come back beside the new reply. A row is
+   *  retired when its `mid` is named, or, for a decided row, its approval id. */
+  retireSwappedRows(state: ChatState, action: PayloadAction<{ slot: string; mids?: unknown; approvalIds?: unknown }>) {
+    const { slot } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const strings = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
+    const mids = strings(action.payload.mids)
+    const approvalIds = strings(action.payload.approvalIds)
+    if (mids.size === 0 && approvalIds.size === 0) return
+    const retired = (m: ChatMessage) => {
+      const mid = m.meta?.mid
+      if (typeof mid === 'string' && mids.has(mid)) return true
+      const aid = m.meta?.approval_id
+      return (m.role === 'permission' || m.role === 'elicitation') && typeof aid === 'string' && approvalIds.has(aid)
+    }
+    if (slot === state.activeSlot) state.messages = state.messages.filter(m => !retired(m))
+    const cached = state.slotMessages[safeKey(slot)]
+    if (cached) state.slotMessages[safeKey(slot)] = cached.filter(m => !retired(m))
+  },
+  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean; mid?: string; answer?: Record<string, unknown> }>) {
+    const { id, slot, registry, allPending, mid, answer } = action.payload
     if (!slot || isUnsafeKey(slot)) return
     const messages = slot === state.activeSlot
       ? state.messages
       : state.slotMessages[safeKey(slot)]
     const matches = messages?.filter(message => message.meta?.approval_id === id)
-    const m = (registry
-      ? matches?.find(message => message.meta?.registry === registry)
-      : undefined) ?? matches?.[0]
+    // `mid` names the exact row the server stamped. An ACP request id is
+    // connection-scoped and a backend may reuse it, so by id alone the OLDEST
+    // row would win and a later card with the same id would stay pending. A
+    // frame that NAMES a mid therefore never falls back to another row: a
+    // miss means the row is not in this store (not loaded yet), and stamping
+    // a sibling would resolve the wrong card.
+    const m = mid
+      ? matches?.find(message => message.meta?.mid === mid)
+      : (registry
+        ? matches?.find(message => message.meta?.registry === registry)
+        : undefined)
+        ?? matches?.[0]
     const decision = action.payload.decision || 'approved'
     // A 'stale' retirement carries no outcome (an expired wait, a 404, or a
     // reconcile snapshot that no longer lists the id), so it may only settle
@@ -293,6 +354,10 @@ export const messageReducers = {
     // write downgraded the decision. The reverse direction stays open: a
     // real decision landing after 'stale' is new information and overwrites.
     if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    // An elicitation's accepted answer rides the same frame; the card reads
+    // `meta.answer` for its summary, which a transcript reload would otherwise
+    // be the first to supply.
+    if (m?.meta && answer && decision !== 'stale') m.meta.answer = answer
     // `allPending`: a bare-id 404 proves NO request is pending under this id
     // (`resolve_approval` checks the state and slot registries), yet a
     // chat-runner row and a coordinator row can carry it. Settling only
@@ -496,28 +561,35 @@ export const messageReducers = {
    *  the text. The tool is then the turn's latest step, so the burst that
    *  preceded it is closed and the new one belongs after it — appending is the
    *  only placement that satisfies both, and it is what stops a post-tool
-   *  burst being concatenated into the pre-tool block. */
+   *  burst being concatenated into the pre-tool block.
+   *
+   *  A NON-active slot accumulates into `slotMessages[slot]`, the array a pane
+   *  rendering that slot reads (a split-view or session-grid pane): those hosts never move `activeSlot`, and their
+   *  answer text already streams there via the non-active chunk path, so
+   *  reasoning must land beside it. A crewmate's chat still drops these rows
+   *  at render time (`filterCrewmateChat`, #18238). */
   sseThinkingChunk(state: ChatState, action: PayloadAction<{ slot: string; content: string }>) {
     const { slot, content } = action.payload
-    if (slot !== state.activeSlot || !content) return
-    let at = state.messages.length
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'streaming') { at = i; break }
+    if (!slot || !content || isUnsafeKey(slot)) return
+    const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
+    let at = msgs.length
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'streaming') { at = i; break }
     }
-    for (let i = at; i < state.messages.length; i++) {
-      if (state.messages[i].role === 'tool') { at = state.messages.length; break }
+    for (let i = at; i < msgs.length; i++) {
+      if (msgs[i].role === 'tool') { at = msgs.length; break }
     }
     // Extend the burst the model is still emitting: an out-of-band row (an
     // approval, a queued bubble) and a confirmed steer both interrupt it
     // without ending it, so look through them for the open block.
     let prev = at
     while (prev > 0) {
-      const m = state.messages[prev - 1]
+      const m = msgs[prev - 1]
       if (isOutOfBandRow(m) || (m.role === 'user' && !isTurnBoundaryUser(m))) { prev--; continue }
       break
     }
-    const open = prev > 0 ? state.messages[prev - 1] : undefined
+    const open = prev > 0 ? msgs[prev - 1] : undefined
     if (open?.role === 'thinking') { open.content += content; return }
-    state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
+    msgs.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
   },
 }

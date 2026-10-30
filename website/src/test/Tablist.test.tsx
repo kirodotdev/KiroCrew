@@ -156,3 +156,24 @@ describe('Tablist selection', () => {
     expect(screen.queryByText('0')).not.toBeInTheDocument()
   })
 })
+
+describe('Tablist find_ui segments', () => {
+  it("puts a segment's marker on that tab, and on no other tab", () => {
+    render(
+      <Tablist<Key>
+        tabs={TABS}
+        value="a"
+        onChange={() => {}}
+        ariaLabel="Planes"
+        segments={[{ key: 'c', label: 'Gamma', 'data-ui-location': 'members.profile-tab' }]}
+      />,
+    )
+    const marked = document.querySelectorAll('[data-ui-location]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toBe(screen.getByRole('tab', { name: /Gamma/ }))
+    // The roving-focus ref still lands: the arrow keys move focus onto the marked tab.
+    screen.getByRole('tab', { name: 'Alpha' }).focus()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Alpha' }), { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /Gamma/ }))
+  })
+})

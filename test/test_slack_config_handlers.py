@@ -62,6 +62,85 @@ def test_write_env_updates_deletes_on_none(tmp_path: Path, monkeypatch) -> None:
     assert "SLACK_APP_TOKEN=keep" in text  # sibling untouched
 
 
+def _set_windows(monkeypatch, windows: bool) -> None:
+    """Model the platform's os.environ case rule (``_env_name_key`` reads it live)."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+
+
+def test_windows_save_replaces_a_lowercase_spelling_of_the_key(tmp_path: Path, monkeypatch) -> None:
+    """On Windows ``slack_bot_token`` and ``SLACK_BOT_TOKEN`` are one os.environ
+    entry. A save must replace the hand-typed lowercase line rather than append
+    the uppercase one after it, or the first-non-empty-spelling rule boot and the
+    watcher use would re-install the OLD token while the save reported success.
+    (Fixes the GPT Windows dashboard-rotation finding.)"""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text("OTHER=keepme\nslack_bot_token=old\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    lines = env.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OTHER=keepme", "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN"]
+    # The value boot / the watcher would install is the new one.
+    effective = loader._effective_entry_values(loader.parse_env_lines("\n".join(lines)))
+    assert effective[loader._env_name_key("SLACK_BOT_TOKEN")] == "secret://SLACK_BOT_TOKEN"
+
+
+def test_windows_save_collapses_every_case_spelling_to_one_line(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Several spellings of one key collapse to a single line under the declared
+    name, written where the first spelling was."""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text(
+        "slack_bot_token=old-a\nOTHER=keepme\nSlack_Bot_Token=old-b\nSLACK_BOT_TOKEN=old-c\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    assert env.read_text(encoding="utf-8").splitlines() == [
+        "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN",
+        "OTHER=keepme",
+    ]
+
+
+def test_windows_clearing_a_key_removes_every_case_spelling(tmp_path: Path, monkeypatch) -> None:
+    """A cleared credential leaves no spelling behind to keep supplying the old
+    value on Windows."""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text(
+        "slack_bot_token=old\nSLACK_APP_TOKEN=keep\nSLACK_BOT_TOKEN=old2\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": None})
+
+    assert env.read_text(encoding="utf-8").splitlines() == ["SLACK_APP_TOKEN=keep"]
+
+
+def test_posix_save_leaves_a_lowercase_name_alone(tmp_path: Path, monkeypatch) -> None:
+    """On POSIX names are case-sensitive: ``slack_bot_token`` is a different
+    variable, so the save updates only the declared key and leaves it untouched."""
+    _set_windows(monkeypatch, False)
+    env = tmp_path / ".env"
+    env.write_text("slack_bot_token=unrelated\nSLACK_BOT_TOKEN=old\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    assert env.read_text(encoding="utf-8").splitlines() == [
+        "slack_bot_token=unrelated",
+        "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN",
+    ]
+
+
 def test_write_env_updates_handles_missing_file(tmp_path: Path, monkeypatch) -> None:
     env = tmp_path / "sub" / ".env"  # parent dir does not exist yet
     monkeypatch.setattr(loader, "env_path", lambda: env)

@@ -24,6 +24,7 @@ from kiro_crew.instances.ssh_tunnel_manager import (
     _SshTunnel,
     _ssm_close_reason,
 )
+from kiro_crew.testing.wait import finished
 
 # The exact literals session-manager-plugin writes to stdout, from its source:
 # datachannel HandleChannelClosedMessage and sessionhandler ResumeSessionHandler.
@@ -328,12 +329,16 @@ class TestDeliberateStopSkipsTheDrain:
                 # A grandchild can hold the write end open forever; the drain
                 # would block on EOF here. timeout=0 must not wait for it. A
                 # never-set event blocks with no timing bet (the enclosing
-                # wait_for bounds the test, not this blocker).
+                # bound is the test's, not this blocker's).
                 await asyncio.Event().wait()
 
             t._stdout_task = asyncio.create_task(_never_eof())
             await started.wait()
-            await asyncio.wait_for(t._finish_stdout_drain(timeout=0), timeout=1.0)
+            # The 1 s bound IS the assertion: a zero timeout that awaited EOF
+            # would sit on the never-set event past it.
+            await finished(
+                t._finish_stdout_drain(timeout=0), "the zero-timeout drain retiring", timeout=1.0
+            )
             assert t._stdout_task is None
 
         asyncio.run(_drive())
@@ -352,9 +357,10 @@ class TestDeliberateStopSkipsTheDrain:
 
             t._stdout_task = asyncio.create_task(_never_eof())
             # No child process: _terminate is a near no-op, so if stop() returns
-            # promptly it proves it did not await the hung drain.
+            # promptly it proves it did not await the hung drain; the 1 s bound
+            # IS that assertion.
             t._proc = None
-            await asyncio.wait_for(t.stop(), timeout=1.0)
+            await finished(t.stop(), "stop() returning past the hung drain", timeout=1.0)
             assert t._stdout_task is None
 
         asyncio.run(_drive())

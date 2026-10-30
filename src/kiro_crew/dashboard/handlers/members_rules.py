@@ -201,8 +201,23 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_UNDO_RULES_EXPECT
+
+    # A card Undo clearing the rules it wrote: only while they still read as it
+    # left them, compared under the rules write lock (``write_member_rules``).
+    expected = request.get(REQ_CARD_UNDO_RULES_EXPECT)
+    guard = {"expected_sha256": expected} if isinstance(expected, str) else {}
     try:
-        await asyncio.to_thread(members_mod.write_member_rules, slug, member=member, text=rules)
+        await asyncio.to_thread(
+            members_mod.write_member_rules, slug, member=member, text=rules, **guard
+        )
+    except (members_mod.MemberRulesChanged, members_mod.MemberRulesUnreadable):
+        if not guard:
+            raise
+        return web.json_response(
+            {"error": "the rules changed after the import", "code": "changed_since_apply"},
+            status=409,
+        )
     except ValueError:
         return web.json_response(
             {

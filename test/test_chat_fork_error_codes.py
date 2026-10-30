@@ -131,43 +131,56 @@ async def test_a_body_that_is_not_json(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_body_that_is_json_but_not_an_object(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "payload,status,code",
+    [
+        pytest.param(
+            ["at_message_index"],
+            400,
+            "body_not_object",
+            id="test_a_body_that_is_json_but_not_an_object",
+        ),
+        pytest.param({"mode": "sideways"}, 400, "invalid_mode", id="test_an_unknown_mode"),
+        pytest.param(
+            {"direction": "sideways"}, 400, "invalid_direction", id="test_an_unknown_direction"
+        ),
+        pytest.param({"prompt": 7}, 400, "invalid_field_type", id="test_a_non_string_prompt"),
+        pytest.param(
+            {"prompt": "x" * 32_769}, 400, "prompt_too_long", id="test_an_over_long_prompt"
+        ),
+        # ``at_index < 0`` shares the branch with the type check, so it keeps that code.
+        pytest.param(
+            {"at_message_index": -1},
+            400,
+            "invalid_field_type",
+            id="test_a_negative_index_is_a_type_refusal_not_a_range_one",
+        ),
+        # ``isinstance(True, int)`` is True in Python; the handler rejects bools first.
+        pytest.param(
+            {"at_message_index": True},
+            400,
+            "invalid_field_type",
+            id="test_a_boolean_index_is_refused_as_a_type",
+        ),
+        pytest.param(
+            {"at_message_id": 7},
+            400,
+            "invalid_field_type",
+            id="test_a_non_string_message_id_is_refused",
+        ),
+        pytest.param(
+            {"at_message_id": "missing-row"},
+            409,
+            "fork_message_not_found",
+            id="test_an_unknown_message_id_is_a_stale_anchor",
+        ),
+    ],
+)
+async def test_a_refused_fork_names_its_code(tmp_path, monkeypatch, payload, status, code) -> None:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", ["at_message_index"])
-    assert status == 400
-    assert body["code"] == "body_not_object"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_mode(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"mode": "sideways"})
-    assert status == 400
-    assert body["code"] == "invalid_mode"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_direction(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"direction": "sideways"})
-    assert status == 400
-    assert body["code"] == "invalid_direction"
-
-
-@pytest.mark.asyncio
-async def test_a_non_string_prompt(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"prompt": 7})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_an_over_long_prompt(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"prompt": "x" * 32_769})
-    assert status == 400
-    assert body["code"] == "prompt_too_long"
+    got_status, body = await _fork(_seeded_state(tmp_path), "forkable", payload)
+    assert got_status == status
+    assert body["code"] == code
 
 
 @pytest.mark.asyncio
@@ -182,44 +195,6 @@ async def test_a_non_integer_index_and_an_out_of_range_one_differ(tmp_path, monk
     _, out_of_range = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": 999})
     assert bad_type["code"] == "invalid_field_type"
     assert out_of_range["code"] == "value_out_of_range"
-
-
-@pytest.mark.asyncio
-async def test_a_negative_index_is_a_type_refusal_not_a_range_one(tmp_path, monkeypatch) -> None:
-    """``at_index < 0`` shares the branch with the type check, so it keeps that code."""
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": -1})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_a_boolean_index_is_refused_as_a_type(tmp_path, monkeypatch) -> None:
-    """``isinstance(True, int)`` is True in Python; the handler rejects bools first."""
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": True})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_a_non_string_message_id_is_refused(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_id": 7})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_message_id_is_a_stale_anchor(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(
-        _seeded_state(tmp_path),
-        "forkable",
-        {"at_message_id": "missing-row"},
-    )
-    assert status == 409
-    assert body["code"] == "fork_message_not_found"
 
 
 @pytest.mark.asyncio
@@ -377,7 +352,9 @@ def test_an_unreadable_mid_rotation_corpus_refuses_instead_of_approximating() ->
     """
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text()
+    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text(
+        encoding="utf-8"
+    )
     head, _, tail = src.partition("chained-full fork corpus read failed")
     assert tail, "the full-read failure branch is gone -- re-point this guard"
     # Scope to the except block itself: the `if not _rebuilt:` prepend further

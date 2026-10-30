@@ -11,8 +11,8 @@ Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_ingress_seq``,
 ``_session_key``, ``_stale_probe``, ``_steering_answers``.
 
-Instance fields read: ``_prompt_or_tool_seen``, ``_queue``, ``_runtime``,
-``_session_id``, ``_steering_settled``, ``keep_transcript``, ``memory_mode``.
+Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
+``_runtime``, ``_session_id``, ``_steering_settled``, ``keep_transcript``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import mediated_request_capability
 from kiro_crew.acp.client import (
     AcpError,
     AcpProcessDied,
@@ -112,6 +113,9 @@ async def cancel(
     auto-recovery.
     """
     self._stale_probe = _stale_probe
+    # A cancelled turn's approved mediated-secret calls must not run later on
+    # their delivered grants: revoke them before the cancel goes out.
+    mediated_request_capability.invalidate_session(self._session_key or "")
     self._cancelled = True
     self._cancel_hook_tasks()
     self._cancel_ts = time.monotonic()
@@ -122,6 +126,12 @@ async def cancel(
         METHOD_CANCEL,
         {"sessionId": self._session_id},
     )
+    # An MCP elicitation still waiting on a person is answered ``cancel`` on the
+    # same path: the engine holds its tool call open until the ask is answered,
+    # and a session/cancel alone would leave that request unanswered on the
+    # wire. Same order as ``AcpClient.cancel_session``: the notification, then
+    # every open server->client request it leaves behind.
+    await self.cancel_pending_elicitations()
 
 
 # ── Commands & Config ──
@@ -271,6 +281,10 @@ async def destroy(self: AcpSessionHandle) -> None:
     for _flag in list(getattr(self, "_steering_settled", {}).values()):
         if not _flag.done():
             _flag.set_result(False)
+    # An elicitation nobody answered is cancelled on the wire before the
+    # session goes: the engine is otherwise left holding its tool call open.
+    if getattr(self, "_pending_elicitations", None):
+        await self.cancel_pending_elicitations()
     try:
         await self._runtime.terminate_session(self._session_id)
     finally:

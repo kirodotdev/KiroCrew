@@ -66,9 +66,9 @@ Tabbed management for mates, custom agents, MCP connections, skills, the knowled
 
 Create and manage cron jobs, organize them in folders, and switch between list, calendar, and execution views.
 
-### Developer (`/developer`)
+### Developer (`/settings/developer`)
 
-Tabbed developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive. The former standalone `/system` page is the System tab here. The agent backend lives in **Settings → Agent Harness**; an old `/developer?tab=agent-backend` link forwards there.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**.
 
 ### Logs (`/logs`)
 
@@ -119,6 +119,18 @@ receive its ready frame leaves the existing owner in place and also closes the
 failed candidate without waiting indefinitely on its transport; a reconnect
 with no live owner (a reload) always converges, even while the shell is
 streaming output continuously.
+
+**Detached shells.** A shell keeps running while no browser is attached, through
+a reload, a dropped network or a sleeping laptop, and the next connection
+reattaches to it. Once it has been detached for `dashboard.terminal.orphan_timeout_s`
+seconds (default `43200`, 12 hours; values below `60` count as `60`), the gateway
+ends the shell and every process it started, logs a warning, records a
+`terminal.session.reap` security event and posts a "Terminal closed" bell note.
+When a new terminal would exceed `dashboard.terminal.max_sessions`, the shell
+that has had no browser attached the longest (at least a minute) is ended the
+same way to make room, so shells left behind on another device cannot block new
+terminals. A gateway restart also ends every shell. Run work that must outlive either inside
+`tmux` or `screen`.
 
 **Selection toolbar.** Highlighting text in a terminal shows a floating toolbar with **Send to chat** and **Copy**. Send to chat appends the selection to the chat composer draft (never overwrites the draft, never auto-sends), annotated with a `Terminal output (path):` header — using the live `cwd` value when the backend has reported one, else the terminal's spawn directory — and wrapped in a code fence so the agent reads it as literal output. Copy places the raw selection on the clipboard.
 

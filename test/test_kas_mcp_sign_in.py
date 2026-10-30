@@ -41,11 +41,25 @@ _LIVE_URL = "https://auth.example.com/authorize?state=explicit"
 #: A KAS-shaped stub: after session/new it reports one remote server as needing
 #: authorization; a resetServer with startOAuth makes it ask the client to open
 #: the live URL, then report the server connected, then answer the reset.
+#:
+#: Each capture is written before the reply it belongs to and swapped in whole,
+#: so the test, which the reset's answer unblocks, never reads a missing or
+#: half-written file. ``KIROCREW_TEST_SIGN_IN_STALL`` holds the stub inside its
+#: last capture write for that many seconds, standing in for a descheduled process.
 _STUB_AGENT = """
-import json, os, sys
+import json, os, sys, time
 
 CAPTURE = os.environ["KIROCREW_TEST_SIGN_IN_CAPTURE"]
+STALL = float(os.environ.get("KIROCREW_TEST_SIGN_IN_STALL") or 0)
 seen = {}
+
+def record(key, value, stall=0.0):
+    seen[key] = value
+    partial = CAPTURE + ".partial"
+    with open(partial, "w") as fh:
+        json.dump(seen, fh)
+        time.sleep(stall)
+    os.replace(partial, CAPTURE)
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\\n")
@@ -63,7 +77,7 @@ for line in sys.stdin:
     msg = json.loads(line)
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if method == "initialize":
-        seen["clientMeta"] = params.get("clientCapabilities", {}).get("_meta")
+        record("clientMeta", params.get("clientCapabilities", {}).get("_meta"))
         send({"jsonrpc": "2.0", "id": mid, "result": {
             "protocolVersion": params.get("protocolVersion"),
             "agentCapabilities": {"loadSession": True}}})
@@ -73,19 +87,17 @@ for line in sys.stdin:
         status("kas-stub-session", status="failed", failedAuthorization=True,
                authorizationUrl=%(dead)r, errorMessage="Unauthorized")
     elif method == "_kiro/mcp/resetServer":
-        seen["reset"] = params
+        record("reset", params)
         pending_reset = mid
         status(params["sessionId"], status="connecting")
         send({"jsonrpc": "2.0", "id": 900, "method": "_kiro/openExternalUrl",
               "params": {"url": %(live)r}})
     elif mid == 900 and method is None:
-        seen["openReply"] = msg.get("result")
+        record("openReply", msg.get("result"), stall=STALL)
         status("kas-stub-session", status="connected", tools=[{"name": "ping"}])
         send({"jsonrpc": "2.0", "id": pending_reset, "result": {"success": True}})
     elif mid is not None and method is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
-    with open(CAPTURE, "w") as fh:
-        json.dump(seen, fh)
 """ % {"dead": _DEAD_URL, "live": _LIVE_URL}
 
 _STUB_AGENT_SPEC = {
@@ -126,6 +138,21 @@ def kas_sign_in_stub(tmp_path, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 @pytest.mark.asyncio
 async def test_an_unauthorized_server_gets_the_live_consent_url(kas_sign_in_stub, tmp_path):
+    await _sign_in_through_the_stub(kas_sign_in_stub, tmp_path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
+@pytest.mark.asyncio
+async def test_the_capture_is_whole_however_long_the_stub_takes_to_write_it(
+    kas_sign_in_stub, tmp_path, monkeypatch
+):
+    # Longer than the drain's idle exit, so a capture written after the
+    # reset's answer would still be empty when the test reads it.
+    monkeypatch.setenv("KIROCREW_TEST_SIGN_IN_STALL", "0.5")
+    await _sign_in_through_the_stub(kas_sign_in_stub, tmp_path)
+
+
+async def _sign_in_through_the_stub(kas_sign_in_stub, tmp_path) -> None:
     runtime = AcpRuntime(work_dir=tmp_path / "ws", sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
     try:
         await runtime.spawn()

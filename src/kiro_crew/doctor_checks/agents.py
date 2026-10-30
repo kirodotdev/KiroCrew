@@ -101,7 +101,9 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
         require_member_memory_store,
     )
 
-    # A V2 store with no owner_member_id predates member identities. The start-of-
+    # A V2 store with no owner_member_id predates member identities, and a member
+    # store whose declaration an older build's save stripped back to V1 has lost
+    # them. The start-of-
     # process upgrade repairs the ones it can attribute to exactly one member;
     # doctor itself repairs nothing (it is exempt from that prologue so it can
     # report the stores), so a repairable store is reported as pending through
@@ -395,14 +397,30 @@ def _doctor_agent_auth() -> None:
     on it would make the default host red for an optional backend.
     """
     from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
-    from kiro_crew.agent_sdk import declaration_for, entitlement_label, signs_in_separately
+    from kiro_crew.agent_sdk import (
+        entitlement_label,
+        kas_bundle,
+        signs_in_separately,
+    )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HOST_AUTH_CALLBACK
+    from kiro_crew.agent_sdk.host_auth import sign_in_remedy, signed_out_message
+    from kiro_crew.kiro_cli_bundle import spawn_login_command
+
+    # Read through the facade, as every family does: a second binding here would
+    # be one a patch of ``cli_doctor.ACP_BACKEND_KAS`` does not reach.
+    kas_backend = cli_doctor.ACP_BACKEND_KAS
 
     try:
         backends = selectable_backend_values()
     except Exception:
         # Reading the registry must not break triage; the rows are advisory.
         return
+
+    # On the bundle route KAS runs Crew's own engine and the vault is its ONLY
+    # owner (acp-client.md, "KAS bundle route"), so its row never falls through to
+    # the kiro-cli store: that fallback is the relay's, and on a host with no
+    # kiro-cli it would print "could not check" for a store the route never reads.
+    kas_bundle_route = kas_bundle.kas_bundle_route()
 
     # Probed at most once even though two harnesses share the host store: kiro and
     # KAS both resolve tokens from it, and spawning ``whoami`` per row would pay
@@ -417,7 +435,8 @@ def _doctor_agent_auth() -> None:
 
     for backend in backends:
         try:
-            declaration = declaration_for(backend)
+            remedy = sign_in_remedy(backend)
+            signed_out = signed_out_message(backend)
             separate = signs_in_separately(backend)
         except Exception:
             continue
@@ -435,7 +454,7 @@ def _doctor_agent_auth() -> None:
             # The ACTION, not the state: nothing was measured on this row, and a
             # line reading "is not signed in" under a "not checked here" would
             # contradict the line above it and train the reader to skip both.
-            render._print_wrapped(declaration.sign_in_remedy)
+            render._print_wrapped(remedy)
             continue
 
         if backend in ACP_BACKENDS_HOST_AUTH_CALLBACK:
@@ -476,6 +495,9 @@ def _doctor_agent_auth() -> None:
                 print(f"  {label.ljust(13)}{glyph}Kiro Crew vault (signed in through Kiro Crew)")
                 if vault_detail:
                     render._print_wrapped(f"crew vault: {vault_detail}")
+                if backend == kas_backend and kas_bundle_route:
+                    # No second store to mention: the bundle has no kiro-cli owner.
+                    continue
                 if host_probed and host_signed_in is True:
                     # Both stores hold a sign-in, and they can be DIFFERENT
                     # accounts (the usage reader's identity checks exist for
@@ -486,6 +508,15 @@ def _doctor_agent_auth() -> None:
                         f"{source} is also present and may be a different account "
                         "(the kiro-cli row reports it); the relay uses the vault."
                     )
+                continue
+            if backend == kas_backend and kas_bundle_route:
+                # Nothing usable in the vault and no fallback owner: the engine's
+                # first prompt will fail with its own "not signed in". The remedy
+                # names Crew's sign-in alone, never ``kiro-cli login``.
+                print(f"  {label.ljust(13)}⏹ Kiro Crew vault; not signed in")
+                render._print_wrapped(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)
+                if vault_detail:
+                    render._print_wrapped(f"crew vault: {vault_detail}")
                 continue
             # Nothing usable in the vault: the kiro-cli branch below is the
             # runtime's fallback owner, so it is this row's report too. A stored
@@ -506,6 +537,7 @@ def _doctor_agent_auth() -> None:
             # the host identity store is the one store this core may read.
             # Wrapped, not reflowed: ``textwrap.wrap`` only inserts line breaks, so
             # the operator reads the declared wording, which is what the panel shows.
-            render._print_wrapped(declaration.signed_out_message)
+            # The sign-in command stays on one line: a bundled copy's path has spaces.
+            render._print_wrapped(signed_out, keep=(spawn_login_command(),))
         if backend in ACP_BACKENDS_HOST_AUTH_CALLBACK and vault_detail:
             render._print_wrapped(f"crew vault: {vault_detail}")

@@ -38,6 +38,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Shell audit log cap | `shell_audit_log.py` | `SHELL_AUDIT_LOG_NAME`, `SHELL_AUDIT_LOG_MAX_BYTES` (the file the bundled `postToolUse` hook appends to, and the size at which the session cleanup loop rotates it aside to one `.1` generation). |
 | Slack UX strings and pacing | `slack/handler.py` | `_THINKING`, `_CURSOR`, `_NO_RESPONSE`, `_STATUS_WORKING`, `_TRUNCATION_MARKER`, plus `_EDIT_INTERVAL`, `_APPROVAL_TIMEOUT`, `_SLACK_SECTION_TEXT_LIMIT`, the stall thresholds and the phase debounce. |
 | Cross-cutting shared constants | `constants.py` | `KIROCREW_SPAWNED_ENV`, `ENV_TRUTHY`, `CHAT_TURN_TIMEOUT`, `COMPACT_WAIT_TIMEOUT_SECS` (one budget, shared by manual and automatic compaction; `session.compact_wait_secs` raises it for both, resolved for every caller by `SessionManager.compact_wait_budget_secs()`), the `[OPTIONS:]` parse regexes, `BANNER`, `MAX_BANNER_CHARS` and `ARTIFACT_MAX_CONTENT_BYTES` (bounds `validation.py` — a leaf — must read without importing the service module that enforces them; `artifacts.MAX_CONTENT_BYTES` re-exports the latter). |
+| Coder execution | `coder/client.py`, `coder/registry.py`, `constants.py` | CLI deadlines and output bounds belong to the client. Generated workspace-name bounds belong to the registry; `CODER_WORKSPACE_PREFIX_MAX_CHARS` lives in `constants.py`. |
 | Gateway shutdown budget | `gateway_shutdown_budget.py` | Gateway cooperative timeout, service-manager signal margin, and the derived systemd/launchd stop deadline. |
 | Process-wide shutdown signal | `__init__.py` | `shutdown_event`. Background loops `await shutdown_event.wait()` with a timeout instead of a plain `asyncio.sleep`, so they wake instantly on Ctrl-C. |
 | Base agent config | `config/defaults.json` | `tools`, `allowedTools`, `resources`, `hooks`, model. Packaged as package data, so editing it needs no code change. |
@@ -126,7 +127,7 @@ recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
 ever shrinks. Prune with `python3 scripts/check_black_formatting.py
 --update-baseline`; it refuses unless the installed black equals the
-`pyproject.toml` pin (`black==26.3.1`). The read-only check does not need the pin. Format what you touched with
+`pyproject.toml` pin (`black==26.10.1`). The read-only check does not need the pin. Format what you touched with
 `black --target-version py310 <paths>`, never the whole tree.
 
 **On macOS, run `mypy --platform linux src/kiro_crew`.** CI type-checks on Linux, and
@@ -248,7 +249,12 @@ family keeps two rules:
 that imports its facade or rebinds a shared global, fails a facade no test patches through,
 and executes only a few patches per facade. Each facade also gets a patch-reach test that
 executes every name the test trees patch through it (read with `test/facade_mirror_scan.py`)
-and proves the scan finds known seams (`test/test_session_pid_facade.py`).
+and proves the scan finds known seams (`test/test_session_pid_facade.py`). A check whose
+body is the same for every facade (the known-seam scan, the corpus-gate derivation, the
+layering, manifest and logger scans) is written once in `test/test_facade_shared_checks.py`
+and parametrized per module: a facade test file names the ones it needs in a module-level
+`SHARED_FACADE_CHECKS` tuple instead of copying their bodies, and keeps only the checks
+particular to its facade.
 
 **A large class keeps one class body**, in the facade or in one home module that sets
 `__module__` to the facade when a pickle, repr or test reads it. Members move to owners as
@@ -257,13 +263,14 @@ functions taking `self`, and the body binds each as a one-line attribute
 with no new mixin or base class (`src/kiro_crew/acp/session_handle_class.py`). A member
 that uses zero-argument `super()`, `__class__` or a name-mangled attribute stays in the
 body. Keep `__module__` and `__qualname__` wherever anything reads them: moved exception
-classes keep the facade's name because error text renders it, and a family-scoped helper
-(`_own_methods` there) renames each bound function `<Class>.<name>`. An owner logs under
+classes keep the facade's name because error text renders it, and the shared helper
+`kiro_crew._facade_bindings.own_methods(cls, owners)` renames each function the class binds
+from a module in its explicit owner set `<Class>.<name>`. An owner logs under
 the original module's logger, `logging.getLogger("kiro_crew.<original>")`: the log format
 prints the logger name, and `caplog` tests filter on it.
 
-**Registries keyed by path follow the code.** A `_REDACTION_SINKS` row in
-`src/kiro_crew/security_posture.py` names the module that redacts that sink; when a split
+**Registries keyed by path follow the code.** A `_REDACTION_SINKS` row (in
+`src/kiro_crew/security_posture_sinks_*.py`) names the module that redacts that sink; when a split
 moves the redactor calls, re-key the row to the owner that now makes them. The sink test
 in `test/test_security_posture.py` also counts calls in the facade's declared owners, so a
 row left on the facade can stay green while it no longer tells an operator where the sink

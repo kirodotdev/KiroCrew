@@ -117,6 +117,7 @@ describe('MembersPage owners', () => {
       'useMembersPageRosterView(',
       'useMembersPageThread(',
       'useMembersPageSidePanel(',
+      'useMembersPageTrackpadSwipe(',
       'useMembersPageSchedules(',
       'useRegisterNavigationLeaveGuard(',
       'usePublishNavigationStake(',

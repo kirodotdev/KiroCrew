@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,9 +21,7 @@ from kiro_crew.providers.acp import AcpProvider
 def _make_app(state: DashboardState) -> web.Application:
     app = web.Application()
     app["state"] = state
-    app.router.add_post(
-        "/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort
-    )
+    app.router.add_post("/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort)
     app.router.add_get(
         "/api/chat/slots/{slot}/selection-capabilities", api_chat_slot_selection_capabilities
     )
@@ -115,7 +114,7 @@ class TestSlotSelectionCapabilities:
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
 
     @pytest.mark.asyncio
     async def test_cold_member_session_uses_member_backend_for_pair_ids(self, monkeypatch):
@@ -123,7 +122,8 @@ class TestSlotSelectionCapabilities:
             chat_handlers.KiroCrewConfig,
             "load",
             lambda: SimpleNamespace(
-                agent=SimpleNamespace(acp_backend="claude", member_acp_backend="codex")
+                agent=SimpleNamespace(acp_backend="claude", member_acp_backend="codex"),
+                agents={},
             ),
         )
         state = _mock_state(_ChatSlot("member-test"))
@@ -132,7 +132,7 @@ class TestSlotSelectionCapabilities:
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "model_effort_pair_ids": True}
+        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
 
     @pytest.mark.asyncio
     async def test_live_provider_can_report_effort_unsupported(self):
@@ -304,7 +304,8 @@ class TestChatSlotReasoningEffort:
             lambda: SimpleNamespace(
                 agent=SimpleNamespace(
                     acp_backend=global_backend, member_acp_backend=member_backend
-                )
+                ),
+                agents={},
             ),
         )
         slot = _ChatSlot("member-test")
@@ -515,15 +516,19 @@ class TestChatSlotReasoningEffort:
 
         state.sessions.reset = AsyncMock(side_effect=_reset)
         async with TestClient(TestServer(_make_app(state))) as client:
-            first = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            first = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             await first_reset_started.wait()
-            second = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            second = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             # Let the second request reach (and block on) the slot lock, then
             # let the first request's reset fail.
             await asyncio.sleep(0.05)
@@ -911,6 +916,7 @@ class TestValidateReasoningEffortPersistence:
     @pytest.mark.parametrize("level", ["", "low", "medium", "high", "xhigh", "max"])
     def test_passes_through_allowlisted(self, level: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(level) == level
 
     @pytest.mark.parametrize(
@@ -919,10 +925,43 @@ class TestValidateReasoningEffortPersistence:
     )
     def test_discards_disallowed(self, tampered: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(tampered) == ""
 
     def test_discards_non_string(self):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(5) == ""
         assert _validate_reasoning_effort(None) == ""
         assert _validate_reasoning_effort(["max"]) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["selection-capabilities", "reasoning-effort"])
+async def test_unknown_crewmate_pin_is_absent_from_slot_refusals(route, monkeypatch, caplog):
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    slot = _ChatSlot("member-atlas-0123456789ab", model="claude-opus-4.8[max]")
+    state = _mock_state(slot)
+    async with TestClient(TestServer(_make_app(state), host="127.0.0.1")) as client:
+        url = f"/api/chat/slots/{slot.key}/{route}"
+        response = (
+            await client.get(url)
+            if route == "selection-capabilities"
+            else await client.post(url, json={"reasoning_effort": "high"})
+        )
+        assert response.status == 409
+        text = await response.text()
+        data = await response.json()
+    assert data["code"] == "crewmate_harness_unavailable"
+    assert "an unknown harness" in data["error"]
+    assert secret not in text + caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.reasoning_effort == ""
+    cast(AsyncMock, state.sessions.reset).assert_not_awaited()

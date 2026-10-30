@@ -20,6 +20,7 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -36,24 +37,26 @@ class TestSafeMeetingId:
     @pytest.mark.parametrize(
         "raw",
         [
-            "../../etc/passwd",
-            "..",
-            ".hidden",
-            "a/b",
-            "a\\b",
-            "with space",
-            "semi;colon",
-            "null\x00byte",
-            "",
-            "   ",
+            *named_cases(
+                "test_rejects_unsafe",
+                "raw",
+                [
+                    "../../etc/passwd",
+                    "..",
+                    ".hidden",
+                    "a/b",
+                    "a\\b",
+                    "with space",
+                    "semi;colon",
+                    "null\x00byte",
+                    "",
+                    "   ",
+                ],
+            ),
+            *named_cases("test_rejects_non_string", "raw", [None, 5, [], {}, True]),
         ],
     )
-    def test_rejects_unsafe(self, raw):
-        with pytest.raises(store.MeetingsPathError):
-            store.safe_meeting_id(raw)
-
-    @pytest.mark.parametrize("raw", [None, 5, [], {}, True])
-    def test_rejects_non_string(self, raw):
+    def test_rejects_an_unsafe_id(self, raw):
         with pytest.raises(store.MeetingsPathError):
             store.safe_meeting_id(raw)
 
@@ -354,6 +357,19 @@ class TestAgentOutputs:
         store.write_agent_output("m", {"id": "note-taker"}, "# Notes\n\nbody", root)
         assert "body" in store.read_agent_outputs("m", [{"id": "note-taker"}], root)["note-taker"]
 
+    def test_read_outputs_survives_a_non_utf8_file(self, root: Path):
+        # One agent writing latin-1 must not blank every other agent's panel.
+        store.meeting_dir("m", root).mkdir(parents=True)
+        store.write_agent_output("m", {"id": "note-taker"}, "# Notes\n\nbody", root)
+        store.agent_output_path("m", "summarizer.md", root).write_bytes(b"# Summary\ncaf\xe9\n")
+        agents = [{"id": "note-taker"}, {"id": "summarizer"}]
+        try:
+            outputs = store.read_agent_outputs("m", agents, root)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"one undecodable output failed the whole read: {exc!r}")
+        assert "body" in outputs["note-taker"]
+        assert outputs["summarizer"] == "# Summary\ncaf\ufffd\n"
+
 
 class TestTasks:
     def test_missing_returns_empty_doc(self, root: Path):
@@ -369,6 +385,16 @@ class TestTasks:
         store.write_tasks("m", [], root)
         store.tasks_path("m", root).write_text(json.dumps({"tasks": "oops"}))
         assert store.read_tasks("m", root)["tasks"] == []
+
+    def test_non_utf8_tasks_file_reads_as_empty_doc(self, root: Path):
+        store.write_tasks("m", [], root)
+        store.tasks_path("m", root).write_bytes(b'{"tasks": [{"id": "caf\xe9"}]}')
+        try:
+            doc = store.read_tasks("m", root)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"an undecodable tasks.json escaped the reader: {exc!r}")
+        assert doc["tasks"] == []
+        assert doc["meeting_id"] == "m"
 
 
 class TestCalendarCache:

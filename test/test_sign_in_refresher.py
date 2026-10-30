@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew.auth.store import REFRESH_MARGIN_SECS, KasToken, TokenStore
 from kiro_crew.dashboard import sign_in_refresher as tick
+from kiro_crew.testing.wait import await_until, finished
 
 
 class _FakeResp:
@@ -222,7 +223,7 @@ async def test_loop_stops_on_shutdown(tmp_path: Path, monkeypatch):
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     stop.set()
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(task, what="the refresher loop stops")
     assert calls == 1
 
 
@@ -242,7 +243,7 @@ async def test_loop_survives_an_unexpected_error(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tick, "refresh_once", _once)
     monkeypatch.setattr(tick, "data_home", lambda: tmp_path)
     monkeypatch.setattr(tick, "IDLE_INTERVAL_SECS", 0.01)
-    await asyncio.wait_for(tick.run_sign_in_refresher(stop), timeout=5)
+    await finished(tick.run_sign_in_refresher(stop), "the refresher loop stops")
     assert calls == 2
 
 
@@ -263,13 +264,13 @@ async def test_shutdown_drain_waits_for_an_in_flight_renewal(tmp_path: Path, mon
     monkeypatch.setattr(tick, "data_home", lambda: tmp_path)
     task = asyncio.create_task(tick.run_sign_in_refresher(stop))
     try:
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the renewal starts")
         stop.set()
         drain = asyncio.create_task(tick.drain_sign_in_refresher(task, timeout=5))
         await asyncio.sleep(0)
         assert not drain.done()
         release.set()
-        await asyncio.wait_for(drain, timeout=5)
+        await await_until(drain, what="the drain returns once the renewal lands")
         assert persisted == [True]
         assert task.done()
     finally:
@@ -284,7 +285,9 @@ async def test_shutdown_drain_waits_for_an_in_flight_renewal(tmp_path: Path, mon
 async def test_shutdown_drain_is_bounded():
     hung = asyncio.create_task(asyncio.Event().wait())
     try:
-        await asyncio.wait_for(tick.drain_sign_in_refresher(hung, timeout=0.05), timeout=5)
+        await finished(
+            tick.drain_sign_in_refresher(hung, timeout=0.05), "the drain gives up on a hung task"
+        )
     finally:
         hung.cancel()
 

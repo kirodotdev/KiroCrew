@@ -136,6 +136,7 @@
         "background/completed",
         "compaction/applied",
         "context/composed",
+        "context/measured",
         "request/configured",
         "session/opened",
         "step/completed",
@@ -942,6 +943,7 @@
         "subagent/completed",
         "subagent/failed",
         "turn/completed",
+        "work/charged",
         "work/recorded"
       ],
       "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
@@ -1100,6 +1102,108 @@
         {
           "name": "updated_at",
           "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "custom",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/custom_value"
+      ],
+      "answers": "The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it",
+      "fields": [
+        {
+          "name": "latest",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "types_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "workers",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "session/adopted",
+        "session/closed",
+        "session/opened",
+        "session/released",
+        "session/spawned",
+        "turn/completed",
+        "turn/started",
+        "work/recorded"
+      ],
+      "answers": "The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said",
+      "fields": [
+        {
+          "name": "counts",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "total",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "worker",
+      "mode": "slot",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "session/adopted",
+        "session/closed",
+        "session/opened",
+        "session/released",
+        "turn/completed",
+        "turn/started",
+        "work/recorded"
+      ],
+      "answers": "One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page",
+      "fields": [
+        {
+          "name": "parent",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "row",
+          "type": "object",
           "optional": false
         }
       ]

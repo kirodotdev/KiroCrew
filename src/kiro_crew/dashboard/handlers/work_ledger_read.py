@@ -105,9 +105,18 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # work-ledger watch has nobody reading its reports, and the flag puts that in
     # front of the conductor's next turn.
     patrolled = conductor_patrol.has_active_patrol(state, key)
+    undelivered = await asyncio.to_thread(
+        lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in shown}
+    )
     rows: list[dict[str, Any]] = []
     for item in shown:
-        row = _row_with_flags(state, item, conductor_alive=conductor_alive, patrolled=patrolled)
+        row = _row_with_flags(
+            state,
+            item,
+            conductor_alive=conductor_alive,
+            patrolled=patrolled,
+            report_undelivered=undelivered.get(item.item_id),
+        )
         if compact:
             rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
             continue
@@ -135,10 +144,15 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # whether that line has gone past its cap, both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
+    # ``max_depth`` is the conducting depth cap in force right now (never stored),
+    # so a conductor can see how many levels may still dispatch below its own.
+    # Read off the loop: it consults the config file.
+    depth_cap = await asyncio.to_thread(work_ledger.max_depth)
     conductor = dict(
         record.to_dict(),
         goal_items_used=record.goal_items_used,
         cap_exceeded=record.cap_exceeded,
+        max_depth=depth_cap,
     )
     payload: dict[str, Any] = {"conductor": conductor, "items": rows}
     if compact:
@@ -155,6 +169,7 @@ def _row_with_flags(
     *,
     conductor_alive: bool,
     patrolled: bool,
+    report_undelivered: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """One item as a read row, with the flags the store derives at read time.
 
@@ -162,6 +177,13 @@ def _row_with_flags(
     the wake snapshot both publish these flags and must publish the SAME ones: a
     snapshot that said a worker was alive while the route called it stale would be a
     second opinion on the one question a conductor acts on.
+
+    ``report_undelivered`` is ``{"tool", "at"}`` while the worker's last
+    ``work_report`` / ``work_brief`` call failed before reaching the ledger (the
+    harness could not resolve it) and none has got through since, else ``None``
+    (:func:`kiro_crew.work_ledger.read_undelivered`, read by the caller
+    off the event loop). It is what tells "couldn't send its report" apart from a
+    worker that went quiet.
 
     Liveness is read straight off the dashboard's own slot table rather than over
     HTTP: every caller runs in the process that owns it. ``orphaned`` asks whether
@@ -191,6 +213,7 @@ def _row_with_flags(
     row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
     row["unpatrolled"] = item.state == "open" and not patrolled
     row["pending_overdue"] = work_ledger.is_pending_overdue(item)
+    row["report_undelivered"] = report_undelivered
     return row
 
 
@@ -215,6 +238,7 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "acceptance_concrete",
     "unpatrolled",
     "pending_overdue",
+    "report_undelivered",
 )
 
 #: Query-string spellings of ``compact``. ``true`` / ``false`` is what the tool

@@ -23,6 +23,19 @@ _MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 _SAFE_ERROR_RE = re.compile(r"\s+")
 
 
+def _scrubbed_error_text(text: str) -> str:
+    """*text* with credentials and exfiltration URLs removed, at full length.
+
+    The scrub :func:`_safe_error_text` applies before it cuts the text to its
+    display length, for a caller that must know what survived the scrub
+    anywhere in the text rather than only in its first 600 characters.
+    """
+    text = text.strip()
+    text = redact_exfiltration_urls(text)[0]
+    text = redact_credentials(text)[0]
+    return _SAFE_ERROR_RE.sub(" ", text)
+
+
 def _safe_error_text(text: str, *, fallback: str = "provider command failed") -> str:
     """Strip credentials and exfiltration URLs from provider error prose.
 
@@ -30,11 +43,7 @@ def _safe_error_text(text: str, *, fallback: str = "provider command failed") ->
     identical treatment a built-in's stderr gets. The two paths must not
     diverge: both end up verbatim in a client-visible response body.
     """
-    text = text.strip()
-    text = redact_exfiltration_urls(text)[0]
-    text = redact_credentials(text)[0]
-    text = _SAFE_ERROR_RE.sub(" ", text)
-    return text[:600] or fallback
+    return _scrubbed_error_text(text)[:600] or fallback
 
 
 def _safe_error(stderr: bytes) -> str:

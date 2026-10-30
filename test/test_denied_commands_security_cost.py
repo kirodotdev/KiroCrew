@@ -266,8 +266,7 @@ class TestSelfFloorShortCircuit:
     def test_gate_is_a_necessary_condition_not_a_name_grep(self):
         """Every obfuscated spelling the floor denies must pass the gate.
 
-        The issue proposed gating on a raw ``_SELF_NAME_RE`` search; that is
-        UNSOUND — each input below fires a predicate today while its raw text
+        Gating on a raw ``_SELF_NAME_RE`` search would be UNSOUND — each input below fires a predicate today while its raw text
         never matches ``kiro[-.]?crew``. The gate must answer True for all of
         them (over-matching is safe; under-matching is a bypass).
         """
@@ -320,7 +319,7 @@ class TestSelfFloorShortCircuit:
         tree: the kill predicates expanduser their targets, so the raw text
         carries neither the self name nor any other machinery character.
         ``~`` must therefore be in the machinery class, or the gate opens a
-        real bypass (pre-push review finding).
+        real bypass.
         """
         from kiro_crew import security
 
@@ -338,8 +337,7 @@ class TestSelfFloorShortCircuit:
         name.  ``python -c "ex""ec(...)"`` carries no product name, no machinery
         character, and no *raw* ``exec(`` — the tokenizer removes the quotes before
         the payload is read, so the gate must search the dynamic-exec marker on the
-        quote-stripped text too, not only on the raw text (pre-merge review
-        finding, confirmed by two reviewers).  The gate is a perf short-circuit:
+        quote-stripped text too, not only on the raw text.  The gate is a perf short-circuit:
         opening it lets the full scan run, it does not decide the verdict.
 
         The verdict is NOT a mint: this payload names nothing of the product.
@@ -389,7 +387,7 @@ class TestSelfModuleIndexIsLinear:
     4x per doubling, against 0.0027 s -> 0.0414 s after -- 186x at 4 000 tokens, and
     the negative-verdict spelling pays the same cost to decide nothing.
 
-    The scan and the normalized forms are now computed once per token list.  Both the
+    The scan and the normalized forms are computed once per token list.  Both the
     verdicts and the complexity are pinned, since a rewrite that changed which token the
     scan stops at would silently change what the floor denies.
     """
@@ -612,7 +610,7 @@ class TestNestedPayloadExtractionIsLinear:
     watchdog fires and the process exits, so this is a denial of service reachable
     from any agent- or injection-authored command.
 
-    The fix precomputes each scan's first-stop index in one backward pass.  The
+    Each scan's first-stop index is precomputed in one backward pass.  The
     payload list is unchanged by construction -- the loops' only exits were that
     first stop token or the end of the list -- and both properties are pinned here:
     the SET, so the transformation cannot silently drop or invent a payload, and the
@@ -982,13 +980,13 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
     These assertions are STRUCTURAL on purpose.  A wall-clock bound would claim
     a performance budget for every other pass in the gate and would flake on a
     slower runner, so what is pinned is the bounded QUANTITY -- how many times
-    the command-level answer is computed -- which is the property the fix
-    actually establishes.
+    the command-level answer is computed -- which is the property that keeps
+    the guard linear.
     """
 
     @staticmethod
     def _spaced(n: int) -> str:
-        """The issue's repro shape: ``bash -c a0pay -c a1pay ...``."""
+        """The many-payload shape: ``bash -c a0pay -c a1pay ...``."""
         return "bash" + "".join(f" -c a{i}pay" for i in range(n))
 
     @staticmethod
@@ -1023,7 +1021,7 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
 
     def test_guard_is_charged_once_however_many_payloads(self, monkeypatch):
         # The count must not scale with the payload count.  Measured: 1 at every
-        # size here; before the fix the guard's work was re-done per payload.
+        # size here; re-doing the guard's work per payload would scale with n.
         counts = {n: self._count_guard_calls(monkeypatch, self._spaced(n)) for n in (30, 60, 120)}
         assert (
             counts[30] == counts[60] == counts[120]
@@ -1036,10 +1034,10 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
     @pytest.mark.parametrize("n", [30, 60, 120])
     def test_argv_sweep_is_linear_in_the_argv_not_quadratic_in_payloads(self, monkeypatch, n):
         # ``_SCRIPT_EXECUTES_RE`` sweeps every token.  Charged once per command
-        # that is O(len(tokens)); charged once per payload it was
-        # O(len(tokens) x payloads).  Measured before the fix: 1830 / 7260 /
-        # 28920 sweeps at n = 30 / 60 / 120 (ratio ~3.98, quadratic).  After:
-        # 61 / 121 / 241 (ratio ~1.99, linear).  The bound below is ~3x the argv
+        # that is O(len(tokens)); charged once per payload it would be
+        # O(len(tokens) x payloads).  Measured per-payload: 1830 / 7260 /
+        # 28920 sweeps at n = 30 / 60 / 120 (ratio ~3.98, quadratic).  Per
+        # command: 61 / 121 / 241 (ratio ~1.99, linear).  The bound below is ~3x the argv
         # length, which the linear form clears with room and the quadratic form
         # misses by a factor of forty at n=120.
         cmd = self._spaced(n)
@@ -1195,7 +1193,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
 
     @staticmethod
     def _triggers(n: int) -> str:
-        """The issue's repro shape: kill-family words as arguments of ``echo``."""
+        """The many-trigger shape: kill-family words as arguments of ``echo``."""
         return "echo " + " ".join([_PK, _NAME] * n)
 
     @staticmethod

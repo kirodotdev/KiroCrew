@@ -65,7 +65,7 @@ const ROUTED = {
   ts: '2026-09-20T07:04:11Z',
   point: 'model.route',
   tier: 'complex',
-  model_chosen: 'claude-fable-5.1',
+  model_chosen: 'claude-opus-5.5',
   baseline_model: 'claude-opus-4.8',
   p: 0.91,
   latency_ms: 180,
@@ -298,7 +298,7 @@ async function main() {
     console.log('wrote', `${OUT}/07-not-applied-expanded-${theme}.png`)
     const expandedNotApplied = await page.locator(NOT_APPLIED_SEL).first().textContent()
     check(
-      !/Model used:?\s*claude-fable/.test(expandedNotApplied ?? ''),
+      !/Model used:?\s*claude-opus-5\.5/.test(expandedNotApplied ?? ''),
       `${theme}: the expanded panel does not credit the model that was not used`,
     )
 

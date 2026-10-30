@@ -122,7 +122,10 @@ async def api_webex_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
     state: DashboardState = request.app["state"]
     return web.json_response(

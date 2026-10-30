@@ -607,6 +607,38 @@ class TestTheMaxWaitStillEndsAHeldStart:
             assert (closed, park_from) == (7, parked_from)
             assert parked_from <= park_end <= time.monotonic_ns()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("remote", [True, False])
+    async def test_a_wake_rebuilds_a_remote_childs_bar_without_the_gateway_floor(
+        self, monkeypatch, remote
+    ) -> None:
+        # A remote session's child owes its engine reserve only, as at the gate; a
+        # wake that put the gateway floor back would keep it parked until the
+        # admit wait although its reserve fits.
+        async with _host(monkeypatch) as h:
+            floor = KiroCrewConfig().agent.spawn_min_memory_gb
+            assert floor > 1.0
+            h.free["gb"] = 1.5
+            h.mgr._memory_waits["mem-r"] = MemoryWait(
+                lane=_A,
+                parent_session_key=_A,
+                since=time.monotonic(),
+                start_gb=1.0,
+                price_gb=1.0,
+                nested=False,
+                durable=False,
+                remote=remote,
+            )
+            released: list[str] = []
+            monkeypatch.setattr(
+                SpawnAdmissionCoordinator,
+                "_release_memory_waits",
+                lambda _self, ids, _reason: released.extend(ids),
+            )
+            await h.mgr._admission._fit_pass("test")
+            assert released == (["mem-r"] if remote else [])
+            h.mgr._memory_waits.pop("mem-r", None)
+
 
 # ── (v) the share follows a live lane_weights reload ────────────────────────
 

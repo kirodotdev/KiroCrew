@@ -6,8 +6,7 @@ The app management route module was split into sibling owners (``routes_<role>.p
 * the facade serves a mirror over exactly the ``routes_*`` modules beside it, and every
   module-level name the unsplit file bound still resolves through it, to the object each
   owner holds, or to the facade's own code;
-* the handlers whose blocking file-system calls the sync-io ``fs`` baseline counts against
-  ``apps/routes.py``, and the units that must stay beside them, are still defined here;
+* the facade defines only the route table, and each handler lives in its family's owner;
 * every import the facade binds is accounted for, since flake8's F401 is off for its
   verbatim import header;
 * every owner logs as ``kiro_crew.apps.routes``, the logger name log filters and
@@ -23,7 +22,6 @@ from __future__ import annotations
 
 import ast
 import importlib
-import logging
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -36,6 +34,10 @@ from kiro_crew.apps import routes as facade
 
 # Walks src/kiro_crew for owner imports; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_routes_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("owners_log_as_facade",)
 
 _SRC = Path(kiro_crew.__file__).resolve().parent
 _FACADE = "kiro_crew.apps.routes"
@@ -140,21 +142,29 @@ def test_every_base_module_name_resolves_through_the_facade() -> None:
         assert own.get(name, value) is value, name
 
 
-#: The async defs whose blocking file-system calls ``.github/sync-io-in-async-fs-baseline.txt``
-#: counts against ``apps/routes.py``, and the units that must stay beside them: the callers of
-#: ``_run_uninstall``, the art route that shares the blob proxy's extension screen, and the
-#: route table that names them all.
-_KEPT_HERE = frozenset("""
-    handle_install_app handle_uninstall_app _run_uninstall handle_app_config handle_app_art_file
-    _fetch_git_blob handle_blob_proxy handle_migrate_cleanup register_app_routes
-    """.split())
+#: Each handler and unit in the family's owner, by endpoint family. The facade keeps only the
+#: route table that names them.
+_OWNER_OF = {
+    "handle_install_app": "kiro_crew.apps.routes_install",
+    "handle_uninstall_app": "kiro_crew.apps.routes_uninstall",
+    "_run_uninstall": "kiro_crew.apps.routes_uninstall",
+    "handle_migrate_cleanup": "kiro_crew.apps.routes_uninstall",
+    "handle_app_config": "kiro_crew.apps.routes_listing",
+    "handle_app_art_file": "kiro_crew.apps.routes_art",
+    "_fetch_git_blob": "kiro_crew.apps.routes_art",
+    "handle_blob_proxy": "kiro_crew.apps.routes_art",
+}
 
 
-def test_the_handlers_the_fs_baseline_pins_stay_in_the_facade() -> None:
+def test_the_facade_defines_only_the_route_table() -> None:
     tree = ast.parse(_source(_FACADE))
     defined = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    assert sorted(_KEPT_HERE - defined) == []
-    assert all(getattr(facade, name).__module__ == _FACADE for name in _KEPT_HERE)
+    assert defined == {"register_app_routes"}
+    assert facade.register_app_routes.__module__ == _FACADE
+
+
+def test_each_handler_lives_in_its_family_owner() -> None:
+    assert {name: getattr(facade, name).__module__ for name in _OWNER_OF} == _OWNER_OF
 
 
 #: Names the facade's own glue imports.
@@ -203,15 +213,6 @@ def test_the_import_census_finds_a_planted_import() -> None:
     planted = _source(_FACADE).replace(head, head + "\nimport json as _s51_planted\n", 1)
     assert planted != _source(_FACADE)
     assert _unaccounted_imports(planted, owners) == ["_s51_planted"]
-
-
-def test_every_owner_logs_as_the_facade() -> None:
-    shared = logging.getLogger(_FACADE)
-    assert facade.logger is shared
-    loggers = {
-        owner: vars(importlib.import_module(owner)).get("logger") for owner in _index().owners
-    }
-    assert {owner: log for owner, log in loggers.items() if log not in (None, shared)} == {}
 
 
 def _typing_names(source: str) -> set[str]:

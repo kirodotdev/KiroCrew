@@ -11,33 +11,20 @@
 # Refresh (after fixing something listed here):
 #   python3 scripts/check_subprocess_encoding.py --update-baseline
 1 conftest.py
-1 src/kiro_crew/acp/client.py
-3 src/kiro_crew/apple_speech/__init__.py
 1 src/kiro_crew/apps/builtins/auto_improvement/backend/deps.py
 1 src/kiro_crew/apps/builtins/auto_improvement/profiles/github_repo/profile.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
 9 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_recipe.py
 1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
-3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
 1 src/kiro_crew/apps/builtins/md_notebook/server.py
 1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 2 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
-1 src/kiro_crew/cli.py
-2 src/kiro_crew/cli_setup.py
-1 src/kiro_crew/cloud/aws.py
 1 src/kiro_crew/cron_script.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/handlers_system.py
-1 src/kiro_crew/deploy/engine.py
-1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/attach_backend.py
-1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
-1 src/kiro_crew/diagnostics.py
-1 src/kiro_crew/env.py
-1 src/kiro_crew/pod/launchd.py
-1 src/kiro_crew/pod/runtime.py
 2 src/kiro_crew/service/apparmor.py
 1 src/kiro_crew/service/macos.py
 2 test/test_acp_backend_kas.py

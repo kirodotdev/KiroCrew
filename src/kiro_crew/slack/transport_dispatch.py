@@ -36,6 +36,7 @@ from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, turn_ceiling
+from kiro_crew.messaging.dashboard_live import DashboardLiveRenderer, TeeRenderer
 from kiro_crew.messaging.dispatch import (
     admit_inbound_callback,
     build_directive_consumer,
@@ -55,6 +56,7 @@ from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.slack.channel_crew import resolve_channel_crew
+from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _get_default_agent,
@@ -193,6 +195,51 @@ async def _refresh_dashboard_tab(session_key: str) -> None:
             session_key,
             exc_info=True,
         )
+
+
+def _dashboard_live_view(
+    session_key: str,
+    conversation_log: ConversationLog | None,
+    *,
+    user_logged: bool,
+    provenance: dict[str, Any],
+) -> DashboardLiveRenderer | None:
+    """The live dashboard view for this turn, or ``None`` when there is none.
+
+    A thread whose conversation has a dashboard tab shows the turn there as it
+    runs: the tool steps and streamed text a dashboard turn shows, instead of
+    "Thinking..." until the reply lands. ``None`` -- the turn runs exactly as it
+    would without a dashboard -- when the gateway has no dashboard
+    (``--slack-only``), when nothing is persisted for this conversation (no
+    transcript, or an incognito/temporary thread), when the user's row did not
+    land at receipt (*user_logged*: the steps would be recorded above the
+    question they answer), or when the dashboard half cannot be loaded. Whether
+    the conversation has an OPEN tab is asked per event.
+    """
+    if conversation_log is None or not user_logged or _is_slack_restricted(session_key):
+        return None
+    try:
+        state = get_dashboard_state()
+        if state is None:
+            return None
+        # Function-local for the reason given in ``_refresh_dashboard_tab``.
+        from kiro_crew.dashboard.channel_live import ChannelLiveSink
+
+        sink = ChannelLiveSink(
+            state,
+            session_key,
+            conversation_log,
+            # Re-asked before every frame and write, like the transport's own
+            # writes: an ``!incognito`` landing mid-turn stops the live view.
+            allowed=lambda: not _is_slack_restricted(session_key),
+            provenance=provenance,
+        )
+    except Exception:
+        logger.debug(
+            "transport_dispatch: no dashboard live view session=%s", session_key, exc_info=True
+        )
+        return None
+    return DashboardLiveRenderer(sink)
 
 
 def flat_dm_session_key(channel: str, thread_ts: str | None, *, enabled: bool) -> str | None:
@@ -374,7 +421,9 @@ async def handle_message_transport(
     # Inbound channels-governance gate (off-loop), same as native handle_message:
     # a ``channels`` policy that denies ``slack`` drops the message before any
     # processing. Default build (no policy) permits — behavior unchanged.
-    if not await channel_inbound_permitted("slack"):
+    if not (
+        await channel_inbound_permitted("slack") and not channel_refusal(channel, caller=user_id)
+    ):
         logger.info("slack inbound (transport) dropped: denied by channels governance policy")
         return
 
@@ -566,6 +615,9 @@ async def handle_message_transport(
     # The turn's driver, for the finally: it records whether the backend
     # compacted the session, on every exit path.
     driver: TurnDriver | None = None
+    # This turn's live dashboard view, for the except and finally: its step writes
+    # are settled before any reply write there, and stopped once the turn ends.
+    _live: DashboardLiveRenderer | None = None
     # This turn's thread-replies read; its watermark moves in the finally.
     _thread_replies: ThreadReplies | None = None
 
@@ -907,9 +959,17 @@ async def handle_message_transport(
             return ""
 
         # ── Drive the turn (renderer already started above) ──
+        # The Slack renderer gets every event first and exactly as before; an open
+        # dashboard tab bound to this thread gets the same turn live behind it.
+        _live = _dashboard_live_view(
+            session_key,
+            conversation_log,
+            user_logged=_logged_user_turn,
+            provenance={"source_thread": session_key, "source_user": user_id, "agent": _agent},
+        )
         driver = TurnDriver(
             client,
-            renderer,
+            TeeRenderer(renderer, _live) if _live is not None else renderer,
             approval_mode=approval_mode,
             decider=decider,
             # Preserve native handle_message's auto_approve_subagent_spawn hook:
@@ -938,6 +998,8 @@ async def handle_message_transport(
             audit_session_key=session_key,
             audit_agent=_agent or "kirocrew",
             closing_gate=turn_ceiling.gate(session_key, lambda: sessions.begin_turn(session_key)),
+            undelivered_watch_key=session_key,
+            event_tap=_live.observe if _live is not None else None,
         )
         # The thread's owner as of the moment the turn starts producing output.
         # A dashboard link landing during the run moves the conversation to a
@@ -1001,6 +1063,15 @@ async def handle_message_transport(
 
         renderer.stamp_options = _persist_and_stamp
         accumulated = await driver.run(full_message)
+        if _live is not None:
+            # A stream that ended without a terminal sent no DONE to settle on,
+            # and the reply is written below.
+            await _live.settle()
+        if not driver.completion_observed:
+            # No terminal, so no ``on_done``: the reply the renderer holds goes
+            # out here, or the thread would show nothing of a reply the
+            # transcript records.
+            await renderer.release_held_text()
 
         # ── Post-turn bookkeeping ──
         # The turn ended without raising (we have `accumulated`), so book its
@@ -1280,12 +1351,21 @@ async def handle_message_transport(
         # the reader did not get the answer: book a failure rather than leave an
         # unrecorded verdict hole. A finalized turn keeps its normal accounting.
         # Then re-raise: a cancellation must always propagate.
+        #
+        # The renderer holds the reply until ``on_done``, which a cancelled turn
+        # (``!stop``) never reaches: release what the model wrote first, so the
+        # thread shows it as it did when replies streamed live. Never raises.
+        if renderer is not None:
+            await renderer.release_held_text()
         if client and _acquired and renderer is not None and not renderer.turn_finalized:
             with contextlib.suppress(Exception):
                 await sessions.record_failure(session_key)
                 Stats().inc_message_failed()
         raise
     except Exception as exc:
+        if _live is not None:
+            # The partial rescue below writes the reply; the steps go first.
+            await _live.settle()
         logger.exception("transport_dispatch: error handling message")
         Stats().inc_message_failed()
         if client and _acquired:
@@ -1304,10 +1384,8 @@ async def handle_message_transport(
         # ── Rescue partial progress ──
         # A transient backend fault (the "died before streaming started" class,
         # a dropped stream) leaves the user row on disk and everything the model
-        # already produced in memory only. Nothing persisted it, so each retry
-        # re-read a transcript that ended at the question and started over: a
-        # 28-minute outage on 2026-09-02 burned five identical attempts that each
-        # re-derived the same ticket ids before dying again.
+        # already produced in memory only. Unpersisted, each retry re-reads a
+        # transcript that ends at the question and redoes the same work.
         #
         # Persisting the partial reply makes the next attempt resume — it reads
         # what was already established instead of rediscovering it. Guarded so
@@ -1339,8 +1417,8 @@ async def handle_message_transport(
         #     flock and ON the loop it single-shots and drops the row.
         #   * its own try/except: a disk failure here must not replace the real
         #     exception in the log with a bookkeeping one.
-        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` batches on
-        # an edit throttle, so the text the model has produced runs routinely ahead
+        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` holds the
+        # reply until the turn ends, so the text the model has produced runs ahead
         # of the text the user has seen; a rescue that persisted the former would
         # record unseen output as established fact, and the retry would build on
         # something that was never on screen. ``delivered_text`` is the renderer's
@@ -1356,13 +1434,11 @@ async def handle_message_transport(
         # throttled, replaced wholesale, or truncated. Slack is the one renderer
         # that keeps a per-append record of what the API acknowledged, so it is
         # the one place a rescue can persist shown text rather than produced text.
-        # A throttled flush can be holding a trailing word back so a timer tick
-        # cannot tear one in half. That hold is released by ``on_done`` or at a
-        # ``wait`` boundary -- neither of which a dying turn reaches -- so it is
-        # released here, before the ledger is read, or the rescued transcript
-        # would end one word short of what the model established.
+        # The renderer holds the reply until ``on_done``, which a dying turn
+        # never reaches, so it is released here, before the ledger is read, or
+        # the rescued transcript would miss what the model last established.
         if renderer is not None:
-            await renderer.release_held_word()
+            await renderer.release_held_text()
         _shown = renderer.delivered_text if renderer is not None else ""
         # ``strip`` decides EMPTINESS only. What gets persisted is ``_shown``
         # verbatim: leading indentation is content in a transcript — a fenced block
@@ -1419,6 +1495,9 @@ async def handle_message_transport(
         except Exception:
             pass
     finally:
+        if _live is not None:
+            # Nothing the live view still holds may land after this turn.
+            _live.abandon()
         # An approval window the driver never awaited -- the blocks went out and
         # the turn then ended before the decider -- has no wait of its own to close
         # it, so a later click would resolve a future nobody reads while the user
@@ -1457,20 +1536,31 @@ async def handle_message_transport(
         # wedge every later message in that conversation (and its queue drain)
         # until the gateway restarts, not merely lose this turn. Same guard as
         # Discord's dispatcher and the shared pipeline.
-        if renderer is not None:
-            try:
-                await renderer.close()
-            except Exception:
-                logger.warning(
-                    "Slack: renderer.close failed session=%s",
-                    session_key,
-                    exc_info=True,
-                )
-        if _acquired:
-            sessions.release(session_key)
-            # The release is what ends the turn for an open dashboard tab bound to
-            # this thread (it reads the lease as the turn running), and a release
-            # raises no slots push of its own. Refresh once more AFTER it, or the
-            # tab keeps showing the finished turn as running until the next
-            # background pass. Best-effort; never raises.
-            await _refresh_dashboard_tab(session_key)
+        #
+        # The release sits in a ``finally`` around the teardown, not after it:
+        # ``close()`` now awaits (it clears the thread status on a cancelled
+        # turn), so a ``!stop`` cancelling this task mid-close raises
+        # ``CancelledError`` -- which is not an ``Exception`` and would escape
+        # the guard below, skipping the release and leaking the semaphore. The
+        # ``finally`` gives the permit back on every exit path, matching the
+        # shared pipeline's own release guard.
+        try:
+            if renderer is not None:
+                try:
+                    await renderer.close()
+                except Exception:
+                    logger.warning(
+                        "Slack: renderer.close failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
+        finally:
+            if _acquired:
+                sessions.release(session_key)
+                # The release is what ends the turn for an open dashboard tab
+                # bound to this thread (it reads the lease as the turn running),
+                # and a release raises no slots push of its own. Refresh once
+                # more AFTER it, or the tab keeps showing the finished turn as
+                # running until the next background pass. Best-effort; never
+                # raises.
+                await _refresh_dashboard_tab(session_key)

@@ -85,6 +85,16 @@ only warns unless you set it. Need a data home? Use the conftest's per-test `KIR
 pin, not a private temp home: a background worker can re-create a home you removed.
 (Details: testing-conventions.md § Rules.)
 
+Running the suite from a Kiro Crew agent needs no setup. The agent's shell inherits the
+live `KIROCREW_HOME`, and the rootdir conftest sees `KIROCREW_SCRATCH` beside it and gives
+the run its own home under `$TMPDIR` (the agent's scratch, reclaimed by the gateway)
+instead of refusing. Do not make a home under `/tmp/<name>`, and do not fake `HOME`: a
+fake `HOME` makes uv, npm and pip rebuild their caches under it, 10k+ inodes per run, and
+nothing an agent may run can delete it afterwards. If a harness must fake `HOME`, keep
+the caches shared: `XDG_CACHE_HOME=<real home>/.cache UV_CACHE_DIR=<real home>/.cache/uv
+npm_config_cache=<real home>/.npm` on the commands the harness itself runs. The conftest
+keeps only its own bytecode and hypothesis caches on the real home.
+
 Why it earns a guard: `/tmp` is often a tmpfs with a fixed **inode** budget
 (1,048,576 on the hosts this was measured on) and it returns `ENOSPC` to every other
 process on the machine while **90% of the bytes are free**. It is not a tidiness issue,
@@ -129,8 +139,9 @@ Six shapes escape the env var:
 - **Import-time from `config_dir()`** (`subagent_persistence._SUBAGENTS_DIR`): the var
   is read after the module captured the path. Each has its own autouse pin. A
   **collection-time probe** is the same shape one step earlier: a module-level
-  `_can_spawn()` used by a `skipif` runs before any pin and read the REAL
-  `config.json`; run such probes under an empty `KIROCREW_HOME`.
+  probe used by a `skipif` (`_sandbox_can_spawn()` in `test/test_app_backend.py`)
+  runs before any pin and would read the REAL `config.json`; run such probes under
+  an empty `KIROCREW_HOME`.
 - **Import-time from `Path.home()`**: `~/.kiro` is *kiro-cli's* home, machine-wide and
   shared with the real installed agent — `~/.kiro/settings/mcp.json` is the live
   agent's MCP server list. `_isolate_shared_kiro_paths` redirects these from a table,
@@ -424,7 +435,9 @@ The recurring wins, in order of leverage:
    tests land on; five full runs measured eighteen ratchet modules each re-scanning on
    3–5 workers, ~22 CPU-minutes per run. Add
    `pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")` — one group per
-   file, never one shared group — and the scan runs once per run.
+   file, never one shared group — and the scan runs once per run. The group also
+   carries the tree-scan timeout: `test/conftest.py` gives every test in a `tree_scan`
+   group with no timeout of its own 300 s instead of the suite's 120 s.
 
 **After any speedup, mutate the production code the test covers and confirm the test
 still FAILS.** A test made faster by checking less is a regression. Restore from a copy

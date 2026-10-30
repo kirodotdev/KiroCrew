@@ -20,7 +20,9 @@ export function useUptime(): string {
 
   useEffect(() => {
     if (!startTime) return
-    const tick = () => setDisplay(fmt(Math.floor(Date.now() / 1000 - startTime)))
+    // start_time is stamped by the gateway's clock; one running ahead of the
+    // browser's would otherwise yield a negative duration.
+    const tick = () => setDisplay(fmt(Math.max(0, Math.floor(Date.now() / 1000 - startTime))))
     tick()
     const iv = setInterval(tick, 1000)
     return () => clearInterval(iv)

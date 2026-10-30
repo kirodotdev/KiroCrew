@@ -238,6 +238,21 @@ async def test_poll_ok_and_missing_and_unknown():
 
 
 @pytest.mark.asyncio
+async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
+    """The code the service returns when a sign-out (this gateway's or a shell's)
+    landed while the login was pending must not reach the card as a plain
+    terminal answer -- that path restarts the provider on the device flow."""
+
+    class _SignedOut(_StubService):
+        async def poll_device(self, login_id):
+            return {"status": "error", "code": "signed_out_during_login"}
+
+    resp = await api_kas_login_poll(_FakeRequest(_SignedOut(), {"login_id": "lid-1"}))
+    assert resp.status == 409
+    assert _body(resp)["code"] == "signed_out_during_login"
+
+
+@pytest.mark.asyncio
 async def test_logout_ok_and_invalid_identity():
     resp = await api_kas_login_logout(_FakeRequest(_StubService(), {"identity": "social"}))
     assert resp.status == 200

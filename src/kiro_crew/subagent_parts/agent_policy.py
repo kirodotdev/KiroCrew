@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         read_session_execution,
         readonly_base_name,
         redact_via_context,
+        sandbox_plan,
         sel,
     )
 
@@ -770,7 +771,19 @@ def _parent_template_for_spawn(parent_session_key: str) -> str:
 ParentSpawnPolicy = tuple[str, "tuple[tuple[str, ...], ...] | None"]
 
 
-def parent_spawn_policy(parent_session_key: str) -> ParentSpawnPolicy:
+def _accepted_project_dirs(value: object) -> tuple[str, ...]:
+    """The parent project directories a queued spawn row recorded at accept time.
+
+    The row is read back from the durable store, so anything but a list of
+    non-empty strings is ignored (``()``): a malformed value can only drop the
+    recorded scope, and the drain then still applies the parent's live one.
+    """
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(v for v in value if isinstance(v, str) and v)
+
+
+def parent_spawn_policy(parent_session_key: str, accepted_dirs: object = ()) -> ParentSpawnPolicy:
     """Resolve the parent's template and its ``availableAgents`` declaration.
 
     Two reads that must not run on the gateway event loop -- the session
@@ -781,16 +794,19 @@ def parent_spawn_policy(parent_session_key: str) -> ParentSpawnPolicy:
     ``_parent_spawn_policy``, the same shape ``_record`` / ``_execution_context``
     already use for the record read. The synchronous ``spawn()`` computes it
     inline for callers that are not on the loop.
+
+    *accepted_dirs* are the project directories a queued row recorded when it
+    was accepted; see :func:`parent_template_allowlists`.
     """
     try:
         template = _parent_template_for_spawn(parent_session_key)
     except ParentRecordUnreadable:
         return "", None
-    return template, parent_template_allowlists(parent_session_key, template)
+    return template, parent_template_allowlists(parent_session_key, template, accepted_dirs)
 
 
 def parent_template_allowlists(
-    parent_session_key: str, template: str
+    parent_session_key: str, template: str, accepted_dirs: object = ()
 ) -> tuple[tuple[str, ...], ...] | None:
     """:func:`parent_spawn_allowlists` for *template*, in the parent session's project.
 
@@ -798,13 +814,46 @@ def parent_template_allowlists(
     template, so each resolves the user scope AND the parent session's project
     scope (:func:`parent_project_dirs`) the same way. Blocking: call it off the
     event loop.
+
+    A queued spawn passes the directories it was accepted under as
+    *accepted_dirs*. They are applied together with the parent's live ones, so
+    a parent that ended or moved project while the row waited still has the
+    project-scope declaration it was admitted under re-read at the drain, and
+    a directory in only one of the two sets can only add restrictions.
     """
     if not template:
         return ()
+    dirs = tuple(
+        dict.fromkeys(
+            (*parent_project_dirs(parent_session_key), *_accepted_project_dirs(accepted_dirs))
+        )
+    )
     return parent_spawn_allowlists(
         template,
-        parent_project_dirs(parent_session_key),
+        dirs,
         parent_session_key=parent_session_key,
+    )
+
+
+def conductor_spawn_refusal(parent_template: str) -> str | None:
+    """The refusal for a spawn whose parent runs on a crewmate's conductor, else ``None``.
+
+    A crewmate's own chat runs on ``kirocrew-mate-conductor`` and hands its work
+    to a worker session; it starts no sub-agents. Named positively by the
+    parent's template, the one the spawn gate already resolves from the parent's
+    execution record, so every entry point (``spawn_run``, ``spawn_sub_agents``,
+    the durable pump's re-check) refuses it the same way. The conductor's spec
+    also leaves the sub-agent tools out of its tool list
+    (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``); this is the gate behind it.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if parent_template != MATE_CONDUCTOR_AGENT:
+        return None
+    return (
+        "a crewmate's own chat starts no sub-agents: hand the work to a worker session "
+        "with session_create, give it the brief with session_send, and read its answer "
+        "with session_read_message"
     )
 
 
@@ -831,6 +880,9 @@ def _vet_parent_available_agents(
     (``capabilities.spawn.scopes.agents``): both must admit. It narrows what the
     agent spec grants and never widens what governance denies.
     """
+    refused = conductor_spawn_refusal(policy[0])
+    if refused:
+        return refused
     if not agent:
         return None
     parent_template, allowlists = policy
@@ -911,8 +963,16 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
         return ("", f"cwd resolution failed: {exc}")
     if not os.path.isdir(resolved):
         return ("", "cwd does not exist or is not a directory")
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
     resolved_roots = [os.path.realpath(os.path.expanduser(r)) for r in allowed_roots]
+    # Windows' ``\\?\`` prefix is folded off both sides before the compare:
+    # ``realpath`` can keep it on one operand and not the other, and the lone
+    # prefix would read as an escape. Lexical, so no redirect is blessed.
+    plain_resolved = strip_extended_length_prefix(resolved)
     for root in resolved_roots:
-        if resolved == root or resolved.startswith(root + os.sep):
+        # ``path_within`` strips a trailing separator before adding one, so a
+        # filesystem-root entry (``/``, ``H:\``) admits the directories below it.
+        if sandbox_plan.path_within(plain_resolved, strip_extended_length_prefix(root)):
             return (resolved, "")
     return ("", f"cwd is not under any allowed root: {allowed_roots}")

@@ -47,7 +47,7 @@ def cgroup_backend_available(monkeypatch):
     monkeypatch.setattr(sb, "_probe_cgroup_scope", lambda: (True, "ok"))
     monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda name: _SYSTEMD_RUN)
     monkeypatch.setattr(sb, "_reconcile_slice_memory_high_off_thread", lambda *a, **k: None)
-    monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda: (8192, 8192, 50, 0))
+    monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda _rl=None: (8192, 8192, 50, 0))
     monkeypatch.setattr(sb, "_cpu_controller_delegated", lambda: False)
 
 

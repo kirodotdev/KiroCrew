@@ -488,6 +488,79 @@ describe('ThemeExperienceLayer', () => {
     }
   })
 
+  // Scrolling and typing are activity wherever they happen. The terminal (xterm)
+  // stops propagation of the keys and wheel events it consumes, so each case
+  // dispatches from an element whose own listener does exactly that.
+  describe('idle-<N>s activity', () => {
+    const idleAssets = {
+      overlays: [{ id: 'idler', position: 'center', zIndex: 20, pointerEvents: false, trigger: 'idle-5s' }],
+      hasAudio: false,
+      hasPersona: false,
+    }
+    const idlerSrc = '/api/theme/bikini-bottom/overlay/idler'
+    let swallower: HTMLElement
+    const spies: { mockRestore: () => void }[] = []
+    beforeEach(() => {
+      vi.useFakeTimers()
+      swallower = document.createElement('div')
+      for (const type of ['keydown', 'wheel', 'touchmove', 'pointerdown']) {
+        swallower.addEventListener(type, (e) => e.stopPropagation())
+      }
+      document.body.appendChild(swallower)
+    })
+    afterEach(() => {
+      spies.splice(0).forEach((spy) => spy.mockRestore())
+      swallower.remove()
+      vi.useRealTimers()
+    })
+
+    it.each([
+      ['a key press in the terminal', () => new KeyboardEvent('keydown', { key: 'a', bubbles: true })],
+      ['a wheel scroll inside a scroll container', () => new WheelEvent('wheel', { deltaY: 40, bubbles: true })],
+      ['a touch scroll', () => new Event('touchmove', { bubbles: true })],
+    ])('counts %s as activity', (_name, makeEvent) => {
+      setTheme({ assets: idleAssets })
+      const { container } = render(<ThemeExperienceLayer />)
+      const mounted = () => frames(container).some((f) => f.getAttribute('src') === idlerSrc)
+      act(() => { vi.advanceTimersByTime(3000) })
+      act(() => { swallower.dispatchEvent(makeEvent()) })
+      // 5s after mount, but only 2s after the input: still counting down.
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(mounted()).toBe(false)
+      act(() => { vi.advanceTimersByTime(3000) })
+      expect(mounted()).toBe(true)
+      // The same input hides a showing overlay.
+      act(() => { swallower.dispatchEvent(makeEvent()) })
+      expect(mounted()).toBe(false)
+    })
+
+    it('listens in the capture phase without blocking scrolling', () => {
+      const add = vi.spyOn(window, 'addEventListener')
+      spies.push(add)
+      setTheme({ assets: idleAssets })
+      render(<ThemeExperienceLayer />)
+      for (const type of ['keydown', 'pointerdown', 'wheel', 'touchmove']) {
+        expect(add).toHaveBeenCalledWith(type, expect.any(Function), { capture: true, passive: true })
+      }
+    })
+
+    // Wheel and touchmove fire many times a second: an input only records its
+    // time, and the countdown already running checks it when it comes due.
+    it('arms no timer per input during a burst of scrolling and typing', () => {
+      setTheme({ assets: idleAssets })
+      render(<ThemeExperienceLayer />)
+      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+      spies.push(setTimeoutSpy)
+      act(() => {
+        for (let i = 0; i < 25; i++) {
+          window.dispatchEvent(new WheelEvent('wheel', { deltaY: 4 }))
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j' }))
+        }
+      })
+      expect(setTimeoutSpy).not.toHaveBeenCalled()
+    })
+  })
+
   // ── §4.3 theme:state downlink ──
   it('posts theme:state to each theme iframe and re-posts when the mute toggles', async () => {
     localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')

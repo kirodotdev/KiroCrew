@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_DROPPED,
     EVENT_STEER_QUEUED,
     EVENT_STRUCTURED_STATUS,
     EVENT_SUBAGENT_ACTIVITY,
@@ -78,6 +79,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
@@ -233,7 +235,7 @@ async def _dispatch_events(
                 )
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="error: cancel unacked",
+                    stop_reason=STOP_REASON_CANCEL_UNACKED,
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return
@@ -567,7 +569,13 @@ async def _dispatch_events(
                     if verdict == VERDICT_WORKING:
                         self._log_working_deferral(_stale_idle, evidence, timeout)
                         continue
-                    _flat_wait = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                    # established_flat (a backend socket held, nothing
+                    # flowing) and platform_limited (macOS: a flat tree with
+                    # no socket evidence to tell a think from a wedge) both
+                    # get the model-silent window.
+                    _flat_wait = evidence.startswith(
+                        (EVIDENCE_ESTABLISHED_FLAT, EVIDENCE_PLATFORM_LIMITED)
+                    )
                     if verdict != VERDICT_DEAD:
                         # UNKNOWN: probe only past the window. An established-
                         # but-flat backend connection is probably a non-streamed
@@ -851,6 +859,18 @@ async def _dispatch_events(
                 # "waiting for a human" from "the consumer stopped pulling".
                 self._awaiting_permission = True
                 yield _perm_event
+            elif action == "elicitation":
+                # An MCP server's human-in-the-loop ask. The handle answers it
+                # itself (decline) unless this consumer can put it to a person;
+                # the returned event is the ask that consumer must answer. No
+                # trust tier applies: it is the server's requirement, not ours.
+                _elicit_event = await self._handle_elicitation_request(msg)
+                if _elicit_event is None:
+                    continue
+                # Same park marking as a permission: the consumer waits on a
+                # human here too, and an observer must not read that as a stall.
+                self._awaiting_permission = True
+                yield _elicit_event
             elif action == "server_request_unknown":
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
             elif action == "update":
@@ -921,6 +941,11 @@ async def _dispatch_events(
                     yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_text, runtime_global=_ownerless)
                 elif _disc == "steering_cleared":
                     yield AcpEvent(kind=EVENT_STEER_CLEARED, runtime_global=_ownerless)
+                elif _disc == "AgentExecutionUserMessageCleared":
+                    # The steers a ``_session/steer/clear`` dropped unread. Only
+                    # the fact is carried: kiro-cli's message ids name nothing
+                    # Crew keeps, so the caller decides which steers it held.
+                    yield AcpEvent(kind=EVENT_STEER_DROPPED, runtime_global=_ownerless)
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":

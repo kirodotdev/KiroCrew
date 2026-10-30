@@ -1,7 +1,7 @@
 /** The hover hold: keeps the row under the pointer in place while the list re-sorts
  *  under it. The seat arithmetic lives in ../chat/hoverHold. */
 import { useRef, useReducer, useCallback, useEffect, type MutableRefObject } from 'react'
-import { type HoverPin, heldSeat } from '../chat/hoverHold'
+import { type HoverPin, heldSeat, seatInSection } from '../chat/hoverHold'
 import { sessionRowsInScope, SESSION_ROW_SELECTOR } from '../chat/sessionRowNav'
 import type { Slot } from './types'
 import { sessionRowIdentity } from './rowIdentity'
@@ -18,8 +18,11 @@ const STALE_REGION_SELECTOR = '[data-stale-region]'
 // tree shares across every folder body and the root rows (see ../chat/hoverHold).
 const SESSION_CONTAINER_SELECTOR = '[data-session-container]'
 
-/** The held-row pin, its release, and the per-lane hold applied at render. */
-export function useHoverHold() {
+/** The held-row pin, its release, and the per-lane hold applied at render.
+ *  `isPinned` names the lane's leading section, the pinned rows the lane order
+ *  puts first; null while a search ranks the lane, which has no such section.
+ *  The hold never seats a row across that boundary (see `seatInSection`). */
+export function useHoverHold({ isPinned }: { isPinned: ((s: Slot) => boolean) | null }) {
   // Hold the row under the pointer in place. Under a last-activity sort,
   // background agent events (touchSlotActivity recency bumps) re-sort the list
   // at any moment, so a row can move out from under the cursor between the user
@@ -72,10 +75,13 @@ export function useHoverHold() {
     // -1 is the normal case for every lane that does not contain the hovered
     // row, including a sibling list sharing this scope, so it is not an error.
     if (at < 0) return list
-    const held = heldSeat(pin, list, sessionRowIdentity, segmentOf)
+    const seat = heldSeat(pin, list, sessionRowIdentity, segmentOf)
+    const rest = list.filter(s => sessionRowIdentity(s) !== pin.key)
+    // Inside its own section only: across the pinned boundary the lane would
+    // read pinned, unpinned, pinned, and draw the pinned divider twice.
+    const held = seat == null || !isPinned ? seat : seatInSection(seat, rest, isPinned(list[at]), isPinned)
     if (held == null || held === at) { heldDisplacedRef.current = false; return list }
     heldDisplacedRef.current = true
-    const rest = list.filter(s => sessionRowIdentity(s) !== pin.key)
     // Clamp: the list can shrink under the hold (a session closes, a filter
     // narrows), and splice past the end would silently append instead.
     rest.splice(Math.min(held, rest.length), 0, list[at])

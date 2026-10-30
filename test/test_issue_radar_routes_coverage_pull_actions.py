@@ -72,10 +72,12 @@ class TestRunPrAction(unittest.IsolatedAsyncioTestCase):
         # On GitLab issues and merge requests are different collections with
         # independent numbering, so the generic one would comment elsewhere.
         with (
-            mock.patch.object(gh, "add_pr_comment", return_value={}) as call,
+            mock.patch.object(gh, "add_pr_comment", return_value={"via": "pr"}) as call,
+            mock.patch.object(gh, "add_issue_comment", return_value={"via": "issue"}),
             mock.patch.object(store, "drop_pr_detail_cache"),
         ):
-            await routes._run_pr_action(_key(), "comment", 7, body="hi")
+            got = await routes._run_pr_action(_key(), "comment", 7, body="hi")
+        self.assertEqual(got, {"via": "pr"})
         call.assert_called_once()
 
     async def test_a_merge_the_provider_declined_is_raised_not_reported_as_success(self):
@@ -107,10 +109,11 @@ class TestRunPrAction(unittest.IsolatedAsyncioTestCase):
             ("rerun_run", "rerun_workflow_run"),
         ):
             with (
-                mock.patch.object(gh, target, return_value={"ok": True}) as call,
+                mock.patch.object(gh, target, return_value={"via": target}) as call,
                 mock.patch.object(store, "drop_pr_detail_cache"),
             ):
-                await routes._run_pr_action(_key(), action, 7, run_id=42)
+                got = await routes._run_pr_action(_key(), action, 7, run_id=42)
+            self.assertEqual(got, {"via": target}, action)
             call.assert_called_once()
 
     async def test_an_unknown_action_is_a_programming_error(self):

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from kiro_crew import session_map_links as _links
 from kiro_crew import session_map_store as _store
+from kiro_crew._facade_bindings import own_methods as _own_methods
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -1447,22 +1448,4 @@ class SessionMap:
 _OWNERS: tuple[str, ...] = ("kiro_crew.session_map_store", "kiro_crew.session_map_links")
 
 
-def _own_methods(cls: type) -> None:
-    """Make each member *cls* binds from an owner module read as a method of *cls*.
-
-    An owner's function annotates ``self`` so mypy checks its body as a method body. This
-    drops that annotation from the runtime object and names the function, and every function
-    it wraps, after the class attribute, so its ``inspect.signature``, ``__qualname__`` and
-    ``__module__`` are the ones the members had when the class was one module, and so are the
-    reprs and pickle paths that read them. Only the code object still names its owner file.
-    """
-    for name, member in vars(cls).items():
-        function = member  # a ``staticmethod`` copies these attributes too, so start at it
-        while getattr(function, "__module__", None) in _OWNERS:
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-            function.__module__ = __name__
-            function = getattr(function, "__wrapped__", None)
-
-
-_own_methods(SessionMap)
+_own_methods(SessionMap, frozenset(_OWNERS), module=__name__)

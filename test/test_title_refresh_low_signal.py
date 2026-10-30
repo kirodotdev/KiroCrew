@@ -246,12 +246,12 @@ class TestLowSignalPersistence:
 class TestChainedTriggerWaitsForOnSendAttempt:
     """chat_done's title→refresh chain vs a still-running ON-SEND attempt.
 
-    Regression (review finding): when the on-send titling task was still
-    awaiting its LLM call at chat_done, the chained ``_maybe_auto_title``
-    bounced off the ``_title_in_flight`` guard and ``maybe_refresh_title``
-    bounced off the not-titled guard; the low-signal title then locked AFTER
-    both, and a one-message session — which gets no later chat_done — kept the
-    URL echo indefinitely. ``title_then_refresh`` must wait the attempt out.
+    When the on-send titling task is still awaiting its LLM call at
+    chat_done, the chained ``_maybe_auto_title`` bounces off the
+    ``_title_in_flight`` guard and ``maybe_refresh_title`` bounces off the
+    not-titled guard; the low-signal title then locks AFTER both, and a
+    one-message session — which gets no later chat_done — keeps the URL echo
+    indefinitely. ``title_then_refresh`` must wait the attempt out.
     """
 
     @staticmethod

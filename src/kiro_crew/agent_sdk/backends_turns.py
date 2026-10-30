@@ -3,8 +3,9 @@ command, and report how the turn ended.
 
 The three steering channels, the three answers to a full context and the inline
 ``/compact`` done signal, the slash-command memberships (``_kiro.dev`` commands,
-``/todos``, a locally answered ``/clear``), and how a refusal or a terminal provider
-failure is reported.
+``/todos``, a locally answered ``/clear``), how a refusal or a terminal provider
+failure is reported, whether a turn reports what it cost, and whether a turn the agent
+starts between prompts is read.
 
 One of the owners of the harness vocabulary in :mod:`kiro_crew.agent_sdk.backends`,
 which re-exports every name defined here and is the import path callers use. Like that
@@ -18,6 +19,7 @@ from __future__ import annotations
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -25,6 +27,19 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
+
+
+def escape_user_message_markup(text: str) -> str:
+    """Escape delimiters so they cannot occur inside the text they delimit."""
+    return text.replace("</user_message>", "&lt;/user_message&gt;").replace(
+        "<user_message>", "&lt;user_message&gt;"
+    )
+
+
+def wrap_user_message(text: str) -> str:
+    """Wrap escaped text so its echo splits one way and cannot close the model's wrapper."""
+    return f"<user_message>\n{escape_user_message_markup(text)}\n</user_message>"
+
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer).
 # claude-agent-acp does not implement it, so a steer sent there is answered with
@@ -48,7 +63,10 @@ from kiro_crew.agent_sdk.backends import (
 # ends its turn. It takes a user's mid-turn message as a second ``session/prompt``
 # instead (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` below).
 # pi is not a member: pi-acp's ``initialize`` result advertises ``loadSession`` and
-# ``sessionCapabilities`` of list and delete, and no steering extension.
+# ``sessionCapabilities`` of list and delete, and no steering extension. It takes a
+# user's steer through Crew's own gate extension instead, which is not a deny-notice
+# channel (``ACP_BACKENDS_STEERING_REQUEST`` below); a pi denial reaches the model as
+# the blocked call's own error result, inside the same turn, without one.
 # deepseek is not a member: it advertises close, list and resume only, and permits
 # one in-flight prompt per session, so a mid-turn steer has no verb to travel on.
 # goose is not a member: its steer is its own request, and it is not shown to
@@ -151,8 +169,33 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
 # advertised it.
+#
+# pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.3.0, driven through
+# Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp
+# has no steer verb, and a second ``session/prompt`` lands in its turn queue as a new
+# turn after the running one, so no request reaches the turn; the steer bypasses the
+# adapter. ``AcpClient`` writes it as a file sealed for Crew's gate extension inside
+# pi (``acp.harness.pi_steer``: owner-only directory the sandbox mounts read-only,
+# AES-256-GCM under a per-launch key bound to the gate nonce, the pi session id and a
+# strictly increasing sequence number). At each ``turn_end`` that did not abort or
+# fail, the extension puts the oldest undelivered steer on pi's steering queue with
+# ``pi.sendMessage(message, {deliverAs: "steer"})``, which queues it synchronously
+# while pi streams and which pi hands the model as a user message; pi 1.3.0's agent
+# loop reads that queue right after the boundary and before its next model call in
+# the same run (``agent-loop.js``; no ``finishTurn`` in 1.3.0 ends a run there).
+# ``pi.sendUserMessage`` is not used: it awaits pi's input handlers before it queues,
+# so its steer could miss that read and surface in a later run. When pi starts the message the extension notifies an envelope naming the
+# steer, which pi-acp forwards as an ``agent_message_chunk`` with
+# ``_meta.piAcp.notify``; that echo is reported as ``EVENT_STEER_CONSUMED``. In the
+# capture a steer written during a running ``bash`` call was echoed after the tool
+# result, the model's next request carried it as the latest user message, and its
+# answer named the steered word before that ``session/prompt`` ended ``end_turn``.
+# A steer the run settles without reading -- the turn was cancelled, or failed, or
+# the steer arrived after its last ``turn_end`` -- is retired by the extension and
+# removed by the client at the turn's terminal, never read into a later turn, and the
+# caller queues it: membership here means ``steer_needs_loss_recovery``, like goose.
 ACP_BACKENDS_STEERING_REQUEST = frozenset(
-    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_PI}
 )
 
 # Backends that take a USER's mid-turn message as a second ``session/prompt`` sent
@@ -177,14 +220,51 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 # That makes membership here mean ``steer_needs_loss_recovery`` as well, like
 # codex.
 #
-# The live measurement is on 1.19.0, quoted here. The Real Adapter Contract lane
-# pins opencode in ``test/real_adapters/package.json``, and
-# ``test/test_opencode_concurrent_prompt_steer.py`` drives a scripted stdout, so no
-# lane re-measures this membership against a real opencode.
+# The live measurement was first taken on 1.19.0, and is captured on 1.19.1, the
+# Real Adapter Contract lane's pin (``test/real_adapters/package.json``):
+# ``test/fixtures/acp_frames/opencode/concurrent-prompt-steer-live.jsonl``. A
+# second ``session/prompt`` sent while the turn's bash ran reached the model in
+# the turn's one remaining request, beside the bash result, and the two prompts
+# were answered ``end_turn`` together. ``test/test_opencode_concurrent_prompt_steer.py``
+# drives a scripted stdout, so no lane re-measures this membership against a real
+# opencode.
 #
 # Not ``ACP_BACKENDS_STEER``: a deny notice cannot ride this verb, because the
 # denial already ended the turn it was meant for.
+#
+# copilot is NOT a member, on measurement against Copilot CLI 1.0.100: a second
+# ``session/prompt`` sent four seconds into a running turn REPLACED it -- the first
+# request answered ``stopReason: cancelled`` the moment the second arrived, and only
+# the second ran -- so it interrupts rather than joins. It is in no steer set:
+# ``_session/steering`` answered ``-32601``, and it advertises no other channel.
 ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
+
+# Backends whose ``_session/steer/clear`` drops the steers the running turn has not
+# read yet and names exactly those, so a pending steer can be taken back. Read by
+# ``supports_steer_retract``; the dashboard's Unsend, Edit and Queue instead on a
+# pending steer exist only on a member.
+#
+# kiro-cli is a member on a LIVE capture against kiro-cli 2.33.1:
+# ``test/fixtures/acp_frames/kiro/steering-clear-live.jsonl``. Two steers sent while
+# a shell call ran were each answered ``{queued: true}`` and echoed as
+# ``AgentExecutionUserMessageQueued``. ``_session/steer/clear`` was answered
+# ``{cleared: true}`` and followed by ``AgentExecutionUserMessageCleared`` naming
+# both, and the turn's answer obeyed neither. A steer sent after the clear was
+# injected and obeyed. The clear drops EVERY pending steer, so the caller sends
+# again the ones it did not mean to take back.
+# ``test/fixtures/acp_frames/kiro/steering-clear-after-inject-live.jsonl`` is the
+# other order: a steer already reported by ``AgentExecutionSteeringInjected`` is not
+# named by a later clear, which names only the steer still pending, and a clear
+# with nothing pending sends no ``AgentExecutionUserMessageCleared`` at all. The
+# answer is the same ``{cleared: true}`` either way, so only that notification is
+# evidence of a drop.
+#
+# KAS is not a member, measured against KAS through kiro-cli 2.33.1
+# (``--agent-engine v3``): its clear answered ``{cleared: true, messageIds: [...]}``
+# naming two steers ``steering_injected`` had already reported, and the turn obeyed
+# both. Its answer and its ``steering_cleared`` name steers the turn already read,
+# so neither can tell a dropped steer from a delivered one.
+ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
 # Every member acts on the ``/compact`` prompt that ``AcpProvider.compact()``
@@ -216,9 +296,9 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ("Summarize conversation to avoid hitting the context limit"), intercepts the
 # ``/compact`` prompt as that command, and answers the same ``session/prompt``
 # request once the compaction is done. On 1.11.0 the frames are a MARKED tool-call
-# pair -- ``_meta.contextCompaction``. 2.2.2 sends the same pair UNMARKED, re-measured
-# in the Real Adapter Contract lane and committed as
-# ``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``.
+# pair -- ``_meta.contextCompaction``. 2.2.2 and 2.3.0 send the same pair UNMARKED,
+# re-measured in the Real Adapter Contract lane and committed as
+# ``test/fixtures/acp_frames/codex/compact-live.jsonl``.
 # ``_dispatch.parse_codex_compaction_update`` reads both shapes and
 # translates them into the compaction status every consumer already reads, so the waiter
 # is satisfied from inside the turn rather than stranded after it. Its native
@@ -238,13 +318,13 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # drive did: ``Agent::reply`` routes ``/compact`` through ``execute_command`` to
 # ``handle_compact_command``, and ``command_starts_turn("/compact")`` is false.
 #
-# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.2.0, taken with
+# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.3.0, taken with
 # ``scripts/capture_acp_compaction.py`` and a locally served model named in pi's own
 # ``models.json``. Over four ordinary turns its ``usage_update.used`` climbed
-# 12773 -> 25127 -> 37481 -> 49834. A ``/compact`` prompt then answered pi's own
+# 13483 -> 25572 -> 37610 -> 49648. A ``/compact`` prompt then answered pi's own
 # ``Compaction completed`` chunk and returned ``stopReason: end_turn`` with no
 # ``usage_update`` and no status frame after it, and the next ORDINARY turn -- which
-# added another ~12k-token prompt -- read 37518, below the pre-compact peak. The
+# added another ~12k-token prompt -- read 13596, below the pre-compact peak. The
 # drive is committed as evidence: ``test/fixtures/acp_frames/pi/compact-live.jsonl``.
 # The source agrees: pi-acp intercepts ``/compact`` in ``prompt()``, awaits
 # ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``.
@@ -276,12 +356,21 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ``contextUsagePercentage`` read 21.99 -> 30.40 -> 38.82, and the next ordinary
 # turn read 30.47. The one metadata frame right after ``completed`` read 81.03.
 #
-# claude is a member on a LIVE capture against claude-agent-acp 0.93.0:
+# claude is a member on a LIVE capture against claude-agent-acp 0.94.0:
 # ``test/fixtures/acp_frames/claude/compact-live.jsonl``. After two ordinary turns
-# (``used`` 31164), the ``/compact`` turn is one ``tool_call`` stamped
+# (``used`` 31250), the ``/compact`` turn is one ``tool_call`` stamped
 # ``_meta.claudeCode.toolName: compact``, completed inside the same
-# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31164 -> ``postTokens`` 4257,
-# then ``end_turn`` with no status frame. The next ordinary turn read 25931.
+# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31250 -> ``postTokens`` 4148,
+# then ``end_turn`` with no status frame. The next ordinary turn read 26171.
+#
+# copilot is a member on a LIVE drive against Copilot CLI 1.0.100. Over three large
+# turns its ``usage_update.used`` climbed 22058 -> 30579 -> 39041. A ``/compact``
+# prompt then answered its own ``Compacted conversation history ...`` chunk, read
+# ``used: 19913`` and returned ``stopReason: end_turn`` with no status frame after
+# it, and the next ORDINARY turn read 20843, below the pre-compact peak
+# (``test/fixtures/acp_frames/copilot/compact-live.jsonl``). ``compact`` is in its
+# ``available_commands_update`` and in ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST``, so
+# the prompt guard lets it through.
 #
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
@@ -295,6 +384,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_PI,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -421,6 +511,9 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # pi is a member on the capture recorded on ``ACP_BACKENDS_COMPACT``: its ``/compact``
 # turn carries the ``Compaction completed`` chunk and ends with ``stopReason:
 # end_turn``, with no status frame after it.
+# copilot is a member on its capture recorded on ``ACP_BACKENDS_COMPACT``: the
+# ``/compact`` turn's own chunk and ``usage_update`` land before its ``end_turn``,
+# and nothing follows it.
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -428,13 +521,14 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_COPILOT,
     }
 )
 
 # Inline-compaction members whose compaction pair may arrive UNMARKED, and so are
 # read by ``_dispatch.CODEX_COMPACTION_TITLE`` on a ``think`` call plus the start's
-# ``toolCallId``. codex is the member: codex-acp 2.2.2 sends the pair with no
-# ``_meta``, captured in ``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``.
+# ``toolCallId``. codex is the member: codex-acp 2.3.0 sends the pair with no
+# ``_meta``, captured in ``test/fixtures/acp_frames/codex/compact-live.jsonl``.
 # Every other member is read by the marker alone, so its own ``think`` call with
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
@@ -507,6 +601,10 @@ ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 #   steering, follow-up, changelog; anything else goes to ``session.prompt``.
 # - deepseek: the ``dsh-acp`` bridge admits every prompt block as a user message
 #   with no slash parsing at all.
+# - copilot: Copilot CLI 1.0.100's ``available_commands_update`` lists no ``clear``,
+#   and its ACP reference says a command it does not list is sent to the model as
+#   an ordinary prompt. ``clear`` is also outside its prompt-command allowlist, so a
+#   ``/clear`` that reached the client would be refused rather than sent.
 #
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
@@ -520,8 +618,30 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
+
+# Backends where the dashboard answers every harness command itself, because the
+# harness has no way to run one. A member's harness command never reaches it:
+# ``/clear`` is dropped the way ``reset_conversation`` does, any other command
+# gets a notice, and ``GET /api/slash-commands`` lists only the commands the
+# dashboard serves without the harness (``/agent <name>``, ``/clear``, ``/goal``,
+# ``/prompts``, ``/side``, ``/workflow``), plus ``/compact``, which has a gate of
+# its own.
+#
+# - kas: refuses ``_kiro.dev/commands/execute`` with -32603 for every command
+#   (``test/fixtures/acp_frames/kas/commands-refused-live.jsonl``), and its
+#   ``available_commands_update`` lists only custom agents and skills, so a
+#   ``/help`` or ``/context`` sent as prompt text reaches the model as a message.
+#
+# kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
+# claude is not a member: its harness owns its own command set. codex, opencode,
+# pi, deepseek, goose and copilot are not members: each serves the commands it
+# knows from its own prompt handler, so their other commands keep the prompt
+# path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
+# harness added later stays out until its command handling is checked.
+ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli
@@ -576,3 +696,25 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # opencode, goose, pi and deepseek are not members: none of them was read writing a
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
+
+# Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
+# turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+ACP_BACKENDS_REPORT_USAGE = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }
+)
+
+# Backends whose AcpClient reads stdout between turns, so a turn the agent starts
+# on its own (a background task finished) is seen when it happens rather than by
+# the next prompt. A member must stream such a turn while no prompt is in flight
+# AND mark where it ends: claude-agent-acp puts ``_meta["_claude/origin"]`` on the
+# cycle's closing ``usage_update``. A harness without that marker would hold its
+# slot until the stale-turn gate or the prompt timeout, so it stays out until its
+# end signal is known.
+# See docs/request-for-change/rfc-agent-started-turns.md.
+ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE})

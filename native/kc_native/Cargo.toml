@@ -1,0 +1,20 @@
+[package]
+name = "kc_native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Optional native fast paths for Kiro Crew."
+
+[lib]
+name = "kc_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Not abi3: the gate reads a str's own storage (PyUnicode_KIND / PyUnicode_DATA),
+# which the limited API does not expose. The wheel is therefore per-CPython-minor.
+pyo3 = { version = "=0.29.3", features = ["extension-module"] }
+regex = "=1.13.1"
+
+[profile.release]
+lto = true
+codegen-units = 1

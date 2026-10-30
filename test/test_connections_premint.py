@@ -20,6 +20,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.connections.registry import Provider
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _provider(slug: str) -> Provider:
@@ -147,12 +148,12 @@ async def test_premint_answers_before_the_activation_settles(
     monkeypatch.setattr(warm, "warm_mint_all", _never_settles)
     client = await _client()
     try:
-        status, body = await asyncio.wait_for(_premint(client), timeout=5)
+        status, body = await finished(_premint(client), "the premint answering ahead of the engine")
         assert status == 200
         assert body["preminting"] == ["linear", "vercel"]
         # The engine really was entered -- the response overtook it rather than the
         # handler having skipped the call altogether.
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the handler entering the warm engine")
     finally:
         released.set()
         await client.close()

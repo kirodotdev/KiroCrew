@@ -108,11 +108,13 @@ describe('ChatInput reasoning effort on the model chip', () => {
     expect(screen.getByTestId('composer-model-chip')).toHaveAccessibleName('Model: claude-opus-4.7')
   })
 
-  it('shows disabled state when running, and still names the level', () => {
+  it('stays enabled when running, still names the level, and says a pick applies next', () => {
     renderInput({ isRunning: true })
-    const btn = screen.getByTitle('Stop the current response to switch model · Reasoning effort: High')
-    expect(btn).toBeDisabled()
-    expect(btn).toHaveAccessibleName('Stop the current response to switch model · Reasoning effort: High')
+    const btn = screen.getByTestId('composer-model-chip')
+    expect(btn).toBeEnabled()
+    expect(btn).toHaveAccessibleName(
+      'Model: claude-opus-4.7 · Reasoning effort: High\nYour next message runs on the model you pick. This reply finishes on the model it started with.',
+    )
   })
 
   it('EFFORT_LABEL_KEY covers all valid values incl xhigh', () => {

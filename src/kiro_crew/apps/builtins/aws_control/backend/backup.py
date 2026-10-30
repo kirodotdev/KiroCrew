@@ -520,12 +520,11 @@ def run_sessions_backup(
             # And suppressing nothing is SAFE here, which is the claim that makes the
             # reasonless exit legitimate rather than convenient. The sweep is only
             # dangerous when an earlier archive holds conversations this run does not,
-            # and no released version wrote one: verified against this PR's base and
-            # against main, where the sessions archive has exactly the `crew` and `cli`
-            # roots and the export does not exist. Nothing needs protecting, under any
-            # grant. The bound on that claim is a host that ran an UNRELEASED build of
-            # this branch, which could hold conversations under a legacy grant; that is
-            # a pre-merge test host, not an operator install.
+            # and no released version wrote one: in every released build the sessions
+            # archive has exactly the `crew` and `cli` roots and the export does not
+            # exist. Nothing needs protecting, under any grant. The bound on that claim
+            # is a host that ran an UNRELEASED build, which could hold conversations
+            # under a legacy grant; that is a test host, not an operator install.
             #
             # Visibility is carried as the grant's STATE, the way the Layer B gate
             # itself is: `layer_b_scope` below says the grant covers `cli`, rather than
@@ -1053,7 +1052,7 @@ def make_job_runner(sdk: Any, kind: str) -> Any:
                 # scheduled run never reaches here with no drive; this guards the
                 # generic `_jobs` entry point, where it is an honest failure for a
                 # request that named a target with nowhere to push.
-                raise RuntimeError("this account has no drive yet; nothing was sent to AWS")
+                raise RuntimeError(f"{storage.no_drive_message(region)}; nothing was sent to AWS")
             # A scheduled run spends the owner's money with nobody present, so it
             # records that another install already backs up to this drive -- evidence
             # a later panel view cannot reconstruct, since the console's `others`

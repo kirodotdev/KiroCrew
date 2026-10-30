@@ -42,26 +42,33 @@ class _FakeClient:
 
 
 @pytest.mark.parametrize("code", [503, 409])
-def test_waits_through_a_recovery_refusal_then_returns(code, monkeypatch):
+def test_waits_through_a_recovery_refusal_then_returns(code):
     """503 on a read and 409 on a write are the same startup refusal."""
-    monkeypatch.setattr("e2e.test_gateway_boot_matrix.time.sleep", lambda _s: None)
     client = _FakeClient([_http_error(code), _http_error(code), {"ok": True}])
-    _await_memory_recovery(client, secs=5)  # type: ignore[arg-type]
+    _await_memory_recovery(client, secs=5, interval=0.001)  # type: ignore[arg-type]
     assert client.calls == 3
 
 
-def test_a_non_recovery_error_is_raised_at_once(monkeypatch):
+def test_a_non_recovery_error_is_raised_at_once():
     """A 500 is not "not yet": surface it instead of burning the whole budget."""
-    monkeypatch.setattr("e2e.test_gateway_boot_matrix.time.sleep", lambda _s: None)
     client = _FakeClient([_http_error(500), {"ok": True}])
     with pytest.raises(AssertionError):
         _await_memory_recovery(client, secs=5)  # type: ignore[arg-type]
     assert client.calls == 1
 
 
-def test_a_store_that_never_recovers_fails_with_the_gateways_own_body(monkeypatch):
+def test_a_non_recovery_error_after_a_refusal_is_the_one_raised():
+    """A 500 behind a 503 surfaces as itself, not as the stale recovery refusal."""
+    client = _FakeClient([_http_error(503), _http_error(500), {"ok": True}])
+    with pytest.raises(AssertionError) as caught:
+        _await_memory_recovery(client, secs=5, interval=0.001)  # type: ignore[arg-type]
+    assert isinstance(caught.value.__cause__, urllib.error.HTTPError)
+    assert caught.value.__cause__.code == 500
+    assert client.calls == 2
+
+
+def test_a_store_that_never_recovers_fails_with_the_gateways_own_body():
     """The wait is bounded, and the failure carries the refusal it kept seeing."""
-    monkeypatch.setattr("e2e.test_gateway_boot_matrix.time.sleep", lambda _s: None)
     client = _FakeClient([_http_error(503) for _ in range(50)])
     with pytest.raises(AssertionError) as caught:
         _await_memory_recovery(client, secs=0)  # type: ignore[arg-type]
@@ -69,9 +76,8 @@ def test_a_store_that_never_recovers_fails_with_the_gateways_own_body(monkeypatc
     assert caught.value.__cause__.code == 503
 
 
-def test_a_ready_gateway_is_not_polled_twice(monkeypatch):
-    """No sleep, no second request when recovery already finished."""
-    monkeypatch.setattr("e2e.test_gateway_boot_matrix.time.sleep", lambda _s: None)
+def test_a_ready_gateway_is_not_polled_twice():
+    """No second request when recovery already finished."""
     client = _FakeClient([{"ok": True}])
     _await_memory_recovery(client)  # type: ignore[arg-type]
     assert client.calls == 1

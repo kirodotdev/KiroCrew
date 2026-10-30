@@ -28,33 +28,16 @@ import {
   USER_LABEL,
   type ContextTrace,
   type ContextTurn,
+  type TrendRow,
 } from '../pages/ContextBreakdownPanel'
+import type { LatestTurn } from '../pages/ContextEngineBreakdown'
 
 afterEach(cleanup)
 
-/**
- * Budget for the two placement tests that dynamically import
- * `pages/chat/SidePanel`.
- *
- * Whichever of them runs first pays that module graph's resolve+transform, which
- * exceeded the 15s global default on a Windows checkout — so both failed for
- * every Windows contributor while passing on CI's Linux runner. The import stays
- * DYNAMIC deliberately: hoisting it to a static top-level import moved the same
- * work into the file's import phase and took the whole file from 32s to 259s
- * (measured), because then every test in it waits on that graph. This is a real,
- * bounded cost rather than a hang, so a per-test budget is the honest fix; the
- * global default stays tight for everything else.
- */
-const SIDE_PANEL_IMPORT_TIMEOUT_MS = 45_000
-
 const turn = (over: Partial<ContextTurn> = {}): ContextTurn => ({
-  ts: '2026-08-04T00:00:00Z',
   phase: 'per_turn',
   blocks: { request_header: 1576, your_message: 6 },
   total_chars: 1582,
-  context_used: 2000,
-  context_window: 200000,
-  model: 'claude',
   ordinal: 0,
   ...over,
 })
@@ -153,250 +136,94 @@ describe('niceTicks — three to four round gridlines', () => {
   })
 })
 
-describe('ContextBreakdownPanel rendering', () => {
-  const sixTurns = () =>
+const latestOf = (over: Partial<LatestTurn> = {}): LatestTurn => ({
+  turn: 6,
+  phase: 'per_turn',
+  ours: { message: 80, memory: 1200, rules: 500, skills: 240, other: 140 },
+  loop_chars: 6000,
+  loop_estimated: true,
+  engine: null,
+  ttft_ms: null,
+  context_used: 2000,
+  context_window: 200000,
+  ...over,
+})
+
+const rowOf = (turn: number, loop = 1000): TrendRow => {
+  const ours = { message: 80, memory: 100 * turn, rules: 500, skills: 240, other: 140 }
+  return {
+    turn,
+    ours,
+    loop,
+    // Each kept turn carries its own whole view, as the trace handler builds it.
+    detail: latestOf({
+      turn,
+      phase: turn === 1 ? 'session_start' : 'per_turn',
+      ours,
+      context_used: 1000 * turn,
+      blocks: { your_message: 80, memory: 100 * turn, lessons: 500, skill_index: 240, surface: 140 },
+    }),
+  }
+}
+
+describe('ContextBreakdownPanel rendering, from the fold\'s bounded state', () => {
+  const fiveTurns = () =>
     trace({
-      turns: [
-        turnOf({ your_message: 120, memory: 1500, lessons: 700, agent_instructions: 300, skill_index: 280, request_header: 100 }, { phase: 'session_start' }),
-        turnOf({ your_message: 80, memory: 600, lessons: 800, skill_index: 240, request_header: 80 }),
-        turnOf({ your_message: 80, memory: 800, lessons: 800, skill_index: 240, request_header: 80 }),
-        turnOf({ your_message: 80, memory: 1200, lessons: 500, response_preferences: 100, critical_rules: 200, skill_index: 240, request_header: 80 }),
-        turnOf({ your_message: 40, memory: 1200, lessons: 500, skill_index: 240, loaded_skill: 4000, request_header: 80 }),
-        turnOf({ your_message: 80, memory: 1200, lessons: 500, skill_index: 240, request_header: 80, mystery_block: 60 }),
-      ],
+      latest: latestOf(),
+      trend: [2, 3, 4, 5, 6].map(n => rowOf(n)),
+      start: rowOf(1, 20000),
+      earlier: 1,
+      turn_count: 6,
+      chars_per_token: 4,
     })
 
-  it('draws one stacked layer per category, bottom to top', () => {
-    const { container } = render(<ContextBreakdownPanel trace={sixTurns()} />)
+  it('draws one band per category and one for the rest of the context, bottom to top', () => {
+    const { container } = render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
     const layers = Array.from(container.querySelectorAll('svg g[data-category]')).map(g => g.getAttribute('data-category'))
-    expect(layers).toEqual([...CATEGORIES])
-    expect(container.querySelector('svg')).toHaveAttribute('role', 'img')
+    expect(layers).toEqual([...CATEGORIES, 'loop'])
+    // One real button per plotted turn, so any kept turn can be picked.
+    expect(container.querySelectorAll('button[data-turn]:not([data-start-row])')).toHaveLength(5)
   })
 
-  it('selects the newest turn by default and shows its total, delta and categories', () => {
-    render(<ContextBreakdownPanel trace={sixTurns()} />)
+  it('heads an unsplit newest turn with its own token total, not Kiro Crew blocks alone', () => {
+    render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
     const detail = screen.getByTestId('selected-turn-detail')
     expect(within(detail).getByText(/Turn 6 · latest/)).toBeInTheDocument()
-    // 2,160 now vs 6,060 before: the loaded skill left the context.
-    expect(within(detail).getByText('2,160')).toBeInTheDocument()
-    expect(within(detail).getByText(/−3,900 vs previous/)).toBeInTheDocument()
-    // The unknown block is counted under "Other", not lost.
-    const other = detail.querySelector('[data-category-row="other"]') as HTMLElement
-    expect(other).not.toBeNull()
-    expect(within(other).getByText('140')).toBeInTheDocument()
-    expect(within(other).getByText('Everything else')).toBeInTheDocument()
-    // Zero-size categories are hidden: turn 6 has no full skill loaded, but
-    // skill_index is a skill, so the skills row still shows.
-    expect(detail.querySelector('[data-category-row="skills"]')).not.toBeNull()
-    // The delta is information, not a verdict: muted in both directions.
-    expect(within(detail).getByText(/−3,900 vs previous/).className).toContain('text-muted')
-    const pressed = screen.getAllByRole('button', { pressed: true })
-    expect(pressed).toHaveLength(1)
-    expect(pressed[0]).toHaveAttribute('data-turn', '6')
+    expect(screen.getByTestId('whole-total').textContent).not.toMatch(/^2,160/)
+    // Kiro Crew is the first row, with its total.
+    const crew = detail.querySelector('[data-engine-row="crew"]') as HTMLElement
+    expect(crew.textContent).toMatch(/Kiro Crew.*2,080/)
   })
 
-  it('moves the detail to a clicked turn and back with the arrow keys', () => {
-    render(<ContextBreakdownPanel trace={sixTurns()} />)
-    const turn4 = screen.getByRole('button', { name: /Turn 4:/ })
-    fireEvent.click(turn4)
-    const detail = screen.getByTestId('selected-turn-detail')
-    expect(within(detail).getByText('Turn 4')).toBeInTheDocument()
-    expect(within(detail).queryByText(/latest/)).toBeNull()
-    expect(within(detail).getByText(/\+400 vs previous/)).toBeInTheDocument()
-    expect(turn4).toHaveAttribute('aria-pressed', 'true')
-
-    // One tab stop: only the pressed button is tabbable.
-    expect(turn4).toHaveAttribute('tabindex', '0')
-    expect(screen.getByRole('button', { name: /Turn 5:/ })).toHaveAttribute('tabindex', '-1')
-    fireEvent.keyDown(turn4, { key: 'ArrowRight' })
-    expect(screen.getByRole('button', { name: /Turn 5:/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: /Turn 5:/ })).toHaveAttribute('tabindex', '0')
-    expect(within(detail).getByText('Turn 5')).toBeInTheDocument()
-    fireEvent.keyDown(screen.getByRole('button', { name: /Turn 5:/ }), { key: 'ArrowLeft' })
-    fireEvent.keyDown(screen.getByRole('button', { name: /Turn 4:/ }), { key: 'ArrowLeft' })
-    expect(screen.getByRole('button', { name: /Turn 3:/ })).toHaveAttribute('aria-pressed', 'true')
+  it('lists only the chart parts that are non-zero in the plotted turns', () => {
+    const rows = [2, 3].map(n => ({ ...rowOf(n), ours: { ...rowOf(n).ours, memory: 0 } }))
+    render(<ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 3 }), trend: rows })} chartWidth={600} />)
+    const legend = screen.getByTestId('trend').textContent ?? ''
+    expect(legend).not.toContain('Kiro Crew memory')
+    expect(legend).toContain('Kiro Crew rules')
+    expect(legend).toContain('Rest of the context')
   })
 
-  it('shows no delta on the first turn and "same as previous" on an unchanged one', () => {
-    render(
-      <ContextBreakdownPanel
-        trace={trace({
-          turns: [turnOf({ your_message: 10, memory: 90 }), turnOf({ your_message: 10, memory: 90 })],
-        })}
-      />,
-    )
-    const detail = screen.getByTestId('selected-turn-detail')
-    expect(within(detail).getByText(/same as previous/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Turn 1:/ }))
-    expect(within(detail).queryByText(/previous/)).toBeNull()
+  it('lists the newest session-start turn above the chart and counts it among the earlier turns', () => {
+    render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
+    const startRow = document.querySelector('[data-start-row]') as HTMLElement
+    expect(startRow.textContent).toContain('Turn 1 · session start')
+    // The only earlier turn is the start row above, so no line repeats it.
+    expect(screen.queryByTestId('earlier-turns')).toBeNull()
   })
 
-  it('expands a category into its raw blocks, with the every-turn members merged', () => {
-    render(<ContextBreakdownPanel trace={sixTurns()} />)
-    fireEvent.click(screen.getByText(/Turn 1 · session start/))
-    const detail = screen.getByTestId('selected-turn-detail')
-    const rules = detail.querySelector('[data-category-row="rules"]') as HTMLElement
-    const toggle = within(rules).getByRole('button')
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(within(rules).getByText('Corrections you taught it')).toBeInTheDocument()
-    expect(within(rules).getByText('Agent instructions')).toBeInTheDocument()
-
-    const other = detail.querySelector('[data-category-row="other"]') as HTMLElement
-    fireEvent.click(within(other).getByRole('button'))
-    expect(within(other).getByText('Every-turn instructions')).toBeInTheDocument()
-    expect(within(other).queryByText(/request header/i)).toBeNull()
-  })
-
-  it('labels the task-facts block from the catalog, distinct from the facts-you-told-it block', () => {
-    // `task_facts` rides along on every session under the default inject_activity,
-    // so it earns a catalog entry: the humanised id ("Task facts") would render in
-    // English beside translated siblings and read as a twin of "Facts you told it".
-    render(<ContextBreakdownPanel trace={trace({ turns: [turnOf({ your_message: 80, semantic_memory: 300, task_facts: 200 })] })} />)
-    const detail = screen.getByTestId('selected-turn-detail')
-    const memory = detail.querySelector('[data-category-row="memory"]') as HTMLElement
-    fireEvent.click(within(memory).getByRole('button'))
-    expect(within(memory).getByText('Facts recalled for this task')).toBeInTheDocument()
-    expect(within(memory).getByText('Facts you told it')).toBeInTheDocument()
-    expect(within(memory).queryByText('Task facts')).toBeNull()
-  })
-
-  it('draws only the newest 30 turns and counts the rest', () => {
-    const many = Array.from({ length: MAX_CHART_TURNS + 5 }, (_, i) => turnOf({ your_message: 10 + i, memory: 100 }))
-    render(<ContextBreakdownPanel trace={trace({ turns: many })} />)
-    expect(screen.getByText('Turns 1–5 earlier')).toBeInTheDocument()
-    expect(screen.getByText(`Last ${MAX_CHART_TURNS} turns`)).toBeInTheDocument()
-    expect(screen.queryByText(/^All /)).toBeNull()
-    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
-    expect(screen.queryByRole('button', { name: /^Turn 5:/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /^Turn 6:/ })).toBeInTheDocument()
-    // The newest turn is still "latest" even though earlier ones are hidden.
-    expect(screen.getByText(`Turn ${MAX_CHART_TURNS + 5} · latest`)).toBeInTheDocument()
-  })
-
-  it('counts every earlier turn from the first shown row ordinal', () => {
-    // 35 retained rows whose TRUE ordinals are 41..75 (40 turns ran before them). The
-    // chart draws the newest 30 (ordinals 46..75) and clips 5; the label must report
-    // all 45 earlier turns -- the 40 gone before the payload plus the 5 clipped here --
-    // derived from the first shown row's exact ordinal, not a uniform offset.
-    const many = Array.from({ length: MAX_CHART_TURNS + 5 }, (_, i) =>
-      turnOf({ your_message: 10 + i, memory: 100 }, { ordinal: 41 + i }),
-    )
-    render(<ContextBreakdownPanel trace={trace({ turns: many })} />)
+  it('says how many turns precede the ring, exactly as the fold counted them', () => {
+    const rows = Array.from({ length: MAX_CHART_TURNS }, (_, i) => rowOf(i + 46))
+    render(<ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 75 }), trend: rows, earlier: 45 })} chartWidth={600} />)
     expect(screen.getByText('Turns 1–45 earlier')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
-    // The newest is turn 75, the oldest shown is 46.
-    expect(screen.getByText(/Turn 75 · latest/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^Turn 46:/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^Turn 45:/ })).toBeNull()
+    expect(screen.getByText(`Last ${MAX_CHART_TURNS} turns`)).toBeInTheDocument()
   })
 
-  it('counts a regenerated turn once when two session-start rows share its ordinal', () => {
-    // An ordinal numbers a TURN, and one turn can own more than one row: a failed replay
-    // that regenerates turn 41 re-emits its session-start injection, so TWO start rows
-    // carry ordinal 41. They are ONE turn position shown above the chart, so exactly one
-    // is subtracted from the earlier-turn count. Counting ROWS subtracts two and reports
-    // 43 -- one fewer earlier turn than there are, and nothing on screen reveals it.
-    const regenerated = [
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 46 }),
-      turnOf({ your_message: 20, memory: 100 }, { ordinal: 47 }),
-      turnOf({ your_message: 30, memory: 100 }, { ordinal: 48 }),
-    ]
-    render(<ContextBreakdownPanel trace={trace({ turns: regenerated })} />)
-    expect(screen.getByText('Turns 1–45 earlier · 1 of them listed above')).toBeInTheDocument()
-  })
-
-  it('lists a regenerated start turn once, from its newest attempt', () => {
-    // A replay that regenerates turn 41 (for example after a provider switch) writes a
-    // second session-start row carrying the same ordinal. That is ONE turn, so exactly
-    // one start row is listed, and it is the newest attempt: window-local index 2.
-    const regenerated = [
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
-      turnOf({ your_message: 120, memory: 31_000 }, { phase: 'session_start', ordinal: 41 }),
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 42 }),
-    ]
-    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: regenerated })} />)
-    const startRows = container.querySelectorAll('[data-start-row]')
-    expect(startRows).toHaveLength(1)
-    expect(startRows[0]).toHaveAttribute('data-turn', '2')
-    expect(startRows[0].textContent).toContain('Turn 41 · context rebuilt')
-    expect(startRows[0].textContent).toContain('31,120 characters')
-    // The previous turn for turn 42 is the kept start attempt, not the dropped one.
-    const detail = screen.getByTestId('selected-turn-detail')
-    expect(within(detail).getByText(/31,010 vs previous/)).toBeInTheDocument()
-  })
-
-  it('draws a retried turn once, from its newest attempt', () => {
-    // A retried or recomposed turn writes one row per attempt, all with the turn's one
-    // ordinal. Drawing rows would show two "Turn 9" columns and say "Last 3 turns" for two.
-    const retried = [
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 8 }),
-      turnOf({ your_message: 20, memory: 100 }, { ordinal: 9 }),
-      turnOf({ your_message: 25, memory: 400 }, { ordinal: 9 }),
-    ]
-    render(<ContextBreakdownPanel trace={trace({ turns: retried })} />)
-    expect(screen.getByText('Last 2 turns')).toBeInTheDocument()
-    const turn9 = screen.getAllByRole('button', { name: /^Turn 9:/ })
-    expect(turn9).toHaveLength(1)
-    // The newest attempt is the one kept: it is the third row, window-local index 3.
-    expect(turn9[0]).toHaveAttribute('data-turn', '3')
-    // The delta compares turn 9 with turn 8 (425 vs 110), never with its own hidden
-    // earlier attempt (425 vs 120).
-    const detail = screen.getByTestId('selected-turn-detail')
-    expect(within(detail).getByText(/\+315 vs previous/)).toBeInTheDocument()
-  })
-
-  it('reports earlier-hidden from the first row ordinal when the chart clips nothing', () => {
-    // Fewer rows than the chart cap, but 7 turns ran before them (ordinals 8, 9, 10):
-    // the count comes from the first row's ordinal, and the chart draws every row it has.
-    const few = [
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 8 }),
-      turnOf({ your_message: 20, memory: 100 }, { ordinal: 9 }),
-      turnOf({ your_message: 30, memory: 100 }, { ordinal: 10 }),
-    ]
-    render(<ContextBreakdownPanel trace={trace({ turns: few })} />)
-    expect(screen.getByText('Turns 1–7 earlier')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(3)
-  })
-
-  it('shows each row EXACT ordinal, indexing the array window-local', () => {
-    // Three retained rows whose true ordinals are 41, 42, 43: the displayed label must
-    // show those exact numbers, while the array is still indexed by the window-local
-    // position (the earlier turns are not in it).
-    const few = [
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 41 }),
-      turnOf({ your_message: 20, memory: 200 }, { ordinal: 42 }),
-      turnOf({ your_message: 30, memory: 300 }, { ordinal: 43 }),
-    ]
-    render(<ContextBreakdownPanel trace={trace({ turns: few })} />)
-    const detail = screen.getByTestId('selected-turn-detail')
-    // Newest retained row is the 43rd turn, not the 3rd.
-    expect(within(detail).getByText(/Turn 43 · latest/)).toBeInTheDocument()
-    // The buttons are LABELLED by the true ordinal ...
-    const turn41 = screen.getByRole('button', { name: /^Turn 41:/ })
-    // ... but still IDENTIFIED window-local, so selecting it indexes the array at 1.
-    expect(turn41).toHaveAttribute('data-turn', '1')
-    fireEvent.click(turn41)
-    // Selecting the first retained row shows the 41st turn's detail, not the latest.
-    expect(within(detail).getByText('Turn 41')).toBeInTheDocument()
-    expect(within(detail).queryByText(/latest/)).toBeNull()
-  })
-
-  it('carries neither a whole-window estimate nor a credits column', () => {
-    render(
-      <ContextBreakdownPanel
-        trace={trace({
-          turns: [turnOf({ memory: 4000, your_message: 40 })],
-          peak_context_used: 5000,
-        })}
-      />,
-    )
-    expect(screen.queryByText(/estimate/i)).toBeNull()
-    expect(screen.queryByText(/Not measured/i)).toBeNull()
-    expect(screen.queryByText('Credits')).toBeNull()
+  it('lists the rest of an unsplit turn as one grey row in estimated tokens', () => {
+    render(<ContextBreakdownPanel trace={fiveTurns()} chartWidth={600} />)
+    const rest = document.querySelector('[data-engine-row="rest"]') as HTMLElement
+    expect(rest.textContent).toMatch(/^Rest of the contextHow to split it~\d/)
+    expect(screen.getByTestId('engine-caption').textContent).toBe('Figures marked ~ are estimates (characters / 4).')
   })
 
   it('renders a readable empty state for a session with no recorded turns', () => {
@@ -405,56 +232,314 @@ describe('ContextBreakdownPanel rendering', () => {
   })
 
   it('does not promise data while recording is switched off', () => {
-    // "yet" is true for a session whose next turn fills the panel, and false when the
-    // gateway records nothing at all: the payload says which, and the copy follows it.
     render(<ContextBreakdownPanel trace={trace({ turns: [], recording: false, env_file: '/srv/crew/.env' })} />)
     expect(screen.getByText(/Context breakdown is not recorded while the crew log is off\. Remove KIROCREW_CREW_LOG from \/srv\/crew\/\.env/)).toBeInTheDocument()
     expect(screen.queryByText(/yet/)).toBeNull()
   })
 
-  it('keeps the "yet" empty state when the payload says recording is on', () => {
-    render(<ContextBreakdownPanel trace={trace({ turns: [], recording: true })} />)
-    expect(screen.getByText('No context breakdown recorded for this session yet.')).toBeInTheDocument()
-  })
-
-  it('names a single earlier turn without a range', () => {
-    const rows = [
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 2 }),
-      turnOf({ your_message: 20, memory: 100 }, { ordinal: 3 }),
-    ]
-    render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
-    expect(screen.getByTestId('earlier-turns')).toHaveTextContent('Turn 1 earlier')
-  })
-
-  it('labels only turn 1 as the session start and a later start row as a rebuild', () => {
-    const rows = [
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 1 }),
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 2 }),
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 3 }),
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 4 }),
-    ]
-    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
-    const labels = Array.from(container.querySelectorAll('[data-start-row]')).map(r => r.textContent ?? '')
-    expect(labels[0]).toContain('Turn 1 · session start')
-    expect(labels[1]).toContain('Turn 3 · context rebuilt')
-    expect(labels[1]).not.toContain('session start')
-  })
-
-  it('labels the fold-marked start "session start" even when a refused turn 1 put it at turn 2', () => {
-    const rows = [
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 2, first_start: true }),
-      turnOf({ your_message: 10, memory: 100 }, { ordinal: 3, first_start: false }),
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 4, first_start: false }),
-    ]
-    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
-    const labels = Array.from(container.querySelectorAll('[data-start-row]')).map(r => r.textContent ?? '')
-    expect(labels[0]).toContain('Turn 2 · session start')
-    expect(labels[1]).toContain('Turn 4 · context rebuilt')
-  })
-
   it('shows a loading state before the first payload', () => {
     const { container } = render(<ContextBreakdownPanel trace={undefined} isLoading />)
     expect(within(container).getByText(/Loading context breakdown/i)).toBeInTheDocument()
+  })
+})
+
+describe('picking a past turn shows that turn whole, as the newest one is shown', () => {
+  const sixTurns = () =>
+    trace({
+      latest: latestOf({ turn: 6, blocks: { your_message: 80, memory: 1200 } }),
+      trend: [2, 3, 4, 5, 6].map(n => rowOf(n)),
+      start: rowOf(1, 20000),
+      earlier: 1,
+      turn_count: 6,
+      chars_per_token: 4,
+    })
+
+  it('moves the detail to a clicked turn and back with the arrow keys', () => {
+    render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const turn4 = screen.getByRole('button', { name: /^Turn 4:/ })
+    fireEvent.click(turn4)
+    const detail = () => screen.getByTestId('selected-turn-detail')
+    expect(within(detail()).getByText('Turn 4')).toBeInTheDocument()
+    expect(within(detail()).queryByText(/latest/)).toBeNull()
+    // Turn 4's own occupancy reading heads its panel.
+    expect(screen.getByTestId('whole-total').textContent).toBe('4,000')
+    expect(turn4).toHaveAttribute('aria-pressed', 'true')
+    // One tab stop: only the pressed button is tabbable.
+    expect(turn4).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(turn4, { key: 'ArrowRight' })
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(detail()).getByText('Turn 5')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 5:/ }), { key: 'ArrowLeft' })
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 4:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 3:/ })).toHaveAttribute('aria-pressed', 'true')
+    // The newest column is the newest turn itself.
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 6:/ }))
+    expect(within(detail()).getByText(/Turn 6 · latest/)).toBeInTheDocument()
+  })
+
+  it('selecting the start row drives the detail like any other turn', () => {
+    const { container } = render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const row = container.querySelector('[data-start-row]') as HTMLElement
+    expect(row).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText('Turn 1 · session start')).toBeInTheDocument()
+    // Only one turn is pressed at a time, across the row and the chart: the chart
+    // draws no marker for it.
+    const pressed = screen.getAllByRole('button', { pressed: true })
+    expect(pressed).toHaveLength(1)
+    expect(pressed[0]).toHaveAttribute('data-start-row')
+    expect(screen.queryByTestId('selected-turn-marker')).toBeNull()
+    // The keyboard still enters the chart at its newest turn.
+    expect(screen.getByRole('button', { name: /^Turn 6:/ })).toHaveAttribute('tabindex', '0')
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 6:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 5:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('selected-turn-marker')).toBeInTheDocument()
+  })
+
+  it('keeps the picked turn when a new turn shifts the full ring, and says so once it leaves', () => {
+    // Ring 2..31, the newest turn 31. Turn 12 is picked.
+    const ring = (from: number) => Array.from({ length: MAX_CHART_TURNS }, (_, i) => rowOf(from + i))
+    const traceAt = (from: number) =>
+      trace({ latest: latestOf({ turn: from + MAX_CHART_TURNS - 1 }), trend: ring(from), earlier: from - 1 })
+    const { rerender } = render(<ContextBreakdownPanel trace={traceAt(2)} chartWidth={600} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 12:/ }))
+    const detail = () => screen.getByTestId('selected-turn-detail')
+    expect(within(detail()).getByText('Turn 12')).toBeInTheDocument()
+    // Turn 32 completes: every column moves one left. The panel stays on turn 12.
+    rerender(<ContextBreakdownPanel trace={traceAt(3)} chartWidth={600} />)
+    expect(within(detail()).getByText('Turn 12')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Turn 12:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByTestId('picked-gone')).toBeNull()
+    // Ten more turns and turn 12 has left the ring: the newest turn, with a note.
+    rerender(<ContextBreakdownPanel trace={traceAt(13)} chartWidth={600} />)
+    expect(within(detail()).getByText('Turn 42 · latest')).toBeInTheDocument()
+    expect(screen.getByTestId('picked-gone').textContent).toBe('Turn 12 has left the chart, so the newest turn is shown.')
+  })
+
+  it('names the start row as a picker and marks it while its turn is shown', () => {
+    const { container } = render(<ContextBreakdownPanel trace={sixTurns()} chartWidth={600} />)
+    const row = screen.getByRole('button', { name: 'Show turn 1 (session start)' })
+    expect(row).toBe(container.querySelector('[data-start-row]'))
+    expect(within(row).getByTestId('start-row-state').textContent).toBe('Show')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    expect(within(row).getByTestId('start-row-state').textContent).toBe('Shown above')
+    // The row states the same size the turn's own headline does.
+    expect(within(row).getByTestId('start-row-size').textContent).toBe(`${screen.getByTestId('whole-total').textContent} tokens`)
+  })
+
+  it('calls a session-start turn that is also the newest one thing in both places', () => {
+    const start = rowOf(1, 20000)
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 1, phase: 'session_start' }), trend: [], start })}
+        chartWidth={600}
+      />,
+    )
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText('Turn 1 · session start · latest')).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: 'Show turn 1 (session start)' })
+    // It is the turn shown, so the row is marked, and its size is the headline's.
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    expect(within(row).getByTestId('start-row-size').textContent).toBe(`${screen.getByTestId('whole-total').textContent} tokens`)
+  })
+
+  it('keeps every turn reachable: one pointer surface maps a click to the nearest turn', () => {
+    const rows = Array.from({ length: MAX_CHART_TURNS }, (_, i) => rowOf(i + 2))
+    const { container } = render(
+      <ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 31 }), trend: rows })} chartWidth={264} />,
+    )
+    const surface = screen.getByTestId('turn-pointer-surface')
+    const plotWidth = 264 - 60 - 28
+    const columnWidth = plotWidth / (MAX_CHART_TURNS - 1)
+    // JSDOM reports the wrapper at x=0, so clientX is a plot-relative offset.
+    fireEvent.click(surface, { clientX: 60 + columnWidth * 10 })
+    expect(screen.getByRole('button', { name: /^Turn 12:/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(container.querySelectorAll('button[data-turn]')).toHaveLength(MAX_CHART_TURNS)
+    expect(within(screen.getByTestId('selected-turn-detail')).getByText('Turn 12')).toBeInTheDocument()
+    // Arrow keys still walk the per-turn buttons.
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 12:/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('button', { name: /^Turn 11:/ })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('a past turn shows its own block names and its own engine rows', () => {
+    const measured = {
+      ...rowOf(3),
+      detail: latestOf({
+        turn: 3,
+        loop_estimated: false,
+        loop_chars: 50_000,
+        engine: {
+          total_chars: 52_000, model_calls: 1,
+          categories: { history: 1_900, steering: 30_000, skillsIndex: 20_100 },
+          percent: { history: 3.7, steering: 57.7, skillsIndex: 38.6 },
+          counts: { skillsIndex: 28 }, parts: {}, window: null, media: null,
+          history: { user: 1_900, assistant: 0, thinking: 0, compaction_summary: 0 },
+          unknown_chars: 0, compacted: false, schema_known: true, approximate: false,
+          crew_chars: 1_200, crew_split: { message: 80, memory: 300, rules: 500, skills: 240, other: 80 },
+          user_other_chars: 700, mismatch_chars: 0,
+        },
+        blocks: { your_message: 80, task_facts: 300, critical_rules: 500, loaded_skill: 240 },
+      }),
+    }
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4, blocks: { your_message: 9 } }), trend: [rowOf(2), measured, rowOf(4)] })}
+        chartWidth={600}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 3:/ }))
+    const detail = screen.getByTestId('selected-turn-detail')
+    // The engine's own rows for turn 3, not the newest turn's.
+    expect(screen.getByTestId('whole-total').textContent).toBe('52,000')
+    expect(detail.querySelector('[data-engine-row="steering"]')!.textContent).toMatch(/30,000/)
+    expect(detail.querySelector('[data-engine-row="skillsIndex"]')!.textContent).toMatch(/\(28\)/)
+    // Its own blocks, by name.
+    fireEvent.click(within(detail).getByRole('button', { name: /blocks sent this turn/ }))
+    const names = Array.from(detail.querySelectorAll('[data-block]')).map(li => li.getAttribute('data-block'))
+    expect(names).toEqual(['critical_rules', 'task_facts', 'loaded_skill', 'your_message'])
+    expect(within(detail).getByText('Must-follow rules')).toBeInTheDocument()
+    expect(within(detail).getByText('Facts recalled for this task')).toBeInTheDocument()
+  })
+
+  it('counts every block sent in the heading, before grouping and past the list', () => {
+    // Two every-turn members list as one row, and still count as the two blocks sent.
+    const blocks = { your_message: 80, task_facts: 300, surface: 40, request_header: 60 }
+    const latest = latestOf({ blocks, blocks_omitted: 6 })
+    render(<ContextBreakdownPanel trace={trace({ latest, trend: [rowOf(2), rowOf(3)] })} chartWidth={600} />)
+    // A disclosure that looks like one: right chevron while shut, down once open.
+    const toggle = screen.getByRole('button', { name: '10 Kiro Crew blocks sent this turn' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.querySelector('[data-testid="blocks-chevron"]')!.getAttribute('class')).toMatch(/chevron-right/)
+    fireEvent.click(toggle)
+    expect(toggle.querySelector('[data-testid="blocks-chevron"]')!.getAttribute('class')).toMatch(/chevron-down/)
+    const listed = Array.from(document.querySelectorAll('[data-block]')).map(li => li.getAttribute('data-block'))
+    expect(listed).toEqual(['task_facts', 'every_turn', 'your_message'])
+    expect(screen.getByTestId('blocks-omitted').textContent).toBe('6 more blocks not shown')
+    // The count of the rest is a note, not a control.
+    expect(screen.getByTestId('blocks-omitted').tagName).toBe('LI')
+    expect(screen.getByTestId('blocks-omitted').getAttribute('class')).toMatch(/cursor-default/)
+  })
+
+  it("asks for a picked past turn the trace does not carry, and shows that turn's read", () => {
+    // As the gateway sends a row: the chart's numbers only.
+    const slim = (turn: number): TrendRow => {
+      const { detail: _detail, ...rest } = rowOf(turn)
+      return rest
+    }
+    const asked: Array<number | null> = []
+    const onPastTurn = (n: number | null) => asked.push(n)
+    const t = trace({ latest: latestOf({ turn: 4 }), trend: [slim(2), slim(3), slim(4)] })
+    const { rerender } = render(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} />)
+    expect(asked.at(-1)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 3:/ }))
+    expect(asked.at(-1)).toBe(3)
+    // While it is read: the turn's name and a loading line, never the newest turn's panel.
+    expect(screen.getByTestId('past-turn-read').textContent).toMatch(/Turn 3/)
+    expect(screen.queryByTestId('selected-turn-detail')).toBeNull()
+    // The read lands: that turn's own panel.
+    const read = latestOf({ turn: 3, context_used: 3_000, blocks: { your_message: 80, lessons: 500 } })
+    rerender(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} pastTurn={{ ordinal: 3, detail: read, loading: false, error: null }} />)
+    expect(screen.getByTestId('whole-total').textContent).toBe('3,000')
+    // A failed read says so in place.
+    rerender(<ContextBreakdownPanel trace={t} chartWidth={600} onPastTurn={onPastTurn} pastTurn={{ ordinal: 3, detail: null, loading: false, error: 'turn is not kept' }} />)
+    expect(within(screen.getByTestId('past-turn-read')).getByText('turn is not kept')).toBeInTheDocument()
+    // Back on the newest turn, nothing is asked for.
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 4:/ }))
+    expect(asked.at(-1)).toBeNull()
+  })
+
+  it('always offers the way back to a running newest turn that is not a column yet', () => {
+    // Turn 9 is still running: the chart stops at turn 8.
+    const t = trace({ latest: latestOf({ turn: 9 }), trend: [rowOf(6), rowOf(7), rowOf(8)] })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    const heading = () => screen.getByTestId('selected-turn-detail').querySelector('strong')!.textContent
+    expect(heading()).toBe('Turn 9 · latest')
+    expect(screen.queryByTestId('show-latest')).toBeNull()
+    // The chart says why the newest turn has no column.
+    expect(screen.getByTestId('chart-running').textContent).toBe('Turn 9 is still running and not charted yet.')
+    fireEvent.click(screen.getByRole('button', { name: /^Turn 7:/ }))
+    expect(heading()).toBe('Turn 7')
+    // The button names the newest turn and brings it back.
+    fireEvent.click(screen.getByTestId('show-latest'))
+    expect(heading()).toBe('Turn 9 · latest')
+    expect(screen.queryByTestId('show-latest')).toBeNull()
+    // So do Escape and Home, from a focused column.
+    for (const key of ['Escape', 'Home']) {
+      const column = screen.getByRole('button', { name: /^Turn 6:/ })
+      fireEvent.click(column)
+      expect(heading()).toBe('Turn 6')
+      fireEvent.keyDown(column, { key })
+      expect(heading()).toBe('Turn 9 · latest')
+    }
+  })
+
+  it('says the unit changes when an unmeasured turn heads in tokens over a character chart', () => {
+    // Turn 9 not measured yet: its headline is the token reading; the ring was measured.
+    const t = trace({ latest: latestOf({ turn: 9, context_used: 38_500 }), trend: [rowOf(6), rowOf(7), rowOf(8)] })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    expect(screen.getByTestId('chart-unit').textContent).toBe('Unit: characters')
+    expect(screen.getByTestId('unit-switch').textContent).toBe('The headline is in tokens; the chart below counts characters.')
+  })
+
+  it('speaks tokens in the chart when the panel does, on a harness that never splits', () => {
+    const flat = (turn: number): TrendRow => ({ ...rowOf(turn, 0) })
+    const t = trace({ latest: latestOf({ turn: 4, context_used: 49_000 }), trend: [flat(2), flat(3), flat(4)] })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    expect(screen.getByTestId('chart-unit').textContent).toBe('Unit: tokens (estimated)')
+    // Turn 3 holds 1,260 characters of Kiro Crew blocks: about 315 tokens at 4 a token.
+    expect(screen.getByRole('button', { name: /^Turn 3:/ }).getAttribute('aria-label')).toBe('Turn 3: about 315 tokens')
+    cleanup()
+    // A measured ring stays in characters.
+    render(<ContextBreakdownPanel trace={trace({ latest: latestOf({ turn: 4 }), trend: [rowOf(2), rowOf(3), rowOf(4)] })} chartWidth={600} />)
+    expect(screen.getByTestId('chart-unit').textContent).toBe('Unit: characters')
+  })
+
+  it('fills each token column up to its own harness total with the rest band', () => {
+    // Turns 2 and 4 reported a total; turn 3 did not.
+    const flat = (turn: number, used: number): TrendRow => ({ ...rowOf(turn, 0), used })
+    const t = trace({
+      latest: latestOf({ turn: 4, context_used: 84_000 }),
+      trend: [flat(2, 80_000), flat(3, 0), flat(4, 84_000)],
+    })
+    render(<ContextBreakdownPanel trace={t} chartWidth={600} />)
+    const aria = (n: number) => screen.getByRole('button', { name: new RegExp(`^Turn ${n}:`) }).getAttribute('aria-label')
+    expect(aria(4)).toBe('Turn 4: about 84,000 tokens')
+    expect(aria(2)).toBe('Turn 2: about 80,000 tokens')
+    // No total: Kiro Crew's own estimate only (1,260 characters, about 315 tokens).
+    expect(aria(3)).toBe('Turn 3: about 315 tokens')
+    expect(document.querySelector('[data-category="loop"]')).not.toBeNull()
+    expect(document.querySelector('[data-legend="loop"]')!.textContent).toBe('Rest of the context')
+    expect(screen.getByTestId('chart-no-total').textContent).toBe(' Turns with no reported total are hatched.')
+    // Turn 3 is a hatched gap: its column is marked, and the top line breaks there.
+    const hatched = document.querySelectorAll('[data-testid="no-total-column"]')
+    expect(Array.from(hatched).map(h => h.getAttribute('data-turn'))).toEqual(['2'])
+    expect(document.querySelectorAll('[data-category="loop"] polygon')).toHaveLength(2)
+    // A token chart heads in tokens too: no unit note.
+    expect(screen.queryByTestId('unit-switch')).toBeNull()
+    cleanup()
+    // Every turn reported a total: no caption about missing ones.
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4, context_used: 84_000 }), trend: [flat(2, 80_000), flat(4, 84_000)] })}
+        chartWidth={600}
+      />,
+    )
+    expect(screen.queryByTestId('chart-no-total')).toBeNull()
+  })
+
+  it('heads the start row with the size the trace sends for it', () => {
+    const { detail: _detail, ...start } = rowOf(1)
+    render(
+      <ContextBreakdownPanel
+        trace={trace({ latest: latestOf({ turn: 4 }), trend: [rowOf(2), rowOf(3), rowOf(4)], start: { ...start, figure: { n: 85_312, unit: 'tokens' } } })}
+        chartWidth={600}
+      />,
+    )
+    expect(screen.getByTestId('start-row-size').textContent).toBe('85,312 tokens')
   })
 })
 
@@ -476,138 +561,15 @@ describe('axisLabelIndices — labels that never overprint', () => {
   })
 })
 
-describe('session-start turns sit above the chart', () => {
-  const withStart = () =>
-    trace({
-      turns: [
-        turnOf({ your_message: 120, memory: 30_000, lessons: 6_000, agent_instructions: 2_000, skill_index: 280, request_header: 100 }, { phase: 'session_start' }),
-        turnOf({ your_message: 80, memory: 600, lessons: 800, skill_index: 240, request_header: 80 }),
-        turnOf({ your_message: 80, memory: 1_000, lessons: 800, skill_index: 240, request_header: 80 }),
-      ],
-    })
-
-  it('renders the start turn as a selectable row, not as a point on the chart', () => {
-    const { container } = render(<ContextBreakdownPanel trace={withStart()} />)
-    const row = container.querySelector('[data-start-row]') as HTMLElement
-    expect(row).not.toBeNull()
-    expect(row).toHaveAttribute('data-turn', '1')
-    expect(row).toHaveAttribute('aria-pressed', 'false')
-    expect(row.textContent).toContain('Turn 1 · session start')
-    expect(row.textContent).toContain('38,500 characters')
-    // The chart only carries the two regular turns.
-    expect(screen.getByText('All 2 turns')).toBeInTheDocument()
-    expect(screen.getByText(/pick a turn/)).toBeInTheDocument()
-    expect(container.querySelector('svg [data-axis-label="1"]')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Turn 1:/ })).toBeNull()
-    // Its size does not pin the y-axis: the top tick stays near the regular turns.
-    const ticks = Array.from(container.querySelectorAll('svg text.tabular-nums'))
-      .map(t => Number((t.textContent ?? '').replace(/,/g, '')))
-      .filter(n => Number.isFinite(n))
-    expect(Math.max(...ticks)).toBeLessThan(10_000)
-    expect(screen.getByText(/Session-start and rebuild turns are listed above the chart so later turns stay readable/)).toBeInTheDocument()
-  })
-
-  it('announces the start row by its TRUE ordinal, matching what the row displays', () => {
-    // The chart's aria label names the selected turn. A session-start row is selected
-    // ABOVE the chart and is absent from the rows the chart draws, so the chart cannot
-    // look its ordinal up -- the selection key it receives is the window-local `n`.
-    // Announcing that would tell a screen-reader user a different number from the one
-    // printed on the row beside it, which is the only place the two can disagree.
-    const rows = [
-      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
-      turnOf({ your_message: 80, memory: 600 }, { ordinal: 42 }),
-      turnOf({ your_message: 80, memory: 1_000 }, { ordinal: 43 }),
-    ]
-    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
-    const row = container.querySelector('[data-start-row]') as HTMLElement
-    // Visible text and the selection key disagree on purpose: ordinal 41, window index 1.
-    expect(row.textContent).toContain('Turn 41 · context rebuilt')
-    expect(row).toHaveAttribute('data-turn', '1')
-
-    fireEvent.click(row)
-    const chart = container.querySelector('[role="img"]') as HTMLElement
-    expect(chart.getAttribute('aria-label')).toContain('Turn 41 is selected')
-    expect(chart.getAttribute('aria-label')).not.toContain('Turn 1 is selected')
-  })
-
-  it('selecting the start row drives the detail like any other turn', () => {
-    const { container } = render(<ContextBreakdownPanel trace={withStart()} />)
-    fireEvent.click(container.querySelector('[data-start-row]') as HTMLElement)
-    expect(container.querySelector('[data-start-row]')).toHaveAttribute('aria-pressed', 'true')
-    const detail = screen.getByTestId('selected-turn-detail')
-    expect(within(detail).getByText('Turn 1')).toBeInTheDocument()
-    expect(within(detail).getByText('38,500')).toBeInTheDocument()
-    expect(within(detail).queryByText(/previous/)).toBeNull()
-    // Only one turn is pressed at a time, across the row and the chart: the
-    // chart draws no marker, no value label and presses no column for it.
-    const pressed = screen.getAllByRole('button', { pressed: true })
-    expect(pressed).toHaveLength(1)
-    expect(pressed[0]).toHaveAttribute('data-start-row')
-    expect(screen.queryByTestId('selected-turn-marker')).toBeNull()
-    expect(screen.queryByTestId('selected-turn-value')).toBeNull()
-    expect(container.querySelectorAll('svg circle')).toHaveLength(0)
-    // The keyboard still enters the chart at its newest turn.
-    expect(screen.getByRole('button', { name: /^Turn 3:/ })).toHaveAttribute('tabindex', '0')
-    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 3:/ }), { key: 'ArrowLeft' })
-    expect(screen.getByRole('button', { name: /^Turn 2:/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('selected-turn-marker')).toBeInTheDocument()
-  })
-})
-
-describe('thirty turns in a narrow side panel', () => {
-  const thirty = () =>
-    trace({ turns: Array.from({ length: MAX_CHART_TURNS }, (_, i) => turnOf({ your_message: 10 + i, memory: 100 + (i % 7) * 40 })) })
-
-  it('draws at most floor(plotWidth / 44) + 2 axis labels at 264px', () => {
-    const { container } = render(<ContextBreakdownPanel trace={thirty()} chartWidth={264} />)
-    const plotWidth = 264 - 60 - 28
-    const labels = container.querySelectorAll('svg [data-axis-label]')
-    expect(labels.length).toBeLessThanOrEqual(Math.floor(plotWidth / 44) + 2)
-    expect(labels.length).toBeGreaterThanOrEqual(2)
-    // The selected (last) turn is always labelled.
-    expect(container.querySelector(`svg [data-axis-label="${MAX_CHART_TURNS}"]`)).not.toBeNull()
-  })
-
-  it('keeps every turn reachable: one pointer surface maps a click to the nearest turn', () => {
-    const { container } = render(<ContextBreakdownPanel trace={thirty()} chartWidth={264} />)
-    const surface = screen.getByTestId('turn-pointer-surface')
-    const plotWidth = 264 - 60 - 28
-    const columnWidth = plotWidth / (MAX_CHART_TURNS - 1)
-    // JSDOM reports the wrapper at x=0, so clientX is a plot-relative offset.
-    fireEvent.click(surface, { clientX: 60 + columnWidth * 10 })
-    expect(screen.getByRole('button', { name: /^Turn 11:/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(container.querySelectorAll('button[data-turn]')).toHaveLength(MAX_CHART_TURNS)
-    // Arrow keys still walk the per-turn buttons.
-    fireEvent.keyDown(screen.getByRole('button', { name: /^Turn 11:/ }), { key: 'ArrowLeft' })
-    expect(screen.getByRole('button', { name: /^Turn 10:/ })).toHaveAttribute('aria-pressed', 'true')
-  })
-
-  it('has no pointer surface and a value label when the columns are wide', () => {
-    render(<ContextBreakdownPanel trace={trace({ turns: thirty().turns.slice(0, 6) })} chartWidth={720} />)
-    expect(screen.queryByTestId('turn-pointer-surface')).toBeNull()
-    expect(screen.getByTestId('selected-turn-value')).toBeInTheDocument()
-  })
-
-  it('drops the value label below 480px — the detail repeats the number', () => {
-    const t = thirty()
-    render(<ContextBreakdownPanel trace={t} chartWidth={390} />)
-    expect(screen.queryByTestId('selected-turn-value')).toBeNull()
-    expect(screen.getByTestId('selected-turn-detail')).toHaveTextContent(String(t.turns[t.turns.length - 1].total_chars))
-  })
-})
-
 describe('placement: a per-session tab, not a global page', () => {
-  // These two dynamically import `pages/chat/SidePanel`, whose transform is
-  // charged to whichever test triggers it first. That exceeded the 15s default on
-  // a Windows checkout, so both failed there while passing on CI's Linux runner.
-  // The import stays DYNAMIC on purpose: hoisting it to a static top-level import
-  // moved the same work into the file's import phase and took the file from 32s to
-  // 259s (measured), because every test then waits on that graph. A per-test budget
-  // is the cheaper half of that trade -- it is not masking a hang, the work is real
-  // and bounded.
+  // These import the menu's owner module, not the `pages/chat/SidePanel` facade:
+  // the owner reaches about a hundred modules, the facade about fifteen hundred
+  // (framer-motion, react-markdown, katex, highlight.js), whose transform cost
+  // exceeded the 15s default on a Windows checkout. The facade re-exports these
+  // same bindings (`SidePanel.owners.test.tsx` pins that), so nothing is lost.
   it('is registered as a side-panel view next to Logs', async () => {
     const { PINNED_VIEWS } = await import('../hooks/usePanelTabs')
-    const { NEW_MENU_LABEL_KEY, NEW_MENU_DESC_KEY } = await import('../pages/chat/SidePanel')
+    const { NEW_MENU_LABEL_KEY, NEW_MENU_DESC_KEY } = await import('../pages/chat/SidePanelAddMenu')
     // Opened from the + menu like Logs — not auto-pinned, since a session the
     // user never inspects should not carry a permanent extra tab.
     expect(PINNED_VIEWS).not.toContain('context')
@@ -615,25 +577,19 @@ describe('placement: a per-session tab, not a global page', () => {
     // asserts the pair exists so the menu row can never render label-less.
     expect(NEW_MENU_LABEL_KEY.context).toBeTruthy()
     expect(NEW_MENU_DESC_KEY.context).toBeTruthy()
-  }, SIDE_PANEL_IMPORT_TIMEOUT_MS)
+  })
 
-  it('is hidden from the + menu unless Developer Mode is on', async () => {
-    const { newMenuSections } = await import('../pages/chat/SidePanel')
-    const kinds = (o: { devMode: boolean; terminalEnabled: boolean }) =>
+  it('is offered in the + menu right after Logs, whatever Terminal is doing', async () => {
+    const { newMenuSections } = await import('../pages/chat/SidePanelAddMenu')
+    const kinds = (o: { terminalEnabled: boolean }) =>
       newMenuSections({ ...o, summaryEnabled: true }).flatMap(g => g.items).map(i => i.kind)
-    // Dev mode off: Context breakdown is not offered — it is a developer surface.
-    expect(kinds({ devMode: false, terminalEnabled: true })).not.toContain('context')
-    // Dev mode on: it appears (right after Logs, closing the diagnostics group).
-    const on = kinds({ devMode: true, terminalEnabled: true })
-    expect(on).toContain('context')
-    expect(on.indexOf('context')).toBe(on.indexOf('logs') + 1)
-    // The gate is independent of the Terminal gate, and it covers Logs as
-    // well: both diagnostics views are Developer-Mode-only, so with dev mode off
-    // neither is offered no matter what Terminal is doing.
-    expect(kinds({ devMode: false, terminalEnabled: false })).not.toContain('logs')
-    expect(kinds({ devMode: true, terminalEnabled: false })).toContain('logs')
-    expect(kinds({ devMode: false, terminalEnabled: false })).not.toContain('terminal')
-  }, SIDE_PANEL_IMPORT_TIMEOUT_MS)
+    for (const terminalEnabled of [false, true]) {
+      const offered = kinds({ terminalEnabled })
+      expect(offered).toContain('logs')
+      expect(offered.indexOf('context')).toBe(offered.indexOf('logs') + 1)
+    }
+    expect(kinds({ terminalEnabled: false })).not.toContain('terminal')
+  })
 
   it('carries no session picker — the tab IS the session', () => {
     render(

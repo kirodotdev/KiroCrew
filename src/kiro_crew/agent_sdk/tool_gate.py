@@ -497,11 +497,10 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     from kiro_crew.sandbox import credential_mask_applies
 
     # Ask whether the mask WILL BE APPLIED, never whether one particular tier is
-    # selected. An earlier revision tested ``effective_sandbox_mode(mode) != "off"``
-    # and so covered only one of the two paths that hand back an unwrapped child: a
-    # host with no sandbox backend and ``sandbox_allow_unsandboxed_exec`` opted in
-    # resolves to a non-``off`` tier, passed the guard, and still spawned the adapter
-    # with its credential mask dropped.
+    # selected. Testing ``effective_sandbox_mode(mode) != "off"`` covers only one of
+    # the two paths that hand back an unwrapped child: a host with no sandbox backend
+    # and ``sandbox_allow_unsandboxed_exec`` opted in resolves to a non-``off`` tier,
+    # passes that guard, and still spawns the adapter with its credential mask dropped.
     if credential_mask_applies(mode):
         return
     # Platform copy only: the verdict above already decided the session cannot

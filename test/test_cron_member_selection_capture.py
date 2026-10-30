@@ -32,6 +32,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cli_commands import _cron
 from kiro_crew.config.loader import (
@@ -303,7 +304,7 @@ def _dashboard_app(add_job_async) -> web.Application:
         push_refresh=MagicMock(),
     )
     app.router.add_route("*", "/api/crons", api_crons_create)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.asyncio

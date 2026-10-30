@@ -14,6 +14,7 @@ New refusal paths for a save belong here.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -455,6 +456,74 @@ def drop_notes_authorized_elsewhere(
             live_session,
         )
     return window
+
+
+@dataclass(frozen=True, eq=False)
+class AppliedSwap:
+    """A committed Regenerate swap that memory does not show yet.
+
+    The replace write commits in a worker thread; the event loop removes the
+    retired rows and gives the reply its variants only when the await returns.
+    Until then ``slot.messages`` still holds the pre-swap window, so a save
+    taking its snapshot in that stretch needs this record to write the window
+    the swap committed.
+    """
+
+    retired: tuple[dict, ...]
+    reply: dict
+    swapped: dict
+
+
+def swap_basis(slot: _ChatSlot) -> tuple[int, AppliedSwap | None]:
+    """What a save must read BEFORE it copies the window, so the check under the
+    transcript lock can tell whether a swap committed after the copy."""
+    return slot._window_swap_epoch, slot._window_swap_applying
+
+
+def publish_swap(slot: _ChatSlot, swap: AppliedSwap) -> None:
+    """Record a committed swap. Call it under the transcript lock, as the
+    replace write's ``after_commit_under_lock`` hook, so every save that takes
+    the lock after the commit sees it. The record is assigned before the epoch
+    moves: a save that reads the new epoch also reads the record."""
+    slot._window_swap_applying = swap
+    slot._window_swap_epoch += 1
+
+
+def finish_swap(slot: _ChatSlot) -> None:
+    """Memory now shows the swap (on the event loop, after the await): a window
+    copied from here on is the post-swap window and needs no correction."""
+    slot._window_swap_applying = None
+
+
+def snapshot_predates_swap(slot: _ChatSlot, basis: tuple[int, AppliedSwap | None]) -> bool:
+    """Whether a window copied at *basis* may hold rows a committed swap retired.
+
+    True when a swap committed after the copy (the epoch moved), or when the
+    copy or the present falls in a swap's commit-to-memory stretch.
+    """
+    epoch, applying = basis
+    return (
+        epoch != slot._window_swap_epoch
+        or applying is not None
+        or slot._window_swap_applying is not None
+    )
+
+
+def apply_committed_swap(window: list[dict], swap: AppliedSwap | None) -> list[dict]:
+    """*window*, copied from memory, as *swap* committed it: retired rows out,
+    the reply carrying its variants. Unchanged when *swap* is ``None``.
+    Matched by identity: a window copy is a shallow copy of the live rows.
+
+    *swap* is the record read BEFORE the window was copied: the event loop can
+    apply the swap to memory and clear the slot's record while the copy is
+    taken, so re-reading the record afterwards could find it gone and leave a
+    pre-swap copy uncorrected. Applying the captured record to a copy that
+    already shows the swap changes nothing.
+    """
+    if swap is None:
+        return window
+    retired = {id(row) for row in swap.retired}
+    return [swap.swapped if row is swap.reply else row for row in window if id(row) not in retired]
 
 
 def read_line_for_save(

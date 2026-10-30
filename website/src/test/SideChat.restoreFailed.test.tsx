@@ -113,4 +113,38 @@ describe('SideChat: a send blocked by the restore read says why', () => {
     })
     expect(screen.getByTestId('side-chat-restore-failed')).toBeInTheDocument()
   })
+
+  it('asks the gateway again on the next send after one outran a read still in flight', async () => {
+    vi.useFakeTimers()
+    let failRead: (e: unknown) => void = () => {}
+    vi.mocked(api.sideState)
+      .mockReturnValueOnce(new Promise<SideSnapshot>((_resolve, reject) => { failRead = reject }))
+      .mockResolvedValue({ open: false })
+    try {
+      const store = createConnectedTestStore()
+      renderWithProviders(<SideChat slot={SLOT} />, { store, queryDefaults: { retry: false } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+
+      act(() => { writeSideChatDraft(SLOT, 'asked too early') })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /send/i })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEND_ABORT_MS + 50) })
+      expect(readSideChatDraft(SLOT)).toBe('asked too early')
+      expect(api.sideTurn).not.toHaveBeenCalled()
+
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /send/i })) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(api.sideState).toHaveBeenCalledTimes(2)
+      expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'asked too early', undefined)
+
+      await act(async () => {
+        failRead(new Error('offline'))
+        await vi.advanceTimersByTimeAsync(50)
+      })
+      // The fresh read settled the slot, so the stalled read's failure shows no notice.
+      expect(screen.queryByTestId('side-chat-restore-failed')).toBeNull()
+    } finally {
+      // Settle the stalled read, so a read in flight never outlives this test.
+      failRead(new Error('test over'))
+    }
+  })
 })

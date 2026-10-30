@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import contextlib
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
 from kiro_crew.platform_compat import SIGKILL, kill_pid, pid_exists, pid_is_zombie
+from kiro_crew.testing.wait import wait_until
 
 _SHIM_FLAGS = ("-I", "-S", "-c")
 _ARGV_SEPARATOR = "--"
@@ -58,22 +58,25 @@ LONG_CHILD_WITH_GRANDCHILD = (
 
 def await_pids(pidfile: Path, budget: float = 30.0) -> tuple[int, ...]:
     """The pids :data:`LONG_CHILD_WITH_GRANDCHILD` wrote, once it wrote them."""
-    deadline = time.monotonic() + budget
-    while time.monotonic() < deadline:
-        if pidfile.exists():
-            return tuple(int(part) for part in pidfile.read_text(encoding="utf-8").split())
-        time.sleep(0.02)
-    raise AssertionError(f"the build child never wrote {pidfile}")
+    wait_until(
+        pidfile.exists,
+        timeout=budget,
+        describe=lambda: f"the build child never wrote {pidfile}",
+    )
+    return tuple(int(part) for part in pidfile.read_text(encoding="utf-8").split())
 
 
 def await_gone(pid: int, budget: float = 10.0) -> bool:
-    """True once *pid* is not running (gone, or a zombie its reaper has not reached)."""
-    deadline = time.monotonic() + budget
-    while time.monotonic() < deadline:
-        if not pid_exists(pid) or pid_is_zombie(pid):
-            return True
-        time.sleep(0.02)
-    return False
+    """True once *pid* is not running (gone, or a zombie its reaper has not reached).
+
+    Returns ``False`` at *budget* rather than raising: a caller asserts on the
+    result, and the kill tests name the pid that stayed in their own message.
+    """
+    try:
+        wait_until(lambda: not pid_exists(pid) or pid_is_zombie(pid), timeout=budget)
+    except AssertionError:
+        return False
+    return True
 
 
 def kill_leftovers(pids: Sequence[int]) -> None:

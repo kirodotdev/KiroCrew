@@ -260,14 +260,19 @@ class TestAbortRetryClosesTheCancellationWindow:
 
     def test_without_abort_retry_the_budget_is_still_spent(self):
         """Negative control: the abort is what shortens it, not the ENOENT."""
+        launched = MagicMock(name="Popen")
         attempts = [_enoent(sys.executable)] * len(_INTERPRETER_ENOENT_DELAYS)
-        attempts.append(MagicMock(name="Popen"))
+        attempts.append(launched)
         with (
             _prepared(),
-            patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts),
+            patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts) as popen,
             patch.object(sandbox_mod.time, "sleep"),
         ):
-            sandbox_mod.popen_limited(["/bin/echo", "hi"])
+            assert sandbox_mod.popen_limited(["/bin/echo", "hi"]) is launched
+            slept = [c.args[0] for c in sandbox_mod.time.sleep.call_args_list]
+
+        assert popen.call_count == len(_INTERPRETER_ENOENT_DELAYS) + 1
+        assert slept == list(_INTERPRETER_ENOENT_DELAYS)
 
     def test_a_false_abort_retry_does_not_stop_the_retry(self):
         sentinel = MagicMock(name="Popen")
@@ -516,11 +521,11 @@ class TestCommandOutputUsesLocaleDecoding:
     def test_neither_cron_spawn_pins_an_encoding(self):
         """Source-level guard: re-pinning either site fails here, at source."""
         cron = importlib.import_module("kiro_crew.cron_script")
-        source = pathlib.Path(cron.__file__).read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        family = sorted(pathlib.Path(cron.__file__).parent.glob("cron_script*.py"))
         cron_spawns = [
             node
-            for node in ast.walk(tree)
+            for path in family
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, ast.Call)
             and getattr(node.func, "id", None) == "popen_limited"
             and any(kw.arg == "abort_retry" for kw in node.keywords)
@@ -810,7 +815,8 @@ class TestCreateSubprocessLimitedToleratesAnAbsentInterpreter:
     @pytest.mark.asyncio
     async def test_the_backoff_never_blocks_the_event_loop(self):
         """time.sleep here would freeze the gateway for ~3.75s -- the core hazard."""
-        attempts = [_enoent(sys.executable), MagicMock(name="Process")]
+        proc = MagicMock(name="Process")
+        attempts = [_enoent(sys.executable), proc]
 
         async def fake_exec(*_args, **_kwargs):
             outcome = attempts.pop(0)
@@ -818,8 +824,10 @@ class TestCreateSubprocessLimitedToleratesAnAbsentInterpreter:
                 raise outcome
             return outcome
 
-        async def fake_sleep(_d):
-            return None
+        slept: list[float] = []
+
+        async def fake_sleep(d):
+            slept.append(d)
 
         with (
             self._shimmed(),
@@ -827,7 +835,10 @@ class TestCreateSubprocessLimitedToleratesAnAbsentInterpreter:
             patch.object(sandbox_mod.asyncio, "sleep", side_effect=fake_sleep),
             patch.object(sandbox_mod.time, "sleep") as blocking,
         ):
-            await sandbox_mod.create_subprocess_limited("/bin/echo", "hi")
+            got = await sandbox_mod.create_subprocess_limited("/bin/echo", "hi")
+
+        assert got is proc
+        assert slept == list(_INTERPRETER_ENOENT_DELAYS[:1])
 
         blocking.assert_not_called()
 
@@ -1219,9 +1230,8 @@ class TestSpawnOnlyCancellationIsReportedHonestly:
         cron_script = importlib.import_module("kiro_crew.cron_script")
         claimers = {
             node.name
-            for node in ast.walk(
-                ast.parse(pathlib.Path(cron_script.__file__).read_text(encoding="utf-8"))
-            )
+            for path in sorted(pathlib.Path(cron_script.__file__).parent.glob("cron_script*.py"))
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and any(
                 isinstance(c, ast.Call)

@@ -5,8 +5,8 @@ semaphore, dead-worker replacement, the provider, sandbox and shared config read
 the context manager -- and the ``AcpWorker``'s send, start and shutdown, its backend
 selection and its zero-tool confirmation. Reasoning effort is pinned in
 ``test_llm_pool_effort.py``, the ``CCWorker`` subprocess worker in
-``test_llm_pool_ccworker.py``, and ``fetch_url_content``, the idle-TTL reader and reaper,
-and conversation recycling in ``test_llm_pool_lifecycle.py``. The shared fakes and the
+``test_llm_pool_ccworker.py``, and the idle-TTL reader and reaper and conversation
+recycling in ``test_llm_pool_lifecycle.py``. The shared fakes and the
 config-dir fixture live in ``llm_pool_helpers.py``.
 """
 

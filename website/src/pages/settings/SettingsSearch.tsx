@@ -102,7 +102,7 @@ export default function SettingsSearch() {
 
   // Shared Arrow/Enter/Escape handling. Escape closes the dropdown only —
   // focus never leaves the input, so the user can keep typing.
-  const { selected, setSelected, itemRefs } = useListKeyboardNav({
+  const { selected, setSelected, itemRefs, hoverSelect } = useListKeyboardNav({
     open,
     count: results.length,
     wrap: true,
@@ -181,30 +181,47 @@ export default function SettingsSearch() {
           id={LISTBOX_ID}
           role="listbox"
           aria-label={i18nT('pages.settingsPage.search.aria_label')}
-          className={`absolute max-h-80 overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1 ${floating
-            ? 'bottom-full mb-2 left-0 right-0'
+          // In the nav the panel is only as wide as the 200px rail, so rows run
+          // taller than in the w-80 header panel; it gets more height (bounded
+          // by the viewport) so a broad query still shows a screenful of hits.
+          className={`absolute overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1 ${floating
+            ? 'max-h-80 bottom-full mb-2 left-0 right-0'
             : inNav
-            ? 'top-full mt-1 left-0 right-0'
-            : 'right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)]'}`}
+            ? 'max-h-[min(60vh,28rem)] top-full mt-1 left-0 right-0'
+            : 'max-h-80 right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)]'}`}
         >
           {results.length === 0 ? (
             <div className="px-3 py-3 text-[12px] text-muted">{i18nT('pages.settingsPage.search.no_results')}</div>
-          ) : results.map((m, i) => (
-            <div
-              key={m.entry.id}
-              id={`settings-search-option-${i}`}
-              role="option"
-              aria-selected={i === selected}
-              tabIndex={-1}
-              ref={el => { itemRefs.current[i] = el }}
-              className={`px-3 py-2 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`}
-              onMouseEnter={() => setSelected(i)}
-              onMouseDown={e => { e.preventDefault(); activate(m) }}
-            >
-              <div className={`text-[13px] font-medium text-text-strong ${inNav ? 'break-words' : 'truncate'}`}>{m.label}</div>
-              <div className={`text-[11px] text-muted ${inNav ? 'break-words' : 'truncate'}`}>{settingsSubtitle(m.entry)}</div>
-            </div>
-          ))}
+          ) : results.map((m, i) => {
+            const subtitle = settingsSubtitle(m.entry)
+            return (
+              <div
+                key={m.entry.id}
+                id={`settings-search-option-${i}`}
+                role="option"
+                aria-selected={i === selected}
+                tabIndex={-1}
+                ref={el => { itemRefs.current[i] = el }}
+                className={`px-3 py-2 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`}
+                onMouseMove={e => hoverSelect(i, e)}
+                onMouseDown={e => { e.preventDefault(); activate(m) }}
+              >
+                {/* The narrow nav rail wraps instead of truncating, but bounded:
+                    label to two lines, subtitle (tab + help text) to one, so a
+                    long description cannot turn one hit into a screenful. The
+                    clamp is visual only: the full text stays in the DOM (the
+                    option's accessible name), and `title` shows it on hover. */}
+                <div
+                  className={`text-[13px] font-medium text-text-strong ${inNav ? 'line-clamp-2 break-words' : 'truncate'}`}
+                  title={inNav ? m.label : undefined}
+                >{m.label}</div>
+                <div
+                  className={`text-[11px] text-muted ${inNav ? 'line-clamp-1 break-words' : 'truncate'}`}
+                  title={inNav ? subtitle : undefined}
+                >{subtitle}</div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

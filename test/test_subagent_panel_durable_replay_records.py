@@ -569,17 +569,20 @@ class TestReusedSlotKeyOwnership:
         state = self.state({})
         assert persisted_replay_denial_reason(state, "chat-1", {"app": ""}) == "slot_missing"
 
-    def test_an_empty_slot_key_denies(self):
-        state = self.state({"chat-1": self.slot("")})
-        assert persisted_replay_denial_reason(state, "", {"app": ""}) == "slot_missing"
-
-    def test_an_empty_slot_key_denies_even_if_a_slot_is_registered_under_it(self):
-        """The empty key is refused on its own, not merely by finding no slot.
-
-        A record whose parent resolves to nothing carries an empty slot, and a
-        lookup would otherwise hand it whatever sits under that key.
-        """
-        state = self.state({"": self.slot("")})
+    @pytest.mark.parametrize(
+        "registered_key",
+        [
+            pytest.param("chat-1", id="test_an_empty_slot_key_denies"),
+            # The empty key is refused on its own, not merely by finding no slot.
+            # A record whose parent resolves to nothing carries an empty slot, and
+            # a lookup would otherwise hand it whatever sits under that key.
+            pytest.param(
+                "", id="test_an_empty_slot_key_denies_even_if_a_slot_is_registered_under_it"
+            ),
+        ],
+    )
+    def test_an_empty_slot_key_is_refused(self, registered_key):
+        state = self.state({registered_key: self.slot("")})
         assert persisted_replay_denial_reason(state, "", {"app": ""}) == "slot_missing"
 
     def test_a_missing_app_key_on_the_record_reads_as_no_app(self):
@@ -705,18 +708,19 @@ class TestOverflowIsCountedNotHidden:
         assert result.overflow == 0
         assert result.overflow_is_lower_bound is False
 
-    def test_overflow_counts_exactly_what_the_cap_cut(self, agent_root):
-        self.seed(agent_root, 7)
-        result = read_panel_records(keep=4, max_age_secs=DAY)
-        assert len(result.records) == 4
-        assert result.overflow == 3
-
-    def test_one_past_the_cap_is_reported(self, agent_root):
-        """The case the finding named: 51 eligible, 50 shown."""
-        self.seed(agent_root, 6)
-        result = read_panel_records(keep=5, max_age_secs=DAY)
-        assert len(result.records) == 5
-        assert result.overflow == 1
+    @pytest.mark.parametrize(
+        ("seeded", "keep", "overflow"),
+        [
+            pytest.param(7, 4, 3, id="test_overflow_counts_exactly_what_the_cap_cut"),
+            # One past the cap, the shape of 51 eligible with 50 shown.
+            pytest.param(6, 5, 1, id="test_one_past_the_cap_is_reported"),
+        ],
+    )
+    def test_overflow_is_counted(self, agent_root, seeded, keep, overflow):
+        self.seed(agent_root, seeded)
+        result = read_panel_records(keep=keep, max_age_secs=DAY)
+        assert len(result.records) == keep
+        assert result.overflow == overflow
 
     def test_overflow_counts_only_admissible_records(self, agent_root):
         """A folder past the cap that would have been skipped is not overflow."""

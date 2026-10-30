@@ -19,6 +19,8 @@ masking there would persist the sentinel over the stored value.
 from __future__ import annotations
 
 import json
+import types
+import typing
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -71,6 +73,43 @@ def test_payload_preconditions_pin_the_redactor():
     assert _redact_external(_BENIGN_TRIGGERS) == _BENIGN_TRIGGERS
 
 
+def _carries_str(tp: object) -> bool:
+    """True when a resolved annotation can hold a ``str`` value.
+
+    Covers a bare ``str`` and any union that includes it (``str | None``,
+    ``Optional[str]``, ``Union[str, int]``), so an optional free-text field is
+    held to the same ratchet as a plain one.
+    """
+    if tp is str:
+        return True
+    if typing.get_origin(tp) in (typing.Union, types.UnionType):
+        return str in typing.get_args(tp)
+    return False
+
+
+def test_carries_str_matches_optional_str_annotation_forms():
+    """The ratchet's field filter must see every annotation form of a str field.
+
+    Pinned on a probe dataclass because the record has no optional-str field
+    today; a filter that matched only ``str`` would let the first one through.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _Probe:
+        plain: str = ""
+        pep604: str | None = None
+        optional: typing.Optional[str] = None
+        union: typing.Union[str, int] = ""
+        flag: bool = False
+        mapping: dict = dataclasses.field(default_factory=dict)
+        maybe_int: int | None = None
+
+    hints = typing.get_type_hints(_Probe)
+    matched = {f.name for f in dataclasses.fields(_Probe) if _carries_str(hints[f.name])}
+    assert matched == {"plain", "pep604", "optional", "union"}
+
+
 def test_every_unguarded_str_field_is_in_the_masked_set():
     """INVARIANT: the masked tuple plus the shape-guarded exceptions must
     cover every ``str`` field of ``KiroCrewAgentConfig``.
@@ -88,8 +127,11 @@ def test_every_unguarded_str_field_is_in_the_masked_set():
         "approval_mode",  # coerce_member_approval_mode: one of three modes or ""
         "session_color",  # _safe_color: pinned to #rrggbb or ""
     }
-    str_fields = {f.name for f in dataclasses.fields(KiroCrewAgentConfig) if f.type in ("str", str)}
-    assert str_fields, "field-type introspection returned nothing — check f.type handling"
+    hints = typing.get_type_hints(KiroCrewAgentConfig)
+    str_fields = {
+        f.name for f in dataclasses.fields(KiroCrewAgentConfig) if _carries_str(hints[f.name])
+    }
+    assert str_fields, "field-type introspection returned nothing — check _carries_str"
     covered = set(_AGENT_UNTRUSTED_TEXT_FIELDS) | shape_guarded
     assert str_fields == covered, (
         f"unmasked free-text field(s): {sorted(str_fields - covered)}; "

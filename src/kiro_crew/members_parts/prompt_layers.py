@@ -1,6 +1,6 @@
 """The two file layers of a member's system prompt: its rules and its briefing.
 
-The user-owned permanent rules under ``trust/`` (path, read, the human write path) and
+The user-owned permanent rules under ``member-records/`` (path, read, the human write path) and
 the member-owned briefing in its own directory (path, the race-free bounded read, the
 injection cap with its visible marker).
 
@@ -14,11 +14,11 @@ import json
 import logging
 import os
 import stat
+import threading
 from pathlib import Path
 
-from kiro_crew import context_omissions, platform_compat
+from kiro_crew import context_omissions, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
-from kiro_crew.config.paths import data_home
 from kiro_crew.members_parts.member_space import (
     BRIEFING_FILE_NAME,
     MEMBER_BRIEFING_MAX_CHARS,
@@ -39,16 +39,17 @@ logger = logging.getLogger("kiro_crew.members")
 def member_rules_path(slug: str) -> Path:
     """Absolute path to one member's permanent-rules file, containment-checked.
 
-    Mirrors :func:`dm_binding_path`: keystone-gated ``trust/`` subtree, one
-    flat ``<slug>.json`` per member, symlink containment re-checked behind
-    ``validate_slug``. JSON rather than bare text because the payload records
-    the EXACT member name (slugification is lossy, and a safety-rules file
-    shared between two colliding crew names must be attributable — the same
-    reason ``dm.json`` records the name). Does NOT create the directory;
+    Mirrors :func:`dm_binding_path`: the gateway-only ``member-records/``
+    leaf (:mod:`kiro_crew.member_records`), one flat ``<slug>.json`` per
+    member, symlink containment re-checked behind ``validate_slug``. JSON
+    rather than bare text because the payload records the EXACT member name
+    (slugification is lossy, and a safety-rules file shared between two
+    colliding crew names must be attributable — the same reason ``dm.json``
+    records the name). Does NOT create the directory;
     :func:`write_member_rules` does on demand.
     """
     validate_slug(slug)
-    root = (data_home() / "trust" / RULES_DIR_NAME).resolve()
+    root = member_records.records_dir(RULES_DIR_NAME).resolve()
     target = (root / f"{slug}.json").resolve()
     if target.parent != root and root not in target.parents:
         raise MemberSlugError(f"member slug {slug!r} escapes {root}")
@@ -86,7 +87,15 @@ def read_member_rules(slug: str, member: str) -> str:
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
-    path = member_rules_path(slug)
+    try:
+        path = member_rules_path(slug)
+    except member_records.RecordsNotMoved as exc:
+        # The rules may still sit in the old layout: reading the new one would turn
+        # them into "never set", which is exactly what this error exists to refuse.
+        raise MemberRulesUnreadable(
+            f"member rules for {slug!r} have not been moved to the records directory "
+            f"yet; the member will not run until the move finishes ({exc})"
+        ) from exc
     try:
         # Same read-side twin as read_dm_binding: write_member_rules replaces
         # this file atomically, and on Windows an AV/indexer handle on the
@@ -126,8 +135,27 @@ def read_member_rules(slug: str, member: str) -> str:
     return data["rules"].strip()
 
 
-def write_member_rules(slug: str, *, member: str, text: str) -> None:
+#: Every rules write in this process holds it, so a compare-and-write (a card
+#: Undo clearing the rules it wrote) cannot interleave with an ordinary save.
+_RULES_WRITE_LOCK = threading.Lock()
+
+
+class MemberRulesChanged(RuntimeError):
+    """The rules read differently from what the caller expected; nothing was written."""
+
+
+MemberRulesChanged.__module__ = "kiro_crew.members"
+
+
+def write_member_rules(
+    slug: str, *, member: str, text: str, expected_sha256: str | None = None
+) -> None:
     """Persist a member's permanent rules atomically (human write path only).
+
+    With *expected_sha256*, write only while the current rules (as
+    :func:`read_member_rules` returns them) still hash to it, compared under the
+    same lock every rules write holds; otherwise raise :class:`MemberRulesChanged`.
+    A card Undo uses it so rules another tab saved after its check are kept.
 
     Records the EXACT member name in the payload so the name-scoped read can
     attribute the file across lossy-slug collisions. Raises rather than
@@ -145,6 +173,17 @@ def write_member_rules(slug: str, *, member: str, text: str) -> None:
     member, so they must not silently vanish to a crash after the dashboard
     confirmed the save.
     """
+    import hashlib
+
+    with _RULES_WRITE_LOCK:
+        if expected_sha256 is not None:
+            current = read_member_rules(slug, member)
+            if hashlib.sha256(current.encode("utf-8")).hexdigest() != expected_sha256:
+                raise MemberRulesChanged(f"member rules for {slug!r} changed since the check")
+        _write_member_rules(slug, member=member, text=text)
+
+
+def _write_member_rules(slug: str, *, member: str, text: str) -> None:
     path = member_rules_path(slug)
     if len(text) > MEMBER_RULES_MAX_CHARS:
         raise ValueError(
@@ -175,9 +214,9 @@ def write_member_rules(slug: str, *, member: str, text: str) -> None:
         fsync_dir(path.parent, best_effort=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Same defence-in-depth mode tightening as the DM binding: the trust
-    # subtree is owner-only everywhere else, and a chmod failure must not
-    # cost the save (the sensitive-path floor is the real fence).
+    # Same defence-in-depth mode tightening as the DM binding: the records
+    # leaf is owner-only, and a chmod failure must not cost the save (the
+    # sandbox mask and the sensitive-path floor are the real fences).
     for _dir in (path.parent, path.parent.parent):
         try:
             platform_compat.restrict_dir_to_owner(_dir)
@@ -205,8 +244,8 @@ def member_briefing_path(slug: str) -> Path:
     """Absolute path to one member's self-maintained briefing file.
 
     Inside :func:`member_dir` — deliberately agent-writable (see
-    ``BRIEFING_FILE_NAME``). Does NOT create the directory; the member's own
-    file tools do when it first writes its briefing.
+    ``BRIEFING_FILE_NAME``). Does NOT create the directory;
+    ``member_notes.write_member_notes`` (``save_notes``) does on the first save.
     """
     return member_dir(slug) / BRIEFING_FILE_NAME
 
@@ -366,8 +405,8 @@ def read_member_briefing(slug: str) -> str:
     * **No symlink following anywhere on the path, no non-regular files, no
       blocking open.** The gateway reads this file with its own privileges
       while building context, so a briefing replaced by a symlink would pull
-      any gateway-readable file — including the keystone-gated ``trust/``
-      payloads the agent's tools cannot reach — into the prompt, and a
+      any gateway-readable file — including the ``trust/`` and
+      ``member-records/`` payloads the agent's tools cannot reach — into the prompt, and a
       briefing replaced by a FIFO would make a plain ``open`` block forever,
       hanging the member's turn and exhausting the embed workers. The leaf is
       opened through :func:`~kiro_crew.pinned_fs.open_in_pinned_parent`, which

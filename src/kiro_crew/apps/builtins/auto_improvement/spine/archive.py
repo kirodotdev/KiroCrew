@@ -197,7 +197,7 @@ class Archive:
             # signature — can carry either, which would shift every later column or split
             # one row into several and corrupt the append-only archive that results.tsv
             # readers parse positionally. Collapse them to a space; the full, unaltered
-            # value still survives in the JSONL row below. Raised by the GPT review.
+            # value still survives in the JSONL row below.
             return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
         line = "\t".join(_cell(c) for c in CONTROL_COLUMNS)

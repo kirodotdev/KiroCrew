@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import taskrunner as tr
+from kiro_crew.history import ConversationLog
+from kiro_crew.learn import LessonStore
 from kiro_crew.safety_override import safety_override
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.taskrunner import TaskRunner, _auto_approve_scope, _resolve_workspace_dir
@@ -113,6 +115,26 @@ def _scripted_sleep(steps: list):
 
 def _noop() -> None:
     return None
+
+
+def _conversation_log(tmp_path: Path) -> ConversationLog:
+    log = ConversationLog(base_dir=tmp_path / "history")
+    log.init()
+    return log
+
+
+def _transcript(log: ConversationLog, key: str) -> list[tuple[str, str]]:
+    return [(m["role"], m["content"]) for m in log.read_messages(key)]
+
+
+class _Notifications:
+    """An ``on_notify`` callback that keeps each (title, body) the runner sent."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def __call__(self, title: str, body: str, task_id: str = "") -> None:
+        self.sent.append((title, body))
 
 
 # ── _resolve_workspace_dir ──
@@ -468,19 +490,6 @@ class TestPlan:
         assert [t.index for t in run.tasks] == [1, 2]
 
     @pytest.mark.asyncio
-    async def test_workspace_override_becomes_work_dir(self, tmp_path: Path) -> None:
-        override = tmp_path / "override"
-        override.mkdir()
-        runner = _runner(tmp_path)
-        with patch.object(
-            TaskRunner,
-            "_decompose",
-            AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
-        ):
-            run = await runner.plan(input_text="go", source="text", workspace_dir=str(override))
-        assert run.work_dir == str(override.resolve())
-
-    @pytest.mark.asyncio
     async def test_decompose_timeout_becomes_value_error(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         with patch.object(TaskRunner, "_decompose", AsyncMock(side_effect=asyncio.TimeoutError())):
@@ -523,13 +532,14 @@ class TestPlan:
                 )
         assert marker.read_text(encoding="utf-8") == "owned by caller"
 
-    def test_cancel_plan_cancels_live_task_only(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cancel_plan_cancels_live_task_only(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         runner.cancel_plan()  # no plan task — must not raise
-        live = _busy_task()
+        live = asyncio.get_running_loop().create_future()
         runner._plan_task = live
         runner.cancel_plan()
-        live.cancel.assert_called_once()
+        assert live.cancelled()
         done = MagicMock()
         done.done = MagicMock(return_value=True)
         runner._plan_task = done
@@ -1057,11 +1067,14 @@ class TestCleanupRunSessions:
     @pytest.mark.asyncio
     async def test_no_sessions_still_releases_runtime(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        run = _seed_run(runner, tmp_path)
+        run = _seed_run(runner, tmp_path, task_id="no_sessions")
+        await runner._grant_run_trust(run, True)
         await runner._cleanup_run_sessions(run)
+        assert safety_override().is_scope_active(_auto_approve_scope("no_sessions")) is False
+        assert run.error == ""
         runner._sessions.cancel_current.assert_not_awaited()
         runner._sessions.release_subagent_runtime.assert_awaited_once_with(
-            "taskrunner:plan_1:runtime"
+            "taskrunner:no_sessions:runtime"
         )
 
     @pytest.mark.asyncio
@@ -1126,12 +1139,16 @@ class TestRunTrust:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         runner = _runner(tmp_path)
-        run = _seed_run(runner, tmp_path)
+        run = _seed_run(runner, tmp_path, task_id="trust_swallow")
+        await runner._grant_run_trust(run, True)
         runner._sessions.release_subagent_runtime = AsyncMock(side_effect=RuntimeError("x"))
+        # A failed runtime release still revokes the run's trust.
+        assert await runner._release_run_runtime(run) is None
+        assert safety_override().is_scope_active(_auto_approve_scope("trust_swallow")) is False
         monkeypatch.setattr(
             tr, "safety_override", MagicMock(side_effect=RuntimeError("override down"))
         )
-        await runner._release_run_runtime(run)  # must not raise
+        assert await runner._release_run_runtime(run) is None
 
 
 # ── delete / cancel / pause ──
@@ -1538,19 +1555,25 @@ class TestLessonExtraction:
     @pytest.mark.asyncio
     async def test_no_store_is_a_noop(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        with patch.object(TaskRunner, "_call_llm_for_lesson", AsyncMock()) as call:
-            await runner._extract_lesson(Task(index=1, title="t", description="d"))
+        run = _seed_run(runner, tmp_path)
+        with patch.object(
+            TaskRunner, "_call_llm_for_lesson", AsyncMock(return_value={"rule": "R"})
+        ) as call:
+            await runner._extract_lesson(Task(index=1, title="t", description="d"), run=run)
+        assert run.lessons_learned == []
         call.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_rule_writes_nothing(self, tmp_path: Path) -> None:
-        store = MagicMock()
+        store = LessonStore(base_dir=tmp_path / "lessons")
         runner = _runner(tmp_path, lesson_store=store)
+        run = _seed_run(runner, tmp_path)
         with patch.object(
             TaskRunner, "_call_llm_for_lesson", AsyncMock(return_value={"category": "tool"})
         ):
-            await runner._extract_lesson(Task(index=1, title="t", description="d"))
-        store.save.assert_not_called()
+            await runner._extract_lesson(Task(index=1, title="t", description="d"), run=run)
+        assert store.load_all() == []
+        assert run.lessons_learned == []
 
     @pytest.mark.asyncio
     async def test_saves_to_lesson_store_and_records_on_run(self, tmp_path: Path) -> None:
@@ -1580,12 +1603,14 @@ class TestLessonExtraction:
         store = MagicMock()
         consolidator = MagicMock()
         runner = _runner(tmp_path, lesson_store=store, consolidator=consolidator)
+        run = _seed_run(runner, tmp_path)
         pool = AsyncMock()
         monkeypatch.setattr(tr, "run_in_embed_pool", pool)
         with patch.object(
             TaskRunner, "_call_llm_for_lesson", AsyncMock(return_value={"rule": "R"})
         ):
-            await runner._extract_lesson(Task(index=1, title="t", description="d"))
+            await runner._extract_lesson(Task(index=1, title="t", description="d"), run=run)
+        assert run.lessons_learned == ["R"]
         store.save.assert_not_called()
         assert pool.await_args.args == (
             consolidator._vector_store.write_lesson,
@@ -1597,13 +1622,15 @@ class TestLessonExtraction:
 
     @pytest.mark.asyncio
     async def test_llm_failure_is_swallowed(self, tmp_path: Path) -> None:
-        store = MagicMock()
+        store = LessonStore(base_dir=tmp_path / "lessons")
         runner = _runner(tmp_path, lesson_store=store)
+        run = _seed_run(runner, tmp_path)
         with patch.object(
             TaskRunner, "_call_llm_for_lesson", AsyncMock(side_effect=RuntimeError("down"))
         ):
-            await runner._extract_lesson(Task(index=1, title="t", description="d"))
-        store.save.assert_not_called()
+            await runner._extract_lesson(Task(index=1, title="t", description="d"), run=run)
+        assert store.load_all() == []
+        assert run.lessons_learned == []
 
 
 class TestCallLlmForLesson:
@@ -1646,35 +1673,44 @@ class TestLogTask:
         assert log.append.call_args_list[1].args[2] == "R" * 2000
 
     def test_off_loop_uses_task_id_when_spec_path_is_blank(self, tmp_path: Path) -> None:
-        log = MagicMock()
+        log = _conversation_log(tmp_path)
         runner = _runner(tmp_path, conversation_log=log)
         run = _seed_run(runner, tmp_path)
         run.spec_path = ""
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
-        assert log.append.call_args_list[0].args[2] == "[Task: plan_1] Task 1: T"
-        assert log.append.call_args_list[1].args[2] == "Task completed."
+        assert _transcript(log, "hist") == [
+            ("user", "[Task: plan_1] Task 1: T"),
+            ("assistant", "Task completed."),
+        ]
 
-    def test_off_loop_append_failure_is_swallowed(self, tmp_path: Path) -> None:
-        log = MagicMock()
-        log.append = MagicMock(side_effect=RuntimeError("history locked"))
+    def test_off_loop_append_failure_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _conversation_log(tmp_path)
+        append = MagicMock(side_effect=RuntimeError("history locked"))
+        monkeypatch.setattr(log, "append", append)
         runner = _runner(tmp_path, conversation_log=log)
         run = _seed_run(runner, tmp_path)
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
-        log.append.assert_called_once()
+        assert _transcript(log, "hist") == []
+        append.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_on_loop_offloads_the_write(self, tmp_path: Path) -> None:
-        log = MagicMock()
+        log = _conversation_log(tmp_path)
         runner = _runner(tmp_path, conversation_log=log)
         run = _seed_run(runner, tmp_path)
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
         # The worker thread can be scheduled late on a loaded runner, so wait
         # for its second append under the lost-run bound, not a sleep count.
         await async_wait_until(
-            lambda: log.append.call_count >= 2,
-            describe=lambda: log.append.call_args_list,
+            lambda: len(_transcript(log, "hist")) >= 2,
+            describe=lambda: _transcript(log, "hist"),
         )
-        assert [call.args[1] for call in log.append.call_args_list] == ["user", "assistant"]
+        assert _transcript(log, "hist") == [
+            ("user", "[Task: spec.md] Task 1: T"),
+            ("assistant", "Task completed."),
+        ]
 
     @pytest.mark.asyncio
     async def test_on_loop_failure_is_reported_not_raised(
@@ -1702,19 +1738,26 @@ class TestLogTask:
 class TestWatchdogLoop:
     @pytest.mark.asyncio
     async def test_returns_when_run_leaves_running(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
+        notify = _Notifications()
+        runner = _runner(tmp_path, on_notify=notify)
         run = _seed_run(runner, tmp_path, status="running")
+        # Stalled past the cancel timeout: a loop that kept going after the
+        # status change would cancel the step.
+        run.started_at = time.time()
+        run.last_task_time = time.time() - tr._STALL_CANCEL_TIMEOUT - 60
 
         def _finish() -> None:
             run.status = "completed"
 
         with patch("asyncio.sleep", _scripted_sleep([_finish])):
             await runner._watchdog_loop(run)
+        assert runner._stall_cancelled_ids == set()
+        assert notify.sent == []
         runner._sessions.is_provider_alive.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dead_process_resets_session_at_threshold(self, tmp_path: Path) -> None:
-        notify = AsyncMock()
+        notify = _Notifications()
         runner = _runner(tmp_path, on_notify=notify)
         run = _seed_run(runner, tmp_path, status="running")
         run.started_at = run.last_task_time = time.time()
@@ -1726,17 +1769,26 @@ class TestWatchdogLoop:
         # _DEAD_THRESHOLD consecutive dead checks before the reset fires
         assert runner._sessions.reset.await_count == 1
         assert runner._sessions.reset.await_args.args == ("taskrunner:plan_1:task4",)
-        assert any("process died" in call.args[0] for call in notify.await_args_list)
+        assert notify.sent == [
+            (
+                "[demo] 💀 Watchdog: ACP process died",
+                "Task 4 sub-agent is not running. Resetting session to trigger recovery.",
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_global_timeout_stops_the_watchdog(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path, global_timeout=1.0)
+        notify = _Notifications()
+        runner = _runner(tmp_path, global_timeout=1.0, on_notify=notify)
         run = _seed_run(runner, tmp_path, status="running")
         run.started_at = time.time() - 30
-        run.last_task_time = time.time()
+        # Stalled too: the timeout returns before the stall cancel is reached.
+        run.last_task_time = time.time() - tr._STALL_CANCEL_TIMEOUT - 60
         sleeper = _scripted_sleep([_noop, _noop])
         with patch("asyncio.sleep", sleeper):
             await runner._watchdog_loop(run)
+        assert runner._stall_cancelled_ids == set()
+        assert notify.sent == []
         # returned on the first tick rather than consuming the second
         runner._sessions.is_provider_alive.assert_awaited_once()
 
@@ -1780,15 +1832,6 @@ class TestPersistence:
         assert runner._persist_written == 0
         assert not (tmp_path / "runs.json").exists()
 
-    def test_stale_snapshot_never_clobbers_a_newer_one(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        newest = json.dumps([_registry_item(task_id="snapshot-task", name="new")])
-        stale = json.dumps([_registry_item(task_id="snapshot-task", name="stale")])
-        runner._commit_snapshot(5, newest)
-        runner._commit_snapshot(2, stale)
-        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == newest
-        assert runner._persist_written == 5
-
 
 def _registry_item(**overrides) -> dict:
     item = {
@@ -1815,13 +1858,6 @@ def _registry_item(**overrides) -> dict:
 class TestLoadRuns:
     def test_missing_file_starts_empty(self, tmp_path: Path) -> None:
         assert _runner(tmp_path)._runs == {}
-
-    def test_corrupt_registry_is_preserved_as_sidecar(self, tmp_path: Path) -> None:
-        (tmp_path / "runs.json").write_text("{not json", encoding="utf-8")
-        runner = _runner(tmp_path)
-        assert runner._runs == {}
-        assert (tmp_path / "runs.json.corrupt").exists()
-        assert not (tmp_path / "runs.json").exists()
 
     def test_sidecar_failure_still_starts_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -106,7 +106,6 @@ async def test_load_transient_io_error_no_destructive_followon(tmp_path, monkeyp
     # In-memory state preserved — now save it (simulating a subsequent mutation)
     state.save_chat_pins()
 
-    # Verify file still has the valid pin
     saved = _json.loads((tmp_path / "chat_pins.json").read_text(encoding="utf-8"))
     assert len(saved) == 1
     assert saved[0]["id"] == "protected-pin1"

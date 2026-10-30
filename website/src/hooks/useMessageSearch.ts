@@ -37,7 +37,10 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
 
   // Debounced match computation (50ms)
   useEffect(() => {
-    if (!term) { setMatches([]); return }
+    // Keep the current array when it is already empty: a fresh `[]` here
+    // re-renders the page on every `messages` change (each streamed chunk)
+    // while the search bar is closed.
+    if (!term) { setMatches(prev => (prev.length === 0 ? prev : [])); return }
     const timer = setTimeout(() => {
       const needle = caseSensitive ? term : term.toLowerCase()
       const result: SearchMatch[] = []

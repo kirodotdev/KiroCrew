@@ -331,9 +331,14 @@ class TestOwnerDesignatedRepo:
 
 
 class TestSelCredentialGrant:
-    def test_audit_failure_is_swallowed(self, monkeypatch):
-        monkeypatch.setattr(registry, "_sel_fn", MagicMock(side_effect=RuntimeError("sel down")))
-        registry._sel_credential_grant("op", "https://x/y.git")  # must not raise
+    def test_audit_failure_is_swallowed(self, monkeypatch, caplog):
+        sel_fn = MagicMock(side_effect=RuntimeError("sel down"))
+        monkeypatch.setattr(registry, "_sel_fn", sel_fn)
+        caplog.set_level("DEBUG", logger="kiro_crew.apps.registry")
+        registry._sel_credential_grant("op", "https://x/y.git")
+        sel_fn.assert_called_once_with()
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert messages == ["SEL audit log failed for op: sel down"]
 
     def test_grant_is_logged_when_sel_is_present(self, monkeypatch):
         sel_obj = MagicMock()

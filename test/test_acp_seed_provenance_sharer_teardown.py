@@ -683,6 +683,11 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         record names and stays the owner's recognized, repairable seed instead
         of an unrecorded file nothing on the host can clean up.
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         owner, path, before = self._owner_with_a_sharer_and_a_warm_cache(
             tmp_path, monkeypatch, with_sharer=False
         )
@@ -817,6 +822,11 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         sharer validated is never touched, and the owner's recorded payload
         stays the bytes on disk.
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         owner, path, before = self._owner_with_a_sharer_and_a_warm_cache(
             tmp_path, monkeypatch, with_sharer=True
         )
@@ -839,6 +849,11 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
         stays registered, so "the next session" is a promise the code cannot
         keep.
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         owner, path, _before = self._owner_with_a_sharer_and_a_warm_cache(
             tmp_path, monkeypatch, with_sharer=True
         )
@@ -858,6 +873,11 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
 
     def test_a_model_key_reseed_still_writes_with_no_sharer(self, tmp_path, monkeypatch):
         """The barrier fires only under a sharer: alone, the owner's re-seed lands."""
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         owner, path, before = self._owner_with_a_sharer_and_a_warm_cache(
             tmp_path, monkeypatch, with_sharer=False
         )

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -36,7 +37,35 @@ from kiro_crew.apps.builtins.aws_control.backend.routes_parts.common import (
     logger,
 )
 from kiro_crew.apps.builtins.aws_control.backend.routes_parts.drive import _require_drive
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.deploy.engine import AWSError
+
+#: Drive buckets whose TLS-only policy this process has already tried to confirm.
+#: Drives created before the policy existed get it on their first upload here.
+_TLS_POLICY_CHECKED: set[str] = set()
+
+
+async def _confirm_tls_policy(bucket: str, profile: str, region: str, account: str) -> None:
+    """Best effort, once per drive per process.
+
+    A failure is logged and never fails the upload that triggered it. It is not
+    retried until the gateway restarts, so a profile without the bucket-policy
+    permissions costs one denied call, not one per upload.
+    """
+    if bucket in _TLS_POLICY_CHECKED:
+        return
+    _TLS_POLICY_CHECKED.add(bucket)
+    try:
+        await asyncio.to_thread(
+            storage_mod.ensure_tls_only_policy, bucket, profile, region, account=account
+        )
+    except (AWSError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            "aws-control: the TLS-only policy on drive %s was not confirmed (this "
+            "needs s3:GetBucketPolicy and s3:PutBucketPolicy): %s",
+            bucket,
+            _safe_error(exc),
+        )
 
 
 async def _handle_drive_upload(request: web.Request) -> web.Response:
@@ -117,6 +146,7 @@ async def _handle_drive_upload(request: web.Request) -> web.Response:
             return _aws_failed(exc)
     finally:
         await asyncio.to_thread(shutil.rmtree, tmp, True)
+    await _confirm_tls_policy(bucket, profile, region, account)
     return web.json_response({"uploaded": True, "key": key, "bytes": received})
 
 
@@ -165,7 +195,9 @@ async def _handle_drive_move(request: web.Request) -> web.Response:
     call, the source must exist (404), and the destination must NOT (409) —
     a move never silently overwrites. A source with a LIVE share link is
     refused (409 ``share_active``): the presigned URL is bound to the old key
-    and would 404 while the Access ledger still reports it live.
+    and would 404 while the Access ledger still reports it live. A destination with
+    an unexpired share is refused too (409 ``destination_share_active``): that link
+    would start serving the moved file.
 
     Everything from the re-authorization through the source delete runs under
     :func:`_locked_drive_write` for both keys — the coordination net every
@@ -214,13 +246,29 @@ async def _handle_drive_move(request: web.Request) -> web.Response:
             # its key and cannot be re-pointed. Refuse instead of silently
             # breaking a grant the owner handed out: the ledger is local, so
             # the check costs no AWS call.
-            shared = await asyncio.to_thread(shares_mod.list_shares, account)
+            # A strict read: a ledger that cannot be read must refuse the move, not
+            # pass both share checks as if nothing were shared.
+            try:
+                shared = await asyncio.to_thread(shares_mod.list_shares_strict, account)
+            except (OSError, json.JSONDecodeError):
+                return _ledger_corrupt("share_ledger_corrupt")
             if any(
                 entry.get("section") == section and entry.get("key") == from_key for entry in shared
             ):
                 return _conflict(
                     "this file has a live share link — moving it would break the link",
                     "share_active",
+                )
+            # The destination too: a share link outlives the object it was minted for,
+            # so a key whose file was deleted can still hold an unexpired link. Moving
+            # a file onto that key would make the old link serve the new file.
+            if any(
+                entry.get("section") == section and entry.get("key") == to_key for entry in shared
+            ):
+                return _conflict(
+                    "the destination still has an unexpired share link — "
+                    "moving a file there would expose it through that link",
+                    "destination_share_active",
                 )
             exists = await asyncio.to_thread(
                 storage_mod.object_exists,
@@ -380,7 +428,7 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
     if err:
         return _bad_request(err, "invalid_key")
     try:
-        expires = int(body.get("expiresSecs", 24 * 3600))
+        expires = body_int(body.get("expiresSecs", 24 * 3600))
     except (TypeError, ValueError):
         return _bad_request("expiresSecs must be a number", "invalid_expiry")
     expires = max(60, min(expires, storage_mod.PRESIGN_MAX_SECS))
@@ -480,7 +528,7 @@ async def _drive_object_keys(request: web.Request, account: str) -> tuple[set[st
     except AWSError as exc:
         return None, _safe_error(exc)
     if not bucket:
-        return None, "this account has no drive yet"
+        return None, storage_mod.no_drive_message(region)
     try:
         keys = await asyncio.to_thread(
             storage_mod.list_object_keys, profile, region, bucket, account=account

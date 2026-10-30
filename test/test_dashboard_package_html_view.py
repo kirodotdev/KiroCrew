@@ -6,7 +6,8 @@ pages this surface exists for: a dispatch tree, a chart, a 3D scene are layouts 
 renderer knows, and a catalog that grew a type per picture would be the host writing every
 page anyway.
 
-So a view is EITHER a block list or one HTML page, never both and never neither. The page
+So a view is one HTML page. A stored block list is read as the page it becomes,
+one way, and the block catalog is gone. The page
 is agent-authored and may run JS, and what keeps that safe is not a check on the markup --
 it is :mod:`kiro_crew.dashboard_frame`: text-only bindings, ``connect-src 'none'``,
 ``allow-scripts`` and nothing else, over an opaque origin. The checks here are the ones
@@ -70,13 +71,17 @@ class TestOneViewOrTheOther:
         assert out["view"] == {"html": '<p data-dashboard-field="boards"></p>'}
         assert "blocks" not in out["view"]
 
-    def test_a_block_list_is_still_a_view(self) -> None:
-        """The shape every stored package uses today. A new view kind that invalidated
-        the old one would make this change a migration rather than an addition."""
+    def test_a_saved_block_list_is_read_as_its_page(self) -> None:
+        """One way: a stored block list is the page it becomes, whatever its
+        type -- there is no catalog left to ask."""
         out = dp.validate_package(
-            package(view={"blocks": [{"id": "b", "type": "stat", "fields": ["boards"]}]})
+            package(view={"blocks": [{"id": "b", "type": "hologram", "fields": ["boards"]}]})
         )
-        assert out["view"]["blocks"][0]["id"] == "b"
+        assert out["view"] == {
+            "html": '<section><dl><div><dt>Boards</dt><dd data-dashboard-field="boards"></dd>'
+            "</div></dl></section>"
+        }
+        assert dp.validate_package(out)["view"] == out["view"]
 
     def test_both_at_once_is_refused(self) -> None:
         """Two views is a package with no answer to "what does this page look like".
@@ -95,7 +100,7 @@ class TestOneViewOrTheOther:
 
     def test_neither_is_refused(self) -> None:
         said = refusal(package(view={}))
-        assert "html" in said and "blocks" in said
+        assert "must hold 'html'" in said
 
 
 class TestThePageItself:

@@ -553,7 +553,7 @@ def _flag_ports(cfg, tmp_path, mp):
 def _flag_client(cfg, tmp_path, mp):
     _mint_after_port(cfg, tmp_path, mp)
     mp.setattr(rt, "port_owner", _value(rt.OWNER_POD))
-    mp.setattr(rt, "loopback_urlopen", _raiser("windows-branch"))
+    mp.setattr(rt, "tcp_verified_urlopen", _raiser("windows-branch"))
     mp.setattr(rt, "pod_socket_path", _raiser("posix-branch"))
     return _mint(cfg, tmp_path, mp)
 

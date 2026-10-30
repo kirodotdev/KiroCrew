@@ -78,6 +78,11 @@ ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # ``crew_log_enabled``.
 ENV_FALSY = frozenset({"0", "false", "no", "off"})
 
+# Longest prefix a generated Coder workspace name may carry: names are at most 32
+# characters and the registry adds two separators and an 8-character binding id,
+# so 21 leaves one owner character. Homed here so every boundary refuses at one number.
+CODER_WORKSPACE_PREFIX_MAX_CHARS = 21
+
 
 # Minimum supported Node.js version (major, minor, patch), shared by the startup
 # probe in ``cli.py`` and ``kirocrew doctor``. Below it, doctor fails and the
@@ -471,6 +476,9 @@ _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
 #: by construction rather than by which opener happens to carry the guard.
 MARKER_OPENERS = "[\u3010\uff3b\u3014"
 _MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
+#: Its negation, derived from the same string: what a pattern that must apply a
+#: per-opener rule may consume WITHOUT applying it. Closers are not excluded.
+_MARKER_NON_OPEN_CLASS = "[^" + re.escape(MARKER_OPENERS) + "]"
 #: Every bracket the grammar knows -- all openers and all closers -- as the
 #: characters the body's NEGATED classes exclude. This is the disjointness
 #: invariant in one place: a character that can START a bracket form (an opener)
@@ -641,6 +649,8 @@ _MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
 
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
 #: stops at a newline; TRAILER spans them (``DOTALL``, as the old ``.*`` did).
+#: No part of the LINE pattern may match ``\n``: :func:`_line_marker_candidates`
+#: scans only the lines holding the head, which is equivalent only while that holds.
 #: The one body-shaped pattern NOT derived from these is
 #: :data:`_OPTIONS_TAIL_PREFIX_RE`, which is a prefix closure and has to stay
 #: looser -- see the reason there before "fixing" it to match.
@@ -765,6 +775,29 @@ def _marker_labels_have_unmatched_opener(labels: str) -> bool:
     return bool(open_stack)
 
 
+def _line_marker_candidates(pattern: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """``pattern.finditer(text)`` for the LINE pattern, run only on lines holding the head.
+
+    Every LINE match contains the literal ``[OPTIONS:`` and stays on its line: the
+    body, closer, tic, wrapper run and trailing ``[ \\t]*`` all exclude ``\\n``, and
+    each lookahead is bounded by them. So a line without the head cannot match, and
+    skipping it returns the same matches. It matters because the optional
+    ``^``-anchored wrapper prefix is attempted at every position, which makes a
+    whole-text scan cost the whole message for every call. Under ``re.MULTILINE``
+    ``^`` holds at ``pos`` (offset 0 or just after a newline) and ``$`` at
+    ``endpos`` (a newline or the end of the text), the anchors the whole-text scan
+    sees there. TRAILER spans newlines, so it never comes through here.
+    """
+    head = text.find("[OPTIONS:")
+    while head != -1:
+        start = text.rfind("\n", 0, head) + 1
+        end = text.find("\n", head)
+        if end == -1:
+            end = len(text)
+        yield from pattern.finditer(text, start, end)
+        head = text.find("[OPTIONS:", end)
+
+
 class _MarkerMatcher:
     """A candidate pattern plus the balance decision the pattern cannot make.
 
@@ -787,7 +820,11 @@ class _MarkerMatcher:
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:
         """Every candidate whose terminator is its own, in order."""
-        for match in self._pattern.finditer(text):
+        if self._pattern is _RAW_OPTIONS_RE_LINE:
+            candidates = _line_marker_candidates(self._pattern, text)
+        else:
+            candidates = self._pattern.finditer(text)
+        for match in candidates:
             if not _marker_labels_have_unmatched_opener(match.group("labels")):
                 yield match
 
@@ -1269,8 +1306,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
 #: a STILL-STREAMING marker only when every byte it holds so far could extend
 #: into a complete marker. ``[OPTIONS`` must be followed by ``:`` and then a
-#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; ``[`` admitted
-#: only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
+#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; EVERY opener
+#: admitted only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
 #: that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
@@ -1279,6 +1316,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s
 #: ``test_closer_inside_an_unfinished_label_is_still_unfinished`` forbids.
+#: The nested-head guard is the one part that must AGREE: the body refuses a head
+#: after every opener, so a tail holding one can never become legal.
 #: ``[STEERING`` follows the steer-ack
 #: grammar (``messaging/driver.py``): whitespace gap, literal ``steer-``, a
 #: nonempty hex/dash id, then an optional ``:`` summary -- spelled as nested
@@ -1287,7 +1326,7 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: acknowledgment``, ``steer-:``) is prose and stays visible. Case-sensitive
 #: on purpose: these probe the exact sentinels the detach walk locates.
 _OPTIONS_TAIL_PREFIX_RE = re.compile(
-    r"\[OPTIONS(?::(?:[^[]|\[(?!OPTIONS:))*)?\Z",
+    rf"\[OPTIONS(?::(?:{_MARKER_NON_OPEN_CLASS}|{_MARKER_OPEN_CLASS}(?!OPTIONS:))*)?\Z",
     re.DOTALL,
 )
 _STEERING_TAIL_PREFIX_RE = re.compile(
@@ -1500,6 +1539,20 @@ NO_TOOL_CALLS_NOTE = (
     "made no tool calls in this run, so it did not itself write a file, run a "
     "command or make a commit. Treat any such change it reports as a claim: check "
     "it on disk before relying on it."
+)
+
+#: What a parent is told beside the result of a sub-agent run that ended
+#: normally but whose final text carries a tool call written as prose instead
+#: of executed (``SubagentInfo.leaked_tool_call``). That call never ran, so the
+#: output it was meant to produce may be missing even though the run reads as
+#: completed. Notice-only, like the dashboard's mixed-turn leak notice: calls
+#: earlier in the run may already have taken effect, so the run is not marked
+#: failed and nothing is re-issued. Prefixed with the agent's label by each caller.
+LEAKED_TOOL_CALL_NOTE = (
+    "ended with a tool call written as text instead of run, so that last call "
+    "did not execute and the output it was meant to produce may be missing. "
+    "Earlier calls in the run may have taken effect. Check the result before "
+    "treating this step as done."
 )
 
 # Key under a completion message's ``meta`` where the gateway stamps the

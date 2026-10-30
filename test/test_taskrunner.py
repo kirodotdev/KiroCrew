@@ -1174,14 +1174,12 @@ class TestRun:
         assert len(result.tasks) == 2  # 2 decomposed steps
         assert all(s.status == StepStatus.PASSED for s in result.tasks)
 
-        # Check progress file was written
         progress = tmp_path / PROGRESS_FILE
         assert progress.exists()
         content = progress.read_text(encoding="utf-8")
         assert "completed" in content
         assert "Create file" in content
 
-        # Check notifications were sent
         assert any("Task started" in t for t, _ in notifications)
         assert any("Task completed" in t for t, _ in notifications)
 
@@ -1239,10 +1237,20 @@ class TestRun:
 
 
 class TestCancel:
-    def test_cancel_not_running(self) -> None:
+    def test_cancel_not_running(self, tmp_path: Path) -> None:
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
-        runner.cancel()  # should not raise
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        runner.cancel()  # no runs: must not raise
+        for status in ("planned", "paused", "completed"):
+            runner._runs[status] = TaskRun(
+                task_id=status, spec_path="", spec_content="", status=status
+            )
+        runner.cancel()
+        assert {k: r.status for k, r in runner._runs.items()} == {
+            "planned": "planned",
+            "paused": "paused",
+            "completed": "completed",
+        }
 
     def test_running_property(self) -> None:
         sessions = _make_mock_sessions()

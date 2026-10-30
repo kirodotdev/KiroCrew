@@ -154,7 +154,6 @@ async def test_reconcile_with_disk_older_count(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     log = state.conversation_log
 
-    # Write 6 messages to disk.
     for i in range(6):
         log.append("dashboard:s1", "user" if i % 2 == 0 else "assistant", f"msg{i}")
 

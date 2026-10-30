@@ -43,6 +43,18 @@ from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_SHORT_STRING, TEMPLATE_NAME_RE
 
 
+def _kiro_agent_or_exit(name: str) -> None:
+    """Refuse a ``--kiro-agent`` value its pattern does not admit, naming the shape."""
+    if TEMPLATE_NAME_RE.fullmatch(name):
+        return
+    # Read here, not at module level: the facade mirrors every module-level import
+    # of its owners, and its import inventory is frozen.
+    from kiro_crew.validation import TEMPLATE_NAME_HINT
+
+    print(f"Error: invalid kiro agent name ({TEMPLATE_NAME_HINT})", file=sys.stderr)
+    sys.exit(1)
+
+
 def _memory_store_or_exit(raw: str) -> str:
     """Return *raw* when it may bind a crew to a memory store, else exit 1.
 
@@ -80,29 +92,60 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
-def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
+def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     """The ``--model`` value to store on an agent, or exit with the reason.
 
     ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
     editor stores them. A CLI call is judged on shape (the same pattern
-    ``cron add --model`` checks), then by the two gates the crew editor runs
+    ``cron add --model`` checks), then by the gates the crew editor runs
     before it reaches entitlement: a wrong-flavour id kiro-cli does not serve
-    (``model_registry.acp_id_correction``), and the backend-aware display-only
+    (``model_registry.acp_id_correction``), the backend-aware display-only
     check (``_model_rejected_reason``, judged against the same harness the crew
-    editor picks with ``_pin_entitlement_backend``). Entitlement itself needs a
-    live session's advertised list, which this offline command does not have,
-    so an unknown id is accepted, as the crew editor accepts it with no live
-    session.
+    editor picks with ``_pin_entitlement_backend``), and, on an
+    ``acp``-namespace harness, a registered model kiro-cli has no id for
+    (``_no_kiro_id_reason``, which the crew editor runs only with no live
+    catalog). Entitlement itself needs a live session's advertised list, which
+    this offline command does not have, so an unknown id is accepted, as the
+    crew editor accepts it with no live session. *crew* names the agent being
+    updated, so a crewmate that pins its own harness is judged against it.
     """
     model = normalize_agent_model(raw)
     if not model:
         return ""
-    if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
-        print("Error: invalid model format", file=sys.stderr)
+    if len(model) > MAX_SHORT_STRING:
+        # A plain id's segment is unbounded in the pattern, so a well-formed id can
+        # be refused by the length cap alone; name the cap, not the shape it has.
+        print(
+            f"Error: invalid model format (expected at most {MAX_SHORT_STRING} characters)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not _MODEL_NAME_RE.match(model):
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import MODEL_NAME_HINT
+
+        print(f"Error: invalid model format ({MODEL_NAME_HINT})", file=sys.stderr)
         sys.exit(1)
     if is_claude_code(cfg.agent.provider):
         return model
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
+
+    try:
+        backend = _pin_entitlement_backend(cfg, crew)
+    except CrewmateHarnessUnavailable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    from kiro_crew.crewmate_harness import crewmate_pin_for, kiro_spelling_applies
+
+    # A crewmate pinned to a harness with its own model ids takes those ids as
+    # written; every other agent keeps the kiro-cli spelling check.
+    correction = (
+        model_registry.acp_id_correction(model)
+        if kiro_spelling_applies(backend, crewmate_pin_for(cfg, crew) is not None)
+        else None
+    )
     if correction:
         print(
             f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "
@@ -113,9 +156,9 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     # Imported here, as the crew editor's own validator imports it, so the
     # dashboard modules load only when a --model value is actually judged.
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
-    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
+    from kiro_crew.dashboard.handlers.core import _no_kiro_id_reason
 
-    reason = _model_rejected_reason(model, _pin_entitlement_backend(cfg))
+    reason = _model_rejected_reason(model, backend) or _no_kiro_id_reason(model, backend)
     if reason:
         print(f"Error: {reason}", file=sys.stderr)
         sys.exit(1)
@@ -172,8 +215,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Error: agent '{keyed.taken}' already exists", file=sys.stderr)
             sys.exit(1)
         args.name, display_name = keyed.key, keyed.display_name
-        if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-            print("Error: invalid kiro agent name", file=sys.stderr)
+        _kiro_agent_or_exit(args.kiro_agent)
+        from kiro_crew.mate_config import start_template_refusal
+
+        template_refusal = start_template_refusal(args.kiro_agent, args.name)
+        if template_refusal:
+            print(f"Error: {template_refusal}", file=sys.stderr)
             sys.exit(1)
         memory_store = _memory_store_or_exit(args.memory_store)
         if memory_store not in ("", DEFAULT_MEMORY_STORE):
@@ -183,6 +230,16 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg)
+        from kiro_crew.mate_config import user_agent_named
+
+        if args.kiro_agent == args.name or user_agent_named(args.name):
+            # Its own file is resolved under its name; a template of that name
+            # would leave it on that template (the create route refuses too).
+            print(
+                f"Error: a template is already named '{args.name}'; give this crew " "another name",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -238,10 +295,18 @@ def _handle_agent(args: argparse.Namespace) -> None:
         print(f"Workspace: {created.workspace}")
         if created.model:
             print(f"Model: {created.model}")
-        from kiro_crew.member_mate_tools import GRANTED, grant_mate_tools_to_new_member
+        # The same eager copy the create route runs, so a crewmate made here
+        # chats on the conductor and hands its work to its worker.
+        from kiro_crew.mate_config import MateConfigError, adopt_own_file
 
-        if grant_mate_tools_to_new_member(args.name) == GRANTED:
-            print("Added the mate's own tools (kirocrew-mate) to its private copy")
+        try:
+            adopt_own_file(args.name)
+        except MateConfigError as exc:
+            print(
+                f"Warning: {display_name or args.name} keeps running as {args.kiro_agent}: "
+                f"its own file was not written ({exc})",
+                file=sys.stderr,
+            )
 
     elif action == "update":
         if args.name not in cfg.agents:
@@ -253,15 +318,13 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print("Error: a member's memory cannot be rebound or shared", file=sys.stderr)
             sys.exit(1)
         if args.kiro_agent is not None:
-            if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-                print("Error: invalid kiro agent name", file=sys.stderr)
-                sys.exit(1)
+            _kiro_agent_or_exit(args.kiro_agent)
             agent.kiro_agent = args.kiro_agent
         if args.workspace is not None:
             agent.workspace = args.workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
-            agent.model = _agent_model_or_exit(new_model, cfg)
+            agent.model = _agent_model_or_exit(new_model, cfg, args.name)
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:

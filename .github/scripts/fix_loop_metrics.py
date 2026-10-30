@@ -214,7 +214,7 @@ OVERRIDE_MARKER_RE = re.compile(
 )
 OVERRIDE_CLASS_RE = re.compile(
     r"\A[^\n]*\n<!-- ai-review-override-record class=([a-z-]+) issue=([0-9]+|none)"
-    r" author_is_actor=(true|false)(?: anchors=([a-z0-9/,-]+))? -->"
+    r" author_is_actor=(true|false) -->"
 )
 OWNER_DECISION_LISTED = 25
 
@@ -643,20 +643,9 @@ LOCAL_COMMAND_JOBS = frozenset(
         "Backend Lint & Type Check (3.12)",
         "Backend Lint & Type Check",
         "Frontend Lint & Type Check",
-        "Comment History Gate",
-        "Brand Name Gate",
-        "Harness Parity Gate",
-        "Feature Map Gate",
-        "Focus Cue Gate",
-        "Changelog History Gate",
-        "Decision Ledger Gate",
-        "Memory Store Seam Gate",
-        "Loop-Bound Locks Gate",
-        "Builtin Skill Scope Gate",
-        "Testpaths Coverage Gate",
-        "Working-Directory Path Gate",
-        "Vendored Tree Integrity",
-        "Docs Lint",
+        # fast-gate.yml's fourteen stdlib gates run as steps of this one job,
+        # so a red on any of them reaches the census under this single name.
+        "Source Gates",
         "Static Ratchet Gate",
         "CloudFormation Lint",
         "PR Hygiene",

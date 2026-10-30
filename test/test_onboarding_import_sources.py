@@ -81,6 +81,7 @@ class TestDefaultEdition:
             "gemini",
             "openclaw",
             "hermes",
+            "amazon_quick",
         )
 
     def test_category_catalog_is_pinned(self):
@@ -261,9 +262,9 @@ class TestScannerIsolation:
 class TestNormalization:
     """Everything questionable about a descriptor is settled at one boundary.
 
-    Three review rounds each found a different consumer re-deriving a field the
-    registry should have canonicalised, so the invariant under test is that
-    `_normalize_source` is the only place that decides.
+    A consumer that re-derives a field the registry should canonicalise drifts, so
+    the invariant under test is that `_normalize_source` is the only place that
+    decides.
     """
 
     def test_an_env_only_source_with_no_variable_set_is_not_scanned(self, tmp_path):
@@ -385,7 +386,14 @@ class TestNormalization:
         builtin the normalizer would silently drop.
         """
         sources = onboarding_import._sources()
-        assert set(sources) == {"codex", "claude_code", "gemini", "openclaw", "hermes"}
+        assert set(sources) == {
+            "codex",
+            "claude_code",
+            "gemini",
+            "openclaw",
+            "hermes",
+            "amazon_quick",
+        }
         for source in sources.values():
             assert isinstance(source, onboarding_import._Source)
             assert source.env_vars or source.home_dir, source.id
@@ -434,7 +442,7 @@ class TestMalformedContributions:
             ids = tuple(onboarding_import._sources())
         assert reason in caplog.text
         # The builtins survive intact, and a shadowing id keeps its builtin.
-        assert ("codex", "claude_code", "gemini", "openclaw", "hermes") == ids
+        assert ("codex", "claude_code", "gemini", "openclaw", "hermes", "amazon_quick") == ids
 
     def test_a_shared_runtime_claim_cannot_reclaim_unrelated_servers(self, tmp_path, monkeypatch):
         """The guard is what stands between a careless descriptor and the user's
@@ -487,6 +495,7 @@ class TestMalformedContributions:
                 "gemini",
                 "openclaw",
                 "hermes",
+                "amazon_quick",
             )
 
 
@@ -770,7 +779,7 @@ class TestHostileDescriptorsCannotCrashDiscovery:
         _install(_lineage_source(**attrs))
         ids = tuple(onboarding_import._sources())
         assert "predecessor" not in ids
-        assert ("codex", "claude_code", "gemini", "openclaw", "hermes") == ids
+        assert ("codex", "claude_code", "gemini", "openclaw", "hermes", "amazon_quick") == ids
 
     @pytest.mark.parametrize(
         "attrs",
@@ -817,7 +826,7 @@ class TestHostileDescriptorsCannotCrashDiscovery:
         set_context(dataclasses.replace(base, import_sources=_Provider()))
         with caplog.at_level(logging.WARNING, logger="kiro_crew.onboarding_import"):
             ids = tuple(onboarding_import._sources())
-        assert ("codex", "claude_code", "gemini", "openclaw", "hermes") == ids
+        assert ("codex", "claude_code", "gemini", "openclaw", "hermes", "amazon_quick") == ids
 
     def test_a_usable_contribution_alongside_a_broken_one_still_registers(self):
         class _Provider:

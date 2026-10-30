@@ -65,11 +65,13 @@ import os
 import socket as _socket
 import stat
 import sys
+import threading
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, cast
 
 from kiro_crew import platform_compat
+from kiro_crew.gateway_lock import _NO_DIRECTORY_LOCK_ERRNOS
 from kiro_crew.mcp_gateway import socketsec
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,30 @@ _PIPE_NAME_PREFIX = r"\\.\pipe\kirocrew-mcp-"
 
 _SINGLETON_LOCK_SUFFIX = ".lock"
 
+#: Suffix of the singleton's anchor directory: the rendezvous that deleting the
+#: lock file cannot reach. An ``flock`` belongs to the open file
+#: description, so unlinking the lock file releases nothing, but the next daemon
+#: would create a fresh inode under the same name and lock it unopposed. A
+#: directory that holds an entry cannot be unlinked or ``rmdir``-ed, so a lock
+#: on it survives that deletion.
+#:
+#: A DEDICATED directory, not the endpoint's own: the endpoint directory can be
+#: ``KIROCREW_HOME`` itself (the stub's default socket sits there), whose
+#: directory lock the gateway already holds exclusively, and it also carries the
+#: ``.backends`` reap list and the hot-key store.
+_SINGLETON_ANCHOR_SUFFIX = ".lock.d"
+
+#: Entry kept inside the anchor directory so a plain ``rmdir`` refuses it.
+_ANCHOR_KEEP_NAME = "keep"
+
+#: Held lock fd -> (anchor fd, ``(st_dev, st_ino)`` of the lock file it holds).
+#: Keyed by the fd the callers already carry, so the public shape stays an int.
+#: An entry whose lock fd was closed with plain ``os.close`` is found stale (the
+#: fd is gone or names another file) and its anchor released at the next
+#: acquire, so ``os.close`` keeps working as a release in one process.
+_held_anchors: dict[int, tuple[int, tuple[int, int]]] = {}
+_held_anchors_lock = threading.Lock()
+
 #: Set once the server pipe factory has been installed, so repeated ``serve()``
 #: calls in one process do not stack wrappers.
 _pipe_factory_installed = False
@@ -198,6 +224,23 @@ def lock_path_for(socket_path: str | os.PathLike[str]) -> Path:
     """
     p = Path(socket_path)
     return p.parent / (p.name + _SINGLETON_LOCK_SUFFIX)
+
+
+def anchor_path_for(socket_path: str | os.PathLike[str]) -> Path:
+    """Directory whose ``flock`` anchors the singleton beside ``socket_path``."""
+    p = Path(socket_path)
+    return p.parent / (p.name + _SINGLETON_ANCHOR_SUFFIX)
+
+
+def singleton_refusal_message(socket_path: str | os.PathLike[str]) -> str:
+    """What an operator should do when the singleton guard turns a daemon away."""
+    return (
+        f"another MCP gateway daemon holds the singleton lock for {socket_path}. "
+        "To replace it, run `kirocrew restart` (it stops the daemon before the "
+        "new gateway starts); `kirocrew doctor` shows which daemon is running. "
+        f"Do not delete {lock_path_for(socket_path)}: the lock is anchored on "
+        f"{anchor_path_for(socket_path)}, so deleting the file frees nothing."
+    )
 
 
 # --- Windows security descriptor ---------------------------------------------
@@ -526,17 +569,107 @@ def acquire_singleton_lock(socket_path: str | os.PathLike[str]) -> Optional[int]
 
     Returns the held fd, or ``None`` when another live daemon holds it. The
     OS releases the lock on process death, so there is no stale-lock mode.
+    Release with :func:`release_singleton_lock`.
+
+    Two locks, both required: the lock file (what every earlier daemon takes,
+    so a daemon adopted across an upgrade still excludes this one) and, on
+    POSIX, the anchor directory (:func:`anchor_path_for`), which a daemon
+    holding a deleted lock file still holds. Windows takes no anchor: an open
+    Windows lock file cannot be deleted out from under its holder.
     """
+    _drop_stale_anchors()
     lock_file = lock_path_for(socket_path)
     # O_CLOEXEC keeps the fd out of spawned backends. It does not exist on
     # Windows, where PEP 446 already makes every fd Python opens
     # non-inheritable, so the flag is simply absent there.
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(str(lock_file), flags, 0o600)
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    fd = platform_compat.open_create_or_existing(str(lock_file), flags, 0o600)
     if not platform_compat.try_acquire_lock(fd, exclusive=True):
         os.close(fd)
         return None
+    try:
+        won, anchor_fd = _acquire_anchor(socket_path)
+        if won and anchor_fd is not None:
+            st = os.fstat(fd)
+            with _held_anchors_lock:
+                _held_anchors[fd] = (anchor_fd, (st.st_dev, st.st_ino))
+    except BaseException:
+        os.close(fd)
+        raise
+    if not won:
+        os.close(fd)
+        return None
     return fd
+
+
+def release_singleton_lock(fd: int) -> None:
+    """Release a lock :func:`acquire_singleton_lock` returned, anchor included."""
+    with _held_anchors_lock:
+        entry = _held_anchors.pop(fd, None)
+    try:
+        os.close(fd)
+    finally:
+        if entry is not None:
+            os.close(entry[0])
+
+
+def _acquire_anchor(socket_path: str | os.PathLike[str]) -> tuple[bool, Optional[int]]:
+    """Take the anchor directory's exclusive ``flock``.
+
+    Returns ``(won, fd)``: ``(False, None)`` when another daemon holds it,
+    ``(True, None)`` on Windows or on a filesystem that positively has no
+    directory locks, ``(True, fd)`` when held. Any other failure raises, so a
+    start never rides on a measurement that did not happen.
+    """
+    if platform_compat.IS_WINDOWS:
+        return True, None
+    anchor = anchor_path_for(socket_path)
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(anchor, 0o700)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    afd = os.open(anchor, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec)
+    try:
+        keep = platform_compat.open_create_or_existing(
+            _ANCHOR_KEEP_NAME, os.O_WRONLY | nofollow | cloexec, 0o600, dir_fd=afd
+        )
+        os.close(keep)
+        platform_compat.fcntl.flock(afd, platform_compat.fcntl.LOCK_EX | platform_compat.fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(afd)
+        return False, None
+    except OSError as exc:
+        os.close(afd)
+        # The gateway home lock's own set, so both singletons agree on when a
+        # start may proceed without a directory lock.
+        if exc.errno in _NO_DIRECTORY_LOCK_ERRNOS:
+            logger.warning(
+                "gatewayd: %s cannot be locked on this filesystem (%s); the singleton "
+                "rests on the lock file alone",
+                anchor,
+                exc,
+            )
+            return True, None
+        raise
+    except BaseException:
+        os.close(afd)
+        raise
+    return True, afd
+
+
+def _drop_stale_anchors() -> None:
+    """Release anchors whose lock fd was closed without :func:`release_singleton_lock`."""
+    with _held_anchors_lock:
+        for lock_fd, (anchor_fd, ident) in list(_held_anchors.items()):
+            try:
+                st = os.fstat(lock_fd)
+                current: Optional[tuple[int, int]] = (st.st_dev, st.st_ino)
+            except OSError:
+                current = None
+            if current != ident:
+                del _held_anchors[lock_fd]
+                with contextlib.suppress(OSError):
+                    os.close(anchor_fd)
 
 
 def probe_live(socket_path: str | os.PathLike[str]) -> bool:
@@ -644,7 +777,7 @@ def singleton_lock_free(socket_path: str | os.PathLike[str]) -> bool:
         return True
     if fd is None:
         return False
-    os.close(fd)
+    release_singleton_lock(fd)
     return True
 
 
@@ -654,12 +787,16 @@ async def remove_stale(socket_path: str | os.PathLike[str]) -> None:
     POSIX only in effect: a Windows named pipe has no persistent name -- the
     kernel drops it when the last handle closes -- so there is nothing to
     clean up and nothing that could block a rebind.
+
+    Every filesystem touch runs in a worker thread: the caller is the
+    gateway's event loop (the manager's respawn) or gatewayd's, and a stat
+    on a slow state directory would stall every session on it.
     """
     if platform_compat.IS_WINDOWS:
         return
     path = Path(socket_path)
     try:
-        st = os.stat(path)
+        st = await asyncio.to_thread(os.stat, path)
     except FileNotFoundError:
         return
     if not stat.S_ISSOCK(st.st_mode):
@@ -677,7 +814,7 @@ async def remove_stale(socket_path: str | os.PathLike[str]) -> None:
         )
         return
     try:
-        path.unlink()
+        await asyncio.to_thread(path.unlink)
     except FileNotFoundError:
         return
     except OSError as exc:

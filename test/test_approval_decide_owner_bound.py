@@ -27,6 +27,7 @@ from chat_test_helpers import _make_state
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_approve
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 SLOT = "dashboard:selected"
 
@@ -70,12 +71,11 @@ def _app(state, middleware) -> web.Application:
 
 
 async def _wait_pending(state, approval_id: str) -> dict:
-    for _ in range(200):
-        pending = state._pending_approvals.get(approval_id)
-        if pending is not None:
-            return pending
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"approval {approval_id!r} never registered")
+    await async_wait_until(
+        lambda: approval_id in state._pending_approvals,
+        describe=lambda: f"approval {approval_id!r} never registered",
+    )
+    return state._pending_approvals[approval_id]
 
 
 async def _cancel(task: asyncio.Task) -> None:
@@ -129,7 +129,7 @@ async def test_internal_caller_owner_bound_coordinator_decide_resolves(state):
         async with TestClient(TestServer(_app(state, _internal_caller))) as client:
             resp = await client.post("/api/approvals/rid-2/approve", params=query, json={})
         assert resp.status == 200
-        assert await asyncio.wait_for(task, 2) is True
+        assert await await_until(task, what="the approval request resolving") is True
     finally:
         await _cancel(task)
 
@@ -144,7 +144,7 @@ async def test_dashboard_user_bare_id_coordinator_decide_still_resolves(state):
         async with TestClient(TestServer(_app(state, _dashboard_user))) as client:
             resp = await client.post("/api/approvals/rid-3/approve", json={})
         assert resp.status == 200
-        assert await asyncio.wait_for(task, 2) is True
+        assert await await_until(task, what="the approval request resolving") is True
     finally:
         await _cancel(task)
 

@@ -130,6 +130,15 @@ MAX_ACTIVITY_ROWS = 40
 #: characters, plus 8.
 SCAN_MARGIN_CHARS = 91
 
+#: Longest running request the redactors read. A longer one is left out of the
+#: excerpt entirely (see :func:`running_turn_excerpts`).
+MAX_REQUEST_SCAN_CHARS = MAX_RUNNING_MESSAGE_CHARS + 4096
+
+#: Longest activity row the redactors read when it crosses the budget. A longer
+#: one is skipped, never cut. Wider than the request's headroom because a row
+#: carries tool output, and a multi-line PEM block must still fit.
+MAX_ROW_SCAN_CHARS = MAX_ACTIVITY_CHARS + 8192
+
 #: Rows the activity excerpt is built from. ``chunk`` is the live, unflushed text
 #: of the reply in progress, which is exactly the part a sender is reacting to.
 #:
@@ -282,6 +291,10 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
         # contains whitespace, so a whitespace cut cannot halve one.
         room_left = activity_room - spent
         if len(content) > room_left:
+            # Too long to scan in one bounded pass: skipped, for the reason the
+            # request is dropped below.
+            if len(content) > MAX_ROW_SCAN_CHARS:
+                continue
             content = redacted(content, room_left + SCAN_MARGIN_CHARS)
             if len(content) > room_left:
                 margin = content[:SCAN_MARGIN_CHARS]
@@ -297,6 +310,12 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
     # The REQUEST is served first out of the shared budget, then whatever is left
     # pays for the activity: the request is the shorter half and the one the
     # activity only makes sense against.
+    #
+    # An over-long request is DROPPED, never cut: any cut can strand a value from
+    # the label its pattern anchors on, so failing closed is the only bound that
+    # cannot leak. The redactors then never read more than this per request.
+    if len(request) > MAX_REQUEST_SCAN_CHARS:
+        request = ""
     request_text = redacted(request, min(MAX_RUNNING_MESSAGE_CHARS, budget))
     activity_text = redacted("\n".join(pieces), max(0, budget - len(request_text)))
     return request_text, activity_text
@@ -395,7 +414,13 @@ async def steer_or_queue(
             "turn_chars": len(running_message) + len(activity),
         }
         answers = await core.decide(
-            POINT, state, questions(), session_key=session_key, config=config, extra=extra
+            POINT,
+            state,
+            questions(),
+            session_key=session_key,
+            config=config,
+            extra=extra,
+            unclipped=text,
         )
     except asyncio.CancelledError:
         raise

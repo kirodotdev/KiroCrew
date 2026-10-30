@@ -17,6 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tag_grants import (
     has_grant_row,
@@ -220,6 +221,7 @@ async def api_chat_tag_create(request: web.Request) -> web.Response:
             error=reason,
         )
         return web.json_response({"error": "persist failed", "code": "persist_failed"}, status=500)
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
@@ -382,6 +384,10 @@ async def api_chat_tag_adopt(request: web.Request) -> web.Response:
 
         response_row = _project_agent_tag(tag, None)
 
+    # Another tab learns of the vocabulary write from the slots frame's
+    # tags generation.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=caller,
         operation="chat.tag_adopt",
@@ -486,8 +492,8 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
             tag["color"] = _valid_color(str(body["color"]))
         if "order" in body:
             try:
-                tag["order"] = int(body["order"])
-            except (TypeError, ValueError, OverflowError):
+                tag["order"] = body_int(body["order"])
+            except (TypeError, ValueError):
                 pass
         if "status" in body:
             # Validated strictly-boolean BEFORE the lock (see above).
@@ -619,6 +625,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
                     )
         updated = tag
 
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
@@ -788,6 +795,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                 # Dangling board reference — pruned on next load.
                 logger.warning("tag delete: board strip persist failed for %s", tid, exc_info=True)
 
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

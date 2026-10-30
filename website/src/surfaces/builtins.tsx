@@ -54,15 +54,6 @@ registerBuiltinSurface({
 // claims the `member-<slug>` slots this page's threads live in, so their
 // unread counts ride this rail item instead of leaking into Sessions
 // (`isChatPageSurface` deliberately does not admit 'member').
-//
-// `previewFlag` (`PREVIEW_CREW`, in `surfaceData.ts`) because crew is not
-// released yet: it is not advertised until the operator opts in at Settings >
-// Developer > Feature Previews. The rail and Search Everywhere both read
-// `getAdvertisedSurfaces()`, and the browser-tab attention count applies the
-// gate inside `selectAllSurfacesAttention`. A guide that points at the page
-// names that switch as its prerequisite (`PREVIEW_FLAG_ENABLERS`). The sidebar
-// create menu's "Crewmates" entry reads PREVIEW_CREW only to decide whether it
-// lands on `/members` or on the Settings card that turns the page on.
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.members,
   icon: <CrewMemberMark />,

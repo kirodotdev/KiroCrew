@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from kiro_crew.apps.spawn_sdk import build_done_probe
 
 
@@ -28,27 +30,31 @@ def test_an_untracked_id_reads_as_done() -> None:
     assert build_done_probe(_subagents())("gone") is True
 
 
-def test_a_tracked_running_run_holds_the_guard() -> None:
-    probe = build_done_probe(_subagents(tracked={"r": SimpleNamespace(done=False)}))
-    assert probe("r") is False
+@pytest.mark.parametrize(
+    "done",
+    [
+        pytest.param(False, id="test_a_tracked_running_run_holds_the_guard"),
+        pytest.param(True, id="test_a_tracked_finished_run_releases_the_guard"),
+    ],
+)
+def test_a_tracked_run_reports_its_own_state(done: bool) -> None:
+    probe = build_done_probe(_subagents(tracked={"r": SimpleNamespace(done=done)}))
+    assert probe("r") is done
 
 
-def test_a_tracked_finished_run_releases_the_guard() -> None:
-    probe = build_done_probe(_subagents(tracked={"r": SimpleNamespace(done=True)}))
-    assert probe("r") is True
-
-
-def test_a_queued_run_holds_the_guard_despite_no_agents_row() -> None:
-    """The core fix: an id with no ``_agents`` entry but still queued is pending
-    work, so the probe reports NOT done and the serial guard is held."""
-    assert build_done_probe(_subagents(queued_ids=("q",)))("q") is False
-
-
-def test_a_dispatching_window_id_holds_the_guard() -> None:
-    """``is_queued`` also covers the pop-to-claim / retained-claim window the
-    pump tracks in ``_dispatch_window_ids`` -- so a probe sampling that window
-    does not release the guard."""
-    assert build_done_probe(_subagents(queued_ids=("dispatching",)))("dispatching") is False
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        pytest.param("q", id="test_a_queued_run_holds_the_guard_despite_no_agents_row"),
+        # ``is_queued`` also covers the pop-to-claim / retained-claim window the
+        # pump tracks in ``_dispatch_window_ids``.
+        pytest.param("dispatching", id="test_a_dispatching_window_id_holds_the_guard"),
+    ],
+)
+def test_a_queued_id_holds_the_guard(run_id: str) -> None:
+    """An id with no ``_agents`` entry but still queued is pending work, so the
+    probe reports NOT done and the serial guard is held."""
+    assert build_done_probe(_subagents(queued_ids=(run_id,)))(run_id) is False
 
 
 def test_probe_tolerates_a_manager_without_is_queued() -> None:

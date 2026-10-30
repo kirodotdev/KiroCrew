@@ -139,6 +139,23 @@ class TestPlan:
         out = json.loads(_call("perform_pet_action", {"action": "query"}))
         assert "x" not in out and "y" not in out
 
+    @pytest.mark.parametrize("cache", ["[]", '"screen"', "{not json"])
+    def test_query_with_an_unusable_display_cache_reports_no_data(
+        self, data_dir: Path, cache: str
+    ) -> None:
+        """A display cache that is malformed OR not an object reads as "no data yet".
+
+        Malformed JSON already degraded this way; a list- or string-shaped file
+        reached `.get` on a non-dict and failed the whole query instead.
+        """
+        (data_dir / "mochi-displays.json").write_text(cache, encoding="utf-8")
+        raw = _call("perform_pet_action", {"action": "query"})
+        assert "failed" not in raw, raw
+        out = json.loads(raw)
+        assert out["displays"] == []
+        assert out["currentDisplay"] is None
+        assert out["note"].startswith("no display data yet")
+
     def test_concurrent_actions_get_distinct_ids(self, data_dir: Path, monkeypatch) -> None:
         # Same millisecond (frozen clock) foreground + background action: a bare
         # `pa{now}` id would collide and the poller would mark one done and

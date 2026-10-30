@@ -1,4 +1,4 @@
-"""Subprocess-spawn audit — security-review finding 92e24570.
+"""Subprocess-spawn audit.
 
 Every subprocess spawn in ``src/kiro_crew`` must be either
 
@@ -300,9 +300,8 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # carve-out is inert anyway.
         "voice_reply.py::_synthesize_system",
         # The shared local-TTS runner. It DECIDES nothing: it forwards its own
-        # parameter to the chokepoint, and its only caller passing a non-default
-        # value is the reviewed ``_synthesize_system`` entry above (piper's call
-        # omits it and takes the False default). Listed rather than excluded
+        # parameter to the chokepoint, and its only caller is the reviewed
+        # ``_synthesize_system`` entry above. Listed rather than excluded
         # because the scan is deliberately value-blind, so a future caller
         # passing True here would still have to be reviewed as its own entry.
         "voice_reply.py::_run_tts_subprocess",
@@ -1028,10 +1027,13 @@ def test_gateway_spawns_all_own_session():
         spawns += 1
         if not any(kw.arg == "start_new_session" for kw in node.keywords):
             missing.append(f"{_GATEWAY_REL}:{node.lineno}")
-    assert spawns >= 10, (
+    assert spawns >= 9, (
         f"only {spawns} spawn sites found in {_GATEWAY_REL} — the audit's "
         "spawn matcher no longer matches the file's spawn idiom; fix the "
-        "matcher rather than deleting the ratchet"
+        "matcher rather than deleting the ratchet. (The floor dropped from 10 "
+        "to 9 when the unattended apply's inline fetch moved to the shared "
+        "update_governance.fetch_and_pin_upstream helper, which carries the same "
+        "start_new_session discipline and is covered by the spawn allowlist.)"
     )
     assert not missing, (
         "Spawn(s) in slack/gateway.py without start_new_session — a timeout "

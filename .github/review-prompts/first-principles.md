@@ -337,7 +337,7 @@ rather than inventing a justification for it.
      link is checked against that list; a link to a `draft`, to a
      document the diff adds or edits, or to nothing, fails.
    - a maintainer's explicit decision on THIS head, recorded as
-     `/ai-review override first-principles <head sha>: <decision>`.
+     `/ai-review override first-principles <head sha> <class>: <decision>`.
      The workflow honours that before you are invoked, on a fork pull
      request as on a same-repo one, so if you are reading this, the
      workflow found no such decision for this head. In either lane the list
@@ -464,7 +464,7 @@ The punchline opens `product-shape change without accepted RFC`. The
 `Clears when:` line names both records: an RFC covering <shape> merged
 non-draft on the base (then a push or rebase, so the run reads a base
 that carries it), or `/ai-review override first-principles <head
-sha>: <decision>` from a maintainer. A well-argued description does
+sha> <class>: <decision>` from a maintainer. A well-argued description does
 not lower this: the argument is the proposal. This is the one
 `cannot evaluate` this lane has, and it is deliberately the only
 one: the recorded decision is the single piece of evidence this

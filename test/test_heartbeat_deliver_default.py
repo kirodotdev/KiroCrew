@@ -50,27 +50,35 @@ class TestDefaultDeliverConfig:
     @pytest.mark.asyncio()
     async def test_empty_deliver_dashboard_default_is_dashboard_only(self, monkeypatch):
         orch, state = _make_orch("dashboard", monkeypatch)
+        slot = state.get_or_create_slot.return_value
         await orch._deliver_result("💓 Heartbeat", "task", "body", "")
-        state.get_or_create_slot.assert_called_once()
-        state.notify.assert_called_once()
-        orch.slack.open_dm.assert_not_called()  # no Slack DM
+        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        state.notify.assert_called_once_with(
+            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+        )
+        orch.slack.open_dm.assert_not_called()
+        orch.slack.post_message.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_empty_deliver_slack_default_is_slack_plus_dashboard(self, monkeypatch):
         orch, state = _make_orch("slack", monkeypatch)
         await orch._deliver_result("💓 Heartbeat", "task", "body", "")
-        orch.slack.open_dm.assert_awaited_once()
+        orch.slack.open_dm.assert_awaited_once_with("U1")
         orch.slack.post_message.assert_awaited_once()
-        state.notify.assert_called_once()
+        assert orch.slack.post_message.await_args.args[0] == "D123"
+        state.notify.assert_called_once_with("heartbeat", "💓 Heartbeat", "task\n\nbody")
         state.get_or_create_slot.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_explicit_slack_tag_overrides_dashboard_default(self, monkeypatch):
-        orch, _ = _make_orch("dashboard", monkeypatch)
+        orch, state = _make_orch("dashboard", monkeypatch)
         await orch._deliver_result("💓 Heartbeat", "task", "body", "slack")
-        # explicit slack branch posts the DM and never creates a dashboard slot
-        orch.slack.open_dm.assert_awaited_once()
-        orch.dashboard_state.get_or_create_slot.assert_not_called()
+        orch.slack.open_dm.assert_awaited_once_with("U1")
+        orch.slack.post_message.assert_awaited_once()
+        assert orch.slack.post_message.await_args.args[0] == "D123"
+        # An explicit "slack" tag is the DM alone: no slot and no dashboard bell.
+        state.get_or_create_slot.assert_not_called()
+        state.notify.assert_not_called()
 
 
 class TestDashboardNewSlotTitle:
@@ -131,6 +139,9 @@ class TestDashboardNewSlotTitle:
         slot = state.get_or_create_slot.return_value
         state.conversation_log.set_title.side_effect = OSError("disk full")
         await orch._deliver_result("💓 Heartbeat", "task", "body", "dashboard")
-        slot.append.assert_called_once()
-        state.push_slots_update.assert_called_once()
-        state.notify.assert_called_once()
+        assert slot.title == "💓 task"
+        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        state.push_slots_update.assert_called_once_with()
+        state.notify.assert_called_once_with(
+            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+        )

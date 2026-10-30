@@ -32,6 +32,8 @@ Two tiers, deliberately:
   captions) and so cannot be banned outright the way a conversion call can; it is
   a judgment-tier problem, not a deterministic one. ``security_posture.py`` states
   the same bound, deliberately, rather than claiming every Slack path is enforced.
+  ``test_slack_post_message_call_sites.py`` does not ban those calls; it pins
+  each module's count to a baseline, so a NEW direct send path fails the build.
 
   BEHAVIOURAL tier -- the ordering tests below. They prove the pipeline the
   structural tier funnels everyone into actually closes both hazards, in both
@@ -227,55 +229,67 @@ def test_no_module_converts_slack_markdown_directly() -> None:
 # ── Meta-tests: prove the detector both fires and stays quiet ─────────────────
 
 
-def test_detector_flags_a_bare_aliased_call() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn as tsm\n"
-        "def f(t):\n"
-        "    return tsm(t)\n"
-    )
+@pytest.mark.parametrize(
+    "src",
+    [
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn as tsm\n"
+                "def f(t):\n"
+                "    return tsm(t)\n"
+            ),
+            id="test_detector_flags_a_bare_aliased_call",
+        ),
+        pytest.param(
+            (
+                "import kiro_crew.slack.format as fmt\n"
+                "def f(t):\n"
+                "    return fmt.to_slack_mrkdwn(t)\n"
+            ),
+            id="test_detector_flags_a_module_attribute_call",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn\n"
+                "def f():\n"
+                '    return to_slack_mrkdwn("render-ok")\n'
+            ),
+            id="test_render_ok_inside_a_string_does_not_suppress",
+        ),
+    ],
+)
+def test_detector_flags_the_call(src: str) -> None:
     assert [v[1] for v in find_violations(src)] == [3]
 
 
-def test_detector_flags_a_module_attribute_call() -> None:
-    src = (
-        "import kiro_crew.slack.format as fmt\n"
-        "def f(t):\n"
-        "    return fmt.to_slack_mrkdwn(t)\n"
-    )
-    assert [v[1] for v in find_violations(src)] == [3]
-
-
-def test_detector_ignores_same_named_method_on_other_objects() -> None:
-    """A method that merely shares the name must not trip the gate."""
-    src = "def f(renderer, t):\n    return renderer.to_slack_mrkdwn(t)\n"
+@pytest.mark.parametrize(
+    "src",
+    [
+        # A method that merely shares the name must not trip the gate.
+        pytest.param(
+            "def f(renderer, t):\n    return renderer.to_slack_mrkdwn(t)\n",
+            id="test_detector_ignores_same_named_method_on_other_objects",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import render_for_slack\n"
+                "def f(t):\n"
+                "    return render_for_slack(t)\n"
+            ),
+            id="test_detector_ignores_the_shared_helpers",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn\n"
+                "def f(t):\n"
+                "    return to_slack_mrkdwn(t)  # render-ok: no egress, formats a local preview\n"
+            ),
+            id="test_render_ok_comment_suppresses",
+        ),
+    ],
+)
+def test_detector_passes_the_source(src: str) -> None:
     assert find_violations(src) == []
-
-
-def test_detector_ignores_the_shared_helpers() -> None:
-    src = (
-        "from kiro_crew.slack.format import render_for_slack\n"
-        "def f(t):\n"
-        "    return render_for_slack(t)\n"
-    )
-    assert find_violations(src) == []
-
-
-def test_render_ok_comment_suppresses() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn\n"
-        "def f(t):\n"
-        "    return to_slack_mrkdwn(t)  # render-ok: no egress, formats a local preview\n"
-    )
-    assert find_violations(src) == []
-
-
-def test_render_ok_inside_a_string_does_not_suppress() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn\n"
-        "def f():\n"
-        '    return to_slack_mrkdwn("render-ok")\n'
-    )
-    assert [v[1] for v in find_violations(src)] == [3]
 
 
 # ── BEHAVIOURAL tier: the pipeline closes both hazards ───────────────────────
@@ -875,13 +889,21 @@ class TestRenderOneForSlackOrdering:
         obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
         assert render_one_for_slack(f"key {obfuscated}", redactor=_fake_redactor).redacted
 
-    def test_it_reports_no_redaction_for_clean_text(self) -> None:
-        """Otherwise the flag would fire every turn and the overwrite is pointless."""
-        assert not render_one_for_slack("just an ordinary answer", redactor=_fake_redactor).redacted
-
-    def test_stripping_ansi_alone_is_not_reported_as_redaction(self) -> None:
-        """Normalisation is not a disclosure that was caught."""
-        assert not render_one_for_slack("plain \x1b[0m text", redactor=_fake_redactor).redacted
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Otherwise the flag would fire every turn and the overwrite is pointless.
+            pytest.param(
+                "just an ordinary answer", id="test_it_reports_no_redaction_for_clean_text"
+            ),
+            # Normalisation is not a disclosure that was caught.
+            pytest.param(
+                "plain \x1b[0m text", id="test_stripping_ansi_alone_is_not_reported_as_redaction"
+            ),
+        ],
+    )
+    def test_no_redaction_reported(self, text: str) -> None:
+        assert not render_one_for_slack(text, redactor=_fake_redactor).redacted
 
     def test_overflow_is_announced_not_silently_dropped(self) -> None:
         out = render_one_for_slack("y" * (SLACK_MAX_TEXT * 2), redactor=_fake_redactor).text
@@ -999,15 +1021,17 @@ class TestOptionsChoicesAreRedacted:
         assert "[REDACTED]" in payload
 
     def test_the_button_value_is_redacted_before_it_is_sliced(self) -> None:
-        """The value is echoed back into the session on submit.
+        """The value is echoed back into the session on click.
 
-        ``value`` is ``choice[:150]``. Slicing first can cut a credential into a
-        prefix the regex does not match, so redaction has to precede the
-        slice -- the same ordering hazard as the conversion ceiling.
+        ``value`` is ``choice[:OPTIONS_VALUE_LIMIT]``. Slicing first can cut a
+        credential into a prefix the regex does not match, so redaction has to
+        precede the slice -- the same ordering hazard as the conversion ceiling.
         """
-        pad = "p" * 140
+        from kiro_crew.slack.format import OPTIONS_VALUE_LIMIT
+
+        pad = "p" * (OPTIONS_VALUE_LIMIT - 10)
         blocks = build_options_blocks([pad + _SECRET], redactor=_fake_redactor)
-        value = blocks[0]["elements"][0]["options"][0]["value"]
+        value = blocks[0]["elements"][0]["value"]
         assert _SECRET[:8] not in value, "a credential fragment survived into the value"
 
     def test_an_ansi_split_credential_in_a_choice_is_redacted(self) -> None:
@@ -1026,7 +1050,7 @@ class TestOptionsChoicesAreRedacted:
     def test_ordinary_choices_are_unchanged(self) -> None:
         """Redaction must be identity for text that holds no secret."""
         blocks = build_options_blocks(["Merge it now", "Show me the diff"])
-        labels = [o["text"]["text"] for o in blocks[0]["elements"][0]["options"]]
+        labels = [el["text"]["text"] for el in blocks[0]["elements"] if el["type"] == "button"]
         assert labels == ["Merge it now", "Show me the diff"]
 
 

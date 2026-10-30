@@ -124,8 +124,8 @@ def test_parse_non_json_raises() -> None:
 
 def test_parse_json_nesting_bomb_keeps_valueerror_contract() -> None:
     # Adversarially deep nesting must surface as the contract ValueError, not a
-    # RecursionError escaping the shared scanner (pre-push review finding). The
-    # balanced form overflowed even the old span fallback; both are contained now.
+    # RecursionError escaping the shared scanner. Both the balanced and the
+    # unterminated form must be contained.
     with pytest.raises(ValueError):
         parse_json("x " + "[" * 100_000)
     with pytest.raises(ValueError):

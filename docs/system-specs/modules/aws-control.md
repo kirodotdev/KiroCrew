@@ -125,6 +125,8 @@ bucket is left untagged rather than becoming a usable drive without versioning.
 `test_aws_control_storage.py::TestCreateDrive.test_versioning_is_enabled_before_hardening_tags_land`
 pins the sequence.
 
+Before the discovery tags, `storage.ensure_tls_only_policy` merges a `KiroCrewDenyInsecureTransport` statement (`aws:SecureTransport=false`) into the bucket policy. It rewrites only a statement under its own Sid and keeps every other statement as written, so an owner's own transport rule, however strict, is never removed. It runs in `create_drive` rather than in the shared `_harden_bucket`, because deploy-web later replaces its bucket policy with `put_oac_bucket_policy`. It is best effort: the recommended drive IAM tier deliberately has no `s3:PutBucketPolicy`, since with it the same principal could grant itself reads of the write-only `backup/` prefix, so a denied call is logged and the drive is still created (`TestCreateDrive.test_a_failed_tls_policy_still_creates_the_drive`). A drive created before this statement existed gets it on its first upload in each gateway process; that check runs once per process, is best effort, and never fails the upload. `TestCreateDrive.test_a_new_drive_gets_a_tls_only_bucket_policy_before_its_tags`, `TestEnsureTlsOnlyPolicy` and `test_aws_control_routes.py::TestDriveUpload.test_an_upload_confirms_the_tls_only_policy_once_per_drive` pin this.
+
 Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
 `storage.validate_key` rejects paths that could escape a section. Folder deletion
 uses a validated, slash-anchored prefix, so it cannot target an empty section,
@@ -151,6 +153,7 @@ a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
 move never silently overwrites (an existing destination refuses with 409,
 pinned by
 `test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+a destination key that still has an unexpired share link refuses with 409 `destination_share_active`, because that link would start serving the moved file (`TestDriveMove.test_move_onto_a_key_with_an_unexpired_share_is_refused`),
 and the section is restricted to `drive` (the `library` and `backup` sections
 are managed surfaces whose objects carry ledger state a move would orphan;
 pinned by
@@ -288,7 +291,7 @@ and `delete_prefix`, `object_exists`, `head_object_meta`, `presign`, `usage` and
 
 | Owner | Holds |
 |---|---|
-| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by` and `create_drive` |
+| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by`, `create_drive` and `ensure_tls_only_policy` |
 | `backend/storage_staging.py` | `STAGING_DIR_LEAF`, `staging_root`, `pinned_staging` and `get_object_head_bytes` |
 | `backend/storage_versions.py` | `validate_version_id`, the batched delete helpers, `DeleteObjectsPartialFailure`, `list_object_versions`, `PartialVersionDelete` and `delete_object_versions` |
 
@@ -2684,8 +2687,10 @@ Seeding the vault is necessary and not sufficient. `kiro-cli acp` validates its 
 credential store before it offers an ACP handshake, so on a store it has never signed
 into it exits `rc=1` "You are not logged in" and that token request is never reached:
 the container answers `/health` 200 and every dashboard turn with
-`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs immediately
-after `require_model_identity`. It empties that store's `auth_kv` table
+`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs after
+`require_model_identity` and after `write_backend_config` -- which program owns the
+sign-in is a property of the WRITTEN config (a crew bundle may ship one), so the seed
+reads that file first (`kiro_login.kas_bundle_route`). It empties that store's `auth_kv` table
 (`DELETE FROM auth_kv`; `$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to
 `$HOME/.local/share/...`, plain JSON), writes one row, and then requires
 `kiro-cli whoami` to accept it; a non-zero exit is a startup refusal. Emptying the
@@ -2712,6 +2717,18 @@ It is written in the container supervisor and nowhere else, which is what keeps 
 internal-only: a desktop host signs kiro-cli in by itself. Every failure inside it is
 a startup refusal, because the alternative is the 503 above with a healthy-looking
 task in front of it.
+
+**On the KAS bundle route none of this runs.** When the written config names the KAS
+harness with `agent.kas_bundle` on -- positive on both halves, the shape
+`kiro_prerequisite_service._kas_bundle_route` reads -- the backend spawns the installed
+engine directly: there is no kiro-cli in the task, no login check in front of the
+engine's credential request, and so no store to seed. The vault `seed_model_identity`
+fills is the engine's only credential there, exactly as on a bundle-route desktop
+([kas-auth.md](kas-auth.md)). Whether the engine is installed is not re-checked here:
+the gateway's own readiness gate (`kiro_prerequisite_service`) names a missing engine on
+every turn, and the image this spec describes pins kiro-cli and ships no engine, so the
+route is reachable today only by a crew bundle or data home that carries one. A config
+that cannot be read answers "relay route", the one the image was measured on.
 
 **That is defence in depth, not a licence to drop the sandbox.** What decides whether
 an auto-approved worker is safe is whether it can REACH a credential, not whether one

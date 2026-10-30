@@ -325,8 +325,18 @@ def test_a_channel_session_forwards_a_strict_caller_session_when_one_exists() ->
         ),
         patch.object(tool.mcp_core, "_post") as post,
     ):
-        post.return_value = {"ok": True, "delivered_to": "webex"}
-        tool.send_message("send_message", {"text": "hi", "session": "webex"})
+
+        def _gateway(_path: str, body: dict, *, session_key: str = "", **_k: object) -> dict:
+            # The gateway re-vets as the caller it is handed; any other principal is refused.
+            if body.get("caller_session") != "webex:a:dm:u1":
+                return {"error": "channel session not permitted for this caller"}
+            return {"ok": True, "delivered_to": "webex"}
+
+        post.side_effect = _gateway
+        result = tool.send_message("send_message", {"text": "hi", "session": "webex"})
+
+    assert not result.startswith("Error:"), result
+    assert "webex" in result
 
     assert post.call_args.args[1]["caller_session"] == "webex:a:dm:u1"
     assert post.call_args.kwargs["session_key"] == "webex:a:dm:u1"

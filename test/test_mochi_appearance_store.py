@@ -285,6 +285,20 @@ class TestListing:
         assert names == ["Good"]
         assert get_pack_detail(tmp_path, good) is not None
 
+    @pytest.mark.parametrize("body", ["[]", '"a string"', "42", "null"])
+    def test_a_non_object_manifest_is_skipped_not_fatal(self, tmp_path: Path, body: str) -> None:
+        # Valid JSON of the wrong shape is as malformed as invalid JSON.
+        save_sprite_pack(tmp_path, _payload(name="Good"))
+        broken = appearances_dir(tmp_path) / "wrong-shape"
+        broken.mkdir(parents=True)
+        (broken / MANIFEST_FILE).write_text(body)
+
+        try:
+            names = [p["name"] for p in list_packs(tmp_path)]
+        except AttributeError as exc:
+            pytest.fail(f"a non-object manifest failed the whole listing: {exc!r}")
+        assert names == ["Good"]
+
     def test_detail_of_an_unknown_pack_is_none(self, tmp_path: Path) -> None:
         assert get_pack_detail(tmp_path, "nope") is None
 

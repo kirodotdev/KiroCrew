@@ -17,6 +17,7 @@ from pathlib import Path
 
 import push_guard_helpers
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from installer_test_helpers import run_bounded
 from push_guard_helpers import (
     _INPROCESS_TIMEOUT_S,
@@ -429,15 +430,14 @@ class TestPushGuardSquash:
         )
         hook.chmod(0o755)
         _write_message(clone_dir)
-        rc, _, stderr = _run_push_guard(
-            clone_dir,
-            ["--squash"],
-            env_extra={
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "core.hooksPath",
-                "GIT_CONFIG_VALUE_0": str(hooks),
-            },
-        )
+        hooks_path = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(hooks),
+        }
+        # The count replaces the suite's entries, so the maintenance ones go after it.
+        hooks_path.update(git_maintenance_off_entries(hooks_path))
+        rc, _, stderr = _run_push_guard(clone_dir, ["--squash"], env_extra=hooks_path)
         assert rc == 0, stderr
         assert "Signed-off-by: Env" in _git(clone_dir, "log", "-1", "--format=%B")
 
@@ -459,9 +459,16 @@ class TestPushGuardSquash:
         # `sleep` that misses it holds the stderr pipe past the wait below.
         waiter = (
             "import os, signal, sys, time; "
-            # Die on Ctrl-C as `sleep` would, but keep an inherited ignore.
-            "signal.getsignal(signal.SIGINT) is signal.default_int_handler "
-            "and signal.signal(signal.SIGINT, signal.SIG_DFL); "
+            # Always install SIG_DFL for SIGINT unconditionally: git sets SIGINT to
+            # SIG_IGN before running hooks so that git itself is not interrupted while
+            # waiting for them.  The hook inherits that SIG_IGN, and Python keeps an
+            # inherited SIG_IGN rather than overriding it with default_int_handler.
+            # A conditional getsignal check therefore never restores SIG_DFL, leaving
+            # SIGINT ignored; the hook survives the killpg and holds the stderr pipe
+            # open past the communicate() timeout.  Installing SIG_DFL here is always
+            # correct for a test hook: the process should die on SIGINT so the group
+            # signal terminates every member deterministically.
+            "signal.signal(signal.SIGINT, signal.SIG_DFL); "
             "open(sys.argv[1] + '.tmp', 'w').close(); "
             "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); "
             # flake-ok: the hook's own 60 s wait keeps it running until the test interrupts it

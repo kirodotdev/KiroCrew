@@ -13,6 +13,7 @@ export const BASE_CONFIG = {
   configured: true,
   connected: false,
   connect_error: '',
+  connect_failed: false,
   read_only: false,
   enabled: true,
   dm_policy: 'self',

@@ -1577,6 +1577,32 @@ async def test_empty_answer_becomes_the_visible_boundary_line(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_empty_answer_after_text_streamed_still_becomes_the_boundary_line(
+    tmp_path, monkeypatch
+):
+    # A prompt-busy retry starts its text over: chunks from the abandoned attempt
+    # reached on_chunk, but the answer it returns is the last attempt's, here empty.
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot, mid = _member_slot(state)
+    _arm_turn(state, monkeypatch, answer="")
+
+    async def _retried_to_nothing(provider, message, *, on_chunk=None, **kwargs):
+        on_chunk("Let me look that up")
+        return ""
+
+    monkeypatch.setattr(chat_threads, "stream_and_collect", _retried_to_nothing)
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    final = _finals(events)[-1]
+    assert "read-only" in final["content"]
+    assert "is_error" not in final
+    stored = _threads(state, slot)[mid]
+    assert stored[-1]["role"] == "assistant" and stored[-1]["content"] == final["content"]
+
+
+@pytest.mark.asyncio
 async def test_a_long_answer_is_clipped_before_it_is_stored(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     slot, mid = _member_slot(state)

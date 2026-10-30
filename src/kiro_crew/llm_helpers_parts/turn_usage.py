@@ -184,13 +184,19 @@ def _sum_usage(left: TurnUsage, right: TurnUsage) -> TurnUsage:
             + int(getattr(right, "cache_read_tokens", 0) or 0),
             cost_usd=float(getattr(left, "cost_usd", 0.0) or 0.0)
             + float(getattr(right, "cost_usd", 0.0) or 0.0),
+            num_turns=int(getattr(left, "num_turns", 0) or 0)
+            + int(getattr(right, "num_turns", 0) or 0),
+            context_sum_tokens=int(getattr(left, "context_sum_tokens", 0) or 0)
+            + int(getattr(right, "context_sum_tokens", 0) or 0),
         )
     except Exception:
         logger.debug("usage sum failed", exc_info=True)
         return left
 
 
-def provider_last_turn_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
+def provider_last_turn_usage(
+    provider: Any, *, since: Any = _NO_PRIOR_STATS, consume: bool = True
+) -> TurnUsage:
     """Best-effort read of the just-completed turn's billing usage.
 
     ``stream_and_collect`` breaks on ``EVENT_COMPLETE`` and returns only text,
@@ -208,6 +214,8 @@ def provider_last_turn_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> 
     consumed here -- one turn's billing is reported once. Callers that drive
     ``provider.stream`` themselves publish no total and fall back to the live
     read, which is what ``since`` guards (see :func:`_attempt_usage`).
+    ``consume=False`` reads the total without clearing it, for a caller that
+    inspects a turn whose recording reader comes after it.
 
     The total is published WITH the stats object it was computed from, and is
     accepted only while that object is still the provider's current one. The
@@ -231,13 +239,14 @@ def provider_last_turn_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> 
         accumulated = getattr(provider, _TURN_BILLED_ATTR, None)
         if isinstance(accumulated, tuple) and len(accumulated) == 2:
             published_stats, total = accumulated
-            # Clear on every read, match or not: a total that failed the identity
-            # check belongs to a turn that is already over and must not be seen
-            # again by a third one.
-            try:
-                delattr(provider, _TURN_BILLED_ATTR)
-            except Exception:
-                logger.debug("clearing accumulated turn usage failed", exc_info=True)
+            # Clear on every consuming read, match or not: a total that failed the
+            # identity check belongs to a turn that is already over and must not be
+            # seen again by a third one.
+            if consume:
+                try:
+                    delattr(provider, _TURN_BILLED_ATTR)
+                except Exception:
+                    logger.debug("clearing accumulated turn usage failed", exc_info=True)
             if isinstance(total, TurnUsage) and published_stats is _billing_stats(provider):
                 return total
     except Exception:

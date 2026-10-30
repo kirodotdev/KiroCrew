@@ -68,7 +68,9 @@ class TestCliUninstallDelegatesToTheGateway:
     def _drive(self, *, purge_data: bool) -> tuple[list[Any], MagicMock]:
         requests: list[Any] = []
 
-        def _open(request: Any, *, timeout: int, socket_path: Any) -> _FakeResponse:
+        def _open(
+            request: Any, *, timeout: int, socket_path: Any, verify_peer: Any
+        ) -> _FakeResponse:
             requests.append(request)
             if request.full_url.endswith("/api/token/local?ttl=2m"):
                 return _FakeResponse({"token": "dashboard-credential"})
@@ -252,14 +254,17 @@ class TestUninstallHandlerStopsAndObservesTheBackend:
         """The split is deliberate: the process is stopped and the scheduler is
         cleaned, but the agents, skills and routes an app with ``resources: "app"``
         registered for itself are left alone."""
-        _, _, deregister = await self._run(resources="app", live_port=None)
+        body, calls, deregister = await self._run(resources="app", live_port=None)
 
+        assert body["ok"] is True
+        assert "stop_app_backend" in calls and "cron_cleanup" in calls
         deregister.assert_not_called()
 
     async def test_a_gateway_managed_app_is_still_deregistered(self) -> None:
-        _, _, deregister = await self._run(resources="gateway", live_port=None)
+        body, _, deregister = await self._run(resources="gateway", live_port=None)
 
-        deregister.assert_called_once()
+        assert body["ok"] is True
+        deregister.assert_called_once_with("test-app")
 
     async def test_the_scheduler_is_cleaned_even_for_a_self_managed_app(self) -> None:
         """An ``app:<name>`` job lives in the GATEWAY's cron store and is fired by
@@ -395,8 +400,12 @@ class TestACronWriteFailureAbortsBeforeAnythingDestructive:
         Once ``onUninstall`` has run, a retry re-applies a teardown that is not
         idempotent, so an abort after it would be worse than the orphaned jobs.
         """
-        _, _, script = await self._run_with_cron_failure(OSError(28, "No space left on device"))
+        status, body, script = await self._run_with_cron_failure(
+            OSError(28, "No space left on device")
+        )
 
+        assert status == 409 and body["code"] == "cron_cleanup_failed"
+        assert "uninstall_log" not in body
         script.assert_not_called()
 
 

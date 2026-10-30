@@ -67,7 +67,7 @@ def test_search_docs_and_find_ui_are_pre_approved_reads_on_every_agent():
 
     assert "@kirocrew-guide/search_docs" in agent._GUIDE_AUTO_GRANTS
     assert "@kirocrew-guide/find_ui" in agent._GUIDE_AUTO_GRANTS
-    shipped = _json.loads((agent._BUNDLED_CFG_DIR / "defaults.json").read_text())
+    shipped = _json.loads((agent._BUNDLED_CFG_DIR / "defaults.json").read_text(encoding="utf-8"))
     # The shipped default template carries exactly the reviewed guide grants.
     assert [g for g in shipped["allowedTools"] if g.startswith("@kirocrew-guide")] == list(
         agent._GUIDE_AUTO_GRANTS

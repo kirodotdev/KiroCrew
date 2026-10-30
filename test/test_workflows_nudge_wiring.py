@@ -33,6 +33,7 @@ import kiro_crew.autonudge_authz as autonudge_authz
 from kiro_crew.autonudge import NudgeAdmissionRefused, binding_key_for
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.monitoring.models import MonitorCreationSurface
+from kiro_crew.testing.wait import async_wait_until
 from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
@@ -55,15 +56,14 @@ def _svc(authorizer=None) -> WorkflowService:
     )
 
 
-async def _wait_terminal(svc: WorkflowService, run_id: str, timeout: float = 3.0) -> dict:
-    t = 0.0
-    while t < timeout:
+async def _wait_terminal(svc: WorkflowService, run_id: str) -> dict:
+    def terminal() -> dict | None:
         snap = svc.status(run_id)
-        if snap and snap["status"] != "running":
-            return snap
-        await asyncio.sleep(0.02)
-        t += 0.02
-    raise AssertionError("run did not finish")
+        return snap if snap and snap["status"] != "running" else None
+
+    return await async_wait_until(
+        terminal, describe=lambda: f"run {run_id} did not finish: {svc.status(run_id)}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -269,8 +269,7 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
 
     monkeypatch.setattr(svc, "_write_state", slow_write)
     task = asyncio.ensure_future(svc.add("chat-cancel-1", "watch"))
-    while not write_started.is_set():
-        await asyncio.sleep(0.01)
+    await async_wait_until(write_started.is_set, describe=lambda: "the state write never started")
     task.cancel()
     release_write.set()
     with pytest.raises(asyncio.CancelledError):
@@ -278,13 +277,10 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
     # The shielded inner task completes: the loop is registered AND persisted.
     # Poll for the FILE — the in-memory mutation lands before the offloaded
     # write, so the file is the true completion signal.
-    for _ in range(150):
-        if (tmp_path / "autonudge.json").exists():
-            break
-        await asyncio.sleep(0.02)
-    assert (
-        tmp_path / "autonudge.json"
-    ).exists(), "shielded add did not persist after caller cancellation"
+    await async_wait_until(
+        (tmp_path / "autonudge.json").exists,
+        describe=lambda: "shielded add did not persist after caller cancellation",
+    )
     loop = svc.get_by_slot("chat-cancel-1")
     assert loop is not None
     svc.remove_sync(loop.id)  # cleanup: cancel the armed timer
@@ -298,6 +294,7 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
 class FakeNudgeSvc:
     def __init__(self) -> None:
         self.added: list[tuple] = []
+        self.retired_sentinels: list = []
 
     async def add(
         self,
@@ -312,10 +309,12 @@ class FakeNudgeSvc:
         admission_check=None,
         gate=True,
         creation_surface=MonitorCreationSurface.DASHBOARD,
+        retire_stale_stop_sentinel=None,
     ):
         if admission_check is not None and not admission_check():
             raise NudgeAdmissionRefused("session changed before nudge arm committed")
         self.added.append((slot_key, message, idle_secs, max_cycles, creation_surface))
+        self.retired_sentinels.append(retire_stale_stop_sentinel)
         self.banners: list[str] = getattr(self, "banners", [])
         self.banners.append(banner)
         return SimpleNamespace(
@@ -632,13 +631,10 @@ async def test_drain_timeout_reports_undetermined_outcome() -> None:
     run record must carry an explicit 'outcome undetermined' event BEFORE the
     drain returns — never a silent post-terminal arm (the underlying shielded
     add stays supervised by AutoNudgeService)."""
-    import threading
-
-    release = threading.Event()  # never set — the authorizer hangs
+    release = asyncio.Event()  # never set — the authorizer hangs
 
     async def hung_authorizer(**kw):
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await release.wait()
         return None  # pragma: no cover
 
     svc = _svc(hung_authorizer)

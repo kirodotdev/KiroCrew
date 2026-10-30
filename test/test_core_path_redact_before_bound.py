@@ -182,7 +182,7 @@ _SCANNED_PACKAGES = {
     # The owners composed into the Slack gateway facade, slack/gateway.py.
     "src/kiro_crew/slack/gateway_runtime": 5,
     # The owners composed into the dashboard chat runner, dashboard/chat_runner.py.
-    "src/kiro_crew/dashboard/chat_turn": 22,
+    "src/kiro_crew/dashboard/chat_turn": 25,
     # The owners mirrored beside the session control tools, mcp_tools/control.py.
     "src/kiro_crew/mcp_tools/control_parts": 1,
     # The owners mirrored beside the spawn tools, mcp_tools/spawn.py.
@@ -237,7 +237,6 @@ _SCANNED_MODULES = [
     "src/kiro_crew/vector_memory_lifecycle.py",
     "src/kiro_crew/vector_memory_member.py",
     "src/kiro_crew/vector_memory_semantic_write.py",
-    "src/kiro_crew/knowledge/agent_fetch.py",
     "src/kiro_crew/slack/gateway.py",
     "src/kiro_crew/telegram/renderer.py",
     # The owners the Telegram renderer is composed from, beside its facade.

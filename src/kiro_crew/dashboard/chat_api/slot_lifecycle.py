@@ -12,26 +12,33 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
+        _FILE_CHANGES_DRAIN_SECS,
         _GUARDED_WRITE_WAIT_SECS,
+        _SESSION_RELOAD_NOTICE,
         DashboardState,
         NudgeLoop,
         SlotCloseError,
+        SlotContinueRefusal,
         _app_cancel_denied,
         _ChatSlot,
         _history_key_for,
         _persist_handover_tail,
         _replacement_shares_transcript,
         _resettle_restricted_key,
+        _slot_replaced_while_queued,
         _subagents_attached_response,
         _switch_target_busy,
         _sync_dashboard_slots,
         _unblock_pending_waits,
+        body_int,
+        continue_slot_turn,
         deny_app_slot_access,
         effective_session_key,
         logger,
         loop_slot_keys,
         note_slot_closed,
         read_bounded_json,
+        reload_slot_session,
         save_slot_off_loop,
         sel,
         select_idle_slot_keys,
@@ -230,6 +237,250 @@ async def _restore_slot_nudge_loop(
         # too. The 500 already tells the caller the close did not happen; the
         # retired loop is visible as gone in the dashboard, not silently dead.
         logger.warning("autonudge loop restore after failed slot close failed", exc_info=True)
+
+
+async def api_chat_slot_repair_images(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/repair-images — recover a many-image-wedged turn.
+
+    The remedy the ``image_repair`` error-card kind points at. When a turn is
+    refused because an image already in the native history exceeds the provider's
+    2000px many-image cap (the ``image_dimension_wedge`` tag), Resume replays the
+    identical history and fails the same way. This route downscales the oversized
+    images in place in the transcript and re-issues the interrupted turn, so no
+    turns are lost -- unlike reset-conversation, which starts over.
+
+    One mechanism, in order: (1) tear the slot's kiro-cli process down through
+    the shared :func:`reload_slot_session` path, which carries every busy /
+    children / rebind guard the reload and reset routes use; (2) WHILE that
+    process is down and both locks are held -- the only moment
+    ``session_image_repair`` will touch the transcript, since it refuses a file a
+    live kiro-cli holds -- scan and, if anything is over the cap, rewrite the
+    transcript in place with its ``.pre-image-repair.bak`` sidecar; (3) let the
+    reload path re-arm the resume spawn, which ``session/load``s the repaired
+    transcript; (4) re-issue the interrupted turn with ``continue_slot_turn``.
+
+    A transcript that turns out to need no repair (every image already within the
+    cap) is left untouched and the turn is still re-issued: the wedge may have
+    been cleared by hand, and re-sending a now-compliant history is the recovery
+    either way.
+
+    Authorization and the guard callbacks are the reload route's own, so an app
+    token must own both the slot and the session, and every refusal maps the
+    same way. A non-persistent (Incognito / Temporary) session is refused with a
+    409 ``image_repair_not_persistent`` before any teardown, because that
+    teardown deletes its native history. The repair step's own refusals (a
+    transcript that moved under it, an existing sidecar) surface as a 409; a
+    process still live after teardown is the reload path's ``turn_in_flight``.
+    """
+    from kiro_crew import session_image_repair
+    from kiro_crew.config.paths import kiro_sessions_dir
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return slot_not_found()
+
+    def _still_ours(_after_reset: bool) -> bool:
+        return not _slot_replaced_while_queued(
+            state, slot, name, request, "chat.slot_repair_images"
+        )
+
+    live_slot: _ChatSlot = slot
+
+    def _denied(session_key: str) -> "web.Response | None":
+        refusal = _app_cancel_denied(request, live_slot, "chat.slot_repair_images", session_key)
+        if refusal is not None:
+            return refusal
+        # A non-persistent (Incognito / Temporary) session's teardown deletes
+        # its native history (the provider's shutdown runs cleanup_session), so
+        # repairing it would destroy the very transcript the repair rewrites,
+        # with no backup. Refuse before the teardown; the card then offers the
+        # fresh-session way out.
+        live = state.sessions.get_provider(session_key)
+        modes = (getattr(live, "memory_mode", None), getattr(live_slot, "memory_mode", None))
+        if any(isinstance(m, str) and m and m != "persistent" for m in modes):
+            return web.json_response(
+                {
+                    "error": "image repair needs a persistent session; start a fresh session instead",
+                    "code": "image_repair_not_persistent",
+                    "slot": name,
+                },
+                status=409,
+            )
+        return None
+
+    def _busy(session_key: str) -> bool:
+        provider = state.sessions.get_provider(session_key)
+        if provider is not None and provider.has_active_turn():
+            return True
+        return _switch_target_busy(state, slot, session_key, provider)  # type: ignore[arg-type]
+
+    # Records whether the in-lock repair actually REWROTE a transcript. The
+    # route reports ``repaired`` from this, not unconditionally: a session with
+    # no transcript, or one already within the cap, is left untouched and must
+    # not claim a repair. A real repair FAILURE (sidecar exists, transcript
+    # moved, OSError) raises out of the hook instead -- which propagates through
+    # ``reload_slot_session`` and SKIPS the respawn, so the turn is never
+    # re-issued onto an unrepaired transcript.
+    repair_state: dict[str, object] = {"rewrote": False}
+
+    class _RepairFailed(Exception):
+        def __init__(self, message: str, code: str = "image_repair_failed") -> None:
+            super().__init__(message)
+            self.message = message
+            # Distinguishes the one PERMANENT refusal (a prior backup sidecar
+            # blocks a second repair -> image_repair_backup_exists, a dead end
+            # the frontend answers with "start a fresh session") from the other
+            # causes (moved transcript, unverifiable scan, OSError) that map to
+            # the generic image_repair_failed and stay retryable.
+            self.code = code
+
+    async def _repair_transcript(session_key: str) -> None:
+        # The process is down and both locks are held: the one window
+        # session_image_repair will act in. The transcript file is
+        # ``kiro_sessions_dir()/<sid>.jsonl`` for the resumable sid the reload
+        # path preserved; with no sid there is no accumulated conversation to
+        # repair, so the repair is simply skipped (rewrote stays False).
+        sessions_dir = kiro_sessions_dir()
+
+        def _run() -> tuple[bool, str | None, str]:
+            # Returns (rewrote, error). ``error`` is a real repair failure, which
+            # the caller turns into a raise so the respawn is skipped. The whole
+            # body runs off the event loop (``asyncio.to_thread`` below): both
+            # the resumable-sid lookup (a persisted-state FILE CHECK) and the
+            # transcript-path probe (a ``stat`` per suffix on the sessions
+            # mount) land here rather than stalling the loop if that mount is
+            # slow to answer.
+            sid = state.sessions.resumable_sid(session_key) or ""
+            if not sid:
+                # No resumable session: nothing accumulated to repair, skip.
+                return (False, None, "")
+            # ``session_image_repair`` operates on the kiro-cli ``<sid>.jsonl``
+            # transcript. (The ``<sid>.json`` file kiro-cli also keeps is resume
+            # metadata, not the conversation, so it is deliberately not a
+            # fallback here.)
+            transcript_path = sessions_dir / f"{sid}.jsonl"
+            if not transcript_path.exists():
+                # No accumulated conversation to repair; skip, not a failure.
+                return (False, None, "")
+            report, lines = session_image_repair.scan_file(transcript_path)
+            if report.error:
+                return (
+                    False,
+                    f"could not read the transcript: {report.error}",
+                    "image_repair_failed",
+                )
+            if report.unanchored_images or report.walk_truncated:
+                # The scan's tripwire fired: the generic walk saw image-shaped
+                # blocks the anchored traversal did not, or the walk hit its
+                # depth ceiling. Either way scan_file's "nothing over the cap"
+                # cannot be trusted, so treating lines=None as "re-issue as-is"
+                # would silently replay the same wedge. Refuse instead -- a real
+                # failure the route maps to a 409 -- rather than respawn onto a
+                # transcript whose images the scan could not fully see.
+                return (
+                    False,
+                    "the transcript scan could not verify every image "
+                    "(the conversation shape may have drifted); not re-issued",
+                    "image_repair_failed",
+                )
+            if lines is None:
+                # Nothing over the cap; leave the file untouched. Not a failure
+                # -- the wedge may have cleared by hand -- so the turn is still
+                # re-issued, but repaired stays False.
+                return (False, None, "")
+            try:
+                session_image_repair.apply_repair(
+                    transcript_path,
+                    lines,
+                    backup=True,
+                    expect=report.source_stat,
+                )
+            except session_image_repair.BackupExistsError as exc:
+                # A prior repair on this session already wrote the
+                # ``.pre-image-repair.bak`` sidecar. That sidecar is the single
+                # recovery copy of the original bytes, and the repair module
+                # refuses to overwrite it ON PURPOSE (its "No --no-backup flag"
+                # decision), so a second wedge is refused rather than rewritten
+                # without a backup. This is the one PERMANENT dead end (only a
+                # manual file move clears it), so it gets its own code and the
+                # frontend offers a fresh session rather than a pointless retry.
+                return (False, str(exc), "image_repair_backup_exists")
+            except session_image_repair.TranscriptMovedError as exc:
+                return (False, str(exc), "image_repair_failed")
+            except session_image_repair.TranscriptLiveError as exc:
+                # Should not happen -- the process is down -- but surface it
+                # rather than respawn onto an unrepaired transcript.
+                return (False, str(exc), "image_repair_failed")
+            except OSError as exc:
+                return (False, f"could not write the repair: {exc}", "image_repair_failed")
+            return (True, None, "")
+
+        rewrote, err, code = await asyncio.to_thread(_run)
+        if err is not None:
+            # Raise so reload_slot_session's after_reset hook propagates and the
+            # respawn is SKIPPED -- the turn is never re-issued onto a transcript
+            # the repair could not fix.
+            raise _RepairFailed(err, code)
+        repair_state["rewrote"] = rewrote
+
+    try:
+        resp = await reload_slot_session(
+            state,
+            slot,
+            name,
+            still_ours=_still_ours,
+            denied=_denied,
+            busy=_busy,
+            notice=_SESSION_RELOAD_NOTICE,
+            after_reset_in_lock=_repair_transcript,
+        )
+    except _RepairFailed as exc:
+        # The teardown ran and the repair was refused, so the respawn did not
+        # happen and no turn was re-issued. The slot is idle and resumable. The
+        # code distinguishes the permanent backup-exists dead end (the frontend
+        # offers a fresh session) from the other causes (retryable).
+        return web.json_response(
+            {"error": exc.message, "code": exc.code, "slot": name},
+            status=409,
+        )
+    # A non-2xx reload response (a 404/409 from its guards) is returned as-is:
+    # nothing was re-issued because the teardown itself was refused.
+    if resp.status >= 300:
+        return resp
+    repaired = bool(repair_state["rewrote"])
+    # Re-issue the interrupted turn against the (possibly repaired) reloaded
+    # conversation. Outside the reload locks: continue_slot_turn takes slot._lock
+    # itself.
+    try:
+        await continue_slot_turn(
+            state,
+            slot,
+            directive_user_origin=not bool(request.get("app", "")),
+            # Same-name registration can change while the lock or child probe
+            # waits, exactly as it can for the plain Continue endpoint.
+            replaced=lambda: _slot_replaced_while_queued(
+                state, slot, name, request, "chat.slot_repair_images"
+            ),
+            via="repair_images",
+        )
+    except SlotContinueRefusal as exc:
+        # The slot is reloaded (and repaired, if anything was over the cap); the
+        # turn was not re-issued (e.g. a turn started racing). Report
+        # ``resumed: False`` so the frontend keeps a Resume affordance instead
+        # of claiming the turn runs. ``exc`` is logged, not returned: the
+        # frontend branches on ``resumed`` alone.
+        logger.info("Slot %s repair re-issue refused: %s (%s)", name, exc.message, exc.code)
+        return web.json_response(
+            {
+                "slot": name,
+                "repaired": repaired,
+                "resumed": False,
+            },
+            status=200,
+        )
+    return web.json_response({"slot": name, "repaired": repaired, "resumed": True})
 
 
 async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response:
@@ -518,13 +769,72 @@ async def close_slot(
     name: str,
     *,
     pre_pop_check: Callable[[], None] | None = None,
+    hand_back: bool = True,
 ) -> None:
-    """Close a slot while releasing its admission fence on every aborted path."""
+    """Close a slot while releasing its admission fence on every aborted path.
+
+    A close that returns has committed, so the sessions the closed one managed are
+    handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
+    The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
+    """
     try:
         await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
     finally:
         if state.get_slot(name) is slot:
             slot.cancel_close()
+    if hand_back and state.get_slot(name) is not slot:
+        from kiro_crew.dashboard.session_control import hand_back_on_close
+
+        await hand_back_on_close(state, slot)
+
+
+async def _drain_file_changes_flush(slot: "_ChatSlot") -> None:
+    """Wait, bounded, for the turn's in-flight file-change flush before the archival save.
+
+    The cancelled turn's ``finally`` reads the after-content of every file it
+    wrote on a worker thread and attaches the chips when that read returns
+    (``chat_runner._flush_file_changes_off_loop``). The bounded wait on the task
+    above can give up while that read is still running; the archive below would
+    then persist the window WITHOUT the chips, and the attach that follows lands
+    on a slot already out of ``state._slots``, where no later save is admitted.
+    So the archive waits for the flush itself, up to ``_FILE_CHANGES_DRAIN_SECS``.
+    A read still running past that is a stuck filesystem or resolver, not a
+    large file: the chips are dropped from the archive KNOWINGLY, with a warning
+    naming the slot, and the close completes -- a close must never hang on a
+    read that never returns.
+
+    Never raises. A flush that fails leaves the archive to write what the window
+    holds. A cancellation of the CLOSE while it waits here is absorbed, as the
+    bounded task wait above absorbs its own: the slot is already popped, so a
+    close that unwound here would leave the surviving flush attaching chips to a
+    slot no periodic or shutdown save visits, and the archive below is the one
+    write that still reaches disk. The worker thread cannot be cancelled either
+    way, so absorbing the cancel changes only whether the archive runs, never
+    how long the read takes; the deadline keeps counting across it.
+    """
+    flush = getattr(slot, "_file_changes_flush", None)
+    if flush is None or flush.done():
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FILE_CHANGES_DRAIN_SECS
+    while not flush.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "Slot %s closed while its file-change read was still running after "
+                "%.0fs; the archive is written without this turn's file-change chips",
+                slot.key,
+                _FILE_CHANGES_DRAIN_SECS,
+            )
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(flush), timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+        except asyncio.TimeoutError:
+            continue
+        except Exception:
+            return
 
 
 async def _close_slot(
@@ -756,6 +1066,7 @@ async def _close_slot(
             )
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
+    await _drain_file_changes_flush(slot)
     # Post-pop teardown race: across the awaits above (and the app-notify awaits
     # before the pop) a concurrent same-key recreate — a POST /api/chat or the
     # session_close MCP verb — can mint a REPLACEMENT slot under `name`. When that
@@ -968,10 +1279,22 @@ async def _close_slot(
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+        # Stop the archived session's remote workspace and keep it for retention:
+        # background, best effort, a no-op without one. Inside the identity check,
+        # so a replacement's is never touched.
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
     state.push_refresh("history")
+    if state._slots.get(name) is None:
+        # Remote dispatch: a hub's work item bound to this slot closes with it.
+        # Imported here, never at boot, and a no-op for a slot bound to none.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        await close_work_item_for_slot(name)
 
 
 async def api_chat_slot_delete(request: web.Request) -> web.Response:
@@ -1024,7 +1347,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     max_days = 3
     try:
-        max_days = max(1, int(body.get("max_inactive_days", 3)))
+        # Capped at 100 years: any cap past the epoch archives nothing, the same
+        # answer a larger value gives, and a JSON integer too large for a float
+        # would otherwise raise OverflowError in the cutoff arithmetic below.
+        max_days = max(1, min(body_int(body.get("max_inactive_days", 3)), 36500))
     except (ValueError, TypeError):
         pass
     active_slot = body.get("active_slot", "")
@@ -1148,6 +1474,11 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
+        # Same obligation as the single-tab close: the cancelled turn's file-change
+        # flush may still be reading on a worker thread past the wait above, and
+        # both writes below (the hand-over drain and the archive) must carry its
+        # chips, or the late attach lands on this popped slot where no save admits it.
+        await _drain_file_changes_flush(removed)
         # Post-pop teardown race (same as the single-tab close, same gate): across
         # the cancel await above a concurrent same-key recreate can mint a
         # REPLACEMENT slot under `name`. When that replacement writes the SAME
@@ -1275,6 +1606,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+        # Same retention as a single archive (see _close_slot).
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:
@@ -1287,6 +1622,14 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         _sync_dashboard_slots(state)
         state.push_slots_update()
         state.push_refresh("history")
+        # Remote dispatch: an archived worker's hub item closes as on a single
+        # close, unless a successor took its key. Imported only when something
+        # was archived.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        for name in archived:
+            if state._slots.get(name) is None:
+                await close_work_item_for_slot(name)
     if not failed:
         cleanup_outcome = "ok"
     elif archived:

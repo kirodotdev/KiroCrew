@@ -254,30 +254,35 @@ async def test_a_field_the_template_does_not_declare_is_refused_with_the_valid_n
         assert "open_items" in body["error"]
 
 
-async def test_a_host_filled_field_is_refused_rather_than_overwritten(vetted, monkeypatch):
-    """A write into a fold-sourced cell would be replaced on the next fold, so
-    reporting it as stored would promise a value that does not survive."""
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        # A write into a fold-sourced cell would be replaced on the next fold, so
+        # reporting it as stored would promise a value that does not survive.
+        pytest.param(
+            "entries",
+            3,
+            "field_not_agentic",
+            id="test_a_host_filled_field_is_refused_rather_than_overwritten",
+        ),
+        pytest.param(
+            "open_items",
+            "three",
+            "wrong_type",
+            id="test_a_value_of_the_wrong_declared_type_is_refused",
+        ),
+    ],
+)
+async def test_a_write_the_field_cannot_store_is_refused(vetted, monkeypatch, field, value, code):
     _adopt_dashboard(monkeypatch)
     async with _client() as c:
         resp = await c.post(
             WRITE_PATH,
-            json={"field": "entries", "value": 3},
+            json={"field": field, "value": value},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "field_not_agentic"
-
-
-async def test_a_value_of_the_wrong_declared_type_is_refused(vetted, monkeypatch):
-    _adopt_dashboard(monkeypatch)
-    async with _client() as c:
-        resp = await c.post(
-            WRITE_PATH,
-            json={"field": "open_items", "value": "three"},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-        )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "wrong_type"
+        assert (await resp.json())["code"] == code
 
 
 @pytest.mark.parametrize(
@@ -468,44 +473,44 @@ async def test_a_write_that_answers_a_recorded_mistake_reports_the_correction(ve
         assert (await resp.json())["corrected"] is True
 
 
-async def test_a_write_is_refused_when_the_gateway_records_no_crew_log(vetted, monkeypatch):
-    """The log is an agentic value's ONLY record -- no host Python computes one,
-    so there is no file beside it. Reporting success would promise a cell that
-    never fills, which is why this refuses rather than shrugging the way a panel
-    publish does.
-    """
+@pytest.mark.parametrize(
+    ("field", "status", "code"),
+    [
+        # The log is an agentic value's ONLY record -- no host Python computes
+        # one, so there is no file beside it. Reporting success would promise a
+        # cell that never fills, which is why this refuses rather than shrugging
+        # the way a panel publish does.
+        pytest.param(
+            "open_items",
+            503,
+            "crew_log_off",
+            id="test_a_write_is_refused_when_the_gateway_records_no_crew_log",
+        ),
+        # Recording the mistake is best-effort, unlike the value append. By the
+        # time it runs the caller is already being refused, so a log that is off
+        # costs the mistake book this row and nothing else. Failing here would
+        # turn "we could not remember your mistake" into "your write was not
+        # refused".
+        pytest.param(
+            "open",
+            400,
+            "unknown_field",
+            id="test_a_refusal_with_the_log_off_still_refuses_the_write",
+        ),
+    ],
+)
+async def test_a_write_with_the_crew_log_off(vetted, monkeypatch, field, status, code):
     _adopt_dashboard(monkeypatch)
     async with _client() as c:
         monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
         crew_log_emit.reset_caches()
         resp = await c.post(
             WRITE_PATH,
-            json={"field": "open_items", "value": 3},
+            json={"field": field, "value": 3},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
-        assert resp.status == 503, await resp.text()
-        assert (await resp.json())["code"] == "crew_log_off"
-    crew_log_emit.reset_caches()
-
-
-async def test_a_refusal_with_the_log_off_still_refuses_the_write(vetted, monkeypatch):
-    """Recording the mistake is best-effort, unlike the value append.
-
-    By the time it runs the caller is already being refused, so a log that is off
-    costs the mistake book this row and nothing else. Failing here would turn
-    "we could not remember your mistake" into "your write was not refused".
-    """
-    _adopt_dashboard(monkeypatch)
-    async with _client() as c:
-        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
-        crew_log_emit.reset_caches()
-        resp = await c.post(
-            WRITE_PATH,
-            json={"field": "open", "value": 3},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-        )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "unknown_field"
+        assert resp.status == status, await resp.text()
+        assert (await resp.json())["code"] == code
     crew_log_emit.reset_caches()
 
 

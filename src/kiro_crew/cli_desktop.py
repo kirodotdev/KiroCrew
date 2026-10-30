@@ -98,9 +98,13 @@ def find_metrics_artifact(
     """
     if explicit is not None:
         try:
+            # Expand a leading ``~``/``~user`` the shell left alone (Windows
+            # shells, ``--path=~/x``), as every other caller path in the CLI does.
+            explicit = explicit.expanduser()
             return explicit if explicit.is_file() else None
-        except OSError:
-            # An unreadable or malformed path is "not found" for our purposes.
+        except (OSError, RuntimeError):
+            # An unreadable or malformed path is "not found" for our purposes, and
+            # so is a ``~user`` naming no account (expanduser's RuntimeError).
             return None
     found: list[tuple[float, Path]] = []
     for directory in desktop_log_dirs(env):

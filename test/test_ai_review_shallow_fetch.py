@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -96,6 +97,8 @@ def _git_env(tmp: Path) -> dict[str, str]:
         GIT_COMMITTER_NAME="t",
         GIT_COMMITTER_EMAIL="t@example.invalid",
     )
+    # Stripping GIT_* drops the suite's maintenance entries and global file.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

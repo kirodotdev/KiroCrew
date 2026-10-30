@@ -20,6 +20,7 @@ from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from auto_research_handlers_coverage_helpers import _isolate_fixture  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_autonudge  # noqa: F401
@@ -36,6 +37,29 @@ from auto_research_handlers_coverage_helpers import (
 )
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
+from kiro_crew.autonudge import AutoNudgeService
+
+
+@pytest_asyncio.fixture
+async def nudges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A real loop registry under ``tmp_path``, published as the autonudge service."""
+    svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+    await svc.start()
+    monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+    try:
+        yield svc
+    finally:
+        svc.stop()
+
+
+def _stop_reasons(tmp_path: Path) -> list[str]:
+    """The reason of every stop record the ``nudges`` registry wrote."""
+    path = tmp_path / "autonudge" / "logs" / "autonudge_stops.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line)["reason"] for line in path.read_text().splitlines()]
+
 
 # --- report / nudge / add-question ----------------------------------------
 
@@ -59,6 +83,37 @@ class TestReportAndNudge:
             _mk("GET", f"campaigns/{cid}/report", app=_app(), match={"id": cid})
         )
         assert _body(resp)["report"] == "# Key finding"
+
+    @pytest.mark.asyncio
+    async def test_report_endpoint_reads_the_findings_file_off_the_event_loop(self, _isolate: Path):
+        """FINDINGS.md is the agent's cumulative report and grows every cycle,
+        so the path checks and the full read must run in a worker thread, not
+        on the event loop every session shares. The read is still redacted."""
+        import threading
+
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("# Key finding")
+        loop_thread = threading.get_ident()
+        real_read = h.publication._read_report
+        seen_threads: list[int] = []
+
+        def _record(campaign_id: str) -> str:
+            seen_threads.append(threading.get_ident())
+            return real_read(campaign_id)
+
+        with (
+            mock.patch.object(h.publication, "_read_report", side_effect=_record),
+            mock.patch.object(
+                h.untrusted, "_redact_finding", side_effect=lambda d: {"v": d["v"] + "!"}
+            ) as redact,
+        ):
+            resp = await h._handle_report(
+                _mk("GET", f"campaigns/{cid}/report", app=_app(), match={"id": cid})
+            )
+        assert _body(resp)["report"] == "# Key finding!"
+        redact.assert_called_once_with({"v": "# Key finding"})
+        assert len(seen_threads) == 1
+        assert seen_threads[0] != loop_thread
 
     @pytest.mark.asyncio
     async def test_nudge_is_refused_in_workflow_mode(self, _isolate: Path):
@@ -478,15 +533,14 @@ async def _drain_bg_tasks(app: web.Application) -> None:
 class TestAssortedHelpers:
     @pytest.mark.asyncio
     async def test_launch_loop_of_an_unknown_campaign_stops_after_the_row_lookup(
-        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+        self, _isolate: Path, nudges: AutoNudgeService
     ):
         _campaign()  # create the schema
         state = SimpleNamespace(get_or_create_slot=MagicMock())
-        svc = SimpleNamespace(add=AsyncMock(), get_by_slot=MagicMock(return_value=None))
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         await h._launch_loop(_mk("PATCH", "x", app=_app(state=state)), "deadbeef")
         state.get_or_create_slot.assert_not_called()
-        svc.add.assert_not_awaited()
+        assert nudges.list_all() == []
+        assert not (h._campaign_dir("deadbeef") / "brief.md").exists()
 
     @pytest.mark.asyncio
     async def test_launch_loop_arms_the_worker_without_a_conversation_log(
@@ -529,15 +583,23 @@ class TestAssortedHelpers:
 
     @pytest.mark.asyncio
     async def test_suspend_tolerates_a_failing_deactivation(
-        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
         loop = SimpleNamespace(id="l1", slot_key="research-a1b2c3d4", active=True)
         svc = SimpleNamespace(
             list_all=MagicMock(return_value=[loop]), update=AsyncMock(side_effect=RuntimeError("x"))
         )
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        await h._suspend_research_loops_while_disabled(None)
+        slot = SimpleNamespace(_trust=True)
+        with caplog.at_level("WARNING", logger=LOGGER_NAME):
+            await h._suspend_research_loops_while_disabled(
+                SimpleNamespace(_slots={"research-a1b2c3d4": slot})
+            )
         svc.update.assert_awaited_once()
+        messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
+        assert messages == ["auto_research: could not deactivate loop l1 on disable"]
+        # A failed deactivation still revokes the slot's standing trust.
+        assert slot._trust is False
 
     @pytest.mark.asyncio
     async def test_suspend_without_a_service_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch):
@@ -546,33 +608,45 @@ class TestAssortedHelpers:
 
     @pytest.mark.asyncio
     async def test_stop_loop_without_a_service_or_loop_is_a_no_op(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         await h._stop_loop("a1b2c3d4", remove=True)  # no autonudge at all
-        svc = SimpleNamespace(get_by_slot=MagicMock(return_value=None), remove=AsyncMock())
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        await h._stop_loop("a1b2c3d4", remove=True)
-        svc.remove.assert_not_awaited()
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            other = await svc.add(slot_key="research-0badc0de", message="other", idle_secs=60)
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            await h._stop_loop("a1b2c3d4", remove=True)
+            # The campaign has no loop, so another campaign's loop is left running.
+            assert svc.list_all() == [other]
+            assert other.active is True
+        finally:
+            svc.stop()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("remove", [True, False], ids=["remove", "pause"])
     async def test_stop_loop_removes_or_deactivates(
-        self, remove: bool, monkeypatch: pytest.MonkeyPatch
+        self, remove: bool, nudges: AutoNudgeService, tmp_path: Path
     ):
-        loop = SimpleNamespace(id="l1")
-        svc = SimpleNamespace(
-            get_by_slot=MagicMock(return_value=loop), remove=AsyncMock(), update=AsyncMock()
-        )
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        loop = await nudges.add(slot_key="research-a1b2c3d4", message="run", idle_secs=60)
         await h._stop_loop("a1b2c3d4", remove=remove, stop_reason="campaign_stopped")
         if remove:
-            svc.remove.assert_awaited_once_with("l1", stop_reason="campaign_stopped")
+            assert nudges.get_by_slot("research-a1b2c3d4") is None
+            assert _stop_reasons(tmp_path) == ["campaign_stopped"]
         else:
-            svc.update.assert_awaited_once_with("l1", active=False)
+            assert nudges.get_by_slot("research-a1b2c3d4") is loop
+            assert loop.active is False
 
-    def test_audit_without_the_sel_module_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch):
+    def test_audit_without_the_sel_module_is_a_no_op(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
         monkeypatch.setattr(h, "sel", None)
-        h._audit("campaign_created", "a1b2c3d4")  # must not raise
+        with caplog.at_level("WARNING", logger=LOGGER_NAME):
+            h._audit("campaign_created", "a1b2c3d4")  # must not raise
+        messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
+        assert messages == [
+            "SEL module unavailable — audit event for campaign_created/a1b2c3d4 not recorded"
+        ]
 
     def test_redaction_fails_closed_without_the_security_module(
         self, monkeypatch: pytest.MonkeyPatch
@@ -656,8 +730,13 @@ class TestAssortedHelpers:
         (h._campaign_dir(cid) / h._WORKER_DONE_FILENAME).mkdir()
         assert h._read_worker_done(cid) is None
 
-    def test_clear_marker_of_an_invalid_id_is_a_no_op(self):
+    def test_clear_marker_of_an_invalid_id_is_a_no_op(self, _isolate: Path):
+        # "../etc" from the research dir names this sibling; nothing there is touched.
+        outside = _isolate / "etc" / h._WORKER_DONE_FILENAME
+        outside.parent.mkdir()
+        outside.write_text('{"reason": "keep"}')
         h._clear_worker_done_marker("../etc")  # must not raise
+        assert outside.read_text() == '{"reason": "keep"}'
 
     def test_tree_node_redaction_passes_primitives_and_recurses_lists(self):
         assert h._redact_tree_node(7) == 7
@@ -740,7 +819,9 @@ class TestActionDispatch:
     @pytest.mark.asyncio
     async def test_agent_mode_start_arms_the_loop(self, _isolate: Path, dispatch):
         cid = _campaign()
-        await self._act(cid, "start")
+        resp = await self._act(cid, "start")
+        assert resp.status == 200
+        assert _status(cid) == "running"
         dispatch.launch_loop.assert_awaited_once()
         dispatch.launch_workflow.assert_not_awaited()
 
@@ -907,7 +988,15 @@ class TestEmergentExploration:
     def test_finalize_of_an_invalid_id_is_false(self):
         assert h._enter_finalize("../etc") is False
 
-    def test_advance_never_raises(self, _isolate: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_advance_never_raises(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
         cid = _campaign()
         monkeypatch.setattr(h, "_should_finalize", MagicMock(side_effect=RuntimeError("db gone")))
-        h._advance_exploration(cid)  # swallowed — the watchdog must survive
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
+            h._advance_exploration(cid)  # swallowed — the watchdog must survive
+        failures = [r for r in caplog.records if r.name == LOGGER_NAME]
+        assert [r.getMessage() for r in failures] == [
+            f"auto_research: emergent exploration failed for {cid}"
+        ]
+        assert str(failures[0].exc_info[1]) == "db gone"

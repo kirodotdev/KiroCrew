@@ -33,7 +33,9 @@ from kiro_crew.cli_server_peer import (
     _owner_verified_secret_urlopen,
 )
 from kiro_crew.cli_server_stop import (
+    _config_dir_owner,
     _pid_exited,
+    _refuse_desktop_supervised,
     _refuse_if_lock_held,
     _refuse_lock_holder,
     _refuse_service_alias,
@@ -106,9 +108,9 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
     ladder as the port-lookup path.
 
     *shutdown_acknowledged* says whether ``_stop`` returned, i.e. a gateway
-    accepted the authenticated shutdown. Only then is a live Kiro Crew holder
-    the exiting incumbent, and only then is it returned as ``[holder_pid]`` to
-    be waited on. Returns ``[]`` when the lock is free or its recorded holder
+    accepted the authenticated shutdown. Only then is the live holder the
+    exiting incumbent, and only then is it returned as ``[holder_pid]`` to be
+    waited on, whatever its argv reads. Returns ``[]`` when the lock is free or its recorded holder
     is dead (nothing left to outwait). Every other live holder -- a foreign
     process, or a Kiro Crew gateway that did not acknowledge the shutdown
     (``_stop`` has already refused it) -- is refused through
@@ -133,7 +135,13 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
         sys.exit(1)
     if holder.pid is None or not holder.alive:
         return []
-    if shutdown_acknowledged and _is_kirocrew_process(holder.pid):
+    # No argv check here. The holder is already named twice without it: a gateway answered the shutdown that carries this home's generation
+    # secret, and the kernel says this pid holds this home's lock. argv would
+    # only refuse a gateway whose spawn shape the patterns miss, and strand
+    # the user with no gateway. The pid is only WAITED on, never signalled,
+    # so dropping the check cannot widen what gets stopped. A holder that is
+    # not really exiting just makes the wait time out and restart refuse.
+    if shutdown_acknowledged:
         return [holder.pid]
     _refuse_lock_holder("gateway_restart", port, holder.pid)
 
@@ -608,6 +616,86 @@ def _wait_gateway_ready(
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
+def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
+    """What ``restart`` prints when the replacement gateway exited at once.
+
+    It claims nothing is serving *port* only after a probe gets no HTTP answer.
+    An HTTP answer does not identify the listener as a gateway, so the message
+    names only the answering port. A replacement refused because another process
+    still owns the config dir can leave that owner's gateway answering; "nothing
+    is serving" would send the operator to debug a dashboard that is up.
+    The owner is named only when the lock names one.
+    """
+    logs = "   To see why it exited, run: kirocrew logs -f"
+    if _probe_gateway_ready(port) == 0:
+        return (
+            f"❌ Replacement gateway (pid {pid}) died immediately "
+            f"(exit status {exit_status}). Nothing is serving port {port}.\n"
+            f"   A replacement that exits at once is usually refused startup — "
+            f"another process still owning {config_dir()}, or a broken config.\n"
+            f"{logs}"
+        )
+    owner = ""
+    found = _config_dir_owner()
+    if found is not None:
+        holder_pid, from_desktop = found
+        if from_desktop:
+            owner = (
+                f"   The Kiro Crew desktop app (pid {holder_pid}) owns {config_dir()}, "
+                f"so the replacement was refused. Restart it from the app.\n"
+            )
+        else:
+            owner = (
+                f"   pid {holder_pid} still owns {config_dir()}, "
+                f"so the replacement was refused.\n"
+            )
+    return (
+        f"❌ Replacement gateway (pid {pid}) exited at once "
+        f"(exit status {exit_status}). Port {port} still answers HTTP.\n"
+        f"{owner}{logs}"
+    )
+
+
+def _signing_key_refusal_lines() -> list[str]:
+    """Repair steps to print when a gateway that just failed to start sits on a truncated key.
+
+    The gateway's own refusal (``slack.gateway.signing_key_preflight``) prints these
+    steps to its stderr, which a detached or service-managed gateway sends to a log
+    the person running ``kirocrew restart`` has not opened. Repeating them here puts
+    the fix in the terminal that asked for the restart.
+
+    Same read-only ``lstat`` look ``kirocrew doctor`` takes, with the same sandbox
+    evidence and the same ``open_is_denied`` guard, so a sandbox mask over a
+    healthy key never gets the file-removing steps. Any
+    error answers ``[]``: this only adds a hint to a failure already reported.
+    """
+    try:
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.service.common import restart_command_hint
+
+        # Same two bits doctor and the boot preflight pass: a foreign macOS
+        # Seatbelt sandbox can leave the real key readable, so the open-refusal
+        # cross-check applies only when that verdict is the sole signal.
+        confined = sandbox.agent_confinement_evidence() is not None
+        state, key_path = token_secret.signing_key_health(
+            confined=confined,
+            require_denied_open=confined and not sandbox.agent_confinement_is_kirocrew_own(),
+        )
+        # A short key this process cannot open may be the sandbox's mode-0 mask
+        # over a healthy key; doctor withholds the removal steps there too.
+        if state != "short" or token_secret.open_is_denied(key_path):
+            return []
+        steps = token_secret.signing_key_remedy(key_path, restart_command_hint())
+    except Exception:  # noqa: BLE001 - a hint on an already-reported failure
+        return []
+    return [
+        f"   The token signing key at {key_path} is shorter than 32 bytes, so the "
+        "gateway refuses to start. Repair it by hand:",
+        *(f"     {step}" for step in steps),
+    ]
+
+
 def _print_token_url(port: int) -> None:
     """Wait for the gateway to come up, then print a fresh token URL."""
     deadline = time.monotonic() + _RESTART_TOKEN_WAIT
@@ -803,6 +891,9 @@ def _restart(cli_port: int | None = None) -> None:
                 lines.append(
                     "   The service manager restarted nothing; run `kirocrew restart` again."
                 )
+            if any(f.kind == RESTART_NOT_UP for f in failures):
+                # A unit that is not up after a restart may be refusing to boot.
+                lines.extend(_signing_key_refusal_lines())
             print("\n".join(lines))
             sys.exit(1)
 
@@ -813,6 +904,12 @@ def _restart(cli_port: int | None = None) -> None:
         # process on the port and spawn a detached replacement beside it.
         if _refuse_service_alias("gateway_restart", port):
             sys.exit(1)
+
+    # The desktop app is another manager: it starts its gateway again when the
+    # gateway goes away, so a restart from here would race it. With --port it
+    # applies only when this home's gateway is the one on that port.
+    if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
+        sys.exit(1)
 
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop
@@ -981,18 +1078,18 @@ def _restart(cli_port: int | None = None) -> None:
             resources=f"port={port} via=fork pid={pid} reason={reason}",
         )
         if verdict == _READY_DIED:
-            print(
-                f"❌ Replacement gateway (pid {pid}) died immediately "
-                f"(exit status {exit_status}). Nothing is serving port {port}.\n"
-                f"   A replacement that exits at once is usually refused startup — "
-                f"another process still owning {config_dir()}, or a broken config.\n"
-                f"   To see why it exited, run: kirocrew logs -f"
-            )
+            print(_died_replacement_message(pid, exit_status, port))
             tail = _gateway_log_lines_since(log_mark)
             if tail:
                 print("   Its last lines in gateway.log:")
                 for line in tail:
                     print(f"     {line}")
+            else:
+                # The relayed lines already carry the gateway's own refusal and
+                # its repair steps; only an empty relay needs them restated.
+                refusal = _signing_key_refusal_lines()
+                if refusal:
+                    print("\n".join(refusal))
         else:
             print(
                 f"❌ Replacement gateway (pid {pid}) did not become ready within "

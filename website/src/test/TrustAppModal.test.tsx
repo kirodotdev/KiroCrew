@@ -495,6 +495,53 @@ describe('LibraryPage trust gate', () => {
     expect(dialog.queryByRole('button', { name: `${K}.confirm_after_failure` })).toBeNull()
   })
 
+  it('retries without writing trust again from the trust-saved state (#21459)', async () => {
+    // The first enable is refused for trust; the retry after the grant fails for
+    // an unrelated reason, so the dialog lands in the trust-saved state.
+    enableApp
+      .mockRejectedValueOnce(TRUST_DENIED())
+      .mockRejectedValueOnce(apiError(500, { error: 'gateway exploded' }, 'gateway exploded'))
+      .mockResolvedValue({ ok: true })
+    // The app is installed, so the failed retry leaves the grant standing.
+    getApp.mockResolvedValue({ name: THIRD_PARTY.name })
+    renderPage()
+    await clickEnable()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    fireEvent.click(confirmBtn())
+    const dialog = within(screen.getByRole('dialog'))
+    const retry = await waitFor(() => dialog.getByRole('button', { name: `${K}.confirm_retry_granted` }))
+    expect(trustApp).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(retry)
+
+    // "Try again" re-runs the action only.
+    await waitFor(() => expect(modalTitle()).toBeNull())
+    expect(enableApp).toHaveBeenCalledTimes(3)
+    expect(trustApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns to the not-saved state when the trust-saved retry finds the trust gone (#21459)', async () => {
+    // The trust-saved retry is refused for missing trust: the grant no longer
+    // stands, so the dialog offers the labelled trust-and-retry instead of
+    // writing the trust itself.
+    enableApp
+      .mockRejectedValueOnce(TRUST_DENIED())
+      .mockRejectedValueOnce(apiError(500, { error: 'gateway exploded' }, 'gateway exploded'))
+      .mockRejectedValueOnce(TRUST_DENIED())
+    getApp.mockResolvedValue({ name: THIRD_PARTY.name })
+    renderPage()
+    await clickEnable()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    fireEvent.click(confirmBtn())
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.click(await waitFor(() => dialog.getByRole('button', { name: `${K}.confirm_retry_granted` })))
+
+    await waitFor(() => expect(dialog.getByRole('button', { name: `${K}.confirm_after_failure` })).toBeTruthy())
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_retry_granted` })).toBeNull()
+    expect(trustApp).toHaveBeenCalledTimes(1)
+    expect(untrustApp).not.toHaveBeenCalled()
+  })
+
   it('does NOT open the modal for a non-trust enable failure', async () => {
     enableApp.mockRejectedValue(apiError(500, { error: 'gateway exploded' }, 'gateway exploded'))
     renderPage()
@@ -874,6 +921,24 @@ describe('registry install trust gate', () => {
     const dialog = within(screen.getByRole('dialog'))
     expect(dialog.getByRole('button', { name: `${K}.confirm_retry_granted` })).toBeTruthy()
     expect(dialog.queryByRole('button', { name: `${K}.confirm_after_failure` })).toBeNull()
+  })
+
+  it('returns the update dialog to the not-saved state when the trust-saved retry finds the trust gone (#21459)', async () => {
+    // The detail page's install/update retry reports a trust refusal through its
+    // own thrown error; the dialog must read it as one and stop offering the
+    // trust-saved retry.
+    await openUpdateConsent()
+    installFromRegistryStream
+      .mockResolvedValueOnce({ ok: false, error: 'clone failed' })
+      .mockResolvedValueOnce(INSTALL_DENIED())
+    fireEvent.click(confirmBtn())
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.click(await waitFor(() => dialog.getByRole('button', { name: `${K}.confirm_retry_granted` })))
+
+    await waitFor(() => expect(dialog.getByRole('button', { name: `${K}.confirm_after_failure` })).toBeTruthy())
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_retry_granted` })).toBeNull()
+    expect(trustApp).toHaveBeenCalledTimes(1)
+    expect(untrustApp).not.toHaveBeenCalled()
   })
 
   it('keeps the trust-and-retry label on the not-saved failure', async () => {

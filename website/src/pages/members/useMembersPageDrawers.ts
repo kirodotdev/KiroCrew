@@ -14,15 +14,21 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { type NavigateFunction, type Location, type NavigationType } from 'react-router-dom'
 import { type MemberRosterRow } from '../../api/client'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { useMotionValue, useTransform } from 'framer-motion'
-import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../../hooks/useDrawerSwipe'
+import {
+  useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft,
+  COMMIT_DRAG_SHARE, COMMIT_VELOCITY, VELOCITY_MIN_SPAN_MS,
+} from '../../hooks/useDrawerSwipe'
 import { useMobileNavRail } from '../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { isTrapEntry } from '../../lib/routeHistoryPosition'
-import { ROSTER_DRAWER_UNCOVERED_PX } from './membersPageModel'
+import { CREW_DASHBOARD_TAB_ID, ROSTER_DRAWER_UNCOVERED_PX } from './membersPageModel'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageTeamsRead } from './useMembersPageTeams'
+import type { MembersPageProfileState } from './MembersPageProfile'
+import type { MembersPageSidePanelState } from './MembersPageSidePanel'
+import { useTrackpadSwipe } from '../../hooks/useTrackpadSwipe'
 
 /** How long a drawer pick waits for the router to report the pop of the
  *  drawer's duplicate entry. Past it the pick is dropped, never run on the
@@ -214,12 +220,58 @@ export function useMembersPageDrawers({
   const [sidePanelPhase, setSidePanelPhase] = useState<'closed' | 'open' | 'closing'>('closed')
   const sidePanelPhaseRef = useRef(sidePanelPhase)
   sidePanelPhaseRef.current = sidePanelPhase
-  const sidePanelTravel = useCallback(() => window.innerWidth || 0, [])
-  useEffect(() => registerDrawerTargets(sidePanelX, {
-    panel: () => sidePanelSlideRef.current,
-    scrim: () => null,
-    travel: sidePanelTravel,
-  }), [sidePanelX, sidePanelTravel])
+  /**
+   * Desktop: true while a two-finger trackpad drag (useMembersPageTrackpadSwipe)
+   * owns the panel, from the run's first event to the end of its settle. The
+   * panel then rides `sidePanelX` as a sheet on the right edge, the phone's own
+   * slide, whichever placement it rests in.
+   */
+  const [deskSlide, setDeskSlide] = useState(false)
+  const deskSlideRef = useRef(deskSlide)
+  deskSlideRef.current = deskSlide
+  const panelSlides = isMobile || deskSlide
+  // A phone's panel fills the window. A desktop panel keeps its own width, so
+  // a drag travels exactly that far.
+  const sidePanelTravel = useCallback(() => {
+    if (isMobile) return window.innerWidth || 0
+    return sidePanelSlideRef.current?.offsetWidth || window.innerWidth || 0
+  }, [isMobile])
+  // Phone: the settle runs on the compositor. Desktop: it runs on the main
+  // thread (same curve and timing), because the chat's spacer below must read
+  // every frame of `sidePanelX`, and a compositor settle never moves it.
+  useEffect(() => {
+    if (!isMobile) return undefined
+    const deregister = registerDrawerTargets(sidePanelX, {
+      panel: () => sidePanelSlideRef.current,
+      scrim: () => null,
+      travel: sidePanelTravel,
+    })
+    return () => {
+      // Leaving the phone layout mid-settle: stop the compositor settle while
+      // its runtime is still registered, as only that can reach it. Left
+      // running, it would carry on over the desktop panel (the same element)
+      // and its end would write the phone's offset into that panel's transform.
+      takeOverDrawer(sidePanelX)
+      deregister()
+    }
+  }, [isMobile, sidePanelX, sidePanelTravel])
+  /**
+   * Desktop drag: how much of the docked column the panel's visible part stands
+   * for, px. A spacer this wide sits where the docked column will be, so the
+   * chat narrows and widens WITH the fingers and the settle, and the swap to (or
+   * from) the docked column of the same width is not a step.
+   */
+  // The width the spacer stands for is the DRAG's travel, set by the drag before
+  // the sheet mounts (the docked column's own width for a close), never a live
+  // re-measure: read mid-swap, that fell back to the window width, and the chat
+  // column collapsed to nothing for the first frames of every close.
+  const deskTravelRef = useRef(0)
+  const deskSpacerW = useMotionValue(0)
+  const syncDeskSpacer = useCallback(
+    () => deskSpacerW.set(Math.max(0, deskTravelRef.current - sidePanelX.get())),
+    [deskSpacerW, sidePanelX],
+  )
+  useEffect(() => sidePanelX.on('change', syncDeskSpacer), [sidePanelX, syncDeskSpacer])
   const overlayOpenRef = useRef(overlayOpen)
   overlayOpenRef.current = overlayOpen
   // Slide in when the overlay is wanted, out (mounted for the travel) when it
@@ -227,6 +279,8 @@ export function useMembersPageDrawers({
   // set the phase first, so this does not run a second settle over it.
   useEffect(() => {
     if (!isMobile) {
+      // A trackpad drag owns the phase while it runs; it parks it itself.
+      if (deskSlideRef.current) return
       sidePanelPhaseRef.current = 'closed'
       setSidePanelPhase('closed')
       takeOverDrawer(sidePanelX)
@@ -308,7 +362,8 @@ export function useMembersPageDrawers({
     locationRef, pushRosterDrawerEntry, consumeRosterDrawerEntry, openRosterDrawer, runRosterDrawerClose,
     closeRosterDrawer, beginRosterDrawerDrag, sidePanelX, sidePanelSlideRef, setSidePanelPhase, sidePanelPhase,
     sidePanelPhaseRef, overlayOpenRef, beginSidePanelDrag, rosterDrawerAvailable, sidePanelSwipeAvailable,
-    placeRoster,
+    placeRoster, deskSlide, deskSlideRef, setDeskSlide, panelSlides, sidePanelTravel, deskSpacerW,
+    deskTravelRef, syncDeskSpacer,
   }
 }
 
@@ -420,3 +475,210 @@ export function useMembersPageDrawerSwipes({
 }
 
 export type MembersPageDrawerSwipes = ReturnType<typeof useMembersPageDrawerSwipes>
+
+interface MembersPageTrackpadSwipeOptions {
+  layout: MembersPageLayout
+  profileCard: MembersPageProfileState
+  sidePanel: MembersPageSidePanelState
+  drawers: MembersPageDrawers
+  active: MemberRosterRow | undefined
+  createOpen: boolean
+  membersRootRef: MutableRefObject<HTMLDivElement | null>
+}
+
+/** The finger phase a release speed is read over, ms before the lift-off. */
+const TRACKPAD_VELOCITY_WINDOW_MS = 60
+
+/**
+ * Desktop: the phone's side-panel drag, driven by a two-finger trackpad swipe.
+ *
+ * `useTrackpadSwipe` cuts the wheel stream into runs and reports the fingers'
+ * own summed `deltaX` (never the momentum tail). This hook drives the panel's
+ * offset, `sidePanelX`, from that sum directly, and the chat's spacer follows the
+ * same value (`deskSpacerW`), so panel and chat move with the fingers. On
+ * lift-off it applies the PHONE's release rule, from `useDrawerSwipe`'s own
+ * constants: faster than `COMMIT_VELOCITY` toward a side commits to it, else
+ * moving past `COMMIT_DRAG_SHARE` of the travel commits, else the panel falls
+ * back. The speed is the fingers' over the last 60ms before they left, and is
+ * zero when they had stopped. The settle is the phone's `animateDrawer`,
+ * continuing from that speed. While a drag runs the panel is a sheet on the
+ * right edge (`deskSlide`); once it settles, its state is published the way the
+ * header toggle does it, and the placement takes it back.
+ *
+ * Nothing is committed before the page's guard has had its say: an opening
+ * swipe while a Profile schedule draft is at stake does not drag at all, and
+ * goes to `togglePanel`, which asks first. A leftward run over a panel showing
+ * another tab only brings Dashboard forward. The Dashboard frame relays its
+ * wheels (`relayWheel`); a relayed run may only start the close, and only while
+ * the Dashboard tab is on screen.
+ *
+ * Under reduced motion there is no live drag; a clear swipe switches the panel
+ * once, when the run ends.
+ */
+export function useMembersPageTrackpadSwipe({
+  layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef,
+}: MembersPageTrackpadSwipeOptions) {
+  const { isMobile, beside, panelVisible } = layout
+  const { togglePanel, closeDocked, schedAtStakeRef, revealPanelThen } = profileCard
+  const { activeTabId, focusPanelTab, closeOverlay } = sidePanel
+  const {
+    sidePanelX, sidePanelPhaseRef, setSidePanelPhase, setDeskSlide, deskSlideRef, sidePanelTravel, deskTravelRef,
+    syncDeskSpacer,
+  } = drawers
+  const onDashboard = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  const enabled = !isMobile && !!active && !createOpen
+  /** Everything the gesture's callbacks read, current at call time. */
+  const now = useRef({ panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab })
+  now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }
+  /** The drag in progress: where it started, its travel, and the fingers'
+   *  (offset, time) samples for the release speed. */
+  const drag = useRef<{
+    on: boolean; startedOpen: boolean; travel: number; base: number; samples: { x: number; t: number }[]
+  }>({ on: false, startedOpen: false, travel: 0, base: 0, samples: [] })
+  /** Where a settle in flight is heading (true: open), or null when none is.
+   *  A new run may grab the panel mid-settle, as a phone's drag can. */
+  const settleTo = useRef<boolean | null>(null)
+
+  /** Publish where the panel came to rest, then hand it back to its placement. */
+  const land = useCallback((open: boolean) => {
+    const n = now.current
+    if (open) {
+      // Only a run that REVEALED the panel lands it on Dashboard. A close drag
+      // that fell back leaves the tab the person had (Files, Notes, ...) alone.
+      if (!n.panelVisible) {
+        // Through the guard: Dashboard is focused only once the reveal has gone
+        // through, so keeping a schedule draft leaves the saved tab alone.
+        n.revealPanelThen(() => now.current.focusPanelTab(CREW_DASHBOARD_TAB_ID))
+      }
+    } else if (n.panelVisible) {
+      if (n.beside) n.closeDocked()
+      else n.closeOverlay()
+    }
+    sidePanelPhaseRef.current = 'closed'
+    setSidePanelPhase('closed')
+    deskSlideRef.current = false
+    setDeskSlide(false)
+  }, [sidePanelPhaseRef, setSidePanelPhase, deskSlideRef, setDeskSlide])
+
+  // Crossing to the phone layout mid-drag or mid-settle retires the desktop
+  // drag outright: the phone's seating takes the offset over (and cancels the
+  // settle), so `land` would never run and `deskSlide` would outlive it. The
+  // panel's published state is left as it was; widening again redocks it.
+  useEffect(() => {
+    if (!isMobile || !deskSlideRef.current) return
+    drag.current.on = false
+    settleTo.current = null
+    deskSlideRef.current = false
+    setDeskSlide(false)
+  }, [isMobile, deskSlideRef, setDeskSlide])
+
+  useTrackpadSwipe(membersRootRef, {
+    enabled,
+    wants: (dir, fromFrame) => {
+      const n = now.current
+      if (fromFrame) return dir === 'right' && n.onDashboard
+      // Mid-settle, either way grabs the panel where it is.
+      if (settleTo.current !== null) return true
+      return dir === 'left' ? !n.onDashboard : n.panelVisible
+    },
+    onDragStart: (dir) => {
+      const n = now.current
+      if (settleTo.current !== null) {
+        // Grabbed mid-settle: stop the settle where it is presenting the panel
+        // now (the live offset, not its target) and follow the fingers from
+        // there. The release is judged against the state it was heading for.
+        takeOverDrawer(sidePanelX)
+        drag.current = { on: true, startedOpen: settleTo.current, travel: drag.current.travel, base: sidePanelX.get(), samples: [] }
+        settleTo.current = null
+        return
+      }
+      // A drag still owns the panel; this run does nothing.
+      if (deskSlideRef.current) return
+      // A panel already showing another tab: Dashboard comes forward, no slide.
+      if (dir === 'left' && n.panelVisible) { n.focusPanelTab(CREW_DASHBOARD_TAB_ID); return }
+      // Revealing with a schedule draft at stake: the guard asks first, and a
+      // refusal leaves nothing behind. No drag, so no state to undo.
+      // Discard reveals on Dashboard, as a drag would.
+      if (dir === 'left' && schedAtStakeRef.current()) {
+        revealPanelThen(() => now.current.focusPanelTab(CREW_DASHBOARD_TAB_ID))
+        return
+      }
+      const startedOpen = n.panelVisible
+      // A close starts from the docked column: measure it BEFORE the swap, so
+      // the spacer that replaces it is exactly as wide and the chat does not move.
+      // Docked only: as an overlay that element is the full-window scrim, and
+      // the travel is the slide's own width, read once the sheet has mounted.
+      const docked = startedOpen && n.beside
+        ? document.getElementById('member-side-panel')?.getBoundingClientRect().width || 0
+        : 0
+      deskTravelRef.current = docked
+      // Mount the sheet first, offscreen for an open, so the travel is the
+      // panel's real width and its first frame is not a flash.
+      takeOverDrawer(sidePanelX)
+      sidePanelX.set(startedOpen ? 0 : window.innerWidth)
+      syncDeskSpacer()
+      flushSync(() => {
+        deskSlideRef.current = true
+        setDeskSlide(true)
+        sidePanelPhaseRef.current = 'open'
+        setSidePanelPhase('open')
+      })
+      const travel = docked || sidePanelTravel()
+      deskTravelRef.current = travel
+      sidePanelX.set(startedOpen ? 0 : travel)
+      syncDeskSpacer()
+      drag.current = { on: true, startedOpen, travel, base: startedOpen ? 0 : travel, samples: [] }
+    },
+    onDragMove: (sumX, at) => {
+      const d = drag.current
+      if (!d.on) return
+      // Fingers moving left report a positive deltaX, which pulls the panel in.
+      const x = Math.min(d.travel, Math.max(0, d.base - sumX))
+      sidePanelX.set(x)
+      d.samples.push({ x, t: at })
+      if (d.samples.length > 32) d.samples.splice(0, d.samples.length - 32)
+    },
+    onDragEnd: (how, at) => {
+      const d = drag.current
+      if (!d.on) return
+      d.on = false
+      const x = sidePanelX.get()
+      // The lift-off: the last move for a recognised tail; the decision time for
+      // a gap, where fingers that had stopped before they left carry no speed;
+      // the shell's reported lift-off for `lift`, so the last 60ms are the
+      // fingers' own and a pause before lifting carries no speed either.
+      const last = d.samples[d.samples.length - 1]
+      const liftAt = how === 'momentum' && last ? last.t : at
+      let first: { x: number; t: number } | undefined
+      for (let i = 0; i < d.samples.length; i++) {
+        if (liftAt - d.samples[i].t <= TRACKPAD_VELOCITY_WINDOW_MS) {
+          first = d.samples[i]
+          if (liftAt - first.t < VELOCITY_MIN_SPAN_MS && i > 0) first = d.samples[i - 1]
+          break
+        }
+      }
+      const span = first && last ? last.t - first.t : 0
+      const v = first && last && span > 0 ? (last.x - first.x) / span : 0
+      // The phone's rule, for a panel anchored right (a smaller offset is open):
+      // a flick decides; else moving past the share decides by its direction;
+      // else the panel goes back to the state it started from (or, grabbed
+      // mid-settle, the one it was heading for).
+      const dragged = Math.abs(x - d.base) / Math.max(1, d.travel)
+      let open: boolean
+      if (-v > COMMIT_VELOCITY) open = true
+      else if (v > COMMIT_VELOCITY) open = false
+      else if (dragged > COMMIT_DRAG_SHARE) open = x < d.base
+      else open = d.startedOpen
+      settleTo.current = open
+      animateDrawer(sidePanelX, open ? 0 : d.travel, () => { settleTo.current = null; land(open) }, v)
+    },
+    onSwipe: (dir) => {
+      // Reduced motion, a leftward swipe over a panel on another tab: Dashboard
+      // comes forward, as the live path's drag start does.
+      if (dir === 'left' && now.current.panelVisible) { now.current.focusPanelTab(CREW_DASHBOARD_TAB_ID); return }
+      land(dir === 'left')
+    },
+    // Only a frame in the Dashboard tab while that tab is on screen.
+    acceptFrame: (frame) => now.current.onDashboard && !!frame.closest('#member-side-panel [data-testid="member-dashboard"]'),
+  })
+}

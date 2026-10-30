@@ -244,6 +244,22 @@ describe('SubagentCompletionCard rendering', () => {
     expect(screen.getByText(`${'x'.repeat(120)}…`)).toBeTruthy()
   })
 
+  it('keeps an emoji whole when the headline cut lands mid-surrogate-pair', () => {
+    // 119 ASCII + 😀 (two UTF-16 units) straddles the 120-unit cap: a plain
+    // .slice(0, 120) keeps the emoji's lone high surrogate, which renders as
+    // U+FFFD. sliceCodePoints moves the end edge back off the pair, so the cut
+    // lands at 119 and the label ends cleanly in '…'.
+    const task = 'x'.repeat(119) + '😀' + 'y'.repeat(20)
+    const emojiTask = SINGLE.replace('Add TWO short UI labels to the GERMAN (de) catalog', task)
+    renderWithProviders(<SubagentCompletionCard message={msg(emojiTask)} />, { store: store() })
+    const shown = screen.getByText(`${'x'.repeat(119)}…`)
+    expect(shown).toBeTruthy()
+    // No lone surrogate reached the DOM.
+    const hasLoneSurrogate = (s: string) =>
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)
+    expect(hasLoneSurrogate(shown.textContent || '')).toBe(false)
+  })
+
   it('leaves a task that fits unmarked', () => {
     renderWithProviders(<SubagentCompletionCard message={msg()} />, { store: store() })
     expect(screen.getByText('Add TWO short UI labels to the GERMAN (de) catalog')).toBeTruthy()

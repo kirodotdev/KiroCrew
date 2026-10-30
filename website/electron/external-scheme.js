@@ -32,13 +32,15 @@
 // Whole-URL matching, because the product needs exactly these two targets and a
 // scheme-granular rule would admit unbounded attacker-chosen payloads into
 // LaunchServices. That is reachable, not theoretical: LLM-authored widget and
-// artifact content renders in iframes carrying
-// `sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`
-// (WidgetFrame, ArtifactBody, ArtifactsPage), no CSP directive constrains a
-// `window.open` target's scheme, and remote-instance dashboard frames share this
-// same handler. A scheme-only rule would let model-generated JS pop ANY System
-// Settings pane — e.g. Sharing -> Remote Login, or Configuration Profiles — next
-// to agent-authored text telling the user to enable it.
+// artifact content renders in `sandbox="allow-scripts"` iframes (WidgetFrame,
+// ArtifactBody, RemoteArtifactDetailPage) whose links the dashboard opens
+// through its link bridge with `window.open` (useFrameLinkBridge, which passes
+// only http(s); other frames, such as the browser preview, still grant
+// `allow-popups`), no CSP directive constrains a `window.open` target's scheme,
+// and remote-instance dashboard frames share this same handler. A scheme-only
+// rule would let model-generated JS pop ANY System Settings pane — e.g. Sharing
+// -> Remote Login, or Configuration Profiles — next to agent-authored text
+// telling the user to enable it.
 //
 // Matching the raw string also removes a parser-differential class: the verdict
 // is computed from `new URL(...)` (WHATWG: lowercases the scheme, strips tabs and
@@ -206,11 +208,68 @@ function createWindowOpenHandler(deps) {
   };
 }
 
+/**
+ * Build the `will-navigate` listener for a dashboard WebContents.
+ *
+ * A renderer-started top-level navigation is allowed only to an http(s) URL on
+ * the dashboard's own origin (scheme, host and port). Anything else is refused
+ * and nothing is opened: an iframe pane can top-navigate its parent, and the
+ * promoted document would otherwise inherit every default-session grant the
+ * dashboard holds. Main-process `loadURL`/`loadFile` calls do not emit this
+ * event, so boot, reconnect and token-retry loads are unaffected.
+ *
+ * Deny-only by design: it never opens the target elsewhere, so it adds no new
+ * way for a page to reach the OS. Fails closed on any error.
+ *
+ * @param {object} deps
+ * @param {() => string} deps.getAppOrigin resolves the dashboard origin (REQUIRED)
+ * @param {(msg: string) => void} [deps.log] diagnostic sink
+ * @returns {(event: {preventDefault: () => void}, url: string) => void}
+ */
+function createNavigationGuard(deps) {
+  if (!deps || typeof deps.getAppOrigin !== "function") {
+    throw new Error("getAppOrigin is required");
+  }
+  const log = deps.log || (() => {});
+  return function guardNavigation(event, url) {
+    let allowed = false;
+    try {
+      const target = new URL(url);
+      allowed = WEB_SCHEMES.includes(target.protocol)
+        && classifyNavigation(url, deps.getAppOrigin()) === "allow";
+    } catch {
+      allowed = false;
+    }
+    if (allowed) return;
+    event.preventDefault();
+    try {
+      let origin = "unparseable";
+      try { origin = new URL(url).origin; } catch { /* keep placeholder */ }
+      log(`denied top-level navigation away from the app origin: ${String(origin).slice(0, 80)}`);
+    } catch {
+      /* a failing log sink must not undo the refusal */
+    }
+  };
+}
+
+// The `will-redirect` listener: the same exact-origin refusal for a main-frame
+// server redirect, including main-process loads (which `will-navigate` never
+// sees). Iframe (pane) redirects are left alone; an unknown frame counts as main.
+function createRedirectGuard(deps) {
+  const guard = createNavigationGuard(deps);
+  return function guardRedirect(details) {
+    if (details && details.isMainFrame === false) return;
+    guard(details, details && details.url);
+  };
+}
+
 module.exports = {
   EXTERNAL_URLS,
   ORIGIN_INHERITING_SCHEMES,
   WEB_SCHEMES,
   classifyNavigation,
+  createNavigationGuard,
+  createRedirectGuard,
   createWindowOpenHandler,
   openExternalSafely,
 };

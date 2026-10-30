@@ -25,6 +25,8 @@
 
 import { i18nT } from '../i18n/t'
 import { withBase } from '../lib/basePath'
+import { isElectron } from '../lib/electron'
+import { isDesktopAppPane } from '../lib/hostRelay'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -147,6 +149,12 @@ export interface PopoutController {
   isSelfPopout(id: string): boolean
   /** From inside a popout: focus the opener and close; navigate to the main view when close is refused. */
   returnSelfToMain(): void
+  /**
+   * From inside a popout whose entity is gone: focus the opener and close; when
+   * close is refused, navigate to the main view with no entity named, since a
+   * deep link to the gone entity would only report it missing.
+   */
+  closeSelf(): void
   /** Register THIS window as the live popout for `id` (responder role). Returns cleanup. */
   registerPopout(id: string): () => void
   /**
@@ -210,6 +218,12 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   function logWarn(msg: string): void {
     // eslint-disable-next-line no-console
     console.warn(`[${logLabel}] ${msg}`)
+  }
+
+  function tellUser(message: string): void {
+    try {
+      window.alert(message)
+    } catch { /* alert unavailable (e.g. sandboxed frame) — the warn before it still records it */ }
   }
 
   function recomputeSnapshot(): void {
@@ -359,15 +373,24 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     const left = Math.round(availLeft + ((sc?.availWidth ?? 1280) - w) / 2)
     const top = Math.round(availTop + Math.max(0, ((sc?.availHeight ?? 900) - h) / 2))
     const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    // A crew's pane in the desktop app runs on the crew's tunnel port, so the
+    // window-open handler would hand this URL, without its token, to the
+    // system browser and return no window. Refuse before that happens.
+    if (isDesktopAppPane()) {
+      logWarn(`popout ${id} not opened — a crew pane in the desktop app cannot open its own window`)
+      tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
+      return
+    }
     const win = window.open(buildUrl(id, title), windowName(id), features)
     if (!win) {
-      // Popup blocker (or policy) vetoed the window. Don't optimistically mark
-      // open — and don't fail silently: tell the user why nothing happened and
-      // leave an operator-diagnosable trail.
-      logWarn(`window.open blocked for ${id} — pop-up blocker or browser policy`)
-      try {
-        window.alert(i18nT('utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
-      } catch { /* alert unavailable (e.g. sandboxed frame) — the warn above still records it */ }
+      // The window was refused. Don't optimistically mark open — and don't fail
+      // silently: tell the user why nothing happened and leave an
+      // operator-diagnosable trail. The desktop app has no pop-up setting, so
+      // the browser advice is only given in a browser.
+      logWarn(`window.open refused for ${id} — ${isElectron ? 'desktop window-open handler' : 'pop-up blocker or browser policy'}`)
+      tellUser(i18nT(isElectron
+        ? 'utils.popoutController.desktop_app_could_not_open_pop_out_window'
+        : 'utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
       return
     }
     handles.set(id, win)
@@ -424,14 +447,22 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    * instead. The control must always visibly do something.
    */
   function returnSelfToMain(): void {
+    leaveSelf(true)
+  }
+
+  function closeSelf(): void {
+    leaveSelf(false)
+  }
+
+  function leaveSelf(keepEntity: boolean): void {
     const id = selfId
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }
     // If we're still alive, the close was refused (no script opener). Fall back
-    // to becoming the main view for this entity.
+    // to becoming the main view, for this entity when it still exists.
     if (!window.closed) {
       if (id) post({ t: 'close', id }) // tell other windows this popout is gone
-      navigate(mainViewUrl(id))
+      navigate(mainViewUrl(keepEntity ? id : null))
     }
   }
 
@@ -526,7 +557,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   return {
     subscribe, getSnapshot, openPopout, focusPopout, bringBack,
-    isSelfPopout, returnSelfToMain, registerPopout,
+    isSelfPopout, returnSelfToMain, closeSelf, registerPopout,
     forwardToMain, setNavIntentHandler,
     __setNavigateForTests, __setWindowOpenForTests, __resetForTests,
   }

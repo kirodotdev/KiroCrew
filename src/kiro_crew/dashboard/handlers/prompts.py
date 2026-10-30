@@ -109,6 +109,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _SKILL_WRITE_LOCK  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _match_package_row  # noqa: F401
+    from kiro_crew.dashboard.handlers.prompts_skill_edits import _skill_detail_verbs  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skills_create  # noqa: F401
@@ -120,8 +121,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.prompts_skill_pending import api_skills_pending  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_pending import (  # noqa: F401
+        _CODE_CONTENT_SHA256_REQUIRED,
         _CODE_LIVE_SKILL_EXISTS,
         _CODE_PENDING_APPROVAL_REFUSED,
+        _CODE_PENDING_SKILL_CHANGED,
         _CODE_PENDING_SKILL_NOT_FOUND,
         _CODE_PENDING_SKILL_UNREADABLE,
         _CODE_SCRIPT_VALIDATION_FAILED,
@@ -137,6 +140,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import served_provider_label  # noqa: F401
     from kiro_crew.agent_discovery import session_skill_globs  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
+    from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _capability_manager  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _get_skills  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _read_session_key  # noqa: F401

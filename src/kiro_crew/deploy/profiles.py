@@ -261,15 +261,19 @@ def load_registry() -> dict[str, Any]:
     implements (try the legacy registry, then the v1 config, then an empty
     registry) rather than inventing a second recovery, and it fixes every reader
     at once instead of asking each call site to guard a shape it did not parse.
+    A file that is not UTF-8 takes the same path: its ``UnicodeDecodeError`` is a
+    ``ValueError``, not a ``json.JSONDecodeError``, so it is named separately.
     """
     try:
         return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+            AttributeError, TypeError):
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
         return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+            AttributeError, TypeError):
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
     try:
@@ -279,7 +283,8 @@ def load_registry() -> dict[str, Any]:
             name = str(legacy["profile"])
             return {"version": 2, "default": name,
                     "profiles": [make_entry(name, str(legacy.get("region", "")))]}
-    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+            AttributeError, TypeError):
         pass
     return {"version": 2, "profiles": [], "default": ""}
 

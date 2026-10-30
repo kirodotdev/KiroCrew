@@ -1,6 +1,6 @@
-import { createContext, forwardRef, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref, type ForwardedRef } from 'react'
+import { createContext, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -8,13 +8,15 @@ import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Tablist, { type TablistTab } from '../../components/Tablist'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
-import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
+// Loaded on first open, so the export view stays out of the profile card's chunk.
+const CrewExportView = lazy(() => import('./CrewExportView'))
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import { forwardUiLocation } from '../../uiLocations/uiLocation'
-import type { UiLocationId } from '../../uiLocations/descriptors'
+import { Row, TONE } from './profileRow'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 
 /** The card's four tabs, in strip order (crewmate-panel IA sketch). */
 export const PROFILE_TABS = ['sessions', 'schedule', 'goals', 'profile'] as const
@@ -26,32 +28,43 @@ export const PROFILE_FACE_PX = 84
 
 /** A page the card pushes OVER its tabs (iOS push: one back control pointing at
  *  the card), for the things a tab opens in place: the full description, the
- *  crewmate's notes, and the schedule create form. */
-type Pushed = 'about' | 'notes' | 'new-schedule' | 'tab-page'
+ *  crewmate's notes, the Export confirm view, and the schedule create form. */
+type Pushed = 'about' | 'notes' | 'export' | 'new-schedule' | 'tab-page'
 
-/** A tab's own page pushed over the card (the Goals tab's milestone, goal and
- *  check-in pages). The tab keeps the page's state and renders it into `host`
+/** A tab's own pages pushed over the card (the Goals tab's milestone, goal and
+ *  check-in pages; the Profile tab's Settings page and the picker pages over
+ *  it). The tab keeps each page's state and renders it into that depth's host
  *  through a portal; the card owns the slide, the back control and Escape, so a
- *  tab page moves exactly like About and Notes do. */
+ *  tab page moves exactly like About and Notes do. Pages stack (iOS push): each
+ *  level's back control names the page under it, the first names the crewmate. */
 export interface ProfilePagePush {
-  /** Push a page (or retitle the one already pushed). `onPop` runs when the
-   *  user goes back, before the card slides the page away. */
-  open: (title: string, onPop: () => void) => void
-  /** Pop the page the tab pushed, e.g. after its save landed. */
-  close: () => void
-  /** Where the tab portals the page body; null until the page has mounted. */
+  /** Push a page at `depth` (default 0, the page over the card), or retitle the
+   *  page already at that depth (the pages over it stay). `onPop` runs when the
+   *  user goes back from it, before the card slides it away. Stable across
+   *  host changes: key an effect on it, never on the whole context value. */
+  open: (title: string, onPop: () => void, depth?: number) => void
+  /** Pop the pages from `depth` up (default: the top one), e.g. after a save
+   *  landed. Their `onPop`s do not run: the tab is already past them. */
+  close: (depth?: number) => void
+  /** Where the tab portals the depth-0 page body; null until it has mounted. */
   host: HTMLElement | null
+  /** One host per pushed depth, in order; an entry is null until it has mounted. */
+  hosts: Array<HTMLElement | null>
 }
 export const ProfilePagePushContext = createContext<ProfilePagePush | null>(null)
+
+/** One level of the tab-page stack: its title, what runs when the user goes
+ *  back from it, and the control that opened it (focus goes back there). */
+interface TabPage { title: string; onPop: () => void; opener: HTMLElement | null }
 
 export interface CrewProfilePanelProps {
   member: MemberRosterRow
   running: boolean
   slotKey?: string | null
-  /** The one normalized monitor record for this crewmate's own slot. */
+  /** The one normalized monitor record for this crewmate's own slot: the head
+   *  face's active mark. What it watches is the Schedules tab's business
+   *  (`selfBody`), not a readout here. */
   automation: AutomationRecord | null
-  /** Whether both monitor registries were read, are pending, or failed. */
-  monitorReadState: MonitorReadState
   /** The crewmate's description from its crew config; '' while unread or unset. */
   description: string
   /** The crew registry read failed; retained cached description data may still be shown. */
@@ -75,6 +88,11 @@ export interface CrewProfilePanelProps {
   /** Hold the head face's place but paint nothing: the page's flight copy is
    *  the one face on screen until it lands here. */
   faceHidden?: boolean
+  /** What wakes this crewmate WITHOUT a schedule, on the Schedules tab above the
+   *  list under its own "On its own" header (CrewOnItsOwn: the patrol over the
+   *  tasks it handed out). Absent when nothing does, and then the list stands
+   *  alone with no headers: most crewmates. */
+  selfBody?: ReactNode
   /** The schedules that wake this crewmate, as the page already reads them. */
   schedules: CronJob[]
   schedulesLoading: boolean
@@ -85,58 +103,39 @@ export interface CrewProfilePanelProps {
   /** The schedule CREATE form (the crew editor's own pane), pushed as a page.
    *  The card is a summary with doors, never a second source of truth. */
   newScheduleBody: ReactNode
+  /** The Heartbeat row at the top of the Schedules tab (CrewHeartbeatRow):
+   *  the one wake that is neither a schedule nor a goal check-in. */
+  heartbeatBody?: ReactNode
+  /** Whether that Heartbeat is on: the schedule list's empty line then says
+   *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
+   *  which the row above it would contradict. */
+  heartbeatOn?: boolean
+  /** A write from one of the "On its own" rows (Heartbeat or patrol) is in
+   *  flight: the tab rail refuses to leave Schedules until it settles (the
+   *  host's leave guard refuses close and navigation the same way). */
+  heartbeatBusy?: boolean
   sessionsBody: ReactNode
   notesBody: ReactNode
   /** The Goals tab: the goals, the milestones, the check-in switches
    *  and the reports (CrewGoalsPane). */
   goalsBody?: ReactNode
-  /** The crewmate's permission, model and effort controls (CrewProfileSettings).
-   *  They are set here, never in the chat composer. */
+  /** The crewmate's own settings group (CrewProfileSettings): permission, model,
+   *  effort, the worker pair and the dashboard lock. They are set here, never in
+   *  the chat composer. Its pickers are pages it pushes over the card through
+   *  `ProfilePagePushContext`, like the Goals tab's pages. */
   settingsBody?: ReactNode
   onClose: () => void
   /** Runs a pushed-page back action through the host's draft guard. */
   onRequestBack: (proceed: () => void) => void
+  /** The Export view's lessons text is typed: the host's exit guards then ask
+   *  before any exit (back, close, backdrop, pill, switch, route) drops it. */
+  onExportDraftChange?: (dirty: boolean) => void
   onEdit: () => void
   onOpenFiles: () => void
   /** Fresh start: stop any turn and start a clean conversation on the same
    *  thread. Absent while the thread is unbound or a reset runs. */
   onFreshStart?: () => void
 }
-
-const TONE: Record<'accent' | 'ok' | 'warn' | 'info', string> = {
-  accent: 'bg-accent-subtle text-accent',
-  ok: 'bg-ok-subtle text-ok-text',
-  warn: 'bg-warn-subtle text-warn-text',
-  info: 'bg-info-subtle text-info-text',
-}
-
-const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, onClick, testId, 'data-ui-location': uiLocationId }: {
-  icon: ReactNode
-  tone?: keyof typeof TONE
-  label: string
-  sub?: string
-  onClick: () => void
-  testId: string
-  /** A registered find_ui location (`{...uiLocation(id)}` spread on the row). */
-  'data-ui-location'?: UiLocationId
-}, forwardedRef: ForwardedRef<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex items-center gap-3 w-full px-3.5 py-3 text-left border-t border-border first:border-t-0 hover:bg-bg-hover transition-colors cursor-pointer"
-      data-testid={testId}
-      {...forwardUiLocation(uiLocationId, forwardedRef)}
-    >
-      <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
-      <span className="flex-1 min-w-0 leading-tight">
-        <span className="block text-[13px] font-semibold truncate">{label}</span>
-        {sub && <span className="block text-[12px] text-muted truncate">{sub}</span>}
-      </span>
-      <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
-    </button>
-  )
-})
 
 function Tile({ icon, tone, label, value, title, onClick, testId }: {
   icon: ReactNode
@@ -171,7 +170,7 @@ function Tile({ icon, tone, label, value, title, onClick, testId }: {
  * the selected tab's word. Profile is a summary with doors (edit, description,
  * memory, workspace, notes) plus the crewmate's own settings (permission,
  * model, effort); Schedules is a readable list of
- * what wakes it; Sessions is the sessions it is driving; Goals is the goal
+ * what wakes it, the Heartbeat row first; Sessions is the sessions it is driving; Goals is the goal
  * record the user and the crewmate share (CrewGoalsPane).
  *
  * It is a floating card over the right of the thread — a hover card, not a
@@ -184,10 +183,15 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   const { t } = useTranslation()
   const reduce = useReducedMotion()
   const [tab, setTab] = useState<ProfileTab>(p.initialTab ?? PROFILE_TABS[0])
+  // The guide's reveal scope for the Profile tab: a `ui.show` step that
+  // selects it completes the moment the tab is current.
+  useGuideRevealScope('members.profile-tab', tab === 'profile')
   const [pushed, setPushed] = useState<Pushed | null>(null)
-  const [tabPageTitle, setTabPageTitle] = useState('')
-  const [tabPageHost, setTabPageHost] = useState<HTMLDivElement | null>(null)
-  const tabPagePop = useRef<(() => void) | null>(null)
+  // The tab-page stack and one host per level. `tabPagesRef` mirrors the stack
+  // for the push callbacks, which decide "new level or retitle" synchronously.
+  const [tabPages, setTabPages] = useState<TabPage[]>([])
+  const tabPagesRef = useRef<TabPage[]>([])
+  const [tabPageHosts, setTabPageHosts] = useState<Array<HTMLDivElement | null>>([])
   const rootRef = useRef<HTMLDivElement>(null)
   const backRef = useRef<HTMLButtonElement>(null)
   // The control that pushed the current page, so a pop can hand focus back to it.
@@ -198,6 +202,31 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   // name to the DM slot's project when it roots Files / Terminal, so there is
   // no path here to take a folder name from.
   const ws = p.member.workspace ?? ''
+
+  const captureOpener = () => {
+    const active = document.activeElement
+    return active instanceof HTMLElement && rootRef.current?.contains(active) ? active : null
+  }
+  const setTabStack = useCallback((next: TabPage[]) => {
+    tabPagesRef.current = next
+    setTabPages(next)
+    if (next.length === 0) setPushed(current => (current === 'tab-page' ? null : current))
+  }, [])
+
+  // Going back from any pushed page: one level. A tab page first hands its own
+  // state back (its `onPop`), so the tab is already on the page under it when
+  // the slide ends; the opener that pushed it takes focus back.
+  const popPage = useCallback(() => {
+    const stack = tabPagesRef.current
+    if (stack.length) {
+      const top = stack[stack.length - 1]
+      openerRef.current = top.opener
+      top.onPop()
+      setTabStack(stack.slice(0, -1))
+      return
+    }
+    setPushed(null)
+  }, [setTabStack])
 
   // Escape belongs to this card only. A key event in the roster switcher,
   // the chat composer, or another overlay never reaches it.
@@ -212,36 +241,39 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pushed, p])
-
-  // Going back from any pushed page. A tab page first hands its own state back
-  // (its `onPop`), so the tab is already on its first page when the slide ends.
-  function popPage() {
-    const pop = tabPagePop.current
-    tabPagePop.current = null
-    pop?.()
-    setPushed(null)
-  }
+  }, [pushed, p, popPage])
 
   const push = (page: Pushed) => {
-    const active = document.activeElement
-    openerRef.current = active instanceof HTMLElement && rootRef.current?.contains(active) ? active : null
+    openerRef.current = captureOpener()
     setPushed(page)
   }
 
-  // A pushed page makes the tabs `inert`, which drops the focus that was on the
-  // opener onto the body — outside the card, where Escape above cannot see it.
-  // Land it on the back control instead (the New schedule page focuses its own
-  // form), and hand it back to the opener when the page pops.
+  // A pushed page makes what it covers `inert`, which drops the focus that was
+  // on the opener onto the body — outside the card, where Escape above cannot
+  // see it. Land it on the back control instead (the New schedule page focuses
+  // its own form), and hand it back to the opener when the page pops.
+  // An opener that unmounted while its page was open (a settings row that
+  // folded on the pick made from its own page) cannot take focus back; the
+  // back control of the page now on top does, or the card itself when none is
+  // left, so Escape still works. Only after a pop: the card opening must never
+  // pull focus off the composer.
+  const hadPage = useRef(false)
+  const prevDepth = useRef(0)
+  const depth = tabPages.length
   useEffect(() => {
-    if (pushed === 'about' || pushed === 'notes' || pushed === 'tab-page') {
+    const deeper = depth > prevDepth.current
+    prevDepth.current = depth
+    if (pushed === 'about' || pushed === 'notes' || pushed === 'export' || (pushed === 'tab-page' && deeper)) {
       backRef.current?.focus({ preventScroll: true })
-    } else if (!pushed) {
+    } else if (!pushed || pushed === 'tab-page') {
       const opener = openerRef.current
       openerRef.current = null
       if (opener?.isConnected) opener.focus({ preventScroll: true })
+      else if (pushed) backRef.current?.focus({ preventScroll: true })
+      else if (hadPage.current) rootRef.current?.focus({ preventScroll: true })
     }
-  }, [pushed])
+    if (pushed) hadPage.current = true
+  }, [pushed, depth])
 
   // Strip order = PROFILE_TABS: the work first (what the crewmate is doing,
   // when it wakes, what it is after), the identity card last.
@@ -251,35 +283,62 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), icon: <Goal size={15} aria-hidden="true" /> },
     { key: 'profile', label: t('pages.membersPage.profile_tab'), icon: <IdCard size={15} aria-hidden="true" /> },
   ]
-  const openTabPage = useCallback((title: string, onPop: () => void) => {
-    tabPagePop.current = onPop
-    setTabPageTitle(title)
-    setPushed(current => {
-      if (current !== 'tab-page') {
-        const active = document.activeElement
-        openerRef.current = active instanceof HTMLElement && rootRef.current?.contains(active) ? active : null
-      }
-      return 'tab-page'
-    })
+  const openTabPage = useCallback((title: string, onPop: () => void, at = 0) => {
+    const stack = tabPagesRef.current
+    // A depth past the top lands on the top: a stack has no holes.
+    const level = Math.min(Math.max(0, at), stack.length)
+    // Re-opening the level already there retitles it in place and KEEPS the
+    // pages over it (a tab's effect may re-run while a deeper page is open;
+    // only `close` drops pages). A new level records the control the focus is
+    // on now, so a pop can hand focus back to it.
+    const next = stack.slice()
+    next[level] = { title, onPop, opener: level < stack.length ? stack[level].opener : captureOpener() }
+    tabPagesRef.current = next
+    setTabPages(next)
+    setPushed('tab-page')
   }, [])
-  const closeTabPage = useCallback(() => {
-    tabPagePop.current = null
-    setPushed(current => (current === 'tab-page' ? null : current))
-  }, [])
+  const closeTabPage = useCallback((from?: number) => {
+    const stack = tabPagesRef.current
+    const level = from === undefined ? stack.length - 1 : from
+    if (level < 0 || level >= stack.length) return
+    openerRef.current = stack[level].opener
+    setTabStack(stack.slice(0, level))
+  }, [setTabStack])
   const pagePush = useMemo<ProfilePagePush>(
-    // The host outlives `pushed` for the exit slide (the node unmounts when the
+    // A host outlives its level for the exit slide (the node unmounts when the
     // slide ends), so the tab can keep painting its page while it leaves.
-    () => ({ open: openTabPage, close: closeTabPage, host: tabPageHost }),
-    [openTabPage, closeTabPage, tabPageHost],
+    // `open` and `close` are stable across host changes, so a tab's effect
+    // keyed on them does not re-run when a host mounts.
+    () => ({ open: openTabPage, close: closeTabPage, host: tabPageHosts[0] ?? null, hosts: tabPageHosts }),
+    [openTabPage, closeTabPage, tabPageHosts],
   )
+  // One STABLE ref callback per level: a fresh closure each render would be
+  // re-attached (null, then the node) on every commit and loop the state.
+  const hostRefs = useRef<Array<(el: HTMLDivElement | null) => void>>([])
+  const tabPageHostRef = (level: number) => {
+    hostRefs.current[level] ??= (el) => setTabPageHosts(hosts => {
+      if (hosts[level] === el) return hosts
+      const next = hosts.slice()
+      next[level] = el
+      // Drop trailing unmounted levels so `hosts.length` tracks the stack.
+      while (next.length && next[next.length - 1] === null) next.pop()
+      return next
+    })
+    return hostRefs.current[level]
+  }
+  // The back control names what is under the top page: the page below it, or
+  // the crewmate (the card) under the first.
+  const backLabel = depth >= 2 ? tabPages[depth - 2].title : name
 
   const pushedTitle = pushed === 'tab-page'
-    ? tabPageTitle
+    ? (tabPages[depth - 1]?.title ?? '')
     : pushed === 'about'
     ? t('pages.membersPage.profile_about')
     : pushed === 'notes'
       ? t('pages.membersPage.notes_tab')
-      : t('pages.membersPage.schedule_new')
+      : pushed === 'export'
+        ? t('pages.membersPage.export_title')
+        : t('pages.membersPage.schedule_new')
 
   const slide = reduce
     ? { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 } }
@@ -297,6 +356,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
       data-testid="crew-profile-panel"
       data-tab={tab}
       ref={rootRef}
+      // Programmatic focus target only (the pop fallback above); not in the tab order.
+      tabIndex={-1}
       role="region"
       aria-label={t('pages.membersPage.profile_card')}
     >
@@ -312,7 +373,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
             data-testid="crew-profile-back"
           >
             <ChevronLeft size={18} aria-hidden="true" />
-            {name}
+            {backLabel}
           </button>
         ) : null}
         {pushed && <div className="flex-1 text-center text-[13px] font-semibold truncate pr-8" data-testid="crew-profile-pushed-title">{pushedTitle}</div>}
@@ -406,11 +467,24 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               value={tab}
               onChange={next => {
                 if (tab === 'goals' && next !== tab) p.onRequestBack(() => { popPage(); setTab(next) })
+                // A Heartbeat or patrol write still in flight would be unmounted
+                // by the switch and its failure lost: refuse the exit until it
+                // settles, as the leave guard refuses a busy Goals write.
+                else if (tab === 'schedule' && p.heartbeatBusy) return
                 else setTab(next)
               }}
               ariaLabel={t('pages.membersPage.profile_card')}
               layoutId="crew-profile-tab-indicator"
               labels="active"
+              // find_ui locations: Schedules and Goals are where a mate shows
+              // the user what wakes it and what it is after; the Profile tab
+              // is also the step a guide to the Settings row (which lives on
+              // it) selects first.
+              segments={[
+                { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
+                { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
+                { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
+              ]}
             />
           </div>
 
@@ -455,22 +529,39 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                   ) : null}
                 </section>
 
-                <CrewMonitorDetails automation={p.automation} readState={p.monitorReadState} nowTs={p.nowTs} />
-
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
                   <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
                 </div>
 
+                {/* The doors: Notes, and the Settings row the settings body
+                    contributes (its pages push over the card through the context). */}
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
+                  <Row icon={<Download size={16} />} tone="info" label={t('pages.membersPage.export_row')} sub={t('pages.membersPage.export_row_sub')} onClick={() => push('export')} testId="crew-profile-export" />
+                  <ProfilePagePushContext.Provider value={pagePush}>{p.settingsBody}</ProfilePagePushContext.Provider>
                 </div>
-
-                {p.settingsBody}
               </div>
             )}
             {tab === 'schedule' && (
-              <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} />
+              <div className="flex flex-col gap-3">
+                {/* "On its own" is what wakes the mate without a schedule a
+                    person wrote: its Heartbeat first (`heartbeatBody`, the
+                    first row by the 2026-10-22 decision), then its patrol over
+                    the tasks it handed out (`selfBody`, only while one runs or
+                    is retained). Two headers only when there is something
+                    under the first: a lone "Your schedules" over the list
+                    would name a split the reader cannot see. */}
+                {(p.selfBody || p.heartbeatBody) && (
+                  <>
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5" data-testid="crew-schedule-heading-self">{t('pages.membersPage.on_its_own')}</h3>
+                    {p.heartbeatBody}
+                    {p.selfBody}
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
+                  </>
+                )}
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} />
+              </div>
             )}
             {tab === 'sessions' && p.sessionsBody}
             {tab === 'goals' && <ProfilePagePushContext.Provider value={pagePush}>{p.goalsBody}</ProfilePagePushContext.Provider>}
@@ -478,7 +569,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
         </motion.div>
 
         <AnimatePresence initial={false}>
-          {pushed && (
+          {pushed && pushed !== 'tab-page' && (
             <motion.div
               key={pushed}
               initial={slide.initial}
@@ -491,20 +582,43 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               {pushed === 'about' ? (
                 <div className="px-4 py-4">
                   <div className="rounded-2xl border border-border bg-bg px-4 py-4 text-[14px] leading-relaxed text-text whitespace-pre-wrap" data-testid="crew-profile-about-full">{p.description}</div>
-                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-white text-[13px] font-semibold cursor-pointer">
+                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer">
                     <Pencil size={14} aria-hidden="true" />
                     {t('pages.membersPage.edit_member')}
                   </button>
                 </div>
               ) : pushed === 'notes' ? (
                 p.notesBody
-              ) : pushed === 'tab-page' ? (
-                <div ref={setTabPageHost} className="px-4 py-4" />
+              ) : pushed === 'export' ? (
+                <Suspense fallback={<div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.export_loading')}</div>}>
+                  <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
+                </Suspense>
               ) : (
                 p.newScheduleBody
               )}
             </motion.div>
           )}
+          {/* The tab-page stack: one layer per level. A layer under a deeper one
+              slides a quarter-width left and goes inert, like the card under
+              the first; its host stays mounted so the tab keeps painting it. */}
+          {pushed === 'tab-page' && tabPages.map((page, level) => {
+            const covered = level < depth - 1
+            return (
+              <motion.div
+                key={`tab-page-${level}`}
+                initial={slide.initial}
+                animate={covered && !reduce ? { x: '-25%', opacity: 0.4 } : slide.animate}
+                exit={slide.exit}
+                transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
+                className="absolute inset-0 overflow-y-auto bg-bg-elevated"
+                data-testid={level === 0 ? 'crew-profile-page-tab-page' : `crew-profile-page-tab-page-${level}`}
+                data-page-title={page.title}
+                {...((covered ? { inert: '', 'aria-hidden': true } : { 'aria-hidden': false }) as typeof coveredProps)}
+              >
+                <div ref={tabPageHostRef(level)} className="px-4 py-4" />
+              </motion.div>
+            )
+          })}
         </AnimatePresence>
       </div>
     </div>

@@ -71,6 +71,28 @@ describe('mergeFolderListings', () => {
     expect(merged.directories).not.toContain('coverage/x')
   })
 
+  it('stops naming a nested repository once its own listing is loaded, and names the ones inside it', () => {
+    const withRepo: TreePayload = {
+      ...base,
+      paths: ['README.md'],
+      directories: ['libs', 'libs/sub', 'libs/other'],
+      truncated: false,
+      truncatedDirectories: [],
+      nestedRepoDirectories: ['libs/other', 'libs/sub'],
+    }
+    const merged = mergeFolderListings(withRepo, [{
+      root: '/p', dir: 'libs/sub', repo: true,
+      paths: ['libs/sub/a.ts'],
+      directories: ['libs/sub/vendor'],
+      truncatedDirectories: [],
+      nestedRepoDirectories: ['libs/sub/vendor'],
+    }])
+    expect(merged.paths).toEqual(['README.md', 'libs/sub/a.ts'])
+    expect(merged.nestedRepoDirectories).toEqual(['libs/other', 'libs/sub/vendor'])
+    // Not a cut: loading a repository never makes the tree "truncated".
+    expect(merged.truncated).toBe(false)
+  })
+
   it('ignores a listing for another project root', () => {
     expect(mergeFolderListings(base, [{ root: '/other', dir: 'big', repo: false, paths: ['big/z'] }])).toBe(base)
   })

@@ -80,7 +80,11 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `Pacific/Kiritimati` (+14:00) and `America/St_Johns` (-03:30). Inject the zone where
   the product allows it; otherwise use the `local_tz` fixture, which sets `TZ` and calls
   `time.tzset()` under a POSIX-only skip and restores both at teardown (class 1 has the
-  shape), never a bare `monkeypatch.undo()`. [Class 1](#1-nondeterministic-input).
+  shape), never a bare `monkeypatch.undo()`. A test that reads a repository file as
+  text names the codec, `read_text(encoding="utf-8")` or `open(path, encoding="utf-8")`:
+  a bare call decodes with the host's code page, which raises at the first non-ASCII
+  character on a cp950 Windows host and silently mis-decodes it on a cp1252 one.
+  [Class 1](#1-nondeterministic-input).
 - **D6. Seed every RNG that feeds an assertion** (`random.Random(SEED)`, or the
   `seeded_rng` fixture, seeded from the node id and printing the seed when the test
   fails), and give a fake PID a number no OS can allocate (`UNALLOCATABLE_PID` /
@@ -134,7 +138,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), and five frontend shapes. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -156,7 +160,11 @@ checks out depth 2 on every pull request and merge group so the resolver reads t
 first parent, answers in about a minute, and fails when the ratchet still
 reports `compared nothing`. Run `python -m pytest -n0 test/test_flake_pattern_ratchet.py`
 before pushing to see the same verdict first. It does not
-count an order assertion (D4) or a network call (D10): those rest on review. A
+count an order assertion (D4) or a network call (D10): those rest on review. For D10
+the same job also runs `scripts/net_strict_changed.py`, which sets `KIROCREW_NET_STRICT=1`
+for the test files the change adds or changes and names any that look up a non-local
+host or connect past loopback in the job summary; it is warn-only for now, and a file
+that already does so is held to the rule only once someone edits it. A
 `flake-ok` line whose reason has ten characters or more, words and not just punctuation
 or digits, is not counted. `python test/test_flake_pattern_ratchet.py` prints each
 file's current counts as the burn-down view; no committed file holds them.
@@ -179,7 +187,10 @@ The test floor clears live session and run execution records between tests so a
 reused temporary home cannot inherit another test's routing or retention mode.
 Dispatch doubles provide a concrete `get_agent_selection()` tuple, including
 `("template", "")` for the default template. An unconstrained mock is not a
-valid member or template identity. Session context doubles implement the async
+valid member or template identity. Runtime fixtures that bypass the constructor
+with `__new__` explicitly set `_remote_workspace = None` for a local session,
+so activation exercises its real local path rather than an incomplete object.
+Session context doubles implement the async
 `memory_mode_for_session()` accessor and return a concrete retention mode.
 Session-start collector tests declare their
 MCP roster explicitly rather than inheriting the installed agent's tools.
@@ -688,7 +699,8 @@ The rule that removes it: **the response read side is `aiohttp`'s own code.**
 `_FakeResponseCM` binds `ClientResponse.json`, `.text`, `.get_encoding`,
 `.raise_for_status` and `.ok` onto itself and inherits `HeadersMixin` for
 `content_type` / `charset`, supplying only the attributes those methods read
-(`_body`, `_headers`, `status`, `reason`, `request_info`, `history`, `release`).
+(`_body`, `_headers`, `headers`, `status`, `reason`, `request_info`, `history`,
+`_in_context`, `_resolve_charset`, `release`).
 Content-type enforcement, the `+json` suffix match, the `content_type=None` bypass,
 empty-body-reads-as-`None`, charset decoding and the `status < 400` rule are then
 decided by the library, not by this repo. `test_fake_channel_wire.py` asserts that
@@ -788,7 +800,7 @@ worker's last test is checked after that warning is written, so its findings are
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
 that a test created lazily (`request.getfixturevalue`) at that test's teardown.
 
-Five members are there for a different reason — a **process-global** that any testpath
+Seven members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -802,6 +814,21 @@ one scope down:
   running. See the Rules entry — that thread makes the sandbox probe's fork child
   multithreaded, which the kernel answers with an EINVAL the probe used to cache as
   "this host has no sandbox backend".
+* `_no_leaked_embed_evictor` fails the test that loads an embedding model and leaves its
+  idle evictor running. `LlamaCppEmbedder` starts the daemon `kc-embed-evict` thread when
+  a model is published, and every tick re-reads the memory config through `config_dir()`,
+  so a backend a test never `close()`d keeps resolving the data home from under every
+  later test on the worker; one of those ticks landing in a test that had cleared
+  `os.environ` is how the home guard came to blame `test_dashboard_origin.py` for a leak
+  from `test_custom_embedding_model.py` (class 4). Attributed by difference and stopped
+  through its owner, like the exporter guard.
+* `pytest_runtest_teardown` cancels every debounced session-tree checkpoint write the
+  test armed (`_cancel_session_tree_checkpoints`, through
+  `session_tree_projection.reset_for_tests`), after the fold worker is retired and before
+  the pins lift. The write sleeps a debounce on the gateway's `mc-maint` pool, which no
+  loop join reaches, so without the cancel it fires inside a LATER test. Its paths are
+  pinned when it is armed (the caller-resolves rule), so this is the owner paying for its
+  own queued work rather than a repair of the resolution.
 * `_restore_log_record_factory` puts `logging`'s record factory back. There is one such
   slot per process, and `log_redaction`'s wrapper ALWAYS renders and clears
   `exc_info` (frame locals are unscannable), and clears `args` on any record that
@@ -1899,6 +1926,19 @@ found these further classes. Each one passed on the host that wrote it.
   treat this run's own basetemp and `tempfile` root as test-owned (`_test_owned_roots`)
   and still catch a pin that escapes to the real tree. Sixteen tests were red in every
   agent-driven run before this.
+- **An agent's shell inherits the live `KIROCREW_HOME`.** When `KIROCREW_SCRATCH` is set
+  beside it, `conftest_floor_home` treats the value as inherited rather than chosen and
+  installs the import-time floor anyway, under `$TMPDIR` first and the system temp dirs
+  after. The run's own scratch (`$KIROCREW_SCRATCH`, its `TMPDIR`, and the floor an xdist
+  worker inherits through `KIROCREW_TEST_HOME_FLOOR`) is not live data for the guard when
+  it sits strictly inside `<home>/scratch/`, so that floor passes
+  `_refuse_a_real_data_home`. Another session's scratch tree, the scratch root and a live
+  home exported by hand are still refused. Before this, the refusal sent agents to `HOME=/tmp/<name>`, and each fake
+  `HOME` rebuilt the uv, npm and bytecode caches under it: those homes exhausted the
+  `/tmp` tmpfs inode budget on a developer host. When `HOME` is faked anyway, the guard
+  also checks the password-database home, and `conftest_floor_configure` keeps the
+  bytecode and hypothesis caches under that real home's `.cache/kirocrew`, the path an
+  unfaked run uses.
 
 The third full-run audit ran five backend and five frontend runs on a **macOS** host,
 from inside a Kiro Crew agent session, with the audit hook attributing every write,
@@ -5076,6 +5116,32 @@ whichever test would have inherited it. It binds `drain_for_shutdown` at SETUP w
 module is already loaded, so a test of the shutdown path that replaces that function
 with a wedged or recording stand-in cannot wedge the floor.
 
+**A poller or a debounced writer an earlier test left behind resolves the home from
+under a later one, and the guard blames the later one.** MEASURED on a Linux shard with a
+throwaway tripwire on `config_dir()` keyed by the test that started the thread or queued
+the job: in one 22k-test shard, six resolutions by `kc-embed-evict` threads born in
+`test_custom_embedding_model.py` (a `LlamaCppEmbedder` whose fake model was published and
+never `close()`d; its idle evictor re-reads the memory config on every tick) landing in
+four unrelated files, and 36 by `mc-maint` jobs from `test_crew_log_emit.py` and
+`test_crew_log_edge_fanout.py` (`SessionTreeProjection._debounced_write` built its
+payload's `root` with a live `_current_root()` when it WOKE, a debounce after the test
+that armed it had ended). Under the per-test home these resolve another test's home and
+nothing notices. The visible failure needs a third party: a test that cleared
+`os.environ` (`patch.dict("os.environ", {}, clear=True)`) for its own reasons has no
+`KIROCREW_HOME` for its duration, so a tick inside that window falls through to the
+operator's real `~/.kiro/crew`, and `_refuse_a_resolved_real_default_home` fails THAT
+test -- `test_dashboard_origin.py`'s hanging-lookup test, whose 200 ms window was the
+widest in its file, on nine PR branches in a week; the leakers passed every time.
+Reproduced on demand by shrinking the evictor's poll ceiling and running one loader test
+before the victim: red on the parent, green with the fixes. Three fixes, each needed:
+the leakers close what they start (`close()` in the tests that build a backend; the
+projection pins `root` beside `target` when it ARMS the write, so the worker resolves
+nothing); the floor catches the next one by name (`_no_leaked_embed_evictor`, and the
+teardown hook cancels the pending checkpoint writes); and the victim keeps the pin,
+unsetting only the variables its subject reads (`SSH_CONNECTION`, `SSH_CLIENT`) rather
+than clearing the environment -- the Rules entry on dropping the override already says
+so, and the floor's pin cannot survive a `clear=True` any other way.
+
 One thing that floor does not reach, residual rather than fixed: it covers `eventlog-io`
 only — the dashboard's `notif-io` pool
 (`_notification_io_executor`) resolves the notifications file the same way when its job
@@ -5659,6 +5725,34 @@ Two more, from a 5x full-suite run whose per-test probe recorded wall time and R
   with the splitter names the pattern has to spell) and it is a dozen files; the
   general rule is that a module-level walk must cost a few files, not the tree, because
   nothing bounds where it runs.
+- **A whole-tree scan that outgrows the suite timeout.** A slow scan takes 30-50 s of
+  CPU on a fast host and about three times that on a hosted runner, past the
+  suite-wide `--timeout=120`. In order of preference:
+  1. Narrow it. Read the tree through `test/source_corpus.py`'s `parsed_candidates`
+     with the literals a hit must spell (`require_all` / `require_any`), so only the
+     files that can match are parsed. A narrowed scan is not a whole-tree scan.
+     Those literals narrow a scan of names (identifiers, attributes, keywords), never
+     a scan of `str` values: an escape (`\x31`), a backslash-newline or adjacent
+     literals (`'1' '4'`) spell a value the source text does not hold, and the corpus
+     matches NFKC-folded text, which Python applies to names only. A value scan
+     parses every file and takes step 2, as `test/test_memory.py`'s history decay
+     gate does.
+  2. Otherwise put the module in its own `tree_scan_<module>` group (above).
+     `test/conftest.py` gives every test in a `tree_scan` group that has no
+     `pytest.mark.timeout` the group default, `TREE_SCAN_TIMEOUT_SECS` (300 s, eight
+     times 37.5 s). Nothing else is needed. A timeout mark that names no seconds
+     (`timeout(method="thread")`) takes the closest explicit value at any level (a
+     module's `timeout(600)`), or the default when there is none.
+  3. If the scan takes more than 37.5 s of CPU alone on a fast host (`-n 0`, the
+     first caller of any cache), give it an explicit `pytest.mark.timeout` of at
+     least eight times its cost. Five times its cost timed out on a loaded host.
+
+  `test/test_tree_scan_budget.py` pins the hook. The hook reads the closest
+  `xdist_group`, so a `tree_scan` group on one test gives that test alone the
+  default. Nothing finds scans or measures cost, so the eight-times rule in step 3 is
+  the author's job. A slow scan with no `tree_scan` group still runs at 120 s and
+  nothing flags it: narrow it (step 1), which is the fix for the cost itself, or
+  group it (step 2).
 
 Neither of these shows up as a *failure*, which is why they survive: the suite is
 green, just three times slower than it needs to be, and every timing-sensitive test
@@ -5673,7 +5767,8 @@ and it refuses to run while a file under proof carries uncommitted edits.
 
 ```bash
 python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/prove.py
-# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red
+# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 11 frontend tests · 30 baseline red
+# it also prints the `Proof:` line a fix PR pastes under `## Tests`
 # add --per-hunk to name the hunks no test catches
 ```
 
@@ -5706,7 +5801,7 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
-macOS assigns whole files like the other platforms, in five shards. The shard
+macOS assigns whole files like the other platforms, in six shards. The shard
 count is the knob to reach for there rather than the 40-minute cap, because that
 cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:
 a higher cap bounds a runaway more loosely, while a higher count is what divides

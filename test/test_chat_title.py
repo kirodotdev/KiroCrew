@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from named_cases_helpers import named_cases
 
 from kiro_crew.acp.transport_errors import AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_END_TURN, STOP_REASON_STALE_RECOVER
@@ -315,35 +316,70 @@ def test_refusal_reply_is_rejected_as_prose():
 @pytest.mark.parametrize(
     "reply",
     [
-        "I can't fetch that link",
-        "I'm unable to open the document",
-        "Sorry, I don't have access to that page",
-        "Unfortunately the URL is not reachable",
-        "As an AI I cannot browse",
-        "Unable to retrieve the blog post",
-        "Here's a title for your conversation",
-        "It looks like you shared a link",
-        "Kiro Crew launch blog. Review requested",
-        "A very long reply that keeps going and going well past any real session title length",
+        *named_cases(
+            "test_prose_replies_rejected",
+            "reply",
+            [
+                "I can't fetch that link",
+                "I'm unable to open the document",
+                "Sorry, I don't have access to that page",
+                "Unfortunately the URL is not reachable",
+                "As an AI I cannot browse",
+                "Unable to retrieve the blog post",
+                "Here's a title for your conversation",
+                "It looks like you shared a link",
+                "Kiro Crew launch blog. Review requested",
+                "A very long reply that keeps going and going well past any real session title length",
+            ],
+        ),
+        *named_cases(
+            "test_unspaced_script_prose_rejected",
+            "reply",
+            [
+                # A refusal in an unspaced script is ONE word by str.split, so only the
+                # character ceiling / wide terminator can catch it.
+                "抱歉，我无法访问这个外部链接，因此无法根据它来命名这个会话",
+                "我无法打开该文档。请提供更多上下文信息",
+                "申し訳ありませんが、外部のURLにはアクセスできません。会話の名前を付けられません",
+                "这是一个会话标题。另外还有一句话",
+            ],
+        ),
     ],
 )
-def test_prose_replies_rejected(reply):
+def test_prose_replies_are_rejected(reply):
     assert _looks_like_prose(reply)
 
 
 @pytest.mark.parametrize(
     "reply",
     [
-        "Kiro Crew launch blog",
-        "Node.js upgrade plan",
-        "Ship v1.2 to prod",
-        "Fix title generation bug",
-        "Quip doc review",
-        "Ideas for the roadmap",
-        "SKIP",
+        *named_cases(
+            "test_real_titles_accepted",
+            "reply",
+            [
+                "Kiro Crew launch blog",
+                "Node.js upgrade plan",
+                "Ship v1.2 to prod",
+                "Fix title generation bug",
+                "Quip doc review",
+                "Ideas for the roadmap",
+                "SKIP",
+            ],
+        ),
+        *named_cases(
+            "test_unspaced_script_titles_accepted",
+            "reply",
+            [
+                "修复会话标题语言",
+                "升级 Node 到 24",
+                "修复 PrivacyPanel 的动态键",
+                "チャットタイトルの言語設定",
+                "แก้ไขภาษาของชื่อแชท",
+            ],
+        ),
     ],
 )
-def test_real_titles_accepted(reply):
+def test_real_titles_are_accepted(reply):
     assert not _looks_like_prose(reply)
 
 
@@ -551,35 +587,6 @@ async def test_generate_title_applies_the_configured_language(monkeypatch):
     )
     assert title == "修复会话标题语言"
     assert "zh-CN" in seen["prompt"]
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        # A refusal in an unspaced script is ONE word by str.split, so only the
-        # character ceiling / wide terminator can catch it.
-        "抱歉，我无法访问这个外部链接，因此无法根据它来命名这个会话",
-        "我无法打开该文档。请提供更多上下文信息",
-        "申し訳ありませんが、外部のURLにはアクセスできません。会話の名前を付けられません",
-        "这是一个会话标题。另外还有一句话",
-    ],
-)
-def test_unspaced_script_prose_rejected(reply):
-    assert _looks_like_prose(reply)
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "修复会话标题语言",
-        "升级 Node 到 24",
-        "修复 PrivacyPanel 的动态键",
-        "チャットタイトルの言語設定",
-        "แก้ไขภาษาของชื่อแชท",
-    ],
-)
-def test_unspaced_script_titles_accepted(reply):
-    assert not _looks_like_prose(reply)
 
 
 @pytest.mark.parametrize(
@@ -949,40 +956,43 @@ _KO_REAL_TITLE = "\ud504\ub77c\uc774\ubc84\uc2dc \ud328\ub110 \ubc84\uadf8 \uc21
 @pytest.mark.parametrize(
     "reply",
     [
-        # Multi-line: a reply reduces to its first line, so the
-        # verdict-plus-reason shape collapses to the bare control word.
-        "SKIP\n\nThe conversation is incomplete and does not establish a clear topic.",
-        "SKIP\nToo vague to name.",
-        # One-line: verdict plus reason on a single line, in any casing --
-        # a lowercased echo carrying a reason is still a verdict.
-        "SKIP - the topic is not clear yet",
-        "SKIP (too vague)",
-        "SKIP: greetings only",
-        "skip - too vague to name",
-        "Skip: greetings only",
-        "keep - the title still fits",
-        # Exact-match forms that must keep working.
-        "SKIP",
-        "skip",
-        "SKIP.",
+        *named_cases(
+            "test_skip_with_reason_yields_no_title",
+            "reply",
+            [
+                # Multi-line: a reply reduces to its first line, so the
+                # verdict-plus-reason shape collapses to the bare control word.
+                "SKIP\n\nThe conversation is incomplete and does not establish a clear topic.",
+                "SKIP\nToo vague to name.",
+                # One-line: verdict plus reason on a single line, in any casing --
+                # a lowercased echo carrying a reason is still a verdict.
+                "SKIP - the topic is not clear yet",
+                "SKIP (too vague)",
+                "SKIP: greetings only",
+                "skip - too vague to name",
+                "Skip: greetings only",
+                "keep - the title still fits",
+                # Exact-match forms that must keep working.
+                "SKIP",
+                "skip",
+                "SKIP.",
+            ],
+        ),
+        *named_cases(
+            "test_keep_is_a_control_word_on_the_initial_path",
+            "reply",
+            [
+                # The module's own refresh prompt teaches KEEP, so an initial reply
+                # of KEEP is a confused model, not a session named "KEEP".
+                "KEEP",
+                "keep",
+                "KEEP\n\nThe current title still fits the conversation.",
+                "KEEP - the title still fits",
+            ],
+        ),
     ],
 )
-def test_skip_with_reason_yields_no_title(reply):
-    assert _validate_title_reply(reply) == ""
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        # The module's own refresh prompt teaches KEEP, so an initial reply
-        # of KEEP is a confused model, not a session named "KEEP".
-        "KEEP",
-        "keep",
-        "KEEP\n\nThe current title still fits the conversation.",
-        "KEEP - the title still fits",
-    ],
-)
-def test_keep_is_a_control_word_on_the_initial_path(reply):
+def test_a_control_reply_yields_no_title(reply):
     assert _validate_title_reply(reply) == ""
 
 
@@ -1008,27 +1018,55 @@ def test_korean_refusal_yields_no_title(reply):
 @pytest.mark.parametrize(
     "reply,expected",
     [
-        # Real titles that OPEN with a control word must survive: a plain
-        # following word or an identifier joiner separates a title from a
-        # verdict-plus-reason, and the prompt tells the model to keep
-        # identifiers verbatim.
-        ("Keep alive timer bug", "Keep alive timer bug"),
-        ("Skip list benchmark", "Skip list benchmark"),
-        ("SKIPPED frames in reveal", "SKIPPED frames in reveal"),
-        ("SKIP and KEEP handling", "SKIP and KEEP handling"),
-        ("SKIP_TESTS env var flag", "SKIP_TESTS env var flag"),
-        ("KEEP-ALIVE header bug", "KEEP-ALIVE header bug"),
-        ("SKIP.md parser fix", "SKIP.md parser fix"),
-        # A title followed by an unasked-for explanation keeps its first line,
-        # mirroring messaging/auto_title.clean_title.
-        ("Fix login bug\n\nThis names the session's main topic.", "Fix login bug"),
-        # A reply opening with a blank line keeps its title.
-        ("\nFix login bug", "Fix login bug"),
-        # A legitimate short Korean title is not a refusal.
-        (_KO_REAL_TITLE, _KO_REAL_TITLE),
+        *named_cases(
+            "test_legitimate_titles_survive_the_new_checks",
+            "reply,expected",
+            [
+                # Real titles that OPEN with a control word must survive: a plain
+                # following word or an identifier joiner separates a title from a
+                # verdict-plus-reason, and the prompt tells the model to keep
+                # identifiers verbatim.
+                ("Keep alive timer bug", "Keep alive timer bug"),
+                ("Skip list benchmark", "Skip list benchmark"),
+                ("SKIPPED frames in reveal", "SKIPPED frames in reveal"),
+                ("SKIP and KEEP handling", "SKIP and KEEP handling"),
+                ("SKIP_TESTS env var flag", "SKIP_TESTS env var flag"),
+                ("KEEP-ALIVE header bug", "KEEP-ALIVE header bug"),
+                ("SKIP.md parser fix", "SKIP.md parser fix"),
+                # A title followed by an unasked-for explanation keeps its first line,
+                # mirroring messaging/auto_title.clean_title.
+                ("Fix login bug\n\nThis names the session's main topic.", "Fix login bug"),
+                # A reply opening with a blank line keeps its title.
+                ("\nFix login bug", "Fix login bug"),
+                # A legitimate short Korean title is not a refusal.
+                (_KO_REAL_TITLE, _KO_REAL_TITLE),
+            ],
+        ),
+        *named_cases(
+            "test_short_titles_in_any_script_survive_the_sentence_shape",
+            "reply,expected",
+            [
+                # Real short titles, as the prompt asks: no punctuation.
+                ("Plan de mise à niveau Node", "Plan de mise à niveau Node"),
+                ("Piano di aggiornamento Node", "Piano di aggiornamento Node"),
+                ("Обновление версии Node", "Обновление версии Node"),
+                ("إصلاح خطأ تسجيل الدخول", "إصلاح خطأ تسجيل الدخول"),
+                ("लॉगिन बग सुधार", "लॉगिन बग सुधार"),
+                ("লগইন বাগ সংশোধন", "লগইন বাগ সংশোধন"),
+                ("修复会话标题语言", "修复会话标题语言"),
+                ("チャットタイトルの言語設定", "チャットタイトルの言語設定"),
+                (_KO_REAL_TITLE, _KO_REAL_TITLE),
+                # A stray final terminator on a short name is still a name.
+                ("修复会话标题语言。", "修复会话标题语言"),
+                ("チャットタイトルの言語設定。", "チャットタイトルの言語設定"),
+                ("Fix login bug.", "Fix login bug"),
+                ("लॉगिन बग सुधार।", "लॉगिन बग सुधार।"),
+                ("إصلاح تسجيل الدخول.", "إصلاح تسجيل الدخول"),
+            ],
+        ),
     ],
 )
-def test_legitimate_titles_survive_the_new_checks(reply, expected):
+def test_a_legitimate_title_survives(reply, expected):
     assert _validate_title_reply(reply) == expected
 
 
@@ -1064,31 +1102,6 @@ def test_a_terminated_refusal_in_any_script_yields_no_title(reply):
     reply line before that strip. Mutation: drop the ``ends_like_sentence``
     call in ``_validate_title_reply`` -- red on every period-closed row."""
     assert _validate_title_reply(reply) == ""
-
-
-@pytest.mark.parametrize(
-    "reply,expected",
-    [
-        # Real short titles, as the prompt asks: no punctuation.
-        ("Plan de mise à niveau Node", "Plan de mise à niveau Node"),
-        ("Piano di aggiornamento Node", "Piano di aggiornamento Node"),
-        ("Обновление версии Node", "Обновление версии Node"),
-        ("إصلاح خطأ تسجيل الدخول", "إصلاح خطأ تسجيل الدخول"),
-        ("लॉगिन बग सुधार", "लॉगिन बग सुधार"),
-        ("লগইন বাগ সংশোধন", "লগইন বাগ সংশোধন"),
-        ("修复会话标题语言", "修复会话标题语言"),
-        ("チャットタイトルの言語設定", "チャットタイトルの言語設定"),
-        (_KO_REAL_TITLE, _KO_REAL_TITLE),
-        # A stray final terminator on a short name is still a name.
-        ("修复会话标题语言。", "修复会话标题语言"),
-        ("チャットタイトルの言語設定。", "チャットタイトルの言語設定"),
-        ("Fix login bug.", "Fix login bug"),
-        ("लॉगिन बग सुधार।", "लॉगिन बग सुधार।"),
-        ("إصلاح تسجيل الدخول.", "إصلاح تسجيل الدخول"),
-    ],
-)
-def test_short_titles_in_any_script_survive_the_sentence_shape(reply, expected):
-    assert _validate_title_reply(reply) == expected
 
 
 class _StubBgSessions:

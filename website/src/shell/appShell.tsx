@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
+import { setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -17,6 +18,7 @@ import { useTheme } from '../hooks/useTheme'
 import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
@@ -37,10 +39,13 @@ import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
-import { subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
+import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
+import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
+import AppNavStateIcon from './nav/AppNavStateIcon'
 import { useUpdateFlow } from './updates/updateFlow'
-import { useUpdateSubscription } from '../hooks/useUpdateSubscription'
+import { useUpdateSubscription, usePolicyGovernedNotification } from '../hooks/useUpdateSubscription'
 import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
 import { useTerminalRestoreProbe } from './boot/terminalRestore'
 import { useTerminalPoppedOut } from '../utils/terminalPopout'
@@ -59,8 +64,8 @@ import { appNavTarget } from '../appNav'
 import { useGlobalApprovalCount, useRailBadges } from './nav/railBadges'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
-import { useDeveloperMode } from './nav/developerMode'
 import { appPathname } from '../lib/basePath'
+import { slotRowByKey } from '../store/slotIndex'
 
 /** Mobile nav drawer travel: its 220px width + the 8px mx-2 inset + border. */
 /** Mobile nav drawer width. Shared with its travel below so the two cannot drift
@@ -320,10 +325,18 @@ export function useAppShell() {
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  // Notify the main process whenever the gateway status reports a security
+  // policy provider governs this install's updates, so the feed lane stands down.
+  usePolicyGovernedNotification()
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
+  // iPad/iPhone Safari: put the page back at scroll 0 after the on-screen
+  // keyboard hides, so the header stays in view and no gap appears below.
+  useKeyboardViewportReset()
   useNotificationSound()
-  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
+  // The rail starts collapsed until the user expands it: only a stored '0'
+  // (the user's own expand) opens it on load.
+  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') !== '0')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed
   // Preview expand mode from the Web Preview tab collapses the left nav
@@ -583,10 +596,16 @@ export function useAppShell() {
                 : builtinIcon
                   ? builtinIcon
                   : <Package size={16} />
+            // An app that declares `ui.pages[].iconInactiveUrl` gets that file on
+            // its row while the row is not selected, the way built-in icons go
+            // grey (see AppNavStateIcon).
+            const stateIcon = target.inactiveIconUrl
+              ? <AppNavStateIcon icon={baseIcon} inactiveSrc={target.inactiveIconUrl} />
+              : baseIcon
             // Orphaned apps get a warn-colored icon to signal migration needed
             const icon = target.orphaned
-              ? <span className="text-warn">{baseIcon}</span>
-              : baseIcon
+              ? <span className="text-warn">{stateIcon}</span>
+              : stateIcon
             return [{
               path: target.route,
               id: target.id,
@@ -683,12 +702,11 @@ export function useAppShell() {
   const metrics = useMetricsReadout(isMobile, updateAvailable, topbarLevels.right)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
-  const { devMode, devPageSeen } = useDeveloperMode(location.pathname)
-  // Guide facts the shell knows: the two gates a guide pauses on (it never
-  // flips either), the phone menu's scope, and whether this is the Sessions
-  // page (whose own drawer replaces the menu button there).
-  useGuideGate('developer_mode', devMode)
+  // Guide facts the shell knows: the gate a guide pauses on (it never flips
+  // it), the phone menu's scope, and whether this is the Sessions page (whose
+  // own drawer replaces the menu button there).
   useGuideGate('terminal_enabled', terminalEnabled)
+  useEffect(() => { showNativeDevTools() }, [])
   useGuidePredicate('not_on_sessions_page', location.pathname !== '/sessions')
   // Whether the rail draws Connect your phone at all: the pairing guide's blocker otherwise.
   useGuidePredicate('phone_connect_available', hasRenderableMobileConnect)
@@ -707,6 +725,10 @@ export function useAppShell() {
     return subscribeNativeNavigate(path => {
       const slotKey = chatDeepLinkSlot(path)
       if (slotKey) {
+        // The session lives in the local Crew. Over a Remote Crew pane, bring
+        // the local Crew forward first (as the notification banner does), so
+        // the leave prompt and the switched session are both on screen.
+        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
         applyNavIntentInMain(
           // `path` is deliberately dropped in favour of the bare route: a
           // NavIntent carries no query string, and ChatPage writes `?sid=` back
@@ -725,7 +747,9 @@ export function useAppShell() {
       if (!mayLeaveForNavigation()) return
       navigate(path)
     })
-  }, [navigate, dispatch, mayLeaveForNavigation])
+  }, [navigate, dispatch, mayLeaveForNavigation, appStore])
+  // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
+  useNativeHistoryStep(isMobile)
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {
@@ -766,7 +790,7 @@ export function useAppShell() {
   // is still its key has no real title yet (same rule as the chat popout).
   const activeSessionTitle = useAppSelector(s => {
     const key = s.chat.activeSlot
-    const title = key ? s.dashboard.slots.find(x => x.key === key)?.title : undefined
+    const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
     return title && title !== key ? title : ''
   })
 
@@ -838,6 +862,14 @@ export function useAppShell() {
     const base = titleLabel ? i18nT('app.tab_title', { label: titleLabel, productName: botName }) : botName
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
   }, [totalAttention, botName, titleLabel])
+  // Name the history entry on screen for the Back/Forward arrows' history
+  // menu (#17453): the session on chat, the page anywhere else, and nothing on
+  // a route with no rail row, so that entry is left out of the list. Re-run on
+  // every entry, because the name belongs to the entry, not to the route.
+  const historyLabel = isChat ? (activeSessionTitle || chatPanelLabel) : titleLabel
+  useEffect(() => {
+    labelCurrentRouteEntry(historyLabel)
+  }, [historyLabel, location.key])
   // Phone chat page: the header is ONE bar for both the shell and the
   // conversation. The chat page fills `#mobile-topbar-slot` (sessions toggle,
   // session title + menu) and `#mobile-topbar-trail-slot` (its overflow menu)
@@ -854,6 +886,10 @@ export function useAppShell() {
   // bare visit that is about to open a crewmate must not flash the logo row.
   const membersRoute = activePath === '/members' || activePath.startsWith('/members/')
   const mobileSingle = isMobile && (isChat || membersSingleBar)
+  // The phone Crewmates single bar before the page has a crewmate open: the
+  // page has no drawer bound yet, so the bar carries a nav-drawer toggle.
+  const membersBarPending = mobileSingle && onMembersRoute && membersBar === 'pending'
+  const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
     isEmbed, isPopout, initialPopoutPath, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
@@ -870,11 +906,12 @@ export function useAppShell() {
     toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
-    capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, devMode, devPageSeen,
+    capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,
     setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
+    membersBarPending, mobileNavOpen,
   }
 }
 

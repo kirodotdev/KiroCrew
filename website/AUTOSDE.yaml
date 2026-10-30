@@ -80,6 +80,54 @@ custom-rules:
 
       See the design-token rules in website/docs/theming-contract.md.
 
+  - id: no-scrollbar-at-rest
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+      - "src/**/*.css"
+    regex:
+      pattern: "^(?!.*data-scrolling).*(?:::-webkit-scrollbar-thumb[^{]*\\{[^}]*background(?:-color)?\\s*:\\s*(?!transparent)|scrollbar-color\\s*:\\s*(?!transparent)|scrollbar-width\\s*:\\s*auto|scrollbarWidth\\s*:\\s*['\"]auto|scrollbarColor\\s*:\\s*['\"](?!transparent)|scrollbar-overlay|scroll-fade)"
+      check-added: true
+      check-removed: false
+    rule: |
+      No scrollbar in the dashboard is visible at rest. A scroll box either hides
+      its scrollbar entirely (`scrollbar-none`) or shows a thin thumb only while
+      it is being scrolled, in a column it reserves anyway so the reveal moves no
+      content. Do NOT add a rule, class, inline style or token that paints a thumb
+      at rest: a coloured `::-webkit-scrollbar-thumb` or `scrollbar-color` whose
+      selector does not carry `[data-scrolling]`, `scrollbar-width: auto`, a
+      hover-revealed thumb (`:hover` is "at rest" for a box the pointer lives
+      over, like the chat transcript), or a revival of the retired
+      `.scrollbar-overlay` / `.scroll-fade` utilities.
+
+      Why: a maintainer decision
+      (docs/decisions/2026-10-23-scrollbars-are-never-always-visible.md). A
+      permanently scrollable region (a long chat, a long sidebar) turns a thumb
+      into a fixed stripe, not a transient hint, and three competing treatments
+      (always-on, hover-revealed, hidden) left every new surface making its own
+      call. The global rule in `src/index.css` (transparent thumb in a reserved
+      6px column; `[data-scrolling]` paints it; `lib/scrollReveal.ts` sets that
+      attribute while a box scrolls and clears it after a short linger) covers
+      every light-DOM scroll box, so a new one needs no class at all.
+      `src/test/scrollbarRevealOnly.test.ts` scans `src/` for the same shapes and
+      measures the revealed thumb's 3:1 contrast per theme.
+
+      A box that scrolls still needs a CUE that it does when its edge is not
+      obvious: the edge-fade mask (`.edge-fade-x`, `useScrollEdges`) or a
+      "more below" affordance (`MORE_BELOW_MASK`, `JumpToBottomButton`), never a
+      resting thumb.
+
+      Shadow roots: the global rule and the document scroll listener both stop
+      at a shadow boundary. Pierre's code, diff and tree surfaces are reached
+      through `unsafeCSS` keyed on the same attribute (`PIERRE_SCROLL_REVEAL_CSS`
+      folded into both option factories, and the tree's `PIERRE_TREE_STATE_ROW_CSS`,
+      in `src/pierre/config.ts`); `lib/scrollReveal.ts` attaches to those hosts'
+      shadow roots itself. A new Pierre entry point resolves its options through
+      the factories, never by hand; a new shadow-drawing host is added to
+      `SHADOW_SCROLL_HOSTS`. The Mochi app's own windows (`src/apps/mochi/`) do
+      not read the dashboard stylesheet and are out of scope.
+
   - id: narrow-viewport-required
     blocking: true
     file-patterns:

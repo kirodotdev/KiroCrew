@@ -36,14 +36,15 @@ What was changed relative to the upstream wheel:
 
 `llama_cpp_libs/` holds the minimal verified shared-library closure per
 platform, extracted from the official prebuilt CPU wheels
-(https://abetlen.github.io/llama-cpp-python/whl/cpu) — except `macos_x86_64/`,
-which upstream does not publish and is built from the pinned PyPI sdist (see
-below):
+(https://abetlen.github.io/llama-cpp-python/whl/cpu) — except `macos_x86_64/`
+and `linux_aarch64_dotprod/`, which upstream does not publish and are built
+from the pinned PyPI sdist (see below):
 
 | Dir | Source wheel |
 |-----|--------------|
 | `linux_x86_64/`  | `llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl` (sha256 f34c26f51ec4fd4e0355c5384b7056f877bf7a38c9d7897a46c78118ca900366) |
 | `linux_aarch64/` | `llama_cpp_python-0.3.34-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl` (sha256 725d8a324032b3f1143c20eee62e47415476eb85127e8a134e3a431d666d21d1) |
+| `linux_aarch64_dotprod/` | built from sdist `llama_cpp_python-0.3.34.tar.gz` with `+dotprod` — see below |
 | `macos_arm64/`   | `llama_cpp_python-0.3.34-py3-none-macosx_11_0_arm64.whl` (sha256 d42e069db63c11494f429589fb0b7b5d3862d72d4ad5e8ef311e0ece7865b33d) |
 | `macos_x86_64/`  | built from sdist `llama_cpp_python-0.3.34.tar.gz` (sha256 d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35) — see below |
 | `win_amd64/`     | `llama_cpp_python-0.3.34-py3-none-win_amd64.whl` (sha256 6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a) |
@@ -131,8 +132,56 @@ c165a668db8017323633638311c637036940cdafffdd059ff9ab101ae4e3c3a0  libggml-cpu.0.
 d28ac2ad5d9fbccd6df6622a6aa3cd54ae8474c88b6672c9fb7a59d4a05ed040  libllama.dylib
 ```
 
+### linux_aarch64_dotprod: built from source (int8 dot product)
+
+Upstream's Linux arm64 wheel targets plain `armv8-a`, so the Q8_0 embedding
+model runs without the `sdot` int8 dot-product instruction (`objdump -d` finds
+0 in its `libggml-cpu.so.0`; this build has 992). On a 16-core Graviton3 at 8
+threads a 2,400-char embed takes 4.2 s on `linux_aarch64/` and 1.5 s here.
+Vectors match (cosine ≥ 0.9997 on a fixed text set, the same spread a compiler
+change alone gives).
+
+The loader picks this directory only when EVERY `Features` line in
+`/proc/cpuinfo` lists `asimddp` and every file below is present
+(`embeddings_native._linux_aarch64_libs_dir`); anything else loads
+`linux_aarch64/`. On a core without `sdot` (Cortex-A72, Graviton1,
+Raspberry Pi 4) this build dies with SIGILL, which nothing can catch.
+
+It is upstream's own arm64 wheel job (`.github/workflows/build-and-release.yaml`
+in the sdist: manylinux2014 aarch64 image, `pip wheel`, `auditwheel repair`)
+with one flag added. Run on an aarch64 host with Docker:
+
+```
+# sdist sha256 d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35
+docker run --rm -v "$PWD:/io" -w /io \
+  quay.io/pypa/manylinux2014_aarch64@sha256:ec445e2688785976c727d304f421ae8af5489715c19508526a749716e240541a \
+  bash -euxc '
+    mkdir src && tar -xzf llama_cpp_python-0.3.34.tar.gz -C src --strip-components 1
+    export CMAKE_ARGS="-DGGML_NATIVE=off -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod"
+    /opt/python/cp310-cp310/bin/python -m pip wheel --no-deps -w dist ./src
+    LD_LIBRARY_PATH=/io/src/llama_cpp/lib auditwheel repair -w wheelhouse dist/*.whl'
+```
+
+Toolchain: that image's gcc 10.2.1 (devtoolset-10), OpenMP on (the default, as
+upstream). Python version does not touch the native build (the wheel is
+`py3-none`); cp310 is used because the image no longer carries upstream's cp38.
+From the repaired wheel take `llama_cpp/lib/{libllama.so,libggml.so.0,
+libggml-base.so.0,libggml-cpu.so.0}` and `llama_cpp_python.libs/libgomp-d22c30c5.so.1.0.0`
+— the same closure as `linux_aarch64/`. `llama_print_system_info()` reads
+`NEON = 1 | ARM_FMA = 1 | DOTPROD = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1`.
+Two clean builds gave byte-identical files:
+
+```
+1bf6689c1efcf92b1c5b20d404eb501774d1933cea78faf0c912b6609cf4332d  libllama.so
+7f42cd95daab68bcda30a8d12aa5ed4985650069548e1fbd0bfbc4f05c939a8a  libggml.so.0
+e198f95172099605d3310132961f50aed9d4c20aae8f2f8673d927ede8c60e93  libggml-base.so.0
+a45ca40cab2825576218359bcee9de11ba46c00216074ace5ba052642a4d3321  libggml-cpu.so.0
+bd0f8bc6b22d5cde4365332ba87c1151416bfc6fa4c51c6f669308de507bd35f  libgomp-d22c30c5.so.1.0.0
+```
+
 To upgrade: download the four wheels for the new version (plus rebuild
-`macos_x86_64/` from the new sdist with the CMAKE_ARGS above), re-extract the
+`macos_x86_64/` from the new sdist with the CMAKE_ARGS above, and
+`linux_aarch64_dotprod/` with the recipe above), re-extract the
 same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
 dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), re-mirror the cache-less architecture set (below), and

@@ -41,6 +41,7 @@ export interface TailnetStatusData {
  * `handlers/tailnet_mobile._derive_step`) so this list is rendered, never
  * re-computed here — one owner for the state machine.
  *
+ * - `policy_off` — an enterprise build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
  * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
  *   — the ways there is no usable tailnet name, kept apart because each is a
@@ -59,6 +60,7 @@ export interface TailnetStatusData {
  * - `ready` — published and trusted.
  */
 export type TailnetMobileStep =
+  | 'policy_off'
   | 'pinned'
   | 'untrusted_cli'
   | 'install'
@@ -146,6 +148,9 @@ export function createRemoteAccessEndpoints({ get, post, j }: ClientTransport) {
       post('/api/auth/mobile-link', undefined, sessionKey).then(j) as Promise<{
       url: string
       expires_in: number
+      /** The same link as a PNG data URI QR code, rendered server-side. Absent
+       *  when the encode failed: the link alone still works. A credential. */
+      image?: string
     }>,
     // Phone-connection methods available on this deployment under the current
     // governance ceiling (CPP mobile_connect seam). Descriptor-only: minting the

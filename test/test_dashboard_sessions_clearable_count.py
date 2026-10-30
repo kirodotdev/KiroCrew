@@ -391,3 +391,84 @@ async def test_counting_does_not_clear_the_closed_marker(tmp_path) -> None:
     after = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert after["closed"] is True, "closed must survive a count"
     assert after["closed_at"] == CLOSED_AT, "closed_at must survive a count"
+
+
+# ── user_only: Delete all takes exactly what the Older Sessions pane lists ──
+
+
+def _seed_mixed_history(tmp_path) -> ConversationLog:
+    """One conversation the pane shows, plus rows ``user_only`` hides."""
+    log = ConversationLog(base_dir=tmp_path)
+    log.append("dashboard:used", "user", "hello")
+    log.append("subagent:abc123", "user", "a delegated task")
+    log.append("secretary:daily", "user", "a background turn")
+    log.update_metadata("dashboard:chat-3-1790874654", {"agent": "kirocrew"})  # never used
+    return log
+
+
+def _real_state(log: ConversationLog) -> MagicMock:
+    state = MagicMock()
+    state.conversation_log = log
+    state._slots = {}
+    state.crons = None
+    state.push_slots_update = MagicMock()
+    state.push_refresh = MagicMock()
+    return state
+
+
+def _query_request(state: MagicMock, query: dict) -> web.Request:
+    request = _request(state)
+    request.query = query
+    return request
+
+
+def _on_disk(tmp_path) -> set[str]:
+    return {p.stem for p in tmp_path.glob("*.jsonl")}
+
+
+@pytest.mark.asyncio
+async def test_user_only_clear_deletes_exactly_the_listed_rows(tmp_path) -> None:
+    """The listing, the count and the clear resolve one set under ``user_only``.
+
+    The pane lists one row here; the hidden machine transcripts and the
+    never-used session must survive the clear.
+    """
+    from kiro_crew.dashboard.handlers import api_sessions
+
+    log = _seed_mixed_history(tmp_path)
+    state = _real_state(log)
+    before = _on_disk(tmp_path)
+
+    listed = json.loads(
+        (await api_sessions(_query_request(state, {"user_only": "1"}))).body.decode("utf-8")
+    )
+    listed_keys = {row["key"] for row in listed["sessions"]}
+    assert listed_keys == {"dashboard_used"}
+
+    count = await api_sessions_clearable_count(_query_request(state, {"user_only": "1"}))
+    assert json.loads(count.body.decode("utf-8")) == {"sessions": len(listed_keys)}
+
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_query_request(state, {"user_only": "1"}))
+    assert resp.status == 200
+    body = json.loads(resp.body.decode("utf-8"))
+    assert (body["ok"], body["cleared"], body["skipped"]) == (True, 1, 0)
+
+    assert before - _on_disk(tmp_path) == listed_keys
+    assert {"subagent_abc123", "secretary_daily"} <= _on_disk(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_clear_without_user_only_still_clears_every_closed_session(tmp_path) -> None:
+    """Other callers of ``DELETE /api/sessions`` keep the old contract."""
+    log = _seed_mixed_history(tmp_path)
+    state = _real_state(log)
+
+    count = await api_sessions_clearable_count(_query_request(state, {}))
+    total = json.loads(count.body.decode("utf-8"))["sessions"]
+    assert total == len(_on_disk(tmp_path))
+
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_query_request(state, {}))
+    assert json.loads(resp.body.decode("utf-8"))["cleared"] == total
+    assert _on_disk(tmp_path) == set()

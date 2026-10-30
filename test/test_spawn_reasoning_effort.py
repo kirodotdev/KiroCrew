@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from named_cases_helpers import named_cases
 from test_subagent_continuable import continuation_runtime as _continuation_runtime
 
 from kiro_crew.effort import EFFORT_LEVELS
@@ -118,13 +119,16 @@ class TestSchema:
         cleaned = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
         assert cleaned.get("reasoning_effort") is None
 
-    @pytest.mark.parametrize("bad", ["ultra", "LOW", "maximum", "0", "hi gh"])
-    def test_unknown_level_is_rejected(self, bad):
-        with pytest.raises(ValidationError):
-            validate_tool_args({"task": "x", "reasoning_effort": bad}, SPAWN_RUN_SCHEMA)
-
-    @pytest.mark.parametrize("bad", [1, 2.5, True, [], {}])
-    def test_non_string_is_rejected(self, bad):
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            *named_cases(
+                "test_unknown_level_is_rejected", "bad", ["ultra", "LOW", "maximum", "0", "hi gh"]
+            ),
+            *named_cases("test_non_string_is_rejected", "bad", [1, 2.5, True, [], {}]),
+        ],
+    )
+    def test_a_bad_level_is_rejected(self, bad):
         with pytest.raises(ValidationError):
             validate_tool_args({"task": "x", "reasoning_effort": bad}, SPAWN_RUN_SCHEMA)
 
@@ -350,21 +354,29 @@ class TestApiSpawnHandler:
         request.json = _json
         return request, mgr
 
+    def _real_request(self, body: dict) -> tuple[Any, Any]:
+        """Like ``_request``, but on a real manager whose runs never start."""
+        request, _ = self._request(body)
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        request.app["state"].subagents = mgr
+        return request, mgr
+
     @pytest.mark.asyncio
     async def test_value_reaches_spawn(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = self._request({"task": "x", "reasoning_effort": "xhigh"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
+        request, mgr = self._real_request({"task": "x", "reasoning_effort": "xhigh"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).reasoning_effort == "xhigh"
 
     @pytest.mark.asyncio
     async def test_absent_value_reaches_spawn_as_empty(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = self._request({"task": "x"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == ""
+        request, mgr = self._real_request({"task": "x"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).reasoning_effort == ""
 
     @pytest.mark.asyncio
     async def test_invalid_value_is_rejected_with_400(self):
@@ -452,29 +464,20 @@ class TestRecordAndRetry:
     async def test_retry_re_spawns_at_the_same_effort(self, crew):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
 
-        old = SimpleNamespace(
+        old = SubagentInfo(
             id="a1",
             task="t",
             _raw_task="t",
             parent_session_key="dash:1",
-            agent="",
-            max_turns=0,
-            cwd="",
-            model="",
             reasoning_effort="xhigh",
-            approval_mode="",
-            silent=False,
-            delegation={},
-            include_memory=True,
-            include_lessons=True,
-            include_project=True,
             # Reused by the retry alongside the context triple: a retry must not
             # widen a delegated run to the global store.
             memory_store="member-coding" if crew else "",
             crew=crew,
             done=True,
-            outcome="failed",
+            error="boom",
             execution_context=ExecutionContext(
                 "coding-id" if crew else None,
                 MemoryStoreRef("member-coding", "coding-id") if crew else MemoryStoreRef("default"),
@@ -482,18 +485,19 @@ class TestRecordAndRetry:
                 "kirocrew",
             ),
         )
-        mgr = MagicMock()
-        mgr.get.return_value = old
-        mgr.spawn.return_value = SimpleNamespace(id="a2", done=False, error="")
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        mgr._agents["a1"] = old
         state = SimpleNamespace(subagents=mgr)
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {}
         request.match_info = {"agent_id": "a1"}
-        await api_spawn_retry(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
-        assert mgr.spawn.call_args.kwargs["crew"] == crew
-        assert mgr.spawn.call_args.kwargs["memory_store"] == old.memory_store
+        resp = await api_spawn_retry(request)
+        retried = mgr.get(json.loads(resp.text)["id"])
+        assert retried.reasoning_effort == "xhigh"
+        assert retried.crew == crew
+        assert retried.memory_store == old.memory_store
 
 
 class TestResolutionPrecedence:
@@ -619,11 +623,10 @@ class TestEffortDropReason:
         assert "deepseek-3.2" in reason
 
     def test_explicit_auto_beats_a_capable_role_pin(self):
-        """Regression (round-4 GPT finding): an explicit ``model="auto"`` is a
-        truthy override — ``_run_inner`` forwards it verbatim and the factory
-        collapses it to unpinned. The old verdict normalized it away and
-        reported the role pin as applied — an inverted receipt. The receipt is
-        the unpinned one, never the pin's."""
+        """An explicit ``model="auto"`` is a truthy override: ``_run_inner``
+        forwards it verbatim and the factory collapses it to unpinned. A verdict
+        that normalized it away would report the role pin as applied, an
+        inverted receipt. The receipt is the unpinned one, never the pin's."""
         from kiro_crew.subagent import effort_applied_note, effort_pending_note
 
         role_models = {"subagent": "sonnet-test-model"}
@@ -887,15 +890,24 @@ class TestEffortAppliedNote:
         with _hermetic_cfg(role_models=role_models, agent_pins=agent_pins):
             return effort_drop_reason(model, effort, agent)
 
-    def test_claude_family_names_output_config(self):
-        note = self._note("sonnet-test-model", "high")
-        assert "sonnet-test-model" in note
-        assert "output_config.effort" in note
-
-    def test_gpt_family_names_reasoning(self):
-        note = self._note("gpt-5.6-sol", "medium")
-        assert "gpt-5.6-sol" in note
-        assert "reasoning.effort" in note
+    @pytest.mark.parametrize(
+        "model, effort, field",
+        [
+            pytest.param(
+                "sonnet-test-model",
+                "high",
+                "output_config.effort",
+                id="test_claude_family_names_output_config",
+            ),
+            pytest.param(
+                "gpt-5.6-sol", "medium", "reasoning.effort", id="test_gpt_family_names_reasoning"
+            ),
+        ],
+    )
+    def test_the_note_names_the_model_and_its_field(self, model, effort, field):
+        note = self._note(model, effort)
+        assert model in note
+        assert field in note
 
     def test_no_effort_requested_means_no_note(self):
         assert self._note("sonnet-test-model", "") == ""
@@ -1313,9 +1325,18 @@ class TestSessionChainResolution:
         assert self._reason("", "high", "mycrew", cfg=cfg) == ""
         assert "sonnet-test-model" in self._note("", "high", "mycrew", cfg=cfg)
 
-    def test_non_capable_crew_pin_is_named(self):
-        cfg = self._cfg_with_crew("deepseek-3.2")
-        assert "deepseek-3.2" in self._reason("", "high", "mycrew", cfg=cfg)
+    @pytest.mark.parametrize(
+        "crew_model, explicit_model",
+        [
+            pytest.param("deepseek-3.2", "", id="test_non_capable_crew_pin_is_named"),
+            pytest.param(
+                "sonnet-test-model", "deepseek-3.2", id="test_explicit_model_beats_the_crew_pin"
+            ),
+        ],
+    )
+    def test_the_drop_names_the_winning_non_capable_model(self, crew_model, explicit_model):
+        cfg = self._cfg_with_crew(crew_model)
+        assert "deepseek-3.2" in self._reason(explicit_model, "high", "mycrew", cfg=cfg)
 
     def test_concrete_global_model_carries_the_effort(self):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
@@ -1333,10 +1354,6 @@ class TestSessionChainResolution:
         assert self._note("", "high", cfg=cfg) == ""
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
             assert effort_pending_note("", "high", "").startswith("no model is pinned")
-
-    def test_explicit_model_beats_the_crew_pin(self):
-        cfg = self._cfg_with_crew("sonnet-test-model")
-        assert "deepseek-3.2" in self._reason("deepseek-3.2", "high", "mycrew", cfg=cfg)
 
     def test_api_spawn_uses_the_inherited_parent_agent(self):
         """No agent in the request: the verdict judges the agent the session

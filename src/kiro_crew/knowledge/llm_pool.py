@@ -75,6 +75,11 @@ logger = logging.getLogger(__name__)
 # the fallback is logged once per backend per process.
 _WARNED_UNSAFE_BACKENDS: set = set()
 
+# Fire-and-forget tasks this module starts. The event loop keeps only a weak
+# reference to a task, so one nothing else holds can be garbage-collected
+# mid-run; each is held here until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
 DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
 FETCH_TIMEOUT = 120.0
@@ -93,8 +98,7 @@ DEFAULT_IDLE_TTL_SECS = 300.0
 #
 # Pool workers are long-lived sessions, but every prompt they serve is
 # self-contained: ``extractor.EXTRACTION_PROMPT`` inlines the whole chunk between
-# per-call nonce markers, and ``agent_fetch`` inlines the whole URL, so no call
-# depends on anything an earlier call said. The accumulating transcript is
+# per-call nonce markers, so no call depends on anything an earlier call said. The accumulating transcript is
 # therefore pure cost — and once it reaches the backend's own ceiling the backend
 # auto-compacts, which is a BILLED summarization turn over the entire transcript,
 # repeated every few minutes for the rest of a large ingestion.
@@ -211,15 +215,20 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     data = _read_config() if config is None else config
     selection = backend_from_stored(_section(data, "agent").get("acp_backend"))
     resolved = resolve_selected_backend(selection)
+    # A Kiro CLI pick resolves to KAS while kiro-cli offers v3, and landing back on
+    # Kiro here is landing on what the user picked, so it is not worth a warning.
+    declared = selection is not None
+    if selection == ACP_BACKEND_KIRO:
+        declared = False
     if not capabilities_for(resolved).honors_zero_tool_ban:
         _log_capability_fallback(
             resolved,
-            selection is not None,
+            declared,
             "does not honor a zero-tool spec (honors_zero_tool_ban is False)",
         )
         return ACP_BACKEND_KIRO
     if not capabilities_for(resolved).acp_client_spawnable:
-        _log_capability_fallback(resolved, selection is not None, "is not acp_client_spawnable")
+        _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
         return ACP_BACKEND_KIRO
     return resolved
 
@@ -366,6 +375,18 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     return eligible[-1] if eligible else None
 
 
+def _repair_agent_spec() -> bool:
+    """Rewrite the installed :data:`AGENT_NAME` spec from its template if it drifted.
+
+    True when the file was rewritten. ``kiro_crew.agent`` is imported here, not at
+    the top, because nothing else in this module needs it. Blocking: callers run it
+    with ``asyncio.to_thread``.
+    """
+    from kiro_crew import agent as agent_mod
+
+    return agent_mod.repair_knowledge_agent_spec()
+
+
 class Worker(ABC):
     """Abstract base for a long-lived LLM worker."""
 
@@ -492,14 +513,15 @@ class AcpWorker(Worker):
         # harness resolves --agent against <cwd>/.kiro/agents before the global
         # directory, and this pool's cwd is a workspace under the data home, so a
         # project-level spec of the same name that carries tools would shadow the
-        # installed one and auto-approve them for untrusted document text. The
-        # projected view the harness consumed through --agent is the authority
-        # when one exists: it is prepared before the spawn and never re-read, so a
-        # later spec edit cannot change the answer. Without one (the rollback
-        # switch, or an alias that could not be taken) the harness loads the named
-        # spec itself, so the authored spec is read before the spawn and again
-        # after start, and both reads must declare an empty list. A worker that
-        # cannot confirm the ban does not start: Kiro is the last fallback.
+        # installed one and auto-approve them for untrusted document text. With a
+        # prepared projection the harness is launched as the view's published
+        # alias, so the view and the alias file kiro-cli loads, read after start,
+        # must both declare an empty list; the authored spec is not read there.
+        # Without one (the rollback switch, or an alias that could not be taken)
+        # the harness loads the named spec itself, so the authored spec is read
+        # before the spawn and again after start, and both reads must declare an
+        # empty list. A worker that cannot confirm the ban does not start: Kiro is
+        # the last fallback.
         if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
             await asyncio.to_thread(
                 self._client.effective_spec_declares_zero_tools,
@@ -520,8 +542,8 @@ class AcpWorker(Worker):
             raise RuntimeError(
                 f"knowledge agent {AGENT_NAME!r} could not be confirmed to declare a "
                 "zero-tool spec (a project-level spec may shadow the installed one, "
-                "or the spec could not be read); refusing to run the knowledge pool "
-                "without a confirmed tool ban"
+                "or the installed one could not be read or restored); refusing to run "
+                "the knowledge pool without a confirmed tool ban"
             )
         await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long
@@ -541,6 +563,12 @@ class AcpWorker(Worker):
     async def _spawn_client(self, acp_backend: str, sandbox_mode: str) -> tuple[AcpClient, bool]:
         """Build the client for *acp_backend*, bring it up, and return it with the pre-spawn read.
 
+        The installed spec is repaired from its template first
+        (:func:`_repair_agent_spec`), on every backend, because every one of them
+        resolves the agent by name from the shared agents directory, where another
+        tool may have rewritten it since the boot rebuild. The confirmation in
+        :meth:`start` still decides whether the worker runs.
+
         The client is stored as ``self._client`` before ``ensure_ready`` so a failed
         start still leaves it reachable. For a backend routed through
         ``Routing.AGENT_SPEC`` the authored spec is read BEFORE this client's
@@ -556,6 +584,7 @@ class AcpWorker(Worker):
         startup model application scopes it to this backend (a model another
         harness serves falls back to the backend default rather than being sent).
         """
+        await asyncio.to_thread(_repair_agent_spec)
         if routing_for(acp_backend) is Routing.AGENT_SPEC:
             client = AcpClient(
                 agent=AGENT_NAME,
@@ -1274,7 +1303,9 @@ class LLMPool:
             if self._resize_when_idle:
                 # A width change waiting on a zero-TTL pool: recycle now that
                 # nothing is in flight, so the next acquire spawns the new width.
-                asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                task = asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                _BACKGROUND_TASKS.add(task)
+                task.add_done_callback(_BACKGROUND_TASKS.discard)
         self._semaphore.release()
 
     async def _idle_reaper(self) -> None:

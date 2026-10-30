@@ -48,6 +48,7 @@ in the **same commit** when you change what it documents.
 | an agent spec: `agent_discovery.py` and its `agent_discovery_parts/` owners, `agent_spec_format.py`, `agent.py`'s spec writers, its `agent_parts/` owners and `agent_materialization/`, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
 | the publicly selectable Claude backend | [claude-code-provider](docs/system-specs/modules/claude-code-provider.md) |
 | sessions, slots, session keys, PIDs | [session](docs/system-specs/modules/session.md) + [history](docs/system-specs/modules/history.md) |
+| `shared_crew/`, attributing work to a person, per-person fair admission, presence, shared approvals | [shared-crew](docs/system-specs/modules/shared-crew.md) |
 | killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, the kill paths of `session_pid.py` and its `session_pid_*.py` owners | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
 | session summaries, the chat summary panel, intent extraction | [session-summary](docs/system-specs/modules/session-summary.md) |
 | memory, embeddings, vectors, lessons, skills, hooks | [memory-skills-hooks](docs/system-specs/modules/memory-skills-hooks.md) |
@@ -165,9 +166,11 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   main and failed every backend test at COLLECTION, including
   `test_every_strict_leaf_of_either_shape_is_covered_by_the_delegated_guard`,
   the test written to catch exactly that gap.
-- **Computer use is deliberately NOT governed**: it is one operator opt-in on the
-  keystone `computer_use.json`. Never add `computer_use.*` scopes, capability rows,
-  approval ordinals or pointer permits. Its refusals run **in band** on
+- **Computer use is governed by one on/off row only**: the operator opt-in on the
+  keystone `computer_use.json`, ANDed with `capabilities.computer_use`
+  ([rfc-crew-enterprise-edition](docs/request-for-change/rfc-crew-enterprise-edition.md),
+  appendix "Desktop control"). Never add finer `computer_use.*` scopes, more
+  capability rows, approval ordinals or pointer permits. Its refusals run **in band** on
   `tools._dispatch`, never at the fail-OPEN `hooks` gate, because a pre-authorized
   tool can skip that gate. `click_method: "auto"` must NEVER resolve onto
   `"global"`: that is the only thing between an ordinary click and the operator's
@@ -252,6 +255,19 @@ goal. A defect in code this PR adds or changes is always in scope and gets fixed
 'out of goal' applies only to new scope — a new feature, surface, or hardening this
 PR does not need. Edit them only when a human explicitly asks, and say why in a PR
 comment.
+
+### A review finding is a class, not a line
+
+Before you edit for a review finding, name the class it belongs to and list every
+site of it. Fix or test all of them in the same push. When a finding names the same
+root cause as an earlier one, in any file or spelling, treat it as the same finding
+and change the approach instead of patching a third spelling:
+remove the second writer, narrow the scope, or defer it with an issue and a
+pinning test. On the fifth fix only narrowing or deferral remain. Two or more PRs
+that need the same new helper module share one owner PR; the others import it, name
+the merge order in their body, and carry no copy. Keep going; no
+one needs to approve that. Details:
+[kirocrew-prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md).
 
 ## CHANGELOG.md
 

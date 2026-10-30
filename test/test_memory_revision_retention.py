@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from contextlib import closing
 
 import pytest
@@ -238,6 +240,15 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert current["revision"] == 1
     assert current["source_ref"] == "user_explicit"
     assert len(opened) == 1
+    # Read-only connections also come from the store's read pool once the open
+    # finished; they set query_only and run nothing but reads.
+    readers = [probe for probe in probes if "PRAGMA query_only=1" in probe.statements]
+    probes = [probe for probe in probes if probe not in readers]
+    assert all(
+        statement.startswith(("SELECT", "PRAGMA"))
+        for reader in readers
+        for statement in reader.statements
+    )
     assert len(probes) == 1
     assert probes[0].statements == ["SELECT 1 FROM sqlite_schema WHERE name='member_database'"]
     assert any(
@@ -246,7 +257,10 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert any(
         statement.startswith("INSERT INTO memory_record_meta") for statement in opened[0].statements
     )
-    assert any(
+    # One accepted revision is within the V1 bound: the open-time pass looks for
+    # over-limit records and, finding none, deletes nothing.
+    assert any("HAVING count(*) >" in statement for statement in opened[0].statements)
+    assert not any(
         statement.startswith("DELETE FROM memory_revisions") for statement in opened[0].statements
     )
 
@@ -392,3 +406,32 @@ def test_failed_init_pruning_rolls_back_reconciliation_while_v2_still_opens(stor
         store.init()
         assert metadata.get_record_metadata(store.db, "key:user.email")["revision"] == 26
         assert len(_accepted(store)) == 20
+
+
+def test_refused_automated_write_logs_the_audit_row_that_keeps_both_values(store, caplog):
+    """A kept-old refusal must log which memory_events row holds the lost value.
+
+    The current value still wins and the returned reason is unchanged (API callers
+    show it). The store's warning names the row, and that row holds the kept value,
+    the rejected value and the losing source, so the dropped update can be found.
+    """
+    _write(store, 1)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+        code, reason = store.set_semantic(
+            "user.email", "newer@example.net", 0.9, "consolidation:dm"
+        )
+    assert code == SemanticRejectCode.CONFLICT
+    assert "memory_events" not in reason
+    assert json.loads(store.get_semantic("user.email")["value_json"]) == "address1@example.net"
+    found = re.findall(
+        r"Semantic write for 'user\.email' kept the stored value: .+; memory_events #(\d+) holds",
+        caplog.text,
+    )
+    assert len(found) == 1, caplog.text
+    row_id = int(found[0])
+    row = store.db.execute("SELECT * FROM memory_events WHERE id=?", (row_id,)).fetchone()
+    assert row["event_type"] == "conflict_skip"
+    assert row["memory_key"] == "user.email"
+    assert json.loads(row["old_value"]) == "address1@example.net"
+    assert json.loads(row["new_value"]) == "newer@example.net"
+    assert row["source"] == "consolidation:dm"

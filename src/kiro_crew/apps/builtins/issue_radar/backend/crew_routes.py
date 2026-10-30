@@ -869,6 +869,12 @@ async def _handle_crew_update(request: web.Request) -> web.Response:
         else None
     )
     crew_model.note_triage_change(slot, before, crew, released=body.get("model_held") is False)
+    if state is not None and before.get("extra_prompt") != crew.get("extra_prompt"):
+        # The armed loop caches its prompt; without this an idle-timer turn keeps
+        # sending the old Additional prompt until a signal wake recomposes it.
+        await crew_runtime.refresh_crew_loop_message(
+            state, key.owner, key.repo, crew, routes._scope(key), key
+        )
     return web.json_response({"crew": crew})
 
 

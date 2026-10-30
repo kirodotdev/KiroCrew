@@ -48,8 +48,20 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import _ON_LOOP_DB_GUARD, KnowledgeStore
+from kiro_crew.knowledge.url_fetch import FetchedPage
 from kiro_crew.on_loop_db import OnLoopStoreError
 from kiro_crew.testing.wait import async_wait_until, await_until
+
+
+@pytest.fixture(autouse=True)
+def _listed_test_hosts(_floor_monkeypatch):
+    """List the hosts these sources name in ``knowledge.doc_ingest_hosts``.
+
+    A source with no connector is fetched by Kiro Crew only from a listed host,
+    and the list is empty by default; these tests exercise what happens after
+    that gate lets the URL through.
+    """
+    _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com"])
 
 
 @pytest.fixture()
@@ -93,7 +105,6 @@ def _make_app(store, *, embedder=None, pipeline=None):
         app["knowledge_embedder"] = embedder
     if pipeline is not None:
         app["knowledge_pipeline"] = pipeline
-    app["knowledge_fetch_pool"] = MagicMock(shutdown=AsyncMock())
     # No connector for any type, so add_source takes its generic https branch.
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
 
@@ -567,12 +578,10 @@ class TestAFailedClaimIsNotASyncFailure:
         monkeypatch.setattr(kh, "_set_sync_status", lambda _s, _sid, status: stamped.append(status))
         fetched: list[str] = []
         monkeypatch.setattr(
-            kh, "fetch_url_content", AsyncMock(side_effect=lambda *a, **k: fetched.append(1))
+            kh, "fetch_page", AsyncMock(side_effect=lambda *a, **k: fetched.append(1))
         )
 
-        await kh._background_agent_sync(
-            source_id, "https://example.com/x", "x", store, MagicMock(), MagicMock()
-        )
+        await kh._background_url_sync(source_id, "https://example.com/x", "x", store, MagicMock())
 
         assert claims == [source_id]
         assert stamped == [], f"a failed claim wrote a status: {stamped}"
@@ -1090,15 +1099,13 @@ class TestCancellationFinalizesSyncStatus:
         source_id = await asyncio.to_thread(_seed_source, store)
         started = asyncio.Event()
 
-        async def _hang_fetch(_url, _pool):
+        async def _hang_fetch(_url, **_kw):
             started.set()
             await asyncio.Event().wait()
 
-        monkeypatch.setattr(kh, "fetch_url_content", _hang_fetch)
+        monkeypatch.setattr(kh, "fetch_page", _hang_fetch)
         task = asyncio.ensure_future(
-            kh._background_agent_sync(
-                source_id, "https://example.com/x", "x", store, MagicMock(), MagicMock()
-            )
+            kh._background_url_sync(source_id, "https://example.com/x", "x", store, MagicMock())
         )
         await await_until(started)
         task.cancel()
@@ -1214,7 +1221,7 @@ class TestCancellationFinalizesSyncStatus:
         source_id = await asyncio.to_thread(_seed_source, store)
         started = asyncio.Event()
 
-        async def _hang_fetch(_url, _pool):
+        async def _hang_fetch(_url, **_kw):
             started.set()
             await asyncio.Event().wait()
 
@@ -1224,11 +1231,9 @@ class TestCancellationFinalizesSyncStatus:
             attempts.append(status)
             raise sqlite3.OperationalError("database is locked")
 
-        monkeypatch.setattr(kh, "fetch_url_content", _hang_fetch)
+        monkeypatch.setattr(kh, "fetch_page", _hang_fetch)
         task = asyncio.ensure_future(
-            kh._background_agent_sync(
-                source_id, "https://example.com/x", "x", store, MagicMock(), MagicMock()
-            )
+            kh._background_url_sync(source_id, "https://example.com/x", "x", store, MagicMock())
         )
         await await_until(started)
         monkeypatch.setattr(kh, "_finalize_sync_status_write", _boom_write)
@@ -1425,3 +1430,128 @@ class TestCancellationFinalizesSyncStatus:
             store, source_id, "error", from_statuses=("syncing", "pending")
         )
         assert await asyncio.to_thread(_sync_status, store, source_id) == "synced"
+
+
+class TestAgentSyncStagesThePageOffTheLoop:
+    """``_background_url_sync`` stages the fetched page in a temp file for
+    ``ingest_file``. A page has no size bound here, so its create, write and
+    unlink run in a worker thread, and the file is named before the worker
+    starts so a cancel during the write cannot leave it behind.
+
+    Each test hooks ``os.open`` for the staged name only, so it observes the
+    create wherever it runs."""
+
+    @staticmethod
+    def _wire(monkeypatch, tmp_path, page: str, on_open) -> None:
+        import os
+
+        real_open = os.open
+
+        def _open(path, flags, *args, **kwargs):
+            if os.path.basename(os.fspath(path)).startswith("url_sync_"):
+                return on_open(real_open, path, flags, *args, **kwargs)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        monkeypatch.setattr(os, "open", _open)
+        monkeypatch.setattr(
+            kh,
+            "fetch_page",
+            AsyncMock(return_value=FetchedPage("https://example.com/x", page, ".md")),
+        )
+
+    @staticmethod
+    def _staged(tmp_path) -> list[str]:
+        return sorted(p.name for p in tmp_path.glob("url_sync_*"))
+
+    @pytest.mark.asyncio
+    async def test_the_page_is_written_and_removed_off_the_loop(self, store, monkeypatch, tmp_path):
+        import os
+
+        source_id = await asyncio.to_thread(_seed_source, store)
+        loop_thread = threading.get_ident()
+        opens: list[int] = []
+        unlinks: list[int] = []
+        real_unlink = pathlib.Path.unlink
+
+        def _on_open(real_open, *args, **kwargs):
+            opens.append(threading.get_ident())
+            return real_open(*args, **kwargs)
+
+        def _unlink(self, *args, **kwargs):
+            if self.name.startswith("url_sync_"):
+                unlinks.append(threading.get_ident())
+            return real_unlink(self, *args, **kwargs)
+
+        self._wire(monkeypatch, tmp_path, "# hello agent\n", _on_open)
+        monkeypatch.setattr(pathlib.Path, "unlink", _unlink)
+        seen: dict = {}
+
+        async def _ingest(path, **_kw):
+            staged = pathlib.Path(path)
+            seen["parent"] = staged.parent
+            seen["text"] = await asyncio.to_thread(staged.read_text)
+            seen["mode"] = (await asyncio.to_thread(staged.stat)).st_mode & 0o777
+
+        pipeline = MagicMock(ingest_file=AsyncMock(side_effect=_ingest))
+
+        await kh._background_url_sync(source_id, "https://example.com/x", "x", store, pipeline)
+
+        assert seen["text"] == "# hello agent\n"
+        assert seen["parent"] == tmp_path
+        if os.name == "posix":
+            assert seen["mode"] == 0o600, "the staged page must stay owner-only"
+        assert len(opens) == 1 and loop_thread not in opens, "the create ran on the loop"
+        assert len(unlinks) == 1 and loop_thread not in unlinks, "the unlink ran on the loop"
+        assert self._staged(tmp_path) == []
+        assert await asyncio.to_thread(_sync_status, store, source_id) == "synced"
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_write_leaves_no_file(self, store, monkeypatch, tmp_path):
+        """The worker outlives the cancel and still creates the file, so the
+        finally drains it before the unlink; the row still lands in 'error'."""
+        source_id = await asyncio.to_thread(_seed_source, store)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _slow_open(real_open, *args, **kwargs):
+            entered.set()
+            release.wait(5.0)
+            return real_open(*args, **kwargs)
+
+        self._wire(monkeypatch, tmp_path, "# page\n", _slow_open)
+        pipeline = MagicMock(ingest_file=AsyncMock())
+        task = asyncio.ensure_future(
+            kh._background_url_sync(source_id, "https://example.com/x", "x", store, pipeline)
+        )
+        await async_wait_until(entered.is_set)
+        task.cancel()
+        # Queued behind the task's cancel wakeup, so the finally has started
+        # before the worker is let go.
+        asyncio.get_running_loop().call_soon(release.set)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert self._staged(tmp_path) == [], "the cancelled write orphaned its file"
+        pipeline.ingest_file.assert_not_awaited()
+        assert await asyncio.to_thread(_sync_status, store, source_id) == "error"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_removes_the_created_file(self, store, monkeypatch, tmp_path):
+        """The create lands and the write then fails: the file is still removed."""
+        import os
+
+        source_id = await asyncio.to_thread(_seed_source, store)
+
+        def _full_disk(real_open, *args, **kwargs):
+            os.close(real_open(*args, **kwargs))
+            raise OSError(28, "No space left on device")
+
+        self._wire(monkeypatch, tmp_path, "# a page the disk cannot hold\n", _full_disk)
+        pipeline = MagicMock(ingest_file=AsyncMock())
+
+        await kh._background_url_sync(source_id, "https://example.com/x", "x", store, pipeline)
+
+        assert self._staged(tmp_path) == [], "the created file was left behind"
+        pipeline.ingest_file.assert_not_awaited()
+        assert await asyncio.to_thread(_sync_status, store, source_id) == "error"

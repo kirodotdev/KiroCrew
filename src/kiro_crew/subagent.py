@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         QueuedRunListing,
     )
 
+from kiro_crew import sandbox_plan  # noqa: F401 - read by agent_policy.validate_cwd
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -254,6 +255,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     AgentCheck,
     ParentRecordUnreadable,
     ParentSpawnPolicy,
+    _accepted_project_dirs,
     _available_agents_hint,
     _inherited_member_agent,
     _internal_agent_refusal,
@@ -268,6 +270,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     _vet_parent_available_agents,
     _vet_spawn_governance,
     agent_matches_allowlist,
+    conductor_spawn_refusal,
     parent_project_dirs,
     parent_spawn_allowlists,
     parent_spawn_policy,
@@ -308,15 +311,15 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
     _cgroup_memory_roots,
     _configured_max_subagents,
     _container_cgroup_available_gb,
+    _host_available_gb,
     _host_mem_term,
     _macos_available_memory_gb,
     _macos_vm_reclaimable_pages,
     _memory_check_cause,
     _proc_subtree_sample,
-    _read_inactive_file_bytes,
     _read_int_file,
+    _read_reclaimable_file_bytes,
     _subtree_cpu_jiffies,
-    _windows_available_memory_gb,
     _working_set,
     check_memory_available,
     compute_max_subagents,
@@ -327,6 +330,7 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
 )
 from kiro_crew.subagent_parts.manager import SubagentManager
 from kiro_crew.subagent_parts.model_choice import (  # noqa: F401
+    PINNED_RUNTIME_NOTE,
     _effort_channel,
     _effort_judged_at_session_start,
     _resolved_model_of,
@@ -412,6 +416,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SHARED_START_MIN_GB,
     _SHARED_START_SAVING_GB,
     _UNLEARNED_DEDICATED_START_GB,
+    REMOTE_COST_BUCKET_SUFFIX,
     _cost_bucket,
     _dedicated_start_price_gb,
     _holds_dedicated_runtime,
@@ -419,6 +424,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _host_memory_reading_off_loop,
     _host_read_in_flight,
     _owns_dedicated_runtime,
+    _parent_runs_remotely,
     _parked_at_spawn_approval,
     _row_settled,
     _selection_kind,

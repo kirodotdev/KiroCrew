@@ -432,3 +432,18 @@ describe('close() hands focus back to the composer', () => {
     expect(document.activeElement).not.toBe(composer)
   })
 })
+
+describe('useMessageSearch with no term', () => {
+  // ChatPage owns this hook; a fresh [] on every `messages` change re-rendered
+  // the page once per streamed chunk while the search bar was closed.
+  it('keeps the same matches array while messages change and the term is empty', () => {
+    let msgs = messages
+    const { result, rerender } = renderHook(() => useMessageSearch(msgs, 'slot-1'))
+    const first = result.current.matches
+    msgs = [...messages, msg('assistant', 'streamed chunk')]
+    rerender()
+    msgs = [...msgs, msg('assistant', 'another chunk')]
+    rerender()
+    expect(result.current.matches).toBe(first)
+  })
+})

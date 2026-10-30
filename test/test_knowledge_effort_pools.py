@@ -15,6 +15,17 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.testing.wait import await_until
 
 
+@pytest.fixture(autouse=True)
+def _listed_test_hosts(_floor_monkeypatch):
+    """List the hosts these sources name in ``knowledge.doc_ingest_hosts``.
+
+    A source with no connector is fetched by Kiro Crew only from a listed host,
+    and the list is empty by default; these tests exercise what happens after
+    that gate lets the URL through.
+    """
+    _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com"])
+
+
 class _FakePool:
     def __init__(
         self,
@@ -115,21 +126,17 @@ class TestKnowledgePoolSetup:
 
         kh.setup_knowledge_routes(app)
 
-        assert len(pools) == 2
-        extraction, fetch = pools
+        # Extraction is the only LLM pool: a web-page source is fetched by the
+        # gateway (url_fetch), not by a worker.
+        assert len(pools) == 1
+        (extraction,) = pools
         assert extraction.pool_size == 3
         assert extraction.effort_key == "extraction_effort"
         assert extraction.fallback_effort == "high"
         assert extraction.config_pool_size_key == "extraction_pool_size"
-        # The fetch pool takes no effort binding at all: it keeps the
-        # provider/model default.
-        assert fetch.pool_size == 1
-        assert fetch.effort_key is None
-        assert fetch.effort is None
-        assert fetch.config_pool_size_key is None
         assert extractor_calls[0]["pool"] is extraction
         assert app["knowledge_extraction_pool"] is extraction
-        assert app["knowledge_fetch_pool"] is fetch
+        assert "knowledge_fetch_pool" not in app
         assert "knowledge_llm_pool" not in app
 
         # Resolve the chain exactly as LLMPool.start() would, and prove the
@@ -154,32 +161,30 @@ class TestKnowledgePoolSetup:
         )
 
 
-class TestKnowledgeFetchPoolWiring:
+class TestUrlSyncNeedsNoPool:
     @pytest.mark.asyncio
-    async def test_agent_sync_uses_fetch_pool(self, store, monkeypatch):
+    async def test_url_sync_is_dispatched_without_an_llm_pool(self, store, monkeypatch):
         source_id = store.add_source(
             name="source",
             source_type="web",
             uri="https://example.com/source",
         )
-        fetch_pool = object()
         pipeline = SimpleNamespace(ingestion_in_flight=contextlib.nullcontext)
         app = web.Application()
         app["state"] = SimpleNamespace(knowledge_store=store)
         app["knowledge_pipeline"] = pipeline
         app["knowledge_sync"] = SimpleNamespace(get_connector=lambda _type: None)
-        app["knowledge_fetch_pool"] = fetch_pool
         app.router.add_post("/api/knowledge/sources/{id}/sync", kh.sync_source)
         observed: dict[str, object] = {}
         done = asyncio.Event()
 
-        async def _fake_sync(source_id, url, name, store, pipeline, pool, *, claim_settled=None):
-            observed["pool"] = pool
+        async def _fake_sync(source_id, url, name, store, pipeline, *, claim_settled=None):
+            observed["url"] = url
             if claim_settled is not None:
                 claim_settled.set()
             done.set()
 
-        monkeypatch.setattr(kh, "_background_agent_sync", _fake_sync)
+        monkeypatch.setattr(kh, "_background_url_sync", _fake_sync)
         monkeypatch.setattr(kh, "_sel_log", lambda *args, **kwargs: None)
 
         async with TestClient(TestServer(app)) as client:
@@ -187,51 +192,31 @@ class TestKnowledgeFetchPoolWiring:
             assert response.status == 200
             await await_until(done, what="sync completes")
 
-        assert observed["pool"] is fetch_pool
-
-    @pytest.mark.asyncio
-    async def test_agent_sync_fails_loudly_without_fetch_pool(self, store, monkeypatch):
-        # The legacy knowledge_llm_pool fallback is gone: an app that never
-        # registered the fetch pool gets an explicit 503 with a
-        # machine-readable code instead of silently running URL sync through
-        # the extraction pool.
-        source_id = store.add_source(
-            name="source",
-            source_type="web",
-            uri="https://example.com/source",
-        )
-        app = web.Application()
-        app["state"] = SimpleNamespace(knowledge_store=store)
-        app["knowledge_pipeline"] = SimpleNamespace(ingestion_in_flight=contextlib.nullcontext)
-        app["knowledge_sync"] = SimpleNamespace(get_connector=lambda _type: None)
-        app.router.add_post("/api/knowledge/sources/{id}/sync", kh.sync_source)
-        monkeypatch.setattr(kh, "_sel_log", lambda *args, **kwargs: None)
-        dispatched: list[object] = []
-
-        async def _fake_sync(source_id, url, name, store, pipeline, pool):
-            dispatched.append(pool)
-
-        monkeypatch.setattr(kh, "_background_agent_sync", _fake_sync)
-
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post(f"/api/knowledge/sources/{source_id}/sync")
-            assert response.status == 503
-            payload = await response.json()
-
-        assert payload["code"] == "knowledge_fetch_pool_unavailable"
-        assert dispatched == []
+        assert observed["url"] == "https://example.com/source"
 
 
 class TestKnowledgePoolCleanup:
     @pytest.mark.asyncio
-    async def test_shutdowns_each_pool_once(self):
+    async def test_shuts_down_the_extraction_pool(self):
         extraction = _FakePool(pool_size=3)
-        fetch = _FakePool(pool_size=1)
         app = web.Application()
         app["knowledge_extraction_pool"] = extraction
-        app["knowledge_fetch_pool"] = fetch
 
         await kh._shutdown_knowledge_pools(app)
 
         extraction.shutdown.assert_awaited_once()
-        fetch.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_shutdown_is_logged_not_raised(self):
+        extraction = _FakePool(pool_size=3)
+        extraction.shutdown.side_effect = RuntimeError("worker hung")
+        app = web.Application()
+        app["knowledge_extraction_pool"] = extraction
+
+        await kh._shutdown_knowledge_pools(app)
+
+        assert extraction.shutdown.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_pool_is_a_no_op(self):
+        await kh._shutdown_knowledge_pools(web.Application())

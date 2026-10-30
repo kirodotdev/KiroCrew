@@ -302,6 +302,7 @@ function VoiceAtomInner({ ctx }: { ctx: ComposerContextValue }) {
       reason={setup.reason}
       provider={setup.provider}
       code={setup.code}
+      providerNotice={setup.providerNotice}
       installCommand={setup.installCommand}
       onClose={close}
       onOpenSettings={openSettings}

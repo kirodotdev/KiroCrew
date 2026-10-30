@@ -3,11 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import type { CapabilityFix, FreshSessionState } from '../ErrorCard'
+import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer } from '../../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { useStableCallbackProps } from '../useStableCallbackProps'
 import { api, type PlanStepInput } from '../../../api/client'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
@@ -19,7 +20,9 @@ import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageCo
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
 import { UserMessage, AssistantMessage } from '..'
+import type { ReactionError } from '../../../hooks/useChatReactions'
 import type { TurnStats } from '../AssistantMessage'
+import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
 import { prevUserTextFor } from '../share/shareSupport'
 import { turnHadPolicyBlock } from '../../../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
@@ -34,11 +37,21 @@ import { i18nT } from '../../../i18n/t'
 import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
 import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
+import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
  *  shared so the per-row context does not allocate. */
 const NO_AUTO_DENIED = new Set<string>()
+
+/** A message row's own pin and whole-message quote handlers. */
+interface MessageRowHandlers {
+  role: 'user' | 'assistant'
+  togglePin: () => void
+  quote: (shown: string) => void
+  toggleReaction: (emoji: string) => void
+}
 
 interface TranscriptRenderingOptions {
   embedded?: boolean
@@ -86,11 +99,15 @@ interface TranscriptRenderingOptions {
   lastTextIdx: number
   regenerating: boolean
   handleRegenerate: () => void
+  /** Ids of the previous reply's rows while a Regenerate turn may replace them; drawn as "previous reply". */
+  replacingMids: ReadonlySet<string>
   continuable: boolean
   continuing: boolean
   freshSession: FreshSessionState
   handleContinue: () => void
   handleFreshSession: () => void
+  repairImages: RepairImagesState
+  handleRepairImages: () => void
   interrupted: boolean
   openDefaultModelSetting: () => void
   openKiroSignIn: () => void
@@ -115,6 +132,15 @@ interface TranscriptRenderingOptions {
   isPinned: (mid: string) => boolean
   handleJumpToQuote: (q: MessageQuote) => void
   handleTogglePinForMessage: (mid: string, messageTs: string, role: 'user' | 'assistant', content: string) => void
+  /** Unsend, Edit and Queue instead on a steer the running turn has not read yet. */
+  handleSteerAction: (mid: string, action: SteerRetractAction) => void
+  steerActionPending: Readonly<Record<string, SteerRetractAction>>
+  steerActionRefusals: Readonly<Record<string, SteerRetractRefusalNotice>>
+  steerActionRequestFailures: Readonly<Record<string, true>>
+  reactionsFor: (mid: string) => ReadonlySet<string>
+  handleToggleReactionForMessage: (mid: string, emoji: string) => void
+  reactionErrorFor: (mid: string) => ReactionError | null
+  clearReactionError: () => void
 }
 
 /**
@@ -132,10 +158,11 @@ export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
   handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress,
-  approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, continuable, continuing, freshSession, handleContinue, handleFreshSession, interrupted,
+  approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
-  handleTogglePinForMessage,
+  handleTogglePinForMessage, reactionsFor, handleToggleReactionForMessage, reactionErrorFor, clearReactionError,
+  handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
 }: TranscriptRenderingOptions) {
   // Precomputed O(n) map from message index → visible (user/assistant) index,
   // used by the fork button. Avoids a per-row O(i) filter that would make the
@@ -166,6 +193,9 @@ export function useTranscriptRendering({
     enabled: !!activeSlot,
     staleTime: 15_000,
   })
+  // Copy on select is device-only, so it is not in chatConfig (which syncs to
+  // other browsers); Settings → Chat writes the same key.
+  const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
   const artifactPaths = useMemo(
     () => new Set((sessionDocs?.docs || []).map(d => d.path)),
     [sessionDocs],
@@ -192,7 +222,56 @@ export function useTranscriptRendering({
     }
     return null
   }, [messages])
+  // The first answer produced by Regenerate below the previous reply. Reasoning,
+  // tools and system notices may arrive first, but Stop cannot preserve a new
+  // version until an actual assistant/streaming answer row exists.
+  const firstNewReplyIdx = useMemo(() => {
+    if (replacingMids.size === 0) return -1
+    let lastReplaced = -1
+    messages.forEach((m, idx) => {
+      const mid = m.meta?.mid
+      if (typeof mid === 'string' && replacingMids.has(mid)) lastReplaced = idx
+    })
+    if (lastReplaced < 0) return -1
+    return messages.findIndex((m, idx) => idx > lastReplaced
+      && (m.role === 'assistant' || m.role === 'streaming')
+      && !isSystemNoticeRow(m)
+      && !isHiddenInvisibleAssistantRow(m))
+  }, [messages, replacingMids])
+  const newReplyStarted = firstNewReplyIdx >= 0
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
+
+  // Row action handlers that never change identity. Their sources are rebuilt on
+  // every chunk flush (handleEditResend and handleRegenerate close over
+  // `messages`), and an inline arrow per row is new on every render, so passing
+  // either straight through re-rendered every memo(UserMessage) and
+  // memo(AssistantMessage) on each streamed chunk. The forwarders call the
+  // latest source, so a click still runs today's guards.
+  // The returned object is new each render; the functions in it are not.
+  const {
+    handleEditResend: stableEditResend, handleJumpToQuote: stableJumpToQuote, handleRegenerate: stableRegenerate,
+    handleTogglePinForMessage: stableTogglePin, quoteWholeMessage: stableQuoteMessage,
+    handleToggleReactionForMessage: stableToggleReaction,
+  } = useStableCallbackProps({ handleEditResend, handleJumpToQuote, handleRegenerate, handleTogglePinForMessage, quoteWholeMessage, handleToggleReactionForMessage })
+  // One pin, one quote and one reaction-toggle handler per message row. Keyed by the row object,
+  // which the store keeps by reference while it is unchanged, so a settled row
+  // gets the same pair on every render and a replaced row gets a fresh pair
+  // over its new content. Weak, so rows that leave the store take theirs along.
+  const rowHandlersRef = useRef(new WeakMap<ChatMessage, MessageRowHandlers>())
+  const rowHandlersFor = useCallback((m: ChatMessage, role: 'user' | 'assistant'): MessageRowHandlers => {
+    let h = rowHandlersRef.current.get(m)
+    if (!h || h.role !== role) {
+      const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+      h = {
+        role,
+        togglePin: () => { if (mid && m.ts) stableTogglePin(mid, m.ts, role, m.content) },
+        quote: (shown: string) => stableQuoteMessage(role, shown, m.ts, mid),
+        toggleReaction: (emoji: string) => { if (mid) stableToggleReaction(mid, emoji) },
+      }
+      rowHandlersRef.current.set(m, h)
+    }
+    return h
+  }, [stableTogglePin, stableQuoteMessage, stableToggleReaction])
 
   // ── Registry-driven row dispatch (chat-core P5-a) ──
   // Every transcript row on this page resolves through the SAME renderer
@@ -235,6 +314,11 @@ export function useTranscriptRendering({
     // visibleIndexMap is O(1) per row.
     const messageId = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
     const canResolveOnServer = !!messageId && !isStreaming && !isInject
+    // The reply a running Regenerate may replace: the new one streams in below it.
+    const beingReplaced = !!messageId && replacingMids.has(messageId)
+    // Only the first answer row after the previous reply starts the new version;
+    // reasoning and tool rows between them keep their own rendering.
+    const startsNewReply = i === firstNewReplyIdx
     const canFork = canResolveOnServer || canForkAtWindow({ isStreaming, isInject, slotHasMore, cursorIsForActiveSlot })
     const forkIndex = canFork ? visibleIndexMapRef.current.get(i) : undefined
     const msgTime = fmtMessageTime(m.ts)
@@ -254,7 +338,7 @@ export function useTranscriptRendering({
               slotRunning={slotRunning}
               messageIndex={i}
               messageTs={m.ts || ''}
-              onEditResend={handleEditResend}
+              onEditResend={stableEditResend}
               doubleClickToEdit={chatConfig.doubleClickToEdit}
               editRequest={!farmPassRef.current && editLast && editLast.index === i && editLast.ts === (m.ts || '') ? editLast.seq : undefined}
               onEditConsumed={farmPassRef.current ? undefined : handleEditConsumed}
@@ -262,9 +346,17 @@ export function useTranscriptRendering({
               slotTitle={activeSlotTitle}
               mode={mode}
               pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false}
-              onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'user', m.content) : undefined}
-              onQuoteMessage={activeSlot && !activeSlotRemoteBound ? (shown) => quoteWholeMessage('user', shown, m.ts, messageId) : undefined}
-              onJumpToQuote={handleJumpToQuote}
+              onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'user').togglePin : undefined}
+              activeReactions={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionsFor((m.meta as Record<string, unknown>).mid as string) : undefined}
+              onToggleReaction={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'user').toggleReaction : undefined}
+              reactionError={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionErrorFor((m.meta as Record<string, unknown>).mid as string) : null}
+              onClearReactionError={clearReactionError}
+              onQuoteMessage={activeSlot && !activeSlotRemoteBound ? rowHandlersFor(m, 'user').quote : undefined}
+              onJumpToQuote={stableJumpToQuote}
+              onSteerAction={activeSlotRemoteBound ? undefined : handleSteerAction}
+              steerActionPending={messageId ? steerActionPending[messageId] : undefined}
+              steerActionRefusal={messageId ? steerActionRefusals[messageId] : undefined}
+              steerActionRequestFailed={messageId ? steerActionRequestFailures[messageId] : undefined}
             />
           ) : isInject ? (
             (() => {
@@ -296,8 +388,10 @@ export function useTranscriptRendering({
               </>
             })()
           ) : (
-            <div className="flex flex-col gap-0">
-              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? (shown) => quoteWholeMessage('assistant', shown, m.ts, messageId) : undefined} showFooter={(() => {
+            <div className={`flex flex-col gap-0${beingReplaced ? ' opacity-60' : ''}`} data-testid={beingReplaced ? 'regenerate-previous-reply' : undefined}>
+              {beingReplaced && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1">{i18nT(newReplyStarted ? 'pages.chatPage.regenerate_previous_reply_kept_as_version' : 'pages.chatPage.regenerate_previous_reply')}</span>}
+              {startsNewReply && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 border-t border-border pt-2" data-testid="regenerate-new-reply">{i18nT('pages.chatPage.regenerate_new_reply')}</span>}
+              <AssistantMessage body={warmBriefBodyOf(m)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} activeReactions={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionsFor((m.meta as Record<string, unknown>).mid as string) : undefined} onToggleReaction={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').toggleReaction : undefined} reactionError={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionErrorFor((m.meta as Record<string, unknown>).mid as string) : null} onClearReactionError={clearReactionError} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -328,7 +422,7 @@ export function useTranscriptRendering({
                 const stats = (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined
                 if (stats && (stats.elapsed_ms ?? 0) > 0) return true
                 return !slotRunning
-              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
@@ -383,6 +477,8 @@ export function useTranscriptRendering({
       onOpenCapabilities: embedded || popout ? undefined : openMemberCapabilities,
       onFreshSession: handleFreshSession,
       freshSession,
+      onRepairImages: handleRepairImages,
+      repairImages,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
@@ -420,7 +516,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, reactionsFor, reactionErrorFor, clearReactionError, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

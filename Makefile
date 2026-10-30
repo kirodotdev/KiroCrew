@@ -5,9 +5,28 @@
 #   make wheel     — self-contained pip wheel (dashboard bundled)
 #   make backend-bin — standalone backend tree (bundled interpreter, no system Python)
 #   make desktop   — double-clickable desktop app (universal DMG on macOS / AppImage on Linux)
-.PHONY: all build frontend backend test clean wheel backend-bin desktop
+# All three take EDITION=oss|enterprise (else $KIROCREW_BUILD_EDITION, else oss).
+.PHONY: all build frontend backend test clean wheel backend-bin desktop check-edition
 
 PY ?= python3
+# Edition stamped into the built package (src/kiro_crew/edition.py). The
+# packaging targets pass it to setup.py's build_py as KIROCREW_BUILD_EDITION;
+# the source tree always stays oss. Keep EDITIONS equal to edition.EDITIONS.
+# EDITION comes from `EDITION=`, else from KIROCREW_BUILD_EDITION, else oss, so
+# `KIROCREW_BUILD_EDITION=enterprise make wheel` cannot quietly build oss.
+# check-edition refuses the two when both are set and differ.
+# `override` on each edition variable: under `make -e` (or `e` in MAKEFLAGS)
+# an environment variable of the same name beats a plain assignment, which
+# would let an ambient EDITION, EDITIONS or helper pick or widen the edition.
+override EDITIONS := oss enterprise
+override _EDITION_ENV := $(strip $(KIROCREW_BUILD_EDITION))
+# Only a command-line EDITION= counts: an exported shell EDITION is a generic
+# name something else may have set, so it is ignored.
+ifneq ($(origin EDITION),command line)
+override EDITION := $(if $(_EDITION_ENV),$(_EDITION_ENV),oss)
+endif
+# Exact string equality; findstring has no % wildcard, unlike filter.
+override _edition_eq = $(and $(findstring $(1),$(2)),$(findstring $(2),$(1)))
 VENV := .venv
 PIP := $(VENV)/bin/pip
 # Build the venv under a umask that masks group/other WRITE so bin/kirocrew is
@@ -59,8 +78,11 @@ frontend:
 backend:
 	bash ensure-python.sh || true
 	# Same `|| true` reasoning as the frontend target: an absent marker file must
-	# fall back to $(PY), not abort the recipe.
-	PY="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
+	# fall back to $(PY), not abort the recipe. A non-empty `PY=` on the make
+	# command line is the caller's explicit choice and skips the marker, which
+	# would otherwise keep winning and make `make backend PY=python3.12` a silent
+	# no-op -- the same precedence make.ps1 gives `-Py`.
+	PY="$(if $(and $(filter command line,$(origin PY)),$(strip $(PY))),,$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true))"; [ -n "$$PY" ] || PY="$(PY)"; \
 	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)'; then \
 	    echo "  → recreating $(VENV) (existing interpreter < 3.12)"; rm -rf $(VENV); fi; \
 	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then \
@@ -102,17 +124,26 @@ test: build
 # the *system* interpreter — mutating it without a venv, and tripping PEP 668
 # "externally-managed-environment" where the marker exists. Depending on
 # `backend` guarantees a >= 3.12 venv exists first.
-wheel: frontend backend
+wheel: check-edition frontend backend
 	$(STAGE_DIST)
 	$(PIP) install --upgrade build
-	$(VENV)/bin/python -m build --wheel
+	KIROCREW_BUILD_EDITION=$(EDITION) $(VENV)/bin/python -m build --wheel
+
+# Refuse an unknown or conflicting EDITION before any slow build step runs.
+# EDITION is the TEXT and EDITIONS the patterns, so `EDITION=%` matches nothing.
+# setup.py checks the value again, so a direct `python -m build` or
+# build-desktop.sh run is covered too.
+check-edition:
+	$(if $(and $(_EDITION_ENV),$(if $(call _edition_eq,$(_EDITION_ENV),$(EDITION)),,x)),$(error EDITION '$(EDITION)' conflicts with KIROCREW_BUILD_EDITION '$(_EDITION_ENV)'; set one, or set both the same))
+	$(if $(and $(filter 1,$(words $(EDITION))),$(filter $(EDITIONS),$(EDITION))),,$(error unknown EDITION '$(EDITION)' (want one of: $(EDITIONS))))
+	@echo "edition: $(EDITION)"
 
 # Standalone backend tree on a bundled python-build-standalone interpreter (no
 # system Python needed). Builds the dashboard first; build-desktop.sh embeds
 # website/dist in the bundle itself. Host-arch only (UNIVERSAL=0): the standalone backend is a
 # local-machine artifact, not a distributable app.
-backend-bin: frontend
-	UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
+backend-bin: check-edition frontend
+	KIROCREW_BUILD_EDITION=$(EDITION) UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
 
 # Full double-clickable desktop app. macOS: ONE universal DMG (arm64 + x86_64,
 # needs an Apple-Silicon host with Rosetta 2 — see docs/build/desktop-app.md;
@@ -122,11 +153,11 @@ backend-bin: frontend
 # PATH. It provisions its own uv + PBS interpreter but NOT node, so bootstrap
 # node here — otherwise a first `make desktop` on a node-less host dies at the
 # script's npm step instead of installing it like every other target does.
-desktop:
+desktop: check-edition
 	bash ensure-node.sh || true
 	NBD="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/node-bin-dir" 2>/dev/null || true)"; \
 	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
-	  bash packaging/build-desktop.sh
+	  KIROCREW_BUILD_EDITION=$(EDITION) bash packaging/build-desktop.sh
 
 clean:
 	rm -rf build dist *.egg-info src/*.egg-info \

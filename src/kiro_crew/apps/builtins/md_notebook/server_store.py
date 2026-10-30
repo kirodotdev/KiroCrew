@@ -134,7 +134,7 @@ def _read_vaults_sync() -> list[dict[str, Any]]:
         with open(_vaults_json(), encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
 
 
@@ -213,7 +213,8 @@ def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
 
 def _read_pat_sync() -> Optional[str]:
     try:
-        pat = open(_pat_file(), encoding="utf-8").read().strip() or None
+        with open(_pat_file(), encoding="utf-8") as fh:
+            pat = fh.read().strip() or None
     except OSError:
         return None
     if pat is not None:
@@ -308,7 +309,7 @@ def _read_settings_sync() -> dict[str, Any]:
             raw = json.load(fh)
     except FileNotFoundError:
         return out
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("md-notebook: unreadable settings, using defaults")
         return out
     if not isinstance(raw, dict):

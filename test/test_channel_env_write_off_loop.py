@@ -34,6 +34,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+from kiro_crew.testing.wait import await_until
 
 # Shapes each validator accepts. Real-looking because the handlers reject on
 # format before they ever reach the write, and a rejected body would make this
@@ -186,7 +187,7 @@ def test_cancelling_a_save_drains_the_env_write_before_releasing_the_lock(
             await first
         except asyncio.CancelledError:
             pass
-        await asyncio.wait_for(second, timeout=10)
+        await await_until(second, what="the second writer finishing")
         return early, order
 
     early, seen = asyncio.run(_run())
@@ -220,11 +221,6 @@ def test_every_saver_writes_env_through_the_shared_rollback_step(owner: str) -> 
     assert source.count("await _write_env_or_roll_back(") == 1
     assert "_write_env_off_loop(" not in source
     assert "asyncio.shield(" not in source
-
-
-#: How long a wait the test itself unblocks may take before the run counts as
-#: lost: the bound this module's other self-released waits already use.
-_LOST_RUN_CEILING_SECS = 10.0
 
 
 def _rollback_probe() -> tuple[list[str], object]:
@@ -269,7 +265,7 @@ def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
     release = asyncio.Event()
 
     async def _parked(_updates):
-        await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_CEILING_SECS)
+        await await_until(release, what="the test releasing the parked write")
         if write_fails:
             raise OSError(5, "I/O error")
 
@@ -285,13 +281,41 @@ def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
             await asyncio.sleep(0)
         release.set()
         try:
-            await asyncio.wait_for(save, timeout=_LOST_RUN_CEILING_SECS)
+            await await_until(save, what="the cancelled save settling")
         except asyncio.CancelledError:
             return True
         return False
 
     assert asyncio.run(_run()) is True
     assert calls == (["rollback"] if write_fails else [])
+
+
+def test_a_landed_write_honours_the_docker_creds_scrub(monkeypatch) -> None:
+    """The env sync routes through the shared ``apply_env_credential_changes``, so
+    under ``_KIROCREW_CREDS_SCRUBBED`` a credential key is NOT re-injected into
+    os.environ (the duplicate-loop bug that ignored the scrub). A non-credential
+    operator key still applies."""
+
+    async def _ok(_updates):
+        return None
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _ok)
+    _calls, rollback = _rollback_probe()
+    with monkeypatch.context() as env:
+        env.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
+        env.delenv("SLACK_BOT_TOKEN", raising=False)
+        env.setenv("KC_PROBE_PROXY", "unset-before")
+        env.delenv("KC_PROBE_PROXY")
+        asyncio.run(
+            mod._write_env_or_roll_back(
+                {"SLACK_BOT_TOKEN": "xoxb-rotated", "KC_PROBE_PROXY": "http://p"}, rollback
+            )
+        )
+        # The credential key is NOT re-injected under the scrub...
+        assert "SLACK_BOT_TOKEN" not in os.environ
+        # ...but a non-credential operator setting still applies.
+        assert os.environ.get("KC_PROBE_PROXY") == "http://p"
+    assert "KC_PROBE_PROXY" not in os.environ
 
 
 def test_a_landed_write_syncs_the_process_environment(monkeypatch) -> None:

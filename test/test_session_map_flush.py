@@ -30,6 +30,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.session_map import SESSION_MAP_FILENAME, SessionMap
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture
@@ -60,15 +61,9 @@ async def _await_event(event: threading.Event, what: str) -> None:
     An unbounded spin would hang until the repo-wide ``--timeout`` fires with
     an unhelpful stack instead of failing on the assertion the test makes.
     """
-
-    async def _poll() -> None:
-        while not event.is_set():
-            await asyncio.sleep(0.005)
-
-    try:
-        await asyncio.wait_for(_poll(), timeout=10)
-    except asyncio.TimeoutError:
-        pytest.fail(f"timed out waiting for {what}")
+    await async_wait_until(
+        event.is_set, interval=0.005, describe=lambda: f"timed out waiting for {what}"
+    )
 
 
 class TestDeferredFlush:
@@ -329,7 +324,9 @@ class TestDeferredFlush:
             assert await asyncio.to_thread(entered.wait, 10)
 
             closing = asyncio.create_task(session_map.aclose())
-            await asyncio.wait_for(cancellation_restored.wait(), timeout=10)
+            await await_until(
+                cancellation_restored, what="the cancelled flush restoring its dirty state"
+            )
             release.set()
             await closing
 

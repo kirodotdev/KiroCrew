@@ -509,6 +509,74 @@ async def test_a_refused_token_names_the_secret_to_replace(
     assert f"Replace {bitbucket_server.GLOBAL_TOKEN_NAME} in Settings > Secrets" in error
 
 
+@pytest.fixture
+def two_hosts_config(tmp_path, monkeypatch):
+    """A real config.json listing the instance and a second one."""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"dashboard": {"bitbucket_server_hosts": [HOST, "other.acme.example"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hosts, "_gitlab_hosts_loaded_at", 0.0)
+    with patch("kiro_crew.config.loader.config_path", return_value=path):
+        yield path
+
+
+@pytest.mark.asyncio
+async def test_with_two_hosts_the_setup_error_ships_the_per_host_secret_name(
+    two_hosts_config, instance, vault
+) -> None:
+    instance.routes[PR_API] = (401, {"errors": []})
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request", json={"url": PR_URL})
+        assert resp.status == 503
+        body = await resp.json()
+    name = bitbucket_server.host_token_name(HOST)
+    assert len(name) > 60
+    # Its own field, so the panel can offer it as copyable text, AND still in the
+    # sentence, for every reader that shows only the message.
+    assert body["secretName"] == name
+    assert name in body["error"]
+    assert "loginCommand" not in body
+
+
+@pytest.mark.asyncio
+async def test_with_one_host_the_setup_error_ships_the_shared_secret_name(
+    config_file, instance, vault
+) -> None:
+    instance.routes[PR_API] = (401, {"errors": []})
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request", json={"url": PR_URL})
+        body = await resp.json()
+    assert body["secretName"] == bitbucket_server.GLOBAL_TOKEN_NAME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refused_token_ships_the_secret_name_to_replace(
+    two_hosts_config, instance, vault, status
+) -> None:
+    vault[bitbucket_server.host_token_name(HOST)] = TOKEN_VALUE
+    instance.routes[PR_API] = (status, {"errors": []})
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request", json={"url": PR_URL})
+        body = await resp.json()
+    assert body["secretName"] == bitbucket_server.host_token_name(HOST)
+    assert f"Replace {body['secretName']} in Settings > Secrets" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_checks_tab_setup_error_ships_the_secret_name(
+    two_hosts_config, instance, vault
+) -> None:
+    instance.routes[PR_API] = (401, {"errors": []})
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/api/source/pull-request/checks", json={"url": PR_URL})
+        assert resp.status == 503
+        body = await resp.json()
+    assert body["secretName"] == bitbucket_server.host_token_name(HOST)
+
+
 @pytest.mark.asyncio
 async def test_a_redirect_is_reported_not_followed(config_file, instance, vault) -> None:
     instance.routes[PR_API] = (302, {})

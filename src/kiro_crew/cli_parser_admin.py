@@ -2,7 +2,7 @@
 ``Develop Kiro Crew itself`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: secrets,
-security, file-delivery, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
+security, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
 eval (``bench``, ``perf`` and ``desktop`` register from their own modules).
 ``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
 line's registration order, so a new command of these sections gets a registrar here and a
@@ -77,6 +77,18 @@ def register_snapshot_parser(sub: _Commands) -> None:
         ),
     )
 
+    snap_parser.add_argument(
+        "--max-archive-gib",
+        type=int,
+        default=None,
+        dest="max_archive_gib",
+        help=(
+            "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+            "1024) for this run only. A bundle written past the default restores with a "
+            "--max-archive-gib at least as large on restore."
+        ),
+    )
+
     # Retired, and defined only so it fails with a pointer instead of a bare argparse
     # error. Dropping it entirely would still fail loudly ("unrecognized arguments"), but
     # an operator whose muscle memory or old cron line still says `--to s3://bucket/prefix`
@@ -110,6 +122,17 @@ def register_restore_parser(sub: _Commands) -> None:
             "Restore by path name on a platform that cannot open a directory relative "
             "to a descriptor (Windows). Without this the restore is refused there "
             "rather than run with a destination an ancestor swap could redirect."
+        ),
+    )
+    rest_parser.add_argument(
+        "--max-archive-gib",
+        type=int,
+        default=None,
+        dest="max_archive_gib",
+        help=(
+            "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+            "1024) for this run only. A bundle written past the default restores with a "
+            "--max-archive-gib at least as large on restore."
         ),
     )
 
@@ -254,6 +277,45 @@ def register_secrets_parser(sub: _Commands) -> None:
         "--apply",
         action="store_true",
         help="Store the secrets and rewrite .env to secret:// refs (default: dry-run)",
+    )
+    # authorize -- the owner binds a stored Custom secret to an exact https origin
+    # for the mediated ``call_api_with_secret`` tool, and SIGNS the policy so
+    # trusted host code can confirm the owner (not the agent) set the destination.
+    secrets_authorize = secrets_sub.add_parser(
+        "authorize",
+        help="Authorize a Custom secret for one exact https origin (agent write requests)",
+    )
+    # Parsed as ``name``: it is the vault ENTRY's name, never its value, and is
+    # echoed back in the CLI's confirmation line.
+    secrets_authorize.add_argument(
+        "name", metavar="SECRET_NAME", help="Name of the stored Custom secret"
+    )
+    secrets_authorize.add_argument(
+        "origin",
+        nargs="?",
+        default=None,
+        help=(
+            "Exact https origin the agent may call, e.g. https://api.example.com "
+            "(required when adding; omit it with --remove)"
+        ),
+    )
+    secrets_authorize.add_argument(
+        "--header",
+        default=None,
+        help="Inject the secret into this request header (default: Authorization: Bearer)",
+    )
+    secrets_authorize.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the authorization for SECRET_NAME instead of adding it",
+    )
+    secrets_authorize.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "Discard an existing policy that does not verify or does not parse, and "
+            "start fresh. Without it, authorize refuses rather than erase entries."
+        ),
     )
 
 
@@ -471,18 +533,6 @@ def register_pod_parser(sub: _Commands) -> None:
     pod_cleanup.add_argument("name")
 
 
-def register_file_delivery_parser(sub: _Commands) -> None:
-    file_delivery_parser = cli_help.add_command(sub, "file-delivery")
-    file_delivery_parser.add_argument(
-        "action",
-        choices=["approve"],
-        help=(
-            "approve: finish a flagged-file delivery consent armed from the "
-            "dashboard's Security panel (proves you are at the host)"
-        ),
-    )
-
-
 def register_cloud_parser(sub: _Commands) -> None:
     # cloud — provision + run Kiro Crew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by Kiro Crew).
@@ -630,7 +680,7 @@ Examples:
     )
     _tunnel_opts(_c_tunnel)
     _c_login = cloud_sub.add_parser(
-        "login", help="Sign kiro-cli in on the instance (fixes 'not logged in' chat errors)"
+        "login", help="Sign Kiro in on the instance (fixes 'not logged in' chat errors)"
     )
     _cloud_common(_c_login)
     _c_login.add_argument(
@@ -638,7 +688,7 @@ Examples:
     )
     _cloud_identity_opts(_c_login)
     _c_logout = cloud_sub.add_parser(
-        "logout", help="Sign kiro-cli out on the instance (to switch Kiro account)"
+        "logout", help="Sign Kiro out on the instance (to switch Kiro account)"
     )
     _cloud_common(_c_logout)
     _c_stop = cloud_sub.add_parser("stop", help="Stop the instance (pause billing)")
@@ -659,6 +709,12 @@ Examples:
         "iam-policy", help="Print the least-privilege IAM policy to apply"
     )
     _cloud_creds_opts(_c_iam)
+    _c_iam.add_argument(
+        "--host-policies",
+        action="store_true",
+        help="Print the second policy that lets the launcher attach this build's "
+        "host policies (only when the edition adds some)",
+    )
     _c_boundary = cloud_sub.add_parser(
         "iam-boundary",
         help="Pre-create the immutable EC2 + Fargate permissions boundaries (admin, one-time)",
@@ -669,6 +725,12 @@ Examples:
         action="store_true",
         help="Also pre-create the opt-in KMS-session instance boundary that "
         "`cloud launch --ssm-kms-key` uses",
+    )
+    _c_boundary.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Upgrade an existing instance boundary that holds the document an earlier "
+        "build created (with --ssm-kms, the KMS-session boundary too)",
     )
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
     _cloud_creds_opts(_c_doctor)

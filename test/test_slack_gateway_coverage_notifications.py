@@ -232,29 +232,37 @@ class TestTaskNotify:
         notify = self._capture(orch)
 
         await notify("Task 3 denied", "nope")
-        orch.slack.post_message.assert_awaited_once()
+        orch.slack.post_message.assert_awaited_once_with("D1", "*Task 3 denied*\nnope")
 
     @pytest.mark.asyncio
     async def test_ordinary_title_does_not_dm(self):
         orch = _make_orchestrator()
-        orch.dashboard_state = None
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         orch.slack = MagicMock()
         orch.slack.open_dm = AsyncMock(return_value="D1")
         orch.slack.post_message = AsyncMock()
         notify = self._capture(orch)
 
         await notify("Investigating gateway error", "looking")
+        assert ds.notify.call_args.args == ("taskrunner", "Investigating gateway error", "looking")
         orch.slack.open_dm.assert_not_called()
+        orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dm_failure_is_swallowed(self):
         orch = _make_orchestrator()
-        orch.dashboard_state = None
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         orch.slack = MagicMock()
         orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
+        orch.slack.post_message = AsyncMock()
         notify = self._capture(orch)
 
-        await notify("Task 3 requires approval", "run it?")  # must not raise
+        await notify("Task 3 requires approval", "run it?")
+        orch.slack.open_dm.assert_awaited_once()
+        orch.slack.post_message.assert_not_awaited()
+        assert ds.notify.call_args.args == ("taskrunner", "Task 3 requires approval", "run it?")
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -305,27 +313,23 @@ class TestChannelTransportPermittedAuditPaths:
             assert gw._channel_transport_permitted("telegram") is False
         assert degraded.call_args.kwargs["failed_closed"] is True
 
-    def test_governed_allow_is_audited_critically(self):
+    @pytest.mark.parametrize(
+        ("layer", "critical"),
+        [
+            pytest.param("profile", True, id="test_governed_allow_is_audited_critically"),
+            pytest.param("", False, id="test_ungoverned_allow_is_audited_best_effort"),
+        ],
+    )
+    def test_allow_audit_disposition(self, layer: str, critical: bool):
         audit = MagicMock()
         with (
             patch.object(
-                gw, "governance_permits", return_value=_decision(permitted=True, layer="profile")
+                gw, "governance_permits", return_value=_decision(permitted=True, layer=layer)
             ),
             patch.object(gw, "sel", return_value=audit),
         ):
             assert gw._channel_transport_permitted("webex") is True
-        assert audit.log_governance_decision.call_args.kwargs["critical"] is True
-
-    def test_ungoverned_allow_is_audited_best_effort(self):
-        audit = MagicMock()
-        with (
-            patch.object(
-                gw, "governance_permits", return_value=_decision(permitted=True, layer="")
-            ),
-            patch.object(gw, "sel", return_value=audit),
-        ):
-            assert gw._channel_transport_permitted("webex") is True
-        assert audit.log_governance_decision.call_args.kwargs["critical"] is False
+        assert audit.log_governance_decision.call_args.kwargs["critical"] is critical
 
     def test_evaluation_error_fails_closed(self):
         with (
@@ -365,13 +369,16 @@ class TestDigestChunkSize:
         monkeypatch.delenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", raising=False)
         assert gw._digest_chunk_size() == 10
 
-    def test_explicit_value_is_honoured(self, monkeypatch):
-        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", "25")
-        assert gw._digest_chunk_size() == 25
-
-    def test_malformed_value_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", "not-a-number")
-        assert gw._digest_chunk_size() == 10
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("25", 25, id="test_explicit_value_is_honoured"),
+            pytest.param("not-a-number", 10, id="test_malformed_value_falls_back_to_default"),
+        ],
+    )
+    def test_set_value_is_parsed(self, monkeypatch, raw: str, expected: int):
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", raw)
+        assert gw._digest_chunk_size() == expected
 
     def test_value_is_clamped_to_a_sane_range(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", "0")
@@ -389,13 +396,16 @@ class TestDigestHoldSecs:
         monkeypatch.delenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", raising=False)
         assert _sa._digest_hold_secs() == 120.0
 
-    def test_explicit_value_is_honoured(self, monkeypatch):
-        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "45.5")
-        assert _sa._digest_hold_secs() == 45.5
-
-    def test_malformed_value_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "not-a-number")
-        assert _sa._digest_hold_secs() == 120.0
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("45.5", 45.5, id="test_explicit_value_is_honoured"),
+            pytest.param("not-a-number", 120.0, id="test_malformed_value_falls_back_to_default"),
+        ],
+    )
+    def test_set_value_is_parsed(self, monkeypatch, raw: str, expected: float):
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", raw)
+        assert _sa._digest_hold_secs() == expected
 
     def test_zero_and_negative_disable_the_deadline(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "0")

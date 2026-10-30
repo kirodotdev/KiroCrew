@@ -74,10 +74,11 @@ class TestInitSubagents:
     @pytest.mark.asyncio
     async def test_subagent_spawn_and_done_push_slots_update_debounced(self):
         """subagents_running flips at spawn/done — the on_event handler schedules a
-        debounced push_slots_update so slots-stream consumers (composer busy
-        affordance, Board working lane) stay live. Multiple events inside the
-        debounce window coalesce into one push. Covers the reaper too, since
-        _force_reap fires subagent_done through the same on_event path."""
+        debounced push_subagent_patch so slots-stream consumers (composer busy
+        affordance, Board working lane) stay live without re-broadcasting the whole
+        slot list. Multiple events inside the debounce window coalesce into one push.
+        Covers the reaper too, since _force_reap fires subagent_done through the same
+        on_event path."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -94,11 +95,15 @@ class TestInitSubagents:
             "subagent_spawn", SubagentInfo(id="a2", task="t", parent_session_key="dashboard:s1"), {}
         )
         await on_event("subagent_done", info, {"elapsed": 1.0})
-        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced, not yet flushed
+        assert (
+            orch.dashboard_state.push_subagent_patch.call_count == 0
+        )  # debounced, not yet flushed
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 1
+        assert orch.dashboard_state.push_subagent_patch.call_count == 1
+        # The sub-agent path sends a one-row patch, never the whole slot list.
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
         # A later lifecycle event schedules a fresh push.
         await on_event(
@@ -109,13 +114,14 @@ class TestInitSubagents:
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 2
+        assert orch.dashboard_state.push_subagent_patch.call_count == 2
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
     @pytest.mark.asyncio
     async def test_subagent_queued_pushes_slots_debounced(self):
         """A queued-depth frame changes slots[].subagents_queued, so it schedules
-        the same debounced push: the next slots frame reconciles a client that
-        missed the depth frame itself, including one not showing that session."""
+        the same debounced push_subagent_patch: the next patch reconciles a client
+        that missed the depth frame itself, without a whole-list rebroadcast."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -128,11 +134,12 @@ class TestInitSubagents:
         info = SubagentInfo(id="_queue", task="", parent_session_key="dashboard:s1")
         await on_event("subagent_queued", info, {"queued": 1})
         await on_event("subagent_queued", info, {"queued": 0})
-        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced
+        assert orch.dashboard_state.push_subagent_patch.call_count == 0  # debounced
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 1
+        assert orch.dashboard_state.push_subagent_patch.call_count == 1
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
     @pytest.mark.asyncio
     async def test_queued_frame_carries_its_tabs_sum_across_parents(self):
@@ -484,6 +491,13 @@ class TestSynthesisAfterAOneTurnBatch:
         await self._complete(on_done, slot, "a1", busy=busy)
         assert slot._pending_synthesis is True, "the arm itself is unchanged"
 
+        if busy:
+            # The blocker's turn end finds the completion still queued: the
+            # gate holds and the completion drains as its own turn.
+            assert await self._turn_end(state, slot) is False
+            assert slot._queue == [], "the queued completion was drained"
+            assert slot._pending_synthesis is True, "held, not judged, while it was queued"
+            slot.task = None
         assert await self._turn_end(state, slot) is False
         assert slot._pending_synthesis is False, "the arm is consumed, not left for later"
 
@@ -605,7 +619,6 @@ class TestSubagentDone:
     async def test_dashboard_slot_idle_triggers_run_chat(self):
         """Subagent done → dashboard slot idle → _run_chat."""
         orch, mock_sm = self._setup_orch_with_subagent_mgr()
-        # Get the on_done callback
         on_done = mock_sm.call_args[1]["on_done"]
 
         slot = MagicMock()
@@ -613,7 +626,6 @@ class TestSubagentDone:
         slot.task = None
         slot.key = "test-slot"
         slot.mode = ""
-        slot._recovery_chat_triggered = False
         slot._pending_subagent_failures = []
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
 
@@ -630,10 +642,13 @@ class TestSubagentDone:
         info.started = 0.0
 
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock, return_value=None
-        ):
+            "kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock, return_value=None
+        ) as mock_run_chat:
             await on_done(info)
 
+        mock_run_chat.assert_called_once()
+        assert mock_run_chat.call_args.args[1] is slot
+        assert "done!" in mock_run_chat.call_args.args[2]
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.push_slots_update.assert_called()
 
@@ -645,7 +660,6 @@ class TestSubagentDone:
 
         slot = MagicMock()
         slot.running = True
-        # Create a task that completes but slot stays running
         never_done = asyncio.get_event_loop().create_future()
         never_done.set_result(None)
         # flake-ok: pre-existing event-loop yield standing in for a finished turn, moved verbatim; tracked for a de-flake pass
@@ -656,7 +670,6 @@ class TestSubagentDone:
         slot.running = True
         slot.key = "busy-slot"
         slot.mode = ""
-        slot._recovery_chat_triggered = False
         slot._pending_subagent_failures = []
         slot.queue_append = MagicMock()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -674,7 +687,12 @@ class TestSubagentDone:
         info.started = 0.0
 
         await on_done(info)
+        from kiro_crew.slack.gateway import SUBAGENT_COMPLETION_KIND
+
         slot.queue_append.assert_called_once()
+        assert "queued result" in slot.queue_append.call_args.args[0]
+        assert slot.queue_append.call_args.kwargs["kind"] == SUBAGENT_COMPLETION_KIND
+        orch.dashboard_state.notify.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_cron_parent_injects_result(self):
@@ -699,10 +717,14 @@ class TestSubagentDone:
             "kiro_crew.slack.gateway.stream_and_collect",
             new_callable=AsyncMock,
             return_value="llm response",
-        ):
+        ) as mock_stream:
             await on_done(info)
 
-        orch.dashboard_state.notify.assert_called()
+        mock_stream.assert_awaited_once()
+        orch.sessions.reset.assert_awaited_with("cron:job1")
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
+        assert "llm response" in orch.dashboard_state.notify.call_args.args[2]
 
     @pytest.mark.asyncio
     async def test_notification_only_for_unknown_parent(self):
@@ -723,7 +745,9 @@ class TestSubagentDone:
         info.started = 0.0
 
         await on_done(info)
-        orch.dashboard_state.notify.assert_called()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
+        assert info._report_delivered is True
 
     @pytest.mark.asyncio
     async def test_silent_subagent_no_notification(self):
@@ -744,6 +768,7 @@ class TestSubagentDone:
         info.started = 0.0
 
         await on_done(info)
+        assert info._report_delivered is True
         orch.dashboard_state.notify.assert_not_called()
 
     @pytest.mark.asyncio
@@ -773,10 +798,13 @@ class TestSubagentDone:
             "kiro_crew.slack.gateway.stream_and_collect",
             new_callable=AsyncMock,
             return_value="synthesized response",
-        ):
+        ) as mock_stream:
             await on_done(info)
 
-        orch.dashboard_state.notify.assert_called()
+        mock_stream.assert_awaited_once()
+        assert mock_stream.await_args.args[1] == "msg"
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_dashboard_slot_gone_notification_only(self):
@@ -798,16 +826,18 @@ class TestSubagentDone:
         info.started = 0.0
 
         await on_done(info)
-        orch.dashboard_state.notify.assert_called()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
+        assert info._report_delivered is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tests: _retrigger_recovery
+# Tests: sub-agent failure events
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestRetriggerRecovery:
-    """Recovery retrigger for queued subagent failures."""
+class TestSubagentFailureEvents:
+    """Sub-agent failure events queue their notices on the parent tab."""
 
     def _setup(self):
         orch = _make_orchestrator()
@@ -928,7 +958,10 @@ class TestRetriggerRecovery:
         info.parent_session_key = "dashboard:slot1"
 
         await on_event("subagent_chunk", info, {"text": "partial"})
-        orch.dashboard_state.broadcast_ws_subagent_subscribers.assert_called()
+        orch.dashboard_state.broadcast_ws_subagent_subscribers.assert_called_once()
+        etype, payload = orch.dashboard_state.broadcast_ws_subagent_subscribers.call_args.args
+        assert etype == "subagent_chunk"
+        assert payload["text"] == "partial"
 
     @pytest.mark.asyncio
     async def test_subagent_event_status(self):
@@ -941,7 +974,8 @@ class TestRetriggerRecovery:
         info.parent_session_key = "dashboard:slot1"
 
         await on_event("subagent_started", info, {})
-        orch.dashboard_state.broadcast_ws.assert_called()
+        etypes = [c.args[0] for c in orch.dashboard_state.broadcast_ws.call_args_list]
+        assert "subagent_started" in etypes
 
     @pytest.mark.asyncio
     async def test_subagent_event_routes_cron_parent_to_the_cron_tab(self):

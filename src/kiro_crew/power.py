@@ -19,6 +19,9 @@ caller — the machine simply keeps its normal sleep behavior):
 * **Windows** — ``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)``
   via ctypes on engage and ``ES_CONTINUOUS`` alone to release. The OS clears the
   request automatically when the process exits, so there is nothing to leak.
+  On a Modern Standby (S0 low power idle) laptop this request does not keep the
+  machine out of standby once the display turns off, for example after the
+  screen is locked.
 
 The inhibitor is idempotent: ``set_active(True)`` twice engages once, and it
 re-spawns a POSIX helper that has died so a long task cannot silently start

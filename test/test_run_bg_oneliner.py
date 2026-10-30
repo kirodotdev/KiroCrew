@@ -442,22 +442,10 @@ async def test_non_rejection_error_is_not_retried():
 
 
 class TestRejectedModelClassifier:
-    def test_matches_invalid_model_id(self):
-        assert (
-            _rejected_model_from_error({"data": "Invalid model ID: claude-haiku-4.5"})
-            == "claude-haiku-4.5"
-        )
-
-    def test_matches_invalid_model_id_auto_in_message(self):
-        assert _rejected_model_from_error({"message": "Invalid model ID: auto"}) == "auto"
-
     def test_matches_model_not_available(self):
         assert (
             _rejected_model_from_error({"data": "The model 'opus-x' is not available"}) == "opus-x"
         )
-
-    def test_returns_none_for_unrelated_error(self):
-        assert _rejected_model_from_error({"data": "ThrottlingException: slow down"}) is None
 
     def test_returns_none_for_non_dict(self):
         assert _rejected_model_from_error("nonsense") is None

@@ -41,6 +41,7 @@ def wired(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_recycle_posts_its_notice_into_the_tab_and_pushes_the_banner_verdict(wired):
     state, slot, on_recycled, _on_stuck, banners = wired
+    slot.append("user", "hello", "msg msg-u", broadcast=False)
     before = len(slot._messages)
 
     await on_recycled("dashboard:t1", reason="RSS over the limit")
@@ -52,6 +53,31 @@ async def test_a_recycle_posts_its_notice_into_the_tab_and_pushes_the_banner_ver
     assert row["meta"]["kind"] == "compaction"
     assert row["meta"]["notice"] == "session_recycled"
     assert banners == ["t1"]
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_tab_gets_no_recycle_notice_while_a_used_tab_keeps_it(wired):
+    """An eager-spawned "+ New" tab recycled before its first message
+    shows no banner, even after a second recycle; a tab with a conversation
+    still gets the notice. The OAuth banner verdict is pushed for both."""
+    state, fresh, on_recycled, _on_stuck, banners = wired
+    used = state.get_or_create_slot("used")
+    used.append("user", "hello", "msg msg-u", broadcast=False)
+    used.append("assistant", "hi", "msg msg-a", broadcast=False)
+    _TABS["dashboard:used"] = "used"
+    try:
+        await on_recycled("dashboard:t1", reason="memory limit (1914MB)")
+        await on_recycled("dashboard:t1", reason="memory limit (1947MB)")
+        await on_recycled("dashboard:used", reason="memory limit (2074MB)")
+    finally:
+        _TABS.pop("dashboard:used")
+
+    assert [r for r in fresh._messages if (r.get("meta") or {}).get("notice")] == []
+    notices = [r for r in used._messages if (r.get("meta") or {}).get("notice")]
+    assert [r["content"] for r in notices] == [
+        _SESSION_RECYCLED_NOTICE.format(reason="memory limit (2074MB)")
+    ]
+    assert banners == ["t1", "t1", "used"]
 
 
 def test_a_stuck_turn_posts_its_notice_into_the_tab(wired):
@@ -86,6 +112,7 @@ async def test_a_session_with_no_live_tab_gets_no_notice(wired, key, caplog):
 @pytest.mark.asyncio
 async def test_a_failing_append_or_banner_push_is_logged_not_raised(wired, monkeypatch, caplog):
     _state, slot, on_recycled, on_stuck, _banners = wired
+    slot.append("user", "hello", "msg msg-u", broadcast=False)
 
     def _refuse(self, *args, **kwargs):
         raise RuntimeError("append refused")

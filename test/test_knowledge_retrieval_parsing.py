@@ -82,7 +82,6 @@ class TestHybridRetrieverExtended:
         )
         results = retriever.search("JWT")
         assert len(results) >= 1
-        # Should have multiple match types
         mt = results[0]["match_type"]
         assert "keyword" in mt
 
@@ -259,7 +258,6 @@ class TestChunkerExtended:
         assert "Hello world" in slides[0]["content"]
 
     def test_chunk_code_oversized(self):
-        # Generate a single huge function
         lines = ["def big():"] + [f"    x = {i}" for i in range(1000)]
         code = "\n".join(lines)
         chunker = HeadingAwareChunker(target_size=50)
@@ -430,7 +428,6 @@ class TestChunkMarkdown:
         chunker = HeadingAwareChunker(target_size=500)
         chunks = chunker.chunk_markdown(text)
         assert len(chunks) >= 2
-        # All chunks have required fields
         for c in chunks:
             assert "content" in c
             assert "section_title" in c
@@ -531,7 +528,6 @@ class TestDocxContentType:
             from docx import Document
         except ImportError:
             pytest.skip("python-docx not installed")
-        # Create a minimal .docx
         doc = Document()
         doc.add_heading("Test Heading", level=1)
         doc.add_paragraph("Some content here.")

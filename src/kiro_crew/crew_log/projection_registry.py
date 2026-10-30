@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final, cast
 
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_ENTRY_TYPE,
+    CUSTOM_FOLD_NAME,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_FOLD_NAME,
     DASHBOARD_REFUSED_ENTRY_TYPE,
@@ -22,15 +24,19 @@ from kiro_crew.crew_log.entry_types import (
     RADAR_ENTRY_TYPE,
     WAITING_ENTRY_TYPE,
     WAITING_FOLD_NAME,
+    WORK_CHARGE_ENTRY_TYPE,
     WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.projection_catalogue import (
     _FOLD_STATE_VERSION_BASE,
     FOLD_NAMES,
+    INTERNAL_SLOT_PROJECTION_NAMES,
     KNOWN_TYPES,
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
     TREE_PROJECTION_NAMES,
+    WORKER_FOLD_NAME,
+    WORKERS_FOLD_NAME,
     WORKSTREAMS_FOLD_NAME,
     WORKTREE_FOLD_NAME,
     _Fold,
@@ -50,6 +56,10 @@ from kiro_crew.crew_log.projection_dashboard import (
     _agentic_rows,
     _agentic_start,
     _agentic_step,
+    _custom_render,
+    _custom_rows,
+    _custom_start,
+    _custom_step,
     _mistakes_render,
     _mistakes_rows,
     _mistakes_start,
@@ -120,6 +130,22 @@ from kiro_crew.crew_log.projection_work import (
     _work_start,
     _work_step,
 )
+from kiro_crew.crew_log.projection_workers import (
+    WORKER_TYPES,
+    WORKERS_TYPES,
+    _worker_bind_slot,
+    _worker_copy,
+    _worker_render,
+    _worker_rows,
+    _worker_start,
+    _worker_step,
+    _workers_bind_slot,
+    _workers_copy,
+    _workers_render,
+    _workers_rows,
+    _workers_start,
+    _workers_step,
+)
 from kiro_crew.crew_log.projection_workstreams import (
     _workstreams_bind_slot,
     _workstreams_copy,
@@ -175,7 +201,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         "session/opened",
         "turn/completed",
         # A refused turn never ran, so it carries no cost and no occupancy -- it is
-        # here only so the ordinal counter sees it. A dispatch gate refusing a turn
+        # here only so the context part's turn counter sees it (``turns`` and the
+        # ordinal memo, ``projection_usage_measured``). A dispatch gate refusing a turn
         # (an oversized or blocked ``@prompt``, a superseded replay) is ordinary
         # operation, and the refusal is the turn's ONLY durable entry: it emits no
         # ``turn/completed`` and composes nothing. Without it the counter never
@@ -184,6 +211,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         # turns not shown" count both drift down and never self-correct.
         "turn/refused",
         "context/composed",
+        # The engine's measurement of a turn, attached to that turn's context row.
+        "context/measured",
         "compaction/applied",
         "step/completed",
         "subagent/completed",
@@ -211,7 +240,7 @@ TOOL_TYPES: Final[frozenset[str]] = frozenset({"tool/called", "tool/completed"})
 #: fourth spender added to :data:`_CREDIT_SOURCE_OF` is then read by the report fold
 #: without a second edit, which is the whole point of deriving it.
 WORKSTREAMS_TYPES: Final[frozenset[str]] = frozenset(
-    {WORK_ENTRY_TYPE, "session/opened"} | set(_CREDIT_SOURCE_OF)
+    {WORK_ENTRY_TYPE, WORK_CHARGE_ENTRY_TYPE, "session/opened"} | set(_CREDIT_SOURCE_OF)
 )
 
 #: Entry types ``approvals`` pairs: a request and the decision that answers it.
@@ -242,19 +271,8 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
         source: dict(row) for source, row in state["credits_by_source"].items()
     }
     grown["by_model"] = {model: dict(row) for model, row in state["by_model"].items()}
-    grown["context_by_source"] = {
-        source: dict(row) for source, row in state["context_by_source"].items()
-    }
-    # Appended to, trimmed from the front, and a row is REPLACED when its turn's
-    # occupancy arrives -- so only the LIST is rebuilt. The row dicts are shared with
-    # the snapshot rather than copied, which is what keeps this O(window) instead of
-    # O(window x sources), and that sharing is exactly why the occupancy stamp in
-    # ``_usage_step`` assigns ``rows[index] = {**row, ...}`` instead of writing into a
-    # row: an in-place write would reach a projection already handed to a reader.
-    grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
-    # ``context_turn_keys`` needs no copy: it is a str, which ``_count_turn_ordinal``
-    # REPLACES rather than mutates, so the snapshot keeps the value it was handed.
+    # ``ctx`` needs no copy: ``context_apply`` never edits it, it returns a new one.
     return grown
 
 
@@ -457,7 +475,22 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # inflated count for the life of the unit.
         # Moved again for ``context_started`` and the per-row ``first_start``: a
         # savepoint without them would mark a later rebuild as the session's start.
-        state_version=_FOLD_STATE_VERSION_BASE + 11,
+        # Moved again for the engine-measured rows and the running sum of composed
+        # characters beside them: a savepoint without the sum would subtract nothing
+        # from the engine's user text for the rest of the unit.
+        # Moved again for the fixed-size context part (five running sums, the newest
+        # measurement, a 30-row trend ring whose rows carry their own ordinal): a
+        # savepoint holding per-turn rows has none of it.
+        # Moved again because each ring row now holds its turn whole (its blocks by
+        # name and its own engine measurement): a savepoint's shorter rows would be
+        # read past their end.
+        # Moved again for the ordinal memo (``turn_memo``) a rewind reads its ordinal
+        # from: a savepoint without it would give every rewound turn a new ordinal.
+        # Moved again for the dated readings the fullest-turn peak is taken from and
+        # the configured window (``peaks``, ``conf_window``): a savepoint has neither.
+        # Moved again for each row's version and the write counter it comes from
+        # (``row_writes``): a savepoint's shorter rows have neither.
+        state_version=_FOLD_STATE_VERSION_BASE + 18,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.
@@ -677,6 +710,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _workstreams_render,
         bind_slot=_workstreams_bind_slot,
         affects=WORKSTREAMS_TYPES,
+        # One past the base: ``charged`` joined the state.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),
@@ -701,6 +736,49 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=frozenset({WAITING_ENTRY_TYPE}),
         copy_state=_flat_copy,
         count_rows=_waiting_rows,
+    ),
+    # The records a script cron writes for its crewmate, keyed by record type and
+    # keeping the latest per type -- the agentic fold's shape with the writer stamped
+    # on every row, so a page can bind a script's result with no model turn.
+    CUSTOM_FOLD_NAME: _Fold(
+        CUSTOM_FOLD_NAME,
+        _custom_start,
+        _custom_step,
+        _custom_render,
+        affects=frozenset({CUSTOM_ENTRY_TYPE}),
+        count_rows=_custom_rows,
+    ),
+    # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
+    # and when, under the cap. What each worker is doing is ``worker``, merged in at
+    # read. ``affects`` stays the whole set a worker's entries carry, because the eager
+    # path routes a worker's entry to its creator's cell by this fold's types.
+    WORKERS_FOLD_NAME: _Fold(
+        WORKERS_FOLD_NAME,
+        _workers_start,
+        _workers_step,
+        _workers_render,
+        bind_slot=_workers_bind_slot,
+        affects=WORKERS_TYPES,
+        copy_state=_workers_copy,
+        count_rows=_workers_rows,
+    ),
+    # One worker's row, over that worker's own newest units: a cell per worker, so one
+    # worker growing continues its own cell and leaves the others warm.
+    WORKER_FOLD_NAME: _Fold(
+        WORKER_FOLD_NAME,
+        _worker_start,
+        _worker_step,
+        _worker_render,
+        bind_slot=_worker_bind_slot,
+        affects=WORKER_TYPES,
+        copy_state=_worker_copy,
+        count_rows=_worker_rows,
+        mode="lazy",
+        lazy_reason=(
+            "a part of ``workers``, read only when that fold is read: every session's "
+            "turns carry its types, so folding it eagerly would fold for every session "
+            "while only a crewmate's workers are ever read"
+        ),
     ),
     # The TREE-keyed fold, the third key kind, argued where
     # :data:`TREE_PROJECTION_NAMES` names it. ``affects`` is the one work entry type:
@@ -781,10 +859,12 @@ if _ORPHAN_EAGER:  # pragma: no cover - import-time
 
 #: A slot-keyed fold is the only kind that gets a warm cell, so it is the only kind the
 #: byte budget charges -- and a charge that cannot see the state's row count is a
-#: CONSTANT, which is what this change exists to stop being. Checked at import because a
+#: CONSTANT, which it must not be. Checked at import because a
 #: fold added without a counter would be silently under-charged forever.
 _UNCOUNTED_SLOT_FOLDS: Final[tuple[str, ...]] = tuple(
-    name for name in SLOT_PROJECTION_NAMES if _FOLDS[name].count_rows is None
+    name
+    for name in SLOT_PROJECTION_NAMES + INTERNAL_SLOT_PROJECTION_NAMES
+    if _FOLDS[name].count_rows is None
 )
 if _UNCOUNTED_SLOT_FOLDS:  # pragma: no cover - import-time
     raise RuntimeError(
@@ -802,7 +882,11 @@ _MISKEYED_FOLDS: Final[tuple[str, ...]] = tuple(
     for name in FOLD_NAMES
     if sum(
         name in family
-        for family in (SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES, TREE_PROJECTION_NAMES)
+        for family in (
+            SESSION_FOLD_NAMES,
+            SLOT_PROJECTION_NAMES + INTERNAL_SLOT_PROJECTION_NAMES,
+            TREE_PROJECTION_NAMES,
+        )
     )
     != 1
 )

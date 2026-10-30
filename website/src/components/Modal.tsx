@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useId, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useCallback, useId, useRef } from 'react'
 import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
@@ -222,16 +222,22 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
     if (!open) return
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prevOverflow }
+  }, [open])
+
+  // A layout effect, so Escape is armed in the same commit that puts the
+  // dialog in the DOM. A passive effect runs a task later when the open came
+  // from a default-priority update (a fetch answering, as the unscanned-download
+  // confirm does), and an Escape pressed in that gap was dropped.
+  useLayoutEffect(() => {
+    if (!open) return
     // Skip an Escape a nested layer already consumed. Overlays that render above
     // this modal call preventDefault on their own Escape handling.
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented && !crewHidden) softDismiss()
     }
     window.addEventListener('keydown', handler)
-    return () => {
-      document.body.style.overflow = prevOverflow
-      window.removeEventListener('keydown', handler)
-    }
+    return () => window.removeEventListener('keydown', handler)
   }, [open, softDismiss, crewHidden])
 
   // Portal to the body-level overlay root: fixed positioning does not escape an

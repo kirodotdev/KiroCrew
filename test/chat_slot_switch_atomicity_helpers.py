@@ -58,4 +58,7 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.sessions.reset = AsyncMock()
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
+    # Not a channel-resumed session by default, so a mid-turn pick on a pure
+    # dashboard key defers; a bare MagicMock would answer truthy and 409.
+    state.sessions.mirror_accepts_inbound = MagicMock(return_value=False)
     return state

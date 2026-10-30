@@ -32,6 +32,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import await_until
 
 
 def test_an_identical_steer_is_refused_while_the_first_is_still_in_flight(tmp_path):
@@ -513,8 +514,15 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     target = _peer_target(state, "chat-2", caller)
     # A turn still in flight on the target, so the send queues.
     target.task = MagicMock(done=MagicMock(return_value=False))
+    loop = asyncio.get_running_loop()
     flushed: list = []
-    state.flush_slot_now = lambda slot: flushed.append(slot)
+    write_started = asyncio.Event()
+
+    def recording_flush(slot):
+        flushed.append(slot)
+        loop.call_soon_threadsafe(write_started.set)
+
+    state.flush_slot_now = recording_flush
 
     out = await sc.send_to_target(
         state,
@@ -524,12 +532,9 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     )
 
     assert out["started"] is False, "the prompt was queued, so a receipt was given"
-    # Started, not awaited, and it runs in an executor.
-    for _ in range(20):
-        # flake-ok: pre-existing bounded 20-yield poll for the executor write; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
-        if flushed:
-            break
+    # Started, not awaited: the write runs on an executor thread, so this waits for
+    # that thread's signal and never counts event-loop turns.
+    await await_until(write_started, what="the immediate queue write on its executor thread")
     assert flushed == [target], (
         "the immediate queue write must have been started for the slot whose queue "
         f"now holds the acknowledged prompt: {flushed}"

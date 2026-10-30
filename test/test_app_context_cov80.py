@@ -73,6 +73,11 @@ class TestBuildAppContext:
         assert isinstance(ctx.storage, AppStorage)
         assert ctx.config == {"tuning": "kx"}
         assert ctx.spawn.is_done("anything") is True
+        # The store is populated but creates no directory on the loop: the kv
+        # dir is made lazily on the first write (see AppStorage), so it is
+        # absent right after the build and present once a value is stored.
+        assert not (tmp_path / "kv").exists()
+        ctx.storage.set("k", {"v": 1})
         assert (tmp_path / "kv").is_dir()
 
     def test_permission_without_host_service_stays_none(self, tmp_path) -> None:

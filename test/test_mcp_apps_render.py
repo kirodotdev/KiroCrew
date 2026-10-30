@@ -101,15 +101,12 @@ def test_load_spool_missing(spool):
     assert mcp_apps_render.load_spool(_hex()) is None
 
 
-def test_load_spool_corrupt_json(spool):
+@pytest.mark.parametrize(
+    "body", ["{not valid json", "[1, 2, 3]"], ids=["corrupt-json", "non-object-json"]
+)
+def test_load_spool_unreadable_body_is_none(spool, body):
     sid = _hex()
-    (spool / f"{sid}.json").write_text("{not valid json", encoding="utf-8")
-    assert mcp_apps_render.load_spool(sid) is None
-
-
-def test_load_spool_non_object_json(spool):
-    sid = _hex()
-    (spool / f"{sid}.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (spool / f"{sid}.json").write_text(body, encoding="utf-8")
     assert mcp_apps_render.load_spool(sid) is None
 
 

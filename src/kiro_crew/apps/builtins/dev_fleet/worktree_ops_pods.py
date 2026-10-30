@@ -68,6 +68,11 @@ def _read_pin_strict(cfg: Any, name: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def _same_checkout(pinned: str, path: str) -> bool:
+    """Whether *pinned* and *path* resolve to one checkout. Blocking; raises OSError."""
+    return Path(pinned).resolve() == Path(path).resolve()
+
+
 async def _pod_checkout_guard(name: str) -> str | None:
     """Pod identities are global basenames while Dev Fleet scopes worktrees to
     MAIN_REPO. Before ANY pod operation, verify the pod's pinned ``CHECKOUT``
@@ -119,7 +124,9 @@ async def _pod_checkout_guard(name: str) -> str | None:
             "refusing pod operation (ambiguous pod identity)"
         )
     try:
-        if Path(pinned).resolve() != Path(target["path"]).resolve():
+        # Two realpath walks: off the loop, so a slow disk stalls only this guard.
+        same = await asyncio.to_thread(_same_checkout, pinned, target["path"])
+        if not same:
             return (
                 f"pod {name!r} is pinned to a different checkout — refusing "
                 "cross-repository pod operation (basename collision)"

@@ -1,0 +1,201 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.33.1",
+    "frame": "response",
+    "id": 101,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "sleep 15 && echo first-done"
+        },
+        "title": "sleep 15 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01Xv4qEbpGLAj89qnUDKVEg1",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"command\": \"sleep 15 && echo first-done\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "wire_title": "Running: sleep 15 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "sleep 15 && echo first-done"
+        },
+        "request_id": "synthetic-id-1",
+        "shell_classified": true,
+        "title": "Running: sleep 15 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01Xv4qEbpGLAj89qnUDKVEg1",
+        "tool_input": "{\n  \"command\": \"sleep 15 && echo first-done\"\n}",
+        "tool_name": "shell"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 104
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "frame": "response",
+    "id": 105
+  },
+  {
+    "frame": "response",
+    "id": 106
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageCleared"
+  },
+  {
+    "frame": "response",
+    "id": 107
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Xv4qEbpGLAj89qnUDKVEg1",
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Xv4qEbpGLAj89qnUDKVEg1",
+        "tool_final": true,
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 15 && echo first-done"
+        },
+        "title": "sleep 15 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01Xv4qEbpGLAj89qnUDKVEg1",
+        "tool_input": "{\n  \"command\": \"sleep 15 && echo first-done\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Running: sleep 15 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionSteeringInjected"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Mango: the command printed `"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Mango: the command printed `",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "first-done`.\n\n[ST"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "first-done`.\n\n[ST",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 103,
+    "stop_reason": "end_turn"
+  }
+]

@@ -675,9 +675,29 @@ describe('sseThinkingChunk (model reasoning)', () => {
     expect(thinking[0].content).toBe('Step 1. Step 2.')
   })
 
-  it('ignores chunks for a non-active slot', () => {
-    const state = reducer(active, sseThinkingChunk({ slot: 'other', content: 'nope' }))
+  it('lands a non-active slot\'s reasoning in that slot\'s cache, not the active transcript', () => {
+    // A split-view or session-grid pane renders its slot through ChatPane
+    // without moving activeSlot, so the pane reads slotMessages[slot].
+    let state = reducer(active, sseThinkingChunk({ slot: 'pane-9', content: 'Step 1. ' }))
+    state = reducer(state, sseThinkingChunk({ slot: 'pane-9', content: 'Step 2.' }))
     expect(state.messages).toHaveLength(0)
+    const cached = state.slotMessages['pane-9']
+    expect(cached.map(m => [m.role, m.content])).toEqual([['thinking', 'Step 1. Step 2.']])
+  })
+
+  it('keeps a non-active slot\'s reasoning above its streamed answer', () => {
+    let state = reducer(active, sseThinkingChunk({ slot: 'pane-9', content: 'why' }))
+    state = reducer(state, sseChatMessage({ slot: 'pane-9', role: 'chunk', content: 'answer', seq: 0 }))
+    state = reducer(state, sseThinkingChunk({ slot: 'pane-9', content: ' and more' }))
+    const cached = state.slotMessages['pane-9']
+    expect(cached.map(m => m.role)).toEqual(['thinking', 'streaming'])
+    expect(cached[0].content).toBe('why and more')
+  })
+
+  it('ignores reasoning for an unsafe slot key', () => {
+    const state = reducer(active, sseThinkingChunk({ slot: '__proto__', content: 'nope' }))
+    expect(state.messages).toHaveLength(0)
+    expect(Object.prototype.hasOwnProperty.call(state.slotMessages, '__proto__')).toBe(false)
   })
 
   it('ignores empty content', () => {

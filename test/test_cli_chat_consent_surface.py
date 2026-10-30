@@ -165,7 +165,7 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
         async def broken_prompt(event):
             raise UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate")
 
-        monkeypatch.setattr(cli_chat, "_prompt_allows", broken_prompt)
+        monkeypatch.setattr(cli_chat, "_prompt_answer", broken_prompt)
         provider, sels, reads = await self._drive(
             monkeypatch,
             event=self._event(title="Render \ud800", tool_name="fs_write"),

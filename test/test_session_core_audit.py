@@ -28,7 +28,7 @@ import pytest
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import FirstTurnState, SessionManager, _Session
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 @pytest.fixture
@@ -82,10 +82,8 @@ async def test_open_task_session_revalidates_dead_provider_after_semaphore(cfg):
     async def _driver() -> None:
         # Let open_task_session block on the semaphore, then kill the provider
         # and release the turn so the fast path proceeds and re-validates.
-        while not sess.semaphore.locked():
-            await asyncio.sleep(0.01)
-        # semaphore is locked (held by us); wait a beat so the coroutine is
-        # actually parked inside acquire(), then flip dead + release.
+        # Semaphore is locked (held by the test); wait for open_task_session
+        # to park on it before flipping the provider dead and releasing.
         await asyncio.sleep(0.02)
         dead_provider._alive = False
         sess.semaphore.release()
@@ -94,9 +92,7 @@ async def test_open_task_session_revalidates_dead_provider_after_semaphore(cfg):
         "kiro_crew.acp.session_provider.AcpSessionProvider",
         return_value=fresh_provider,
     ):
-        _, result = await asyncio.gather(
-            _driver(), sm.open_task_session("parent", key)
-        )
+        _, result = await asyncio.gather(_driver(), sm.open_task_session("parent", key))
 
     provider, is_new, resumed = result
     assert provider is fresh_provider, "must cold-start a fresh session, not reuse the dead one"
@@ -125,8 +121,8 @@ async def test_open_task_session_revalidates_removed_session_after_semaphore(cfg
     fresh_provider.shutdown = AsyncMock()
 
     async def _driver() -> None:
-        while not sess.semaphore.locked():
-            await asyncio.sleep(0.01)
+        # Semaphore is locked (held by the test); wait a beat so the target
+        # coroutine parks on acquire() before we recycle the session.
         await asyncio.sleep(0.02)
         # Another coroutine recycled the session: removed from the map.
         sm._sessions.pop(key, None)
@@ -136,9 +132,7 @@ async def test_open_task_session_revalidates_removed_session_after_semaphore(cfg
         "kiro_crew.acp.session_provider.AcpSessionProvider",
         return_value=fresh_provider,
     ):
-        _, result = await asyncio.gather(
-            _driver(), sm.open_task_session("parent", key)
-        )
+        _, result = await asyncio.gather(_driver(), sm.open_task_session("parent", key))
 
     provider, is_new, _resumed = result
     assert provider is fresh_provider
@@ -186,22 +180,21 @@ async def test_open_task_session_lost_race_revalidates_recycled_winner(cfg):
 
     sm._get_or_bootstrap_run_runtime = AsyncMock(side_effect=_bootstrap)  # type: ignore[method-assign]
 
-    dup_provider = AsyncMock()          # the redundant provider we lose with
+    dup_provider = AsyncMock()  # the redundant provider we lose with
     dup_provider.shutdown = AsyncMock()
     # Synchronous on the real provider; an AsyncMock attribute would hand the
     # registry an un-awaited coroutine when it disowns the lost-race provider.
     dup_provider.disown_work_dir = MagicMock()
-    fresh_provider = AsyncMock()        # the winning provider on the retry
+    fresh_provider = AsyncMock()  # the winning provider on the retry
     fresh_provider.shutdown = AsyncMock()
 
     async def _driver() -> None:
         # Wait until open_task_session is parked on the winner's semaphore
         # (lost-race acquire), then recycle the winner: flip its provider dead
         # and release the turn so re-validation runs and finds it stale.
-        while not (key in sm._sessions and sm._sessions[key] is winner
-                   and winner.semaphore.locked()):
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.02)  # ensure the loser is parked inside acquire()
+        # open_task_session is parked on the winner's semaphore once at least
+        # one waiter is pending; until_parked guarantees this before we proceed.
+        await until_parked(winner.semaphore)
         winner_provider._alive = False
         winner.semaphore.release()
 
@@ -209,9 +202,7 @@ async def test_open_task_session_lost_race_revalidates_recycled_winner(cfg):
         "kiro_crew.acp.session_provider.AcpSessionProvider",
         side_effect=[dup_provider, fresh_provider],
     ):
-        _, result = await asyncio.gather(
-            _driver(), sm.open_task_session("parent", key)
-        )
+        _, result = await asyncio.gather(_driver(), sm.open_task_session("parent", key))
 
     provider, is_new, resumed = result
     assert provider is fresh_provider, "loser must revalidate + cold-start, not reuse dead winner"
@@ -303,9 +294,7 @@ async def test_resolve_agent_model_serves_cache_within_ttl(tmp_path, monkeypatch
     monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path)
     SessionManager._agent_model_cache = {}  # type: ignore[attr-defined]
 
-    (tmp_path / "z.json").write_text(
-        json.dumps({"name": "z", "model": "mz"}), encoding="utf-8"
-    )
+    (tmp_path / "z.json").write_text(json.dumps({"name": "z", "model": "mz"}), encoding="utf-8")
     assert SessionManager._resolve_agent_model("z") == "mz"
 
     calls = {"n": 0}
@@ -350,9 +339,9 @@ async def test_reacquire_and_validate_releases_semaphore_on_cancellation(cfg):
         task = asyncio.ensure_future(sm._reacquire_and_validate(key, sess))
         # Wait until the method has grabbed the per-session semaphore and is now
         # blocked trying to take self._lock.
-        while not sess.semaphore.locked():
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.02)  # ensure it is parked inside the lock acquire
+        # _reacquire_and_validate acquires sess.semaphore then parks on
+        # sm._lock (held by us); until_parked confirms it is parked there.
+        await until_parked(sm._lock)
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -363,7 +352,9 @@ async def test_reacquire_and_validate_releases_semaphore_on_cancellation(cfg):
     # The semaphore must have been released on cancellation, so the key is free.
     assert not sess.semaphore.locked(), "cancellation must not leak the semaphore"
     # And it is genuinely re-acquirable without blocking.
-    await asyncio.wait_for(sess.semaphore.acquire(), timeout=1.0)
+    await await_until(
+        asyncio.ensure_future(sess.semaphore.acquire()), what="semaphore re-acquirable after cancel"
+    )
     sess.semaphore.release()
 
 

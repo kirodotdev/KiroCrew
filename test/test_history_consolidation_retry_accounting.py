@@ -9,7 +9,10 @@ resurrects a deleted session. The shared helpers come from
 """
 
 import asyncio
+import contextlib
+import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,12 +27,40 @@ from windows_sim import replace_sharing_violation
 
 from kiro_crew import atomic_write as aw
 from kiro_crew import history as history_mod
-from kiro_crew import platform_compat
+from kiro_crew import history_consolidation, platform_compat
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
     ConversationLog,
 )
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+
+class _OneTurnProvider:
+    """Streams *text* as one turn, on fresh stats that bill *credits*, as a runner does."""
+
+    served_model = "test-model"
+    # A backend in ACP_BACKENDS_REPORT_USAGE, whose zero billing means nothing was billed.
+    reports_turn_usage = True
+
+    def __init__(self, text: str, credits: float) -> None:
+        self._text = text
+        self._credits = credits
+        self.last_prompt_stats = SimpleNamespace(credits=0.0)
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        self.last_prompt_stats = SimpleNamespace(credits=self._credits)
+        if self._text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._text)
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+
+def _background_turn_on(provider: _OneTurnProvider):
+    @contextlib.asynccontextmanager
+    async def _turn(_sessions, **_kwargs):
+        yield provider
+
+    return _turn
 
 
 def _plant_raw_meta(log: ConversationLog, key: str, raw_fields: str) -> None:
@@ -207,7 +238,7 @@ class TestAttemptCap:
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
 
-        assert seen == [(KEY, 3, "empty LLM result")]
+        assert seen == [(KEY, 3, "LLM turn failed")]
 
     @pytest.mark.asyncio
     async def test_a_failed_attempt_below_the_cap_reports_nothing(self, tmp_path):
@@ -632,6 +663,117 @@ class TestOnlyASentTurnConsumesTheCap:
         assert log.consolidation_retry_state(KEY)[0] == 1
 
     @pytest.mark.asyncio
+    async def test_a_reply_with_no_text_and_no_billing_does_not_consume_an_attempt(self, tmp_path):
+        """A throttled provider ends the turn with no text and bills nothing: no model
+        read the span, so a charge at the cap would drop it from memory unread."""
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        provider = _OneTurnProvider("", credits=0.0)
+        with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
+            await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == _CONSOLIDATION_MAX_ATTEMPTS - 1
+        assert retry_at > time.time()
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3
+
+    @pytest.mark.asyncio
+    async def test_an_empty_unbilled_reply_from_a_backend_without_usage_is_charged(self, tmp_path):
+        """A backend that reports no usage shows none for a billed turn too, so taking its
+        empty reply as free would retry a dead span forever and never abandon it."""
+
+        class _UnmeteredProvider(_OneTurnProvider):
+            reports_turn_usage = False
+
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        seen: list[tuple[str, int, str]] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
+            (key, count, reason)
+        )
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        provider = _UnmeteredProvider("", credits=0.0)
+        with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
+            await c._consolidate(KEY, include_history=True)
+
+        assert seen == [(KEY, 3, "empty reply")]
+        assert log.unconsolidated_count(KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_an_empty_reply_whose_turn_billed_still_consumes_an_attempt(self, tmp_path):
+        """Only a turn that billed nothing is free. The billing here is on an attempt a
+        transient error abandoned, and the retry's fresh stats show none of it."""
+        from kiro_crew.acp.client import AcpError
+
+        class _BilledThenRetried(_OneTurnProvider):
+            def __init__(self) -> None:
+                super().__init__("", credits=0.0)
+                self.calls = 0
+
+            async def stream(self, _message: str, *, allow_image: bool = True):
+                self.calls += 1
+                if self.calls == 1:
+                    self.last_prompt_stats = SimpleNamespace(credits=2.0)
+                    raise AcpError("transient error (http 5xx)")
+                async for event in super().stream(_message, allow_image=allow_image):
+                    yield event
+
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        provider = _BilledThenRetried()
+        with (
+            patch.object(history_consolidation, "background_turn", _background_turn_on(provider)),
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0),
+        ):
+            await c._consolidate(KEY, include_history=True)
+
+        assert provider.calls == 2
+        assert log.consolidation_retry_state(KEY)[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unparsable_reply_is_charged_and_logged_without_its_text(
+        self, tmp_path, caplog
+    ):
+        """The reply can quote the chat being consolidated, credentials included, so the
+        WARNING carries its size and shape and no slice of its text, head or tail."""
+        reply = '{"history_entry": "' + "the user pasted a key " * 30
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+
+        provider = _OneTurnProvider(reply, credits=9.6)
+        with (
+            patch.object(history_consolidation, "background_turn", _background_turn_on(provider)),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.history"),
+        ):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
+        warnings = "\n".join(r.getMessage() for r in caplog.records)
+        assert "model=test-model prompt_chars=" in warnings
+        assert f"unparsable reply ({len(reply)} chars, no closing brace)" in warnings
+        assert "the user pasted" not in warnings
+
+    @pytest.mark.asyncio
     async def test_no_session_manager_is_reported_as_not_dispatched(self, tmp_path):
         """_call_llm's own contract, not the caller's handling of it."""
         log = _seed_log(tmp_path)
@@ -670,6 +812,146 @@ class TestOnlyASentTurnConsumesTheCap:
             AsyncMock(side_effect=RuntimeError("stream died")),
         ):
             assert await c._call_llm("prompt") is None
+
+
+class _SignedOutProvider(_OneTurnProvider):
+    """Fails every prompt with ``AcpAuthRequired``, optionally after a billed or streamed start."""
+
+    def __init__(
+        self, *, billed_first: float = 0.0, streams_text: bool = False, metered: bool = True
+    ) -> None:
+        super().__init__("", credits=0.0)
+        self.reports_turn_usage = metered
+        self._billed_first = billed_first
+        self._streams_text = streams_text
+        self.calls = 0
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        from kiro_crew.acp.client import AcpAuthRequired, AcpError
+
+        self.calls += 1
+        if self._billed_first and self.calls == 1:
+            self.last_prompt_stats = SimpleNamespace(credits=self._billed_first)
+            raise AcpError("transient error (http 5xx)")
+        self.last_prompt_stats = SimpleNamespace(credits=0.0)
+        if self._streams_text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"history_entry": "par')
+        raise AcpAuthRequired("kiro-cli is not logged in")
+
+
+class TestALapsedLoginIsNotAFailedAttempt:
+    """A signed-out kiro-cli runs no model, so it must not spend the abandon budget.
+
+    The turn fails inside ``stream_and_collect_json`` with ``AcpAuthRequired``; an
+    overnight lapse must not burn all five attempts and mark the span consolidated
+    unread. A content-shaped failure in the same place is still charged, and so is
+    an auth failure after the turn streamed text or billed on an earlier attempt.
+    """
+
+    @staticmethod
+    def _consolidator(log, provider):
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        turn = patch.object(history_consolidation, "background_turn", _background_turn_on(provider))
+        return c, abandoned, turn
+
+    @pytest.mark.asyncio
+    async def test_an_auth_failure_inside_the_turn_is_not_dispatched(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn, pytest.raises(history_mod._ConsolidationNotDispatched, match="not logged in"):
+            await c._call_llm("prompt")
+
+    @pytest.mark.asyncio
+    async def test_repeated_auth_failures_never_abandon_the_history_span(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn:
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == 0, "a lapsed login consumed the abandon budget"
+        assert retry_at > time.time(), "the environment backoff was not armed"
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3, "a lapsed login dropped the span unread"
+        # Re-login: the same span consolidates once the backoff expires.
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        assert c.retry_eligible(KEY) is True
+
+    @pytest.mark.asyncio
+    async def test_an_auth_failure_leaves_the_prefs_window_pending(self, tmp_path):
+        from kiro_crew.history_consolidation import _CONSOLIDATION_EMPTY
+
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn:
+            outcome = await c._consolidate(KEY, include_history=False)
+
+        assert outcome is _CONSOLIDATION_EMPTY
+        assert log.consolidation_retry_state(KEY) == (0, 0.0)
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider_kwargs",
+        [
+            pytest.param({"billed_first": 2.0}, id="billed-attempt-then-auth"),
+            pytest.param({"streams_text": True}, id="text-streamed-then-auth"),
+            pytest.param({"billed_first": 2.0, "metered": False}, id="unmetered-billed-then-auth"),
+            pytest.param({"metered": False}, id="unmetered-backend"),
+        ],
+    )
+    async def test_an_auth_failure_after_spend_or_without_metering_is_charged(
+        self, tmp_path, provider_kwargs
+    ):
+        """Only a metered backend showing zero billing and no text proves the turn was free."""
+        log = _seed_log(tmp_path)
+        provider = _SignedOutProvider(**provider_kwargs)
+        c, _, turn = self._consolidator(log, provider)
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_content_shaped_failure_still_abandons_after_the_cap(self, tmp_path):
+        sessions = MagicMock()
+        sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
+        sessions.release = MagicMock()
+        sessions.recycle_background = AsyncMock()
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=sessions)
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+
+        with patch.object(
+            history_mod,
+            "stream_and_collect_json",
+            AsyncMock(side_effect=RuntimeError("context window exceeded")),
+        ):
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS - 1):
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                assert abandoned == []
+            assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS - 1
+            assert log.unconsolidated_count(KEY) == 3
+            with history_mod.allow_on_loop_persist():
+                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await c._consolidate(KEY, include_history=True)
+
+        assert len(abandoned) == 1
+        assert log.unconsolidated_count(KEY) == 0
 
 
 class TestAccountingNeverResurrectsADeletedSession:

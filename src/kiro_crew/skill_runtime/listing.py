@@ -356,6 +356,10 @@ def list_skills(
                 "content_digest": (meta.get("_content_digest", "") if project_root is None else ""),
                 "metadata_indexed": project_root is None and bool(fingerprint),
                 **loader._usage_fields(name),
+                # Unix time from the frontmatter's ``created_at`` (auto skills
+                # record it), else ``None``. Never the file's mtime: an edit,
+                # copy or restore moves that, so an old skill would sort as new.
+                "created_at": loader._auto_created_ts(meta) or None,
                 "owned": loader._owned_hint(skill_file),
             }
         )

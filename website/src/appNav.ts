@@ -1,5 +1,5 @@
 import { appPageLabel } from './components/appstore/appManifest'
-import { installedIcon } from './components/appstore/useHeroArt'
+import { classifyManifestArt, installedIcon } from './components/appstore/useHeroArt'
 
 /**
  * Where an installed app lives in the dashboard — one definition, shared by every
@@ -19,6 +19,8 @@ export interface AppNavPage {
   route: string
   icon?: string
   iconUrl?: string
+  /** Icon file for the nav row when the app is NOT selected, relative to `ui/`. */
+  iconInactiveUrl?: string
   label?: string
 }
 
@@ -84,6 +86,43 @@ export interface AppNavTarget {
   iconName: string
   /** Page-relative icon file (installed apps), resolved against `/apps/<name>/ui/`. */
   pageIconUrl: string
+  /**
+   * The icon the rail shows while this app's row is NOT selected, from the first
+   * page's `iconInactiveUrl`: a resolved URL, or `''` when the manifest declares
+   * none (or one this module refuses). Empty means the row keeps one icon.
+   */
+  inactiveIconUrl: string
+}
+
+/**
+ * Resolve a page-icon value from an installed manifest against the app's UI
+ * asset route, `/apps/<name>/ui/…` — the base `ui.pages[]` icon files are
+ * documented relative to.
+ *
+ * The manifest is untrusted, and the rail renders on every dashboard load, so
+ * the value goes through the same classifier as every other manifest art path:
+ * a host, a scheme, a dot segment or an off-allowlist absolute path answers `''`.
+ * A same-origin client-art path (a built-in's `/app-assets/…`) passes as-is.
+ */
+export function installedUiArt(path: unknown, appName: string): string {
+  const kind = classifyManifestArt(path)
+  if (kind === 'refused') return ''
+  const value = path as string
+  // The classifier judged the value the URL parser sees (tabs and newlines
+  // dropped, ends trimmed). Refuse a value that differs from it rather than
+  // re-derive that form here, so the URL built below is the one it judged.
+  if (/^[\u0000-\u0020]|[\u0000-\u0020]$|[\t\n\r]/.test(value)) return ''
+  if (kind === 'same-origin') return value
+  const rel = value.startsWith('./') ? value.slice(2) : value
+  try {
+    const encoded = rel.split('/').map(encodeURIComponent).join('/')
+    return `/apps/${encodeURIComponent(appName)}/ui/${encoded}`
+  } catch {
+    // A lone surrogate is valid JSON but makes encodeURIComponent throw. This
+    // runs for every app on every rail refresh, so one bad manifest must cost
+    // only its own inactive icon, never the whole Apps list.
+    return ''
+  }
 }
 
 /**
@@ -162,6 +201,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     ),
     iconName: page.icon || '',
     pageIconUrl: page.iconUrl || '',
+    inactiveIconUrl: installedUiArt(page.iconInactiveUrl, app.name),
   }
 }
 

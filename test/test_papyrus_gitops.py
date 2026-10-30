@@ -32,10 +32,11 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import sandbox
-from kiro_crew.apps.builtins.papyrus.backend import gitops
+from kiro_crew.apps.builtins.papyrus.backend import gitops, store
 
 
 def _hermetic_git_env() -> dict[str, str]:
@@ -207,6 +208,13 @@ class TestClone:
         with mock.patch.object(gitops, "_git", script):
             await gitops.clone("https://example.com/g/p.git", dest)
         assert dest.is_dir()
+
+    async def test_clone_returns_the_new_papers_generation(self, tmp_path: Path) -> None:
+        dest = tmp_path / "dest"
+        with mock.patch.object(gitops, "_git", _GitScript()):
+            generation = await gitops.clone("https://example.com/g/p.git", dest)
+        assert generation
+        assert generation == store.project_generation(dest)
 
     async def test_a_clone_that_loses_the_rename_reports_a_conflict(
         self, tmp_path: Path
@@ -833,6 +841,10 @@ class TestPackProgramsArePinnedForEveryRemote:
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
+        # The push starts receive-pack here with no env config and no global
+        # file, so only the remote's own config keeps auto maintenance off.
+        for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+            _run("config", key, value, cwd=upstream)
         _run("clone", "-q", str(upstream), str(work), cwd=tmp_path)
         _run("config", "user.email", "t@example.invalid")
         _run("config", "user.name", "t")

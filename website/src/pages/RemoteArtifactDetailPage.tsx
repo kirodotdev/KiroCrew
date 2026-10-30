@@ -4,7 +4,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { ArrowLeft, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw, Eye } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
+import { AGENT_PAGE_SANDBOX, buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
@@ -22,6 +22,7 @@ import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 
@@ -260,7 +261,7 @@ export default function RemoteArtifactDetailPage() {
   const isHtml = ctype.includes('html')
   const isMarkdown = ctype.includes('markdown') || ctype.includes('text/md')
   const srcdoc = useMemo(
-    () => (isHtml && art?.content ? buildSrcdoc({ html: art.content, themeVars, mode: theme, enableComments: true }) : null),
+    () => (isHtml && art?.content ? buildSrcdoc({ html: art.content, themeVars, mode: theme, enableComments: true, linkBridge: true }) : null),
     [isHtml, art?.content, themeVars, theme],
   )
   // A gateway-served document, not a `blob:` URL — the same reason the artifact
@@ -269,6 +270,9 @@ export default function RemoteArtifactDetailPage() {
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // Links in a shared page open through the host after a real click in this
+  // frame (the frame itself grants no popups), or through the button it returns.
+  const linkChip = useFrameLinkBridge([iframeRef])
   // A mint can succeed while the frame never fires `load` — a visible-but-blank
   // frame here, since this surface has no opacity gate. `silent` overlays the
   // same notice + retry the mint-`failed` branch uses so the blank is explained
@@ -471,13 +475,14 @@ export default function RemoteArtifactDetailPage() {
           <div className="flex-1 min-w-0">
             {isHtml ? (
               <div ref={iframeBodyRef} className="relative rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
+                {linkChip}
                 {blobUrl ? (
                   /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame-load lifecycle handler (it clears the silent-load watch), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */
                   <iframe
                     ref={iframeRef}
                     src={frameSrc}
                     onLoad={onFrameLoaded}
-                    sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+                    sandbox={AGENT_PAGE_SANDBOX}
                     // NO clipboard-write delegation here, deliberately. These frames host
                     // agent-generated HTML whose scripts run on load, so a delegated
                     // permission would let one overwrite the user's clipboard with no Copy

@@ -61,6 +61,15 @@ export const LOCATIONS = {
     terms: ADVANCED_TERMS,
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
   },
+  // The empty roster's Import from file: the first crewmate can be a shared one.
+  'members.empty.import': {
+    kind: 'button',
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
+    placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
+  },
   // The header "+" (an icon button): its name is the aria-label "Add…".
   // The roster's header "+" (an icon button): its name is the aria-label
   // "Add…". An open crewmate chat folds the roster away on a wide screen, so
@@ -159,6 +168,25 @@ export const LOCATIONS = {
     terms: CREATE_TERMS,
     placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
   },
+  // The header "+" menu's Import from file: the phone roster's door to the import dialog.
+  'members.add-menu.import': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.membersPage.import_from_file' },
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
+    placements: [{ surface: 'members', parent: 'members.add-menu', entry: 'menu' }],
+  },
+  // Under it, Import from file: a crewmate someone shared as a .crewmate file.
+  'members.switcher.import': {
+    kind: 'menu-item',
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
+    placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
+  },
   // The identity pill in the open crewmate's header. Its text (and accessible
   // name) is the crewmate's name; what the click does is the tooltip.
   'members.edit': {
@@ -170,10 +198,86 @@ export const LOCATIONS = {
     },
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_selected' }] }],
   },
-  // The profile card's Permissions row (CrewProfilePanel): "what it may do",
-  // the newcomer's door to a crewmate's tools, which opens the editor. The card
-  // opens from the header pill (`members.edit`), so a guide walks: choose the
-  // crewmate in the roster, open its card, here.
+  // The profile card's Profile tab, last on its rail (the card opens on
+  // Sessions). The Settings row lives on it, so a guide to anything there
+  // selects this tab first; it is the reveal scope for that step.
+  'members.profile-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my crewmate's profile", 'what my crewmate is about', "the crewmate's memory and workspace"],
+      'zh-CN': ['队友资料', '队友简介', '队友的记忆和工作区'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // The profile card's Schedules tab: what wakes the mate, the Heartbeat row
+  // first. The card opens from the header pill (`members.edit`).
+  'members.schedule-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my mate's schedules", 'what wakes my mate', 'turn on heartbeat', "my mate's check-ins"],
+      'zh-CN': ['队友的定时任务', '什么会唤醒队友', '打开心跳'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // The profile card's Goals tab: the goal record the user and the mate share,
+  // its milestones and check-in switches.
+  'members.goals-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my mate's goal", "my mate's milestones", 'goals and milestones', "what my mate is working toward"],
+      'zh-CN': ['队友的目标', '队友的里程碑', '目标和里程碑'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // The profile card's Settings row (CrewProfileSettings), on its Profile tab:
+  // the door to the crewmate's own settings page (permission, model, worker
+  // model, the dashboard lock). The card opens from the header pill
+  // (`members.edit`) on Sessions, so a guide walks: choose the crewmate, open
+  // its card, its Profile tab, here.
+  'members.settings': {
+    kind: 'button',
+    label: { from: 'attr', attr: 'aria-label' },
+    terms: {
+      en: ['crewmate settings', 'my crewmate\'s model', 'change the crewmate\'s model', 'lock the dashboard layout'],
+      'zh-CN': ['队友设置', '队友的模型', '锁定仪表板布局'],
+      ja: ['クルーメイトの設定'],
+      ko: ['크루메이트 설정'],
+      es: ['ajustes del agente'],
+      fr: ["réglages de l'agent"],
+      de: ['Einstellungen des Agenten'],
+      pt: ['configurações do agente'],
+      it: ["impostazioni dell'agente"],
+      ru: ['настройки агента'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+        { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' },
+      ],
+    }],
+  },
+  // The Settings page's Permissions row: "what it may do", the newcomer's door
+  // to a crewmate's tools. One more step on the walk above: open Settings, here.
   'members.permissions': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
@@ -194,17 +298,20 @@ export const LOCATIONS = {
       requires: [
         { kind: 'condition', id: 'crewmate_selected' },
         { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+        { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' },
+        { kind: 'shown_by', location: 'members.settings', when: 'crewmate_settings_closed' },
       ],
     }],
   },
   // The side panel's opener. Drawn while the panel is hidden (always, as an
   // overlay); while the docked panel is open its contents are already on screen.
+  // The panel's first tab is the mate's Dashboard, so this is also the way to it.
   'members.details': {
     kind: 'toggle',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details'],
-      'zh-CN': ['队友详情', '队友信息', '侧边面板'],
+      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's dashboard", "my mate's files"],
+      'zh-CN': ['队友详情', '队友信息', '侧边面板', '队友的仪表板', '队友的文件'],
     },
     placements: [{
       ...ON_PAGE, entry: 'header',

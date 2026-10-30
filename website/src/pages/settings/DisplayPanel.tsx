@@ -42,6 +42,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { useCloseAction } from '../../hooks/useCloseAction'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 /**
@@ -109,6 +110,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
+  const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -212,6 +214,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
+      show_unread_dot?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
     }
   }
@@ -249,6 +252,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Steps are computed from the SHOWN count so rapid clicks stack on the
   // in-flight value instead of re-incrementing a stale server value.
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // The per-row unread dot on sidebar cards (dashboard.show_unread_dot). On by
+  // default; only a literal `false` hides it, the same rule ChatSidebar reads.
+  const shownUnreadDot = overlay.shown('dashboard.show_unread_dot', mcQ.data?.dashboard?.show_unread_dot !== false)
+  const [unreadDotError, setUnreadDotError] = useState<string | null>(null)
+  const unreadDotMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.show_unread_dot', value),
+    path: () => 'dashboard.show_unread_dot',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
+    onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
+    onSupersede: () => setUnreadDotError(null),
+  }))
 
   // Default shell for the built-in terminal — persisted server-side
   // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
@@ -508,6 +525,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'view':
           return (
+      <>
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
@@ -579,6 +597,32 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
         </SettingsCard>
       </SettingsSection>
+      {/* Desktop app only: shown once the main process answers for the main
+          window's dashboard (useCloseAction), local or remote gateway. */}
+      {closeActionSupported && (
+        <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
+          <SettingsCard>
+            <SettingsToggle
+              settingId="display.keep-running-in-the-background-after-closing-the-window"
+              label={i18nT('pages.settings.displayPanel.keep_running_when_window_closed')}
+              description={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
+              checked={closeAction === 'background'}
+              disabled={closeActionPending}
+              onChange={on => setCloseAction(on ? 'background' : 'quit')}
+            />
+            {/* No hand-off: navigating away would discard `shellDraft` or
+                `installValue` further down this panel. The switch already
+                shows the unchanged value, so toggling again is the retry. */}
+            {closeActionFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+          </SettingsCard>
+        </SettingsSection>
+      )}
+      </>
           )
 
         case 'zoom':
@@ -1035,10 +1079,19 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               only things inside it. No hand-off: `shellDraft` and `installValue`
               share this panel and the navigation would unmount them. */}
           <ErrorNotice message={tintError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_unread_dot')}
+            checked={shownUnreadDot}
+            onChange={v => unreadDotMut.mutate(v)}
+            disabled={unreadDotMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.show_unread_dot"
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={unreadDotError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
             <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
-            <div className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.none_auto_cycle_or_pick_a_fixed_color')}</div>
             <div className="flex flex-wrap items-center gap-1.5">
               <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (

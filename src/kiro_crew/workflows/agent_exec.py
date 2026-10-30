@@ -33,6 +33,7 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
 
@@ -48,6 +49,29 @@ _MAX_TURNS_PER_STEP = 200
 
 class WorkflowSpawnRefused(Exception):
     """A ``ctx.agent()`` step the spawn policy or the cwd allowlist refuses."""
+
+
+class WorkflowEffortInvalid(ValueError):
+    """A ``ctx.agent(effort=...)`` value that is not a reasoning-effort level."""
+
+
+def step_effort_kwargs(opts: dict) -> dict[str, str]:
+    """The ``get_or_create`` kwargs that carry a step's ``effort=``, or ``{}``.
+
+    An unset effort adds nothing, so the session resolves its effort exactly as
+    a step that never named one. A set one must be a level from the shared
+    vocabulary: anything else raises :class:`WorkflowEffortInvalid` and fails the
+    step before a session is allocated, instead of running it at a default the
+    script did not ask for.
+    """
+    effort = opts.get("effort")
+    if effort is None or effort == "":
+        return {}
+    if not is_valid_effort(effort):
+        raise WorkflowEffortInvalid(
+            f"invalid effort {str(effort)[:64]!r}: expected one of {', '.join(EFFORT_LEVELS)}"
+        )
+    return {"reasoning_effort_override": effort}
 
 
 async def vet_step_spawn(
@@ -156,8 +180,9 @@ def build_agent_fn(
     counter = itertools.count()
 
     async def agent_fn(prompt: str, opts: dict) -> Any:
-        # Spawn gates FIRST: a refused step must allocate no session, touch no
-        # memory scope and consume no session index.
+        # Effort and spawn gates FIRST: a refused step must allocate no session,
+        # touch no memory scope and consume no session index.
+        effort_kwargs = step_effort_kwargs(opts)
         step_cwd = await vet_step_spawn(
             session_key=session_key,
             agent=opts.get("agent") or default_agent,
@@ -179,6 +204,7 @@ def build_agent_fn(
             model=opts.get("model") or default_model,
             cwd=step_cwd or cwd,
             extra_env=extra_env,
+            **effort_kwargs,
         )
         # Wall clock for THIS agent turn only (not the whole workflow run):
         # acp leaves TurnUsage.duration_ms at 0, so without this the row's

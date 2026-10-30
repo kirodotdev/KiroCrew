@@ -616,9 +616,9 @@ class TestKasSpawnWarnsOnVocabularyDrift:
 
         spawn = inspect.getsource(KasHarness.resolve_spawn)
         assert (
-            "warn_kas_vocabulary_drift(await asyncio.to_thread(installed_kiro_cli_version))"
-            in spawn
-        )
+            "kiro_cli_version = await asyncio.to_thread(installed_kiro_cli_version)\n"
+            "        warn_kas_vocabulary_drift(kiro_cli_version)\n"
+        ) in spawn
         import sys
 
         # runtime.py's owner modules (runtime_*.py) hold code that was its own.

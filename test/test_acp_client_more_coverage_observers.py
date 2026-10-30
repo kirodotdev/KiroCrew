@@ -215,6 +215,11 @@ class TestAdvertisedModelCacheWiring:
         return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
 
     def test_seed_availableModels_from_advertised_cache(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         served = [
             "global.anthropic.claude-opus-5[1m]",
             "global.anthropic.claude-opus-4-8[1m]",
@@ -228,7 +233,8 @@ class TestAdvertisedModelCacheWiring:
         # No static-registry fallback: a guessed allowlist poisons the adapter's
         # union+dedup merge for any model the registry has not caught up on, so an
         # unseeded file (adapter falls back to its own provider list) beats a stale
-        # one. The post-capture re-seed fills both keys in.
+        # one. The post-capture re-seed writes the model key, and the list only when
+        # another settings source defines one.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE, model="claude-opus-5")
         client._write_claude_local_settings()
@@ -271,6 +277,11 @@ class TestAdvertisedModelCacheWiring:
 
     @pytest.mark.asyncio
     async def test_set_model_reseeds_settings_on_claude(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         # The re-seed half: set_model refreshes settings.local.json so a pooled
         # runtime's stale spawn-time seed is overwritten with the claimed model.
         monkeypatch.setattr(

@@ -20,6 +20,7 @@ _TO_DICT_KEYS = (
     "title",
     "agent",
     "agent_kind",
+    "crew_mode_agent",
     "effective_agent",
     "model",
     # The owner's per-turn model-routing choice (the picker's "Auto (Jev)" entry).

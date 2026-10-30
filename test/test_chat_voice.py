@@ -81,9 +81,6 @@ class TestVoiceConfig:
         [
             "voice",
             "system_voice",
-            "piper_binary",
-            "piper_model",
-            "piper_model_config",
             "aws_profile",
             "region",
         ],
@@ -155,7 +152,7 @@ class TestVoiceConfig:
     async def test_a_rejected_patch_applies_none_of_its_fields(self, tmp_path, monkeypatch):
         """A 400 must leave `_vc` untouched, including fields validated earlier.
 
-        `PUT {"provider": "piper", "system_voice": {}}` names a VALID provider and
+        `PUT {"provider": "polly", "system_voice": {}}` names a VALID provider and
         an invalid voice. Applying fields while walking them makes this a torn
         write: the caller is told 400 while the live provider has already changed,
         so the next synthesis silently uses an engine the request never
@@ -170,7 +167,7 @@ class TestVoiceConfig:
         from kiro_crew.dashboard import chat_voice as cv
 
         before = cv._vc.provider
-        other = next(p for p in ("piper", "polly", "system") if p != before)
+        other = next(p for p in ("polly", "system") if p != before)
         async with TestClient(TestServer(_make_voice_app(state))) as client:
             resp = await client.put(
                 "/api/voice/config", json={"provider": other, "system_voice": {}}
@@ -192,11 +189,8 @@ class TestVoiceConfig:
             default_pitch="0%",
             aws_profile="",
             region="us-east-1",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         state = _make_state(tmp_path)
@@ -220,18 +214,15 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=False,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         state = _make_state(tmp_path)
@@ -278,18 +269,15 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=True,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -306,23 +294,20 @@ class TestVoiceConfig:
         assert persisted["auto_speak"] is False
 
     @pytest.mark.asyncio
-    async def test_get_config_exposes_provider_and_piper(self, tmp_path, monkeypatch):
+    async def test_get_config_exposes_provider_without_piper_keys(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=False,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="/usr/bin/piper",
-            piper_model="~/m.onnx",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         state = _make_state(tmp_path)
@@ -330,13 +315,11 @@ class TestVoiceConfig:
             resp = await client.get("/api/voice/config")
             assert resp.status == 200
             data = await resp.json()
-            assert data["provider"] == "piper"
-            assert data["piper_binary"] == "/usr/bin/piper"
-            assert data["piper_model"] == "~/m.onnx"
-            assert data["piper_length_scale"] == 1.0
+            assert data["provider"] == "system"
+            assert not [key for key in data if key.startswith("piper")]
 
     @pytest.mark.asyncio
-    async def test_put_config_updates_provider_and_piper(self, tmp_path, monkeypatch):
+    async def test_put_config_ignores_the_removed_piper_provider(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
             global_enabled=False,
@@ -348,11 +331,8 @@ class TestVoiceConfig:
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -369,13 +349,9 @@ class TestVoiceConfig:
                 },
             )
             assert resp.status == 200
-            assert mock_vc.provider == "piper"
-            assert mock_vc.piper_model == "~/voices/en.onnx"  # stripped
-            assert mock_vc.piper_length_scale == 1.5
-        # Persisted to config.json under voice_reply
-        persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert persisted["voice_reply"]["provider"] == "piper"
-        assert persisted["voice_reply"]["piper_model"] == "~/voices/en.onnx"
+            assert mock_vc.provider == "polly"  # unchanged: piper is not selectable
+        # Nothing this request named is a managed key any more, so nothing is written.
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == {}
 
     @pytest.mark.asyncio
     async def test_put_config_rejects_invalid_provider(self, tmp_path, monkeypatch):
@@ -383,18 +359,15 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=False,
             auto_speak=False,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -405,7 +378,7 @@ class TestVoiceConfig:
             resp = await client.put("/api/voice/config", json={"provider": "bogus"})
             assert resp.status == 200
             # Invalid provider ignored — unchanged
-            assert mock_vc.provider == "piper"
+            assert mock_vc.provider == "system"
 
     @pytest.mark.asyncio
     async def test_put_config_unhashable_engine_does_not_500(self, tmp_path, monkeypatch):
@@ -416,18 +389,15 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=False,
             auto_speak=False,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -442,39 +412,6 @@ class TestVoiceConfig:
             assert mock_vc.default_engine == "generative"
 
     @pytest.mark.asyncio
-    async def test_put_config_ignores_invalid_length_scale(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(
-            global_enabled=False,
-            auto_speak=False,
-            provider="piper",
-            default_voice="Ruth",
-            default_engine="generative",
-            default_rate="100%",
-            default_pitch="0%",
-            aws_profile="",
-            region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
-            system_voice="",
-        )
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
-        cfg_path = tmp_path / "config.json"
-        cfg_path.write_text(json.dumps({}))
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
-        state = _make_state(tmp_path)
-        async with TestClient(TestServer(_make_voice_app(state))) as client:
-            # Non-numeric, huge-int (OverflowError), non-finite, and non-positive
-            # values must all be rejected WITHOUT a 500 and WITHOUT persisting an
-            # unserializable value — each leaves the field unchanged at 1.0.
-            for bad in ["fast", 10**400, float("inf"), float("nan"), 0, -2.0]:
-                resp = await client.put("/api/voice/config", json={"piper_length_scale": bad})
-                assert resp.status == 200, f"{bad!r} should not 500"
-                assert mock_vc.piper_length_scale == 1.0, f"{bad!r} should be ignored"
-
-    @pytest.mark.asyncio
     async def test_put_config_unhashable_provider_does_not_500(self, tmp_path, monkeypatch):
         # `body["provider"] in VALID_PROVIDERS` would raise TypeError on an
         # unhashable JSON value (list/dict); the isinstance(str) guard prevents it.
@@ -482,18 +419,15 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=False,
             auto_speak=False,
-            provider="piper",
+            provider="system",
             default_voice="Ruth",
             default_engine="generative",
             default_rate="100%",
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -501,9 +435,9 @@ class TestVoiceConfig:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.put("/api/voice/config", json={"provider": ["piper"]})
+            resp = await client.put("/api/voice/config", json={"provider": ["polly"]})
             assert resp.status == 200
-            assert mock_vc.provider == "piper"  # unchanged, not crashed
+            assert mock_vc.provider == "system"  # unchanged, not crashed
 
     @pytest.mark.asyncio
     async def test_put_config_preserves_unmanaged_voice_reply_keys(self, tmp_path, monkeypatch):
@@ -524,11 +458,8 @@ class TestVoiceConfig:
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="",
+            language_code="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cfg_path = tmp_path / "config.json"
@@ -546,53 +477,6 @@ class TestVoiceConfig:
         assert persisted["voice_id"] == "Matthew"  # updated
         assert persisted["auto_reply_to_voice"] is False  # preserved (not dropped)
         assert persisted["auto_speak"] is True  # written from _vc.auto_speak
-
-    @pytest.mark.asyncio
-    async def test_synthesize_routes_piper_through_pcm_stream(self, tmp_path, monkeypatch):
-        # Provider dispatch keeps local audio independent of the Polly client.
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(
-            provider="piper",
-            default_voice="Ruth",
-            default_engine="generative",
-            default_rate="100%",
-            default_pitch="0%",
-            aws_profile="",
-            region="",
-            piper_binary="",
-            piper_model="~/m.onnx",
-            piper_model_config="",
-            piper_length_scale=1.0,
-            system_voice="",
-        )
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
-
-        async def _fake_synth(text, **kw):
-            assert kw["piper_model"] == "~/m.onnx"
-            yield 0, 22050, b"\x00\x01"
-
-        streaming_called = False
-
-        async def _fake_stream(*a, **kw):
-            nonlocal streaming_called
-            streaming_called = True
-            if False:
-                yield  # pragma: no cover — make it an async generator
-
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_piper_reply", _fake_synth)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", _fake_stream)
-        state = _make_state(tmp_path)
-        state.broadcast_ws = MagicMock()
-        async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["ok"] is True and data["chunks"] == 1
-        assert streaming_called is False  # Polly path NOT used for Piper
-        kinds = [c.args[0] for c in state.broadcast_ws.call_args_list]
-        assert "voice_chunk" in kinds and "voice_complete" in kinds
-        payloads = [c.args[1] for c in state.broadcast_ws.call_args_list]
-        assert all(payload["audioMime"] == "audio/wav" for payload in payloads)
 
     @pytest.mark.asyncio
     async def test_put_config_invalid_json(self, tmp_path, monkeypatch):
@@ -737,50 +621,6 @@ class TestVoiceSynthesize:
         state.broadcast_ws.assert_called()
 
     @pytest.mark.asyncio
-    async def test_piper_replay_is_encoded_off_the_event_loop(self, tmp_path, monkeypatch):
-        from kiro_crew.dashboard import chat_voice
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr(
-            chat_voice,
-            "_vc",
-            MagicMock(
-                provider="piper",
-                piper_binary="",
-                piper_model="~/m.onnx",
-                piper_model_config="",
-                piper_length_scale=1.0,
-            ),
-        )
-
-        async def stream(*args, **kwargs):
-            yield 0, 22050, b"\x01\x00"
-            yield 1, 22050, b"\x02\x00"
-
-        monkeypatch.setattr(chat_voice, "streaming_piper_reply", stream)
-        loop_thread = threading.get_ident()
-        replay_threads = []
-        real_wav = chat_voice.pcm_to_wav
-
-        def watch_wav(pcm, rate):
-            if len(pcm) == 4:
-                replay_threads.append(threading.get_ident())
-            return real_wav(pcm, rate)
-
-        monkeypatch.setattr(chat_voice, "pcm_to_wav", watch_wav)
-        state = _make_state(tmp_path)
-        state.broadcast_ws = MagicMock()
-        async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
-            assert resp.status == 200
-        assert replay_threads and loop_thread not in replay_threads
-        assert [call.args[0] for call in state.broadcast_ws.call_args_list] == [
-            "voice_chunk",
-            "voice_chunk",
-            "voice_complete",
-        ]
-
-    @pytest.mark.asyncio
     async def test_the_polly_chunks_are_written_and_read_off_the_event_loop(
         self, tmp_path, monkeypatch
     ):
@@ -882,7 +722,6 @@ class TestVoiceSynthesize:
             data = await resp.json()
             assert data["ok"] is False
             assert "error" in data
-        # Verify voice_error was broadcast
         state.broadcast_ws.assert_called()
         call_args = state.broadcast_ws.call_args
         assert call_args[0][0] == "voice_error"
@@ -1373,15 +1212,19 @@ class TestVoiceSystemVoices:
             "kiro_crew.dashboard.chat_voice.resolve_system_tts_async",
             AsyncMock(return_value=("say", "/usr/bin/say")),
         )
-        probe = AsyncMock(return_value=[])
+        # A second probe would answer differently, so the second response shows
+        # whether it came from the cache.
+        alex = {"id": "Alex", "name": "Alex", "language": "en-US"}
+        probe = AsyncMock(side_effect=[[], [alex]])
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.list_system_voices", probe)
 
         async with TestClient(TestServer(self._app(tmp_path))) as client:
-            await client.get("/api/voice/system-voices")
-            await client.get("/api/voice/system-voices")
+            first = await (await client.get("/api/voice/system-voices")).json()
+            second = await (await client.get("/api/voice/system-voices")).json()
         # An empty list is cached too: it is stable for the life of the install,
         # and re-probing would cost a subprocess per panel visit.
         assert probe.await_count == 1
+        assert first["voices"] == second["voices"] == []
 
     @pytest.mark.asyncio
     async def test_probe_failure_returns_502(self, tmp_path, monkeypatch):
@@ -1408,8 +1251,8 @@ class TestVoiceSystemVoices:
 class TestSynthesizeProviderRouting:
     """Only Polly can reach the paid sentence stream.
 
-    Piper has its local PCM stream; system and unknown future providers retain
-    the provider-aware single-file path rather than falling through to AWS.
+    The system engine and unknown future providers retain the provider-aware
+    single-file path rather than falling through to AWS.
     """
 
     def _mock_vc(self, provider: str):
@@ -1421,10 +1264,6 @@ class TestSynthesizeProviderRouting:
             default_pitch="0%",
             aws_profile="",
             region="",
-            piper_binary="",
-            piper_model="",
-            piper_model_config="",
-            piper_length_scale=1.0,
             system_voice="Alex",
         )
 
@@ -1588,11 +1427,9 @@ class TestSynthesizeProviderRouting:
 def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     """No value from the request body may reach `_vc` via a bare ``str()``.
 
-    This is a RATCHET, not another point fix. Four consecutive review rounds
-    landed the same class of finding on this one handler -- a non-object body, a
-    wrong-typed ``system_voice``, a torn write, then a wrong-typed ``voice`` --
-    because each round fixed the field that was reported and left its siblings on
-    ``str()``. ``str({})`` is ``"{}"``: a syntactically valid voice name or path
+    This is a RATCHET over the whole handler, not a per-field fix: a field left
+    on ``str()`` while its siblings are validated is the same defect again.
+    ``str({})`` is ``"{}"``: a syntactically valid voice name or path
     that no engine can satisfy, so synthesis goes silent while the stored config
     looks populated.
 
@@ -1600,8 +1437,7 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     per-field: every ``body[...]`` read in ``api_voice_config`` must be an
     argument to a validator that owns a documented contract, or be guarded by an
     ``isinstance`` + membership test. A new field added on a bare ``str()`` or
-    ``bool()`` fails here instead of shipping and being found by a reviewer one
-    round later.
+    ``bool()`` fails here instead of shipping.
     """
     import ast
     import inspect
@@ -1615,7 +1451,7 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     SANCTIONED = {
         "validated_config_bool",
         "validated_config_string",
-        "validate_length_scale",
+        "validated_language_code",
         "_validate_rate",
         "_validate_pitch",
     }
@@ -1638,8 +1474,13 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     guarded: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and isinstance(node.ops[0], ast.In):
-            target = getattr(node.comparators[0], "id", "")
-            if target.startswith("VALID_"):
+            # A ``VALID_*`` set, or ``valid_providers()``: the built-in providers
+            # plus the edition's registered ones.
+            comparator = node.comparators[0]
+            if isinstance(comparator, ast.Call):
+                comparator = comparator.func
+            target = getattr(comparator, "id", "")
+            if target.startswith("VALID_") or target == "valid_providers":
                 for inner in ast.walk(node.left):
                     if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
                         guarded.add(inner.value)
@@ -1676,22 +1517,17 @@ class TestSandboxRefusalReachesTheUser:
     _PROSE = "SANDBOX-REMEDY-SENTINEL: set agent.sandbox_allow_unsandboxed_exec=true"
 
     @pytest.mark.asyncio
-    async def test_piper_refusal_is_relayed_with_the_sandbox_prose(self, tmp_path, monkeypatch):
-        """The Piper (non-streaming) branch reports the refusal, not a config guess.
+    async def test_system_refusal_is_relayed_with_the_sandbox_prose(self, tmp_path, monkeypatch):
+        """The non-streaming branch reports the refusal, not a config guess.
 
-        The pre-existing message blamed the piper binary and model path, which for
-        a sandbox refusal sends the operator to check two settings that are both
-        already correct.
+        A config-shaped message for a sandbox refusal sends the operator to check
+        settings that are already correct.
         """
         from kiro_crew.sandbox import SandboxUnavailableError
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
             provider="system",
-            piper_binary="/usr/bin/piper",
-            piper_model="/m.onnx",
-            piper_model_config="",
-            piper_length_scale=1.0,
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
@@ -1714,7 +1550,7 @@ class TestSandboxRefusalReachesTheUser:
             # sandbox kind alone and request data never enters a long-lived key.
             await client.post("/api/voice/synthesize", json={"text": "again", "slot": "s2"})
         assert self._PROSE in body["error"], "the sandbox's own remedy must be relayed"
-        assert "piper binary" not in body["error"], "must not blame the piper config"
+        assert "espeak-ng" not in body["error"], "must not blame the engine install"
         # A localized UI cannot translate the relayed prose, so the refusal also
         # carries a machine-readable id -- and it names the KIND, since that is
         # what decides which remedy the prose describes.
@@ -1740,7 +1576,7 @@ class TestSandboxRefusalReachesTheUser:
         """The Polly (streaming) branch relays it too.
 
         Covered explicitly because the two providers take DIFFERENT endpoint
-        branches -- Piper is one local WAV, Polly is sentence-chunked -- so fixing
+        branches -- the system engine is one local WAV, Polly is sentence-chunked -- so fixing
         only the branch named in the report would have left the other silent.
         """
         from kiro_crew.sandbox import SandboxUnavailableError
@@ -1767,7 +1603,7 @@ class TestSandboxRefusalReachesTheUser:
         state.notify = MagicMock()
         async with TestClient(TestServer(_make_voice_app(state))) as client:
             resp = await client.post("/api/voice/synthesize", json={"text": "hi", "slot": "s1"})
-            # Identical to the Piper branch, not merely "an error": Polly reaches
+            # Identical to the system branch, not merely "an error": Polly reaches
             # the sandbox through the streaming path, and falling to the generic
             # handler there would report 500 with no notification -- the remedy
             # invisible on a Polly host, which is the defect being fixed.
@@ -1795,10 +1631,6 @@ class TestSandboxRefusalReachesTheUser:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
             provider="system",
-            piper_binary="/usr/bin/piper",
-            piper_model="/m.onnx",
-            piper_model_config="",
-            piper_length_scale=1.0,
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 

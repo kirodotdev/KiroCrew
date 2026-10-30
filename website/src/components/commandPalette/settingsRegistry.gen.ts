@@ -26,60 +26,28 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "about.update-the-gateway-automatically",
     "label": "Update the gateway automatically",
     "labelKey": "pages.settings.aboutPanel.automatic_updates",
-    "description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+    "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
     "tab": "about",
     "type": "toggle",
     "occurrence": 1,
     "configKey": "auto_update"
   },
   {
-    "id": "browser.max-frame-rate",
-    "label": "Max frame rate",
-    "labelKey": "pages.settings.browserPanel.max_fps_label",
-    "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
+    "id": "browser.attach-token",
+    "labelKey": "pages.settings.browserPanel.token_label",
     "tab": "browser",
-    "type": "select",
+    "type": "input",
     "occurrence": 1,
-    "configKey": "browser.live.max_fps"
+    "label": "Extension token (optional)"
   },
   {
-    "id": "browser.quality",
-    "label": "Quality",
-    "labelKey": "pages.settings.browserPanel.quality_label",
-    "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
-    "tab": "browser",
-    "type": "select",
-    "occurrence": 1,
-    "configKey": "browser.live.quality"
-  },
-  {
-    "id": "browser.run-with-no-window",
-    "label": "Run with no window",
-    "labelKey": "pages.settings.browserPanel.headless_label",
-    "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window.",
-    "tab": "browser",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "browser.show-the-live-view-in-chat",
-    "label": "Show the live view in chat",
-    "labelKey": "pages.settings.browserPanel.live_enabled_label",
-    "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
+    "id": "browser.use-the-built-in-browser",
+    "label": "Use the built-in browser",
+    "labelKey": "pages.settings.browserPanel.use_builtin_label",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1,
-    "configKey": "browser.live.enabled"
-  },
-  {
-    "id": "browser.which-browser",
-    "label": "Which browser",
-    "labelKey": "pages.settings.browserPanel.choice_label",
-    "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
-    "tab": "browser",
-    "type": "select",
-    "occurrence": 1,
-    "configKey": "browser.choice"
+    "configKey": "dashboard.use_builtin_browser"
   },
   {
     "id": "channels.allowed-emails-webex",
@@ -619,7 +587,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Phase reactions (Slack)",
     "labelKey": "pages.settings.slackPanel.phase_reactions",
     "labelSuffix": "Slack",
-    "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
+    "description": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -846,7 +814,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
-    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,
@@ -990,6 +958,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "models"
     },
     "configKey": "agent.refusal_fallback_model"
+  },
+  {
+    "id": "chat.copy-on-select",
+    "label": "Copy on select",
+    "labelKey": "pages.settings.chatPanel.copy_on_select",
+    "hint": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
   },
   {
     "id": "chat.default-memory-mode",
@@ -1153,6 +1133,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.jump-to-the-bottom-when-you-send",
+    "label": "Jump to the bottom when you send",
+    "labelKey": "pages.settings.chatPanel.scroll_on_send",
+    "hint": "When off, sending a message leaves the transcript where it is.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.keep-side-panel-open",
     "label": "Keep Side Panel Open",
     "labelKey": "pages.settings.chatPanel.side_panel_always_open",
@@ -1304,7 +1296,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.prevent-sleep-while-running",
     "label": "Prevent sleep while running",
     "labelKey": "pages.settings.chatPanel.prevent_sleep_while_running",
-    "hint": "Keep your computer awake while a task is running",
+    "hint": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen on for long tasks.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -1426,7 +1418,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.show-full-titles-while-scrolling",
     "label": "Show Full Titles While Scrolling",
     "labelKey": "pages.settings.chatPanel.full_titles_on_scroll",
-    "hint": "While you scroll the session list, titles the sidebar cuts off show in full",
+    "hint": "While you scroll the session list, cut-off titles show in full",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -1778,18 +1770,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
-    "label": "Also send screenshots of the agent's browser tab",
-    "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
-    "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only.",
+    "id": "developer.agent-harness-per-mate",
+    "label": "Agent harness per mate",
+    "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
+    "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_memory_text",
     "tab": "developer",
+    "params": {
+      "sub": "feature-previews"
+    },
     "type": "toggle",
     "occurrence": 1,
     "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
@@ -1799,6 +1797,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_compaction",
     "tab": "developer",
+    "params": {
+      "sub": "feature-previews"
+    },
     "type": "toggle",
     "occurrence": 1,
     "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
@@ -1808,6 +1809,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_tool_args",
     "tab": "developer",
+    "params": {
+      "sub": "feature-previews"
+    },
     "type": "toggle",
     "occurrence": 1,
     "label": "Also send tool-call arguments so Jev can flag risky calls",
@@ -1820,7 +1824,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.automatic-cards-for-all-sessions",
@@ -1830,6 +1837,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    },
     "configKey": "dashboard.dynamic_dashboard_cards"
   },
   {
@@ -1839,7 +1849,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.composable-layout",
@@ -1848,7 +1861,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.decisions-jev",
@@ -1857,16 +1873,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "developer.developer-mode",
-    "label": "Developer Mode",
-    "labelKey": "pages.settings.developerPanel.developer_mode",
-    "hint": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
@@ -1875,7 +1885,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
     "tab": "developer",
     "type": "input",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.folder-conductor",
@@ -1884,7 +1897,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.jev-api-key",
@@ -1893,16 +1909,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it.",
     "tab": "developer",
     "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "developer.mates",
-    "label": "Mates",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_members",
-    "hint": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.model-for-the-small-model-judge",
@@ -1911,7 +1921,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one.",
     "tab": "developer",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.reply-threads-on-mate-chat-messages",
@@ -1920,7 +1933,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.run-a-local-gateway",
@@ -1929,7 +1945,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.run-kas-on-kiro-crew-s-own-engine",
@@ -1938,7 +1957,22 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.session-environments",
+    "label": "Session Environments",
+    "labelKey": "sessionEnvironments.title",
+    "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.webhooks",
@@ -1947,7 +1981,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "hint": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
     "tab": "developer",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.which-judge-answers",
@@ -1955,7 +1992,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_provider",
     "tab": "developer",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "display.command-completion",
@@ -2129,6 +2169,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.keep-running-in-the-background-after-closing-the-window",
+    "label": "Keep running in the background after closing the window",
+    "labelKey": "pages.settings.displayPanel.keep_running_when_window_closed",
+    "description": "Closing the window hides Kiro Crew and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.keep-running-in-the-background-after-closing-the-window"
+  },
+  {
     "id": "display.language",
     "label": "Language",
     "labelKey": "settings.display.language.label",
@@ -2176,6 +2229,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
+    "id": "display.show-unread-dot-on-session-cards",
+    "label": "Show unread dot on session cards",
+    "labelKey": "pages.settings.displayPanel.show_unread_dot",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    },
+    "configKey": "dashboard.show_unread_dot"
   },
   {
     "id": "display.theme",
@@ -2307,6 +2372,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Mark sessions unread only when they need you",
     "labelKey": "pages.settings.notificationsPanel.unread_only_when_done_or_waiting",
     "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
+  },
+  {
+    "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
+    "label": "Notify me even when Kiro Crew is closed",
+    "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
+    "description": "Sends alerts to this device even after you close Kiro Crew. System notifications stop once you close it.",
     "tab": "notifications",
     "type": "toggle",
     "occurrence": 1,
@@ -2562,6 +2639,61 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
   },
   {
+    "id": "session-environments.coder-url",
+    "label": "Coder URL",
+    "labelKey": "sessionEnvironments.url",
+    "description": "Use the deployment URL without credentials, query parameters, or fragments, for example https://coder.example.com.",
+    "tab": "session-environments",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "session_environments.coder_url"
+  },
+  {
+    "id": "session-environments.default-for-new-chats",
+    "label": "Default for new chats",
+    "labelKey": "sessionEnvironments.defaultProfile",
+    "description": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.machine-size",
+    "label": "Machine size",
+    "labelKey": "sessionEnvironments.boxdSize",
+    "description": "A snapshot keeps the size it was saved with, so this applies only to profiles without one. Larger sizes bill more while the machine runs.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
+    "label": "Secret name for the token (usually SPRITES_TOKEN)",
+    "labelKey": "sessionEnvironments.tokenSecret",
+    "description": "The name the token is stored under in Settings → Secrets. Change it only to use a different saved token.",
+    "tab": "session-environments",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.start-new-chats-on-a-profile",
+    "label": "Start new chats on a profile",
+    "labelKey": "sessionEnvironments.defaultEnabled",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.default_profile"
+  },
+  {
+    "id": "session-environments.stop-workspaces-when-kiro-crew-shuts-down",
+    "label": "Stop workspaces when Kiro Crew shuts down",
+    "labelKey": "sessionEnvironments.stopOnShutdown",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.stop_on_shutdown"
+  },
+  {
     "id": "shortcuts.enable-shortcuts",
     "label": "Enable shortcuts",
     "labelKey": "pages.settings.shortcutsPanel.enable_shortcuts",
@@ -2666,7 +2798,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.aws-region-transcribe",
     "label": "AWS Region (Transcribe)",
     "labelKey": "pages.settings.sttSettings.aws_region_transcribe",
-    "description": "AWS region for Transcribe",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
@@ -2758,6 +2889,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.language_code"
   },
   {
+    "id": "voice.language-2",
+    "label": "Language",
+    "labelKey": "pages.settings.voicePanel.language",
+    "hint": "Language for spoken replies",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 2,
+    "settingId": "voice.language-2"
+  },
+  {
     "id": "voice.microphone",
     "label": "Microphone",
     "labelKey": "pages.settings.sttSettings.microphone",
@@ -2770,7 +2911,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.mixed-languages",
     "label": "Mixed languages",
     "labelKey": "pages.settings.sttSettings.transcribe_languages",
-    "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, Amazon Transcribe detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
+    "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, dictation detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
     "tab": "voice",
     "type": "select",
     "occurrence": 1,
@@ -2787,24 +2928,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.model"
   },
   {
-    "id": "voice.piper-binary",
-    "label": "Piper Binary",
-    "labelKey": "pages.settings.voicePanel.piper_binary",
-    "description": "Path to the piper executable. Leave blank to auto-detect on PATH or in a ~/piper-venv install",
-    "tab": "voice",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "voice.piper-model",
-    "label": "Piper Model",
-    "labelKey": "pages.settings.voicePanel.piper_model",
-    "description": "Path to the Piper voice model (.onnx). Required — download from huggingface.co/rhasspy/piper-voices",
-    "tab": "voice",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
     "id": "voice.provider",
     "label": "Provider",
     "labelKey": "pages.settings.sttSettings.provider",
@@ -2818,7 +2941,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.provider-2",
     "label": "Provider",
     "labelKey": "pages.settings.voicePanel.provider",
-    "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
+    "description": "The built-in engine needs no setup; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
     "occurrence": 2,
@@ -2859,15 +2982,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 2
-  },
-  {
-    "id": "voice.speed-3",
-    "label": "Speed",
-    "labelKey": "pages.settings.voicePanel.speed",
-    "hint": "Piper speech speed (length scale)",
-    "tab": "voice",
-    "type": "select",
-    "occurrence": 3
   },
   {
     "id": "voice.streaming",

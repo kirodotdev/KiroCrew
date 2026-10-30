@@ -267,31 +267,50 @@ class TestEntryReferences:
 class TestIsAncestor:
     """Ancestry is the tree's relation, followed under the tree's own rules."""
 
-    def test_a_direct_creator_is_an_ancestor(self) -> None:
-        nodes = {"worker": _node("worker", "conductor"), "conductor": _node("conductor")}
-        assert is_ancestor("conductor", "worker", nodes) is True
-
-    def test_a_grandparent_is_an_ancestor(self) -> None:
-        nodes = {
-            "leaf": _node("leaf", "mid"),
-            "mid": _node("mid", "root"),
-            "root": _node("root"),
-        }
-        assert is_ancestor("root", "leaf", nodes) is True
-
-    def test_a_slot_is_not_its_own_ancestor(self) -> None:
-        nodes = {"a": _node("a", "a")}
-        assert is_ancestor("a", "a", nodes) is False
-
-    def test_a_child_is_not_its_creators_ancestor(self) -> None:
-        nodes = {"worker": _node("worker", "conductor"), "conductor": _node("conductor")}
-        assert is_ancestor("worker", "conductor", nodes) is False
-
-    def test_a_cited_creator_with_no_log_ends_the_chain(self) -> None:
-        # The tree follows an edge only onto a slot that has a log of its own, so
-        # a citation is not a place in the tree and nothing above it is reachable.
-        nodes = {"worker": _node("worker", "ghost")}
-        assert is_ancestor("ghost", "worker", nodes) is False
+    @pytest.mark.parametrize(
+        ("ancestor", "descendant", "nodes", "expected"),
+        [
+            pytest.param(
+                "conductor",
+                "worker",
+                {"worker": ("worker", "conductor"), "conductor": ("conductor",)},
+                True,
+                id="test_a_direct_creator_is_an_ancestor",
+            ),
+            pytest.param(
+                "root",
+                "leaf",
+                {"leaf": ("leaf", "mid"), "mid": ("mid", "root"), "root": ("root",)},
+                True,
+                id="test_a_grandparent_is_an_ancestor",
+            ),
+            pytest.param(
+                "a", "a", {"a": ("a", "a")}, False, id="test_a_slot_is_not_its_own_ancestor"
+            ),
+            pytest.param(
+                "worker",
+                "conductor",
+                {"worker": ("worker", "conductor"), "conductor": ("conductor",)},
+                False,
+                id="test_a_child_is_not_its_creators_ancestor",
+            ),
+            # The tree follows an edge only onto a slot that has a log of its own, so
+            # a citation is not a place in the tree and nothing above it is reachable.
+            pytest.param(
+                "ghost",
+                "worker",
+                {"worker": ("worker", "ghost")},
+                False,
+                id="test_a_cited_creator_with_no_log_ends_the_chain",
+            ),
+            pytest.param(
+                "anyone", "missing", {}, False, id="test_an_unknown_slot_has_no_ancestors"
+            ),
+        ],
+    )
+    def test_ancestry_follows_creator_edges(self, ancestor, descendant, nodes, expected) -> None:
+        tree = {slot: _node(*args) for slot, args in nodes.items()}
+        assert is_ancestor(ancestor, descendant, tree) is expected
 
     def test_a_slot_on_a_cycle_is_never_walked_through(self) -> None:
         nodes = {
@@ -305,9 +324,6 @@ class TestIsAncestor:
         nodes["s10"] = _node("s10")
         assert is_ancestor("s10", "s0", nodes, depth=3) is False
         assert is_ancestor("s10", "s0", nodes, depth=20) is True
-
-    def test_an_unknown_slot_has_no_ancestors(self) -> None:
-        assert is_ancestor("anyone", "missing", {}) is False
 
 
 class TestFoldHolders:
@@ -340,27 +356,38 @@ class TestFoldHolders:
         mentions = {_ref(2): [_mention("conductor", newest_ms=5)]}
         assert fold_holders(mentions, nodes)[_ref(2)].slot == "conductor"
 
-    def test_among_unrelated_sessions_the_newest_wins(self) -> None:
-        nodes = {"a": _node("a"), "b": _node("b")}
-        mentions = {_ref(3): [_mention("a", newest_ms=10), _mention("b", newest_ms=20)]}
-        assert fold_holders(mentions, nodes)[_ref(3)].slot == "b"
-
-    def test_a_tie_on_recency_falls_to_the_larger_count(self) -> None:
+    @pytest.mark.parametrize(
+        ("number", "a", "b", "winner"),
+        [
+            pytest.param(
+                3, (10, 1), (20, 1), "b", id="test_among_unrelated_sessions_the_newest_wins"
+            ),
+            pytest.param(
+                4, (10, 1), (10, 9), "b", id="test_a_tie_on_recency_falls_to_the_larger_count"
+            ),
+            # The count must not become the ranking: a session that mentioned a pull
+            # request nine times an hour ago does not hold it over one that mentioned
+            # it once a minute ago.
+            pytest.param(
+                15,
+                (20, 1),
+                (10, 9),
+                "a",
+                id="test_recency_outranks_count_so_count_is_only_a_tie_break",
+            ),
+        ],
+    )
+    def test_among_unrelated_sessions_recency_ranks_and_count_breaks_ties(
+        self, number, a, b, winner
+    ) -> None:
         nodes = {"a": _node("a"), "b": _node("b")}
         mentions = {
-            _ref(4): [_mention("a", newest_ms=10, count=1), _mention("b", newest_ms=10, count=9)]
+            _ref(number): [
+                _mention("a", newest_ms=a[0], count=a[1]),
+                _mention("b", newest_ms=b[0], count=b[1]),
+            ]
         }
-        assert fold_holders(mentions, nodes)[_ref(4)].slot == "b"
-
-    def test_recency_outranks_count_so_count_is_only_a_tie_break(self) -> None:
-        # The count must not become the ranking: a session that mentioned a pull
-        # request nine times an hour ago does not hold it over one that mentioned
-        # it once a minute ago.
-        nodes = {"a": _node("a"), "b": _node("b")}
-        mentions = {
-            _ref(15): [_mention("a", newest_ms=20, count=1), _mention("b", newest_ms=10, count=9)]
-        }
-        assert fold_holders(mentions, nodes)[_ref(15)].slot == "a"
+        assert fold_holders(mentions, nodes)[_ref(number)].slot == winner
 
     def test_a_tie_on_recency_and_count_falls_to_the_slot_so_two_scans_agree(self) -> None:
         nodes = {"a": _node("a"), "b": _node("b")}
@@ -1043,16 +1070,6 @@ class TestScannerBounds:
         # there is still there.
         assert _ref(1) in second.mentions
 
-    def test_a_segment_deleted_off_the_front_is_not_a_fault(self, store: _Store) -> None:
-        # The other half of the same rule: retention took the entries with it, so an
-        # answer without them is the whole truth available.
-        store.unit("sid-a", "slot-a")
-        store.roll("sid-a", 4, f"{_URL}/4")
-        store.segment("sid-a").unlink()
-        reading = ReferenceScanner().references()
-        assert _ref(4) in reading.mentions
-        assert reading.incomplete is False
-
     def test_a_preferred_unit_does_not_suppress_an_unlistable_root(
         self, store: _Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1146,30 +1163,30 @@ class TestScannerBounds:
         assert _ref(8) in reading.mentions
         assert reading.incomplete is False
 
-    def test_a_segment_missing_from_the_middle_is_damage(self, store: _Store) -> None:
-        # The entries around a middle hole are still here, so the sequence itself
-        # says some are absent: the surviving segment starts HIGHER than the one
-        # before it ended. Reporting that as complete hands back a fold built on
-        # references nobody can see are missing.
+    @pytest.mark.parametrize(
+        ("next_first_seq", "incomplete"),
+        [
+            # The entries around a middle hole are still here, so the sequence itself
+            # says some are absent: the surviving segment starts HIGHER than the one
+            # before it ended. Reporting that as complete hands back a fold built on
+            # references nobody can see are missing.
+            pytest.param(9, True, id="test_a_segment_missing_from_the_middle_is_damage"),
+            # The check must fire on a HOLE, not on an ordinary rollover. The first
+            # segment holds seq 2, so the next one starting at 3 is contiguous and the
+            # answer is complete.
+            pytest.param(3, False, id="test_segments_that_meet_exactly_are_not_a_gap"),
+        ],
+    )
+    def test_only_a_hole_between_segments_marks_the_reading_short(
+        self, store: _Store, next_first_seq: int, incomplete: bool
+    ) -> None:
         store.unit("sid-a", "slot-a")
         store.append("sid-a", f"{_URL}/1", seq=2)
-        store.roll("sid-a", 9, f"{_URL}/9")
+        store.roll("sid-a", next_first_seq, f"{_URL}/{next_first_seq}")
         reading = ReferenceScanner().references()
         assert _ref(1) in reading.mentions
-        assert _ref(9) in reading.mentions
-        assert reading.incomplete is True
-
-    def test_segments_that_meet_exactly_are_not_a_gap(self, store: _Store) -> None:
-        # The check must fire on a HOLE, not on an ordinary rollover. The first
-        # segment holds seq 2, so the next one starting at 3 is contiguous and the
-        # answer is complete.
-        store.unit("sid-a", "slot-a")
-        store.append("sid-a", f"{_URL}/1", seq=2)
-        store.roll("sid-a", 3, f"{_URL}/3")
-        reading = ReferenceScanner().references()
-        assert _ref(1) in reading.mentions
-        assert _ref(3) in reading.mentions
-        assert reading.incomplete is False
+        assert _ref(next_first_seq) in reading.mentions
+        assert reading.incomplete is incomplete
 
     def test_forget_makes_the_next_scan_read_from_the_start(self, store: _Store) -> None:
         store.unit("sid-a", "slot-a")

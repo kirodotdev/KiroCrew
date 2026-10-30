@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 # (other names on it may still be read here). The facade keeps binding them, so
 # ``kiro_crew.cli.<name>`` stays the object callers import, type checkers see and patches
 # replace (the mirror at the end of this file sends such a patch to every owner holding it).
-from kiro_crew import _facade_mirror, cli_help, platform_compat, version_line
+from kiro_crew import _facade_mirror, cli_help, platform_compat, sandbox_launch_mark, version_line
 from kiro_crew.apps import builtins as _builtins_pkg
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.cli_log_files import (  # noqa: F401 -- re-exported for existing callers
@@ -89,6 +89,7 @@ from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.service.live_target import maybe_reexec
 from kiro_crew.session import SessionManager  # noqa: F401
 from kiro_crew.skills import SkillsLoader  # noqa: F401
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # The owners bind this same logger by name; ``__name__`` is ``__main__`` under
 # ``python -m kiro_crew.cli``, where one object per name must still hold.
@@ -96,6 +97,27 @@ logger = logging.getLogger("kiro_crew.cli")
 
 # The project-root signature lives in kiro_crew.project_dir; kept here by name.
 _PROJECT_MARKERS = PROJECT_MARKERS
+
+
+#: The ``kas`` verbs that only read or write the Kiro sign-in in Crew's vault, plus
+#: ``route``, the read-only config lookup a remote sign-in runs before ``login``.
+_SIGN_IN_ACTIONS = frozenset({"login", "whoami", "logout", "route"})
+
+
+def _is_sign_in_command(args: argparse.Namespace) -> bool:
+    """Is *args* an enterprise build's sign-in verb, which must run before policy loads?
+
+    An enterprise build's policy fetch authenticates as the vault's sign-in, so with no
+    sign-in the fetch fails; the verb that creates one must not need it. An oss build
+    keeps the fail-closed rule for every command.
+    """
+    from kiro_crew import edition
+
+    return (
+        edition.is_enterprise()
+        and args.command == "kas"
+        and getattr(args, "kas_action", None) in _SIGN_IN_ACTIONS
+    )
 
 
 def _project_dir_file() -> Path:
@@ -169,7 +191,8 @@ def _node_ok() -> bool:
             # found anyway.
             [node, "-v"],
             capture_output=True,
-            text=True,
+            # node writes UTF-8 to a pipe on every OS, whatever the locale.
+            **UTF8_TEXT,
             timeout=5,
         )
         version = parse_node_version(node_ver.stdout)
@@ -241,6 +264,10 @@ def main() -> None:
     # KIROCREW_SANDBOX_LEVEL gets the same treatment: a stale inherited value
     # would be read as the ACTIVE tier by a descendant's passthrough and
     # corrupt its downgrade audit.
+    #
+    # Noted first, because the governance tier asks later where this process takes its
+    # ceiling from (``sandbox_launch_mark``). That answer picks a source, not a looser one.
+    sandbox_launch_mark.note()
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
     os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
 
@@ -454,7 +481,6 @@ def main() -> None:
     cli_parser_admin.register_secrets_parser(sub)
     cli_parser_admin.register_pod_parser(sub)
     cli_parser_gateway.register_update_parser(sub)
-    cli_parser_admin.register_file_delivery_parser(sub)
     cli_parser_gateway.register_stop_parser(sub)
     cli_parser_gateway.register_restart_parser(sub)
     cli_parser_gateway.register_gateway_pid_parser(sub)
@@ -464,6 +490,7 @@ def main() -> None:
     cli_parser_admin.register_cloud_parser(sub)
     cli_parser_gateway.register_logs_parser(sub)
     cli_parser_gateway.register_token_parser(sub)
+    cli_parser_gateway.register_open_parser(sub)
     cli_parser_gateway.register_logout_parser(sub)
     cli_parser_gateway.register_status_parser(sub)
 
@@ -504,6 +531,11 @@ def main() -> None:
     # mcp-mate (MCP server -- a crewmate changing its own record from its own
     # chat: ``update_self`` and the card-backed asks).
     sub.add_parser("mcp-mate")
+
+    # mcp-secrets (MCP server -- the opt-in mediated-secret request tool: an agent
+    # granted ``@kirocrew-secrets`` may send a write to an owner-authorized origin
+    # with a Custom secret whose value never reaches the model).
+    sub.add_parser("mcp-secrets")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -674,9 +706,19 @@ def main() -> None:
         # mcp-core/mcp-cron/etc. with no security overlay or credential
         # redaction. PluginAdmissionError subclasses PlatformCompositionError.
         if isinstance(exc, PlatformCompositionError):
-            if args.command == "doctor":
+            sign_in = _is_sign_in_command(args)
+            if args.command != "doctor" and not sign_in:
+                # Enterprise build: governance rules that did not load stop Crew
+                # here, before any server binds, with what failed and the fix.
+                from kiro_crew.enterprise_boot import refuse_policy_boot
+
+                refuse_policy_boot(exc)
+            if args.command == "doctor" or sign_in:
+                # The sign-in verbs are what an enterprise build's policy fetch needs
+                # first, so a missing sign-in must not lock them out. They touch only
+                # the Kiro sign-in in Crew's vault and run no agent.
                 logging.getLogger("kiro_crew").debug(
-                    "platform composition failed; doctor will report it", exc_info=True
+                    "platform composition failed; %s runs without it", args.command, exc_info=True
                 )
                 _platform_boot_error = exc
             else:
@@ -894,6 +936,11 @@ def main() -> None:
     elif args.command == "mcp-mate":
         # Lazily imported for the same reason as the guide.
         importlib.import_module("kiro_crew.mcp_mate").run_mcp_server()
+    elif args.command == "mcp-secrets":
+        # Lazily imported like the other opt-in servers, so the gateway boot path
+        # never loads the sandboxed forwarder just to exist. It does NOT import
+        # the vault -- the vault read happens host-side in the dashboard handler.
+        importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the
@@ -955,10 +1002,6 @@ def main() -> None:
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
-    elif args.command == "file-delivery":
-        from kiro_crew.cli_server import _file_delivery_approve
-
-        _file_delivery_approve()
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 
@@ -993,6 +1036,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "open":
+        from kiro_crew.cli_open import cmd_open
+
+        sys.exit(cmd_open(args))
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 

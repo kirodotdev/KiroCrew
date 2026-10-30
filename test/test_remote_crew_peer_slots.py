@@ -133,17 +133,19 @@ def _manager(
     wrap at all — two different exception paths reaching the same handler.
     """
     calls: list[tuple[str, str, str]] = []
+    params: list[object] = []
 
     @contextlib.asynccontextmanager
-    async def _proxy_request(instance_id, method, path, **_kw):
+    async def _proxy_request(instance_id, method, path, **kw):
         calls.append((instance_id, method, path))
+        params.append(kw.get("params"))
         if raises is not None:
             raise raises
         yield _Upstream(
             status, _Content(body, interrupt=interrupt, interrupt_after=interrupt_after)
         )
 
-    return SimpleNamespace(proxy_request=_proxy_request, calls=calls)
+    return SimpleNamespace(proxy_request=_proxy_request, calls=calls, params=params)
 
 
 def _state(mgr, slots: dict[str, _ChatSlot] | None = None):
@@ -217,8 +219,18 @@ class TestRelayArchivesHideNoPeerRow:
 
         assert mgr.calls == [("nobita", "GET", "api/chat/slots")]
 
+    async def test_the_peer_read_asks_for_every_row_crew_workers_included(self, monkeypatch):
+        """The hub reads with the peer token, which the peer serves as a person's
+        read; its default view leaves Crew Mode workers out, so the hub asks for
+        ``crew=all`` and the merged list keeps them."""
+        _enable_instances(monkeypatch)
+        mgr = _manager(body=b"[]")
 
-@pytest.mark.asyncio
+        await hi.api_instances_chat_slots(_request(_state(mgr)))
+
+        assert mgr.params == [{"crew": "all"}]
+
+
 class TestPeerTextIsRedactedAndAllowlisted:
     """A peer slot title is model-authored text that lands in this machine's list.
 
@@ -234,6 +246,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
     ``peer_redaction`` and is free to change without this route regressing.
     """
 
+    @pytest.mark.asyncio
     async def test_a_credential_shaped_title_never_reaches_the_browser(self, monkeypatch):
         """The finding this pass exists for.
 
@@ -250,6 +263,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert len(data) == 1
         assert secret not in data[0]["title"]
 
+    @pytest.mark.asyncio
     async def test_redaction_runs_before_the_clamp(self, monkeypatch):
         """``_cap_str`` scrubs and THEN truncates, and the order is load-bearing.
 
@@ -272,6 +286,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert secret[: len(secret) // 2] not in data[0]["title"]
         assert len(data[0]["title"]) <= 512
 
+    @pytest.mark.asyncio
     async def test_only_the_fields_the_sidebar_reads_are_forwarded(self, monkeypatch):
         """An allowlist, not a passthrough.
 
@@ -330,6 +345,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         }
         assert data[0]["parent"] == {"slot": "p0", "key": "p0"}
 
+    @pytest.mark.asyncio
     async def test_every_field_the_sidebar_reads_survives(self, monkeypatch):
         """The allowlist must not cost the feature its rows.
 
@@ -361,6 +377,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         # named explicitly instead of loosening the comparison to a subset check.
         assert data == [{**row, "row_identity": "nobita:p1"}]
 
+    @pytest.mark.asyncio
     async def test_a_peer_rows_creator_citation_reaches_the_lane(self, monkeypatch):
         """The conductor lane nests a peer row on ``parent.key`` -- the same field a
         local row carries. With the citation stripped at this hop, every session a
@@ -387,6 +404,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert "parent" not in by_key["lead"]
         assert "lineage_pending" not in by_key["lead"]
 
+    @pytest.mark.asyncio
     async def test_a_citation_with_neither_half_a_string_is_no_citation(self, monkeypatch):
         """Both halves are dereferenced by the lane on every frame, so a peer
         answering ``"parent": "lead"`` or ``{"key": {}}`` must not reach it. Such a
@@ -408,6 +426,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert [r["key"] for r in data] == ["a", "b", "c", "d", "e", "f"]
         assert all("parent" not in r for r in data)
 
+    @pytest.mark.asyncio
     async def test_the_orphan_citation_keeps_slot_when_key_is_gone(self, monkeypatch):
         """``lineage_parents`` sends ``{"slot": <creator>, "key": null}`` for a
         row whose creator has closed. That half feeds the lane's "opened by"
@@ -428,6 +447,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "key": "a",
         }
 
+    @pytest.mark.asyncio
     async def test_lineage_pending_is_forwarded_only_when_literally_true(self, monkeypatch):
         """The lane tests PRESENCE to skip a provisional frame when it records what
         the user has opened. ``"yes"`` or ``1`` must not read as a settled flag, and
@@ -448,6 +468,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         for k in ("b", "c", "d"):
             assert "lineage_pending" not in by_key[k]
 
+    @pytest.mark.asyncio
     async def test_a_citation_key_is_redacted_and_clamped_like_a_key(self, monkeypatch):
         """``parent.key`` goes through the same sink as ``key``: a credential-shaped
         citation never reaches the browser, and an oversized one is clamped."""
@@ -466,6 +487,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert by_key["a"]["parent"]["key"].startswith("lead ")
         assert len(by_key["b"]["parent"]["key"]) == hi._PEER_FIELD_MAX_CHARS
 
+    @pytest.mark.asyncio
     async def test_an_absent_title_stays_absent_rather_than_becoming_blank(self, monkeypatch):
         """``""`` and "no title" are different rows.
 
@@ -480,6 +502,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
         assert "title" not in data[0]
 
+    @pytest.mark.asyncio
     async def test_a_non_string_title_is_dropped_not_forwarded(self, monkeypatch):
         """A peer's declared JSON types are a claim, not a guarantee.
 
@@ -495,6 +518,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert "title" not in data[0]
         assert data[0]["key"] == "p1"
 
+    @pytest.mark.asyncio
     async def test_a_truthy_non_boolean_raises_no_badge_it_never_claimed(self, monkeypatch):
         """``running``, ``pending_approval`` and ``needs_input`` are coerced, not
         truth-tested.

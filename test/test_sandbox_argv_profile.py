@@ -69,16 +69,14 @@ class TestDetectBackend:
 
     @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_caches_result(self, mock_ns):
-        detect_backend(config_mode="auto")
-        detect_backend(config_mode="auto")
-        # Only probed once due to caching
+        assert detect_backend(config_mode="auto") == "namespace"
+        assert detect_backend(config_mode="auto") == "namespace"
         assert mock_ns.call_count == 1
 
     @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_invalidates_on_mode_change(self, mock_ns):
-        detect_backend(config_mode="auto")
-        detect_backend(config_mode="off")
-        # Second call with different mode should re-evaluate
+        assert detect_backend(config_mode="auto") == "namespace"
+        assert detect_backend(config_mode="off") == "none"
         assert mock_ns.call_count == 1  # off doesn't probe
 
 
@@ -112,6 +110,8 @@ class TestWrapArgv:
         mock_ns_argv.assert_called_once_with(
             ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
         )
+        assert result == mock_ns_argv.return_value
+        assert cleanup == "/tmp/launcher.py"
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")
@@ -121,6 +121,7 @@ class TestWrapArgv:
         mock_sb_argv.assert_called_once_with(
             ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
         )
+        assert (result, cleanup) == mock_sb_argv.return_value
 
     @patch("kiro_crew.sandbox.detect_backend")
     def test_inside_sandbox_passes_through(self, mock_detect, monkeypatch):
@@ -174,6 +175,8 @@ class TestWrapArgv:
             result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         # Falls through to normal backend detection rather than passing through.
         mock_detect.assert_called_once()
+        assert mock_detect.call_args.kwargs == {"config_mode": "strict"}
+        assert (result, cleanup) == (["kiro-cli"], None)
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_outside_sandbox_does_not_pass_through(self, mock_detect, monkeypatch):
@@ -184,6 +187,8 @@ class TestWrapArgv:
         with patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True):
             result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_detect.assert_called_once()
+        assert mock_detect.call_args.kwargs == {"config_mode": "strict"}
+        assert (result, cleanup) == (["kiro-cli"], None)
 
 
 class TestBuildSeatbeltProfile:
@@ -857,11 +862,14 @@ class TestBuildSeatbeltProfile:
         # Standard mode doesn't hide .aws
         assert f'(subpath "{home}/.aws")' not in profile
 
-    def test_cc_mode_skips_aws_on_macos(self):
+    def test_cc_mode_hides_aws_except_config_on_macos(self):
         profile = _build_seatbelt_profile("cc")
-        home = str(Path.home())
-        # CC mode on macOS doesn't hide .aws (credential_process needs it)
-        assert f'(subpath "{home}/.aws")' not in profile
+        aws = os.path.join(str(Path.home()), ".aws")
+        # CC hides .aws and re-exposes only config, so credential_process resolves
+        assert (
+            f'(deny file-read* (require-all (subpath "{aws}")'
+            f' (require-not (literal "{aws}/config"))))'
+        ) in profile.splitlines()
 
     def test_cc_mode_denies_individual_files(self):
         profile = _build_seatbelt_profile("cc")
@@ -869,12 +877,12 @@ class TestBuildSeatbeltProfile:
         for f in _CC_FILES:
             assert os.path.join(home, f) in profile
 
-    def test_cc_mode_skips_aws_dir(self):
-        """CC mode does NOT deny .aws as a directory (credential_process needs it)."""
+    def test_cc_mode_denies_aws_hardlinks_and_no_whole_dir_read(self):
+        """CC denies hardlinking out of .aws; the read deny carries the config exception."""
         profile = _build_seatbelt_profile("cc")
-        home = str(Path.home())
-        # .aws should not appear as a subpath deny
-        assert f'(subpath "{home}/.aws")' not in profile
+        aws = os.path.join(str(Path.home()), ".aws")
+        assert f'(deny file-link (subpath "{aws}"))' in profile.splitlines()
+        assert f'(deny file-read* (subpath "{aws}"))' not in profile
 
     # ── hardlink bypass ──
     def test_strict_denies_hardlink_creation_to_dirs(self):

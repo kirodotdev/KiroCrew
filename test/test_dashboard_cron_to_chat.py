@@ -988,14 +988,6 @@ class TestInjectCronResultToDashboard:
         # walk can match it rather than re-appending the injection.
         assert all(r[3] for r in rows)
 
-    def test_nothing_is_persisted_when_the_run_produced_no_result(self):
-        """No result means no run boundary, so the durable write never fires."""
-        state = _make_state()
-        job = _make_job()
-        with patch("kiro_crew.dashboard.cron_inject.append_rows_if_absent_off_loop") as durable:
-            _inject(state, job, "")
-        durable.assert_not_called()
-
     def test_the_prompt_is_persisted_verbatim(self):
         """The replay must record the prompt the run was GIVEN.
 
@@ -1057,32 +1049,32 @@ class TestInjectCronResultToDashboard:
         assert [m["role"] for m in slot.messages] == ["user", "assistant"]
         assert "summarize yesterday" in slot.messages[0]["content"]
 
-    def test_no_prompt_row_without_a_result(self):
+    def test_empty_result_creates_slot_without_message(self):
         """A boundary row must never appear with nothing behind it.
 
         ``/to-chat`` on a job that has never produced a result reaches the
         injection with an empty ``result_text``; writing the prompt there would
-        put a run header in the tab for a run that never happened.
+        put a run header in the tab for a run that never happened. No result
+        also means no run boundary, so neither durable write fires.
         """
         state = _make_state()
         job = _make_job()
-        _inject(state, job, "")
-        slot = state.get_or_create_slot(name=f"cron-{job.id}")
-        assert slot.messages == []
-
-    def test_empty_result_creates_slot_without_message(self):
-        state = _make_state()
-        job = _make_job()
-        _inject(state, job, "")
+        with patch("kiro_crew.dashboard.cron_inject.append_rows_if_absent_off_loop") as durable:
+            _inject(state, job, "")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert slot.linked_session_key == f"cron:{job.id}"
-        assert len(slot.messages) == 0
+        assert slot.messages == []
+        durable.assert_not_called()
+        state.conversation_log.append_if_absent.assert_not_called()
+        state.conversation_log.append.assert_not_called()
 
     def test_pushes_slots_update(self):
         state = _make_state()
         job = _make_job()
         _inject(state, job, "result")
-        state.push_slots_update.assert_called_once()
+        state.push_slots_update.assert_called_once_with()
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
 
     def test_publishes_the_tab_to_the_surface_registry(self):
         """Regression: the cron tab must be surfaced the moment it is created.
@@ -1150,6 +1142,9 @@ class TestPersistsResultToConversationLog:
         _inject(state, job, "the result")
         assert state.conversation_log.append_if_absent.call_count == 2
         state.conversation_log.append.assert_not_called()
+        # The window still shows the result the log write was delegated for.
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        assert slot.messages[-1]["content"].startswith("# Cron Job Result: my-cron")
 
     def test_durable_copy_carries_the_window_rows_id(self):
         # The durable transcript copy must ride with the SAME ``meta.mid`` the
@@ -1162,13 +1157,6 @@ class TestPersistsResultToConversationLog:
         window_mid = slot.messages[-1]["meta"]["mid"]
         kwargs = state.conversation_log.append_if_absent.call_args.kwargs
         assert kwargs["mid"] == window_mid, "the durable copy did not carry the window row's id"
-
-    def test_empty_result_does_not_persist(self):
-        state = _make_state()
-        job = _make_job(job_id="job3")
-        _inject(state, job, "")
-        state.conversation_log.append_if_absent.assert_not_called()
-        state.conversation_log.append.assert_not_called()
 
     def test_no_conversation_log_does_not_crash(self):
         state = _make_state()

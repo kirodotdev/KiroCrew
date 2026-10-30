@@ -197,7 +197,10 @@ class TestBlockAdjudicationContract:
                 # Only the same-repo lane advertises the ready-to-paste command;
                 # the fork lane's comment carries no override command by
                 # standing design, and the `else` arm below is what pins that.
-                assert "/ai-review override gpt $HEAD: $rtxt" in comment, lane
+                assert "/ai-review override gpt $HEAD <class>: $rtxt" in comment, lane
+                # The finding is real, so the draft must not file it as a rule mismatch.
+                assert "override gpt $HEAD not-applicable" not in comment, lane
+                assert "owner-decision" in comment and "deferred #<N>" in comment, lane
             else:
                 assert "/ai-review override" not in comment, lane
             adj = _step_script(workflow, ADJ_GATE)

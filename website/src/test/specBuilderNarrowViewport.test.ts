@@ -90,7 +90,7 @@ describe('Spec Builder at narrow widths', () => {
     // Each costs width a phone has none of and does nothing without a pointer:
     // the shell's rail splitter and the detail's own document divider.
     expect(await src('Workspace.tsx')).toMatch(/\{!isMobile && \(\s*<ColumnSplitter/)
-    expect(await src('SpecDetail.tsx')).toMatch(/cursor-col-resize[^`]*\$\{isMobile \? 'hidden' : ''\}/)
+    expect(await src('SpecDetail.tsx')).toMatch(/<ResizeHandle[\s\S]*?className=\{isMobile \? 'hidden' : undefined\}/)
   })
 
   it('hands the chat the full width and keeps the document reachable', async () => {

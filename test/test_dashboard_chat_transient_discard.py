@@ -474,9 +474,8 @@ class TestRunChatTransientRetryPoisonedDiscard:
             await self._drain_bg(state)
             canary.assert_awaited_once()
             # The probe is only meaningful on the SAME served model as the
-            # failing session, with fallback disabled (GPT review finding:
-            # a canary succeeding on a different model must never justify
-            # discarding this conversation).
+            # failing session, with fallback disabled: a canary succeeding on
+            # a different model must never justify discarding this conversation.
             assert canary.await_args.kwargs["model"] == "claude-test-model"
             assert canary.await_args.kwargs["strict_model"] is True
 
@@ -547,8 +546,8 @@ class TestRunChatTransientRetryPoisonedDiscard:
         """Regression: the poisoned-discard one-shot re-arms only on a LANDED
         turn. But the STREAK is evidence-based: a cancelled turn that EMITTED
         output proves the backend accepts this conversation, so it breaks the
-        streak (GPT review finding — without this, exhaustion → stopped-but-
-        streaming turn → exhaustion would discard a healthy conversation),
+        streak (without this, exhaustion → stopped-but-streaming turn →
+        exhaustion would discard a healthy conversation),
         while a cancelled turn with NO output proves nothing and preserves
         it. In both cases the spent one-shot stays consumed."""
         from kiro_crew.acp.types import STOP_REASON_CANCELLED
@@ -564,7 +563,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         self._wire_sessions(state, client)
         slot = state.get_or_create_slot("s1")
         slot._titled = True
-        # Arrange: an escalation already consumed the one-shot mid-streak.
+        # An escalation already consumed the one-shot mid-streak.
         slot._poisoned_reset_used = True
         slot._prestream_exhausted_cycles = 3
 

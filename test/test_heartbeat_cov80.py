@@ -37,6 +37,7 @@ from kiro_crew.heartbeat import (
     is_keep_response,
     strip_keep_sentinel,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 @pytest.fixture()
@@ -135,7 +136,7 @@ class TestLoop:
         loop_task = asyncio.create_task(svc._loop())
         await asyncio.sleep(0)  # let the loop reach the shutdown wait
         event.set()
-        await asyncio.wait_for(loop_task, timeout=5)
+        await await_until(loop_task, what="the loop exiting on shutdown")
         assert beats == []
         assert svc._tick == 0
 
@@ -154,7 +155,7 @@ class TestLoop:
             event.set()
 
         monkeypatch.setattr(svc, "_beat", _beat)
-        await asyncio.wait_for(svc._loop(), timeout=5)
+        await finished(svc._loop(), "the heartbeat loop exiting")
         assert beats == [1]
 
     @pytest.mark.asyncio
@@ -174,31 +175,41 @@ class TestLoop:
             raise RuntimeError("zibble")
 
         monkeypatch.setattr(svc, "_beat", _beat)
-        await asyncio.wait_for(svc._loop(), timeout=5)
+        await finished(svc._loop(), "the heartbeat loop exiting")
         assert calls == [1, 2]
 
 
 class TestBeat:
     @pytest.mark.asyncio
-    async def test_ordinary_tick_only_processes_the_file(
-        self, workspace: Path, inline_executor: None
+    @pytest.mark.parametrize(
+        ("tick", "rebuilds"),
+        [
+            pytest.param(1, 0, id="test_ordinary_tick_only_processes_the_file"),
+            pytest.param(15, 1, id="test_fifteenth_tick_rebuilds_the_fts_index"),
+        ],
+    )
+    async def test_tick_runs_the_file_and_its_due_maintenance(
+        self,
+        workspace: Path,
+        inline_executor: None,
+        monkeypatch: pytest.MonkeyPatch,
+        tick: int,
+        rebuilds: int,
     ) -> None:
         mem = _memory()
         svc = HeartbeatService(mem)
-        svc._tick = 1
-        await svc._beat()
-        mem.rebuild_index.assert_not_called()
-        mem.prune_history.assert_not_called()
+        processed: list[int] = []
+        real_process = svc._process_heartbeat_file
 
-    @pytest.mark.asyncio
-    async def test_fifteenth_tick_rebuilds_the_fts_index(
-        self, workspace: Path, inline_executor: None
-    ) -> None:
-        mem = _memory()
-        svc = HeartbeatService(mem)
-        svc._tick = 15
+        async def _counting_process() -> None:
+            processed.append(svc._tick)
+            await real_process()
+
+        monkeypatch.setattr(svc, "_process_heartbeat_file", _counting_process)
+        svc._tick = tick
         await svc._beat()
-        mem.rebuild_index.assert_called_once_with()
+        assert processed == [tick]
+        assert mem.rebuild_index.call_count == rebuilds
         mem.prune_history.assert_not_called()
 
     @pytest.mark.asyncio

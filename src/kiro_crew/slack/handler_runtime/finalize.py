@@ -48,11 +48,9 @@ def _review_drafts_get(key: str) -> tuple[str, str]:
 def _review_drafts_set(key: str, draft: str, requester_user_id: str) -> None:
     """Store a draft with TTL + requester id, evicting oldest if at capacity."""
     now = time.monotonic()
-    # Evict expired entries
     expired = [k for k, (_, _, ts) in _review_drafts.items() if now - ts > _REVIEW_DRAFT_TTL]
     for k in expired:
         _review_drafts.pop(k, None)
-    # Evict oldest if still at capacity
     if len(_review_drafts) >= _REVIEW_DRAFT_MAX:
         oldest_key = min(_review_drafts, key=lambda k: _review_drafts[k][2])
         _review_drafts.pop(oldest_key, None)
@@ -112,7 +110,7 @@ def _append_footer_actions(
     dashboard_state: object | None,
     staleness_token: str | None = None,
 ) -> list[dict]:
-    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks.
+    """Append the OPTIONS buttons and/or Link to Dashboard button to footer blocks.
 
     *staleness_token* must be minted by the caller, which is async and can do the
     transcript read off the event loop. Absent it the control posts untokened and
@@ -123,9 +121,15 @@ def _append_footer_actions(
 
         footer_blocks.extend(build_options_blocks(options, staleness_token=staleness_token))
     if thread_ts and not linked_session_key and dashboard_state:
-        from kiro_crew.slack.format import build_link_dashboard_button
+        from kiro_crew.slack.format import build_link_dashboard_button, is_options_actions_block
 
-        if footer_blocks and footer_blocks[-1].get("type") == "actions":
+        # Its own row after an OPTIONS card: the card's last row ends in its ⋯ menu,
+        # and answering the card replaces its rows -- which must not take the link.
+        if (
+            footer_blocks
+            and footer_blocks[-1].get("type") == "actions"
+            and not is_options_actions_block(footer_blocks[-1])
+        ):
             footer_blocks[-1]["elements"].append(build_link_dashboard_button())
         else:
             footer_blocks.append({"type": "actions", "elements": [build_link_dashboard_button()]})

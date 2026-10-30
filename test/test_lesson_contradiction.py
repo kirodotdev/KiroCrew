@@ -781,7 +781,9 @@ class TestApiLessonsDeleteOffloadsRemove:
         seen: dict[str, int] = {}
 
         class _RecordingStore:
-            def remove(self, rule_sub, repo_scope=None, *, exact=False):  # noqa: ANN001 - test double
+            def remove(  # noqa: ANN001 - test double
+                self, rule_sub, repo_scope=None, *, exact=False, keep_one=False
+            ):
                 seen["remove"] = threading.get_ident()
                 return True
 
@@ -871,8 +873,8 @@ class TestWriteLessonRejectionPreflight:
 
 
 class TestSplitStored:
-    """Direct truth table for the separator matcher. Four review rounds each found one
-    more instance of this class, because the separator is stored IN-BAND and unescaped:
+    """Direct truth table for the separator matcher. The separator is stored IN-BAND and
+    unescaped:
     `A — NOT: B` is either rule `A` with clause `B`, or a bare rule containing the
     separator. The row's key (md5 of the rule at write time) is what settles it, so
     these cases are pinned in BOTH directions."""
@@ -923,8 +925,8 @@ class TestSplitStored:
 
     def test_the_prefix_matches_only_when_the_key_confirms_it(self):
         """Same text, same submitted rule, different stored key -> opposite answers. This
-        is the whole disambiguation in one pair of assertions, and it is why the two
-        contradictory review rounds can both be satisfied."""
+        is the whole disambiguation in one pair of assertions: both readings of the
+        same text are honoured."""
         stored = f"A{self.SEP}B"
         assert _split_stored(stored, "a", self._key("A")) == ("A", True)
         assert _split_stored(stored, "a", self._key(stored)) == (None, False)

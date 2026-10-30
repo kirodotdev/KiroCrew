@@ -64,6 +64,16 @@ describe('AgentDropdownList', () => {
     // Guard against the loop passing vacuously (e.g. rows moved into a portal).
     expect(checked).toBeGreaterThan(0)
   })
+
+  it('draws the keyboard focus ring inside each row, so the host scroller cannot clip it', () => {
+    // Rows sit flush with the host's `overflow-y-auto` edge. The global
+    // `:focus-visible` outline is offset 2px OUTSIDE the box, so on the first
+    // row the scroller cut its top edge off. The inset utility opts out of it.
+    render(<AgentDropdownList agents={agents} activeAgent="kirocrew" defaultAgent="" onSelect={() => {}} />)
+    for (const option of screen.getAllByRole('option')) {
+      expect(option).toHaveClass('focus-ring-accent-inset')
+    }
+  })
 })
 
 describe('AgentDropdownList namespaces (member vs template)', () => {

@@ -50,6 +50,7 @@ from typing import (
     Tuple,
 )
 
+from kiro_crew import edition
 from kiro_crew.config.paths import config_dir  # noqa: F401 - re-export
 from kiro_crew.mcp_provenance import is_marked
 from kiro_crew.platform.admission import (  # noqa: F401 - re-export
@@ -60,6 +61,13 @@ from kiro_crew.platform.admission import (  # noqa: F401 - re-export
 )
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_health import mark_governance_incident  # noqa: F401 - re-export
+from kiro_crew.platform.guest_paths import (  # noqa: F401 - re-export
+    GuestPath,
+    guest_also_local,
+    guest_norm,
+    guest_root,
+    guest_unverifiable,
+)
 from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     TARGET_PATH_KEYS,
     edit_target_candidates,
@@ -67,6 +75,7 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     target_paths,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_environment import WORKSPACE_SERVER_NAME, WORKSPACE_TOOL_KINDS  # noqa: F401
 
 # isort: split
 from kiro_crew import _facade_mirror
@@ -79,7 +88,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
 )
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
 from kiro_crew.platform.governance_parts.catalog import ORDINAL, SCOPE_CATALOG
-from kiro_crew.platform.governance_parts.evaluator import gate_decision
+from kiro_crew.platform.governance_parts.evaluator import gate_decision, policy_level_control
 from kiro_crew.platform.governance_parts.tiers import _POLICY_CACHE_LEAF
 
 logger = logging.getLogger("kiro_crew.platform.governance")
@@ -113,6 +122,7 @@ BUILTIN_TOOL_SCOPES: Dict[str, Tuple[str, ...]] = {
     "web_fetch": ("network.egress",),
     "web_search": ("network.egress",),
 }
+
 
 #: Builtin -> the ``capabilities.*`` gate that also governs it. A capability is
 #: not a ``tools`` rule, so the name check below cannot see it: a policy that
@@ -177,9 +187,7 @@ def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: s
     test for the scope-level question. Do not "fix" this function to return True
     on an empty ruleset: that would tax every server for a rule about one.
     """
-    if ceiling is None:
-        return False
-    ruleset = ceiling.get("mcp")
+    ruleset = policy_level_control(ceiling, "mcp")
     if not isinstance(ruleset, RulesetLike):
         return False
     prefix = f"@{server}".casefold()
@@ -268,11 +276,28 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     # Network-only builtins (web_fetch/web_search) carry no such floor, and
     # read-only file tools still auto-approve via hooks AFTER the floor runs — so
     # this only closes the bypass, it does not add prompts.
+    # Workspace tools are replacements for floor-gated builtins, including
+    # whole-server and wildcard grants that would bypass those same checks.
+    if ref.split("/", 1)[0] == f"@{WORKSPACE_SERVER_NAME}":
+        return False
     if not ref.startswith("@") and _FLOOR_GATE_SCOPES.intersection(
         BUILTIN_TOOL_SCOPES.get(ref, ())
     ):
         return False
-    if ceiling is None:
+    return _ceiling_has_no_say(ref, ceiling)
+
+
+def _ceiling_has_no_say(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
+    """:func:`may_skip_gate` after its floor clause: the ceiling's own question.
+
+    True when the ceiling could never have an opinion about *ref*, so a grant of it
+    stands. Shared by the static writers (through :func:`may_skip_gate`, which
+    refuses a floor-gated builtin first) and the gate-answered grant
+    (:func:`may_grant_builtin_at_gate`, whose call has already met the floor).
+    """
+    # An enterprise build has no ungoverned host: an unnamed scope is answered by
+    # the built-in baseline, read through ``policy_level_control`` below.
+    if ceiling is None and not edition.is_enterprise():
         return True
     try:
         if ref.startswith("@"):
@@ -295,7 +320,7 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
             # gate, so if the ceiling has an opinion on ANY argument-derived scope,
             # withhold and let the gate apply it against the real path/host.
             arg_scopes = ("filesystem.read", "filesystem.write", "network.egress")
-            if any(_ruleset_has_an_opinion(ceiling.get(_s)) for _s in arg_scopes):
+            if any(_ruleset_has_an_opinion(policy_level_control(ceiling, _s)) for _s in arg_scopes):
                 return False
             return True
 
@@ -306,10 +331,10 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         # bypassed a `tools`-scope ceiling (e.g. tools.deny=["report"]). The
         # capability scopes it DOES map to add path/host granularity on top.
         scopes = ("tools",) + tuple(BUILTIN_TOOL_SCOPES.get(ref, ()))
-        if any(_ruleset_has_an_opinion(ceiling.get(scope)) for scope in scopes):
+        if any(_ruleset_has_an_opinion(policy_level_control(ceiling, scope)) for scope in scopes):
             return False
         capability = BUILTIN_TOOL_CAPABILITIES.get(ref)
-        return not (capability and _capability_restricts(ceiling.get(capability)))
+        return not (capability and _capability_restricts(policy_level_control(ceiling, capability)))
     except Exception:  # noqa: BLE001 — see the fail-closed note above
         logger.warning("ceiling probe failed for %r; not auto-approving", ref, exc_info=True)
         return False
@@ -804,6 +829,54 @@ def may_skip_gate_now(ref: str) -> bool:
     return _policy_may_skip_gate_now(ref) and not _operator_requires_confirmation(ref)
 
 
+def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
+    """Whether a spec's grant of the built-in *ref* may approve a call AT the gate.
+
+    The question :func:`may_skip_gate` asks, minus its floor clause, for the
+    ceiling and for every configured profile
+    (``governance_profiles.any_configured_profile_has_say``).
+
+    :func:`may_skip_gate` refuses a floor-gated builtin (``fs_read``,
+    ``execute_bash``, ...) because a static grant of one skips
+    ``hooks.on_tool_call`` and so skips the floor. The KAS
+    ``spec-builtin-grant`` tier is a grant made INSIDE that gate, after the deny
+    floor, the sensitive-path check and governance have all run on the real
+    arguments, so the floor clause has nothing left to protect there. Everything
+    else stands: a ceiling with any opinion on the tool's scopes, or any configured
+    profile that could govern it, withholds the grant and the call prompts.
+
+    *ceiling* is the one the gate's own context snapshot carries, so the call is
+    judged under one ceiling throughout. Fails closed on any error.
+    """
+    if not isinstance(ref, str) or not ref or ref.startswith("@"):
+        return False
+    try:
+        if not _ceiling_has_no_say(ref, ceiling):
+            return False
+        from kiro_crew.platform.governance_profiles import any_configured_profile_has_say
+
+        return not any_configured_profile_has_say(ref)
+    except Exception:  # noqa: BLE001 - cannot tell -> withhold
+        logger.warning("cannot evaluate the gate grant of %r; not auto-approving", ref)
+        return False
+
+
+def may_grant_builtin_at_gate_now(ref: str) -> bool:
+    """:func:`may_grant_builtin_at_gate` against the CURRENTLY installed ceiling.
+
+    For the KAS projection, which records the grants at session start; the gate
+    itself asks again, under its own snapshot, on every call.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("cannot resolve the governance ceiling; not granting %r", ref)
+        return False
+    return may_grant_builtin_at_gate(ref, ceiling)
+
+
 def withheld_by_confirm_tools(ref: str) -> bool:
     """Whether ``hooks.confirm_tools``, and not the security policy, withholds ``ref``'s grant.
 
@@ -1049,6 +1122,7 @@ __all__ = [
 #   ``tool_calls`` -- the governed (scope, item) pairs one tool call touches
 #   ``archetypes`` -- the decision record, the four archetypes and their composition
 #   ``catalog`` -- which scopes exist, and which archetype each one is
+#   ``baseline`` -- the enterprise built-in baseline: each scope's minimal set
 #   ``carriers`` -- ``GovernanceCeiling``, ``Profile`` and their policy-only blocks
 #   ``parsing`` -- a policy or profile document into its carrier
 #   ``signature`` -- proving a policy's ``identity.signature``
@@ -1060,6 +1134,7 @@ _OWNERS = (
     "kiro_crew.platform.governance_parts.tool_calls",
     "kiro_crew.platform.governance_parts.archetypes",
     "kiro_crew.platform.governance_parts.catalog",
+    "kiro_crew.platform.governance_parts.baseline",
     "kiro_crew.platform.governance_parts.carriers",
     "kiro_crew.platform.governance_parts.parsing",
     "kiro_crew.platform.governance_parts.signature",
@@ -1083,8 +1158,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _compose_controls,
         _compose_posture,
         _dedup,
+        _refuse_unmatchable_host_entries,
         _reject_unknown_keys,
         _str_tuple,
+        _unmatchable_glob,
+    )
+    from kiro_crew.platform.governance_parts.baseline import (  # noqa: F401
+        _CAPABILITY_OFF,
+        _DEFAULT_WORKSPACE_ROOTS,
+        _OFF,
+        _PUBLISH_LISTS_OFF,
+        BASELINE_CONTROLS,
+        BASELINE_INNER_LISTS,
+        BASELINE_UNGATED,
+        ENTERPRISE_SLACK_CHANNELS,
+        ENTERPRISE_UPDATE_CHANNEL,
+        ENTERPRISE_YOLO_MAX_SECONDS,
     )
     from kiro_crew.platform.governance_parts.carriers import (  # noqa: F401
         _AGENTCORE_POLICY_ONLY,
@@ -1103,6 +1192,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SIGNATURE_VERIFIED,
         UNAVAILABLE_DEGRADE,
         UNAVAILABLE_FAIL_CLOSED,
+        UPDATE_CHANNELS,
         Bind,
         BootControls,
         PolicyDistribution,
@@ -1112,6 +1202,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _apply_agentcore_workload_name,
         _capability_raw_for_gate,
         _command_deny_patterns,
+        _is_enterprise,
         _version_tuple,
         active_policy_distribution,
         active_update_pins,
@@ -1131,7 +1222,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_scope,
     )
     from kiro_crew.platform.governance_parts.evaluator import (  # noqa: F401
+        _BASELINE_REASON,
+        _DENY_UNLISTED,
         _PERMIT_NOT_GOVERNED,
+        _policy_level,
         _query_level,
         resolve,
         resolve_ordinal,
@@ -1142,16 +1236,26 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MATCHERS,
         _NETWORK_SCHEMES,
         _ORDINAL_SCALES,
+        _ORIGIN_ITEM_RE,
+        _PLAIN_HOST_RE,
+        ENTERPRISE_ORIGIN_ENTRY_RE,
+        _browser_idna,
+        _browser_origin,
+        _canonical_ip,
         _expand,
         _looks_like_host,
         _match_command,
         _match_host,
         _match_identifier,
+        _match_ip,
         _match_mcp,
+        _match_origin,
         _match_path,
         _norm_item,
+        _origin_form,
         _url_host,
         register_matcher,
+        url_policy_hosts,
     )
     from kiro_crew.platform.governance_parts.parsing import (  # noqa: F401
         _KEY_OPEN_NAMESPACES,
@@ -1159,13 +1263,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SANDBOX_FLAGS_SCOPE,
         _SANDBOX_RESERVED_FLAGS,
         _STRUCTURAL_KEYS,
+        ALLOW_ONLY_IN_ENTERPRISE,
         POLICY_VERSION,
+        _browser_serialized_origin,
         _coerce_boot_flag,
+        _ipv6_or_none,
         _parse_control,
         _parse_controls,
+        _parse_yolo_max_seconds,
         _read_json_file,
+        _refuse_inexact_origin_entries,
+        _whatwg_ipv4,
+        baseline_controls,
+        baseline_inner_lists,
         parse_policy,
         parse_profile,
+        with_inner_baseline,
     )
     from kiro_crew.platform.governance_parts.signature import (  # noqa: F401
         _audit_policy_signature,
@@ -1181,6 +1294,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
         _POLICY_ENV,
         _POLICY_HOME_LEAF,
+        _SLACK_CHANNEL_LEAF,
         TIER_BUNDLED,
         TIER_CENTRAL,
         TIER_ENV,
@@ -1190,6 +1304,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _declared_distribution,
         _intersect_ceilings,
         _intersect_update_pins,
+        _load_security_policy,
+        _LoadStage,
+        _lower_cap,
         _policy_home_path,
         _process_state,
         _read_env_policy,
@@ -1198,6 +1315,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TierProcessState,
         _warn_env_beneath_central_once,
         _warn_home_unreadable_beneath_authority_once,
+        _with_baseline_controls,
+        _with_enterprise_baseline,
+        _with_enterprise_value_floors,
         compose_installed_ceiling,
         compose_tier_ladder,
         last_composed_ceiling,
@@ -1210,9 +1330,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CU_ACTION_TOOL_PREFIX,
         _CU_TITLE_PREFIX,
         _CU_UNKNOWN_ACTION_CLASSES,
+        _GUEST_UNVERIFIABLE_ITEM,
         _KIND_EDIT,
         _KIND_FETCH,
         _KIND_READ,
+        _NO_TARGET_ITEM,
         _PATH_ARG_KEYS,
         _READING_PREFIX,
         _RUNNING_PREFIX,
@@ -1226,6 +1348,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CU_CLASS_TEXT_ENTRY,
         CU_MCP_SERVER,
         _cu_action_key,
+        _governed_targets,
         _tool_arg_paths,
         classify_tool_args,
         classify_tool_title,

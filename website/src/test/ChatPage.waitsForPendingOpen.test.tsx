@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
-import { createSlot, forkOpenSettled, forkOpenStarted } from '../store/chatSlice'
+import { createSlot, forkOpenSettled, forkOpenStarted, resumeFromHistory } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
@@ -271,6 +271,36 @@ describe('the active chat leaves the list while a new chat is on its way', () =>
     expect(store.getState().chat.activeSlot).toBeNull()
     await advance(1)
     expect(store.getState().chat.activeSlot).toBe('chat-2-200')
+  })
+
+  // Only the pending action lands: the POST never answers, so the entry stays.
+  const hangResume = (store: ReturnType<typeof renderChatPage>) => act(async () => {
+    store.dispatch(resumeFromHistory.pending('resume-hung', { key: 'chat-hung', title: 'Hung' }, { startedAt: Date.now() }))
+  })
+
+  it('a resume within its lease holds the pick', async () => {
+    const store = renderChatPage()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(ORIGIN))
+    pinClock()
+    await hangResume(store)
+    await advance(PENDING_OPEN_LEASE_MS - 1)
+    await act(async () => { store.dispatch(sseSlots(withoutOrigin)) })
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+  })
+
+  it('a resume past its lease does not hold a later pick', async () => {
+    const store = renderChatPage()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(ORIGIN))
+    pinClock()
+    await hangResume(store)
+    await advance(PENDING_OPEN_LEASE_MS)
+    // The hung entry is still there: nothing pruned it.
+    expect(Object.keys(store.getState().chat.pendingResumes ?? {})).toEqual(['resume-hung'])
+
+    await act(async () => { store.dispatch(sseSlots(withoutOrigin)) })
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBe(OLDEST)
   })
 
   it('with nothing pending, the first listed chat opens at once (unchanged)', async () => {

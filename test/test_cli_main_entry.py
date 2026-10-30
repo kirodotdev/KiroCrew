@@ -8,6 +8,7 @@ where the API is gone. The project-dir pointer path is pinned here too.
 """
 
 import hashlib
+import importlib
 import os
 import stat
 import subprocess
@@ -168,13 +169,26 @@ class TestMcpBuiltinDispatch:
         # mcp_server module resolves — make the synthetic one resolve.
         monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
+        # The server's own exit status must reach the caller unchanged.
+        mock_module.run_mcp_server.side_effect = SystemExit(7)
+
+        target = f"kiro_crew.apps.builtins.{builtin_name}.mcp_server"
+        real_import = importlib.import_module
+
+        def fake_import(name, *args):
+            # Only the synthetic module is faked; every other import stays real.
+            return mock_module if name == target else real_import(name, *args)
 
         monkeypatch.setattr(sys, "argv", ["kirocrew", f"mcp-{builtin_name}"])
-        with patch("importlib.import_module", return_value=mock_module) as mock_import:
+        with (
+            patch("importlib.import_module", side_effect=fake_import) as mock_import,
+            pytest.raises(SystemExit) as exc_info,
+        ):
             cli_mod.main()
 
-        mock_import.assert_called_once_with(f"kiro_crew.apps.builtins.{builtin_name}.mcp_server")
-        mock_module.run_mcp_server.assert_called_once()
+        assert exc_info.value.code == 7
+        assert target in [c.args[0] for c in mock_import.call_args_list]
+        mock_module.run_mcp_server.assert_called_once_with()
 
 
 class TestProjectDirFile:
@@ -239,9 +253,16 @@ class TestSeedDispatch:
         line_buffer.assert_called_once_with()
         assert order == ["line-buffer", "gateway"]
 
-    def test_seed_calls_seed_cmd(self, monkeypatch):
-        """When --seed is provided, seed_cmd should be called before gateway."""
-        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo"])
+    @pytest.mark.parametrize(
+        "extra_argv, expect_replace",
+        [
+            pytest.param([], False, id="test_seed_calls_seed_cmd"),
+            pytest.param(["--seed-replace"], True, id="test_seed_with_replace_flag"),
+        ],
+    )
+    def test_seed_runs_before_gateway(self, monkeypatch, extra_argv, expect_replace):
+        """--seed (optionally with --seed-replace) hands the parsed flags to seed_cmd, then the gateway runs."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo", *extra_argv])
         mock_seed = MagicMock(return_value=0)
         gateway_call = object()
         mock_gateway = MagicMock(return_value=gateway_call)
@@ -254,6 +275,8 @@ class TestSeedDispatch:
 
             main()
         mock_seed.assert_called_once()
+        seed_args = mock_seed.call_args.args[0]
+        assert (seed_args.seed, seed_args.seed_replace) == ("demo", expect_replace)
         mock_gateway.assert_called_once()
         mock_run.assert_called_once_with(gateway_call)
 
@@ -283,28 +306,6 @@ class TestSeedDispatch:
 
             main()
         mock_seed.assert_not_called()
-        mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
-
-    def test_seed_with_replace_flag(self, monkeypatch):
-        """--seed with --seed-replace should call seed_cmd."""
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["kirocrew", "gateway", "--seed", "demo", "--seed-replace"],
-        )
-        mock_seed = MagicMock(return_value=0)
-        gateway_call = object()
-        mock_gateway = MagicMock(return_value=gateway_call)
-        with (
-            patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli_server._gateway", mock_gateway),
-            patch("kiro_crew.cli.asyncio.run") as mock_run,
-        ):
-            from kiro_crew.cli import main
-
-            main()
-        mock_seed.assert_called_once()
         mock_gateway.assert_called_once()
         mock_run.assert_called_once_with(gateway_call)
 
@@ -693,7 +694,7 @@ class TestInstallPidfdChildWatcher:
     """Verify _install_child_watcher's platform behavior."""
 
     @staticmethod
-    def _install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
+    def _assert_install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
         """Run "_install_child_watcher() then asyncio.run(subprocess)" in a CLEAN
         child Python process, and assert it exits 0.
 
@@ -908,7 +909,7 @@ class TestInstallPidfdChildWatcher:
             expected = "SafeChildWatcher"
         else:
             expected = "PidfdChildWatcher"
-        self._install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
 
     @pytest.mark.skipif(
         sys.platform == "linux" or not hasattr(__import__("asyncio"), "SafeChildWatcher"),
@@ -932,7 +933,7 @@ class TestInstallPidfdChildWatcher:
         is itself main-thread-only, so an in-process run under a non-main
         pytest-xdist worker thread would fail spuriously.
         """
-        self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
 
 
 class TestChildWatcherApiRemoved:

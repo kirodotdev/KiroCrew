@@ -374,6 +374,9 @@ export interface WhatsAppGroup {
   rules: string
   /** Minimum seconds between agent replies in this group (anti-flood). */
   cooldown_s: number
+  /** Numbers admitted in this group in place of the global allowed_wa_ids.
+   *  Absent means the global list applies; carried through edits unchanged. */
+  allowed_wa_ids?: string[]
 }
 
 /** WhatsApp (personal account, QR-paired via neonize) config from
@@ -384,6 +387,10 @@ export interface WhatsAppConfigData {
   configured: boolean
   connected: boolean
   connect_error: string
+  /** Whether `connect_error` reports a failure (a broken link, a missing SDK, a
+   *  start exception) rather than a step still to take, such as the pairing
+   *  instruction. Absent from a gateway that predates the field. */
+  connect_failed?: boolean
   read_only: boolean
   enabled: boolean
   /** Who may DM the agent: only the linked number (self), an allow-list, anyone

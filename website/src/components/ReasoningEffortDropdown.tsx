@@ -8,7 +8,7 @@ import { pendingSlotSwitchTarget, performSlotSwitch, stagedSlotSwitchTarget, sta
 import { useAppDispatch } from '../store'
 import { updateSlot } from '../store/dashboardSlice'
 import { setAgentSwitchNotice } from '../store/chatSlice'
-import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice } from '../utils/agentSwitchFeedback'
 import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
@@ -132,9 +132,9 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     // unconfirmed current pick from a genuinely newer target.
     const pending = pendingSlotSwitchTarget('reasoning_effort', slot)
     if (pending !== null && pending !== failedLevel) return false
-    const message = agentSwitchFailureMessage(error)
-    if (onWriteError) onWriteError(message)
-    else dispatch(setAgentSwitchNotice(message))
+    const notice = agentSwitchErrorNotice(error)
+    if (onWriteError) onWriteError(notice.message)
+    else dispatch(setAgentSwitchNotice(notice))
     return true
   }, [dispatch, slot, onWriteError])
 

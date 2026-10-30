@@ -120,12 +120,43 @@ class TestPartialFlushKeepsUnwrittenNotes:
         assert [m["content"] for m in slot.messages] == ["first", "second", "third"]
         assert slot._deferred_notes == []
 
-    def test_a_restored_note_does_not_re_promote_its_context_half(self, tmp_path: Path):
-        """The context half is promoted before the visible line is appended.
+    def test_a_row_that_lands_despite_a_callback_raise_is_treated_as_written(self, tmp_path: Path):
+        """When slot.append adds a row but a callback raises, the row is in the window.
 
-        So a note whose ``append`` raised has ALREADY put its context on the
-        pending queue. Restoring the note for a retry must not queue that
-        context a second time, or the next turn reads the note twice.
+        The inject except arm detects the landing via a pre/post messages length check.
+        It must not restore the note for retry (that would duplicate the row) and must
+        still promote the context half.
+        """
+        slot = _slot()
+        _hold(slot, "first")  # has context
+
+        real_append = type(slot).append
+
+        def _land_then_raise(self, role="", content="", cls="", **kw):
+            result = real_append(self, role=role, content=content, cls=cls, **kw)
+            if role == "inject":
+                raise _Boom("callback raised after row already landed")
+            return result
+
+        with patch.object(type(slot), "append", _land_then_raise):
+            written = slot.flush_deferred_notes()  # must NOT raise
+
+        assert written == 1, "row that lands counts as written"
+        assert slot._deferred_notes == [], "note must not be queued for retry"
+        assert [m["content"] for m in slot.messages if m.get("role") == "inject"] == [
+            "first"
+        ], "row must be in the window"
+        assert [e["content"] for e in slot._pending_context] == [
+            "first"
+        ], "context must be promoted after row lands"
+
+    def test_a_restored_note_does_not_re_promote_its_context_half(self, tmp_path: Path):
+        """Context is promoted AFTER the visible row lands, not before.
+
+        With the fix, a note whose ``append`` raised has NOT yet put its context
+        on the pending queue -- the restore arm puts context back in the note so
+        the retry can promote it after the row eventually lands.  The retry must
+        not queue the context a second time either.
         """
         slot = _slot()
         _hold(slot, "first", "second")
@@ -134,16 +165,17 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         def _append(self, role="", content="", cls="", **kw):
             if content == "second":
-                raise _Boom("append failed after its context was promoted")
+                raise _Boom("append failed before context could be promoted")
             return real_append(self, role=role, content=content, cls=cls, **kw)
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
                 slot.flush_deferred_notes()
 
-        assert [e["content"] for e in slot._pending_context] == ["first", "second"]
+        # "second" row failed -- its context must NOT be in the queue yet.
+        assert [e["content"] for e in slot._pending_context] == ["first"]
         slot.flush_deferred_notes()
-        # "second" must appear exactly once, not twice.
+        # After the retry the row lands and context is promoted exactly once.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
 
 

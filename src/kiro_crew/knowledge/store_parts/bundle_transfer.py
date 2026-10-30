@@ -381,9 +381,9 @@ def import_bundle(self: KnowledgeStore, bundle: dict) -> dict:
             # (it serializes SELECT * FROM sources). Reading the blob copy
             # instead would land every bundle exported from a fixed store at
             # the 'pending' default -- there is no copy there any more -- and
-            # silently resume a folder the user had paused. A bundle written
-            # before this change has the blob copy and no column, so fall
-            # back to it. Both go through the same allowlist as the other
+            # silently resume a folder the user had paused. An older bundle
+            # has the blob copy and no column, so fall back to it. Both go
+            # through the same allowlist as the other
             # insert paths: a bundle is untrusted input, and a restored
             # 'syncing' would report a conflict forever for a sync that
             # never started.

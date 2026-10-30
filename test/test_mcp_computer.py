@@ -279,21 +279,19 @@ def test_unknown_tool_is_rejected_with_no_raw_passthrough():
 # ── argument validation ──
 
 
-def test_element_index_as_bool_is_rejected():
-    """``True`` must not become the integer 1 for an element index.
-
-    ``isinstance(True, int)`` is True in Python, so a bool would otherwise pass an
-    int field AND its range check — and address element 1, some other widget
-    entirely.
-    """
+@pytest.mark.parametrize(
+    "index",
+    [
+        # ``isinstance(True, int)`` is True in Python, so a bool would otherwise pass
+        # an int field AND its range check, and address element 1, some other widget.
+        pytest.param(True, id="bool"),
+        # A float index is not an index; refuse rather than truncate.
+        pytest.param(3.7, id="float"),
+    ],
+)
+def test_element_index_of_a_non_int_type_is_rejected(index):
     with pytest.raises(ValidationError):
-        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": True})
-
-
-def test_element_index_as_float_is_rejected():
-    """A float index is not an index; refuse rather than truncate."""
-    with pytest.raises(ValidationError):
-        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": 3.7})
+        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": index})
 
 
 def test_element_index_out_of_range_is_rejected():
@@ -1015,9 +1013,9 @@ def test_sel_records_a_tool_invocation_on_success(
 def test_sel_records_a_PRE_GATE_refusal(keystone: Path, fake_backend: FakeComputerUseBackend):
     """The audit hole between the gate's denials and ``_audit_allowed``.
 
-    Reviewer finding: a schema ``ValidationError``, an unknown tool, a bad
-    ``click_method``, a stale index, an unparseable key and the paste refusal all
-    return WITHOUT reaching the gate — so nothing was recorded. An audit trail with a
+    A schema ``ValidationError``, an unknown tool, a bad ``click_method``, a stale
+    index, an unparseable key and the paste refusal all return WITHOUT reaching the
+    gate, so they must record themselves. An audit trail with a
     gap at "malformed or refused attempts" is the wrong shape here: a burst of them is
     exactly the signal an investigation wants.
     """
@@ -1081,11 +1079,9 @@ def test_an_audit_failure_never_turns_a_refusal_into_a_crash(
 def test_every_refusal_exit_goes_through_an_AUDITED_helper():
     """Structural: no refusal may return ``Error: …`` inline.
 
-    Reviewer finding, twice — first the ``_refusal`` path, then six static pre-gate
-    sites that returned ``f"{ERROR_PREFIX}{…}"`` directly and so produced no SEL
-    record. Behavioural tests can only cover the refusals someone thought to write a
-    case for, which is exactly how the second batch survived the first fix. This
-    asserts over the AST instead: the ONLY functions allowed to build that string are
+    A site that returns ``f"{ERROR_PREFIX}{…}"`` directly produces no SEL record.
+    Behavioural tests can only cover the refusals someone thought to write a case
+    for, so this asserts over the AST instead: the ONLY functions allowed to build that string are
     the two helpers that audit first.
     """
     import ast
@@ -1146,7 +1142,7 @@ def test_an_unknown_tool_refusal_is_audited(keystone: Path):
 
 
 def test_sel_records_the_resolved_identity_not_the_agents_claim(
-    keystone: Path, fake_backend: FakeComputerUseBackend
+    keystone: Path, fake_backend: FakeComputerUseBackend, sel_private_root: Path
 ):
     """The audited target is the identity the driver RESOLVED.
 
@@ -1155,12 +1151,12 @@ def test_sel_records_the_resolved_identity_not_the_agents_claim(
     the gate is fed the resolved identity.
     """
     _enable(keystone)
-    with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
-        recorder = MagicMock()
-        sel_factory.return_value = recorder
-        # Query by a loose fragment; the audit must carry the resolved label.
-        _dispatch(TOOL_GET_STATE, app="fake files")
-    assert recorder.log_tool_invocation.call_args.kwargs["resources"] == FAKE_FILES_APP.label
+    # Query by a loose fragment; the stored audit row must carry the resolved label.
+    _dispatch(TOOL_GET_STATE, app="fake files")
+    log = sel_private_root / "security_events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["resources"] == FAKE_FILES_APP.label
+    assert not [r for r in rows if "fake files" in r["resources"]], rows
 
 
 def test_denial_text_does_not_disclose_the_ceiling(

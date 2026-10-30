@@ -199,7 +199,9 @@ async def _ensure_dedicated_start_priced_impl(
     floor, cost = _spawn_memory_floor_and_cost()
     settled = self._manager._learned_settled_gb
     info._start_price_gb = _dedicated_start_price_gb(
-        cost, settled, _cost_bucket(info.agent, info.execution_context)
+        cost,
+        settled,
+        _cost_bucket(info.agent, info.execution_context, remote=bool(info._remote_workspace)),
     )
     if floor <= 0:
         info._start_priced_shared = False

@@ -38,6 +38,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         AppsLoader,
         BrowserCredentialProvider,
         CapabilityManager,
+        CloudInstancePolicyProvider,
         CredentialPolicy,
         DashboardContributor,
         DeniedRuleProvider,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         SandboxPolicy,
         SkillDiscoveryProvider,
         SlackEnterpriseGate,
+        SpeechProviderRegistry,
         TelemetryProvider,
         TipsProvider,
         TunnelProvider,
@@ -343,6 +345,10 @@ class PlatformContext:
     # plus whatever the edition adds), each backed by a ``LaunchEngine`` the
     # core's launch job drives. v1 addition (no CONTRACT_VERSION bump).
     remote_provisioners: "RemoteProvisionerProvider"
+    # Managed policies and boundary statements added to every EC2 crew's
+    # instance role (a host agent an organization requires). Empty by default.
+    # v1 addition (no CONTRACT_VERSION bump).
+    cloud_instance_policy: "CloudInstancePolicyProvider"
     # Where Report a Problem / `kirocrew doctor` send the user to file the
     # bundle. REPLACE-capable like ``tips``: the public pre-filled GitHub link
     # or the edition's own URL, never a merge of the two. The backend half of
@@ -354,6 +360,10 @@ class PlatformContext:
     # before an agent navigation; never for the person's own Chrome. The Default
     # supplies nothing. v1 addition (no CONTRACT_VERSION bump).
     browser_credentials: "BrowserCredentialProvider"
+    # Edition-registered STT / TTS providers and the edition's default choice.
+    # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
+    # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
+    speech: "SpeechProviderRegistry"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS
@@ -645,6 +655,26 @@ PEEK_CALLERS: "dict[str, str]" = {
         "being skipped; the genuine downgrade case — a context IS installed and "
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
+    ),
+    "speech_providers.py::_installed_speech": (
+        "no-context answer is 'no registered speech providers and no edition "
+        "default', which is the standalone answer: the built-in STT and TTS sets. "
+        "An unknown stored name then keeps its built-in fallback (STT fails closed "
+        "to off, TTS falls back to the local default), so an absent context can only "
+        "NARROW what is selectable, never route audio anywhere. It must peek: the STT "
+        "half runs inside KiroCrewConfig.load(), and current_context() with nothing "
+        "installed loads config, which would re-enter that load."
+    ),
+    "edition_locks.py::policy_permits": (
+        "no-context answer is to fall through to current_context() and the full "
+        "fail-closed evaluation, exactly as if the peek were absent. The peek only "
+        "short-circuits an oss build whose INSTALLED policy does not name the scope, "
+        "where the answer is the same permit that evaluation would give."
+    ),
+    "edition_locks.py::policy_governs": (
+        "no-context answer is to fall through to current_context(), and its error "
+        "answers 'governed', which refuses the item; the peek only skips that "
+        "resolution on a host that already installed a context."
     ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
@@ -1133,13 +1163,10 @@ def binary_content_is_flagged(raw: bytes) -> bool:
 
     Four gates guard the ``file_send`` delivery path -- the MCP tool before any
     byte is copied, ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}``,
-    and the ``_gate_upload_file`` shared by the Slack and channel upload legs. All
-    four must agree on what counts as flagged content, for two different reasons.
-    The three owner-facing gates each read the one durable grant
-    :mod:`kiro_crew.file_delivery_consent` records, so a disagreement among them
-    turns that grant into "delivered, card rendered, download refused". The upload
-    legs read no grant at all and refuse regardless, so a disagreement there
-    splits one file's verdict across two delivery legs instead. Agreement is why
+    and the ``_gate_upload_file`` shared by the Slack and channel upload legs. The
+    owner gets their own file unscanned; a non-owner outbox download and the upload
+    legs scan, and they must agree on what counts as flagged content, or one
+    file's verdict splits across two delivery legs. Agreement is why
     this lives here as one function rather than as the same three lines written
     out four times.
 

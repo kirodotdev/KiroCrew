@@ -5,6 +5,7 @@ target's next turn applies.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,7 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import autho
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
 from kiro_crew.members import select_provider_backend
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -151,8 +153,10 @@ async def set_model_target(
                 status=400,
             )
         model_name = _normalize_model(model)
+    loaded_cfg = None
     try:
-        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        loaded_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        agent_cfg = loaded_cfg.agent
         provider = agent_cfg.provider
         member_backend, default_backend = agent_cfg.member_acp_backend, agent_cfg.acp_backend
     except Exception:  # pragma: no cover - config load is resilient
@@ -181,7 +185,22 @@ async def set_model_target(
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
     # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
+    # A crewmate's own harness pin outranks both, and one that cannot start
+    # refuses the pick (fail closed) rather than judging it for another harness.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+
+    target_key = effective_session_key(slot)
+    try:
+        backend = select_provider_backend(
+            target_key,
+            member_backend,
+            default_backend,
+            crew_backend=(
+                crewmate_backend_pin(loaded_cfg, target_key) if loaded_cfg is not None else None
+            ),
+        )
+    except CrewmateHarnessUnavailable as exc:
+        raise SessionControlError(str(exc), code=exc.code, status=409) from None
     target_provider = (
         provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
     )
@@ -445,6 +464,219 @@ def arm_model_switch_reset(state: "DashboardState", slot: "_ChatSlot") -> None:
         slot._pending_reset_history_key = slot._pending_reset_history_key or key
 
 
+async def apply_deferred_model_switch(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    *,
+    session_lock_held: bool = False,
+    live_only: bool = False,
+) -> bool:
+    """Land a model pick the picker took while a turn was in flight.
+
+    ``api_chat_slot_model`` commits ``slot.model`` at once for such a pick and
+    records the session it could not touch in ``slot._deferred_model_switch_key``
+    (the picker's answer carries ``deferred: true``). The turn it would have cut
+    finishes on the model it started on, as every backend's own mid-turn pick
+    does (measured on KAS: ``session/set_config_option`` is accepted mid-turn,
+    the running turn keeps its model, the next turn runs the pick). This is
+    what runs at the boundary, from two callers: the end of the turn the pick
+    arrived in (``_end_turn_tail``, before its deferred-reset consume) and the
+    start of the slot's next turn (``turn_admission``, the backstop for a turn
+    that ended without its tail, and for a sibling alias's turn this slot's tail
+    never sees).
+
+    The session is moved exactly the way an idle pick moves it, so every
+    harness takes the path it already takes for the picker:
+    ``_try_live_model_switch`` first (``session/set_model`` on kiro-cli, the
+    model config option on KAS and claude, each harness's own refusal
+    handling), and the deferred reset (``arm_model_switch_reset``, consumed by
+    the caller's ``_consume_pending_reset``) when the live switch is not
+    available — no ACP provider, an unrepresentable target, a failed call, or a
+    model the account cannot run, where the cold start's withheld-pin handling
+    is the surface that tells the user. A session still busy — another alias
+    mid-turn, or a picker transaction holding ``_model_pick_lock`` — keeps the
+    pick deferred for a later boundary; the committed ``slot.model`` is what
+    any cold start reads meanwhile, so a restart loses nothing.
+
+    ``session_lock_held`` is passed by ``turn_admission``, which has ALREADY
+    taken ``slot_switch_session_lock(session_key)`` for its cold start: that
+    lock is not reentrant, so the helper must then take only
+    ``_model_pick_lock`` or the turn self-deadlocks at session creation. Every
+    other caller (``_end_turn_tail``, a future channel-completion hook) holds
+    neither lock and leaves it False, so the helper takes the session lock
+    itself. That lock is load-bearing on the tail path: ``_model_pick_lock`` is
+    per-slot, so it does NOT serialise two aliases sharing one session, and a
+    sibling alias's next turn runs ``_restore_refusal_fallback`` inside its own
+    held session lock; without taking the same session-keyed lock here, this
+    tail ``set_model`` would race that restore on the shared client and the
+    restore could overwrite the pick.
+
+    ``live_only`` is passed by the channel-turn boundary
+    (:func:`land_model_pick_after_channel_turn`): when the live switch does not
+    land, the pick stays deferred instead of arming the reset. A channel turn
+    cold-starts on the default model ladder, not on ``slot.model``, so a reset
+    there would move the session off the old model without putting it on the
+    pick. The next dashboard boundary lands it, as before.
+
+    Returns True when the deferred reset was armed, so the caller's consume
+    knows a teardown may follow.
+    """
+    key = slot._deferred_model_switch_key
+    if not key:
+        return False
+    # circular import: chat_handlers imports this module at module level.
+    from kiro_crew.dashboard.chat_handlers import (
+        AcpModelUnavailable,
+        _broadcast_context_reset,
+        _sync_served_model,
+        _try_live_model_switch,
+        subagents_attached_async,
+    )
+
+    if slot._model_pick_lock.locked() or _another_alias_is_mid_turn(state, slot):
+        logger.info("Slot %s deferred model switch waits: session still busy", slot.key)
+        return False
+    # The marker is NOT cleared here. Everything below can be cancelled at the
+    # turn deadline while it awaits -- the live switch, or the off-loop sub-agent
+    # read -- and a marker cleared before those awaits would lose the pick with
+    # no reset armed and nothing to retry. Keep it set until the live switch has
+    # SUCCEEDED or a reset is armed: the terminal branches below clear it then,
+    # and a cancellation in between leaves the pick retryable at a later boundary.
+    session_key = effective_session_key(slot)
+    if session_key != key:
+        # The slot moved to another session while the pick waited. The old one
+        # is not this slot's to move; the current binding is what the next
+        # turn runs on, so that is the session the pick lands on.
+        logger.info(
+            "Slot %s deferred model switch: session rebound %s -> %s", slot.key, key, session_key
+        )
+    went_live = False
+    # Two locks, in the switch handlers' global order (session lock, then pick
+    # lock). The session lock is session-keyed and SHARED across aliases, so it
+    # is the only thing that serialises this tail set_model against a sibling
+    # alias's refusal-fallback restore, which runs inside that alias's own held
+    # session lock; the pick lock is per-slot and cannot. The pick lock still
+    # serialises against this slot's own model-fallback swap/restore. When
+    # admission already holds the session lock (session_lock_held) the helper
+    # takes only the pick lock: re-acquiring the non-reentrant session lock on
+    # that task would hang the turn at session creation.
+    async with contextlib.AsyncExitStack() as _locks:
+        if not session_lock_held:
+            await _locks.enter_async_context(slot_switch_session_lock(session_key))
+        await _locks.enter_async_context(slot._model_pick_lock)
+        if not slot._deferred_model_switch_key:
+            # Another boundary landed the pick (or armed its reset) while this
+            # one waited for the locks: two boundaries can race for one pick
+            # once a channel turn's end is one of them. Applying it again would
+            # arm a second reset against the session the first one set up.
+            return False
+        # Read the pick UNDER the locks, not before them. A newer /model request
+        # commits through the busy branch WITHOUT taking the session lock, so
+        # slot.model and the deferred key can both change while this helper waits
+        # for the lock. Reading here applies what is current once serialised,
+        # never a model captured before the wait while a newer pick queued in.
+        key = slot._deferred_model_switch_key
+        model = slot.model or "auto"
+        provider = state.sessions.get_provider(session_key)
+        try:
+            went_live = await _try_live_model_switch(slot.key, slot, provider, model)
+        except AcpModelUnavailable as exc:
+            # The reset below cold-starts on the committed pin; the account
+            # cannot run it, so the cold start withholds it and the slot's
+            # withheld-pin card says so — the same surface a restored pin gets.
+            logger.warning(
+                "Slot %s deferred model switch: live session refused %r (%s); resetting",
+                slot.key,
+                model,
+                exc,
+            )
+        except Exception:
+            logger.warning(
+                "Slot %s deferred model switch: live set_model(%r) failed; resetting",
+                slot.key,
+                model,
+                exc_info=True,
+            )
+    if went_live:
+        # The tab can rebind to a different session WHILE the set_model RPC
+        # above awaits: a cron tab links to its live runtime through
+        # ``ensure_cron_slot`` -> ``_bind_cron_slot``, which takes none of the
+        # locks held here. When that happens the switch reached the old
+        # session's provider, not the one the slot now runs on. Publishing the
+        # old provider's served model and leaving the pick cleared would strand
+        # the current binding on the old model with no reset armed to retry.
+        # Re-read the key before publishing; on a rebind keep the pick deferred
+        # for the current binding, the same way the sub-agent branch below keeps
+        # it when a reset cannot be armed. A later boundary applies it against
+        # whatever session the slot holds then.
+        post_rpc_key = effective_session_key(slot)
+        current_model = slot.model or "auto"
+        if post_rpc_key != session_key or current_model != model:
+            # The binding rebound to another session (a cron tab's
+            # ``ensure_cron_slot`` -> ``_bind_cron_slot`` takes none of these
+            # locks), or a newer pick changed the model, WHILE the set_model RPC
+            # awaited. The switch reached the old session or the old model, so
+            # clearing the marker would strand the current binding with nothing
+            # to retry. Keep the pick deferred for what is current now; a later
+            # boundary lands it on the right session and model.
+            slot._deferred_model_switch_key = post_rpc_key or key
+            logger.info(
+                "Slot %s deferred model switch: binding/model changed to %s/%r during the live "
+                "switch; pick kept deferred for the current binding",
+                slot.key,
+                post_rpc_key,
+                current_model,
+            )
+            return False
+        # The live switch succeeded on the current binding and model: now it is
+        # safe to clear the marker, past the last await where a cancellation or
+        # a newer pick could otherwise be lost.
+        slot._deferred_model_switch_key = ""
+        _sync_served_model(slot, provider)
+        _broadcast_context_reset(state, slot.key, provider)
+        state.push_slots_update()
+        logger.info("Slot %s deferred model switch landed live on %r", slot.key, model)
+        return False
+    if live_only:
+        # The marker was never cleared above, so the pick stays deferred for the
+        # next dashboard boundary (see ``live_only`` in the docstring).
+        logger.info(
+            "Slot %s deferred model switch held at a channel boundary: live switch did not land",
+            slot.key,
+        )
+        return False
+    # The live switch did not land, so the pin applies only via a cold-start
+    # reset. ``_consume_pending_reset`` leaves an armed reset UNSPENT while
+    # sub-agents share the runtime, so arming one here would leave later turns
+    # on the old model with no card while slot.model names the pick. Keep the
+    # pick deferred instead: the key stays set, this turn's completion still
+    # bills the served model (turn_stats reads the key), and a later boundary
+    # retries once the children detach. Same policy the idle path enforces as
+    # ``children_409``, applied here as "wait" rather than a dead reset.
+    if await subagents_attached_async(state, slot, session_key, "deferred_model_switch"):
+        # The marker was never cleared above, so it already names the pick; the
+        # explicit set keeps this branch readable and pins it to the current key.
+        slot._deferred_model_switch_key = key
+        logger.info(
+            "Slot %s deferred model switch held: sub-agents attached, reset not armed", slot.key
+        )
+        return False
+    # A reset is the pending mechanism from here, so the marker is cleared: the
+    # two cannot both be live or a later boundary would apply the pick twice.
+    slot._deferred_model_switch_key = ""
+    arm_model_switch_reset(state, slot)
+    # Clear the composer's cached context window, as the idle reset path does
+    # with a None provider: the pick moves the session to a model whose window
+    # and length limit differ, so the readout and the next-prompt length check
+    # drop the cached count and wait for the next turn's telemetry. Emitted only
+    # here, where the reset is armed -- the sub-agents-attached branch above
+    # returns first, so a pick still waiting keeps its measurements until it
+    # lands.
+    _broadcast_context_reset(state, slot.key, None)
+    logger.info("Slot %s deferred model switch: reset armed for %r", slot.key, model)
+    return True
+
+
 def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool:
     """Commit *slot*'s pending ``session_set_model`` pick, if it is still allowed.
 
@@ -586,6 +818,140 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
         detail={**_pick_audit_fields(model, effort), "stage": "turn_start"},
     )
     return changed
+
+
+def channel_drives_session(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> bool:
+    """Whether *session_key*'s turns can run on a channel path (Slack, Discord, ...).
+
+    The three signals ``turn_admission`` reads to tell a channel-driven turn from a
+    direct dashboard one: a channel session key; a mirror link that accepts inbound
+    resume (a ``!sessions`` resume keeps its ``dashboard:`` key yet the channel drives
+    it); or a Slack channel bound on the slot. Such a session can go a whole
+    conversation without a dashboard turn boundary.
+    """
+    return (
+        is_channel_session_key(session_key)
+        or bool(state.sessions.mirror_accepts_inbound(session_key))
+        or bool(getattr(slot, "_slack_channel", ""))
+    )
+
+
+#: Landings in flight, held so the loop keeps a reference until each one ends.
+_CHANNEL_PICK_LANDINGS: set[asyncio.Task[None]] = set()
+
+
+def _log_landing_failure(task: asyncio.Task[None]) -> None:
+    _CHANNEL_PICK_LANDINGS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Model pick landing after a channel turn failed", exc_info=task.exception())
+
+
+def schedule_channel_pick_landing(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Run :func:`land_model_pick_after_channel_turn` for *slot* on the running loop."""
+    task = asyncio.ensure_future(land_model_pick_after_channel_turn(state, slot))
+    _CHANNEL_PICK_LANDINGS.add(task)
+    task.add_done_callback(_log_landing_failure)
+
+
+def channel_pick_waits_on(state: "DashboardState", slot: "_ChatSlot", released_key: str) -> bool:
+    """Whether *slot* holds a pick that the end of a turn on *released_key* may land.
+
+    *released_key* is the session manager's folded key, so the slot's keys are
+    folded the same way before comparing.
+    """
+    fold = state.sessions._fold_key
+    if slot._deferred_model_switch_key:
+        if fold(slot._deferred_model_switch_key) == released_key:
+            return True
+    pick = slot._pending_model_pick
+    if pick is None or pick.reasoning_effort is not None:
+        return False
+    return fold(effective_session_key(slot)) == released_key
+
+
+async def land_model_pick_after_channel_turn(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Land *slot*'s waiting model pick at a boundary no dashboard turn passes.
+
+    Scheduled by the session manager's release observer when a turn lease on the
+    slot's session ends with no dashboard turn of the slot's own reserved or in
+    flight (a Slack, Discord, Telegram or Teams turn, a cron run). Two kinds of
+    pick wait here:
+
+    * the picker's deferred pick (``_deferred_model_switch_key``);
+    * a ``session_set_model`` pick (``_pending_model_pick``) that changes only the
+      model. It is committed through :func:`apply_pending_model_pick`, the same
+      gate a dashboard turn start runs, and handed to the deferred switch.
+
+    LIVE ONLY. The session moves through the harness's in-place switch or not at
+    all: a channel turn cold-starts on the default model ladder rather than on
+    ``slot.model``, so the reset a dashboard boundary would arm cannot land the
+    pick here. A pick the live switch cannot take, and a pick that sets an effort
+    (a live session keeps the level it started with), keep waiting for the next
+    dashboard turn, exactly as before this boundary existed.
+
+    The session is between turns when this runs, but a new channel turn may
+    already hold it: the live switch declines under an active turn, the pick stays
+    deferred, and that turn's own release retries.
+    """
+    if slot.running:
+        # The slot's own dashboard turn owns this boundary, from the moment a
+        # send reserves it: its admission and its tail land the pick, reset
+        # path included.
+        return
+    pick = slot._pending_model_pick
+    if pick is not None and pick.reasoning_effort is None:
+        # Warms the config the pick's fence re-check reads, so the synchronous
+        # gate below does no file IO on the loop.
+        await prewarm_enabled_check()
+        if slot.running or slot._pending_model_pick is not pick:
+            return
+        if apply_pending_model_pick(state, slot):
+            # circular import: chat_handlers imports this module at module level.
+            from kiro_crew.dashboard.chat_handlers import save_slot_off_loop
+            from kiro_crew.dashboard.chat_utils import slot_history_key
+
+            # slot.model now names the pick and the live session does not run
+            # it yet: that is exactly the deferred marker's state.
+            slot._deferred_model_switch_key = effective_session_key(slot)
+            state.push_slots_update()
+            if not await save_slot_off_loop(
+                state, slot, force=True, expected_history_key=slot_history_key(slot)
+            ):
+                slot._dirty = True
+    if not slot._deferred_model_switch_key or slot.running:
+        return
+    # Hold the session's own turn lease across the live switch. The dashboard
+    # session lock does not exclude a channel turn, and a channel prompt that
+    # starts while the switch awaits its reply would read the same stdout.
+    # Taken without waiting: a turn that already holds the lease lands the pick
+    # at its own release.
+    lease_key = state.sessions._fold_key(effective_session_key(slot))
+    if slot_switch_session_lock(effective_session_key(slot)).locked():
+        # A dashboard switch or turn start holds the session lock and may be
+        # waiting for this lease; taking the lease first would deadlock it.
+        return
+    if not await state.sessions.try_acquire(lease_key):
+        return
+    _LANDING_LEASES.add(lease_key)
+    try:
+        if slot._deferred_model_switch_key and not slot.running:
+            await apply_deferred_model_switch(state, slot, live_only=True)
+    finally:
+        # wake_queue: a channel message that arrived while this landing held
+        # the lease was queued behind it, and no channel turn ends to drain it.
+        state.sessions.release(lease_key, wake_queue=True)
+        _LANDING_LEASES.discard(lease_key)
+
+
+#: Session keys whose lease a landing holds right now. The release observer
+#: skips their release, or a pick the live switch refused would land again,
+#: release again, and loop.
+_LANDING_LEASES: set[str] = set()
+
+
+def landing_holds_lease(key: str) -> bool:
+    """Whether a model-pick landing is releasing the lease on *key* itself."""
+    return key in _LANDING_LEASES
 
 
 #: Lowercased spellings of the picker's Jev entry that ``session_set_model``

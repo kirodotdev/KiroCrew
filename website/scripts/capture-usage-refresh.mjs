@@ -62,7 +62,7 @@ import { join } from 'node:path'
 
 import { chromiumExecutable } from './lib/chromium-executable.mjs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { json, KIRO_BACKEND_CONFIG_FIXTURE, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || join(process.env.KIROCREW_SCRATCH || '/tmp', 'usage-refresh-evidence')
 mkdirSync(OUT, { recursive: true })
@@ -108,13 +108,13 @@ const shot = async (page, name, clip) => {
  * One page per scene.
  *   `get`     what GET /api/sessions/usage serves first: 'reading' | 'stale' | 'failed' (500)
  *             | 'none' (`{available:false}`, no reason: the gateway holds no reading;
- *               the fixture's `agent.acp_backend` is unset, i.e. the kiro backend,
- *               which is the one place the dash renders)
+ *               the config names the kiro backend, which is the one place the
+ *               dash renders)
  *             | 'signin' (`{available:false, reason:'signin_required'}`)
  *   `refresh` what the POST answers: 'reading' (200) | 'stale' (200, dimmed prior reading)
  *             | 'parked' (200 + skipped marker) | 'error' (500) | 'in-flight' (409) | 'hang' (held open)
- *   `config`  what GET /api/config/kirocrew answers: 'ok' (the fixture; unset
- *             `agent.acp_backend`, i.e. the kiro backend) | 'error' (500)
+ *   `config`  what GET /api/config/kirocrew answers: 'ok'
+ *             (`KIRO_BACKEND_CONFIG_FIXTURE`, the kiro backend) | 'error' (500)
  * Returns the page, the POST count, the config-read count, and the release handle for 'hang'.
  */
 async function scene(theme, get, refresh, config = 'ok') {
@@ -153,9 +153,13 @@ async function scene(theme, get, refresh, config = 'ok') {
       else await json(route, { error: 'usage store unreadable' }, 500)
       return true
     }
-    if (path === '/api/config/kirocrew' && config === 'error') {
-      configReads += 1
-      await json(route, { error: 'config store unreadable' }, 500)
+    if (path === '/api/config/kirocrew') {
+      if (config === 'error') {
+        configReads += 1
+        await json(route, { error: 'config store unreadable' }, 500)
+      } else {
+        await json(route, KIRO_BACKEND_CONFIG_FIXTURE)
+      }
       return true
     }
     return false
@@ -175,7 +179,7 @@ async function scene(theme, get, refresh, config = 'ok') {
  */
 async function openModal(page) {
   await page.goto(base + '/settings/display', { waitUntil: 'domcontentloaded' })
-  const pill = page.getByRole('button', { name: /Kiro credit usage/ }).first()
+  const pill = page.getByRole('button', { name: /Kiro account & credits/ }).first()
   await pill.waitFor({ state: 'visible', timeout: 15000 })
   // Let the shell's boot-time reflows (container-query rungs, first metric
   // poll, the query's own retry on a 500) finish so the click lands on a
@@ -231,7 +235,7 @@ for (const theme of ['light', 'dark']) {
     // The pill outside the modal reads the same numbers: one query feeds both.
     // It pools the bonus grant into its compact readout (636 + 500 used of
     // 2000 + 500), so the expected text is the compacted total.
-    const pillText = await page.getByRole('button', { name: /Kiro credit usage/ }).first().textContent()
+    const pillText = await page.getByRole('button', { name: /Kiro account & credits/ }).first().textContent()
     if (!/1\.1K\s*\/\s*2\.5K/.test(pillText || '')) fail(`${theme}: top-bar pill did not update (${pillText})`)
     await page.close()
   }
@@ -409,8 +413,8 @@ for (const theme of ['light', 'dark']) {
     const pill = page.getByRole('button', { name: /no balance reading yet; open to refresh/ })
     await pill.waitFor({ state: 'visible', timeout: 15000 })
     if (!/—/.test((await pill.textContent()) || '')) fail(`${theme}: no-reading pill is not the dash`)
-    if ((await pill.getAttribute('title')) !== 'Kiro credit usage — no balance reading yet; open to refresh') fail(`${theme}: no-reading pill label is not the refresh hint`)
-    if ((await page.getByRole('button', { name: /Kiro credit usage/ }).count()) !== 1) fail(`${theme}: more than one usage segment in the top bar`)
+    if ((await pill.getAttribute('title')) !== 'Kiro account & credits — no balance reading yet; open to refresh') fail(`${theme}: no-reading pill label is not the refresh hint`)
+    if ((await page.getByRole('button', { name: /Kiro account & credits/ }).count()) !== 1) fail(`${theme}: more than one usage segment in the top bar`)
     if ((await page.getByRole('dialog').count()) !== 0) fail(`${theme}: a dialog is open before the pill was clicked`)
     await page.waitForTimeout(2500)
     /* ── 12 the top bar alone: the dimmed dash with its label, no modal ─────── */
@@ -473,7 +477,7 @@ for (const theme of ['light', 'dark']) {
     await pill.waitFor({ state: 'visible', timeout: 15000 })
     if (!/—/.test((await pill.textContent()) || '')) fail(`${theme}: config-unreadable pill is not the dash`)
     if ((await page.getByRole('button', { name: /no balance reading yet/ }).count()) !== 0) fail(`${theme}: the no-reading label shown for an unreadable config`)
-    if ((await page.getByRole('button', { name: /Kiro credit usage/ }).count()) !== 1) fail(`${theme}: more than one usage segment in the top bar`)
+    if ((await page.getByRole('button', { name: /Kiro account & credits/ }).count()) !== 1) fail(`${theme}: more than one usage segment in the top bar`)
     await page.waitForTimeout(2500)
     const readsBeforeOpen = configCount()
     if (readsBeforeOpen < 1) fail(`${theme}: the config was never read`)

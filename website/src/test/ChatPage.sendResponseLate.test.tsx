@@ -24,7 +24,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { confirmOptimisticSend, selectTurnInterrupted, sseChatMessage } from '../store/chatSlice'
+import chatReducer, { confirmOptimisticSend, endLocalTurn, selectTurnInterrupted, sseChatMessage, startLocalTurn } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
@@ -122,7 +122,7 @@ function makeStore({ running = false } = {}) {
  *  is still a plain send (not a steer) but mints no bubble. With `confirmed`,
  *  the POST answers an ordinary `ok` receipt instead: the control case whose
  *  footer must look exactly as it always did. */
-async function sendPastTheDeadline({ echo = false, busy = false, confirmed = false } = {}) {
+async function sendPastTheDeadline({ echo = false, busy = false, confirmed = false, midFlight }: { echo?: boolean; busy?: boolean; confirmed?: boolean; midFlight?: (store: ReturnType<typeof makeStore>) => void } = {}) {
   fixtureRunning = busy
   if (busy) localStorage.setItem('mc-busy-send-mode:slot-a', 'queue')
   const store = makeStore({ running: busy })
@@ -134,6 +134,7 @@ async function sendPastTheDeadline({ echo = false, busy = false, confirmed = fal
       }))
     }
     if (confirmed) return { ok: true, json: () => Promise.resolve({ ok: true, mid: 'm-ok' }) }
+    midFlight?.(store)
     // `sendTurn` maps an AbortError to `response-late`: the deadline fired.
     throw new DOMException('aborted', 'AbortError')
   })
@@ -201,6 +202,38 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     // No restore and no error row: nothing proved the send failed.
     expect(input.value).toBe('')
     expect(messages().some(m => m.role === 'error')).toBe(false)
+  })
+
+  it('the warning strip removes the pending bubble and hands its text back to the composer', async () => {
+    const { messages, input } = await sendPastTheDeadline()
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect(input.value).toBe(SENT_TEXT))
+    expect(messages().some(m => m.role === 'user' && m.content === SENT_TEXT)).toBe(false)
+  })
+
+  it('hands back both texts when two timed-out sends are removed with one click', async () => {
+    const { store, messages, input } = await sendPastTheDeadline()
+    await waitFor(() => expect(messages().some(m => m.role === 'notice')).toBe(true))
+    act(() => { store.dispatch(endLocalTurn('slot-a')) })
+    fireEvent.change(input, { target: { value: 'the second message' } })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      for (let i = 0; i < 8; i++) await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(messages().filter(m => m.role === 'user' && m.meta?.deliveryUnconfirmed)).toHaveLength(2))
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect(input.value).toContain(SENT_TEXT))
+    expect(input.value).toContain('the second message')
+    expect(messages().filter(m => m.role === 'user')).toHaveLength(0)
+  })
+
+  it('leaves a turn started while the removed send was in flight pending', async () => {
+    const { store } = await sendPastTheDeadline({ midFlight: s => s.dispatch(startLocalTurn('slot-a')) })
+    expect(store.getState().chat.pendingTurnSlot).toBe('slot-a')
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'user' && m.content === SENT_TEXT)).toBe(false))
+    expect(store.getState().chat.pendingTurnSlot).toBe('slot-a')
   })
 
   it('does not read the pending bubble as an interrupted turn, so Resume is not offered for it', async () => {

@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state_parts import dashboard_services as _dashboard_services
-from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import session_events as _session_events
 from kiro_crew.dashboard.state_parts import sidebar_stores as _sidebar_stores
 from kiro_crew.dashboard.state_parts import slot_directory as _slot_directory
@@ -43,6 +43,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.notifications.bus import NotificationBus
+from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
@@ -111,10 +112,13 @@ class DashboardState:
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
     _chat_pins_lock: LoopBoundLock
+    _chat_reactions_lock: LoopBoundLock
+    _chat_reactions_loaded: bool
     _folders_lock: LoopBoundLock
     _folders_generation: int
-    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending).
-    _lineage_sent: dict[str, tuple[Any, bool]]
+    _tags_generation: int
+    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending, crew stamps).
+    _lineage_sent: dict[str, tuple[Any, bool, tuple[str, bool]]]
 
     # Class-level defaults, NOT just __init__ assignments. push_slots_update and
     # _persist_open_slots read these on every call, and a partially-constructed
@@ -427,8 +431,9 @@ class DashboardState:
         self.teams_connect_error: str = ""
         # Late-bound inbound webhook handler for the Teams channel. The route
         # POST /api/messaging/teams is registered at app-build time (aiohttp
-        # freezes routes at startup); maybe_start_teams sets this to the built
-        # client's on_activity once credentials are present. None => 503.
+        # freezes routes at startup); the gateway host sets this to the client's
+        # on_activity once that client is the accepted Teams handle
+        # (channel_lifecycle._publish_teams_webhook). None => 503.
         self.teams_on_activity: Any = None
         # True only while the Weixin (personal WeChat over iLink) channel's
         # long-poll loop is running (set in maybe_start_weixin). Read by the
@@ -446,6 +451,11 @@ class DashboardState:
         # Short reason from the most recent WhatsApp start failure, empty when
         # connected or never attempted. Read by the settings badge.
         self.whatsapp_connect_error: str = ""
+        # True when the most recent WhatsApp state is a failure (a broken link,
+        # a missing SDK, a start exception), False while connected or still
+        # pairing. The settings panel reads this rather than parsing the text
+        # in ``whatsapp_connect_error``.
+        self.whatsapp_connect_failed: bool = False
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated
@@ -480,7 +490,12 @@ class DashboardState:
         self.unrestored_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
-        self._notification_coordinator = _new_notification_coordinator()
+        self._notification_coordinator = _new_notification_coordinator(
+            web_push_fanout=lambda note: self._fan_out_web_push(note)
+        )
+        # Web Push subscription store (browser push endpoints). State-owned like
+        # the bus/limiter/settings so its lifecycle matches the gateway.
+        self.push_subscription_store = PushSubscriptionStore()
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         self.notification_bus = NotificationBus(sink=self._deliver_note)
@@ -542,6 +557,12 @@ class DashboardState:
         self._slot_list_channel_held_keys: set[str] = set()
         self._slot_list_released_keys: set[str] = set()
         self._slot_list_hold_channels = False
+        # Set by the first ``finish_slot_list_rebuild`` and never cleared, so a
+        # waiter that arrives after it still sees it. From then on, every tab the
+        # startup restore and the channel reconciler's first complete pass rebuilt
+        # is in ``_slots`` and published to the surface registry. The gateway
+        # holds the boot orphan sweep's notices until it is set (``run()``).
+        self.startup_tabs_rebuilt: asyncio.Event = asyncio.Event()
         # The slot each connected owner dashboard reports in the foreground, by
         # connection (``slot_retention.note_foreground``). The idle sweep never
         # archives a slot someone is looking at.
@@ -554,8 +575,10 @@ class DashboardState:
         self._warm_task_brief_not_before: dict[str, float] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
         self._warm_task_brief_model_active: set[str] = set()
-        # Threads whose in-flight model call was left behind by a departure.
+        # Threads whose in-flight model call was dropped by a real cancel.
         self._warm_task_brief_abandoned: set[str] = set()
+        # Threads whose brief has posted its opener: leaving keeps the brief.
+        self._warm_task_brief_opened: set[str] = set()
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
@@ -611,6 +634,17 @@ class DashboardState:
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
         # single event loop (in-process gateway restart, test loops).
         self._chat_pins_lock = LoopBoundLock()
+        self._chat_reactions: list[dict[str, Any]] = []  # message reactions
+        # Malformed chat_reactions.json entries dropped at load time, kept
+        # verbatim so save_chat_reactions round-trips them back instead of
+        # erasing bytes a hand-edit left in a shape the loader could not
+        # validate (mirrors the chat-pins unparsed-entry preservation).
+        self._unparsed_chat_reaction_entries: list[Any] = []
+        # Reactions load lazily on first request, not on the gateway boot path
+        # (no-new-work-on-gateway-boot-path); this guards the one-time load.
+        self._chat_reactions_loaded = False
+        # Serializes reaction mutation + persistence; see _chat_pins_lock.
+        self._chat_reactions_lock = LoopBoundLock()
         # Serializes read-modify-write of the folder store; see
         # mutate_folders(). Constructed here rather than lazily so two
         # concurrent first-callers cannot each make their own lock and
@@ -622,6 +656,9 @@ class DashboardState:
         # (the store's only writer) on each confirmed write. See
         # folders_generation() for what the client does with it.
         self._folders_generation = 0
+        # The tag-vocabulary / board-column twin; bumped by every save of
+        # either store. See tags_generation().
+        self._tags_generation = 0
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Malformed tags.json entries dropped at load time, kept verbatim so a
@@ -652,7 +689,7 @@ class DashboardState:
         # successful exec replaces this state with the successor process.
         self._gateway_restart_task: asyncio.Task[None] | None = None
         self._gateway_restart_in_progress: bool = False
-        # FIX 2: unattended-turn concurrency cap. Semaphore is created lazily
+        # Unattended-turn concurrency cap. Semaphore is created lazily
         # (see _background_turn_sema) because this object outlives / predates
         # the event loop in some hosts. The counters exist so a queued fleet is
         # observable — see background_turn_stats().
@@ -811,6 +848,12 @@ class DashboardState:
             from kiro_crew.subagent import set_parent_project_resolver
 
             set_parent_project_resolver(lambda key: session_project_for_spawn_gate(self, key))
+            # A child's prompt carries the folder steering its parent receives.
+            from kiro_crew.dashboard.handlers._shared import session_folder_steering_dirs
+
+            self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
+                self, key
+            )
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)
@@ -875,12 +918,13 @@ class DashboardState:
 
     _FLUSH_INTERVAL = 5  # seconds between dirty-slot flushes
 
-    # ── FIX 2: bounded concurrency for unattended, app-owned turns ──────────
-    # Nothing capped chat slots or concurrent turns. The nearest analogue caps
-    # at 12 (dashboard/handlers/terminal_session.py::_MAX_SESSIONS, 429 on excess) and
-    # the only real ceiling was asyncio.Semaphore(4) on agent cold starts plus
-    # host memory — so an app that arms N worker slots could put N turns on the
-    # runtime at once and exhaust it. Shape copied from
+    # ── Bounded concurrency for unattended, app-owned turns ──────────
+    # Without this cap nothing bounds chat slots or concurrent turns. The nearest
+    # analogue caps at 12 (dashboard/handlers/terminal_session.py::_MAX_SESSIONS,
+    # 429 on excess), and the only other ceiling is asyncio.Semaphore(4) on agent
+    # cold starts plus host memory, so an app
+    # that arms N worker slots could put N turns on the runtime at once and
+    # exhaust it. Shape copied from
     # apps/builtins/code_review_sage/sage_lib/review_pool.py (default +
     # ``MAX_CONCURRENT_CEIL`` clamp): configurable, but never unbounded.
     MAX_BACKGROUND_TURNS = 4  # default in-flight unattended turns
@@ -966,6 +1010,7 @@ class DashboardState:
     # ── Chat message pin persistence ──
 
     _CHAT_PINS_FILE = "chat_pins.json"
+    _CHAT_REACTIONS_FILE = "chat_reactions.json"
 
     @staticmethod
     def _atomic_write_json(path: Path, data: Any) -> None:
@@ -1043,6 +1088,8 @@ class DashboardState:
     _flush_dirty_slots = _dashboard_services._flush_dirty_slots
     _persist_open_slots = _dashboard_services._persist_open_slots
     notify = _dashboard_services.notify
+    _fan_out_web_push = _dashboard_services._fan_out_web_push
+    _send_web_push_all = _dashboard_services._send_web_push_all
     _deliver_note = _dashboard_services._deliver_note
     register_sse = _dashboard_services.register_sse
     unregister_sse = _dashboard_services.unregister_sse
@@ -1063,6 +1110,7 @@ class DashboardState:
     wire_session_compact_callback = _session_events.wire_session_compact_callback
     _notify_channel_compaction = _session_events._notify_channel_compaction
     wire_session_bind_listener = _session_events.wire_session_bind_listener
+    wire_session_release_listener = _session_events.wire_session_release_listener
     wire_session_unbind_listener = _session_events.wire_session_unbind_listener
     _spawn_unbind_notice = _session_events._spawn_unbind_notice
     _on_unbind_notice_done = _session_events._on_unbind_notice_done
@@ -1113,7 +1161,12 @@ class DashboardState:
     load_chat_pins = _sidebar_stores.load_chat_pins
     save_chat_pins = _sidebar_stores.save_chat_pins
     remove_chat_pins_for_slots = _sidebar_stores.remove_chat_pins_for_slots
+    load_chat_reactions = _sidebar_stores.load_chat_reactions
+    save_chat_reactions = _sidebar_stores.save_chat_reactions
+    ensure_chat_reactions_loaded = _sidebar_stores.ensure_chat_reactions_loaded
     folders_generation = _sidebar_stores.folders_generation
+    tags_generation = _sidebar_stores.tags_generation
+    bump_tags_generation = _sidebar_stores.bump_tags_generation
     mutate_folders = _sidebar_stores.mutate_folders
     read_folders = _sidebar_stores.read_folders
     hold_folders = _sidebar_stores.hold_folders
@@ -1153,6 +1206,7 @@ class DashboardState:
     push_slot_title = _slots_push.push_slot_title
     push_slot_patch = _slots_push.push_slot_patch
     push_lineage_patch = _slots_push.push_lineage_patch
+    push_subagent_patch = _slots_push.push_subagent_patch
     push_slot_removed = _slots_push.push_slot_removed
     _has_slot_patch_clients = _slots_push._has_slot_patch_clients
     _send_slot_patch = _slots_push._send_slot_patch
@@ -1180,6 +1234,13 @@ class DashboardState:
     broadcast_ws_owners = _slots_push.broadcast_ws_owners
     ws_client_count = _slots_push.ws_client_count
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
+    set_fold_delta_capable = _slots_push.set_fold_delta_capable
+    set_fold_watch = _slots_push.set_fold_watch
+    set_fold_apply_capable = _slots_push.set_fold_apply_capable
+    broadcast_slot_fold = _slots_push.broadcast_slot_fold
+    fold_watch_routing = _slots_push.fold_watch_routing
+    fold_apply_watch = _slots_push.fold_apply_watch
+    add_fold_watch_listener = _slots_push.add_fold_watch_listener
     register_ws = _slots_push.register_ws
     send_members_subscribed = _slots_push.send_members_subscribed
     unregister_ws = _slots_push.unregister_ws
@@ -1204,4 +1265,20 @@ class DashboardState:
     finish_slot_list_rebuild = _slot_list_hold.finish_slot_list_rebuild
 
 
-own_methods(DashboardState)
+#: The owners whose functions :class:`DashboardState` binds as its members, this shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.state_parts.dashboard_services",
+        "kiro_crew.dashboard.state_parts.dashboard_state",
+        "kiro_crew.dashboard.state_parts.session_events",
+        "kiro_crew.dashboard.state_parts.sidebar_stores",
+        "kiro_crew.dashboard.state_parts.slot_directory",
+        "kiro_crew.dashboard.state_parts.slot_list_hold",
+        "kiro_crew.dashboard.state_parts.slots_frame",
+        "kiro_crew.dashboard.state_parts.slots_push",
+        "kiro_crew.dashboard.state_parts.source_links",
+        "kiro_crew.dashboard.state_parts.status_payload",
+    }
+)
+
+own_methods(DashboardState, _MEMBER_OWNERS)

@@ -27,17 +27,26 @@ const apiMock = vi.hoisted(() => ({
 }))
 vi.mock('../../../api/client', () => ({ api: apiMock }))
 
+/** The real thunk's `fulfilled` creator, so the mocked create opens its session
+ *  through the real reducer and records `lastCreatedActivation`. */
+const realCreateSlot = vi.hoisted(() => ({ fulfilled: null as null | ((...a: unknown[]) => unknown) }))
 const thunks = vi.hoisted(() => ({
-  createSlot: vi.fn(() => () => ({ unwrap: () => Promise.resolve('zzq-new') })),
+  createSlot: vi.fn(() => (dispatch: (a: unknown) => unknown, getState: () => { chat: { activeSlot: string | null } }) => {
+    const meta = { originActiveSlot: getState().chat.activeSlot, originActiveSlotMoves: 0, originActiveSlotAutoMoves: 0, activate: true }
+    const p = Promise.resolve({ key: 'zzq-new', title: '', messages: 0, running: false })
+      .then((s) => { dispatch(realCreateSlot.fulfilled!(s, 'zzq-create', undefined, meta)); return s })
+    return { requestId: 'zzq-create', unwrap: () => p }
+  }),
   // Thunks, like the real ones: the rows unwrap the dispatch to focus the
   // composer once the switch, or the resume, has entered the session.
   switchSlot: vi.fn((arg: { key: string }) => () => ({ unwrap: () => Promise.resolve({ key: arg.key }) })),
   resumeFromHistory: vi.fn(() => () => ({ unwrap: () => Promise.resolve({ ok: true, surface: '' }) })),
 }))
-vi.mock('../../../store/chatSlice', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  ...thunks,
-}))
+vi.mock('../../../store/chatSlice', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../store/chatSlice')>()
+  realCreateSlot.fulfilled = actual.createSlot.fulfilled as unknown as (...a: unknown[]) => unknown
+  return { ...actual, ...thunks }
+})
 
 import { createTestStore } from '../../../test/helpers'
 import { sseSlots, markSlotUnread } from '../../../store/dashboardSlice'
@@ -247,7 +256,7 @@ describe('useRecentsProvider — Current group', () => {
     const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
     const rows = await result.current.search('')
     rows.find((r) => r.id === 'recents:cur:zzq-a')?.onActivate?.()
-    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-a', announceOnMissing: true })
+    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-a', announceOnMissing: true, gesture: true })
     expect(navigateSpy).toHaveBeenCalledWith('/chat')
   })
 
@@ -264,7 +273,7 @@ describe('useRecentsProvider — Current group', () => {
       ['recents:cur:zzq-named', 'zzq Named'],
     ])
     current[0].onActivate?.()
-    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-keyonly', announceOnMissing: true })
+    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-keyonly', announceOnMissing: true, gesture: true })
   })
 
   it('synthesizes a create row when no empty untitled slot exists', async () => {
@@ -274,11 +283,17 @@ describe('useRecentsProvider — Current group', () => {
   })
 
   it('creates the session before navigating when the create row is activated', async () => {
-    const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
-    const rows = await result.current.search('')
-    rows[0].onActivate?.()
-    expect(thunks.createSlot).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat'))
+    // Asked from a page that is not a chat surface, so the create navigates.
+    window.history.replaceState(null, '', '/settings')
+    try {
+      const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
+      const rows = await result.current.search('')
+      rows[0].onActivate?.()
+      expect(thunks.createSlot).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat'))
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
   })
 
   it('lets an existing empty untitled slot BE the create row (no synthetic row)', async () => {

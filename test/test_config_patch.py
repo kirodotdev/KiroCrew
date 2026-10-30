@@ -611,6 +611,20 @@ class TestPatchGeneral:
             )
             assert resp.status == 400
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_infinite_int_value_returns_400(self, tmp_config, raw) -> None:
+        """JSON reads ``1e999`` as an infinite float: the integer 400, never a 500."""
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                data=f'{{"path": "session.timeout_secs", "value": {raw}}}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "must be an integer"
+        assert json.loads(tmp_config.read_text())["session"]["timeout_secs"] == 3600
+
 
 # ── Enum validator ───────────────────────────────────────────────────────
 

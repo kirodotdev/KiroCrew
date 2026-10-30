@@ -1,6 +1,6 @@
-import { forwardRef, type ForwardedRef } from 'react'
+import { forwardRef, useEffect, useRef, useState, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAppSelector } from '../../store'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -13,6 +13,8 @@ import { forwardUiLocation } from '../../uiLocations/uiLocation'
 import type { UiLocationId } from '../../uiLocations/descriptors'
 import type { AppRunState } from '../../appRunState'
 import { useNavTip } from './navTip'
+import { clearFeatureNewTag, featureNewTagRoute, useFeatureNewTag } from '../../utils/featureNewTag'
+import { FeatureNewTagFlyer, useFeatureNewTagFlight } from './featureNewTagFlight'
 
 function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0) return null
@@ -152,8 +154,66 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
   const builtinLabel = surface?.badgeLabel ?? i18nT('app.updates')
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? i18nT('app.subagents_in_flight_fallback')
+  // The "New" tag a feature intro's "Not now" handed to this row. It clears the
+  // first time the route opens, by any path (this row, a link, the address bar).
+  // `arriving` while the intro's avatar is still flying here: the pill is
+  // rendered, invisible, so the flight below can measure where to land.
+  const newTag = useFeatureNewTag(navId)
+  // State, not a ref: the flight hook must re-run when the pill mounts, and a
+  // ref's `.current` changing re-runs nothing.
+  const [pill, setPill] = useState<HTMLElement | null>(null)
+  const { flight, landed, land } = useFeatureNewTagFlight(navId, newTag, pill)
+  const { pathname, search } = useLocation()
+  const navigate = useNavigate()
+  const surfaceRoute = surface?.route
+  const onRoute = !!surfaceRoute && (pathname === surfaceRoute || pathname.startsWith(surfaceRoute + '/'))
+  // Starts false so a page load onto the route counts as arriving.
+  const wasOnRoute = useRef(false)
+  useEffect(() => {
+    const arrived = onRoute && !wasOnRoute.current
+    wasOnRoute.current = onRoute
+    if (!newTag || !onRoute) return
+    // Set while already on the page (here or in another tab): only clear, since a
+    // redirect would act like Try now and skip an unsaved form's leave guard.
+    if (!arrived) {
+      clearFeatureNewTag(navId)
+      return
+    }
+    const route = featureNewTagRoute(navId)
+    // Only the plain page is redirected to the intro's route; a link to a
+    // specific crewmate keeps its target.
+    if (route && pathname + search !== route && pathname === surfaceRoute && !search) navigate(route, { replace: true })
+    clearFeatureNewTag(navId)
+  }, [newTag, onRoute, surfaceRoute, navId, pathname, search, navigate])
+  // Collapsed, the only corner badge is the unread dot; the tag yields to it
+  // rather than stacking two marks on one icon.
+  const showNewTag = !!newTag && !(collapsed && builtinCount + dynamicCount > 0)
   return (
     <>
+      {/* Collapsed, the tile is too narrow for the pill: it hangs off the
+          lower-right corner so the icon stays visible. */}
+      {showNewTag && (
+        <motion.span
+          ref={setPill}
+          data-feature-new-tag={navId}
+          data-feature-new-tag-state={newTag}
+          // Invisible, not absent, while the avatar is on its way: the flight
+          // measures this box to know where to land.
+          style={newTag === 'arriving' ? { visibility: 'hidden' } : undefined}
+          // The pop on landing: the avatar touches down and the pill takes its
+          // place with a small bounce. A tag that arrived with no flight (reduced
+          // motion, a row off screen) is simply there.
+          initial={false}
+          animate={landed ? { scale: [0.6, 1.18, 1] } : { scale: 1 }}
+          transition={{ duration: 0.35, ease: 'easeOut' }}
+          className={collapsed
+            ? 'absolute -bottom-1.5 -right-[9px] z-10 bg-accent text-accent-fg text-[10px] font-bold leading-[12px] px-1 py-0 rounded-full border-2 border-bg'
+            : 'shrink-0 bg-accent text-accent-fg text-[10px] font-bold leading-[12px] px-1.5 py-[2px] rounded-full'}
+        >
+          {i18nT('components.startupVideoModal.new_tag')}
+        </motion.span>
+      )}
+      {flight && <FeatureNewTagFlyer navId={navId} from={flight.from} to={flight.to} onLanded={land} />}
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
       <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
@@ -266,6 +326,10 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
       aria-pressed={pressed}
+      // `active` is a class, which assistive technology cannot see. A row that
+      // NAVIGATES says it is the current page; a row that toggles a surface says
+      // so through `aria-pressed` instead, and never claims to be a page.
+      aria-current={active && pressed === undefined ? 'page' : undefined}
       // The chord declared to assistive tech, in the ARIA grammar rather than the
       // display glyphs — the same split MoveUndoBar's Undo button already ships.
       // This is what makes the hint reachable without a pointer: the visible

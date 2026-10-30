@@ -33,6 +33,7 @@ from kiro_crew.dashboard.slot_persistence.turn_marker import (
 from kiro_crew.dashboard.state import is_turn_interrupted
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _PARTIAL = "Part one of the plan is to "
 
@@ -84,20 +85,15 @@ async def _start_turn(state, *, finish: bool):
     slot.append("user", "explain the plan", "msg msg-u")  # as api_chat does before dispatch
     turn = asyncio.ensure_future(_run_chat(state, slot, "explain the plan"))
     slot.task = turn  # as the dispatcher installs it
-    await asyncio.wait_for(streamed.wait(), 10)
+    await await_until(streamed, what="chunk streamed")
     # The runner has handled the chunk once its text is on the slot: a streamed
     # chunk row, or the reply row of a turn that already finished.
-    await asyncio.wait_for(_until(lambda: _replied(slot)), 10)
+    await async_wait_until(lambda: _replied(slot))
     return slot, turn
 
 
 def _replied(slot) -> bool:
     return any(m.get("role") in ("chunk", "assistant") for m in slot.messages)
-
-
-async def _until(condition) -> None:
-    while not condition():
-        await asyncio.sleep(0.01)
 
 
 def _archived(tmp_path, slot) -> list[dict]:
@@ -117,7 +113,10 @@ async def test_a_turn_cut_by_closing_its_tab_reads_as_interrupted(tmp_path, monk
     async with TestClient(TestServer(_make_app(state))) as http:
         resp = await http.delete("/api/chat/slots/s1")
         assert resp.status == 200
-        await asyncio.wait_for(asyncio.gather(turn, return_exceptions=True), 20)
+        await await_until(
+            asyncio.ensure_future(asyncio.gather(turn, return_exceptions=True)),
+            what="turn finished after tab close",
+        )
 
     rows = _archived(tmp_path, slot)
     assert any(r.get("role") == "assistant" and _PARTIAL in r.get("content", "") for r in rows)
@@ -133,7 +132,10 @@ async def test_a_turn_cut_by_closing_its_tab_reads_as_interrupted(tmp_path, monk
 async def test_closing_a_tab_after_a_finished_turn_archives_it_unchanged(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     slot, turn = await _start_turn(state, finish=True)
-    await asyncio.wait_for(asyncio.gather(turn, return_exceptions=True), 20)
+    await await_until(
+        asyncio.ensure_future(asyncio.gather(turn, return_exceptions=True)),
+        what="turn finished before tab close",
+    )
 
     async with TestClient(TestServer(_make_app(state))) as http:
         assert (await http.delete("/api/chat/slots/s1")).status == 200
@@ -156,7 +158,9 @@ def test_a_restart_interrupted_turn_is_recorded_as_before():
 
 
 def test_no_close_row_when_the_turn_already_reads_as_interrupted_or_stopped():
-    from kiro_crew.dashboard.slot_persistence.turn_marker import record_close_interruption
+    from kiro_crew.dashboard.slot_persistence.turn_marker import (
+        record_close_interruption,
+    )
 
     unanswered = _make_state_slot()
     unanswered.append("user", "explain the plan", "msg msg-u", broadcast=False)

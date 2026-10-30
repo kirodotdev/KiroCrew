@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.members_parts.member_space import (
@@ -21,6 +22,9 @@ from kiro_crew.members_parts.member_space import (
     MEMORY_STORE_SLOT_SUFFIX,
     validate_slug,
 )
+
+if TYPE_CHECKING:
+    from kiro_crew.crewmate_harness import StartableCrewPin
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.members")
@@ -46,17 +50,116 @@ def is_member_session_key(session_key: str | None) -> bool:
     return key.startswith(DM_SLOT_KEY_PREFIX)
 
 
+def _slot_part(session_key: str) -> str:
+    """*session_key* without the ``dashboard_`` / ``dashboard:`` layer prefix."""
+    for prefix in ("dashboard_", "dashboard:"):
+        if session_key.startswith(prefix):
+            return session_key[len(prefix) :]
+    return session_key
+
+
+#: Slot keys of the sessions known to be a crewmate's own worker, in this process.
+#: Filled from the worker's execution record (``mate_worker.note_worker_session``)
+#: at its birth and on every read of the record, so the backend selection below is
+#: a pure in-memory test, never a file read on the event loop.
+_CREWMATE_WORKER_SLOTS: set[str] = set()
+
+
+#: The crewmate worker sessions whose live provider takes the worker's prompt only
+#: from the ``[AGENT SYSTEM PROMPT]`` block. Written at allocation from the provider
+#: itself (``mate_worker_prompt_in_context``), so a later config change cannot move
+#: a running worker's prompt to the other channel.
+_CREWMATE_WORKER_PROMPT_IN_CONTEXT: set[str] = set()
+
+
+def note_crewmate_worker_prompt_channel(session_key: str, in_context: bool) -> None:
+    """Record whether worker *session_key*'s live provider reads its prompt in context."""
+    if not session_key:
+        return
+    if in_context:
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.add(_slot_part(session_key))
+    else:
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.discard(_slot_part(session_key))
+
+
+def crewmate_worker_prompt_in_context(session_key: str | None) -> bool:
+    """Whether worker *session_key*'s live provider reads its prompt in context."""
+    return bool(session_key) and _slot_part(str(session_key)) in _CREWMATE_WORKER_PROMPT_IN_CONTEXT
+
+
+#: The crewmate (its immutable ``member_id``) each known worker slot belongs to,
+#: written with :data:`_CREWMATE_WORKER_SLOTS` from the same execution record. It
+#: names whose harness pin the worker runs on (``crewmate_harness``); the set above
+#: stays the one answer to "is this a worker".
+_CREWMATE_WORKER_MEMBERS: dict[str, str] = {}
+
+
+def note_crewmate_worker_session(session_key: str, member_id: str = "") -> None:
+    """Record *session_key* as crewmate *member_id*'s own worker session (any key spelling)."""
+    if session_key:
+        _CREWMATE_WORKER_SLOTS.add(_slot_part(session_key))
+        if member_id:
+            _CREWMATE_WORKER_MEMBERS[_slot_part(session_key)] = member_id
+        else:
+            _CREWMATE_WORKER_MEMBERS.pop(_slot_part(session_key), None)
+
+
+def forget_crewmate_worker_session(session_key: str) -> None:
+    """Drop *session_key* from the crewmate workers (any key spelling).
+
+    A session switched off the worker template is not its crewmate's worker, so
+    its next allocation takes the configured default backend.
+    """
+    if session_key:
+        _CREWMATE_WORKER_SLOTS.discard(_slot_part(session_key))
+        _CREWMATE_WORKER_MEMBERS.pop(_slot_part(session_key), None)
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.discard(_slot_part(session_key))
+
+
+def crewmate_worker_member_id(session_key: str | None) -> str:
+    """The ``member_id`` of the crewmate whose worker *session_key* is, or ``""``."""
+    if not session_key or not is_crewmate_worker_session(session_key):
+        return ""
+    return _CREWMATE_WORKER_MEMBERS.get(_slot_part(str(session_key)), "")
+
+
+def is_crewmate_worker_session(session_key: str | None) -> bool:
+    """Whether *session_key* is a session this process knows as a crewmate's worker.
+
+    Positive identity: only a key whose execution record was read as the
+    crewmate's worker (the worker template on that crewmate's store) answers True.
+    """
+    return bool(session_key) and _slot_part(str(session_key)) in _CREWMATE_WORKER_SLOTS
+
+
 def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
     backend_override: str | None = None,
+    *,
+    crew_backend: StartableCrewPin | None = None,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
     Precedence: the caller's explicit backend (``backend_override``, a
-    sub-agent spawned with ``spawn_run(backend=...)``), then the member-DM
-    auto-route, then the configured default. ``None`` is no override, so the
+    sub-agent spawned with ``spawn_run(backend=...)``), then the crewmate's own
+    harness pin (``crew_backend``, from ``crewmate_harness.crewmate_backend_pin``
+    for this session), then the member-DM auto-route, then the configured
+    default. Every caller passes ``crew_backend`` explicitly, ``None`` included,
+    and only as that call or ``None`` (``test_crewmate_harness.py``), so no
+    reader of the gate can skip the pin. The pin fails CLOSED, but not here
+    (H17): ``crewmate_backend_pin`` is the pre-gate check, and it raises
+    :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` for a harness
+    this gateway cannot start while the caller's arguments are evaluated, before
+    this function runs. What arrives here is a
+    :class:`~kiro_crew.crewmate_harness.StartableCrewPin` already confirmed, so
+    this gate never raises (H3) and returns its backend as is.
+
+    A crewmate's own worker session
+    (:func:`is_crewmate_worker_session`) takes the member route too: a worker
+    runs on the same backend as the crewmate that opened it, and its kit is
+    applied by that backend's projection. ``None`` is no override, so the
     lower tiers decide exactly as before; ``""`` is Kiro's own id, not "unset".
 
     The override and member arms go through :func:`resolve_selected_backend` —
@@ -82,7 +185,17 @@ def select_provider_backend(
             backend,
         )
         return backend
-    if is_member_session_key(session_key):
+    if crew_backend is not None:
+        backend = crew_backend.backend
+        logger.info(
+            "crewmate session %s: routing to acp_backend=%r (agents.%s.acp_backend=%r)",
+            session_key,
+            backend,
+            crew_backend.crew,
+            crew_backend.stored,
+        )
+        return backend
+    if is_member_session_key(session_key) or is_crewmate_worker_session(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(
             "member session %s: routing to acp_backend=%r " "(agent.member_acp_backend=%r)",

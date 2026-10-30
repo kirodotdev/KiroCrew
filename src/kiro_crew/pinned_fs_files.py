@@ -220,8 +220,8 @@ def copy_file_pinned(
         #     publish step to attack, and no hard link, which is also why the FAT/exFAT
         #     fallback and its overwrite hazard are simply gone rather than guarded.
         #
-        # What the first design got wrong was the CLEANUP, not the create, and the fix is
-        # to stop unlinking names: on failure the file is emptied through the descriptor we
+        # The hazard is in the CLEANUP, not the create, so no name is ever
+        # unlinked: on failure the file is emptied through the descriptor we
         # hold and the failure is reported. `O_EXCL` proves we created this entry, so
         # truncating it cannot touch anyone else's file, and a reported empty file with the
         # previous version still in the backup is a far smaller harm than either publishing

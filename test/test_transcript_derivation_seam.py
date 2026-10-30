@@ -29,6 +29,7 @@ import pathlib
 from collections import Counter
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew import history as history_mod
 from kiro_crew.history import (
@@ -150,8 +151,11 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
 
 def _plain_read_sites() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for path in sorted(SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # A site is an attribute spelled as one of the read names, so only the files whose
+    # text holds one are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=sorted(PLAIN_READS), skip_syntax_errors=False
+    ):
         rel = path.relative_to(SRC).as_posix()
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in PLAIN_READS:

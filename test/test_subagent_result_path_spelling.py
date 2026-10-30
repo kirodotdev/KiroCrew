@@ -199,4 +199,6 @@ class TestUnsymlinkedHomeIsUnchanged:
         )
         (tmp_path / "subagents").mkdir()
         with mock.patch.object(Path, "mkdir", side_effect=AssertionError("must not create")):
-            agent_dir_for_display(_AGENT_ID)
+            shown = agent_dir_for_display(_AGENT_ID)
+        assert shown == tmp_path / "subagents" / _AGENT_ID
+        assert not shown.exists()

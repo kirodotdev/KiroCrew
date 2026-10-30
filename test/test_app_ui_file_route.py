@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps import dev_mode
 from kiro_crew.apps import routes as app_routes
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 APP = "demo-app"
 
@@ -486,7 +487,7 @@ async def test_a_FIFO_does_not_hang_the_request(ui_root: Path) -> None:
     FIFO would park a thread-pool worker forever. If this test ever hangs
     rather than failing, that IS the regression."""
     os.mkfifo(ui_root / "piped.js")
-    status, _ = await asyncio.wait_for(_get(f"/apps/{APP}/ui/piped.js"), timeout=10)
+    status, _ = await finished(_get(f"/apps/{APP}/ui/piped.js"), "the FIFO request", timeout=10)
     assert status == 404, "a FIFO is not a plain file, so it is not servable"
 
 
@@ -590,8 +591,7 @@ async def test_a_client_that_stops_reading_releases_its_permit(ui_root: Path) ->
     watchers: list[asyncio.Task[None]] = []
 
     async def _watch(transport: asyncio.Transport) -> None:
-        while not transport.is_closing():
-            await asyncio.sleep(0.01)
+        await async_wait_until(transport.is_closing)
         torn_down.set()
 
     async def _watched_route(request: web.Request) -> web.StreamResponse:
@@ -616,7 +616,7 @@ async def test_a_client_that_stops_reading_releases_its_permit(ui_root: Path) ->
             resp = await client.get(f"/apps/{APP}/ui/stalled.js")
             assert resp.status == 200
             try:
-                await asyncio.wait_for(torn_down.wait(), 5)
+                await await_until(torn_down, what="the stalled connection being torn down")
             finally:
                 for watcher in watchers:
                     watcher.cancel()

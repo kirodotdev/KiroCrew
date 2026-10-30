@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import importlib
 import socket
+import threading
+import time
 import urllib.error
 from typing import Any
 
@@ -601,6 +603,29 @@ class TestSameBaseRefusalRetry:
         return urllib.error.URLError(ConnectionRefusedError(111, "refused"))
 
     @staticmethod
+    def _recording_time() -> tuple[list[float], Any]:
+        """A stand-in for the module's ``time`` that records the sleeps it serves.
+
+        The retry loop calls ``time.sleep`` through ``mcp_core``'s own module
+        global, so a test swaps that binding -- ``monkeypatch.setattr(mcp,
+        "time", fake)`` -- rather than mutating the shared stdlib ``time``
+        object. ``sleep`` appends to ``slept`` and every other attribute
+        delegates to the real ``time``, so only ``mcp_core``'s view changes and
+        no other thread's ``time.sleep`` is affected. The returned list holds
+        exactly the sleeps the code under test performed.
+        """
+        slept: list[float] = []
+
+        class _RecordingTime:
+            def sleep(self, seconds: float) -> None:
+                slept.append(seconds)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(time, name)
+
+        return slept, _RecordingTime()
+
+    @staticmethod
     def _resolution_sequence(
         monkeypatch: pytest.MonkeyPatch, mcp: Any, sequence: list[tuple[int, str]]
     ) -> None:
@@ -870,8 +895,11 @@ class TestSameBaseRefusalRetry:
         """
         _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
         _retry_resolution(monkeypatch, mcp, 7788, "marker")
-        slept: list[float] = []
-        monkeypatch.setattr(mcp.time, "sleep", slept.append)
+        # Swap the module's own ``time`` binding, not the shared stdlib object,
+        # so the count is exactly the retry loop's own sleeps and no other
+        # thread's ``time.sleep`` is touched.
+        slept, fake_time = self._recording_time()
+        monkeypatch.setattr(mcp, "time", fake_time)
 
         def fake_open(req, timeout=None, unix_socket_path=None):
             raise self._refusal()
@@ -879,6 +907,59 @@ class TestSameBaseRefusalRetry:
         monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
         assert "error" in mcp._post("/api/learn", {"rule": "x"})
         assert 2 <= len(slept) <= 3, f"retry budget drifted: {slept}"
+        assert sum(slept) <= 2.0, f"a refused gateway blocked the caller for {sum(slept)}s"
+
+    def test_the_budget_is_not_inflated_by_another_threads_sleeps(
+        self, mcp: Any, monkeypatch
+    ) -> None:
+        """The budget count is the retry loop's own, not the whole process's.
+
+        A test that patched the shared stdlib ``time.sleep`` would count a
+        concurrent thread's ``time.sleep`` calls against this budget. Swapping
+        only ``mcp_core``'s ``time`` binding leaves the stdlib object alone, so a
+        foreign thread's real ``time.sleep`` never reaches the recorder and the
+        count stays the dial's own.
+        """
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+
+        slept, fake_time = self._recording_time()
+        monkeypatch.setattr(mcp, "time", fake_time)
+
+        # A stand-in for a thread leaked by an earlier test, calling the real
+        # stdlib ``time.sleep`` a FINITE number of times. If this budget counted
+        # process-wide sleeps, these foreign calls would land in ``slept``.
+        started = threading.Event()
+        done = threading.Event()
+        foreign_calls = 8
+
+        def _foreign_sleeper() -> None:
+            started.set()
+            for _ in range(foreign_calls):
+                # A real stdlib sleep is the point: it stands in for a leaked
+                # sleeper and must be seen NOT to reach the recorder, so there is
+                # no signal to await here.
+                time.sleep(0.001)  # flake-ok: stand-in leaked sleeper, must use the real clock
+            done.set()
+
+        leaked = threading.Thread(target=_foreign_sleeper, daemon=True)
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        leaked.start()
+        try:
+            assert started.wait(timeout=5), "foreign thread never started"
+            assert "error" in mcp._post("/api/learn", {"rule": "x"})
+            assert done.wait(timeout=5), "foreign thread did not finish its sleeps"
+        finally:
+            leaked.join(timeout=5)
+            assert not leaked.is_alive(), "foreign thread outlived the test"
+
+        # The foreign thread's real sleeps are absent; only the retry loop's own
+        # backoffs are recorded, so the bounded-budget check holds unchanged.
+        assert 2 <= len(slept) <= 3, f"a foreign thread's sleeps leaked in: {slept}"
         assert sum(slept) <= 2.0, f"a refused gateway blocked the caller for {sum(slept)}s"
 
     def test_a_refused_replay_also_gets_the_window(self, mcp: Any, monkeypatch) -> None:

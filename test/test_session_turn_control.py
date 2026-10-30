@@ -333,7 +333,8 @@ class TestRecordSuccessFailure:
 
     def test_record_success_missing_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr.record_success("nonexistent")  # should not raise
+        assert mgr.record_success("nonexistent") is None
+        assert not mgr.has_session("nonexistent"), "no session is created for the key"
 
     @pytest.mark.asyncio
     async def test_record_failure_increments(self, cfg):
@@ -500,7 +501,8 @@ class TestRelease:
 
     def test_release_missing_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr.release("nonexistent")  # should not raise
+        assert mgr.release("nonexistent") is None
+        assert not mgr.has_session("nonexistent"), "no session is created for the key"
 
     @pytest.mark.asyncio
     async def test_stray_release_after_reset_does_not_over_permit_the_replacement(

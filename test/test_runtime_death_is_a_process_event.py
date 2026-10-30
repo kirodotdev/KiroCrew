@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew import runtime_death, runtime_ownership
 from kiro_crew.acp.runtime import AcpRuntime, _proven_death_cause, _rc_phrase
@@ -488,6 +489,18 @@ def _guard_names_in_ancestors(tree: ast.AST, target: ast.AST) -> set[str]:
                     names.add(sub.attr)
         node = parent
     return names
+
+
+def _awaited_turn_phases(handler: ast.ExceptHandler) -> list[str]:
+    """The ``_on_*`` phases *handler* awaits: the dashboard runner's except arms run there."""
+    return [
+        sub.value.func.id
+        for sub in ast.walk(handler)
+        if isinstance(sub, ast.Await)
+        and isinstance(sub.value, ast.Call)
+        and isinstance(sub.value.func, ast.Name)
+        and sub.value.func.id.startswith("_on_")
+    ]
 
 
 def test_the_attribution_predicate_reaches_every_charging_site():
@@ -1095,19 +1108,33 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
     boolean named as though it had, which is why the guard name is traced back to
     its binding.
 
-    Written over the whole handler population rather than one file on purpose. The
-    first version of this change guarded three of the four sites and an external
-    reviewer found the fourth (`task_executor.py`, the taskrunner's
-    ``recoveries``); a per-file test would have passed on that PR. This one fails
-    on a fifth site the moment somebody adds it.
+    Written over the whole handler population rather than one file on purpose: a
+    per-file test passes while one site (such as `task_executor.py`, the
+    taskrunner's ``recoveries``) is left unguarded. This one fails on a new site
+    the moment somebody adds it.
 
     A reset to zero is not a charge and is excluded: zeroing a budget is the
     conservative direction and needs no ownership question.
     """
     handlers = 0
+    awaited: list[str] = []
     unguarded: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    # The dashboard runner's except arms run in these owners' phases, by name. An owner
+    # holds the phase, not the except clause, so it need not name ``AcpProcessDied``
+    # and the filter below cannot find it: every chat_turn module is read for phases.
+    turn_phases: dict[str, tuple[ast.Module, ast.AsyncFunctionDef]] = {}
+    for path in sorted(_SRC.rglob("chat_turn/*.py")):
+        owner = ast.parse(path.read_text(encoding="utf-8"))
+        turn_phases.update(
+            (node.name, (owner, node))
+            for node in owner.body
+            if isinstance(node, ast.AsyncFunctionDef)
+        )
+    # A counted handler names ``AcpProcessDied`` in its ``except`` clause, so only
+    # files whose text holds it are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=("AcpProcessDied",), skip_syntax_errors=False
+    ):
         backed = _predicate_backed_guards(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler):
@@ -1121,6 +1148,7 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
             if "AcpProcessDied" not in names:
                 continue
             handlers += 1
+            awaited += _awaited_turn_phases(node)
             for sub in ast.walk(node):
                 if not isinstance(sub, ast.AugAssign):
                     continue
@@ -1128,17 +1156,30 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
                     continue
                 if not (_guard_names_in_ancestors(tree, sub) & backed):
                     unguarded.append(f"{path.name}:{sub.lineno}")
+    # A handler of the dashboard runner awaits its arm's phase in a chat_turn owner: the
+    # phase's body is the handler's, so the same sweep reads it there.
+    swept = [name for name in awaited if name in turn_phases]
+    for name in swept:
+        owner, phase = turn_phases[name]
+        owner_backed = _predicate_backed_guards(owner)
+        for sub in ast.walk(phase):
+            if not isinstance(sub, ast.AugAssign) or not isinstance(sub.op, ast.Add):
+                continue
+            if not (_guard_names_in_ancestors(owner, sub) & owner_backed):
+                unguarded.append(f"{name}:{sub.lineno}")
     # Control: the scan must actually find the handler population. Zero handlers
     # would make the assertion below vacuously true, which is the failure mode a
     # structural test is most likely to hide.
     assert handlers >= 4, f"only {handlers} AcpProcessDied handlers found -- scan is broken"
+    # Control: the runner's AcpProcessDied arm is read through its phase.
+    assert "_on_process_died" in swept, f"the runner's death-arm phase was not swept: {swept}"
     assert not unguarded, f"death handler charges a budget with no ownership guard: {unguarded}"
 
 
 def test_every_retry_budget_charge_is_guarded_by_the_predicate_itself():
-    """The same rule for the chat runner's budget specifically, including the
-    arms that catch a pipe death as a plain ``AcpError`` rather than a typed one
-    and so fall outside the handler scan above.
+    """The same rule for the chat runner's budget specifically: its death arms, the ones that
+    catch a pipe death as a plain ``AcpError`` too, charge it in their phases in
+    ``chat_turn/acp_recovery.py``, outside any ``except`` node and so outside the scan above.
     """
     runner = _SRC / "dashboard" / "chat_runner.py"
     tree = ast.parse(

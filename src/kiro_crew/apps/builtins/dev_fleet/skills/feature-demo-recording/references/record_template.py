@@ -120,7 +120,7 @@ window.__moveCur=(x,y)=>{c.style.left=x+'px';c.style.top=y+'px';};})();
 
 def beat_targets(narr_path="assets/audio/narr.json"):
     """Absolute beat times on the footage clock, plus the tail after the last beat."""
-    narr = json.loads((BASE / narr_path).read_text())
+    narr = json.loads((BASE / narr_path).read_text(encoding="utf-8"))
     foot = [line for line in narr["lines"] if line["role"] == "footage"]
     outro = [line for line in narr["lines"] if line["role"] == "outro"][0]
     t0 = foot[0]["start"]

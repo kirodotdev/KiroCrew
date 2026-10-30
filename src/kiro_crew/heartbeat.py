@@ -109,6 +109,10 @@ def _rewrite_heartbeat_locked(
                 current_tasks = _extract_tasks(path.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 current_tasks = []
+            except (OSError, UnicodeDecodeError) as exc:
+                # Rewriting would replace content nobody could read; leave it.
+                logger.warning("HEARTBEAT.md unreadable, not rewriting it: %s", exc)
+                return 0
 
             remaining = Counter(t for t, _ in original_tasks)
             appended: list[tuple[str, str]] = []
@@ -134,15 +138,20 @@ def _ensure_heartbeat_file(path: Path) -> None:
 
 
 def _read_heartbeat_file(path: Path) -> str | None:
-    """Return HEARTBEAT.md's stripped content, or ``None`` if it is absent.
+    """Return HEARTBEAT.md's stripped content, or ``None`` if it is absent or unreadable.
 
     Blocking; call off-loop. The existence check rides with the read so a file
     removed between them cannot turn a missing file into a raised
     ``FileNotFoundError``, and so the pair costs one worker hop rather than two.
+    An unreadable or non-UTF-8 file is treated as absent: raising here would
+    skip the rest of every tick, retention pruning included.
     """
     try:
         return path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning("HEARTBEAT.md unreadable, skipping its tasks: %s", exc)
         return None
 
 

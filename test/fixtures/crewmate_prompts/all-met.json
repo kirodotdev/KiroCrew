@@ -1,0 +1,13 @@
+{
+  "_note": "Round 4 Cove: every milestone met by a free-text reading ('4 fixes proposed' against '3'), no milestones card waiting.",
+  "member": "Cove",
+  "goal": "Keep CHANGELOG.md and issues.md true to what users reported",
+  "milestones": [
+    {"text": "Fixes proposed for triaged issues", "target": "3", "readings": ["4 fixes proposed"]},
+    {"text": "Issues in issues.md left untriaged", "target": "0", "readings": ["2", "0 (both triaged)"]}
+  ],
+  "milestones_card_waiting": false,
+  "heartbeat_minutes": 30,
+  "worker_servers": ["git", "issuetracker"],
+  "gateway_has_beyond_worker": ["teamchat"]
+}

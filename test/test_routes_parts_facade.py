@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import importlib
 import logging
 import sys
 from pathlib import Path
@@ -32,6 +31,10 @@ from kiro_crew import _facade_mirror
 from kiro_crew.apps.builtins.aws_control.backend import routes
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_routes_parts_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
 
 FACADE = "kiro_crew.apps.builtins.aws_control.backend.routes"
 PACKAGE = "kiro_crew.apps.builtins.aws_control.backend.routes_parts"
@@ -122,22 +125,6 @@ def _corpus_patched_names() -> frozenset[str]:
                 continue
             found |= names_by_target(events, {FACADE}).get(FACADE, set())
     return frozenset(found)
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:

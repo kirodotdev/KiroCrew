@@ -75,6 +75,13 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
     expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject')
   })
 
+  it("a crew member's approval row offers no Approve or Reject: only its conductor's card decides it", () => {
+    renderFeed([mkN({ ...approval, slot: 'root', crew_member: 'w1', title: 'Flag A needs approval' })])
+    expect(screen.getByText('Flag A needs approval')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull()
+  })
+
   it('acked approval rows show no inline buttons', () => {
     renderFeed([mkN({ ...approval, acked: true })])
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()

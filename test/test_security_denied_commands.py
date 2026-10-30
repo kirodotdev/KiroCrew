@@ -447,7 +447,7 @@ class TestBuiltinDenyPatterns:
         """
         from kiro_crew.security import is_denied
 
-        # Concrete bypass attempt — flagged by review-bot on rev 1.
+        # Concrete bypass attempt.
         assert is_denied("git$(echo ' ')push origin main") is not None
         # Other variants that exploit the same boundary trick.
         assert is_denied("git$(echo)push origin") is not None
@@ -458,15 +458,14 @@ class TestBuiltinDenyPatterns:
         """``&`` (single ampersand, the bash background operator) must split
         segments like ``;`` and ``&&``.
 
-        Guards a review-bot finding on rev 2: the rev-2
-        ``_CMD_SPLIT_RE`` covered ``&&`` but not a lone ``&``, so
+        A ``_CMD_SPLIT_RE`` that covers ``&&`` but not a lone ``&`` keeps
         ``git stash push & git push origin main`` (which bash backgrounds
-        the left command and immediately runs the right) stayed a single
-        segment that matched both the deny pattern and the stash exception
+        the left command and immediately runs the right) as a single
+        segment that matches both the deny pattern and the stash exception
         → falsely allowed.
 
-        The fix uses ``&(?!&)`` after ``&&`` in the alternation so ``&&``
-        is consumed as a single token and a lone ``&`` is split on.
+        ``&(?!&)`` follows ``&&`` in the alternation so ``&&`` is consumed
+        as a single token and a lone ``&`` is split on.
         """
         from kiro_crew.security import is_denied
 
@@ -487,11 +486,9 @@ class TestBuiltinDenyPatterns:
         exception, so a *different* pattern with no exception still triggers
         an outright deny.
 
-        Guards a review-bot finding on rev 1: the original
-        pass-2 inner loop used ``break`` after granting an exception, which
-        would skip remaining patterns.  In rev 2 the equivalent logic in
-        pass 1 records the exception-matched pattern as a candidate and
-        keeps iterating (this test exercises that path); pass 2 uses
+        A ``break`` after granting an exception would skip the remaining
+        patterns.  Pass 1 records the exception-matched pattern as a candidate
+        and keeps iterating (this test exercises that path); pass 2 uses
         ``continue`` for the same reason (covered by other tests).
 
         ``_DENY_EXCEPTIONS`` ships only the search-verb carve-out on the two
@@ -801,9 +798,8 @@ class TestBuiltinDenyPatterns:
     def test_deny_event_audit_emitted_on_block(self, monkeypatch) -> None:
         """Every denial path emits a ``deny_event`` SEL event.
 
-        Regression test for review-bot finding on rev 1: prior
-        revision only emitted SEL audit on the exception-granted path,
-        leaving denials un-audited.
+        Auditing only the exception-granted path would leave denials
+        un-audited.
         """
         import kiro_crew.security as security_module
 

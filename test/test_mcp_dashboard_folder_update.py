@@ -112,34 +112,50 @@ class TestRefusals:
         with pytest.raises(ValidationError):
             mcp_dashboard._validate_args("chat_folder_update", {"folder": "Travel", field: "x"})
 
-    def test_the_endpoints_sibling_refusal_is_explained(self) -> None:
-        out, _ = _run(
-            {"folder": "kirocrew", "name": "Travel"},
-            patch_result={
-                "error": "a sibling folder already has that name",
-                "code": "folder_name_exists",
-            },
-        )
-        assert out.startswith("Error:") and "cannot be told apart by path" in out
+    @pytest.mark.parametrize(
+        "args,code,error,why",
+        [
+            pytest.param(
+                {"folder": "kirocrew", "name": "Travel"},
+                "folder_name_exists",
+                "a sibling folder already has that name",
+                "cannot be told apart by path",
+                id="sibling",
+            ),
+            pytest.param(
+                {"folder": "Travel", "name": "X"},
+                "folder_not_owned",
+                "this app does not own that folder",
+                "only a folder it created",
+                id="ownership",
+            ),
+            pytest.param(
+                {"folder": "Travel", "color": "#123456"},
+                "color_invalid",
+                "color must be one of the folder palette values",
+                "palette",
+                id="validation",
+            ),
+        ],
+    )
+    def test_the_endpoints_refusal_is_explained(self, args, code, error, why) -> None:
+        out, _ = _run(args, patch_result={"error": error, "code": code})
+        assert out.startswith("Error:") and why in out
 
-    def test_slash_in_name_is_refused(self) -> None:
-        out, writes = _run({"folder": "Travel", "name": "A/B"})
-        assert out.startswith("Error:") and "'/'" in out
-        assert writes == []
-
-    def test_nothing_to_change_is_refused(self) -> None:
-        out, writes = _run({"folder": "Travel"})
-        assert out.startswith("Error:") and "at least one" in out
-        assert writes == []
-
-    def test_root_is_not_a_folder(self) -> None:
-        out, writes = _run({"folder": "root", "name": "X"})
-        assert out.startswith("Error:")
-        assert writes == []
-
-    def test_unknown_folder_is_refused_not_created(self) -> None:
-        out, writes = _run({"folder": "Nope", "name": "X"})
-        assert out.startswith("Error:") and "folder not found" in out
+    @pytest.mark.parametrize(
+        "args,why",
+        [
+            pytest.param({"folder": "Travel", "name": "A/B"}, "'/'", id="slash-in-name"),
+            pytest.param({"folder": "Travel"}, "at least one", id="nothing-to-change"),
+            pytest.param({"folder": "root", "name": "X"}, "", id="root-is-not-a-folder"),
+            pytest.param(
+                {"folder": "Nope", "name": "X"}, "folder not found", id="unknown-folder-not-created"
+            ),
+        ],
+    )
+    def test_a_bad_request_is_refused_before_any_write(self, args, why) -> None:
+        out, writes = _run(args)
+        assert out.startswith("Error:") and why in out
         assert writes == []
 
     def test_name_too_long_after_redaction_is_refused(self) -> None:
@@ -154,26 +170,6 @@ class TestRefusals:
         )
         assert out.startswith("Error:") and "cannot verify" in out
         assert writes == []
-
-    def test_endpoint_ownership_refusal_is_explained(self) -> None:
-        out, _ = _run(
-            {"folder": "Travel", "name": "X"},
-            patch_result={
-                "error": "this app does not own that folder",
-                "code": "folder_not_owned",
-            },
-        )
-        assert out.startswith("Error:") and "only a folder it created" in out
-
-    def test_endpoint_validation_error_surfaces(self) -> None:
-        out, _ = _run(
-            {"folder": "Travel", "color": "#123456"},
-            patch_result={
-                "error": "color must be one of the folder palette values",
-                "code": "color_invalid",
-            },
-        )
-        assert out.startswith("Error:") and "palette" in out
 
 
 def test_the_tool_is_blocked_for_channel_agents() -> None:
@@ -297,6 +293,75 @@ async def test_a_non_name_change_is_not_checked() -> None:
     assert status == 200
 
 
+@pytest.mark.asyncio
+async def test_an_agent_cannot_move_a_folder_beside_its_namesake() -> None:
+    """chat_folder_move sends a parent_id-only PATCH; it must not make two Alphas."""
+    folders = _tree()
+    status, body = await _patch_folder(folders, _A["id"], {"parent_id": _B["id"]}, internal=True)
+    assert status == 409 and body["code"] == "folder_name_exists"
+    assert next(f for f in folders if f["id"] == _A["id"])["parent_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_move_a_namesake_to_the_top_level() -> None:
+    folders = _tree()
+    status, body = await _patch_folder(folders, _C["id"], {"parent_id": ""}, internal=True)
+    assert status == 409 and body["code"] == "folder_name_exists"
+    assert next(f for f in folders if f["id"] == _C["id"])["parent_id"] == _B["id"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_may_move_a_folder_where_its_name_is_free() -> None:
+    folders = _tree()
+    status, _ = await _patch_folder(folders, _B["id"], {"parent_id": _A["id"]}, internal=True)
+    assert status == 200
+    assert next(f for f in folders if f["id"] == _B["id"])["parent_id"] == _A["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_move_and_rename_in_one_write_checks_the_new_name() -> None:
+    """The resulting name decides: Alpha may land beside the nested Alpha as Charlie."""
+    folders = _tree()
+    status, _ = await _patch_folder(
+        folders, _A["id"], {"parent_id": _B["id"], "name": "Charlie"}, internal=True
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_reposition_in_place_is_not_checked() -> None:
+    """Same parent, same name: a folder that already has a twin may still be reordered."""
+    folders = _tree() + [dict(_A, id="fldr0000000d")]
+    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": "", "order": 3}, internal=True)
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_the_person_may_still_move_a_folder_beside_its_namesake() -> None:
+    folders = _tree()
+    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": _B["id"]}, internal=False)
+    assert status == 200
+
+
+def test_the_move_tool_explains_a_same_name_refusal() -> None:
+    dash = InMemoryDashboardClient(
+        {
+            "GET /api/chat/folders": [dict(f) for f in _FOLDERS],
+            "GET /api/chat/slots": [dict(_CALLER_ROW)],
+            "PATCH /api/chat/folders/{folder}": {
+                "error": "a sibling folder already has that name",
+                "code": "folder_name_exists",
+            },
+        }
+    )
+    out = TABLE.call(
+        "chat_folder_move",
+        {"folder": "kirocrew/0811", "new_parent": "root"},
+        ToolContext(dash, _CALLER),
+    )
+    assert out.startswith("Error:") and "cannot be told" in out and "Rename one" in out
+
+
 # A channel conversation resumed into a dashboard session runs under that
 # session's ``dashboard:`` key, so the MCP dispatch check on the key cannot see
 # it. The endpoint refuses on what it can see: the session's channel bindings.
@@ -370,9 +435,12 @@ async def test_the_person_may_rename_in_a_channel_reachable_session(reach: dict)
 
 @pytest.mark.asyncio
 async def test_a_move_is_left_to_its_own_tool() -> None:
-    """``chat_folder_move`` reparents through the same route and keeps its own channel rule."""
+    """``chat_folder_move`` reparents through the same route and keeps its own channel rule.
+
+    Bravo moves under Alpha, where its name is free, so only the channel rule decides.
+    """
     status, _ = await _patch_folder(
-        _tree(), _C["id"], {"parent_id": ""}, internal=True, links=_Links(mirror=True)
+        _tree(), _B["id"], {"parent_id": _A["id"]}, internal=True, links=_Links(mirror=True)
     )
     assert status == 200
 

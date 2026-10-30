@@ -205,6 +205,24 @@ def test_check_setting_value_takes_only_a_list_of_strings_for_str_list():
         assert exc.value.code == "invalid_value", bad
 
 
+def test_check_setting_value_runs_a_normalized_settings_own_normalizer():
+    # The route's spec for these keys, so a card is refused with the same reason
+    # the PATCH route would give, before anyone is asked to approve it.
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    stop = _EDITABLE_CONFIG["session_environments.stop_on_shutdown"]
+    cards.check_setting_value(stop, True)
+    for bad in ("yes", 1, None):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.check_setting_value(stop, bad)
+        assert exc.value.code == "invalid_value", bad
+    default = _EDITABLE_CONFIG["session_environments.default_profile"]
+    cards.check_setting_value(default, "")
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        cards.check_setting_value(default, 7)
+    assert exc.value.code == "invalid_value"
+
+
 def test_check_setting_value_holds_a_str_list_to_its_bounds():
     spec = {"type": "str_list", "max_items": 2, "max_item_len": 3}
     cards.check_setting_value(spec, ["abc", "de"])

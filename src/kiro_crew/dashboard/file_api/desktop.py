@@ -207,8 +207,11 @@ async def api_screenshot(request: web.Request) -> web.Response:
             status=501,
         )
 
+    # The screenshots directory lives in the data home, which can sit on a mount
+    # that stops answering; its mkdir and the exists check below run on a worker
+    # so a wedged mount cannot stall the event loop.
     screenshot_dir = _screenshot_dir()
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(screenshot_dir.mkdir, parents=True, exist_ok=True)
     ts = int(time.time())
     dest = screenshot_dir / f"screenshot_{ts}.png"
 
@@ -228,6 +231,6 @@ async def api_screenshot(request: web.Request) -> web.Response:
             pass
         await proc.wait()
         return web.json_response({"error": "screenshot timed out"}, status=504)
-    if not dest.exists():
+    if not await asyncio.to_thread(dest.exists):
         return web.json_response({"path": ""})  # user cancelled
     return web.json_response({"path": str(dest)})

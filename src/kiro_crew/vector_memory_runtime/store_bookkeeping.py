@@ -75,8 +75,6 @@ def _ineligible_ids(self: VectorMemoryStore, record_ids: list[str] | None = None
         rows = []
         for start in range(0, len(unique), _MAX_SQL_PARAMS):
             chunk = unique[start : start + _MAX_SQL_PARAMS]
-            if not chunk:
-                continue
             placeholders = ",".join("?" * len(chunk))
             rows.extend(
                 self._fetch_all_locked(
@@ -165,8 +163,8 @@ def _log_event(
     old_value: str | None,
     new_value: str | None,
     source: str,
-) -> None:
-    """Append to the audit trail."""
+) -> int | None:
+    """Append to the audit trail; return the new row's id, or None when it was not written."""
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
@@ -177,14 +175,16 @@ def _log_event(
         # unlocked callers, so serialize on the (reentrant) _db_lock: an
         # unsynchronized INSERT races a concurrent writer's implicit BEGIN.
         with self._db_lock:
-            self.db.execute(
+            cursor = self.db.execute(
                 "INSERT INTO memory_events (event_type, memory_type, memory_key, "
                 "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (event_type, memory_type, key, old_value, new_value, source, _now_iso()),
             )
             self.db.commit()
+            return cursor.lastrowid
     except Exception:
         logger.debug("Failed to log memory event", exc_info=True)
+        return None
 
 
 def get_events(self: VectorMemoryStore, limit: int = 50, offset: int = 0) -> list[dict]:
@@ -254,7 +254,7 @@ def get_rejection_stats(self: VectorMemoryStore) -> dict[str, int]:
         "SELECT event_type, COUNT(*) as count FROM memory_events "
         "WHERE event_type = 'injection_blocked' "
         "OR (memory_type = 'semantic' AND event_type IN "
-        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
+        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty', 'work_state')) "
         "GROUP BY event_type"
     )
     return {r["event_type"]: r["count"] for r in rows}

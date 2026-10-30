@@ -204,6 +204,35 @@ class TestDiskCache:
         assert result == {"C111": "preloaded"}
         slack.conversations_list.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_refresh_persists_cache_off_loop(self, tmp_path, monkeypatch):
+        """``_save_to_disk`` serializes the whole channel map and atomic-writes
+        it while ``_refresh`` holds the resolver lock, so it must not run on
+        the event loop thread. The file it writes is still the merged map."""
+        import threading
+
+        import kiro_crew.slack.channel_resolver as resolver_mod
+
+        cache_path = tmp_path / _CACHE_FILENAME
+        resolver = ChannelNameResolver(cache_path=cache_path)
+        loop_thread = threading.get_ident()
+        threads = []
+        real_atomic_write = resolver_mod.atomic_write
+
+        def recording_atomic_write(path, payload):
+            threads.append(threading.get_ident())
+            real_atomic_write(path, payload)
+
+        monkeypatch.setattr(resolver_mod, "atomic_write", recording_atomic_write)
+        slack = _make_slack([{"id": "C111", "name": "engineering"}])
+
+        assert await resolver.resolve_many(slack, ["C111"]) == {"C111": "engineering"}
+
+        assert len(threads) == 1
+        assert threads[0] != loop_thread
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert data["names"] == {"C111": "engineering"}
+
     def test_corrupt_disk_cache_starts_fresh(self, tmp_path):
         cache_path = tmp_path / _CACHE_FILENAME
         cache_path.write_text("not valid json {{{")

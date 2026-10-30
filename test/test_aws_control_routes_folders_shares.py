@@ -14,6 +14,7 @@ import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import pytest
 from aws_control_routes_helpers import (
     ACCOUNT,
     _consent_ok,
@@ -239,6 +240,16 @@ class TestDriveShare:
         assert resp.status == 400
         assert _payload(resp)["code"] == "invalid_expiry"
         presign.assert_not_called()
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_share_rejects_an_infinite_expiry(self, raw):
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+        body = json.loads('{"section": "drive", "key": "a.txt", "expiresSecs": %s}' % raw)
+        resp, presign, recorder = self._share(body)
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_expiry"
+        presign.assert_not_called()
+        recorder.assert_not_called()
 
     def test_share_surfaces_an_aws_error_from_object_exists(self):
         handlers = _registered()

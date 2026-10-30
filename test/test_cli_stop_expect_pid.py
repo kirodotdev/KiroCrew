@@ -93,7 +93,7 @@ def pidfd_host(host, monkeypatch):
     return host
 
 
-def _refused(host, sel_rec, capsys, reason):
+def _assert_refused(host, sel_rec, capsys, reason):
     with pytest.raises(SystemExit) as exc:
         cli_server._stop(5476, expect_pid=4242)
     assert exc.value.code == 1
@@ -114,64 +114,64 @@ def test_matching_pid_is_sent_sigterm_through_the_pidfd(pidfd_host, sel_rec, cap
 
 def test_with_pidfd_a_refusal_still_closes_the_handle(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["listeners"] = [5151]
-    _refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
+    _assert_refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
     assert pidfd_host["closed"] == [900 + 4242]
 
 
 def test_without_pidfd_it_refuses(host, sel_rec, capsys) -> None:
-    _refused(host, sel_rec, capsys, "unpinnable_platform")
+    _assert_refused(host, sel_rec, capsys, "unpinnable_platform")
 
 
 def test_pidfd_open_without_a_pidfd_sender_refuses(
     pidfd_host, sel_rec, capsys, monkeypatch
 ) -> None:
     monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
-    _refused(pidfd_host, sel_rec, capsys, "unpinnable_platform")
+    _assert_refused(pidfd_host, sel_rec, capsys, "unpinnable_platform")
     assert pidfd_host["closed"] == [], "no pidfd is opened when it cannot be used"
 
 
 def test_windows_is_refused(pidfd_host, sel_rec, capsys, monkeypatch) -> None:
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    _refused(pidfd_host, sel_rec, capsys, "unpinnable_platform")
+    _assert_refused(pidfd_host, sel_rec, capsys, "unpinnable_platform")
 
 
 def test_a_different_listener_is_refused(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["listeners"] = [5151]
-    _refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
+    _assert_refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
 
 
 def test_an_exited_pid_with_a_free_port_is_refused(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["listeners"] = []
-    _refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
+    _assert_refused(pidfd_host, sel_rec, capsys, "listener_mismatch")
 
 
 def test_a_listener_that_does_not_hold_this_homes_lock_is_refused(
     pidfd_host, sel_rec, capsys
 ) -> None:
     pidfd_host["lock"] = LockHolder(pid=7777, alive=True, source="flock_owner")
-    _refused(pidfd_host, sel_rec, capsys, "lock_holder_mismatch")
+    _assert_refused(pidfd_host, sel_rec, capsys, "lock_holder_mismatch")
 
 
 def test_a_free_lock_is_refused(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["lock"] = LockHolder(pid=None, alive=False, source="none")
-    _refused(pidfd_host, sel_rec, capsys, "lock_holder_mismatch")
+    _assert_refused(pidfd_host, sel_rec, capsys, "lock_holder_mismatch")
 
 
 def test_an_indeterminate_lock_probe_is_refused(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["lock"] = LockProbeError(Path("gateway.lock"), OSError("probe failed"))
-    _refused(pidfd_host, sel_rec, capsys, "lock_probe_indeterminate")
+    _assert_refused(pidfd_host, sel_rec, capsys, "lock_probe_indeterminate")
 
 
 def test_a_non_kirocrew_process_is_refused(pidfd_host, sel_rec, capsys) -> None:
     pidfd_host["kirocrew"] = False
-    _refused(pidfd_host, sel_rec, capsys, "not_kirocrew")
+    _assert_refused(pidfd_host, sel_rec, capsys, "not_kirocrew")
 
 
 def test_a_pid_that_exits_before_the_signal_is_reported_not_stopped(
     pidfd_host, sel_rec, capsys
 ) -> None:
     pidfd_host["kill_error"] = ProcessLookupError()
-    _refused(pidfd_host, sel_rec, capsys, "process_already_exited")
+    _assert_refused(pidfd_host, sel_rec, capsys, "process_already_exited")
 
 
 def test_an_oversized_pid_is_refused_not_a_traceback(
@@ -210,6 +210,8 @@ def test_plain_port_stop_never_consults_the_lock(host, sel_rec, capsys, monkeypa
         raise AssertionError("plain --port must keep its own path")
 
     monkeypatch.setattr(cli_server, "lock_holder", unexpected)
+    # The desktop-app check is the one lock read; the port stop itself makes none.
+    monkeypatch.setattr(cli_server, "_config_dir_owner", lambda: None)
     cli_server._stop(5476)
     assert host["signals"] == [("pid", 4242, signal.SIGTERM)]
 

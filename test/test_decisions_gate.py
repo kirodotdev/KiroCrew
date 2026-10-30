@@ -787,6 +787,37 @@ class TestScrub:
         assert row["error"] in gate_mod.SCRUB_ERRORS
         assert row["answers"] is None
 
+    def test_a_credential_the_point_clipped_in_half_still_refuses(self, install_impl, log_home):
+        """The clipped state alone carries a fragment no pattern matches."""
+        message = "w " * 995 + "sk-" + "a" * 32
+        clipped = {"message": message[:2000]}
+        assert gate_mod.scrub_reason(clipped, QUESTIONS) is None
+        oracle = install_impl(_ExplodingOracle())
+        assert (
+            asyncio.run(decide(POINT, clipped, QUESTIONS, config=_config(), unclipped=message))
+            is None
+        )
+        assert oracle.entered is False
+        assert log_home()[0]["error"] == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+
+    def test_unclipped_text_past_the_scan_bound_refuses(self):
+        """A JWT whose second dot falls past the bound is a fragment to any cut scan."""
+        jwt = "ey" + "J" + "a" * 20 + "." + "ey" + "J" + "b" * 7000 + "." + "c" * 40
+        message = "w " * 900 + jwt
+        assert message.index(jwt) < 2000 and len(message) > gate_mod.MAX_UNCLIPPED_SCAN_CHARS
+        clipped = {"message": message[:2000]}
+        assert (
+            gate_mod.scrub_reason(clipped, QUESTIONS, unclipped=message)
+            == gate_mod.ERROR_SCRUBBED_SCAN_BOUND
+        ), "refused under its own category, so the log never reads it as a scanner fault"
+
+    def test_clean_unclipped_text_just_under_the_bound_passes(self):
+        message = ("w " * gate_mod.MAX_UNCLIPPED_SCAN_CHARS)[
+            : gate_mod.MAX_UNCLIPPED_SCAN_CHARS - 2
+        ]
+        clipped = {"message": message[:2000]}
+        assert gate_mod.scrub_reason(clipped, QUESTIONS, unclipped=message) is None
+
     def test_the_two_scanners_are_distinguished_in_the_row(self, install_impl, log_home):
         """Which scanner refused is the finding; one category for both would lose it."""
         install_impl(_ExplodingOracle())
@@ -1551,3 +1582,166 @@ class TestResponseMetadataOnRow:
         row = log_home()[0]
         assert row["error"] == gate_mod.ERROR_PROVIDER
         assert "provider_model" not in row
+
+
+class TestDecisionLists:
+    """``capabilities.decisions`` ``models`` / ``points`` / ``endpoints`` lists, at
+    ``decide`` (RFC crew-enterprise-edition, appendix: decision models, decision
+    kinds, decision endpoints). Real policy, real evaluator; only SEL is faked."""
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, _floor_monkeypatch):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.sel as sel_mod
+
+        _floor_monkeypatch.setattr(gate_mod, "_capability_denied_warned", False)
+        self.sel = MagicMock()
+        _floor_monkeypatch.setattr(sel_mod, "sel", lambda: self.sel)
+
+    @staticmethod
+    def _policy(monkeypatch, body: dict | None) -> None:
+        from kiro_crew.platform import context as pc
+        from kiro_crew.platform.governance import parse_policy
+
+        doc = None
+        if body is not None:
+            doc = {"version": 1, "boot": {"fail_closed": True}, "capabilities": {"decisions": body}}
+        ceiling = parse_policy(doc) if doc is not None else None
+        monkeypatch.setattr(pc, "current_context", lambda: SimpleNamespace(governance=ceiling))
+
+    @staticmethod
+    def _allow(**lists: list[str]) -> dict:
+        return {"scopes": {k: {"mode": "allow", "allow": v} for k, v in lists.items()}}
+
+    def _send(self, install_impl) -> tuple[object, _RecordingOracle]:
+        oracle = install_impl(_RecordingOracle())
+        return asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())), oracle
+
+    def test_no_policy_sends_as_before(self, install_impl, log_home, monkeypatch):
+        self._policy(monkeypatch, None)
+        answers, oracle = self._send(install_impl)
+        assert answers is not None and len(oracle.calls) == 1
+
+    @pytest.mark.parametrize(
+        "lists",
+        [
+            {"points": [POINT]},
+            {"models": [gate_mod._DEFAULT_MODEL]},
+            {"endpoints": ["api.typesafe.ai"]},
+        ],
+        ids=["points", "models", "endpoints"],
+    )
+    def test_a_list_naming_this_request_sends(self, install_impl, log_home, monkeypatch, lists):
+        self._policy(monkeypatch, self._allow(**lists))
+        answers, oracle = self._send(install_impl)
+        assert answers is not None and len(oracle.calls) == 1
+
+    @pytest.mark.parametrize(
+        "lists",
+        [
+            {"points": ["tool.risk"]},
+            {"models": ["other-model"]},
+            {"endpoints": ["jev.corp.example"]},
+        ],
+        ids=["points", "models", "endpoints"],
+    )
+    def test_a_list_not_naming_it_sends_nothing_and_writes_no_row(
+        self, install_impl, log_home, monkeypatch, lists
+    ):
+        self._policy(monkeypatch, self._allow(**lists))
+        oracle = install_impl(_ExplodingOracle())
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+        assert oracle.entered is False
+        assert log_home() == []
+        items = [c[1]["item"] for c in self.sel.log_governance_decision.call_args_list]
+        assert {f"points:{POINT}", f"models:{gate_mod._DEFAULT_MODEL}"} <= set(items)
+        assert "endpoints:api.typesafe.ai" in items
+
+    def test_a_credential_shaped_model_never_reaches_the_audit(
+        self, install_impl, log_home, monkeypatch
+    ):
+        """The scrub refuses the model id before the list check writes it to SEL."""
+        model = "sk-" + "0123456789abcdef" * 2
+        self._policy(monkeypatch, self._allow(models=["other-model"]))
+        oracle = install_impl(_ExplodingOracle())
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config(model=model))) is None
+        assert oracle.entered is False
+        for call in self.sel.mock_calls:
+            assert model not in repr(call)
+
+    def test_a_gate_pinned_off_sends_nothing(self, install_impl, log_home, monkeypatch):
+        self._policy(monkeypatch, {"enabled": False})
+        oracle = install_impl(_ExplodingOracle())
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+        assert oracle.entered is False
+
+    def test_the_llm_lane_is_asked_about_its_point_only(self, monkeypatch):
+        from kiro_crew.decisions import capability
+
+        seen: list[dict] = []
+
+        def _spy(surface_key=capability.DASHBOARD_SURFACE_KEY, **kw):
+            seen.append(kw)
+            return False
+
+        monkeypatch.setattr(capability, "targets_denied", _spy)
+        assert gate_mod._targets_denied(_config(), None, POINT, "m", gate_mod.LANE_LLM) is False
+        assert seen == [{"point": POINT, "model": None, "endpoint": None}]
+
+    def test_an_error_in_the_check_denies(self, monkeypatch):
+        from kiro_crew.decisions import capability
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(capability, "targets_denied", _boom)
+        assert gate_mod._targets_denied(_config(), None, POINT, "m", gate_mod.LANE_JEV) is True
+
+    def test_a_policy_swap_between_items_denies(self, monkeypatch):
+        """Each item permits under some policy, but the answers span two, so the
+        request is refused and the refusal is audited."""
+        from kiro_crew.decisions import capability
+
+        self._policy(monkeypatch, None)
+        generations = iter([1, 2])
+        monkeypatch.setattr(capability, "_answer_generation", lambda: next(generations))
+        assert (
+            capability.targets_denied(point=POINT, model="m", endpoint="https://api.typesafe.ai/x")
+            is True
+        )
+        rows = [c[1] for c in self.sel.log_governance_decision.call_args_list]
+        assert rows[-1]["outcome"] == "denied" and "fail-closed" in rows[-1]["reason"]
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://jev.corp.example./x",
+            "https://jev.corp.example\\@api.typesafe.ai/x",
+            "https://jev\u3002corp.example/x",  # aiohttp/yarl reads U+3002 as a dot
+            "https://%6aev.corp.example/x",  # urllib percent-decodes the authority
+            "https://j\u00e9v.corp.example/x",  # sent as its xn-- form, which the list names
+        ],
+        ids=["root-dot", "backslash", "ideographic-dot", "percent", "unicode"],
+    )
+    def test_an_endpoint_spelling_cannot_dodge_a_deny(self, monkeypatch, endpoint):
+        from kiro_crew.decisions import capability
+
+        self._policy(
+            monkeypatch,
+            {
+                "scopes": {
+                    "endpoints": {
+                        "mode": "deny",
+                        "deny": ["jev.corp.example", "xn--jv-bja.corp.example", "10.0.0.5"],
+                    }
+                }
+            },
+        )
+        assert capability.targets_denied(point=POINT, model="m", endpoint=endpoint) is True
+        # An IP literal is refused in every spelling the resolver accepts.
+        assert capability.targets_denied(point=POINT, model="m", endpoint="http://167772165/v1")
+        assert (
+            capability.targets_denied(point=POINT, model="m", endpoint="https://api.typesafe.ai/x")
+            is False
+        )

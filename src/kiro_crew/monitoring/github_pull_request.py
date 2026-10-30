@@ -59,7 +59,7 @@ _PROBE_TIMEOUT_SECS = 30.0
 _REVIEW_THREAD_PAGE_SIZE = 100
 _REVIEW_THREAD_MAX_PAGES = 10
 # PR-level (issue) comments: the surface a review bot's verdict comment actually
-# lives on. The four verdicts that motivated this feature -- design-review,
+# lives on. The four bot verdicts this reads -- design-review,
 # codex-ai-review, first-principles-review, claude-ai-review -- post as PR-level
 # issue comments, NOT as review threads (measured: over 60 recently-updated open
 # PRs, 50 carry PR-level bot comments and ZERO carry an unresolved non-outdated

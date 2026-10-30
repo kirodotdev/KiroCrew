@@ -173,7 +173,7 @@ class LifecycleDispatcher:
             hook_path = self._get_hook(app_info, "on_startup")
             if not hook_path:
                 continue
-            ctx = self._build_context(app_info, phase="startup")
+            ctx = await self._prepare_context(app_info, phase="startup")
             success = await self._invoke(name, hook_path, ctx, phase="startup")
             if success:
                 invoked.append(name)
@@ -214,7 +214,7 @@ class LifecycleDispatcher:
                 continue
             if not hook_path:
                 continue
-            ctx = self._build_context(app_info, phase="shutdown")
+            ctx = await self._prepare_context(app_info, phase="shutdown")
             success = await self._invoke(name, hook_path, ctx, phase="shutdown")
             if success:
                 invoked.append(name)
@@ -229,7 +229,7 @@ class LifecycleDispatcher:
         hook_path = self._get_hook(app_info, "on_startup")
         if not hook_path:
             return True
-        ctx = self._build_context(app_info, phase="startup")
+        ctx = await self._prepare_context(app_info, phase="startup")
         return await self._invoke(name, hook_path, ctx, phase="startup")
 
     async def cache_shutdown_for(self, app_info: dict[str, Any]) -> None:
@@ -297,7 +297,7 @@ class LifecycleDispatcher:
         hook_path = self._get_hook(app_info, "on_shutdown")
         if not hook_path:
             return True
-        ctx = self._build_context(app_info, phase="shutdown")
+        ctx = await self._prepare_context(app_info, phase="shutdown")
         return await self._invoke(name, hook_path, ctx, phase="shutdown")
 
     async def stop_detached_startup_hooks(
@@ -402,6 +402,17 @@ class LifecycleDispatcher:
             return func
         return load_app_module(app_name, app_dir(app_name), hook_path)
 
+    async def _prepare_context(self, app_info: dict[str, Any], *, phase: str) -> AppContext:
+        """Create the app's data dir off the loop, then build its context on it.
+
+        The ``mkdir`` is blocking disk I/O and runs once per app per lifecycle
+        event, so it takes a ``to_thread`` hop. The context is built back on
+        the loop, which owns the ``AppContext`` it hands to the hook.
+        """
+        data_path = app_dir(app_info.get("name", "")) / "data"
+        await asyncio.to_thread(data_path.mkdir, parents=True, exist_ok=True)
+        return self._build_context(app_info, phase=phase)
+
     def _build_context(self, app_info: dict[str, Any], *, phase: str) -> AppContext:
         """Build an AppContext for the given app.
 
@@ -420,8 +431,8 @@ class LifecycleDispatcher:
         name = app_info.get("name", "")
         manifest = app_info.get("manifest", {})
         permissions = approved_manifest_permissions(app_info)
+        # Created by ``_prepare_context`` off the loop before this runs.
         data_path = app_dir(name) / "data"
-        data_path.mkdir(parents=True, exist_ok=True)
 
         if phase == "shutdown":
             granted = cached_http_app_grant(name)

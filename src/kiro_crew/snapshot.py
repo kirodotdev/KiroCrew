@@ -73,10 +73,12 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     DB_UNSAFE_SOURCE,
     EXPORT_MANIFEST_VERSION,
     MANIFEST_VERSION,
+    MAX_ARCHIVE_GIB_CEILING,
     SKIP_DB_UNPINNED_SOURCE,
     DatabaseCopyFailed,
     ManifestUnreadable,
     _ArchiveTooLarge,
+    _bound_gib,
     _bundle_carries_named_stores,
     _chain_is_link_free,
     _copy_database_consistently,
@@ -90,6 +92,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _print_manifest,
     _refuse_if_changed_since,
     _refuse_oversized_archive,
+    _refuse_oversized_tree,
     _refuse_unsound_required_capture,
     _rejection_recording_filter,
     _report_skip,
@@ -98,6 +101,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _staging_ignore,
     _staging_is_pinned,
     _terminal_safe,
+    archive_byte_bound,
 )
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
@@ -301,7 +305,7 @@ def _report_unredacted_upload() -> None:
     )
 
 
-def _report_unresolved_payload(selected: list[str]) -> None:
+def _report_unresolved_payload(selected: list[str], *, uploading: bool = True) -> None:
     """Name the components in this bundle that carry uncertified credential material.
 
     A backup is NOT redacted, and that is deliberate: it goes to a destination the
@@ -321,6 +325,14 @@ def _report_unresolved_payload(selected: list[str]) -> None:
     if not riding:
         return
     print(f"ℹ️  Riding this bundle, uncertified for sharing: {', '.join(sorted(riding))}.")
+    if not uploading:
+        # A local bundle: no off-host copy follows, so there is no "below" to point to.
+        print(
+            "   `config` carries credentials in plaintext at rest, and so does this "
+            "bundle. Treat it as secret, and narrow it with --components if you do not "
+            "need all of it."
+        )
+        return
     print(
         "   `config` carries credentials in plaintext at rest. Whether the copy that "
         "leaves this host still does is reported below; the bundle on local disk always "
@@ -544,6 +556,25 @@ def _report_redacted_bundle(snap: Path) -> None:
 #: still exits 0, because existing callers treat any non-zero exit as a failed backup.
 EXIT_INCOMPLETE = 3
 
+_MAX_ARCHIVE_GIB_HELP = (
+    "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+    f"{MAX_ARCHIVE_GIB_CEILING}) for this run only. A bundle written past the default "
+    "restores with a --max-archive-gib at least as large on restore."
+)
+
+
+def _archive_bound_from_args(args: argparse.Namespace) -> int | None:
+    """The byte bound this run enforces, or ``None`` after printing why the flag is refused.
+
+    One validator for both commands, so `snapshot` can never write a bound `restore`
+    would not accept. An absent flag is the default bound, never an error.
+    """
+    gib = getattr(args, "max_archive_gib", None)
+    if gib is not None and not 1 <= gib <= MAX_ARCHIVE_GIB_CEILING:
+        print(f"❌ --max-archive-gib must be between 1 and {MAX_ARCHIVE_GIB_CEILING}, got: {gib}")
+        return None
+    return archive_byte_bound(gib)
+
 
 def snapshot_main(
     argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None
@@ -578,12 +609,22 @@ def snapshot_main(
             ),
         )
         p.add_argument("--to", default=None, help=argparse.SUPPRESS)
+        p.add_argument(
+            "--max-archive-gib",
+            type=int,
+            default=None,
+            dest="max_archive_gib",
+            help=_MAX_ARCHIVE_GIB_HELP,
+        )
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
 
     if args.keep <= 0:
         print(f"❌ --keep value must be a positive integer, got: {args.keep}")
+        return 1
+    archive_bound = _archive_bound_from_args(args)
+    if archive_bound is None:
         return 1
 
     # `--to s3://…` never worked, and the off-host destination it was replaced by is now
@@ -597,7 +638,20 @@ def snapshot_main(
         )
         return 1
 
-    out = Path(args.output_dir or _default_snapshot_dir())
+    # `list` and `ls` read as the listing verb (`kirocrew snapshot list`), but the
+    # optional positional takes any word as the output directory, so they silently
+    # wrote a full bundle into `./list/` and pruned it. Refused unless they name a
+    # directory that already exists, which is the only case the user could mean it.
+    output_dir = getattr(args, "output_dir", None)
+    if output_dir in ("list", "ls") and not Path(output_dir).is_dir():
+        print(
+            f"❌ {output_dir!r} is not a snapshot directory, and no snapshot was taken.\n"
+            f"   Did you mean `kirocrew snapshot --list`? To write into a directory\n"
+            f"   named {output_dir!r}, create it first or pass ./{output_dir}/."
+        )
+        return 1
+
+    out = Path(output_dir or _default_snapshot_dir())
 
     if args.list_snapshots:
         if not out.is_dir():
@@ -717,7 +771,26 @@ def snapshot_main(
             root_name=root_name,
             allow_unpinned=allow_unpinned,
             skipped_out=omissions,
+            max_archive_bytes=archive_bound,
         )
+    except _ArchiveTooLarge as e:
+        # Refused while staging, before any tarball existed: nothing is published under
+        # the name retention and restore look for, and nothing is pruned.
+        _audit("snapshot_rejected", f"reason=archive_too_large detail={e}")
+        print(f"❌ {e}.")
+        if e.kind == "entries":
+            # The entry-count bound is fixed, so the override would refuse the same way.
+            print(
+                "   No bundle was written and nothing was pruned. Leave a component out "
+                "with --components."
+            )
+        else:
+            print(
+                "   No bundle was written and nothing was pruned. Leave a component out with "
+                "--components, or pass --max-archive-gib N here and at least N to "
+                "`kirocrew restore`."
+            )
+        return 1
     except pinned_fs.PinnedPathRefusal as exc:
         # A refusal is a decision this command made on purpose. A traceback would
         # read like a crash and bury the sentence saying what to do about it.
@@ -759,10 +832,12 @@ def snapshot_main(
     # The bound belongs at CREATION, not only on the paths that move a bundle around. A
     # bundle past it cannot be restored by this tool, so reporting success would promise a
     # backup that does not exist -- and the prune below would then delete older bundles that
-    # DO restore in favour of one that never will. Checked before both.
+    # DO restore in favour of one that never will. Checked before both. The staged tree was
+    # already held to the same bound, so this read-back is the backstop for an archive
+    # whose headers disagree with what was staged.
     try:
         with tarfile.open(outfile) as probe:
-            _refuse_oversized_archive(probe)
+            _refuse_oversized_archive(probe, max_bytes=archive_bound)
     except _ArchiveTooLarge as e:
         print(f"❌ {e}.")
         print(
@@ -778,6 +853,9 @@ def snapshot_main(
         return 1
 
     print(f"✅ Snapshot created: {outfile} ({human})")
+    # The bundle on local disk is not redacted either, so it gets the same notice as
+    # the copy that leaves the host: which components carry credential material.
+    _report_unresolved_payload(selected, uploading=False)
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
@@ -853,6 +931,91 @@ def _is_gateway_running() -> bool:
         return False
 
 
+def _hold_back_executables(
+    snap: Path, mc: Path, components: list[str] | None, mode: str
+) -> dict[str, list[str]]:
+    """Switch off, in the staged bundle, every cron and hook that would run a command.
+
+    Uses the dashboard import's own helpers, so both ways in apply one rule: a
+    command or script cron is restored paused (a command failing the ``cron_add``
+    vet is dropped), and a script hook is restored disabled. Message-only crons and
+    skill-only hooks run nothing and are left as they are. Returns the names, for
+    :func:`_report_held_back`, keyed ``dropped`` / ``paused`` / ``hooks``, plus
+    ``kept_crons``: the names a merge's destination already has.
+    """
+    # Imported here: the portability family imports this module at load time.
+    from kiro_crew import portability
+
+    _disable_imported_script_hooks = portability._disable_imported_script_hooks
+    _sanitize_imported_crons = portability._sanitize_imported_crons
+
+    held: dict[str, list[str]] = {"dropped": [], "paused": [], "hooks": [], "kept_crons": []}
+    if _want(components, "crons"):
+        # The restore judges the store's shape itself (merge skips an unusable one,
+        # replace validates it), so only the vet and the pause are applied here.
+        held["dropped"], held["paused"] = _sanitize_imported_crons(
+            snap / "crons.json", drop_malformed=False
+        )
+        if mode == "merge":
+            # A merge skips a bundle job whose name the home already has, so those
+            # names are not the bundle's and must not be reported as restored.
+            held["kept_crons"] = sorted(_cron_names(mc / "crons.json"))
+    if _want(components, "config"):
+        # Merge keeps an existing hooks.json, so the bundle's hooks only land where
+        # there is none. Still switched off either way; only named when installed.
+        installs_hooks = mode == "replace" or not os.path.lexists(mc / "hooks.json")
+        hooks = _disable_imported_script_hooks(snap / "hooks.json")
+        if installs_hooks:
+            held["hooks"] = hooks
+    return held
+
+
+def _cron_names(path: Path) -> set[str]:
+    """The job names in a cron store, or none when it cannot be read as one.
+
+    Read through the merge's own one-open reader: non-blocking, so a FIFO at the
+    name cannot hang the restore, and anything but one regular file is refused.
+    """
+    try:
+        text, _seen, _fd = _read_cron_store_once(path, what="cron store")
+        data = json.loads(text)
+    except (OSError, ValueError, RecursionError):
+        return set()
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        return set()
+    return {j["name"] for j in jobs if isinstance(j, dict) and isinstance(j.get("name"), str)}
+
+
+def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
+    """Name what the restore switched off or dropped, and how to turn it back on.
+
+    A paused job is named only when it is in the live store after the restore and
+    was not there before: a merge skips a same-named job and can refuse the whole
+    cron file, and neither installs anything to switch on.
+    """
+    if held["paused"]:
+        installed = _cron_names(mc / "crons.json") - set(held["kept_crons"])
+        held["paused"] = [name for name in held["paused"] if name in installed]
+    if held["dropped"]:
+        print(
+            "⚠️  Not restored: these cron jobs have a command that fails the check "
+            "`cron_add` applies:"
+        )
+        for name in held["dropped"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+    if held["paused"]:
+        print("⏸  Restored PAUSED: these cron jobs run a command or script:")
+        for name in held["paused"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+        print("   Check each one, then resume it on the dashboard's Schedules page.")
+    if held["hooks"]:
+        print("⏸  Restored DISABLED: these hooks run a shell command:")
+        for name in held["hooks"]:
+            print(f"     {_safe_name(_terminal_safe(name))}")
+        print("   Check each one, then enable it on the dashboard's Hooks page.")
+
+
 def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None) -> int:
     if parsed is None:
         p = argparse.ArgumentParser(
@@ -876,6 +1039,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "rather than run with a destination an ancestor swap could redirect."
             ),
         )
+        p.add_argument(
+            "--max-archive-gib",
+            type=int,
+            default=None,
+            dest="max_archive_gib",
+            help=_MAX_ARCHIVE_GIB_HELP,
+        )
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
@@ -887,6 +1057,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     if not args.snapshot:
         print("❌ snapshot file is required (unless --list-components is given)")
         return 1
+
+    archive_bound = _archive_bound_from_args(args)
+    if archive_bound is None:
+        return 1
+    raised_bound = getattr(args, "max_archive_gib", None) is not None
 
     force = getattr(args, "force", False)
     if not force and _is_gateway_running():
@@ -923,7 +1098,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         print(f"❌ File not found: {snap_path}")
         return 1
 
-    # Parse components
     components: list[str] | None = None
     if args.components:
         requested = [c.strip() for c in args.components.split(",") if c.strip()]
@@ -971,7 +1145,19 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 # wrong, and on Python < 3.11.4 the fallback below calls `getmembers()`,
                 # which materialises every entry — so an archive declaring millions of
                 # them exhausts memory before a single file is written.
-                _refuse_oversized_archive(tar)
+                declared_bytes = _refuse_oversized_archive(tar, max_bytes=archive_bound)
+                if raised_bound:
+                    # Past the default bound the operator vouched for the size, not for
+                    # the disk. Holding a raised bound to the free space of the extraction
+                    # directory keeps the override from turning a hostile or simply wrong
+                    # archive into a full disk; the default bound needs no such check.
+                    free = shutil.disk_usage(work).free
+                    if declared_bytes > free:
+                        raise _ArchiveTooLarge(
+                            f"This archive declares {declared_bytes / (1024 ** 3):.2f} GiB of "
+                            "uncompressed content, more than the "
+                            f"{free / (1024 ** 3):.2f} GiB free where it would be extracted"
+                        )
                 rejected_entries: list[str] = []
                 _filter = _rejection_recording_filter(rejected_entries)
                 try:
@@ -1247,6 +1433,18 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             print(f"❌ {e}")
             return 1
+        # A bundle may come from someone else, so anything in it that runs a shell
+        # command on its own is installed switched off -- the same rule the dashboard
+        # import applies. Done on the staged copy, after the source checks above have
+        # judged the files as the archive carried them, and before either mode reads it.
+        try:
+            held_back = _hold_back_executables(snap, mc, components, mode)
+        except OSError as exc:
+            # Only the staged copy was touched: live state is as it was.
+            _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
+            print(f"❌ Could not prepare the bundle's crons and hooks: {exc}")
+            print("   Nothing was restored; your current state is unchanged.")
+            return 1
         # Contained here rather than allowed to propagate: a refusal is a decision
         # this command made on purpose, and a traceback would read like a crash and
         # bury the one sentence saying what to do about it.
@@ -1372,5 +1570,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     comp_str = ",".join(components) if components else "all"
     _audit("state_restored", f"mode={mode} components={comp_str} from={snap_path.name}")
 
+    _report_held_back(held_back, mc)
     print("\n⚠️  Restart kirocrew gateway to pick up changes: kirocrew restart")
     return 0

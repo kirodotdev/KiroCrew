@@ -31,6 +31,7 @@ import {
 } from '../hooks/unreadOnAttention'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import en from '../i18n/locales/en.manual.json'
+import { sharedItem } from './unreadStorageTestUtils'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -376,7 +377,7 @@ describe('unread badge over the dashboard socket', () => {
 
   // The gateway never saves a permission row, so after a restart no slot
   // last_ts reaches its ts. A watermark taken from it could never be covered.
-  const sharedWatermark = () => (JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)[BACKGROUND]
+  const sharedWatermark = () => (JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)[BACKGROUND]
 
   it.each([false, true])('a permission row records no watermark of its own (opt-in %s)', (optIn) => {
     if (optIn) localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')

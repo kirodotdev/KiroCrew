@@ -1,7 +1,7 @@
 """The pinned FFmpeg decoder, and a digest-verified store for source installs.
 
-A desktop release carries the ``imageio-ffmpeg`` executable inside its own
-interpreter, so it never needs this -- except on macOS Intel, which carries none
+A desktop release carries the pinned executable inside its own bundle (see
+:data:`PACKAGED_DIR`), so it never needs this -- except on macOS Intel, which carries none
 (see :func:`bundle_carries_decoder`). A source or Toolbox install carries nothing,
 and the only decoder it can otherwise reach is a system FFmpeg from a fixed
 set of package-manager directories -- which on a distribution that ships no
@@ -9,34 +9,36 @@ FFmpeg package (Amazon Linux, RHEL without EPEL) does not exist, leaving batch
 voice input permanently broken with a shell command as the only remedy.
 
 **The trust anchor is the digest, not the path.** :mod:`kiro_crew.transcribe`
-already pins one upstream executable per platform by size and SHA-256 and
+already pins one executable per platform by size and SHA-256 and
 re-verifies it on every open, so fetching *those same bytes* into the data home
 and running them through the same check adds a location, not a weaker rule. What
 would weaken the model is trusting a directory: a user-writable path is never
 enough on its own, which is why the candidate directory list this module sits
 beside must not grow an entry for the store.
 
-Two pins per platform, and both are load-bearing:
+The executables are the minimal audio-only builds of ``scripts/build-ffmpeg.sh``,
+published once per bump by ``.github/workflows/build-ffmpeg-decoder.yml`` as the
+GitHub release :data:`DECODER_RELEASE`. Each one is fetched as itself, with no
+archive around it, and its size and SHA-256 here are BOTH the transfer bound (a
+hostile mirror or a captive-portal HTML body fails on the first byte past the
+size, or on the digest) and the SAME pin the runtime authenticates against
+(:data:`PACKAGED_FFMPEG_ARTIFACTS`), so the store cannot install bytes the
+resolver would then refuse.
 
-- the WHEEL (filename, URL, size, SHA-256) is what bounds the network fetch, so a
-  hostile mirror or a captive-portal HTML body fails before anything is extracted;
-- the EXECUTABLE (:data:`PACKAGED_FFMPEG_ARTIFACTS`) is what bounds the member
-  taken out of it, and it is the SAME table the runtime authenticates against, so
-  the store cannot install bytes the resolver would then refuse.
-
-Exactly one member is ever extracted, matched by its full archive name, and it is
-written through a descriptor this process opened -- never ``ZipFile.extract``,
-whose member name is attacker-controlled path data.
+The same table drives the desktop build: ``python -m kiro_crew.stt.decoder
+--install-into DIR`` is how ``packaging/build-desktop.sh`` puts the decoder into a
+bundle, so the build and the runtime cannot pin different bytes.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
 import platform
+import sys
 import tempfile
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,9 +54,19 @@ from kiro_crew.stt.models import (
 
 logger = logging.getLogger(__name__)
 
-#: Upstream release the pins below are taken from. Stated once so the version and
-#: the digests cannot disagree; bumping it means re-deriving every pin.
-IMAGEIO_FFMPEG_VERSION = "0.6.0"
+#: The release the pins below are taken from. Stated once so the tag and the
+#: digests cannot disagree; a new build means a new ``-rN`` tag and new pins, and
+#: the publish job refuses to replace the assets of an existing tag.
+DECODER_RELEASE = "ffmpeg-decoder-7.1.1-r1"
+
+#: Where :data:`DECODER_RELEASE`'s assets are downloaded from.
+_RELEASE_BASE_URL = f"https://github.com/kirodotdev/KiroCrew/releases/download/{DECODER_RELEASE}"
+
+#: The bundle-relative directory a desktop release carries its decoder in: a
+#: top-level directory of the bundled interpreter's site-packages, so the runtime
+#: finds it under the same trusted roots it already resolves the interpreter's own
+#: packages from.
+PACKAGED_DIR = ("kirocrew_ffmpeg", "bin")
 
 #: Directory inside the shared ``models/`` tree that holds a fetched decoder. A
 #: sibling of the whisper weights rather than a child, for the reason
@@ -62,35 +74,25 @@ IMAGEIO_FFMPEG_VERSION = "0.6.0"
 #: collide on a name, and an operator clearing one should not take the other.
 _STORE_DIRNAME = "ffmpeg"
 
-#: Suffix for both staging files (the wheel, and the executable taken out of it).
-#: Staged inside the store directory so the finishing rename is same-filesystem
-#: and therefore atomic.
+#: Suffix for the staging file. Staged inside the target directory so the
+#: finishing rename is same-filesystem and therefore atomic.
 _STAGING_SUFFIX = ".part"
-
-#: Read size while copying the archive member out. Same order as the download
-#: chunk: large enough that the digest update is not per-page work, small enough
-#: that the bound below is checked often.
-_EXTRACT_CHUNK_BYTES = 1 << 20
 
 #: Mode for the installed executable. Owner-writable is deliberate -- this file is
 #: replaced by a later fetch -- because the digest, not the mode, is what decides
 #: whether it runs.
 _EXECUTABLE_MODE = 0o755
 
-#: Archive directory holding the platform executable in every imageio-ffmpeg
-#: wheel. Joined with the artifact filename to form the ONE member name accepted.
-_WHEEL_BINARIES_PREFIX = "imageio_ffmpeg/binaries/"
-
 
 @dataclass(frozen=True)
 class DecoderArtifact:
-    """One platform's pinned decoder, and the wheel it is extracted from.
+    """One platform's pinned decoder, exactly as the release publishes it.
 
-    ``platform_key`` is upstream's own platform spelling, shared with
+    ``platform_key`` is the build script's ``--target`` spelling, shared with
     ``transcribe._SHIPPED_FFMPEG_PLATFORMS`` so the desktop matrix and this store
     describe platforms in one vocabulary rather than two.
 
-    ``wheel_size_bytes`` is a ceiling on the transfer as well as a pre-check: the
+    ``size_bytes`` is a ceiling on the transfer as well as a pre-check: the
     download refuses the first chunk that would exceed it, so a mirror that keeps
     sending cannot fill the disk before the digest is ever computed.
     """
@@ -99,95 +101,63 @@ class DecoderArtifact:
     filename: str
     size_bytes: int
     sha256: str
-    wheel_filename: str
-    wheel_url: str
-    wheel_size_bytes: int
-    wheel_sha256: str
 
     @property
-    def member(self) -> str:
-        """The single archive member this artifact may be extracted from."""
-        return f"{_WHEEL_BINARIES_PREFIX}{self.filename}"
+    def url(self) -> str:
+        """The release asset this artifact is fetched from."""
+        return f"{_RELEASE_BASE_URL}/{self.filename}"
 
 
 #: The pinned decoders, one per platform the desktop matrix ships (see
-#: ``transcribe._SHIPPED_FFMPEG_PLATFORMS``, which the completeness test in
-#: test_transcribe_ffmpeg.py cross-checks against upstream's own filename table).
+#: ``transcribe._SHIPPED_FFMPEG_PLATFORMS``, which test_transcribe_ffmpeg.py keeps
+#: equal to the platform keys here).
 #:
-#: Executable size and SHA-256 are the bytes the WHEEL publishes: the filename
-#: selects the platform artifact, size makes a truncated payload fail cheaply, and
-#: the digest is the trust anchor. Desktop build staging is intentionally
-#: writable, so path placement cannot establish provenance and does not try to.
+#: Size and SHA-256 are the bytes :data:`DECODER_RELEASE` publishes, cross-checked
+#: against that release's own ``SHA256SUMS``: the filename selects the platform
+#: artifact, size makes a truncated payload fail cheaply, and the digest is the
+#: trust anchor. Desktop build staging is intentionally writable, so path
+#: placement cannot establish provenance and does not try to.
 #:
-#: Wheel URL, size and digest come from PyPI's own metadata for
-#: ``imageio-ffmpeg==0.6.0`` and were verified by downloading each wheel and
-#: hashing it, then hashing the member it carries against the executable pin
-#: beside it. The URLs are content-addressed by upstream (the hash segment in the
-#: path), so they are immutable rather than a channel that can be re-pointed.
-#:
-#: ``windows-i686`` is deliberately absent for the same reason it is absent from
-#: the shipped set: no 32-bit Windows target exists in any build workflow.
-#:
-#: ``macos-x86_64`` is deliberately absent too: the Intel backend ships no decoder
-#: and resolves a system FFmpeg instead. Keep it absent -- a pin here is what would
-#: make this store fetch that executable and the desktop resolver accept it.
+#: ``macos-x86_64`` is deliberately absent even though the release carries it: the
+#: Intel backend ships no decoder and resolves a system FFmpeg instead. Keep it
+#: absent -- a pin here is what would make this store fetch that executable and
+#: the desktop resolver accept it.
 ARTIFACTS: tuple[DecoderArtifact, ...] = (
     DecoderArtifact(
         platform_key="macos-aarch64",
-        filename="ffmpeg-macos-aarch64-v7.1",
-        size_bytes=49_368_728,
-        sha256="6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
-        wheel_filename="imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl",
-        wheel_url=(
-            "https://files.pythonhosted.org/packages/40/5c/"
-            "f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/"
-            "imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl"
-        ),
-        wheel_size_bytes=21_113_891,
-        wheel_sha256="b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463fa742",
+        filename="ffmpeg-macos-aarch64",
+        size_bytes=2_248_760,
+        sha256="7cb3900ae27620526eebcdd49fcdc366afc8b1a3f08cdec0c205cadee1944300",
     ),
     DecoderArtifact(
         platform_key="linux-x86_64",
-        filename="ffmpeg-linux-x86_64-v7.0.2",
-        size_bytes=79_826_272,
-        sha256="e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
-        wheel_filename="imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl",
-        wheel_url=(
-            "https://files.pythonhosted.org/packages/a0/2d/"
-            "43c8522a2038e9d0e7dbdf3a61195ecc31ca576fb1527a528c877e87d973/"
-            "imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl"
-        ),
-        wheel_size_bytes=29_498_237,
-        wheel_sha256="c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282",
+        filename="ffmpeg-linux-x86_64",
+        size_bytes=3_889_216,
+        sha256="688cc450b016f38d31e63bff6b2d0ec62ca0973fda6a0b5cf6242869f764f712",
     ),
     DecoderArtifact(
         platform_key="linux-aarch64",
-        filename="ffmpeg-linux-aarch64-v7.0.2",
-        size_bytes=51_134_160,
-        sha256="6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
-        wheel_filename="imageio_ffmpeg-0.6.0-py3-none-manylinux2014_aarch64.whl",
-        wheel_url=(
-            "https://files.pythonhosted.org/packages/33/e7/"
-            "1925bfbc563c39c1d2e82501d8372734a5c725e53ac3b31b4c2d081e895b/"
-            "imageio_ffmpeg-0.6.0-py3-none-manylinux2014_aarch64.whl"
-        ),
-        wheel_size_bytes=25_632_706,
-        wheel_sha256="1d47bebd83d2c5fc770720d211855f208af8a596c82d17730aa51e815cdee6dc",
+        filename="ffmpeg-linux-aarch64",
+        size_bytes=2_970_296,
+        sha256="f10acc9ea1c51becc8ffc03433d39b4863f925ed2881f46d6923f9d02796821f",
     ),
     DecoderArtifact(
         platform_key="windows-x86_64",
-        filename="ffmpeg-win-x86_64-v7.1.exe",
-        size_bytes=87_638_016,
-        sha256="2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
-        wheel_filename="imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl",
-        wheel_url=(
-            "https://files.pythonhosted.org/packages/2c/c6/"
-            "fa760e12a2483469e2bf5058c5faff664acf66cadb4df2ad6205b016a73d/"
-            "imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl"
-        ),
-        wheel_size_bytes=31_246_824,
-        wheel_sha256="02fa47c83703c37df6bfe4896aab339013f62bf02c5ebf2dce6da56af04ffc0a",
+        filename="ffmpeg-windows-x86_64.exe",
+        size_bytes=2_662_400,
+        sha256="ebf1982bec7cb0693c4c1547210244747a5e3d12535b8873fa4ae52215ad3f68",
     ),
+)
+
+#: Store filenames earlier releases pinned (the imageio-ffmpeg 0.6.0 executables).
+#: Nothing resolves them any more; :func:`migrate_retired_decoder` fetches the
+#: current pin for an install that still has one and then removes it, so an
+#: upgrade neither breaks batch voice nor strands a 50-90 MB executable.
+RETIRED_FILENAMES: tuple[str, ...] = (
+    "ffmpeg-macos-aarch64-v7.1",
+    "ffmpeg-linux-x86_64-v7.0.2",
+    "ffmpeg-linux-aarch64-v7.0.2",
+    "ffmpeg-win-x86_64-v7.1.exe",
 )
 
 #: Filename to ``(size, sha256)``, the form the runtime authenticates against.
@@ -201,7 +171,7 @@ PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = {
 
 _BY_PLATFORM: dict[str, DecoderArtifact] = {a.platform_key: a for a in ARTIFACTS}
 
-#: ``platform.system()`` to upstream's platform prefix. A system absent here (BSD,
+#: ``platform.system()`` to the build target's platform prefix. A system absent here (BSD,
 #: SunOS, Android) has no pinned decoder and is reported unsupported rather than
 #: guessed at.
 _SYSTEM_PREFIX: dict[str, str] = {
@@ -238,14 +208,12 @@ STAGE_UNSUPPORTED = "unsupported"
 #: ``error_detail`` is advisory -- the same split the STT endpoints already use.
 CODE_UNSUPPORTED = "decoder_unsupported_platform"
 CODE_DOWNLOAD_DISABLED = "decoder_download_disabled"
-CODE_WHEEL_UNVERIFIED = "decoder_wheel_unverified"
-CODE_MEMBER_MISSING = "decoder_member_missing"
 CODE_PAYLOAD_UNVERIFIED = "decoder_payload_unverified"
 CODE_INSTALL_FAILED = "decoder_install_failed"
 
 
 def platform_key(system: str | None = None, machine: str | None = None) -> str:
-    """Upstream's platform spelling for *system*/*machine*, or ``""``.
+    """The build target's platform spelling for *system*/*machine*, or ``""``.
 
     Empty rather than a guess: an unmapped system or ISA has no pinned artifact,
     and composing a plausible-looking key would turn "this platform is not
@@ -267,8 +235,8 @@ def artifact_for(system: str | None = None, machine: str | None = None) -> Decod
 
 
 #: The one desktop backend built without a decoder: the x86_64 tree of the
-#: universal macOS app, for which ``desktop_decoder_requirement`` in
-#: packaging/build-desktop.sh installs no imageio-ffmpeg.
+#: universal macOS app, for which ``install_desktop_decoder`` in
+#: packaging/build-desktop.sh installs no decoder.
 DECODERLESS_BUNDLE_PLATFORM = "macos-x86_64"
 
 
@@ -331,126 +299,44 @@ def is_present(artifact: DecoderArtifact) -> bool:
         return False
 
 
-def _extract_pinned_member(archive: Path, artifact: DecoderArtifact, target_dir: Path) -> Path:
-    """Copy *artifact*'s one member out of *archive*, verified, into *target_dir*.
+def _download_into(
+    artifact: DecoderArtifact,
+    target_dir: Path,
+    on_progress: object = None,
+) -> Path:
+    """Download, verify and install *artifact* as ``target_dir/filename``. Blocks.
 
-    Returns the staging path of the extracted file; the caller renames it into
-    place. Raises :class:`~kiro_crew.stt.models.ModelDownloadError` on anything
-    that is not exactly the pinned payload.
-
-    ``ZipFile.extract`` is deliberately not used. Its destination is derived from
-    the member NAME, which is data inside the archive, so a crafted entry
-    (``../``, an absolute path, a Windows drive letter) chooses where the write
-    lands. Here the member is looked up by its full name, the name that came back
-    is compared against the one asked for, and the bytes are written through a
-    descriptor this process created under *target_dir*.
+    The bytes are streamed to a staging file in *target_dir* under the pin's size
+    bound and digest check (``stream_pinned_payload``), made executable, and only
+    then renamed over the target, so a tampered or truncated transfer never
+    replaces a good decoder and never lands under the name the resolver opens.
     """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / artifact.filename
     staging_fd, staging_name = tempfile.mkstemp(
         dir=target_dir, prefix=f"{artifact.filename}.", suffix=_STAGING_SUFFIX
     )
     staging = Path(staging_name)
     try:
-        with zipfile.ZipFile(archive) as bundle:
-            try:
-                info = bundle.getinfo(artifact.member)
-            except KeyError as exc:
-                raise ModelDownloadError(
-                    f"{artifact.filename}: {artifact.wheel_filename} carries no "
-                    f"{artifact.member}"
-                ) from exc
-            # getinfo resolves through a name index, so a second entry with the
-            # same name, or a name that only normalises to the one asked for,
-            # would be served here. Compare what came back.
-            if info.filename != artifact.member or info.is_dir():
-                raise ModelDownloadError(
-                    f"{artifact.filename}: refusing archive member {info.filename!r}"
-                )
-            # The declared size is the archive's claim, not the pin, so it is a
-            # cheap pre-check rather than the check.
-            if info.file_size != artifact.size_bytes:
-                raise ModelDownloadError(
-                    f"{artifact.filename}: {info.filename} declares {info.file_size} "
-                    f"bytes against the pinned {artifact.size_bytes}"
-                )
-            digest_written = 0
-            with bundle.open(info) as member, os.fdopen(staging_fd, "wb") as handle:
-                staging_fd = -1  # ownership transferred to the context manager
-                while True:
-                    chunk = member.read(_EXTRACT_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    # Bounded BEFORE the write, for the reason the download bounds
-                    # its own: a decompressed member's real length is not fixed by
-                    # anything in the header, so streaming to EOF first is how a
-                    # zip bomb fills the disk.
-                    digest_written += len(chunk)
-                    if digest_written > artifact.size_bytes:
-                        raise ModelDownloadError(
-                            f"{artifact.filename}: member exceeds the pinned "
-                            f"{artifact.size_bytes} bytes; refusing to keep writing"
-                        )
-                    handle.write(chunk)
-        actual = _sha256_file(staging)
-        if digest_written != artifact.size_bytes or actual != artifact.sha256:
-            raise ModelDownloadError(
-                f"{artifact.filename}: sha256 mismatch (got {actual[:16]}…, "
-                f"expected {artifact.sha256[:16]}…)"
-            )
-        # Executable, because the resolver will spawn it. Through chmod_safe: this
-        # runs on Windows too, where os.chmod cannot express the bit at all.
-        platform_compat.chmod_safe(staging, _EXECUTABLE_MODE)
-        return staging
-    except BaseException:
-        if staging_fd >= 0:
-            os.close(staging_fd)
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            logger.debug("Could not remove staging file %s", staging, exc_info=True)
-        raise
-
-
-def _fetch_blocking(
-    artifact: DecoderArtifact,
-    on_progress: object = None,
-) -> Path:
-    """Download, extract and install *artifact*. Blocks; never on the loop.
-
-    The wheel is streamed to a staging file under the store directory and its own
-    digest is verified before the archive is opened at all, so a tampered or
-    truncated download never reaches the zip parser.
-    """
-    target_dir = store_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / artifact.filename
-    wheel_fd, wheel_name = tempfile.mkstemp(
-        dir=target_dir, prefix=f"{artifact.wheel_filename}.", suffix=_STAGING_SUFFIX
-    )
-    wheel = Path(wheel_name)
-    try:
         # The descriptor is adopted FIRST, for the reason models._download_blocking
         # gives: mkstemp hands back an unowned fd, and the cleanup below unlinks a
         # PATH, so an exception raised before the adoption leaks one descriptor per
         # attempt and (on Windows) strands the partial file with it.
-        with os.fdopen(wheel_fd, "wb") as handle:
+        with os.fdopen(staging_fd, "wb") as handle:
             stream_pinned_payload(
-                artifact.wheel_url,
-                label=artifact.wheel_filename,
-                expected_size=artifact.wheel_size_bytes,
-                expected_sha256=artifact.wheel_sha256,
+                artifact.url,
+                label=artifact.filename,
+                expected_size=artifact.size_bytes,
+                expected_sha256=artifact.sha256,
                 write=handle.write,
                 on_progress=on_progress,  # type: ignore[arg-type]
             )
-        staging = _extract_pinned_member(wheel, artifact, target_dir)
-    finally:
-        try:
-            wheel.unlink(missing_ok=True)
-        except OSError:
-            logger.debug("Could not remove staging wheel %s", wheel, exc_info=True)
-    try:
+        # Executable, because the resolver will spawn it. Through chmod_safe: this
+        # runs on Windows too, where os.chmod cannot express the bit at all.
+        platform_compat.chmod_safe(staging, _EXECUTABLE_MODE)
         # replace_with_retry, not os.replace: on Windows the rename fails while any
-        # other handle is open on either path, and a freshly written 80 MB
-        # executable is exactly what an AV scanner reaches for.
+        # other handle is open on either path, and a freshly written executable is
+        # exactly what an AV scanner reaches for.
         replace_with_retry(staging, target)
     except BaseException:
         try:
@@ -462,12 +348,32 @@ def _fetch_blocking(
     return target
 
 
+def _fetch_blocking(
+    artifact: DecoderArtifact,
+    on_progress: object = None,
+) -> Path:
+    """Fetch *artifact* into the data-home store. Blocks; never on the loop."""
+    return _download_into(artifact, store_dir(), on_progress)
+
+
+def _digest_if_file(path: Path) -> str | None:
+    """The sha256 of *path*, or ``None`` when it is not a regular file. Blocks.
+
+    The ``is_file`` probe and the hash are both filesystem calls, so the caller
+    runs them together in ONE ``asyncio.to_thread`` hop rather than probing on
+    the event loop. Read errors propagate to the caller.
+    """
+    if not path.is_file():
+        return None
+    return _sha256_file(path)
+
+
 class DecoderStore:
     """Serialises decoder fetches and exposes their progress.
 
     One store per process, and one in-flight fetch: a settings panel that pressed
     the button and a model download that finished at the same moment share the
-    transfer through ``_lock`` rather than both pulling the same wheel.
+    transfer through ``_lock`` rather than both pulling the same executable.
     """
 
     def __init__(self) -> None:
@@ -519,7 +425,7 @@ class DecoderStore:
             self._set(
                 stage=STAGE_DOWNLOADING,
                 artifact=artifact.filename,
-                total=artifact.wheel_size_bytes,
+                total=artifact.size_bytes,
             )
             try:
                 path = await asyncio.to_thread(
@@ -544,9 +450,10 @@ class DecoderStore:
             self._set(
                 stage=STAGE_READY,
                 artifact=artifact.filename,
-                done=artifact.wheel_size_bytes,
-                total=artifact.wheel_size_bytes,
+                done=artifact.size_bytes,
+                total=artifact.size_bytes,
             )
+            await asyncio.to_thread(_remove_retired)
             return path
 
     async def _accept_existing(self, artifact: DecoderArtifact) -> Path | None:
@@ -555,17 +462,17 @@ class DecoderStore:
         ``None`` means "carry on to the fetch": either nothing is there, or what
         is there is not the pinned payload -- in which case the fetch replaces it
         atomically rather than this deleting it first, so a host that cannot reach
-        PyPI keeps whatever it had instead of losing it to a failed repair.
+        the release keeps whatever it had instead of losing it to a failed repair.
         """
-        if not is_present(artifact):
+        if not await asyncio.to_thread(is_present, artifact):
             return None
         if not await self._verified_on_disk(artifact):
             return None
         self._set(
             stage=STAGE_READY,
             artifact=artifact.filename,
-            done=artifact.wheel_size_bytes,
-            total=artifact.wheel_size_bytes,
+            done=artifact.size_bytes,
+            total=artifact.size_bytes,
         )
         return installed_path(artifact)
 
@@ -581,9 +488,11 @@ class DecoderStore:
         passes here still cannot be executed on this check alone.
         """
         path = installed_path(artifact)
-        if path is None or not path.is_file():
+        if path is None:
             return False
-        actual = await asyncio.to_thread(_sha256_file, path)
+        actual = await asyncio.to_thread(_digest_if_file, path)
+        if actual is None:
+            return False
         if actual == artifact.sha256:
             return True
         logger.error(
@@ -618,20 +527,11 @@ class DecoderStore:
 def _failure_code(exc: BaseException) -> str:
     """Classify a fetch failure into a code the dashboard can localise.
 
-    Keyed off which pin the message names rather than off exception type, because
-    every verification failure raises the one shared ``ModelDownloadError``: the
-    caller needs "the download was tampered with or truncated" told apart from
-    "the archive did not carry the member" and from "the write failed", since only
-    the first two are worth another attempt.
+    Every verification failure raises the one shared ``ModelDownloadError``, and
+    the caller only needs "the download did not match its pin" (worth another
+    attempt) told apart from "the write failed".
     """
-    text = str(exc)
     if isinstance(exc, ModelDownloadError):
-        if "carries no " in text or "refusing archive member" in text:
-            return CODE_MEMBER_MISSING
-        if "declares " in text or "member exceeds the pinned" in text:
-            return CODE_PAYLOAD_UNVERIFIED
-        if ".whl" in text:
-            return CODE_WHEEL_UNVERIFIED
         return CODE_PAYLOAD_UNVERIFIED
     return CODE_INSTALL_FAILED
 
@@ -650,6 +550,73 @@ def store() -> DecoderStore:
     if _store is None:
         _store = DecoderStore()
     return _store
+
+
+#: Process-wide, caller-independent: the one retired-name migration, once started.
+#: Kept after it finishes so it never runs twice, and awaited while in flight so a
+#: concurrent transcode waits for the same transfer instead of failing.
+_migration_task: asyncio.Task[Path | None] | None = None
+
+
+def has_retired_decoder() -> bool:
+    """Whether the store still holds a decoder under a retired pinned name."""
+    root = store_dir()
+    return any((root / name).is_file() for name in RETIRED_FILENAMES)
+
+
+def _remove_retired() -> None:
+    """Delete retired-name decoders from the store. Best effort, never raises."""
+    root = store_dir()
+    for name in RETIRED_FILENAMES:
+        try:
+            (root / name).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove retired decoder %s", name, exc_info=True)
+
+
+async def _join_migration(task: asyncio.Task[Path | None]) -> Path | None:
+    """Wait for the migration *task* another caller started; ``None`` when it
+    runs on a different event loop, which this caller cannot await."""
+    try:
+        same_loop = task.get_loop() is asyncio.get_running_loop()
+    except RuntimeError:
+        same_loop = False
+    if not same_loop:
+        return None
+    # Shielded: one caller giving up must not cancel the shared transfer.
+    return await asyncio.shield(task)
+
+
+async def migrate_retired_decoder() -> Path | None:
+    """Fetch the current pin for an install whose store has only a retired one.
+
+    Called by the transcode resolver when nothing resolves. ``None`` -- and no
+    network -- unless this is a store-using install (no decoder in the bundle, a
+    pinned platform) that still has a retired file. The retired file is removed
+    by :meth:`DecoderStore.ensure` once the current pin is installed.
+    """
+    global _migration_task
+    if _migration_task is not None:
+        return await _join_migration(_migration_task)
+    if bundle_carries_decoder() or artifact_for() is None:
+        return None
+    has_retired = await asyncio.to_thread(has_retired_decoder)
+    # Another caller can start the migration while this one awaits the probe, and
+    # its transfer removes the retired file, so a probe that ran after it finds
+    # none: join that transfer rather than report the decoder missing.
+    if _migration_task is not None:
+        return await _join_migration(_migration_task)
+    if not has_retired:
+        return None
+    # Started at most once per process: on a host that cannot reach the release,
+    # every later transcode would otherwise wait out another failed fetch. The
+    # settings page's Download button still retries on demand.
+    if _migration_task is None:
+        logger.info(
+            "Replacing a retired FFmpeg decoder in %s with %s", store_dir(), DECODER_RELEASE
+        )
+        _migration_task = asyncio.ensure_future(store().ensure())
+    return await asyncio.shield(_migration_task)
 
 
 async def maybe_autofetch() -> None:
@@ -675,3 +642,34 @@ async def maybe_autofetch() -> None:
     if artifact_for() is None:
         return
     await store().ensure()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m kiro_crew.stt.decoder --install-into DIR [--platform KEY]``.
+
+    The desktop build's only way to put a decoder into a bundle, so the bytes it
+    ships are the bytes this module pins. ``--platform`` defaults to this host;
+    a platform with no pin exits 3 without writing anything, which is how the
+    macOS Intel backend stays decoderless.
+    """
+    parser = argparse.ArgumentParser(prog="python -m kiro_crew.stt.decoder")
+    parser.add_argument("--install-into", required=True, type=Path, metavar="DIR")
+    parser.add_argument("--platform", default="", metavar="KEY")
+    args = parser.parse_args(argv)
+    artifact = _BY_PLATFORM.get(args.platform) if args.platform else artifact_for()
+    if artifact is None:
+        print(f"no pinned decoder for {args.platform or platform_key() or 'this host'}")
+        return 3
+    try:
+        path = _download_into(artifact, args.install_into)
+    except (ModelDownloadError, OSError) as exc:
+        # OSError covers the transport too (urllib's errors subclass it), so an
+        # unreachable host fails the build with this line, not a traceback.
+        print(f"decoder download failed: {exc}", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

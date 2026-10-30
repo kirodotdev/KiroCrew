@@ -314,7 +314,17 @@ _ensure_mise() {
     _source_mise
     if ! command -v mise &>/dev/null; then
         echo "  → Installing mise…"
-        curl -fsSL https://mise.run | sh
+        # A pinned release checked against a recorded sha256, never a piped
+        # script: this runs unprompted from gateway start and `kirocrew update`.
+        local lib
+        lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/pinned-mise.sh"
+        if [ -f "$lib" ]; then
+            # shellcheck source=scripts/lib/pinned-mise.sh
+            . "$lib"
+            MISE_INSTALL_PATH="$HOME/.local/bin/mise" install_pinned_mise || true
+        else
+            echo "  ⚠  $lib not found — not installing mise"
+        fi
         _source_mise
     fi
 }
@@ -336,13 +346,15 @@ case $PLATFORM in
         if command -v mise &>/dev/null; then
             mise use -g "node@$TARGET_VERSION" 2>/dev/null
         else
-            echo "  → Falling back to nvm…"
-            if [ ! -d "$HOME/.nvm" ]; then
-                curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash 2>/dev/null
-            fi
+            # Use an nvm the host already has; never fetch and run its
+            # installer. Without one, the checksum-verified glibc-217 build
+            # below is the remaining fallback.
             _source_nvm
-            nvm install "$TARGET_VERSION" 2>/dev/null
-            nvm alias default "$TARGET_VERSION" 2>/dev/null
+            if command -v nvm &>/dev/null; then
+                echo "  → Falling back to the existing nvm…"
+                nvm install "$TARGET_VERSION" 2>/dev/null
+                nvm alias default "$TARGET_VERSION" 2>/dev/null
+            fi
         fi
         # If the resulting node can't load OR is outside the supported range (an
         # old glibc leaves official Node 24 unloadable, or a pre-existing
@@ -376,7 +388,7 @@ if _node_version_ok; then
     _record_node_bin
 else
     echo "  ⚠️  Node install failed — frontend build needs Node >= $MIN_VERSION"
-    echo "     macOS / AL2023 / modern Linux: curl https://mise.run | sh && mise use -g node@$TARGET_VERSION"
+    echo "     macOS / AL2023 / modern Linux: install mise (https://mise.jdx.dev/installing-mise.html), then: mise use -g node@$TARGET_VERSION"
     echo "     Amazon Linux 2 (x86_64): re-run 'bash ensure-node.sh' (installs the glibc-217 Node build)"
     exit 1
 fi

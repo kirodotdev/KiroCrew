@@ -605,6 +605,9 @@ class TeamsClient:
         #: attribute for the same reason ``on_message`` is one: the transport is built
         #: after the client, and a constructor argument would need a cycle.
         self.on_route: Callable[[str, str, str, str], Awaitable[None]] | None = None
+        #: Set by the gateway to retire this channel's process-global registrations
+        #: (its queue drain) when the client closes. Mirrors ``DiscordClient``.
+        self.on_close: Callable[[], None] | None = None
         # Live turn tasks -- prevent GC of in-flight background handlers, and
         # bound how many a burst may start (see _MAX_INFLIGHT_TURNS).
         self._handler_tasks: set[asyncio.Task[None]] = set()
@@ -692,6 +695,13 @@ class TeamsClient:
         pin map.
         """
         self._closed = True
+        # Retire the registrations first, so nothing routes to a dispatcher that is
+        # going away while the turns below unwind.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Teams on_close callback failed", exc_info=True)
         try:
             # Snapshot first: a cancelled handler's done-callback mutates the set.
             handler_tasks = list(self._handler_tasks)
@@ -765,7 +775,17 @@ class TeamsClient:
         Validates the bearer token (401 on failure) BEFORE processing, parses
         the Activity (400 on malformed), fast-acks with 200, and runs the turn
         in a background task so a long turn never times out the POST.
+
+        A CLOSED client refuses with 503 before any processing: the webhook
+        route is pre-registered and outlives the client, so a credential removal
+        that closes this client (``restart_channel`` leaving Teams
+        uncredentialed) must not keep running turns for authenticated,
+        allow-listed senders. The host also clears ``state.teams_on_activity``
+        on close, so this is defence in depth for a request already dispatched
+        to this bound method.
         """
+        if self._closed:
+            return web.Response(status=503, text="Teams channel is not running")
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
         # request.remote is the peer IP when present (real aiohttp request); the
@@ -854,6 +874,14 @@ class TeamsClient:
             )
             return web.Response(status=200)
 
+        # Re-check closed AFTER every processing await (JWT verify, body read):
+        # a request that passed the entry guard can still be mid-flight when the
+        # client closes on a credential removal, and it is not yet in
+        # ``_handler_tasks`` so ``close()``'s cancel sweep cannot reach it.
+        # Without this recheck it would create and register the turn after close,
+        # running an agent turn for an allow-listed sender on a revoked channel.
+        if self._closed:
+            return web.Response(status=503, text="Teams channel is not running")
         task = asyncio.create_task(self._dispatch_activity(activity, claims))
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)

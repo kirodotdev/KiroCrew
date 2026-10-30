@@ -395,7 +395,6 @@ class TestMultiAgentMigrationEdgeCases:
                 assert on_disk["agents"]["default"]["kiro_agent"] == "kirocrew"
         finally:
             tmp.unlink(missing_ok=True)
-            # Clean up backup file
             bak = tmp.with_suffix(".json.bak")
             bak.unlink(missing_ok=True)
 
@@ -437,7 +436,6 @@ class TestMultiAgentMigrationEdgeCases:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_config = Path(tmpdir) / "config.json"
-            # Start with empty config
             tmp_config.write_text("{}", encoding="utf-8")
 
             with (
@@ -903,6 +901,88 @@ class TestAppAgentDispatch(unittest.TestCase):
                     # …and the rest of the directory still scans.
                     assert loader.resolve_agent_bindings(cfg, "good").kiro_agent == "good"
         assert refused, "the gate was never consulted for the planted entry"
+
+    def test_a_failed_spec_read_keeps_the_agent_the_last_snapshot_had(self):
+        # One transient read failure during a refresh must not drop a template
+        # whose file is still on disk: its sessions would fail memory_unavailable
+        # until the next complete refresh. An incomplete scan keeps what the last
+        # snapshot declared.
+        import kiro_crew.config.loader as loader
+        import kiro_crew.hooks as hooks_mod
+
+        real = hooks_mod.safe_read_file
+
+        def _flaky(path: str) -> str:
+            if path.endswith("lead.json"):
+                raise OSError("transient read failure")
+            return real(path)
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(
+                Path(td),
+                {"lead.json": {"name": "team-lead"}, "other.json": {"name": "other"}},
+            )
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+                assert loader.materialized_snapshot_complete() is True
+                with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
+                    loader.refresh_materialized_agents()
+                assert loader.materialized_snapshot_complete() is False
+                cfg = self._config()
+                kept = loader.resolve_agent_bindings(cfg, "team-lead", selection_kind="template")
+                assert kept.kiro_agent == "team-lead"
+                assert kept.requested_resolved is True
+                # A complete scan afterwards is authoritative again: a file that
+                # is really gone stops resolving.
+                (d / "lead.json").unlink()
+                loader.refresh_materialized_agents()
+                assert loader.materialized_snapshot_complete() is True
+                gone = loader.resolve_agent_bindings(cfg, "team-lead", selection_kind="template")
+                assert gone.requested_resolved is False
+
+    def test_an_incomplete_scan_keeps_the_stems_the_last_snapshot_had(self):
+        # The stem map is a second half of the same snapshot: a crewmate bound to
+        # a FILE name must not lose its mapping to one unreadable read either.
+        import kiro_crew.config.loader as loader
+        import kiro_crew.hooks as hooks_mod
+
+        real = hooks_mod.safe_read_file
+
+        def _flaky(path: str) -> str:
+            if path.endswith("KiroPkg-captain.json"):
+                raise OSError("transient read failure")
+            return real(path)
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+                assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
+                with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
+                    loader.refresh_materialized_agents()
+                assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
+
+    def test_an_incomplete_scan_still_drops_an_agent_whose_file_was_removed(self):
+        # Only what a SKIPPED spec declared is kept. A spec that never parses
+        # makes every scan incomplete; an app disabled meanwhile must still
+        # leave resolution, or its sessions would dispatch a config that is gone.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(
+                Path(td),
+                {"lead.json": {"name": "team-lead"}, "app--mochi.json": {"name": "mochi"}},
+            )
+            (d / "broken.json").write_text("{not json", encoding="utf-8")
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+                cfg = self._config()
+                assert loader.resolve_agent_bindings(cfg, "mochi").kiro_agent == "mochi"
+                (d / "app--mochi.json").unlink()
+                loader.refresh_materialized_agents()
+                assert loader.materialized_snapshot_complete() is False
+                assert loader.resolve_agent_bindings(cfg, "mochi").requested_resolved is False
+                assert loader.resolve_agent_bindings(cfg, "team-lead").kiro_agent == "team-lead"
 
     def test_out_of_order_refresh_cannot_resurrect_a_deleted_agent(self):
         # Two scans race by COMPLETION order, not start order. An older scan that

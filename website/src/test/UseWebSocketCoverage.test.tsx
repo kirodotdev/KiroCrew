@@ -215,7 +215,7 @@ describe('useWebSocket frame router', () => {
   it('subscribes to subagent events over the freshly-opened socket', () => {
     const { ws } = mount()
     expect(ws.url).toContain('/api/ws')
-    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents' }))
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents', slots: ['slot-a'] }))
     expect(dash().connected).toBe(true)
   })
 

@@ -11,6 +11,7 @@ import {
 } from './ui/context-menu'
 
 import { i18nT } from '../i18n/t'
+import { resolveDefaultDestination, withDefaultFirst } from '../utils/defaultDestinationCrew'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -24,6 +25,9 @@ interface SendToInstanceSubmenuProps {
   readonly slotKey: string
   /** Which menu family this submenu nests inside — Radix Dropdown vs Context. */
   readonly variant: 'dropdown' | 'context'
+  /** The session's folder's `default_destination_crew`, which overrides the
+   *  global default destination crew for this session. */
+  readonly folderDefault?: string
 }
 
 /**
@@ -64,8 +68,11 @@ interface SendToInstanceSubmenuProps {
  * `Item` is the Radix menu-item primitive of the hosting menu family; items must
  * match their parent menu's family.
  */
-export function InstanceSendItems({ instances, states, onSend, Item }: {
+export function InstanceSendItems({ instances, states, onSend, Item, defaultId = '' }: {
   readonly instances: readonly InstanceView[]
+  /** The default destination crew's id ('' = none). Its row is marked; the
+   *  caller orders it first. Marking never sends: the click still does. */
+  readonly defaultId?: string
   readonly states: Readonly<Record<string, SendState>>
   readonly onSend: (instanceId: string) => void
   readonly Item: React.ComponentType<{
@@ -76,15 +83,18 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
   }>
 }) {
   const notConnected = i18nT('components.sendToInstanceSubmenu.not_connected')
+  const defaultLabel = i18nT('components.sendToInstanceSubmenu.default_badge')
   return (
     <>
       {instances.map(inst => {
         const connected = inst.status?.state === 'connected'
         const st = states[inst.id] ?? { kind: 'idle' }
+        const isDefault = inst.id === defaultId
+        const name = isDefault ? `${inst.name} (${defaultLabel})` : inst.name
         return (
           <Item
             key={inst.id}
-            title={connected ? inst.name : `${inst.name} — ${notConnected}`}
+            title={connected ? name : `${name} — ${notConnected}`}
             disabled={!connected || st.kind === 'sending'}
             onSelect={connected
               ? (event: Event) => {
@@ -99,6 +109,14 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
               className={connected ? 'text-accent shrink-0' : 'text-muted shrink-0'}
             />
             <span className="truncate">{inst.name}</span>
+            {isDefault && (
+              <span
+                data-testid="send-to-instance-default"
+                className="shrink-0 rounded border border-border px-1 text-[10px] text-muted"
+              >
+                {defaultLabel}
+              </span>
+            )}
             {!connected && (
               <span className="ml-auto text-[10px] text-muted shrink-0">{notConnected}</span>
             )}
@@ -136,7 +154,7 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
   )
 }
 
-export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstanceSubmenuProps) {
+export default function SendToInstanceSubmenu({ slotKey, variant, folderDefault }: SendToInstanceSubmenuProps) {
   const [states, setStates] = useState<Record<string, SendState>>({})
 
   const { data } = useQuery({
@@ -179,6 +197,11 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
 
   const instances = data?.instances ?? []
   if (instances.length === 0) return null
+  // The default crew goes first and is marked; an offline default stays
+  // disabled like any other offline crew, and the others stay usable.
+  const defaultId = resolveDefaultDestination(
+    instances.map(i => i.id), data?.default_destination, folderDefault,
+  )
 
   const Sub = variant === 'context' ? ContextMenuSub : DropdownMenuSub
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
@@ -194,7 +217,8 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
       </SubTrigger>
       <SubContent className="min-w-[210px] max-h-[280px] overflow-y-auto">
         <InstanceSendItems
-          instances={instances}
+          instances={withDefaultFirst(instances, defaultId)}
+          defaultId={defaultId}
           states={states}
           onSend={(id) => sendMutation.mutate({ id })}
           Item={Item}

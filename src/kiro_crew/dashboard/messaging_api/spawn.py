@@ -17,24 +17,53 @@ if TYPE_CHECKING:
         _SPAWN_REJECTED_CODE,
         DEFERRED_QUEUED_REASONS,
         NATIVE_CHILD_NOT_RESUMABLE,
+        PINNED_RUNTIME_NOTE,
         SPAWN_RUN_SCHEMA,
         DashboardState,
         KiroCrewConfig,
         ValidationError,
         _redact,
         _spawn_scope_refusal,
+        body_int,
+        body_not_object_error,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
         internal_memory_scope,
+        parent_project_dirs,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
+        stopped_before_start,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
+
+
+#: ``code`` for a start that was stopped while it waited, so it never ran (see
+#: :func:`kiro_crew.subagent_wait_reasons.stopped_before_start`). A route that
+#: tested only ``done and error`` would read that record as a started run.
+STOPPED_BEFORE_START_CODE = "stopped_before_start"
+
+
+def _stopped_before_start(info: Any, *, counted: bool = False) -> web.Response | None:
+    """409 ``stopped_before_start`` when *info* is a start stopped while it waited.
+
+    None for every other answer, so the caller goes on to its success body. A
+    start that ended in an error is the caller's typed rejection, not this.
+    ``counted`` adds ``counted: true`` for ``POST /api/spawn``, whose wave
+    reconcile reads it.
+    """
+    if not stopped_before_start(info):
+        return None
+    error = "the run was stopped before it started; nothing ran"
+    if counted:
+        return web.json_response(
+            {"error": error, "code": STOPPED_BEFORE_START_CODE, "counted": True}, status=409
+        )
+    return web.json_response({"error": error, "code": STOPPED_BEFORE_START_CODE}, status=409)
 
 
 async def _spawn_request_memory_mode(
@@ -208,6 +237,16 @@ async def api_spawn(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    # The parent's project scope, read as soon as the request names its parent
+    # and before any later await (the backend probe, the memory-scope and
+    # record reads), so a parent session that ends meanwhile cannot shrink the
+    # scope the gate checks now and the queued row records. Dict reads only;
+    # a non-string parent is refused below and reads no scope here.
+    asked_parent = body.get("parent_session", "")
+    parent_dirs = list(parent_project_dirs(asked_parent)) if isinstance(asked_parent, str) else []
     try:
         cleaned = validate_tool_args(
             {
@@ -319,7 +358,10 @@ async def api_spawn(request: web.Request) -> web.Response:
             (
                 parent_execution.template_id,
                 await asyncio.to_thread(
-                    parent_template_allowlists, parent_session, parent_execution.template_id
+                    parent_template_allowlists,
+                    parent_session,
+                    parent_execution.template_id,
+                    parent_dirs,
                 ),
             )
             if parent_execution is not None
@@ -357,8 +399,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
     try:
-        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
         batch_total = 0
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
@@ -388,6 +430,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
         _parent_spawn_policy=parent_spawn_policy,
+        _parent_project_dirs=parent_dirs,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -418,6 +461,11 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Accepted (and counted) by mgr.spawn, then stopped before its claim: no run
+    # and no card will follow, so "spawned" would leave the caller waiting.
+    stopped = _stopped_before_start(info, counted=True)
+    if stopped is not None:
+        return stopped
     resp: dict[str, object] = {
         "id": info.id,
         "task": task,
@@ -492,6 +540,44 @@ async def api_spawn(request: web.Request) -> web.Response:
         field, text = await asyncio.to_thread(_effort_verdict)
         if field:
             resp[field] = text
+
+    # Reporting only, like the effort verdict. Read from the run's own sharing
+    # plan, the one decision the start and admission take, so the note can
+    # never follow a copy of the pin rule. The plan reads config (file I/O),
+    # so off the loop; a crew spawn already loaded it above.
+    def _runtime_note() -> str:
+        manager = state.subagents
+        if manager is None:
+            return ""
+        import copy
+
+        from kiro_crew.subagent import _selection_kind
+
+        try:
+            # Only a template run can ever take the shared arm.
+            if _selection_kind(info) != "template":
+                return ""
+            plan = manager._sharing_plan(info, cfg=config)
+            pins = (getattr(plan, "eff_model", ""), getattr(plan, "eff_effort", ""))
+            if not any(isinstance(p, str) and p for p in pins):
+                return ""
+            if getattr(plan, "shared", None) is not False or getattr(info, "keep", False):
+                return ""
+            # Name the pin only when it is what took the share away: the same
+            # run without its own model would take the shared arm. A backend
+            # or setting that never shares gets no note.
+            unpinned = copy.copy(info)
+            unpinned.model = ""
+            unpinned.routed_model = ""
+            if manager._should_use_session_sharing(unpinned) is not True:
+                return ""
+        except Exception:
+            return ""
+        return PINNED_RUNTIME_NOTE
+
+    runtime_note = await asyncio.to_thread(_runtime_note)
+    if runtime_note:
+        resp["runtime_note"] = runtime_note
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id
@@ -545,6 +631,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
@@ -567,8 +656,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
-        max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        max_turns = max(0, min(body_int(body.get("max_turns", 0) or 0), 1000))
+    except (TypeError, ValueError):
         max_turns = 0
     # The run's own cwd, resolved OFF the event loop: a continuation has to run
     # where the run ran (a project-local agent does not resolve against the pool
@@ -607,4 +696,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
         return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})

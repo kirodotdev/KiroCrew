@@ -35,6 +35,16 @@ from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, LLM
 from kiro_crew.testing.wait import async_wait_until
 
 
+def _card_outcomes(slot: _ChatSlot) -> dict[str, str]:
+    """Each approval card's request id mapped to the decision its row shows."""
+    outcomes = {}
+    for row in slot.messages:
+        if row.get("role") == "permission":
+            meta = parse_cls_meta(row["cls"]) or {}
+            outcomes[meta.get("approval_id", "")] = meta.get("resolved", "")
+    return outcomes
+
+
 class TestBatchRejection:
     """Verify batch rejection auto-rejects remaining tools."""
 
@@ -128,6 +138,7 @@ class TestDenialCascadeLifetime:
         # The revised call was PROMPTED and could be approved — never swallowed.
         client.approve_tool.assert_any_call("req-2")
         assert ("req-2",) not in [c.args for c in client.reject_tool.call_args_list]
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "approved"}
 
     @pytest.mark.asyncio
     async def test_same_group_still_cascades_after_the_fix(self, tmp_path):
@@ -158,6 +169,7 @@ class TestDenialCascadeLifetime:
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
         client.approve_tool.assert_not_called()
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "rejected"}
 
 
 class TestBatchCascadeAttribution:
@@ -264,6 +276,7 @@ class TestBatchCascadeAttribution:
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
         client.steer.assert_not_called()
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "rejected"}
 
     @pytest.mark.asyncio
     async def test_one_notice_covers_the_whole_cascaded_remainder(self, tmp_path):
@@ -512,7 +525,6 @@ class TestToolCompletionTracking:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        # Verify tool_call broadcast includes tool_call_id
         calls = [c for c in state.broadcast_ws.call_args_list if c[0][0] == "tool_call"]
         assert len(calls) > 0
         assert calls[0][0][1]["tool_call_id"] == "tc-42"
@@ -845,8 +857,9 @@ class TestStateMetaAndPermissions:
 
     def test_mark_permission_resolved_not_found(self):
         slot = _make_slot()
-        # Should not raise
+        slot.append("permission", "tool_x", '{"request_id": "req-42"}', broadcast=False)
         slot.mark_permission_resolved("nonexistent", "approved")
+        assert slot.messages[-1]["cls"] == '{"request_id": "req-42"}'
 
     def test_parse_cls_meta_normalizes_request_id(self):
         meta = parse_cls_meta('{"request_id": "req-1", "tool_input": "x"}')

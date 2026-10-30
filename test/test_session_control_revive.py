@@ -137,6 +137,51 @@ def test_revive_does_not_transfer_ownership_to_the_reviver(tmp_path, monkeypatch
     assert state._slots[key]._created_by == "chat-9"
 
 
+@pytest.mark.parametrize("creator_is_reviver", [True, False], ids=["creator", "other-reviver"])
+def test_a_revived_worker_takes_its_creators_posture_only_from_its_creator(
+    tmp_path, monkeypatch, creator_is_reviver
+):
+    """A conductor that brings back its own worker hands it its posture, as create
+    does at birth; a session that merely revives someone else's worker hands none."""
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    reviver = conductor if creator_is_reviver else _slot(state, "chat-3")
+    reviver._trust = True
+    peer = _slot(state, "chat-2")
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, reviver, key)
+
+    revived = state._slots[key]
+    assert revived._trust is creator_is_reviver
+    assert revived._posture_inherited is creator_is_reviver
+
+
+def test_a_revived_crewmate_worker_is_left_to_its_profile(tmp_path, monkeypatch):
+    """A crewmate's own worker takes its Profile Permissions at its first turn, never
+    the conductor's Trust: a grant already on the slot would survive that seed."""
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    peer = _slot(state, "chat-2")
+    peer.agent = MATE_WORKER_AGENT
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, conductor, key)
+
+    revived = state._slots[key]
+    assert revived.agent == MATE_WORKER_AGENT
+    assert revived._trust is False
+    assert revived._posture_inherited is False
+
+
 @pytest.mark.parametrize("known", [True, False], ids=["lineage-names-another", "lineage-unknown"])
 def test_an_uncorroborated_created_by_claim_is_not_stamped_on_the_revived_slot(
     tmp_path, monkeypatch, known
@@ -144,8 +189,9 @@ def test_an_uncorroborated_created_by_claim_is_not_stamped_on_the_revived_slot(
     """``created_by`` is read from an agent-editable file. A fenced agent that wrote
     its own key into an archived transcript must not be handed the slot when an
     UNFENCED tab revives it (the reviver's own ownership is not gated), so the
-    stamp is taken only from a lineage that names the same parent; otherwise the
-    field stays blank, which matches no caller."""
+    stamp is taken only from creation records that name the same creator. Otherwise
+    the slot gets a creator no caller matches and stays fenced: blank would read as
+    a person's own tab."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     peer = _slot(state, "chat-2")
@@ -155,9 +201,15 @@ def test_an_uncorroborated_created_by_claim_is_not_stamped_on_the_revived_slot(
 
     _revive(state, caller, key)
 
+    from kiro_crew.dashboard.session_control_parts.caller_access import (
+        _caller_is_ownership_fenced,
+    )
+    from kiro_crew.dashboard.session_control_parts.session_revive import UNVERIFIED_CREATOR
+
     revived = state._slots[key]
-    assert getattr(revived, "_created_by", "") == ""
+    assert revived._created_by == UNVERIFIED_CREATOR
     assert sc._created_by_other(revived, "member-agent")
+    assert _caller_is_ownership_fenced(state, key)
 
 
 # ── Filing ───────────────────────────────────────────────────────────────────
@@ -354,11 +406,40 @@ def test_fenced_caller_may_revive_only_what_it_created(tmp_path, monkeypatch):
     assert _revive(state, caller, own_key, caller_fenced=True)["target"] == own_key
 
 
+def test_a_send_revive_keeps_the_fence_the_request_was_admitted_under(tmp_path, monkeypatch):
+    """``session_send``'s own-worker revive carries the request's admission fence.
+    Recomputed from config instead, a conductor whose binding moved mid-request
+    reads as an unfenced owner chat and reopens an archive it did not create."""
+    from kiro_crew import mate_worker
+    from kiro_crew.dashboard.session_control_parts import session_revive
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    foreign = _slot(state, "chat-3")
+    foreign._created_by = "chat-7"
+    foreign_key = _archive(state, caller, foreign)
+    _lineage(monkeypatch, {foreign_key: "chat-7"})
+    conductor = MagicMock(selection_kind="member", template_id=mate_worker.MATE_CONDUCTOR_AGENT)
+    monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", lambda key: conductor)
+
+    got = asyncio.run(
+        session_revive.revive_own_archived_worker(
+            state, _key(caller), foreign_key, caller_fenced=True
+        )
+    )
+
+    assert got == foreign_key
+    assert foreign_key not in state._slots
+
+
 def _lineage(monkeypatch, parents: dict, *, known: bool = True):
     """Stand in for the crew-log session-tree projection: *parents* maps an
-    archived slot key to the parent the gateway recorded for it."""
+    archived slot key to the creator the gateway recorded for it."""
     monkeypatch.setattr(
         sc, "_slot_tree_parent", lambda slot_key: (known, parents.get(slot_key, ""), {})
+    )
+    monkeypatch.setattr(
+        sc, "_creation_parent", lambda slot_key: parents.get(slot_key, "") if known else ""
     )
 
 

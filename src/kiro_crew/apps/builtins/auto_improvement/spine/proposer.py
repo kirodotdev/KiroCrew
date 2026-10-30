@@ -42,8 +42,8 @@ _log = logging.getLogger("auto_improvement.spine.proposer")
 #: helpers (driver/gate/commit/pr_recipe/agent_runner/pr_watchers). The proposer runs `add -A`
 #: and `diff` on the HOST over the worktree the agent wrote to, and both consult (and can SPAWN)
 #: `core.fsmonitor`; any git also runs `core.hooksPath` hooks. `-c` overrides on OUR argv beat
-#: the repo config. Part of the D-120 hook-hardening class (Opus 5 review pressed on
-#: completeness). `worktree`/`branch` subcommands take no untrusted tree but share the helper.
+#: the repo config. Part of the D-120 hook-hardening class. `worktree`/`branch`
+#: subcommands take no untrusted tree but share the helper.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -99,7 +99,6 @@ class Proposer:
         # `test_a_planted_clean_filter_does_not_run`). These two calls bypass `_git` (they set
         # `capture_output` and a custom pathspec), so they must pin explicitly like every
         # sibling helper. Missed here because the structural test only checked `proposer._git`.
-        # Raised by the Opus review.
         require_pinned(worktree)
         # Stage everything first so NEW (untracked) files are included in the diff. A bug
         # fix's reproducing test is always a new file; ``git diff base_sha`` alone omits

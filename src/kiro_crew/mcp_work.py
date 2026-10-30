@@ -66,15 +66,18 @@ from urllib.parse import urlencode
 # Same cross-module reuse as ``mcp_dashboard``: the authenticated loopback client
 # to the gateway lives in ``mcp_core``, and its heavy dependencies are
 # function-local so importing it here is cheap.
+from kiro_crew import work_preview
 from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     MCP_WORK_SCHEMAS,
+    WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
     clamp_report,
     sanitize_string,
     validate_tool_args,
 )
+from kiro_crew.work_vocab import worker_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +322,37 @@ def fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
 _fit_ledger = fit_ledger
 
 
-def _tool_definitions() -> list[dict[str, Any]]:
-    """The tool surface this server advertises."""
+#: What ``work_report``'s description says about ``reply`` while
+#: ``work_ledger.remote_dispatch`` is on. With it off the description is unchanged.
+_REPLY_WAKES = "'blocked', 'question', 'reply' and 'done' wake it"
+_REPLY_SENTENCE = (
+    " 'reply' answers a follow-up the conductor sent you: it wakes the conductor, "
+    "needs no evidence and claims nothing finished."
+)
+
+
+def _tool_definitions(remote_dispatch: bool = False) -> list[dict[str, Any]]:
+    """The tool surface this server advertises.
+
+    *remote_dispatch* is ``work_ledger.remote_dispatch``: on, ``work_report`` also
+    offers ``reply``; off (the default), every definition is the one from before it.
+    """
+    tools = _base_tool_definitions()
+    if remote_dispatch:
+        report = next(t for t in tools if t["name"] == "work_report")
+        status = report["inputSchema"]["properties"]["status"]
+        status["enum"] = list(worker_statuses(True))
+        status["description"] = "Where the work stands, in one of five values."
+        report["description"] = (
+            report["description"]
+            .replace("'blocked', 'question' and 'done' wake it", _REPLY_WAKES, 1)
+            .replace(" Write facts and pointers", _REPLY_SENTENCE + " Write facts and pointers", 1)
+        )
+    return tools
+
+
+def _base_tool_definitions() -> list[dict[str, Any]]:
+    """The tool surface with the remote-dispatch preview off."""
     return [
         {
             "name": "work_brief",
@@ -374,7 +406,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["progress", "done", "blocked", "question"],
+                        "enum": list(worker_statuses(False)),
                         "description": "Where the work stands, in one of four values.",
                     },
                     "summary": {
@@ -418,14 +450,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Read the work ledger this conductor session owns: the conductor "
                 "record, every item with all its fields, each item's derived 'orphaned', "
-                "'stale', 'acceptance_concrete', 'unpatrolled' and 'pending_overdue' "
-                "flags, the newest events per item, and "
+                "'stale', 'acceptance_concrete', 'unpatrolled', 'pending_overdue' and "
+                "'report_undelivered' flags, the newest events per item, and "
                 "a ready-to-pipe 'accept_batch' document for the goal-conductor skill's "
                 "accept_eval.py. The ledger is your own. With no arguments that is the "
                 "whole board, each item with its last 20 events; every argument NARROWS "
                 "it. compact=true is the cheap patrol read: per item only item_id, title, "
                 "state, created_at, status, reason, summary, decision, verdict, pr, worker_session_key, "
-                "last_report_at and the five flags — no events, acceptance or "
+                "last_report_at and the six flags — no events, acceptance or "
                 "accept_batch. item_id=<id> reads one item in full; state= and since= "
                 "select rows (accept_batch is always the whole board); events=<n> "
                 "shortens the tails. A reply over the tool-result budget is trimmed to "
@@ -453,7 +485,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "An item is pending_overdue once its acceptance has read 'pending' for "
                 "24 hours on end (never for a human_approval bar): ask the user, then "
                 "either write its bar again with action=accept, which starts a fresh "
-                "run, or close it. Answers 'no_ledger' when this session owns "
+                "run, or close it. report_undelivered is {tool, at} while the worker's "
+                "last work_report or work_brief call failed before reaching the ledger "
+                "(the harness could not deliver it) and no work tool call has got through since: the "
+                "worker tried to report, so check its session_status and pull request "
+                "and tell the person it couldn't send its report, rather than calling it "
+                "stalled. Answers 'no_ledger' when this session owns "
                 "none yet."
             ),
             "inputSchema": {
@@ -485,7 +522,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": (
                             "Status columns and the orphaned / stale / "
-                            "acceptance_concrete / unpatrolled / pending_overdue flags "
+                            "acceptance_concrete / unpatrolled / pending_overdue / "
+                            "report_undelivered flags "
                             "only — no events, acceptance or accept_batch."
                         ),
                     },
@@ -511,7 +549,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "call, because the field sets are disjoint: 'goal' sets the goal and "
                 "round (and opens the ledger); 'create' mints an item from title + "
                 "acceptance; 'bind' attaches a worker session key to an item — do this "
-                "BEFORE seeding that session, so the worker never starts unbound. When "
+                "BEFORE seeding that session, so the worker never starts unbound. A "
+                "session holds one OPEN item at a time: binding a session whose item is "
+                "still open is refused worker_already_dispatched, while a session whose "
+                "items are all closed can be bound to a new one, and its work_brief and "
+                "work_report then resolve to that new item. When "
                 "your session has no active loop (none, or one the system stopped), a "
                 "bind also arms a default work-ledger patrol on it; a loop a person "
                 "stopped is kept. The reply always ends 'patrol=<armed|existing|"
@@ -520,7 +562,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "'decide' records what you decided and why (the one field a worker reads "
                 "as an instruction); 'verdict' records accept_eval.py's verdict and the "
                 "fail count; 'accept' promotes a worker's claimed pr into the item's "
-                "acceptance once you have checked it; 'close' stamps a terminal state. "
+                "acceptance once you have checked it; 'close' stamps a terminal state, "
+                "and when the item's worker session is still open the reply warns that "
+                "its report channel is now cut (bind a new item to it to restore it). "
                 "Caps refuse rather than truncate, naming the field. The whole write is "
                 "one 64 KB crew-log line as JSON (a non-ASCII character can count up to twelve "
                 "bytes), so a write at every field cap with non-ASCII text can be "
@@ -643,12 +687,18 @@ def _list_tools() -> list[dict[str, Any]]:
     by identity would make a worker's missing conductor tools look like a broken
     install rather than a refusal it can read.
     """
-    return _tool_definitions()
+    return _tool_definitions(work_preview.remote_dispatch())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Validate tool arguments against schema. Returns cleaned args."""
+    """Validate tool arguments against schema. Returns cleaned args.
+
+    ``work_report`` admits ``reply`` only while ``work_ledger.remote_dispatch`` is on;
+    the gateway route and the store decide the same way on their own read.
+    """
     schema = MCP_WORK_SCHEMAS.get(name)
+    if name == "work_report" and work_preview.remote_dispatch():
+        schema = WORK_REPORT_REMOTE_DISPATCH_SCHEMA
     if schema:
         return validate_tool_args(args, schema)
     return args
@@ -758,6 +808,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 from kiro_crew.conductor_patrol import reply_line
 
                 line += reply_line(resp)
+            warning = str(resp.get("warning") or "")
+            if warning:
+                line += f"\nWarning: {warning}"
             return line
         conductor = resp.get("conductor") or {}
         return f"Recorded {action}. round={conductor.get('round', '(unset)')}"

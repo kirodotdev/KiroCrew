@@ -184,7 +184,7 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     const { container, store } = renderSidebar(onOpen)
     fireEvent.click(colPlus(container), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     // The create itself did not activate; the tab opener switches after the tab exists.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
@@ -195,7 +195,7 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     const { container, store } = renderSidebar(onOpen)
     fireEvent.click(colEmptyRow(container), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 

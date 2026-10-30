@@ -82,9 +82,8 @@ async function openChat(page: Page, baseURL: string) {
             download: { stage: 'idle', artifact: '', downloaded_bytes: 0, total_bytes: 0,
               error_code: '', error_detail: '' } } })
       } else if (path === '/api/voice/config') {
-        await json(route, { enabled: true, autoSpeak: true, provider: 'piper',
+        await json(route, { enabled: true, autoSpeak: true, provider: 'system',
           voice: 'Ruth', engine: 'generative', rate: '100%', aws_profile: '', region: '',
-          piper_binary: '', piper_model: '', piper_model_config: '', piper_length_scale: 1,
           system_voice: '' })
       } else if (path === '/api/tips/status') {
         await json(route, { enabled: false })
@@ -188,7 +187,7 @@ test('failed playback links to and highlights the text-to-speech provider', asyn
   await settings.click()
   const provider = page.locator('[data-setting-id="voice.provider-2"]')
   await expect(provider).toBeVisible()
-  await expect(provider).toContainText(label('pages.settings.voicePanel.piper_local_offline'))
+  await expect(provider).toContainText(label('pages.settings.voicePanel.system_built_in'))
   // The URL is cleared after highlighting; observing the target proves arrival.
   await expect(provider).toHaveCSS('outline-style', 'solid')
   await expect(provider).toHaveCSS('outline-width', '2px')

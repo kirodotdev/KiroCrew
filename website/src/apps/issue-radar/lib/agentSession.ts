@@ -25,7 +25,7 @@
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../../store'
-import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
+import { createSlot, switchSlot, deleteSlot, requestSlotFolderOpen } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { ensureChatFolder } from '../../../utils/ensureChatFolder'
@@ -340,6 +340,9 @@ export function useAgentSession(): UseAgentSession {
           // separately; this path is unchanged from before the PR.
         }, kind)
         await dispatch(switchSlot(slot.key)).unwrap().catch(() => {})
+        // The repo's folder can be collapsed: open its path so the row of the
+        // session /chat opens on shows. Skipped when the switch did not hold.
+        dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: slot.folder_id || folderId, onlyIfActive: true }))
         navigate('/chat')
         return res.investigation
       } catch (e) {

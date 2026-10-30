@@ -1,6 +1,22 @@
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
+import { apiErrorCode } from '../../api/apiError'
 import { embedModelErrorMessage } from './EmbeddingModelCard'
+
+/** Localize a refusal of `POST /api/memory/enable-embeddings` by its `code`.
+ *
+ * `code` is the wire contract and `error` is advisory English prose, so a coded
+ * refusal gets a catalog message. A refusal with no code, or one this map does
+ * not know, returns '' and the caller keeps its own fallback, so nothing is
+ * swallowed. */
+export function enableEmbeddingsErrorMessage(err: unknown): string {
+  switch (apiErrorCode(err)) {
+    case 'owner_only': return i18nT('pages.overview.vectorMemoryCard.enable_err_owner_only')
+    case 'config_unreadable': return i18nT('pages.overview.vectorMemoryCard.enable_err_config_unreadable')
+    case 'embedding_dim_unreadable': return i18nT('pages.overview.vectorMemoryCard.enable_err_dim_unreadable')
+    default: return ''
+  }
+}
 
 /** DOM id of the Embedding Model card's path field.
  *

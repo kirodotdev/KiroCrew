@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -552,7 +553,9 @@ def test_every_turn_re_pushes_the_sessions_claim(monkeypatch: pytest.MonkeyPatch
     assert calls == ["reclaimed"]
 
 
-def test_a_provider_without_stubs_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_provider_without_stubs_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """No stub token means no claim to push and nothing that would read one."""
     import asyncio as _asyncio
 
@@ -565,7 +568,11 @@ def test_a_provider_without_stubs_is_left_alone(monkeypatch: pytest.MonkeyPatch)
         def get_provider(self, _key: str) -> Any:
             return object()
 
-    _asyncio.run(identity_mod.publish_turn_identity(_Sessions(), PARENT_KEY))
+    # Every step swallows its own error into a DEBUG line, so "left alone" means
+    # no step reached one: an empty log, not merely no exception.
+    with caplog.at_level(logging.DEBUG, logger=identity_mod.logger.name):
+        _asyncio.run(identity_mod.publish_turn_identity(_Sessions(), PARENT_KEY))
+    assert "failed" not in caplog.text
 
 
 @pytest.mark.asyncio

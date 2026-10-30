@@ -142,7 +142,6 @@ class TestStopHandlerIdempotent:
         request.match_info = {"slot": "test-slot"}
         request.query = {}
 
-        # Mock SEL logging and _reject_pending_approvals
         with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             mock_sel.return_value.log = MagicMock()

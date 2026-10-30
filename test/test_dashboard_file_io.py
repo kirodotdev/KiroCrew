@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import io
 import json
@@ -366,15 +367,39 @@ class TestFileRead:
             assert "X-File-Binary" not in resp.headers
 
     @pytest.mark.asyncio
-    async def test_read_jsonl_sets_x_ndjson_content_type(self, tmp_path, mock_sel, home_patch):
-        # JSONL is NOT a single JSON document — must use application/x-ndjson
-        # so clients don't try to parse the whole body as one JSON value.
-        f = tmp_path / "lines.jsonl"
-        f.write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
+    @pytest.mark.parametrize(
+        "name, body, content_type",
+        [
+            # JSONL is NOT a single JSON document -- must use application/x-ndjson
+            # so clients don't try to parse the whole body as one JSON value.
+            pytest.param(
+                "lines.jsonl",
+                '{"a":1}\n{"b":2}\n',
+                "application/x-ndjson",
+                id="read_jsonl_sets_x_ndjson_content_type",
+            ),
+            pytest.param(
+                "note.md", "# title", "text/markdown", id="read_md_sets_text_markdown_content_type"
+            ),
+            # Default content_type for files without a known extension stays
+            # text/plain so existing behaviour is preserved.
+            pytest.param(
+                "notes.log",
+                "line 1\nline 2\n",
+                "text/plain",
+                id="read_unknown_extension_falls_back_to_text_plain",
+            ),
+        ],
+    )
+    async def test_read_sets_content_type(
+        self, tmp_path, mock_sel, home_patch, name, body, content_type
+    ):
+        f = tmp_path / name
+        f.write_text(body, encoding="utf-8")
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-read?path={f}")
             assert resp.status == 200
-            assert resp.headers["Content-Type"].startswith("application/x-ndjson")
+            assert resp.headers["Content-Type"].startswith(content_type)
 
     @pytest.mark.asyncio
     async def test_read_html_served_as_text_plain_to_block_xss(
@@ -393,28 +418,6 @@ class TestFileRead:
             assert resp.headers["Content-Type"].startswith(
                 "text/plain"
             ), f"HTML files MUST be served as text/plain (got {resp.headers['Content-Type']})"
-
-    @pytest.mark.asyncio
-    async def test_read_md_sets_text_markdown_content_type(self, tmp_path, mock_sel, home_patch):
-        f = tmp_path / "note.md"
-        f.write_text("# title", encoding="utf-8")
-        async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get(f"/api/file-read?path={f}")
-            assert resp.status == 200
-            assert resp.headers["Content-Type"].startswith("text/markdown")
-
-    @pytest.mark.asyncio
-    async def test_read_unknown_extension_falls_back_to_text_plain(
-        self, tmp_path, mock_sel, home_patch
-    ):
-        # Default content_type for files without a known extension stays
-        # text/plain so existing behaviour is preserved.
-        f = tmp_path / "notes.log"
-        f.write_text("line 1\nline 2\n", encoding="utf-8")
-        async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get(f"/api/file-read?path={f}")
-            assert resp.status == 200
-            assert resp.headers["Content-Type"].startswith("text/plain")
 
     @pytest.mark.asyncio
     async def test_read_utf8_multibyte_round_trip(self, tmp_path, mock_sel, home_patch):
@@ -808,6 +811,28 @@ def _make_send_app(state) -> web.Application:
     return app
 
 
+def _idle_slot(key: str) -> MagicMock:
+    """An idle slot whose admission state lets the queue drain start a turn."""
+    slot = MagicMock()
+    slot.key = key
+    slot.running = False
+    slot.task = None
+    slot._queue = []
+    slot._lock = asyncio.Lock()
+    slot._turn_admission_reserved = False
+    slot.is_closing = False
+    slot._last_turn_auth_required = False
+    slot._stopping = False
+    slot._stop_state = "idle"
+
+    def _append(content, kind="", meta=None, **_kw):
+        slot._queue.append({"id": f"q{len(slot._queue)}", "content": content, "kind": kind})
+        return slot._queue[-1]["id"]
+
+    slot.queue_append = MagicMock(side_effect=_append)
+    return slot
+
+
 def _mock_state(slack_client=None, owner_id=""):
     state = MagicMock()
     state.slack_client = slack_client
@@ -960,13 +985,10 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_session_origin(self):
-        """session='origin' injects into the cron's originating session and triggers a turn."""
+        """session='origin' queues into the cron's originating session and drains a turn."""
         state = _mock_state()
         # Mock a slot that the cron originated from
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        mock_slot = _idle_slot("chat-1-1712793600")
         state.get_slot = MagicMock(return_value=mock_slot)
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
@@ -978,8 +1000,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch(
             "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
@@ -995,15 +1019,17 @@ class TestSendMessage:
                 data = await resp.json()
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
                 # Hot-path: in-memory slot found, no rehydrate needed.
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
+                state.get_slot.assert_any_call("chat-1-1712793600")
                 mock_rehydrate.assert_not_called()
-                # Injected as user message to trigger agent turn
+                # Queued as a cron card, then the queue drain starts the turn
+                # (and writes the inject row).
+                (entry,) = mock_slot._queue
+                assert '[Cron notification from "check pipeline"]' in entry["content"]
+                assert "build failed" in entry["content"]
                 call_args = mock_slot.append.call_args
-                assert call_args[0][0] == "inject"
-                assert '[Cron notification from "check pipeline"]' in call_args[0][1]
-                assert "build failed" in call_args[0][1]
-                assert json.loads(call_args[0][2]) == {"cronLabel": "check pipeline"}
-                mock_run.assert_called_once()
+                assert call_args[0][0] == "queued"
+                assert json.loads(call_args[0][2])["cronLabel"] == "check pipeline"
+                mock_drain.assert_awaited_once_with(state, mock_slot)
                 # Should NOT fall back to notify/Slack
                 state.notify.assert_not_called()
 
@@ -1065,13 +1091,11 @@ class TestSendMessage:
         real _ChatSlot creation) is covered by
         TestRehydrateSlotFromHistory in test_session_restore.py."""
         state = _mock_state()
+        # Rehydrate helper returns a slot reconstructed from persisted history,
+        # and registers it, so later reads find it.
+        mock_slot = _idle_slot("chat-1-1712793600")
         # Simulate cold-start: slot not loaded in memory yet.
-        state.get_slot = MagicMock(return_value=None)
-        # Rehydrate helper returns a slot reconstructed from persisted history.
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        state.get_slot = MagicMock(side_effect=[None, mock_slot, mock_slot])
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
         mock_job = MagicMock()
@@ -1081,8 +1105,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch(
             "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
             return_value=mock_slot,
         ) as mock_rehydrate:
@@ -1096,15 +1122,14 @@ class TestSendMessage:
                 # Session delivery succeeded — no Slack DM fallback.
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
                 # Hot-path miss: get_slot called first, then rehydrate helper.
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
+                assert state.get_slot.call_args_list[0].args == ("chat-1-1712793600",)
                 mock_rehydrate.assert_called_once_with(state, "chat-1-1712793600")
-                # Agent turn was triggered on the revived slot (the whole point of the fix).
-                mock_run.assert_called_once()
-                # Injected as user message with cron-notification contract.
-                call_args = mock_slot.append.call_args
-                assert call_args[0][0] == "inject"
-                assert '[Cron notification from "test-cron"]' in call_args[0][1]
-                assert "update" in call_args[0][1]
+                # Queued on the revived slot, which the drain then starts
+                # (the whole point of the fix).
+                mock_drain.assert_awaited_once_with(state, mock_slot)
+                (entry,) = mock_slot._queue
+                assert '[Cron notification from "test-cron"]' in entry["content"]
+                assert "update" in entry["content"]
                 # Message was injected, not sent as a notification.
                 state.notify.assert_not_called()
 
@@ -1205,10 +1230,7 @@ class TestSendMessage:
     async def test_send_message_session_origin_stateless_cron(self):
         """Stateless cron (session key 'cron:{id}:{run_id}') resolves the job correctly."""
         state = _mock_state()
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        mock_slot = _idle_slot("chat-1-1712793600")
         state.get_slot = MagicMock(return_value=mock_slot)
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
@@ -1219,8 +1241,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -1233,8 +1257,8 @@ class TestSendMessage:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
-                mock_run.assert_called_once()
+                state.get_slot.assert_any_call("chat-1-1712793600")
+                mock_drain.assert_awaited_once_with(state, mock_slot)
 
     @pytest.mark.asyncio
     async def test_send_message_session_rejects_arbitrary_key(self):

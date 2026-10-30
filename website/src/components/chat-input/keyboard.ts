@@ -12,6 +12,7 @@ import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { MentionKeyMods } from './props'
+import type { StopTurnOnEscape } from './stopKey'
 import { applyTextareaListBreak, isAndroid, writeTextareaEdit } from './listContinuation'
 import { listIndentEdit } from '../composerListIndent'
 
@@ -107,7 +108,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -129,6 +130,15 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
   pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
+  /** A bare Escape with the prompt box focused: stop the running turn on this
+   *  slot (soft cancel; a second Escape after the arm window force-kills, via
+   *  the same onStop protocol the Stop button runs). Returns true when it
+   *  claimed the key, so the handler stops before Escape reaches undo/Tab/
+   *  history. The caller owns precedence: it returns false when a picker,
+   *  dictation, an approval, a dialog, IME composition or voice read-back
+   *  owns Escape, or when
+   *  no turn is running (issue #22315). */
+  stopTurnOnEscape?: StopTurnOnEscape
 }) {
   // Set by a bare Escape and spent by the next key: Esc then Tab always moves
   // focus, so a draft made only of list lines is never a keyboard trap.
@@ -139,6 +149,13 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (!MODIFIER_KEYS.has(e.key)) {
       escapedRef.current = e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
     }
+    // Escape stops the running turn on this slot (issue #22315). Runs before
+    // undo/Tab/history so it owns a bare Escape when a turn is running, but the
+    // callback yields when a picker, dictation, an approval, a dialog or IME
+    // composition owns Escape first (see useComposerStopKey; `ime` supplies the
+    // textarea's composition verdict), so dictation-
+    // discard and picker-close keep Escape exactly as they do today.
+    if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && stopTurnOnEscape?.(e, { native: e.nativeEvent, composing: ime.isComposing(e) })) return
     // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
     // full text inline (no chip collapse).
     // Self-clearing: any other keydown resets the flag so it only ever affects
@@ -213,8 +230,11 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Cmd+Shift+Enter (or Ctrl+Shift+Enter) → optimize prompt.
     // Gated on `promptOptimizer` like the Optimize button and plus-menu row:
     // a host that opted out (e.g. the side panel) has no optimize affordance,
-    // so the combo falls through to ordinary Enter/Shift+Enter handling there
-    // instead of rewriting a draft the surface meant to treat literally.
+    // so the chord must NOT optimize there — but it must not SEND there either.
+    // The `ctrl-enter` send binding below excludes Shift (`!e.shiftKey`), so the
+    // chord is a no-op (treated literally) on an opted-out host instead of being
+    // read as a plain Ctrl/Cmd+Enter send — which would submit the draft the
+    // surface meant the user to keep editing.
     // preventDefault always fires when the combo is detected so the browser's
     // default Enter behavior (newline insert) doesn't leak through when the
     // gateway is offline. The action itself is gated on `connected` to match
@@ -239,7 +259,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       return
     }
     const sendKey = sendOnEnter === 'ctrl-enter'
-      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey))
+      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey)
       : (e.key === 'Enter' && !e.shiftKey)
     if (sendKey && !e.defaultPrevented) {
       // The key is ours as soon as it matches the send binding, so claim it before
@@ -290,7 +310,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
 }
 
 /** The `beforeinput` inputTypes the mention value-change seam handles: a

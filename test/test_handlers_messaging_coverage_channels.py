@@ -27,6 +27,7 @@ from handlers_messaging_coverage_helpers import (
     _run,
     _state,
 )
+from named_cases_helpers import named_cases
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
@@ -387,21 +388,30 @@ class TestHelpers:
 
     @pytest.mark.parametrize(
         "value,valid",
-        [("kyle@example.com", True), ("", False), ("a" * 260, False), ("no-at-sign", False)],
-    )
-    def test_is_valid_webex_email(self, value: str, valid: bool) -> None:
-        assert mod._is_valid_webex_email(value) is valid
-
-    @pytest.mark.parametrize(
-        "value,valid",
         [
-            ("kyle@example.com", True),
-            ("has space@example.com", False),
-            ("two@@example.com", False),
-            ("nodot@example", False),
+            *named_cases(
+                "test_is_valid_webex_email",
+                "value,valid",
+                [
+                    ("kyle@example.com", True),
+                    ("", False),
+                    ("a" * 260, False),
+                    ("no-at-sign", False),
+                ],
+            ),
+            *named_cases(
+                "test_is_valid_webex_email_shape_rules",
+                "value,valid",
+                [
+                    ("kyle@example.com", True),
+                    ("has space@example.com", False),
+                    ("two@@example.com", False),
+                    ("nodot@example", False),
+                ],
+            ),
         ],
     )
-    def test_is_valid_webex_email_shape_rules(self, value: str, valid: bool) -> None:
+    def test_webex_email_validity(self, value: str, valid: bool) -> None:
         assert mod._is_valid_webex_email(value) is valid
 
     @pytest.mark.parametrize(

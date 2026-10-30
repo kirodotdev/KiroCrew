@@ -14,7 +14,10 @@ pin both verdicts and the guard they depend on.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -483,6 +486,38 @@ class TestPartialBlock:
             assert "@everyone" not in surface
             assert "<\u200b!channel>" in surface, "the title was dropped, not defanged"
         assert "Write /vault/x.md" in job.last_error
+
+    def test_the_schedule_page_tells_a_partial_block_from_a_total_one(self) -> None:
+        """The Schedule page shows this arm as "Partial" rather than "Error",
+        while ``last_status`` stays ``error``. It recognises the arm by the
+        opening of the reason this arm writes, a pattern it reads from
+        ``website/src/lib/backendPhrases.json`` (backend prose the UI matches),
+        so the pattern must match every partial reason and no total one --
+        otherwise a reworded summary silently turns the badge back into
+        "Error", or a run that did nothing reads as partial."""
+        phrases = json.loads(
+            (Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        pattern = re.compile(phrases["cronPartialGateBlockPattern"])
+
+        partial_runs = (
+            [APPROVED, APPROVED, REFUSED_WRITE],
+            # An unresolved call beside the refusal keeps the run's capability
+            # unknown, so it is the partial arm too, with no approved call.
+            [UNAPPROVED, BLOCKED],
+            # More refusals than the summary names; the head still carries the count.
+            [APPROVED, *[(f"Write /vault/note-{i}.md", False, True) for i in range(6)]],
+        )
+        for gate in partial_runs:
+            job = _run_cron_runs(gate)
+            assert job.last_status == "error", gate
+            assert job.last_error is not None and pattern.match(job.last_error), job.last_error
+
+        total = _run_cron_runs([BLOCKED, ("cat ~/.ssh/id_rsa", False, True)])
+        assert total.last_status == "error"
+        assert total.last_error is not None and not pattern.match(total.last_error)
 
 
 class TestMultiAgentSequence:

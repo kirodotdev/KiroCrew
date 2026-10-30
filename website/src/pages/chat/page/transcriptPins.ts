@@ -151,7 +151,13 @@ export function useTranscriptPins({
     origin: PendingJumpOrigin
   } | null>(null)
   const pinnedJumpPageLoadsRef = useRef(0)
+  // Reads `messagesRef`, not `messages`: the array is new on every streamed
+  // frame, and this resolver sits under `handleJumpToQuote`, a transcript
+  // renderers memo dep, so a `messages` dep re-rendered every mounted row on
+  // every frame. The pending-jump effect below lists `messages` itself, so it
+  // still re-resolves when paged rows land.
   const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string): boolean => {
+    const messages = messagesRef.current
     // Mid-based resolution when a mid is known; ts ONLY for legacy pins that carry none.
     // Falling through to ts with a mid in hand takes a same-tick twin, which is the wrong row.
     const msgIdx = mid
@@ -166,7 +172,7 @@ export function useTranscriptPins({
     setHighlightTs(messageTs)
     setTimeout(() => setHighlightTs(null), 3000)
     return true
-  }, [messages, navToDisplayIndex, setHighlightTs])
+  }, [messagesRef, navToDisplayIndex, setHighlightTs])
   // ⌘↑ / Ctrl+Up target resolution, placed next to the virtualizer seam it
   // depends on: the transcript is virtualized, so the newest user message can
   // sit OUTSIDE the mounted window (a long agent reply just streamed past it)
@@ -178,6 +184,8 @@ export function useTranscriptPins({
     const msgs = messagesRef.current
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role !== 'user') continue
+      // A steer taken back draws no bubble, so it has nothing to edit.
+      if (msgs[i].meta?.steerState === 'retracted') continue
       const di = messageToDisplayIdxRef.current.get(i)
       if (di === undefined) return
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
@@ -278,6 +286,9 @@ export function useTranscriptPins({
     dispatch,
     jumpToLoadedPinnedMessage,
     loadingOlder,
+    // The resolver reads the rows through `messagesRef`, so a page of older
+    // rows landing must re-run this effect on its own.
+    messages,
     pendingPinnedJump,
     slotHasMore,
     slotOldestIndex,

@@ -395,6 +395,26 @@ class TestDeadIdentifier:
         _write(tree, "docs/ok.md", "# Ok\n\nPinned by `test_all_exports_exact`.\n")
         assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    def test_silent_for_a_frontend_integration_test_file(self, tree: Path) -> None:
+        # website/integration/ is the vitest integration suite; a doc citing one
+        # of its files by name names a live test, not a renamed symbol.
+        _write(
+            tree, "website/integration/WidgetButtons.integration.test.tsx", "it('x', () => {})\n"
+        )
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\nCovered by `integration/WidgetButtons.integration.test.tsx`.\n",
+        )
+        assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+    def test_silent_for_a_desktop_shell_symbol(self, tree: Path) -> None:
+        # website/electron/ is the desktop shell; a doc naming one of its symbols
+        # cites something real, not a renamed symbol.
+        _write(tree, "website/electron/auto-update.js", "function checkForUpdates() {}\n")
+        _write(tree, "docs/ok.md", "# Ok\n\nIt drives `checkForUpdates`.\n")
+        assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
     @pytest.mark.parametrize("prefix", sorted(gate._IDENT_PLACEHOLDER_PREFIXES))
     def test_silent_for_a_documentation_placeholder(self, tree: Path, prefix: str) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
@@ -414,6 +434,118 @@ class TestDeadIdentifier:
             "# Rfc\n\nThis adds `planned_coordinator`.\n",
         )
         assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+
+class TestAnchorExists:
+    """A section link lands on a section, or it reads as working while landing at the top."""
+
+    def test_flags_a_same_page_link_to_a_heading_that_is_not_there(self, tree: Path) -> None:
+        _write(tree, "docs/ok.md", "# Ok\n\n## Real\n\nSee [it](#gone).\n")
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {"#gone"}
+
+    def test_flags_a_cross_file_link_whose_heading_changed(self, tree: Path) -> None:
+        _write(tree, "docs/other.md", "# Other\n\n## Takes the slot's machinery\n")
+        _write(tree, "docs/ok.md", "# Ok\n\n[x](other.md#takes-the-slots-machinery-discord)\n")
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {
+            "other.md#takes-the-slots-machinery-discord"
+        }
+
+    def test_a_dead_anchor_fails_the_run_until_it_is_baselined(self, tree: Path) -> None:
+        _write(tree, "docs/ok.md", "# Ok\n\n[x](#gone)\n")
+        findings = gate.run(tree)
+        assert findings.total() == 1
+        gate.apply_baseline(findings, {(gate.CHECK_ANCHOR_EXISTS, "docs/ok.md", "#gone")})
+        assert findings.total() == 0
+
+    def test_a_clean_page_reports_nothing(self, tree: Path) -> None:
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\n"
+            "### `reconfigure(cfg)` / `apply_limits(cfg, *, max=None)` — live config\n\n"
+            "## Notes\n\n## Notes\n\n"
+            "Setext heading\n--------------\n\n"
+            "## The `_private` store and _emphasis_\n\n"
+            '- <a id="a-bullet"></a>**A bullet**\n\n'
+            "[a](#reconfigurecfg--apply_limitscfg--maxnone--live-config) [b](#notes) "
+            "[c](#notes-1) [d](#setext-heading) [e](#the-_private-store-and-emphasis) "
+            "[f](#a-bullet) [g](#Notes) [h](#a%2Dbullet)\n",
+        )
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == set()
+
+    @pytest.mark.parametrize(
+        ("heading", "slug"),
+        [
+            # A code span renders verbatim: its `<...>` and `_` are text.
+            (
+                "Dashboard Delivery (`prompt:dashboard:<slot>`)",
+                "dashboard-delivery-promptdashboardslot",
+            ),
+            ("`GET /api/items?source_id=<id>`", "get-apiitemssource_idid"),
+            # An unpaired underscore is text; a pair is emphasis.
+            ("Multiplexed _bg runtime", "multiplexed-_bg-runtime"),
+            ("The `_private` store and _emphasis_", "the-_private-store-and-emphasis"),
+            ("__a _b_ c__", "a-b-c"),
+            # An entity renders to its character, which the rule then drops.
+            ("A &amp; B", "a--b"),
+            # HTML and a link URL render to nothing but their text.
+            ("<code>x</code> and [the doc](other.md)", "x-and-the-doc"),
+        ],
+    )
+    def test_slugs_the_heading_as_github_renders_it(self, heading: str, slug: str) -> None:
+        assert gate._github_slug(heading) == slug
+
+    def test_numbers_a_repeat_past_a_literal_suffixed_heading(self, tree: Path) -> None:
+        # github-slugger skips any slug already handed out, so the second
+        # `Notes` is `notes-2`, not a second `notes-1`.
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\n## Notes\n\n## Notes-1\n\n## Notes\n\n[a](#notes-1) [b](#notes-2)\n",
+        )
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == set()
+
+    def test_a_tag_shown_inside_a_code_span_is_no_anchor(self, tree: Path) -> None:
+        _write(
+            tree, "docs/ok.md", '# Ok\n\nWrite `<a id="fake"></a>` to anchor it.\n\n[x](#fake)\n'
+        )
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {"#fake"}
+
+    def test_a_heading_inside_a_fence_is_no_anchor(self, tree: Path) -> None:
+        _write(tree, "docs/ok.md", "# Ok\n\n```md\n## Sample\n```\n\n[x](#sample)\n")
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {"#sample"}
+
+    def test_a_rule_under_a_list_item_is_no_setext_heading(self, tree: Path) -> None:
+        _write(tree, "docs/ok.md", "# Ok\n\n- item\n---\n\n[x](#item) [y](#--item)\n")
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {"#item", "#--item"}
+
+    def test_leaves_links_it_cannot_judge_alone(self, tree: Path) -> None:
+        # External pages, a non-markdown target, a template, and a missing file
+        # (the broken-link check's finding, not this one's).
+        _write(tree, "docs/notes.txt", "plain\n")
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\n[a](https://example.com/x.md#nope) [b](notes.txt#nope) "
+            "[c](${base}.md#nope) [d](gone.md#nope)\n",
+        )
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == set()
+
+    def test_judges_only_links_written_under_docs(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/docs/README.md", "# Packaged\n\n[x](#gone)\n")
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == set()
+
+    def test_a_link_from_docs_into_another_tree_is_judged(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/docs/README.md", "# Packaged\n\n## Setup\n")
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\n[a](../src/kiro_crew/docs/README.md#setup) "
+            "[b](../src/kiro_crew/docs/README.md#install)\n",
+        )
+        assert _tokens(tree, gate.CHECK_ANCHOR_EXISTS) == {
+            "../src/kiro_crew/docs/README.md#install"
+        }
 
 
 class TestBaseline:
@@ -723,6 +855,7 @@ class TestShippedBaseline:
             gate.CHECK_TABLE_ROW_MERGE,
             gate.CHECK_COUPLING_COMPLETENESS,
             gate.CHECK_DEAD_IDENTIFIER,
+            gate.CHECK_ANCHOR_EXISTS,
         }
         assert {check for check, _path, _token in recorded} <= known
 

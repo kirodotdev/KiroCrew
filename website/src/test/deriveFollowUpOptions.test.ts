@@ -612,3 +612,56 @@ describe('deriveFollowUpOptions select mode', () => {
     expect(deriveFollowUpOptions([assistant('Plan ready [OPTION: Go | Cancel]')], true).followUpMulti).toBe(true)
   })
 })
+
+describe('deriveFollowUpOptions empty-result identity', () => {
+  // Consumers memoize on `followUpOptions`; a fresh [] per streamed chunk
+  // re-renders the composer even though nothing is on offer.
+  it('returns the same empty array for every option-less derivation', () => {
+    const streaming = deriveFollowUpOptions([user('hi'), assistant('partial')], true).followUpOptions
+    expect(deriveFollowUpOptions([user('hi'), assistant('partial more')], true).followUpOptions).toBe(streaming)
+    expect(deriveFollowUpOptions([user('hi')], false).followUpOptions).toBe(streaming)
+    expect(deriveFollowUpOptions([user('hi'), assistant('no markers here')], false).followUpOptions).toBe(streaming)
+    expect(deriveFollowUpOptions([], false).followUpOptions).toBe(streaming)
+    expect(streaming).toEqual([])
+  })
+
+  it('still returns a fresh array when options are on offer', () => {
+    const a = deriveFollowUpOptions([assistant('Pick [OPTIONS: A | B]')], false)
+    expect(a.followUpOptions).toEqual(['A', 'B'])
+    expect(a.followUpSourceKey).not.toBeNull()
+  })
+})
+
+describe('deriveFollowUpOptions across a say-nothing reply', () => {
+  // A quiet patrol cycle answers with a bare U+200B. The transcript does not draw that
+  // row, so the question above it is still what the user reads, and its chips stay.
+  const silent = (content = '\u200b'): ChatMessage => assistant(content)
+
+  it('keeps the chips of the question above an invisible-only reply', () => {
+    const asked = assistant(OPTIONS_MSG)
+    const derived = deriveFollowUpOptions([user('go'), asked, silent()], false)
+    expect(derived.followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    expect(derived.followUpSourceKey).toBe(deriveFollowUpOptions([user('go'), asked], false).followUpSourceKey)
+  })
+
+  it('crosses a run of them, whitespace and other format characters included', () => {
+    const rows = [user('go'), assistant(OPTIONS_MSG), silent(), silent(' \u200b\n'), silent('\u2060')]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  it('still clears the chips when a later reply has words', () => {
+    const rows = [user('go'), assistant(OPTIONS_MSG), silent(), assistant('Done, nothing to pick.')]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+
+  it('does not cross an invisible reply that carries file changes, which is drawn', () => {
+    const withChips: ChatMessage = { ...silent(), meta: { file_changes: [{ path: '/a', kind: 'edit' }] } }
+    const rows = [user('go'), assistant(OPTIONS_MSG), withChips]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+
+  it('does not reach past the user turn the silent reply answered', () => {
+    const rows = [assistant(OPTIONS_MSG), user('Beta'), silent()]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+})

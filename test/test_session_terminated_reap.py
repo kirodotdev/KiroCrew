@@ -26,6 +26,7 @@ probe that cannot answer.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -505,7 +506,9 @@ class TestPendingInjectionIsSpared:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_an_injection_starting_inside_the_rss_probe_await_spares_it(self, cfg) -> None:
+    async def test_an_injection_starting_inside_the_rss_probe_await_spares_it(
+        self, cfg, caplog
+    ) -> None:
         """The RSS ceiling reaches ``reset`` through the same suspending wrapper.
 
         So it inherits the same window, and closing it only on the idle sweep's
@@ -540,10 +543,15 @@ class TestPendingInjectionIsSpared:
             patch.object(session_mod.platform_compat, "IS_WINDOWS", False),
             patch("kiro_crew.session._build_child_map", return_value={}),
             patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+            caplog.at_level(logging.DEBUG, logger="kiro_crew.session"),
         ):
             await mgr._rss_threshold_check()
 
         recycled.assert_not_awaited()
+        assert mgr._cleanup_boundary().state.rss_recycled == {}
+        assert (
+            f"RSS recycle: session {key} began an injection mid-check; skipping" in caplog.messages
+        )
 
     @pytest.mark.asyncio
     async def test_the_rss_ceiling_still_recycles_when_nothing_is_injecting(self, cfg) -> None:
@@ -574,6 +582,8 @@ class TestPendingInjectionIsSpared:
             await mgr._rss_threshold_check()
 
         recycled.assert_awaited_once()
+        assert recycled.await_args.args[0] == key
+        assert set(mgr._cleanup_boundary().state.rss_recycled) == {key}
 
     @pytest.mark.asyncio
     async def test_an_injection_starting_while_reset_awaits_the_lock_spares_it(self, cfg) -> None:

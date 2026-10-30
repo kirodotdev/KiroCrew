@@ -21,7 +21,9 @@ import os
 import shutil
 import socket
 import stat
+import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -207,6 +209,42 @@ def test_singleton_lock_file_is_created_beside_the_endpoint(tmp_path: Path) -> N
         assert transport.lock_path_for(sock).exists()
     finally:
         os.close(fd)
+
+
+# Independent of the code under test: an open Windows file cannot be unlinked,
+# so the delete-then-acquire sequence does not exist there.
+_POSIX_UNLINK_WHILE_OPEN = sys.platform != "win32"
+
+
+@pytest.mark.skipif(not _POSIX_UNLINK_WHILE_OPEN, reason="Windows cannot unlink an open file")
+def test_deleting_the_lock_file_does_not_admit_a_second_daemon(tmp_path: Path) -> None:
+    """The incumbent keeps its flock on the unlinked inode; the next
+    daemon must still lose, because the anchor directory is still held."""
+    sock = tmp_path / "gateway.sock"
+    transport.prepare_dir(sock)
+    first = transport.acquire_singleton_lock(sock)
+    assert first is not None
+    try:
+        transport.lock_path_for(sock).unlink()
+        assert transport.acquire_singleton_lock(sock) is None
+        assert transport.singleton_lock_free(sock) is False
+        # The anchor holds an entry, so a plain rmdir cannot retire it either.
+        with pytest.raises(OSError):
+            os.rmdir(transport.anchor_path_for(sock))
+    finally:
+        # Plain os.close, as existing callers do: the next acquire finds the
+        # anchor stale and frees it.
+        os.close(first)
+    second = transport.acquire_singleton_lock(sock)
+    assert second is not None
+    os.close(second)
+
+
+def test_singleton_refusal_says_what_to_do_instead_of_deleting(tmp_path: Path) -> None:
+    sock = tmp_path / "gateway.sock"
+    msg = transport.singleton_refusal_message(sock)
+    assert "kirocrew restart" in msg
+    assert f"Do not delete {transport.lock_path_for(sock)}" in msg
 
 
 # --- POSIX serve / connect ---------------------------------------------------
@@ -397,6 +435,73 @@ async def test_remove_stale_is_a_noop_on_windows(
     assert sock.exists()
 
 
+def _record_fs_threads(monkeypatch: pytest.MonkeyPatch, sock: Path) -> dict[str, list[int]]:
+    """Record the thread of each ``os.stat`` / ``Path.unlink`` call on ``sock``.
+
+    Both wrappers delegate to the real call, so the test runs against the real
+    filesystem; only calls on the endpoint path are recorded, which keeps the
+    executor's and pytest's own stats out of the record.
+    """
+    seen: dict[str, list[int]] = {"stat": [], "unlink": []}
+    real_stat = os.stat
+    real_unlink = Path.unlink
+
+    def _stat(p: Any, *a: Any, **kw: Any) -> os.stat_result:
+        if os.fspath(p) == os.fspath(sock):
+            seen["stat"].append(threading.get_ident())
+        return real_stat(p, *a, **kw)
+
+    def _unlink(self: Path, *a: Any, **kw: Any) -> None:
+        if os.fspath(self) == os.fspath(sock):
+            seen["unlink"].append(threading.get_ident())
+        real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(transport.os, "stat", _stat)
+    monkeypatch.setattr(Path, "unlink", _unlink)
+    return seen
+
+
+@pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX socket files")
+@pytest.mark.asyncio
+async def test_remove_stale_touches_the_filesystem_off_the_event_loop(
+    sock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The manager's respawn awaits this on the gateway loop: a stat or unlink
+    against a slow state directory there would stall every session."""
+    sock = sock_dir / "gateway.sock"
+    transport.prepare_dir(sock)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(sock))
+    s.close()
+    seen = _record_fs_threads(monkeypatch, sock)
+    loop_thread = threading.get_ident()
+
+    await transport.remove_stale(sock)
+    calls = {k: list(v) for k, v in seen.items()}  # before exists() stats again
+
+    assert not sock.exists()
+    assert len(calls["stat"]) == 1 and len(calls["unlink"]) == 1, calls
+    assert loop_thread not in calls["stat"] + calls["unlink"]
+
+
+@pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX socket files")
+@pytest.mark.asyncio
+async def test_remove_stale_stats_a_missing_endpoint_off_the_event_loop(
+    sock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing endpoint still returns quietly, and the stat that finds it
+    missing runs on a worker thread too."""
+    sock = sock_dir / "gateway.sock"
+    seen = _record_fs_threads(monkeypatch, sock)
+    loop_thread = threading.get_ident()
+
+    await transport.remove_stale(sock)
+
+    assert len(seen["stat"]) == 1, seen
+    assert seen["stat"][0] != loop_thread
+    assert seen["unlink"] == []
+
+
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX socket files")
 def test_teardown_unlinks_on_posix_and_not_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -411,8 +516,12 @@ def test_teardown_unlinks_on_posix_and_not_on_windows(
     assert not sock.exists()
 
 
-def test_teardown_tolerates_a_missing_endpoint(tmp_path: Path) -> None:
-    transport.teardown(tmp_path / "never-existed.sock")
+def test_teardown_tolerates_a_missing_endpoint(tmp_path: Path, caplog) -> None:
+    with caplog.at_level("WARNING"):
+        transport.teardown(tmp_path / "never-existed.sock")
+    # A missing file is the clean case, not the "could not unlink" warning.
+    assert "could not unlink" not in caplog.text
+    assert list(tmp_path.iterdir()) == []
 
 
 # --- TransportServer wrapper -------------------------------------------------
@@ -1072,7 +1181,8 @@ async def test_gatewayd_offloads_prepare_dir_from_the_event_loop(
     monkeypatch.setattr(gw, "warm_code_fingerprint", AsyncMock(return_value="fp-test"))
     # Lose the singleton election immediately after prepare_dir so the daemon
     # returns without binding anything.
-    monkeypatch.setattr(gw.transport, "acquire_singleton_lock", lambda _p: None)
+    lock_probe = _LoopProbe()
+    monkeypatch.setattr(gw.transport, "acquire_singleton_lock", lock_probe)
 
     await gw.run_gatewayd(
         socket_path=tmp_path / "gateway.sock",
@@ -1083,6 +1193,8 @@ async def test_gatewayd_offloads_prepare_dir_from_the_event_loop(
 
     assert probe.calls == 1
     assert probe.on_event_loop is False, "prepare_dir ran inline on the daemon loop"
+    assert lock_probe.calls == 1
+    assert lock_probe.on_event_loop is False, "singleton lock ran inline on the daemon loop"
 
 
 # --- connect() honours the server principal verdict ---------------------------

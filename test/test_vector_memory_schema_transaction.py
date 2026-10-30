@@ -193,7 +193,7 @@ def test_the_schema_step_of_an_up_to_date_store_takes_no_write_lock(
 ):
     """The store is empty, so nothing after the schema step writes either.
 
-    A store holding data still writes on open: see the populated test below.
+    A store holding data must not write on open either: see the populated test below.
     """
     db_path = where(tmp_path)
     first = VectorMemoryStore(db_path=db_path)
@@ -219,37 +219,52 @@ def test_the_schema_step_of_an_up_to_date_store_takes_no_write_lock(
     assert not [sql for sql in statements if sql.lstrip().upper().startswith("BEGIN")]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=sqlite3.OperationalError,
-    reason=(
-        "#21056: limit_v1_accepted_history's open-time DELETE begins a write on every "
-        "open even when it deletes nothing, so the open waits on another writer"
-    ),
-)
 @pytest.mark.parametrize(("where", "lineage"), _FRESH_FILES)
 def test_a_populated_up_to_date_store_opens_while_another_connection_holds_the_write_lock(
     tmp_path, monkeypatch, where, lineage
 ):
+    """An open with nothing to trim issues no DML, so it never waits on a writer.
+
+    ``algorithm_version`` (not the lineage) selects the V1 history bound, so both
+    lineages run the open-time pass over a store that holds an accepted revision.
+    """
     monkeypatch.setattr(lifecycle, "_BUSY_TIMEOUT_MS", 200)
     db_path = where(tmp_path)
     first = VectorMemoryStore(db_path=db_path)
     first.init()
     try:
         first.set_semantic("pref.a", "x", 0.9, "user_explicit")
+        assert first.algorithm_version == "v1"
+        assert (
+            first.db.execute(
+                "SELECT count(*) FROM memory_revisions WHERE status = 'accepted'"
+            ).fetchone()[0]
+            == 1
+        )
     finally:
         first.close()
 
+    statements: list[str] = []
+    monkeypatch.setattr(vector_memory, "sqlite3", _TracingSqlite(statements))
     holder = sqlite3.connect(db_path, isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")
     try:
         store = VectorMemoryStore(db_path=db_path)
         # Bounded by the store's busy_timeout, shortened above, after which it raises.
         store.init()
-        store.close()
+        try:
+            assert store._lineage == lineage
+        finally:
+            store.close()
     finally:
         holder.execute("ROLLBACK")
         holder.close()
+    written = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith(("BEGIN", "INSERT", "UPDATE", "DELETE", "REPLACE"))
+    ]
+    assert written == []
 
 
 @pytest.mark.parametrize(("where", "lineage"), _FRESH_FILES)

@@ -94,7 +94,7 @@ beforeEach(() => {
   mockApi.skillTree.mockResolvedValue({ entries: [] })
   mockApi.skillsPending.mockResolvedValue({ pending: [ROW_A, ROW_B] })
   mockApi.skillPendingDetail.mockImplementation((slug: string) =>
-    Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [] }),
+    Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [], content_sha256: 'c'.repeat(64) }),
   )
 })
 
@@ -160,7 +160,7 @@ describe('?review=<slug> deep link', () => {
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    await waitFor(() => expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('beta-skill'))
+    await waitFor(() => expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('beta-skill', 'c'.repeat(64)))
     // The queue is now empty AND the latch is cleared, so the panel unmounts
     // rather than accusing someone else of resolving the user's own candidate.
     await waitFor(() =>
@@ -201,7 +201,7 @@ describe('?review=<slug> deep link', () => {
     qc.setQueryData(['skills-pending-detail', 'beta-skill'], {
       name: 'auto/beta-skill',
       content: 'STALE BODY FROM A PRIOR CANDIDATE',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
     })
     mockApi.skillsPending.mockResolvedValue({ pending: [ROW_B] })
     render(

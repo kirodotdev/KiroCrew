@@ -8,6 +8,7 @@ out of the PR's own hands.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -736,3 +737,101 @@ def test_stale_sticky_is_refreshed_when_sensitive_file_reverted(mod, monkeypatch
 
 def test_no_sticky_is_created_without_sensitive_file(mod, monkeypatch):
     assert _clean_run(mod, monkeypatch, []) == []
+
+
+# -- Transient API reads ---------------------------------------------------------
+
+
+def _err(stderr):
+    return subprocess.CalledProcessError(1, ["gh", "api"], stderr=stderr)
+
+
+@pytest.fixture
+def gh_calls(mod, monkeypatch):
+    """Script `gh api` answers in order: an exception is raised, a str is stdout."""
+    state = {"answers": [], "calls": 0, "sleeps": []}
+
+    def run(cmd, **kwargs):
+        state["calls"] += 1
+        answer = state["answers"].pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return subprocess.CompletedProcess(cmd, 0, stdout=answer, stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    # raising=False: the retry tests must fail, not error, with the fix reverted.
+    monkeypatch.setattr(mod, "_sleep", state["sleeps"].append, raising=False)
+    return state
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "gh: Server Error (HTTP 502)",
+        "gh: Service Unavailable (HTTP 503)",
+        "gh: API rate limit exceeded for installation. (HTTP 403)",
+        "gh: Too Many Requests (HTTP 429)",
+        'Get "https://api.github.com/...": read: connection reset by peer',
+    ],
+)
+def test_transient_read_failure_is_retried(mod, gh_calls, stderr):
+    gh_calls["answers"] = [_err(stderr), '{"ok": 1}']
+    assert mod._gh_json("repos/o/r/pulls/1") == {"ok": 1}
+    assert gh_calls["calls"] == 2
+    assert gh_calls["sleeps"] == [mod.READ_RETRY_DELAYS[0]]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    ["gh: Not Found (HTTP 404)", "gh: Resource not accessible by integration (HTTP 403)"],
+)
+def test_definite_api_answer_is_not_retried(mod, gh_calls, stderr):
+    # A 404 is how permission_of learns "not a collaborator"; waiting on it
+    # would only slow the check down.
+    gh_calls["answers"] = [_err(stderr)]
+    with pytest.raises(subprocess.CalledProcessError):
+        mod._gh_json("repos/o/r/collaborators/x/permission")
+    assert gh_calls["calls"] == 1
+    assert gh_calls["sleeps"] == []
+
+
+def test_bad_json_is_not_retried(mod, gh_calls):
+    gh_calls["answers"] = ["not json"]
+    with pytest.raises(json.JSONDecodeError):
+        mod._gh_json("repos/o/r/pulls/1")
+    assert gh_calls["calls"] == 1
+
+
+def test_read_that_keeps_failing_still_fails_closed(mod, gh_calls, monkeypatch, capsys):
+    attempts = len(mod.READ_RETRY_DELAYS) + 1
+    gh_calls["answers"] = [_err("gh: Bad Gateway (HTTP 502)\nmore detail")] * attempts
+    monkeypatch.setenv("REPO", "o/r")
+    monkeypatch.setenv("PR", "1")
+    monkeypatch.setenv("EVENT_HEAD_SHA", HEAD)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert mod.main() == 2
+    assert gh_calls["calls"] == attempts
+    assert gh_calls["sleeps"] == list(mod.READ_RETRY_DELAYS)
+    out = capsys.readouterr().out
+    assert (
+        "::error::Could not read the PR from the API "
+        "(CalledProcessError: gh: Bad Gateway (HTTP 502)); re-run this job."
+    ) in out
+    assert "more detail" not in out
+
+
+def test_one_failed_pr_read_no_longer_fails_the_check(mod, gh_calls, monkeypatch):
+    pr = dict(_pr(head_repo={"full_name": "someone/r"}), changed_files=1)
+    gh_calls["answers"] = [
+        _err("gh: Server Error (HTTP 502)"),
+        json.dumps(pr),
+        json.dumps([[{"filename": "README.md"}]]),
+        json.dumps([[]]),
+        json.dumps([[]]),
+    ]
+    monkeypatch.setenv("REPO", "o/r")
+    monkeypatch.setenv("PR", "1")
+    monkeypatch.setenv("EVENT_HEAD_SHA", HEAD)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert mod.main() == 0
+    assert gh_calls["answers"] == []

@@ -543,7 +543,6 @@ class TestVersions:
 class TestPruning:
     def test_old_versions_pruned(self, store: ArtifactStore) -> None:
         store.create(name="x", content="v1")
-        # Create more than MAX_VERSIONS revisions.
         for i in range(2, MAX_VERSIONS + 5):
             store.update("x", content=f"v{i}", snapshot=True)
         versions = store.list_versions("x")

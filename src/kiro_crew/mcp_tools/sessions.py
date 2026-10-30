@@ -23,6 +23,7 @@ from typing import Any
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
+from kiro_crew.history_search import split_title_scope
 from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     LIST_SESSIONS_SCHEMA,
@@ -208,6 +209,10 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
     ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._SEARCH_HISTORY_SCAN)
+    # A leading ``title:`` term only picks which titles qualify; the transcript
+    # was searched for the text after it, so the excerpt looks for that text too.
+    scope = split_title_scope(query)
+    snippet_query = query if scope is None else scope.rest
 
     results: list[dict] = []
     for meta in ranked:
@@ -241,7 +246,7 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
             rows_for_snippet = cl.derive_messages(key)
         except TranscriptWithheld:
             continue
-        snippet = mcp_core._extract_history_snippet(rows_for_snippet, query)
+        snippet = mcp_core._extract_history_snippet(rows_for_snippet, snippet_query)
         results.append(
             {
                 "session_key": key,

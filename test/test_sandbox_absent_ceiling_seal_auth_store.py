@@ -66,8 +66,11 @@ class TestTheAuthStoreStagingReconciliation:
         IS the fix -- with the refusal first this raises and no later spawn can ever clear
         it.
         """
-        sandbox._reconcile_auth_store_staging_links()
-        sandbox._refuse_aliased_masked_leaves()  # does not raise
+        key, stale = staged_link
+        assert sandbox._reconcile_auth_store_staging_links() == [str(stale)]
+        assert sandbox._refuse_aliased_masked_leaves() == ()
+        assert key.stat().st_nlink == 1
+        assert key.read_bytes() == b"k" * 32
 
     def test_it_syncs_the_keys_parent_BEFORE_dropping_the_second_name(
         self, staged_link, monkeypatch

@@ -44,6 +44,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import native_skill_projection_helpers
 import pytest
 from test_update_provider import _UNALLOCATABLE_PID
 
@@ -52,6 +53,10 @@ from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
+
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the fake watcher is driven by inotify"

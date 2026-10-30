@@ -173,11 +173,9 @@ class TestInstall:
         result = install_app(src)
         assert result.ok
         assert result.name == "test-app"
-        # Verify files copied
         installed_dir = app_home / "apps" / "test-app"
         assert installed_dir.is_dir()
         assert (installed_dir / APP_MANIFEST_FILENAME).is_file()
-        # Verify installed.json
         meta = _read_installed("test-app")
         assert meta is not None
         assert meta.name == "test-app"
@@ -218,7 +216,6 @@ class TestInstall:
             agents=["agents/analyst.json"],
             skills=["skills/triage"],
         )
-        # Create the referenced files
         (src / "agents").mkdir()
         (src / "agents" / "analyst.json").write_text('{"name": "analyst"}')
         (src / "skills" / "triage").mkdir(parents=True)
@@ -226,7 +223,6 @@ class TestInstall:
 
         result = install_app(src)
         assert result.ok
-        # Verify files were copied
         installed = app_home / "apps" / "test-app"
         assert (installed / "agents" / "analyst.json").is_file()
         assert (installed / "skills" / "triage" / "SKILL.md").is_file()
@@ -570,6 +566,87 @@ class TestUninstall:
         assert result.ok
         assert not (app_home / "apps" / "test-app").exists()
 
+    @staticmethod
+    def _sharing_violation(path):
+        """The ``PermissionError`` Windows raises deleting a file another process holds open."""
+        exc = PermissionError(13, "The process cannot access the file", str(path))
+        exc.winerror = 32
+        return exc
+
+    def _hold_app_dir(self, monkeypatch, app_root, *, releases_after, exc_factory):
+        """Make ``rmtree`` of *app_root* fail ``releases_after`` times, then delete it."""
+        import kiro_crew.apps.manager_uninstall as uninstall_mod
+
+        monkeypatch.setattr(uninstall_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def held_rmtree(path, *args, **kwargs):
+            if str(path) == str(app_root):
+                attempts.append(path)
+                if releases_after is None or len(attempts) <= releases_after:
+                    raise exc_factory(Path(path) / "backend.log")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", held_rmtree)
+        return attempts
+
+    @pytest.mark.parametrize("keep_data", [False, True])
+    def test_uninstall_retries_a_file_held_open_until_it_is_released(
+        self, tmp_path, app_home, monkeypatch, keep_data
+    ):
+        """A sharing violation on the app dir delete clears once the holder lets go."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=2, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=keep_data)
+
+        assert result.ok, result.error
+        assert len(attempts) == 3
+        assert not (app_root / APP_MANIFEST_FILENAME).exists()
+
+    def test_uninstall_fails_naming_the_file_still_held_after_the_retries(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A holder that never releases fails the purge, names the file, keeps the app."""
+        import kiro_crew.apps.manager_uninstall as uninstall_mod
+
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=None, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == uninstall_mod._RMTREE_MAX_ATTEMPTS
+        assert str(app_root / "backend.log") in result.error
+        assert "held open by another process" in result.error
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
+    def test_uninstall_does_not_retry_a_permission_error_that_is_not_a_sharing_violation(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Only winerror 32/33 is transient; any other refusal fails on the first attempt."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch,
+            app_root,
+            releases_after=None,
+            exc_factory=lambda path: PermissionError(13, "Access is denied", str(path)),
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == 1
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
     def test_uninstall_removes_the_agent_lock_and_gateway_overlay(
         self, tmp_path, app_home, monkeypatch
     ):
@@ -658,15 +735,12 @@ class TestUninstall:
     def test_uninstall_keep_data(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write some data
         data_dir = app_home / "apps" / "test-app" / "data"
         (data_dir / "cache.json").write_text('{"key": "value"}')
 
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
-        # Data preserved
         assert (app_home / "apps" / "test-app" / "data" / "cache.json").is_file()
-        # App files removed
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_uninstall_keeps_data_when_the_app_dir_is_reached_through_a_link(
@@ -881,14 +955,12 @@ class TestUninstall:
         """Reinstall after default uninstall must preserve user data."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "priorities.md").write_text("- item1\n- item2\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
         assert (data_dir / "priorities.md").is_file()
@@ -898,7 +970,6 @@ class TestUninstall:
         result = install_app(src2)
         assert result.ok
 
-        # User data must survive
         assert (data_dir / "priorities.md").read_text(encoding="utf-8") == "- item1\n- item2\n"
         assert (data_dir / "state" / "oncall.json").read_text(
             encoding="utf-8"
@@ -908,14 +979,12 @@ class TestUninstall:
         """If copytree fails after data/ was preserved, rollback must restore data/."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "config.yaml").write_text("oncall:\n  rotation: my-rotation\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         uninstall_app("test-app", keep_data=True)
         assert (data_dir / "config.yaml").is_file()
 
@@ -927,11 +996,9 @@ class TestUninstall:
         monkeypatch.setattr("shutil.copytree", failing_copytree)
         result = install_app(src2)
 
-        # Install must fail
         assert not result.ok
         assert "failed to copy app files" in result.error
 
-        # Rollback must have restored data/
         assert data_dir.is_dir(), "data/ directory must be restored after rollback"
         assert (data_dir / "config.yaml").read_text(
             encoding="utf-8"
@@ -959,11 +1026,9 @@ class TestUninstall:
         result = install_app(src)
         assert not result.ok
         assert "unsafe app name" in result.error
-        # Verify SEL rejection event was emitted
         assert len(sel_calls) == 1
         assert sel_calls[0]["outcome"] == "rejected"
         assert sel_calls[0]["operation"] == "path_safety_check"
-        # Verify nothing was written to disk
         assert not (app_home / "apps" / "evil-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_install_reclaims_stale_tmp_when_data_absent(self, tmp_path, app_home):
@@ -1030,7 +1095,6 @@ class TestUninstall:
         src = _make_app_source(tmp_path)
         result = install_app(src)
         assert result.ok
-        # Must have emitted a success event
         success_events = [c for c in sel_calls if c.get("outcome") == "success"]
         assert len(success_events) == 1
         assert success_events[0]["operation"] == "install"

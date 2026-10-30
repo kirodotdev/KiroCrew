@@ -37,6 +37,7 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _sel
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform import redact_log_via_context
 
 # The family logs under the facade's name, which log filters and caplog assertions key on.
@@ -253,8 +254,17 @@ HONOUR_TOOL_REFS_KEY = "honourToolRefs"
 #: spec's ``tools`` and never copied from the spec itself.
 POLICY_INCLUDE_KEY = "include"
 
-#: The managed server an opted-in spec's per-tool refs narrow.
-INCLUDE_LIST_SERVER = "kirocrew-core"
+#: The managed servers an opted-in spec's per-tool refs narrow: every server Kiro
+#: Crew ships, since each serves through the shared dispatcher that enforces an
+#: include list by its own server name.
+INCLUDE_LIST_SERVERS: tuple[str, ...] = KIROCREW_BIN_MCP_SERVERS
+
+#: The spec key, inside ``managedToolPolicy``, naming managed servers the agent is
+#: denied WHOLE. Each one is answered as an empty ``include`` list, so that server
+#: lists nothing and refuses every call. The app framework writes it for a managed
+#: server whose tool names it could not read (``apps.permissions``), where a
+#: name-based ``exclude`` cannot cover the server.
+EXCLUDE_SERVERS_KEY = "excludeServers"
 
 
 def _policy_answer(
@@ -262,39 +272,60 @@ def _policy_answer(
 ) -> dict[str, Any]:
     """The policy body the endpoint answers, given the spec's own ``managedToolPolicy``.
 
-    For a spec without ``honourToolRefs: true`` that is the policy as written,
-    less any ``include`` key: an include list is derived from the spec's
-    ``tools`` here, and an ``include`` written by hand is not a field the
-    managed servers read from a spec.
+    For a spec without ``honourToolRefs: true`` or ``excludeServers`` that is the
+    policy as written, less any ``include`` key: an include list is derived here,
+    and an ``include`` written by hand is not a field the managed servers read
+    from a spec.
 
-    With the opt-in set and the spec granting :data:`INCLUDE_LIST_SERVER` ONLY
-    through ``@<server>/<tool>`` refs, its set of tool names goes under
-    ``include``; the server lists those and refuses any other call.
+    With the opt-in set, each server in :data:`INCLUDE_LIST_SERVERS` that the spec
+    grants ONLY through ``@<server>/<tool>`` refs gets its set of tool names under
+    ``include``; that server lists those and refuses any other call.
     A whole-server grant -- ``*``, a bare ``@<server>``, a glob tool part --
-    yields no entry, so the server answers exactly as it does without the opt-in.
+    yields no entry, so that server answers exactly as it does without the opt-in.
+
+    Every server named in :data:`EXCLUDE_SERVERS_KEY` is answered as an EMPTY
+    ``include`` entry, overriding any per-tool entry for it: that server lists
+    nothing and refuses every call. The key itself is not answered.
 
     Raises :class:`ManagedToolPolicyUnreadable` for an opt-in that is present
-    but not a bool: the operator wrote something there and whether it narrows
+    but not a bool, or an ``excludeServers`` that is present but not a list of
+    server names: the operator wrote something there and whether it narrows
     the agent is unknown.
     """
-    answer = {k: v for k, v in policy.items() if k != POLICY_INCLUDE_KEY}
+    answer = {k: v for k, v in policy.items() if k not in (POLICY_INCLUDE_KEY, EXCLUDE_SERVERS_KEY)}
     opt_in = policy.get(HONOUR_TOOL_REFS_KEY, False)
-    if not isinstance(opt_in, bool):
+    withheld = policy.get(EXCLUDE_SERVERS_KEY, [])
+    for key, bad in (
+        (HONOUR_TOOL_REFS_KEY, not isinstance(opt_in, bool)),
+        (
+            EXCLUDE_SERVERS_KEY,
+            not isinstance(withheld, list) or not all(isinstance(s, str) and s for s in withheld),
+        ),
+    ):
+        if not bad:
+            continue
+        value = policy.get(key)
         where = f"in {spec_path.name!r}" if spec_path is not None else "in its spec"
         remedy = (
             _unreadable_spec_remedy(spec_path)
             if spec_path is not None
             else "Fix the spec in the agents directory; no restart needed."
         )
+        expected = "a bool" if key == HONOUR_TOOL_REFS_KEY else "a list of server names"
         raise ManagedToolPolicyUnreadable(
-            f"managedToolPolicy.{HONOUR_TOOL_REFS_KEY} for {agent_name!r} {where} is "
-            f"{type(opt_in).__name__}, not a bool. {remedy}"
+            f"managedToolPolicy.{key} for {agent_name!r} {where} is "
+            f"{type(value).__name__}, not {expected}. {remedy}"
         )
-    if not opt_in:
-        return answer
-    granted = per_tool_grants(config.get("tools"), INCLUDE_LIST_SERVER)
-    if granted is not None:
-        answer[POLICY_INCLUDE_KEY] = {INCLUDE_LIST_SERVER: sorted(granted)}
+    include: dict[str, list[str]] = {}
+    if opt_in:
+        for server in INCLUDE_LIST_SERVERS:
+            granted = per_tool_grants(config.get("tools"), server)
+            if granted is not None:
+                include[server] = sorted(granted)
+    for server in withheld:
+        include[server] = []
+    if include:
+        answer[POLICY_INCLUDE_KEY] = include
     return answer
 
 

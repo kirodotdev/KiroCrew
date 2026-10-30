@@ -188,6 +188,7 @@ class TestLauncherStdlibShadowing:
                 f"(stderr={preview}); "
                 "positive test (test_launcher_survives_sibling_struct_py) still guards the fix"
             )
+        assert result.returncode != 0, result.stderr
 
     def test_control_unhardened_import_takes_a_sibling_ctypes(self, tmp_path):
         """Control for the prelude test: the ``ctypes.py`` poison bites an un-hardened script.
@@ -459,7 +460,6 @@ class TestNamespaceArgv:
         assert result[3].endswith(".py")
         assert result[4] == "/usr/local/bin/kiro-cli"
         assert result[5] == "acp"
-        # Cleanup temp file
         os.unlink(result[3])
 
     @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")

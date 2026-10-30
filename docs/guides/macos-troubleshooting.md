@@ -169,6 +169,73 @@ which case it found.
 
 ---
 
+## Chat shows "Connection unstable — please try again." behind a corporate proxy
+
+**Symptoms:** every chat turn fails with a "Connection unstable — please try
+again." banner (the gateway log calls it a "transient error (HTTP 5xx)"), while `kiro-cli` in a Terminal window and the
+Kiro IDE on the same machine work fine. The log shows `dispatch failure …
+error sending request for url (https://q.us-east-1.amazonaws.com/)`.
+
+Your Mac reaches the internet only through an HTTP proxy, and `HTTP_PROXY` /
+`HTTPS_PROXY` are set in your shell — but a Finder- or Dock-launched app
+inherits launchd's minimal environment, not your shell profile (the same gap
+as [a command works in Terminal but is "command not found" in the
+app](#a-command-works-in-terminal-but-is-command-not-found-in-the-app)).
+The gateway spawns its bundled `kiro-cli-chat` with the
+environment it was started with, so the child has no proxy variables, tries to
+reach the model backend directly, and the proxy-only network blocks it.
+
+The app recovers this on its own since the fix for
+[kirodotdev/KiroCrew#19821](https://github.com/kirodotdev/KiroCrew/issues/19821):
+when the gateway environment carries none of the standard proxy variables, the
+app reads the system proxy (System Settings → Network → Proxies, which GUI
+applications use directly) via `scutil --proxy` and injects
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` for the gateway and every child.
+That covers the gateway's own outbound traffic too, such as channel
+connectors, not only chat.
+A manual HTTP or HTTPS proxy you configured in System Settings therefore needs
+no extra step. `NO_PROXY` always includes `localhost`, `127.0.0.1` and `::1`;
+the System Settings bypass list is copied with `*.example` rewritten to
+`.example`, and the default link-local entry `169.254/16` is left out because
+`NO_PROXY` readers do not understand ranges. A bypass list with a bare `*`
+means "connect directly", so nothing is set. Anything else `NO_PROXY` cannot
+express also sets nothing: a wildcard such as `*.*` or `10.*`, any other
+range such as `10/8`, or "Bypass proxy settings for simple hostnames". That
+way traffic the system sends direct is never forced through the proxy; set
+`HTTPS_PROXY` and `NO_PROXY` yourself with `launchctl setenv` in that case. Only the uppercase names are
+set, so a proxy you put in `agent.env` (written in uppercase) fully replaces
+the discovered one for agents. Any proxy variable already in the
+environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or `NO_PROXY`, in either
+case) always wins, and the system proxy is then not read at all.
+
+**Turning it off.** If your Mac has a System Settings proxy but the app works
+better connecting directly (for example, the proxy needs a password the app
+cannot read from System Settings, or it is meant only for browsers), set any proxy
+variable for launchd. A `NO_PROXY` that names only the loopback is enough to
+stop the discovery:
+
+```bash
+launchctl setenv NO_PROXY localhost,127.0.0.1
+```
+
+Then fully quit and relaunch the app. `launchctl unsetenv NO_PROXY` turns
+discovery back on.
+
+If your proxy is not in System Settings (a `.pac` auto-config script, or a
+variable only your shell exports), tell launchd directly — the same mechanism
+the PATH fix uses:
+
+```bash
+launchctl setenv HTTP_PROXY http://proxy.corp.example:7890
+launchctl setenv HTTPS_PROXY http://proxy.corp.example:7890
+```
+
+then fully quit and relaunch the app. As with `PATH`, this writes in-memory
+launchd state: re-run after a reboot/logout, or automate it with a LaunchAgent
+like the one above.
+
+---
+
 ## The agent's git/cr commands are killed by security software
 
 **Symptoms:** the agent's `git` or `cr` commands (even a read-only

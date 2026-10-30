@@ -78,8 +78,9 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
 
 
 def test_wire_is_noop_when_dashboard_absent() -> None:
-    orch = SimpleNamespace(dashboard_state=None)
+    orch = SimpleNamespace(dashboard_state=None, _mcp_gateway_manager="MGR")
     GatewayOrchestrator._wire_mcp_gateway_dashboard(orch)  # type: ignore[arg-type]
+    assert vars(orch) == {"dashboard_state": None, "_mcp_gateway_manager": "MGR"}
 
 
 @pytest.mark.asyncio

@@ -451,18 +451,28 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   // writes, and re-running on that would measure for nothing (the memo makes it
   // a no-op, but the guard makes the intent legible). `dragging` and `parked`
   // are the same preconditions the two call sites above honour.
+  // The height is written on the NEXT frame, never inside the callback: a
+  // write there resizes the very element this observer watches, so the engine
+  // owes it a second delivery in the same frame. WebKit reports that as
+  // "ResizeObserver loop completed with undelivered notifications", and the
+  // crewmate composer hit it on every one-row -> two-row flip, where the
+  // textarea's width changes with the box's shape.
   useEffect(() => {
     const el = inputRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
     let lastWidth = el.clientWidth
+    let frame = 0
     const ro = new ResizeObserver(() => {
       const width = el.clientWidth
       if (width === lastWidth) return
       lastWidth = width
-      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
+      })
     })
     ro.observe(el)
-    return () => ro.disconnect()
+    return () => { ro.disconnect(); cancelAnimationFrame(frame) }
     // `textareaParked` re-arms the observer on the way back from the sr-only box,
     // where the 1px width must not be the baseline the next change is judged from.
   }, [manualHeight, prefillHint, textareaParked, inputRef, dragging])

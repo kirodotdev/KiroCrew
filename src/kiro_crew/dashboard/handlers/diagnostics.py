@@ -7,8 +7,8 @@ Both share the collector engine in :mod:`kiro_crew.diagnostics`, the exact same
 code path the ``kirocrew doctor --bundle`` CLI uses. Auth + host validation are
 applied globally by the dashboard middleware chain. Both handlers are also
 owner-gated: a bundle carries the owner's gateway and chat logs, so only the
-dashboard owner may build or download one. The blocking collect runs off the
-event loop via ``asyncio.to_thread``.
+dashboard owner may build or download one. The blocking collect and the
+download's path checks run off the event loop via ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
+from pathlib import Path
 
 from aiohttp import web
 
@@ -119,6 +120,21 @@ async def api_diagnostics_collect(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+def _servable_bundle_path(filename: str) -> Path | None:
+    """The bundle ``filename`` names, or ``None`` when it may not be served.
+
+    Blocking: both ``resolve()`` calls and the ``is_file()`` stat touch the
+    filesystem, so :func:`api_diagnostics_download` runs this with
+    ``asyncio.to_thread``. ``None`` covers a name that escapes the diagnostics
+    directory, a non-``.zip`` name and a name that is not a regular file.
+    """
+    base = _diagnostics_dir().resolve()
+    path = (base / filename).resolve()
+    if not path.is_relative_to(base) or path.suffix != ".zip" or not path.is_file():
+        return None
+    return path
+
+
 async def api_diagnostics_download(request: web.Request) -> web.StreamResponse:
     """GET /api/diagnostics/download/{filename} — stream a bundle zip.
 
@@ -130,10 +146,9 @@ async def api_diagnostics_download(request: web.Request) -> web.StreamResponse:
     if owner_denied is not None:
         return owner_denied
     filename = request.match_info["filename"]
-    base = _diagnostics_dir().resolve()
-    path = (base / filename).resolve()
+    path = await asyncio.to_thread(_servable_bundle_path, filename)
 
-    if not path.is_relative_to(base) or path.suffix != ".zip" or not path.is_file():
+    if path is None:
         _sel().log_tool_invocation(
             session_key="api",
             source="api",

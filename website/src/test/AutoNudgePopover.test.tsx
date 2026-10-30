@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { useState } from 'react'
+import { StrictMode, useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
@@ -818,6 +818,81 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     renderWith(null)
     fireEvent.change(goalBox(), { target: { value: '   ' } })
     expect(byLabel(START)!).toBeDisabled()
+  })
+
+  it('NO LOOP: "Run first cycle now" starts unchecked; ticked, Start loop creates the loop then fires it once (#23803)', async () => {
+    const created = makeLoop({ id: 'l9', message: 'brand new goal', next_due_ts: 0, cycle_count: 0 })
+    stubWriteThenFire(created, { ok: true, loop: created })
+    const { onChange, onFired } = renderWith(null)
+    const box = screen.getByRole('checkbox', { name: 'Run first cycle now' }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    fireEvent.change(goalBox(), { target: { value: 'brand new goal' } })
+    await act(async () => { fireEvent.click(byLabel(START)!) })
+    expect(createCalls()).toHaveLength(1)
+    expect(JSON.parse(createCalls()[0][1]!.body!)).toEqual({ slot_key: SLOT, message: 'brand new goal', idle_secs: 60, max_cycles: 0 })
+    expect(fireCalls('l9')).toHaveLength(1)
+    expect(fireCalls('l9')[0][1]?.method).toBe('POST')
+    expect(onChange).toHaveBeenCalledWith(created)
+    expect(onFired).toHaveBeenCalledWith(created)
+  })
+
+  it('NO LOOP: a refused first fire survives the re-key onto the created loop and shows in the remounted popover', async () => {
+    const created = makeLoop({ id: 'l9', message: 'brand new goal', next_due_ts: 0 })
+    stubWriteThenFire(created, { ok: false, status: 409, error: 'session is busy' })
+    const onFired = vi.fn()
+    // Keyed on the loop id, as SessionAutomationPopover keys it: handing the
+    // created record up REMOUNTS the popover.
+    const Harness = () => {
+      const [loop, setLoop] = useState<AutoNudgeLoop | null>(null)
+      return (
+        <AutoNudgePopover key={loop?.id ?? 'none'} slotKey={SLOT} loop={loop} open onOpenChange={vi.fn()} onChange={setLoop} onFired={onFired} />
+      )
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    // StrictMode, as main.tsx renders the app: its second effect pass re-runs
+    // the open-edge reset after the refusal was adopted.
+    render(<StrictMode><QueryClientProvider client={qc}><Harness /></QueryClientProvider></StrictMode>)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Run first cycle now' }))
+    await act(async () => { fireEvent.click(byLabel(START)!) })
+    expect(fireCalls('l9')).toHaveLength(1)
+    expect(byLabel(PAUSE)).toBeTruthy()
+    expect(onFired).not.toHaveBeenCalled()
+    expect(screen.getByTestId('auto-nudge-error')).toHaveTextContent('session is busy')
+    cleanup()
+    // Not held past that popover: a later mount for the same loop starts clean.
+    render(<QueryClientProvider client={qc}><AutoNudgePopover slotKey={SLOT} loop={created} open onOpenChange={vi.fn()} onChange={vi.fn()} onFired={vi.fn()} /></QueryClientProvider>)
+    expect(screen.queryByTestId('auto-nudge-error')).toBeNull()
+  })
+
+  it('NO LOOP: a refused first fire reaches a popover the websocket frame re-keyed BEFORE the fire answered', async () => {
+    const created = makeLoop({ id: 'l9', message: 'brand new goal', next_due_ts: 0 })
+    let answerFire: (r: unknown) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && String(url) === '/api/autonudge') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, loop: created }) })
+      }
+      if (String(url) === '/api/autonudge/l9/fire') return new Promise(resolve => { answerFire = resolve })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+    }) as unknown as typeof fetch)
+    let frame: (loop: AutoNudgeLoop) => void = () => {}
+    // Keyed like SessionAutomationPopover; `frame` stands in for the
+    // autonudge_state frame, and the late onChange is dropped as stale.
+    const Harness = () => {
+      const [loop, setLoop] = useState<AutoNudgeLoop | null>(null)
+      frame = setLoop
+      return <AutoNudgePopover key={loop?.id ?? 'none'} slotKey={SLOT} loop={loop} open onOpenChange={vi.fn()} onChange={vi.fn()} onFired={vi.fn()} />
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(<QueryClientProvider client={qc}><Harness /></QueryClientProvider>)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Run first cycle now' }))
+    await act(async () => { fireEvent.click(byLabel(START)!) })
+    expect(fireCalls('l9')).toHaveLength(1)
+    await act(async () => { frame(created) })
+    expect(byLabel(PAUSE)).toBeTruthy()
+    expect(screen.queryByTestId('auto-nudge-error')).toBeNull()
+    await act(async () => { answerFire({ ok: false, status: 409, json: () => Promise.resolve({ error: 'session is busy' }) }) })
+    expect(screen.getByTestId('auto-nudge-error')).toHaveTextContent('session is busy')
   })
 
   it('a refused create shows the refusal inline and hands nothing up', async () => {

@@ -404,11 +404,17 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
     hooks = raw.get("hooks") if raw is not None else None
     if not isinstance(hooks, dict):
         hooks = {}
-    # Load bundled defaults to tag source
+    # Load bundled defaults to tag source. Explicit UTF-8: the shipped file
+    # carries non-ASCII text, and the locale code page (cp932/cp936/cp949 on CJK
+    # Windows) cannot decode it. ``ValueError`` covers that UnicodeDecodeError
+    # and JSONDecodeError, so an unreadable file degrades to no bundled tags.
+    # Off-loop, with the path lookup (it probes a project-dir override).
     try:
-        raw = json.loads(_shipped_defaults().read_text())
+        raw = json.loads(
+            await asyncio.to_thread(lambda: _shipped_defaults().read_text(encoding="utf-8"))
+        )
         bundled = raw.get("hooks", {}) if isinstance(raw, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         bundled = {}
     bundled_keys: set[tuple[str, str, str]] = set()
     for event, entries in bundled.items():

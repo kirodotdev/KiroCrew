@@ -127,6 +127,10 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew chat -m "message"` | Single message (non-interactive) |
 | `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
 
+When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
+`n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
+type a reply to the agent instead. Anything else denies.
+
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
@@ -175,6 +179,7 @@ leftover prefix without touching it.
 | `kirocrew spawn run --async "task"` | Fire-and-forget subagent |
 | `kirocrew spawn run --crew NAME "task"` | Run as a crew member (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
+| `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
 | `kirocrew spawn list` | List active subagents |
 
 ## Cron Jobs
@@ -353,7 +358,6 @@ already-running app record -- restart it.
 | `kirocrew security events` | Show recent security event log entries (last 20) |
 | `kirocrew security events -n 50` | Show N entries |
 | `kirocrew security verify` | Verify security event log HMAC integrity |
-| `kirocrew file-delivery approve` | Finish a flagged-file delivery consent armed in the dashboard's Security panel (proves you are at the host) |
 | `kirocrew eval` | Run smoke test evaluation (~30s) |
 | `kirocrew eval memory_recall_basic` | Run specific scenario by name |
 | `kirocrew eval --all` | Run all scenarios (slow) |

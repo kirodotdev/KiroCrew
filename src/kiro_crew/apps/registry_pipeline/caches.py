@@ -41,6 +41,15 @@ def _manifest_cache_dir() -> Path:
 
 _MANIFEST_CACHE_TTL = 86400  # 24 hours
 
+#: TTL for the NEGATIVE manifest cache: a short-lived marker that a listing-time
+#: ``app.json`` fetch FAILED, so the next listing returns the bare entry instead
+#: of re-cloning. Much shorter than the success TTL because a failure is usually
+#: transient (an unreachable host, a repo not pushed yet): an hour stops the
+#: per-listing retry of every failing source and still picks up a fixed source
+#: on the first listing after it lapses. A registry refresh expires the marker
+#: at once, so an explicit refresh always retries.
+_MANIFEST_NEGATIVE_CACHE_TTL = 3600  # 1 hour
+
 
 #: Subdirectory of :func:`_manifest_cache_dir` holding the source-keyed
 #: manifest files. Registry INDEX caches live at the dir root; keeping the
@@ -176,8 +185,10 @@ def _gc_manifest_cache_dir() -> None:
     churns its coordinates every refresh would otherwise grow the cache dir
     without bound. Reclaim is age-based and read-invisible: only files older
     than every TTL plus a grace window are removed, and ``_read_manifest_cache``
-    already answers ``None`` for anything past ``_MANIFEST_CACHE_TTL`` (there
-    is no ``ignore_ttl`` read of a manifest file), so deleting them changes no
+    already answers ``None`` for anything past ``_MANIFEST_CACHE_TTL`` (the only
+    read past the TTL is the store-art prewarm's batch ranking,
+    ``_stale_row_art_present``, which never serves the manifest and ranks a row
+    whose file is gone as cold, its pre-ranking order), so deleting them changes no
     read result. Only the ``by-source/`` subdirectory is scanned: registry
     index caches live at the cache-dir ROOT, so the boundary between "GC may
     reclaim" and "GC never touches" is structural — an index cannot spell a
@@ -471,6 +482,92 @@ def _write_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> bool:
     _gc_manifest_cache_dir()
     _gc_blob_cache_dir()
     return written
+
+
+def _manifest_negative_cache_path(entry: dict[str, Any]) -> Path:
+    """Negative-cache marker for *entry*, keyed on the SAME source coordinates.
+
+    Derived from :func:`_manifest_cache_path`, so the marker shares the success
+    cache's identity exactly (normalized credential-free origin, effective
+    branch/pinned commit, repository subdirectory, app name): a row configured
+    for another branch, repository or subdirectory never reads another row's
+    marker. The ``.miss`` infix keeps the marker and a manifest for the same
+    coordinates in separate files, and the ``.json`` suffix inside
+    ``by-source/`` keeps it in :func:`_gc_manifest_cache_dir`'s sweep and in
+    reach of :func:`_expire_cache_file`.
+    """
+    success_path = _manifest_cache_path(entry)
+    return success_path.with_name(success_path.name[: -len(".json")] + ".miss.json")
+
+
+def _installed_manifest_cache_path(entry: dict[str, Any]) -> Path:
+    """Cache of the INSTALLED checkout's app.json for *entry*, beside the source's.
+
+    Same source identity as :func:`_manifest_cache_path`, with an ``.installed``
+    infix: the listing reads an installed app's display info from its own
+    checkout, which names the installed version, and that answer must not sit
+    in the source's cache file, which the listing's ``version``, the update
+    status and the store-art prewarm's warm check all read as what the source
+    publishes. The ``.json`` suffix keeps it in the GC sweep and in reach of
+    :func:`_expire_cache_file`.
+    """
+    success_path = _manifest_cache_path(entry)
+    return success_path.with_name(success_path.name[: -len(".json")] + ".installed.json")
+
+
+def _read_installed_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The cached installed-checkout app.json for *entry*, or None if missing or stale."""
+    path = _installed_manifest_cache_path(entry)
+    try:
+        if time.time() - path.stat().st_mtime > _MANIFEST_CACHE_TTL:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_installed_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> None:
+    """Cache the installed checkout's app.json for *entry* (best-effort)."""
+    path = _installed_manifest_cache_path(entry)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
+    except OSError as exc:
+        logger.warning("Failed to cache installed manifest for %s: %s", entry.get("name", ""), exc)
+    _gc_manifest_cache_dir()
+
+
+def _read_manifest_negative_cache(entry: dict[str, Any]) -> bool:
+    """Whether a fresh failure marker exists for *entry*'s source coordinates.
+
+    The marker carries no payload; its age is its mtime. A missing, expired or
+    unreadable marker answers ``False``, so the caller fetches as if no
+    negative cache existed.
+    """
+    try:
+        age = time.time() - _manifest_negative_cache_path(entry).stat().st_mtime
+    except OSError:
+        return False
+    return age <= _MANIFEST_NEGATIVE_CACHE_TTL
+
+
+def _write_manifest_negative_cache(entry: dict[str, Any]) -> None:
+    """Record that *entry*'s listing-time manifest fetch failed (best-effort).
+
+    A write failure only means the next listing fetches again.
+    """
+    path = _manifest_negative_cache_path(entry)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, "")
+    except OSError as exc:
+        logger.warning(
+            "Failed to write negative manifest cache for %s: %s",
+            entry.get("name", ""),
+            exc,
+        )
+    _gc_manifest_cache_dir()
 
 
 _EXTERNAL_REGISTRY_CACHE_TTL = 3600  # 1 hour

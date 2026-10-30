@@ -127,6 +127,14 @@ class TestRouteMessageQueueing:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
+        assert orch.sessions.enqueue.call_args.args == ("100.0", "100.0", "hello")
+        # The idle-session enqueue is not the busy-task one, which forces.
+        assert "force" not in orch.sessions.enqueue.call_args.kwargs
+        # The reaction failure is swallowed, and nothing falls back to the
+        # orchestrator-level queue.
+        orch.slack.add_reaction.assert_awaited_once_with("D1", "100.0", "hourglass_flowing_sand")
+        assert "100.0" not in orch._pending_queue
+        assert "100.0" not in orch._session_tasks
 
 
 async def _tick_until(flag) -> None:
@@ -318,17 +326,24 @@ class TestRouteMessageAttachments:
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
                     return_value=([], []),
-                ):
+                ) as process:
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
                     ) as hm:
                         # A missing temp path must not raise from the cleanup loop.
                         img.unlink()
                         await ev._route_message(orch, _event(text="", files=files), ev.SeenCache())
+        process.assert_awaited_once_with(orch, files)
         hm.assert_not_called()
+        # Bailed before the history push and before any turn was scheduled.
+        orch.channel_history.push.assert_not_called()
+        assert "100.0" not in orch._session_tasks
 
     @pytest.mark.asyncio
     async def test_forwarded_attachment_text_is_recovered(self):
+        # A note-less forward's third-party body is recovered from the share
+        # attachment AND quarantined in the untrusted-content fence (XPIA
+        # guard). It must NOT be routed as bare text as if the owner wrote it.
         orch = _make_orch()
         event = _event(
             text="This message contains interactive elements.",
@@ -338,7 +353,11 @@ class TestRouteMessageAttachments:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, event, ev.SeenCache())
                 await _drain(orch)
-        assert hm.await_args[0][3] == "the real body"
+        routed = hm.await_args[0][3]
+        assert "the real body" in routed
+        assert "UNTRUSTED FORWARDED CONTENT BEGIN" in routed
+        assert "UNTRUSTED FORWARDED CONTENT END" in routed
+        assert routed != "the real body"
 
 
 class TestRouteMessageTransportPath:
@@ -359,7 +378,7 @@ class TestRouteMessageTransportPath:
                         await _drain(orch)
                         await _drain(orch)
         transport.assert_awaited_once()
-        dispatch.assert_awaited_once()
+        dispatch.assert_awaited_once_with(orch, "100.0", "101.0", "next up", {"channel": "C1"})
         assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
@@ -406,7 +425,8 @@ class TestRouteMessageNativeDrain:
                     await ev._route_message(orch, _event(), ev.SeenCache())
                     await _drain(orch)
                     await _drain(orch)
-        dispatch.assert_awaited_once()
+        dispatch.assert_awaited_once_with(orch, "100.0", "101.0", "next up", {"channel": "C1"})
+        assert queued == []
 
     @pytest.mark.asyncio
     async def test_native_done_callback_drain_failure_is_logged(self, caplog):
@@ -479,14 +499,19 @@ class TestRouteMessageEnterpriseAndObserve:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(thread_ts="99.0"), ev.SeenCache())
                 await _drain(orch)
+        orch.sessions.has_session.assert_any_call("99.0")
         hm.assert_awaited_once()
+        assert hm.await_args[0][3] == "hello"
 
     @pytest.mark.asyncio
     async def test_observe_skips_history_for_unauthorized_sender(self):
         orch = _make_orch(dm_activation=ACTIVATION_OBSERVE)
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
-            await ev._route_message(orch, _event(), ev.SeenCache())
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False) as allowed:
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(orch, _event(), ev.SeenCache())
+        allowed.assert_any_call("U_OWNER")
         orch.channel_history.push.assert_not_called()
+        hm.assert_not_called()
 
 
 class TestRouteMessageTempCleanup:
@@ -510,6 +535,7 @@ class TestRouteMessageTempCleanup:
                         )
                         await _drain(orch)
         hm.assert_awaited_once()
+        assert str(ghost) in hm.await_args[0][3]
 
 
 class TestDispatchQueued:
@@ -540,8 +566,11 @@ class TestDispatchQueued:
     async def test_missing_temp_path_is_tolerated(self, tmp_path):
         orch = _make_orch()
         kwargs = {"channel": "D1", "image_temp_paths": [str(tmp_path / "nope.png")]}
-        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
+        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
             await ev._dispatch_queued(orch, "100.0", "101.0", "queued text", kwargs)
+        hm.assert_awaited_once()
+        assert hm.await_args[0][3] == "queued text"
+        orch.slack.remove_reaction.assert_awaited_once_with("D1", "101.0", "hourglass_flowing_sand")
 
 
 class TestHandleStatus:

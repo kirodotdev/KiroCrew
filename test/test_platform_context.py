@@ -6,7 +6,7 @@ import string
 
 import pytest
 
-from kiro_crew import security
+from kiro_crew import edition, security
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import (
     BASELINE_DENY,
@@ -201,6 +201,62 @@ class TestProfileResolution:
         monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(False))
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_STANDALONE
 
+    def test_precedence_tests_run_on_the_oss_edition(self) -> None:
+        # Every test above relies on the checked-in edition; pin it.
+        assert edition.EDITION == "oss"
+
+
+class TestEnterpriseEditionProfile:
+    """An enterprise build resolves enterprise before every other signal."""
+
+    @pytest.mark.parametrize("value", ["standalone", "bogus", "", "enterprise"])
+    def test_env_profile_cannot_change_it(
+        self, cfg: KiroCrewConfig, monkeypatch, value: str
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setenv("KIROCREW_PROFILE", value)
+        assert resolve_profile(cfg, entry_points=[]) == PROFILE_ENTERPRISE
+
+    def test_no_companion_and_no_marker_is_still_enterprise(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        # No entry point, no probe, no marker: still enterprise, so every
+        # enterprise gate stays on when bootstrap composes the core defaults.
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
+        monkeypatch.delenv("KIROCREW_SSO_PROFILE_PROBE", raising=False)
+        monkeypatch.delenv("KIROCREW_MIDWAY_PROFILE_PROBE", raising=False)
+        monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(False))
+        assert resolve_profile(cfg, entry_points=[]) == PROFILE_ENTERPRISE
+
+    def test_enterprise_build_without_companion_fails_closed_at_discovery(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.platform.discovery import (
+            PlatformCompositionError,
+            discover_companion_context,
+        )
+
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
+        cfg = KiroCrewConfig()
+        profile = resolve_profile(cfg, entry_points=[])
+        with pytest.raises(PlatformCompositionError, match="fail-closed") as raised:
+            discover_companion_context(profile, cfg, entry_points=[])
+        # The advice must not point at an override this build ignores.
+        message = str(raised.value)
+        assert "KIROCREW_PROFILE=standalone" not in message
+        assert "enterprise-edition build" in message
+
+    def test_oss_build_keeps_the_standalone_advice(self, monkeypatch) -> None:
+        from kiro_crew.platform.discovery import (
+            PlatformCompositionError,
+            discover_companion_context,
+        )
+
+        with pytest.raises(PlatformCompositionError, match="KIROCREW_PROFILE=standalone"):
+            discover_companion_context(PROFILE_ENTERPRISE, KiroCrewConfig(), entry_points=[])
+
 
 class _FakeHome:
     """A fake home dir whose ``/ <marker>`` existence is controllable."""
@@ -298,6 +354,140 @@ class TestBootstrapAndDiscovery:
         )
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
+
+
+class TestEnterpriseBuildWithoutCompanion:
+    """An enterprise build with no companion boots on the core defaults (RFC D1).
+
+    Any installed companion still goes through discovery, so the companion path,
+    including every fail-closed refusal, is unchanged.
+    """
+
+    @staticmethod
+    def _enterprise_build(monkeypatch) -> None:
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        # The real enterprise load fetches the organisation's policy; that fetch is
+        # covered elsewhere and is not what these tests measure.
+        monkeypatch.setattr(bootstrap_mod, "load_security_policy", lambda: None)
+
+    @staticmethod
+    def _no_discovery(*_args, **_kwargs):
+        raise AssertionError("discovery must not run when no companion is installed")
+
+    @pytest.mark.parametrize("env_profile", ["standalone", "enterprise", ""])
+    def test_boots_on_core_defaults_under_the_enterprise_profile(
+        self, cfg: KiroCrewConfig, monkeypatch, env_profile: str
+    ) -> None:
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+        from kiro_crew.platform import current_context
+        from kiro_crew.platform.defaults import DefaultIdentityProvider
+
+        monkeypatch.setenv("KIROCREW_PROFILE", env_profile)
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [])
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", self._no_discovery)
+
+        ctx = bootstrap_mod.bootstrap_context(cfg)
+
+        # The env var cannot lower the profile, so every enterprise gate stays on.
+        assert ctx.profile == PROFILE_ENTERPRISE
+        assert ctx.is_enterprise
+        assert isinstance(ctx.identity, DefaultIdentityProvider)
+        assert current_context() is ctx
+
+    def test_installed_companion_still_composes(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        companion = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kw: companion
+        )
+        assert bootstrap_mod.bootstrap_context(cfg) is companion
+
+    def test_broken_companion_still_fails_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        def _broken(*_args, **_kwargs):
+            raise PlatformCompositionError("companion entry point failed to compose")
+
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", _broken)
+        with pytest.raises(PlatformCompositionError, match="failed to compose"):
+            bootstrap_mod.bootstrap_context(cfg)
+
+    def test_mismatched_companion_still_fails_closed(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        self._enterprise_build(monkeypatch)
+        import dataclasses
+
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        bad = dataclasses.replace(
+            build_default_context(cfg, profile=PROFILE_ENTERPRISE),
+            contract_version=CONTRACT_VERSION + 99,
+        )
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kw: bad
+        )
+        with pytest.raises(PlatformCompositionError):
+            bootstrap_mod.bootstrap_context(cfg)
+
+    def test_telemetry_uses_the_core_provider(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+        from kiro_crew.platform.defaults import DefaultTelemetryProvider
+
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [])
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", self._no_discovery)
+        assert isinstance(bootstrap_mod.compose_telemetry_provider(cfg), DefaultTelemetryProvider)
+
+    def test_unreadable_entry_points_fail_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
+        # A scan that cannot read the metadata must not read as "no companion".
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        def _corrupt():
+            raise TypeError("malformed entry_points.txt")
+
+        monkeypatch.setattr(
+            "kiro_crew.platform.discovery.importlib.metadata.entry_points", _corrupt
+        )
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", self._no_discovery)
+        with pytest.raises(PlatformCompositionError, match="could not read"):
+            bootstrap_mod.bootstrap_context(cfg)
+        with pytest.raises(PlatformCompositionError, match="could not read"):
+            bootstrap_mod.compose_telemetry_provider(cfg)
+
+    def test_oss_build_still_reads_unreadable_entry_points_as_none(self, monkeypatch) -> None:
+        from kiro_crew.platform.discovery import plugin_entry_points
+
+        def _corrupt():
+            raise TypeError("malformed entry_points.txt")
+
+        monkeypatch.setattr(
+            "kiro_crew.platform.discovery.importlib.metadata.entry_points", _corrupt
+        )
+        assert plugin_entry_points() == []
+
+    def test_oss_build_with_enterprise_profile_still_fails_closed(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        self._enterprise_build(monkeypatch)
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "oss")
+        monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [])
+        monkeypatch.setattr("kiro_crew.platform.discovery.plugin_entry_points", lambda: [])
+        with pytest.raises(PlatformCompositionError):
+            bootstrap_mod.bootstrap_context(cfg)
 
 
 class TestRedactLogViaContext:

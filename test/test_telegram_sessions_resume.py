@@ -48,7 +48,7 @@ from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.renderer import session_provenance_tag
 from kiro_crew.messaging.session_resume import RoutingDecision
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
-from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 from kiro_crew.testing.wait import await_until
 
@@ -432,6 +432,44 @@ class TestTelegramInboundResumeRouting:
 
         dispatcher._session_resume.route.assert_awaited_once_with(7, 7, "private", None)
         assert sessions.last_key == "dashboard:chat-1"
+
+    @pytest.mark.asyncio
+    async def test_a_busy_resumed_handoff_carries_the_reply_context(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A reply arriving into a busy resumed session hands its quoted parent to
+        the slot too — framed once, the same as the native busy paths."""
+        from kiro_crew.context_assembly import markers as _markers
+        from kiro_crew.dashboard import channel_handoff
+
+        dispatcher, _client, sessions, _ = _dispatcher(tmp_path)
+        dispatcher._session_resume.route = AsyncMock(
+            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+        )
+        sessions.busy = True
+        handed: list[str] = []
+
+        async def _hand(state, session_key, text, *, mode, has_attachments, **recipient):
+            handed.append(text)
+            return channel_handoff.ResumedBusyOutcome(channel_handoff.HANDOFF_QUEUED)
+
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+
+        await dispatcher.handle_message(
+            TelegramInboundMessage(
+                channel_type="telegram",
+                user_id="7",
+                conversation_id="7",
+                text="use this one",
+                message_id=31,
+                reply_context="Option A: CSV",
+            )
+        )
+
+        assert len(handed) == 1
+        assert handed[0].startswith("use this one")
+        assert "Option A: CSV" in handed[0]
+        assert handed[0].count(_markers._THREAD_FENCE_OPEN) == 1
 
 
 class TestTelegramModelPickerRouting:

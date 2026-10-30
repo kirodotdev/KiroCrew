@@ -11,6 +11,91 @@ import type { ChatState, SideMessage, SideQueueEntry, SideSendStatus, SideStandi
 import { isUnsafeKey, safeKey } from './wire'
 
 const MAX_RETIRED_QUEUE_IDS = 50
+const MAX_SUBMITTED_STEER_TEXT = 50
+
+const sideSteerSubmittedText = new Map<string, Map<string, string>>()
+
+/** Keep this tab's submitted steer text outside the panel that sent it. */
+export function recordSideSteerSubmittedText(slot: string, steerId: string, content: string): void {
+  let perSlot = sideSteerSubmittedText.get(slot)
+  if (!perSlot) {
+    perSlot = new Map<string, string>()
+    sideSteerSubmittedText.set(slot, perSlot)
+  }
+  perSlot.delete(steerId)
+  perSlot.set(steerId, content)
+  while (perSlot.size > MAX_SUBMITTED_STEER_TEXT) {
+    const oldest = perSlot.keys().next().value
+    if (oldest === undefined) break
+    perSlot.delete(oldest)
+  }
+}
+
+/** Read this tab's submitted text without consuming its ownership record. */
+export function readSideSteerSubmittedText(slot: string, steerId: string): string | undefined {
+  return sideSteerSubmittedText.get(slot)?.get(steerId)
+}
+
+/** Forget submitted text once the steer's queue card has been handled. */
+export function forgetSideSteerSubmittedText(slot: string, steerId: string): void {
+  const perSlot = sideSteerSubmittedText.get(slot)
+  if (!perSlot) return
+  perSlot.delete(steerId)
+  if (perSlot.size === 0) sideSteerSubmittedText.delete(slot)
+}
+
+/** Non-raw queue entries a close dropped, retained independently of the slot
+ *  state so a delayed receipt can identify its conversation after a reopen.
+ *  A requeued steer's demoted receipt carries only its steer id, while an
+ *  ordinary queued receipt carries its queue id, so each card keeps both. */
+type SideQueueCardDroppedByClose = { queueId: string; steerId?: string }
+const sideQueueCardsDroppedByClose = new Map<string, SideQueueCardDroppedByClose[]>()
+
+/** Record queue entries named by a close frame for delayed receipt handling. */
+export function noteSideQueueDroppedByClose(
+  slot: string,
+  entries: readonly { queueId: string; steerId?: string }[],
+): void {
+  if (entries.length === 0) return
+  const dropped = sideQueueCardsDroppedByClose.get(slot) ?? []
+  for (const entry of entries) {
+    const existing = dropped.findIndex(card =>
+      card.queueId === entry.queueId || (!!entry.steerId && card.steerId === entry.steerId)
+    )
+    if (existing >= 0) dropped.splice(existing, 1)
+    dropped.push({ queueId: entry.queueId, ...(entry.steerId ? { steerId: entry.steerId } : {}) })
+  }
+  sideQueueCardsDroppedByClose.set(slot, dropped.slice(-MAX_RETIRED_QUEUE_IDS))
+}
+
+function noteSideQueueCardsDroppedByClose(slot: string, entries: readonly SideQueueEntry[]): void {
+  noteSideQueueDroppedByClose(slot, entries.map(entry => ({
+    queueId: entry.id,
+    ...(entry.steerId ? { steerId: entry.steerId } : {}),
+  })))
+}
+
+function takeSideQueueCardDroppedByClose(
+  slot: string,
+  matches: (card: SideQueueCardDroppedByClose) => boolean,
+): boolean {
+  const dropped = sideQueueCardsDroppedByClose.get(slot)
+  const at = dropped?.findIndex(matches) ?? -1
+  if (!dropped || at < 0) return false
+  dropped.splice(at, 1)
+  if (dropped.length === 0) sideQueueCardsDroppedByClose.delete(slot)
+  return true
+}
+
+/** Consume the record that a close dropped this queue entry. */
+export function takeSideQueueDroppedByClose(slot: string, queueId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.queueId === queueId)
+}
+
+/** Consume the record that a close dropped this requeued steer. */
+export function takeSideSteerDroppedByClose(slot: string, steerId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.steerId === steerId)
+}
 
 /** Monotonic tick, so an observation can be ordered against a request already in flight.
  *  A bare boolean cannot: it could have been set by an earlier, unrelated edit. */
@@ -18,6 +103,57 @@ let queueEditBroadcastSeq = 0
 /** Nested per slot rather than keyed on a joined string: queue ids are unique only within
  *  their own sidecar, and a joined key would need a separator literal. */
 const queueEditBroadcasts = new Map<string, Map<string, number>>()
+
+type PendingQueueEdit = { content: string; handedBack: boolean }
+const pendingQueueEdits = new Map<string, Map<string, PendingQueueEdit>>()
+const liveQueueEditDrafts = new Map<string, Map<string, string>>()
+
+/** Keep an open side queue editor's local text available until that editor exits. */
+export function setSideQueueEditDraft(slot: string, queueId: string, content: string | undefined): void {
+  const perSlot = liveQueueEditDrafts.get(slot)
+  if (content === undefined) {
+    perSlot?.delete(queueId)
+    if (perSlot?.size === 0) liveQueueEditDrafts.delete(slot)
+    return
+  }
+  if (perSlot) perSlot.set(queueId, content)
+  else liveQueueEditDrafts.set(slot, new Map([[queueId, content]]))
+}
+
+/** Record the latest text submitted for a queue card while its edit request is in flight. */
+export function beginSideQueueEdit(slot: string, queueId: string, content: string): void {
+  let perSlot = pendingQueueEdits.get(slot)
+  if (!perSlot) {
+    perSlot = new Map<string, PendingQueueEdit>()
+    pendingQueueEdits.set(slot, perSlot)
+  }
+  perSlot.set(queueId, { content, handedBack: false })
+}
+
+/** Return the newest local edit to a closing composer and remember that hand-back. */
+export function takeSideQueueEditForClose(slot: string, queueId: string): string | undefined {
+  const livePerSlot = liveQueueEditDrafts.get(slot)
+  const liveDraft = livePerSlot?.get(queueId)
+  // QueueStack refuses a blank commit. Treat the same value as no live draft
+  // here so closing the card returns its pending edit or saved wording.
+  const hasLiveDraft = liveDraft !== undefined && liveDraft.trim().length > 0
+  if (livePerSlot?.delete(queueId) && livePerSlot.size === 0) {
+    liveQueueEditDrafts.delete(slot)
+  }
+  const edit = pendingQueueEdits.get(slot)?.get(queueId)
+  if (edit) edit.handedBack = true
+  return hasLiveDraft ? liveDraft : edit?.content
+}
+
+/** Retire a settled edit and report whether closure already returned its text. */
+export function finishSideQueueEdit(slot: string, queueId: string): boolean {
+  const perSlot = pendingQueueEdits.get(slot)
+  const edit = perSlot?.get(queueId)
+  if (!edit || !perSlot) return false
+  perSlot.delete(queueId)
+  if (perSlot.size === 0) pendingQueueEdits.delete(slot)
+  return edit.handedBack
+}
 
 function noteQueueEditBroadcast(slot: string, queueId: string): void {
   let perSlot = queueEditBroadcasts.get(slot)
@@ -34,6 +170,19 @@ export function queueEditBroadcastAt(slot: string, queueId: string): number {
   return queueEditBroadcasts.get(slot)?.get(queueId) ?? 0
 }
 
+/** A side state with no rows and no queue holds no conversation yet, even when a
+ *  queue frame, a send status or a read with no rows made it earlier. Its first row
+ *  starts one: its age starts at that row, and the banner counts the main chat's
+ *  turns newer than the row, as for a restored conversation. The turns this tab
+ *  holds when the row lands cannot be the baseline, because the tab can be showing
+ *  another slot or still loading this one. A state its first row makes is not one
+ *  of these: it is stamped when it is made, as before. */
+function startConversationIfEmpty(side: SideState, ts: string): void {
+  if (side.messages.length || side.queue?.length) return
+  side.createdAt = ts
+  side.countsTurnsSinceCreated = true
+}
+
 /** Place `row` after the last row of its run, so a frame or a kept row that lands
  *  late sits with the turn it belongs to rather than under a later one. A row of a
  *  run with no rows yet goes at the end. */
@@ -47,6 +196,57 @@ function insertAfterRun(messages: SideMessage[], row: SideMessage): void {
     }
   }
   messages.push(row)
+}
+
+/** The runs a panel shows a row of, holds a question accepted into, or last saw begin. */
+function runsShownIn(side: SideState): Set<string> {
+  const runs = new Set(side.messages.map(row => row.run_id ?? row.acceptedRunId).filter((runId): runId is string => !!runId))
+  if (side.lastRunId) runs.add(side.lastRunId)
+  return runs
+}
+
+/** Whether `snapshot` holds a different side conversation from the one `readFor`
+ *  shows: the gateway knows none of the runs this tab saw in it, so this one was
+ *  closed while the tab could not hear it. A panel that saw no run cannot tell. */
+function isAnotherConversation(readFor: SideState, snapshot: SideSnapshot): boolean {
+  const runsAtRead = runsShownIn(readFor)
+  if (runsAtRead.size === 0) return false
+
+  const snapshotRuns = new Set((snapshot.messages ?? []).map(row => row.run_id).filter((runId): runId is string => !!runId))
+  if (snapshot.last_run_id) snapshotRuns.add(snapshot.last_run_id)
+  return [...runsAtRead].every(runId => !snapshotRuns.has(runId))
+}
+
+/** Remove optimistic questions whose accepted runs the gateway already stores,
+ *  so the stored rows replace them when a socket-open resync merges the same
+ *  conversation. Matching is one-to-one in row order; questions without a
+ *  receipt-provided run stay optimistic even when the read holds the same text. */
+function settleStoredOptimisticRows(local: SideState, snapshot: SideSnapshot): SideState {
+  const localIds = new Set(local.messages.map(row => row.id).filter((id): id is string => !!id))
+  const storedQuestions = (snapshot.messages ?? []).filter(
+    row => row.role === 'user' && !row.steer && !localIds.has(row.id),
+  )
+  const settled = new Set<SideMessage>()
+  for (const row of local.messages) {
+    if (!row.optimistic || row.role !== 'user' || !row.acceptedRunId) continue
+    const storedIndex = storedQuestions.findIndex(stored => stored.run_id === row.acceptedRunId)
+    if (storedIndex < 0) continue
+    storedQuestions.splice(storedIndex, 1)
+    settled.add(row)
+  }
+  if (!settled.size) return local
+  return { ...local, messages: local.messages.filter(row => !settled.has(row)) }
+}
+
+/** The text of an edit this tab kept while its read was in flight, when that edit
+ *  is newer than the read's copy of the entry. The gateway bumps an entry's `rev`
+ *  on every edit and sends it with both, so the read's copy wins when it already
+ *  carries that edit or a later one this tab missed. Without a `rev` on either
+ *  side the edit counts as newer, since the read may have been answered before it. */
+function newerKeptText(edit: { content: string; rev?: number } | undefined, entry: { rev?: number }): string | undefined {
+  if (!edit) return undefined
+  if (edit.rev === undefined || entry.rev === undefined) return edit.content
+  return edit.rev > entry.rev ? edit.content : undefined
 }
 
 /** The side state a panel restored from `GET .../side` shows, merged with what
@@ -118,6 +318,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
   if (keptOptimistic) pending = true
 
   const removed = new Set(local?.removedQueueIds ?? [])
+  const keptEdits = new Map((local?.editedBeforeRestore ?? []).map(edit => [edit.id, edit]))
   const localQueue = (local?.queue ?? []).map(entry => ({ ...entry }))
   const localEntry = new Map(localQueue.map(entry => [entry.id, entry]))
   const restoredQueueIds = new Set((snapshot.queue ?? []).map(entry => entry.id))
@@ -128,7 +329,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
     ...localOnlyQueue.filter(entry => entry.front),
     ...(snapshot.queue ?? [])
       .filter(entry => !removed.has(entry.id))
-      .map(entry => localEntry.get(entry.id) ?? { id: entry.id, content: entry.content, ts: entry.ts }),
+      .map(entry => localEntry.get(entry.id) ?? { id: entry.id, content: newerKeptText(keptEdits.get(entry.id), entry) ?? entry.content, ts: entry.ts }),
     ...localOnlyQueue.filter(entry => !entry.front),
   ]
 
@@ -167,6 +368,7 @@ export const sideReducers = {
     }
     // Block late assistant chunks after sideClose
     if (!state.slotSide[slot] && state.slotSideClosed[slot]) return
+    const madeEarlier = !!state.slotSide[slot]
     if (!state.slotSide[slot]) {
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -178,6 +380,9 @@ export const sideReducers = {
     // the gateway. Nothing to draw, and the busy state now belongs to whatever
     // came after it.
     if (message_id && side.messages.some(m => m.id === message_id)) return
+    // Every path below adds a row, except a delta held back or dropped, and only
+    // a side that already has rows does that.
+    if (madeEarlier) startConversationIfEmpty(side, tsIso)
     // A frame for a turn that has already given way to a later one, which only a
     // restore can make arrive (it raced the read). It still adds its row, but it
     // must not clear the later turn's busy state.
@@ -217,13 +422,23 @@ export const sideReducers = {
         // already ended. A steer never STARTS a turn, so it owns neither.
         return
       }
+      // An empty conversation is dated from a question this tab sent until that
+      // question's frame lands, and the frame's clock then takes over. It is found as
+      // "no confirmed question yet", not by content (the gateway's copy can be
+      // redacted) nor by the start stamp (a read of the empty conversation can land
+      // first and rewrite it).
+      const unconfirmedStart = side.countsTurnsSinceCreated
+        && side.messages.some(m => m.optimistic && m.role === 'user')
+        && !side.messages.some(m => m.role === 'user' && !m.steer && !m.optimistic)
+      if (unconfirmedStart) side.createdAt = tsIso
       // Reconcile with the optimistic bubble appended in sideOptimisticAppend,
       // found by its MARKER rather than by position. This frame can arrive after
       // the in-flight turn has already streamed assistant text, so the bubble is
       // often no longer the tail — and a positional check then pushes a second
       // bubble for the same question.
       const pendingIdx = side.messages.findIndex(
-        m => m.optimistic && m.role === 'user' && m.content === content,
+        m => m.optimistic && m.role === 'user'
+          && (m.acceptedRunId === run_id || (!m.acceptedRunId && m.content === content)),
       )
       if (pendingIdx >= 0) {
         const row = side.messages[pendingIdx]
@@ -231,6 +446,7 @@ export const sideReducers = {
         row.ts = tsIso
         if (message_id) row.id = message_id
         delete row.optimistic
+        delete row.acceptedRunId
       } else {
         side.messages.push({ role: 'user', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })
       }
@@ -268,17 +484,19 @@ export const sideReducers = {
     side.messages.push({ role: 'assistant', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })
     if (!earlierRun) side.lastRunId = run_id
   },
-  sseSideQueue(state: ChatState, action: PayloadAction<{ slot: string; action: 'push' | 'edit' | 'cancel' | 'drain'; queue_id: string; content?: string; ts?: number; front?: boolean; steer_id?: string; raw?: boolean; suppressRelease?: boolean }>) {
-    const { slot, action: kind, queue_id, content, ts, front, steer_id, raw, suppressRelease } = action.payload
+  sseSideQueue(state: ChatState, action: PayloadAction<{ slot: string; action: 'push' | 'edit' | 'cancel' | 'drain'; queue_id: string; content?: string; ts?: number; front?: boolean; steer_id?: string; raw?: boolean; suppressRelease?: boolean; rev?: number }>) {
+    const { slot, action: kind, queue_id, content, ts, front, steer_id, raw, suppressRelease, rev } = action.payload
     if (isUnsafeKey(slot)) return
     // A queue mutation is never a reason to resurrect a closed side.
     if (!state.slotSide[slot]) {
-      if (state.slotSideClosed[slot] || kind === 'edit') return
+      // An edit for an entry this tab has no card for matters only while the
+      // restore read is in flight: see the `at < 0` branch below.
+      if (state.slotSideClosed[slot] || (kind === 'edit' && !state.slotSideReading?.[slot])) return
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
         : 0
-      // A terminal frame can beat the restore read. Keep only the same empty
-      // shell SideChat already renders for absent state, plus its retired id.
+      // A terminal frame or an edit can beat the restore read. Keep only the same
+      // empty shell SideChat already renders for absent state, plus what it said.
       state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: new Date().toISOString() }
     }
     const side: SideState = state.slotSide[slot]
@@ -288,6 +506,10 @@ export const sideReducers = {
       const retired = side.removedQueueIds ?? []
       if (!retired.includes(queue_id)) {
         side.removedQueueIds = [...retired, queue_id].slice(-MAX_RETIRED_QUEUE_IDS)
+      }
+      // A retired entry is left out of the restore, so an edit kept for it is moot.
+      if (side.editedBeforeRestore?.some(edit => edit.id === queue_id)) {
+        side.editedBeforeRestore = side.editedBeforeRestore.filter(edit => edit.id !== queue_id)
       }
     }
     if (kind === 'push') {
@@ -315,6 +537,18 @@ export const sideReducers = {
     }
     if (at < 0) {
       if (kind === 'cancel' || kind === 'drain') retireQueueId()
+      // Another tab edited an entry this tab has no card for, while this tab's
+      // restore read is in flight. The read may have been answered before the
+      // edit, so its copy would show the old text. The frame's `rev` lets the
+      // restore keep the read's copy instead when it is at least as new. With no
+      // read in flight the edit is not kept: a read issued later is answered
+      // after it, so it already carries the new text.
+      if (kind === 'edit' && content !== undefined && state.slotSideReading?.[slot]) {
+        side.editedBeforeRestore = [
+          ...(side.editedBeforeRestore ?? []).filter(edit => edit.id !== queue_id),
+          { id: queue_id, content, ...(rev !== undefined ? { rev } : {}) },
+        ].slice(-MAX_RETIRED_QUEUE_IDS)
+      }
       return
     }
     if (!queue) return
@@ -430,13 +664,31 @@ export const sideReducers = {
     side.releasedText = current.slice(consumed.length).replace(/^\s+/, '')
   },
   sideClose(state: ChatState, action: PayloadAction<string>) {
-    delete state.slotSide[action.payload]
-    if (isUnsafeKey(action.payload)) return
-    state.slotSideClosed[safeKey(action.payload)] = true
+    const slot = action.payload
+    if (isUnsafeKey(slot)) return
+    noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
+    delete state.slotSide[slot]
+    state.slotSideClosed[safeKey(slot)] = true
     // Closed here, so this page knows the gateway holds nothing for the slot: a
     // restore read still in flight describes the conversation just closed.
     state.slotSideRestored ??= {}
-    state.slotSideRestored[safeKey(action.payload)] = true
+    state.slotSideRestored[safeKey(slot)] = true
+    if (state.slotSideReading) delete state.slotSideReading[slot]
+  },
+  /** A restore read of the slot's side conversation started (`reading: true`), or
+   *  failed (`reading: false`). Only while one is in flight does the panel keep an
+   *  edit for a queued question it has no card for; a failed read drops them,
+   *  since the next read is answered after them. `sideRestore` ends a read that landed. */
+  sideRestoreReading(state: ChatState, action: PayloadAction<{ slot: string; reading: boolean }>) {
+    const { slot, reading } = action.payload
+    if (isUnsafeKey(slot)) return
+    if (reading) {
+      state.slotSideReading ??= {}
+      state.slotSideReading[safeKey(slot)] = true
+      return
+    }
+    if (state.slotSideReading) delete state.slotSideReading[slot]
+    if (state.slotSide[slot]) delete state.slotSide[slot].editedBeforeRestore
   },
   /** Settle a slot's panel against the gateway's own copy of its side
    *  conversation (`GET .../side`), once per page: what a reload had dropped
@@ -444,6 +696,7 @@ export const sideReducers = {
   sideRestore(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot }>) {
     const { slot, snapshot } = action.payload
     if (isUnsafeKey(slot)) return
+    if (state.slotSideReading) delete state.slotSideReading[slot]
     state.slotSideRestored ??= {}
     if (state.slotSideRestored[slot]) return
     state.slotSideRestored[safeKey(slot)] = true
@@ -452,10 +705,60 @@ export const sideReducers = {
     const local = draft && isDraft(draft) ? current(draft) : draft
     state.slotSide[safeKey(slot)] = restoredSide(local, snapshot)
   },
+  /** Correct a restored panel still waiting on a turn from a socket-open read of
+   *  the gateway's copy (`resyncWaitingSideConversations`). The read speaks only
+   *  for the panel as it was when the read was sent (`readFor`). A read that finds
+   *  no open conversation, or another conversation (it shares none of the runs
+   *  `readFor` shows), stops the wait for the turns the read covers, settles the
+   *  questions accepted into them, and otherwise leaves the rows alone. A read
+   *  that shares one of those runs settles optimistic questions already stored by
+   *  the gateway, then is merged as a restore merges it. A read
+   *  whose conversation this tab closed and replaced while the read was
+   *  out (the panel carries another `createdAt`) changes nothing. */
+  sideResync(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot; readFor: SideState }>) {
+    const { slot, snapshot, readFor } = action.payload
+    if (isUnsafeKey(slot) || state.slotSideClosed?.[slot]) return
+    const side = state.slotSide[slot]
+    if (!side || side.createdAt !== readFor.createdAt) return
+    if (!snapshot.open || isAnotherConversation(readFor, snapshot)) {
+      // The conversation the read was made for is gone, so no turn the read covers
+      // can still run, and a question accepted into one of them is no longer being
+      // sent. A turn begun after the read was sent is newer than the read, and so is
+      // a question still unaccepted when it was sent: either keeps the panel busy.
+      const runsAtRead = runsShownIn(readFor)
+      for (const row of side.messages) {
+        if (!row.optimistic || !row.acceptedRunId || !runsAtRead.has(row.acceptedRunId)) continue
+        row.run_id = row.acceptedRunId
+        delete row.optimistic
+        delete row.acceptedRunId
+      }
+      delete side.awaitingFinalRunId
+      if (side.lastRunId && !runsAtRead.has(side.lastRunId)) return
+      side.pending = side.messages.some(row => row.optimistic)
+      side.streaming = false
+      return
+    }
+    const local = isDraft(side) ? current(side) : side
+    const merged = restoredSide(settleStoredOptimisticRows(local, snapshot), snapshot)
+    side.messages = merged.messages
+    side.pending = merged.pending
+    side.streaming = merged.streaming
+    if (merged.lastRunId) side.lastRunId = merged.lastRunId
+    // A restored turn's rows read as one this tab saw begin, so the merge alone
+    // would stop holding its deltas back. It keeps waiting while the gateway
+    // still runs it and has stored no answer for it.
+    const awaited = local.awaitingFinalRunId
+    const stillAwaited = !!awaited && snapshot.running === true && snapshot.last_run_id === awaited
+      && !merged.messages.some(m => m.run_id === awaited && m.role === 'assistant' && (!!m.id || !!m.is_error))
+    const awaiting = merged.awaitingFinalRunId ?? (stillAwaited ? awaited : undefined)
+    if (awaiting) side.awaitingFinalRunId = awaiting
+    else delete side.awaitingFinalRunId
+  },
   sideOptimisticAppend(state: ChatState, action: PayloadAction<{ slot: string; message: SideMessage }>) {
     const { slot, message } = action.payload
     if (isUnsafeKey(slot)) return
     if (state.slotSideClosed[slot]) delete state.slotSideClosed[slot]
+    const madeEarlier = !!state.slotSide[slot]
     if (!state.slotSide[slot]) {
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -463,8 +766,36 @@ export const sideReducers = {
       state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: message.ts }
     }
     const side = state.slotSide[slot]
+    if (madeEarlier) startConversationIfEmpty(side, message.ts)
     side.messages.push({ ...message, optimistic: true })
     side.pending = true
+  },
+  sideOptimisticAccepted(state: ChatState, action: PayloadAction<{ slot: string; content: string; runId: string }>) {
+    const { slot, content, runId } = action.payload
+    if (isUnsafeKey(slot)) return
+    const side = state.slotSide[slot]
+    if (!side) return
+    const storedFrameArrived = side.messages.some(
+      row => !row.optimistic && row.role === 'user' && !row.steer && row.run_id === runId,
+    )
+    for (let i = side.messages.length - 1; i >= 0; i--) {
+      const row = side.messages[i]
+      if (!row.optimistic || row.role !== 'user' || row.content !== content) continue
+      if (storedFrameArrived) {
+        side.messages.splice(i, 1)
+        // The duplicate may be all that still keeps the panel busy: a resync that
+        // found this turn over keeps an unsettled question busy. Removing a row
+        // never starts a turn, so this only ever ends the busy state, and only when
+        // no turn streams and no final frame is still awaited.
+        const stillUnsettled = side.messages.some(message => message.optimistic && message.role === 'user')
+        if (!stillUnsettled && !side.streaming && side.awaitingFinalRunId !== side.lastRunId) side.pending = false
+        return
+      }
+      if (!row.acceptedRunId) {
+        row.acceptedRunId = runId
+        return
+      }
+    }
   },
   sideOptimisticRollback(state: ChatState, action: PayloadAction<string>) {
     const side = state.slotSide[action.payload]

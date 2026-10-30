@@ -39,6 +39,8 @@ class _WaitsMixin(ManagerComponent):
 
         def taskq_store(self) -> "_taskq.TaskStore | None": ...
 
+        def track_store_task(self, task: "_asyncio.Task[Any]") -> "_asyncio.Task[Any]": ...
+
     # ── waits: yield the lane slot, keep the residency, resume through admission ──
     #
     # Addendum §1-3 / RFC §14. A live run that cannot progress (children still
@@ -118,16 +120,18 @@ class _WaitsMixin(ManagerComponent):
         from kiro_crew.security import redact_and_truncate
 
         try:
-            _asyncio.get_event_loop().create_task(
-                self._manager._fire_event(
-                    "subagent_waiting",
-                    info,
-                    {
-                        "state": record.state,
-                        "reason": redact_and_truncate(record.reason),
-                        "resume": record.resume_condition.kind,
-                        "residency_charged": record.residency_charged,
-                    },
+            self.track_store_task(
+                _asyncio.get_event_loop().create_task(
+                    self._manager._fire_event(
+                        "subagent_waiting",
+                        info,
+                        {
+                            "state": record.state,
+                            "reason": redact_and_truncate(record.reason),
+                            "resume": record.resume_condition.kind,
+                            "residency_charged": record.residency_charged,
+                        },
+                    )
                 )
             )
         except RuntimeError:
@@ -390,9 +394,11 @@ class _WaitsMixin(ManagerComponent):
             # that arrives after this grant cannot read a stale set().
             info._resume_event = None
         try:
-            _asyncio.get_event_loop().create_task(
-                self._manager._fire_event(
-                    "subagent_resumed", info, {"generation": info._taskq_generation}
+            self.track_store_task(
+                _asyncio.get_event_loop().create_task(
+                    self._manager._fire_event(
+                        "subagent_resumed", info, {"generation": info._taskq_generation}
+                    )
                 )
             )
         except RuntimeError:
@@ -726,8 +732,13 @@ class _WaitsMixin(ManagerComponent):
         )
 
     def _schedule_cancel(self, agent_id: str) -> None:
+        # Held like the two event frames above: the loop keeps a task only
+        # weakly, and a cancel collected while it awaits the run's teardown
+        # leaves that run alive. ``cancel_all`` drains the set with its bound.
         try:
-            _asyncio.get_event_loop().create_task(self._manager.cancel(agent_id))
+            self.track_store_task(
+                _asyncio.get_event_loop().create_task(self._manager.cancel(agent_id))
+            )
         except RuntimeError:
             pass
 

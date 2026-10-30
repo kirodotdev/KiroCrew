@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _cost_bucket,
         _dedicated_start_price_gb,
         _inherited_member_agent,
+        _parent_runs_remotely,
         _shared_start_price_gb,
         _spawn_memory_floor_and_cost,
         _startup_memory_reserve_gb,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         check_memory_available,
         logger,
         on_event_loop,
+        parent_project_dirs,
         parent_spawn_policy,
         platform_compat,
         pop_memory_check_cause,
@@ -116,6 +118,7 @@ class _GateMixin(ManagerComponent):
         label: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
+        _parent_project_dirs: "list[str] | None" = None,
         _agent_check: "AgentCheck | None" = None,
         _recovering_row: bool = False,
         _stop_before_memory_read: bool = False,
@@ -463,8 +466,15 @@ class _GateMixin(ManagerComponent):
         # ``spawn()`` callers and the in-memory queue's synchronous drain, which
         # re-enters WITHOUT a stored copy so the declaration is read fresh at
         # dispatch (``queue_params`` below says why).
+        # ``_parent_project_dirs`` is the parent's project scope at ACCEPT time:
+        # read here on the first entry (the resolver is dict reads, no I/O) and
+        # carried by every re-entry from ``queue_params``, so a drain re-reads
+        # the declaration from the scope the spawn was admitted under even when
+        # the parent session has since ended and its live scope reads empty.
+        if _parent_project_dirs is None:
+            _parent_project_dirs = list(parent_project_dirs(parent_session_key))
         if _gate and _parent_spawn_policy is None:
-            _parent_spawn_policy = parent_spawn_policy(parent_session_key)
+            _parent_spawn_policy = parent_spawn_policy(parent_session_key, _parent_project_dirs)
         allowlist_err = (
             _vet_parent_available_agents(_parent_spawn_policy, execution.template_id, app=app)
             if _gate and _parent_spawn_policy is not None
@@ -550,7 +560,10 @@ class _GateMixin(ManagerComponent):
             # through the gate's inline fallback above -- a memo-pinned
             # directory read (``_PARENT_ALLOWLIST_MEMO``), so a ``scandir``
             # in the ordinary case, and a full parse only when the memo
-            # declines to pin.
+            # declines to pin. What IS queued is where to read it from: the
+            # parent's project directories at accept time, applied on top of
+            # its live ones at every drain.
+            "_parent_project_dirs": _parent_project_dirs,
             "crew": crew,
             "_memory_mode": _memory_mode,
             # Same rule for the asking turn: `spawn_async` re-enters from this
@@ -834,6 +847,8 @@ class _GateMixin(ManagerComponent):
         # admission charges it until it settles. Without it, a parent waiting on
         # its own child at the floor could only end at the max wait.
         nested_shared = False
+        # A remote session's child: its engine reserve only, never the gateway floor.
+        remote_child = False
         settled = self._manager._learned_settled_gb
         # The fields the sharing decision reads, shared by the prediction's probe
         # and the row registered below so the two cannot describe different runs.
@@ -862,14 +877,19 @@ class _GateMixin(ManagerComponent):
                 else claim.get(agent_id, (None, False))
             )
         elif min_mem > 0:
+            # A remote session's child works in that workspace; only its engine runs
+            # here. So it is priced from its ``@remote`` bucket and owes the engine
+            # reserve, not ``spawn_min_memory_gb``; the 0 off-switch and posture gate
+            # still apply, and it is never priced shared (``_run_inner``).
+            remote_child = _parent_runs_remotely(parent_session_key)
             candidate_price = _dedicated_start_price_gb(
-                start_cost, settled, _cost_bucket(agent, execution)
+                start_cost, settled, _cost_bucket(agent, execution, remote=remote_child)
             )
             try:
                 plan = self._manager._sharing_plan(
                     SubagentInfo(task="", agent=agent, **run_fields), cfg=loaded_cfg
                 )
-                if plan.shared is True:
+                if plan.shared is True and not remote_child:
                     candidate_price = _shared_start_price_gb(candidate_price)
                     priced_shared = True
                     nested_shared = _is_child
@@ -880,7 +900,7 @@ class _GateMixin(ManagerComponent):
             # the next controller sample: this start at its own price, and each
             # row still warming at the price it was admitted at. Memory used by
             # work a run launches later is not priced here.
-            min_mem += _startup_memory_reserve_gb(
+            min_mem = (0.0 if remote_child else min_mem) + _startup_memory_reserve_gb(
                 agents_snapshot,
                 running_count=self._manager._running_count,
                 cost_gb=start_cost,
@@ -959,6 +979,7 @@ class _GateMixin(ManagerComponent):
                 price_gb=candidate_price,
                 nested=_is_child,
                 durable=_durable,
+                remote=remote_child,
             )
             if lane_held:
                 # No reading was taken and the bar is not what holds it.

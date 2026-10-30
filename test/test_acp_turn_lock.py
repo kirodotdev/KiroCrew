@@ -31,6 +31,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.testing.wait import finished
 
 
 def _client_with_real_reader(tmp_path):
@@ -66,13 +67,9 @@ async def test_concurrent_turns_serialize(tmp_path):
 
     results = await asyncio.gather(a, b, return_exceptions=True)
 
-    readuntil = [
-        r for r in results
-        if isinstance(r, RuntimeError) and "readuntil" in str(r)
-    ]
+    readuntil = [r for r in results if isinstance(r, RuntimeError) and "readuntil" in str(r)]
     assert not readuntil, (
-        "concurrent _bg reads raced — L1 turn-lock missing or ineffective: "
-        f"{results}"
+        "concurrent _bg reads raced — L1 turn-lock missing or ineffective: " f"{results}"
     )
 
 
@@ -87,8 +84,10 @@ async def test_turn_releases_on_normal_completion(tmp_path):
             pass
 
     await drive(1)
+    assert not client._turn_lock.locked()
     # If L1 held the lock past turn 1, this second turn would hang; bound it.
-    await asyncio.wait_for(drive(2), timeout=5.0)
+    await finished(drive(2), "second turn after a deadline-ended first turn")
+    assert not client._turn_lock.locked()
 
 
 @pytest.mark.asyncio
@@ -129,4 +128,4 @@ async def test_aclosing_releases_lock_deterministically(tmp_path):
         async for _a, _m in client._prompt_loop(req_id, timeout=0.3):
             pass
 
-    await asyncio.wait_for(drive(2), timeout=5.0)
+    await finished(drive(2), "second turn after aclosing()")

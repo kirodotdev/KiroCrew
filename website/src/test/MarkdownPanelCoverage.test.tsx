@@ -306,6 +306,7 @@ describe('OverflowMenu Download', () => {
     fireEvent.click(screen.getByText('Download'))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       '/api/file-download?path=%2Ftmp%2Fnotes.md',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ))
     expect(overflowError).not.toHaveBeenCalled()
     expect(window.alert).not.toHaveBeenCalled()

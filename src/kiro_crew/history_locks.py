@@ -70,6 +70,12 @@ logger = logging.getLogger("kiro_crew.history")
 _FLOCK_ACQUIRE_TIMEOUT_S = 10.0
 _FLOCK_POLL_INTERVAL_S = 0.05
 
+#: How many times one acquire attempt re-opens a sidecar whose name stopped
+#: reaching the inode it locked (pruned by the session janitor) before it reads
+#: as busy. One prune per transcript is the real case; the bound only stops a
+#: pathological unlink loop from spinning the caller.
+_SIDECAR_REOPEN_LIMIT = 3
+
 
 class HistoryLockTimeout(TimeoutError):
     """Raised when the cross-process session lock cannot be acquired in time.
@@ -200,7 +206,7 @@ def _locked_stem(self: ConversationLog, key: str) -> Iterator[None]:
             if state is None:
                 lock_path = self._lock_path(key)
                 mkdirs_owner_only(lock_path.parent)
-                fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+                fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
                 state = [fd, 0, 0]  # fd, depth, held
                 type(self)._flock_state[lock_key] = state
             state[1] += 1
@@ -230,7 +236,9 @@ def _locked_stem(self: ConversationLog, key: str) -> Iterator[None]:
                 except RuntimeError:
                     on_loop = False
                 if on_loop:
-                    if not platform_compat.try_acquire_lock(state[0], exclusive=True):
+                    if not _try_acquire_named_sidecar(
+                        self._lock_path(key), state, type(self)._flock_guard
+                    ):
                         logger.warning(
                             "history: cross-process lock for %s busy on the "
                             "event loop; abandoning mutation rather than "
@@ -244,7 +252,9 @@ def _locked_stem(self: ConversationLog, key: str) -> Iterator[None]:
                         )
                 else:
                     deadline = _time.monotonic() + _FLOCK_ACQUIRE_TIMEOUT_S
-                    while not platform_compat.try_acquire_lock(state[0], exclusive=True):
+                    while not _try_acquire_named_sidecar(
+                        self._lock_path(key), state, type(self)._flock_guard
+                    ):
                         if _time.monotonic() >= deadline:
                             logger.warning(
                                 "history: cross-process lock for %s not "
@@ -298,6 +308,59 @@ def _locked_stem(self: ConversationLog, key: str) -> Iterator[None]:
                 # load. The deferred release re-checks depth and
                 # its own fd under the guard, so a reuse cancels it.
                 self._schedule_flock_release(key, lock_key, state[0])
+
+
+def _sidecar_still_named(fd: int, lock_path: Path) -> bool:
+    """Whether the sidecar NAME still reaches the inode *fd* holds open."""
+    try:
+        held = os.fstat(fd)
+        named = os.stat(str(lock_path))
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _try_acquire_named_sidecar(
+    lock_path: Path, state: list[int], guard: threading.Lock | threading.RLock
+) -> bool:
+    """One non-blocking ``flock`` attempt on the sidecar *lock_path*, as the name now resolves.
+
+    The session janitor prunes a sidecar whose transcript is gone
+    (``session_staging_sweep``), and it unlinks only while it holds the ``flock``
+    itself. A writer that opened the sidecar BEFORE that unlink and takes the
+    ``flock`` after it would hold a lock on an inode no other process can reach,
+    while the next opener creates a fresh sidecar and locks that one: two holders
+    of the same transcript. So a taken ``flock`` counts only when the name still
+    reaches the locked inode; otherwise the stale descriptor is replaced by a fresh
+    open of the name and the attempt repeats, at most ``_SIDECAR_REOPEN_LIMIT``
+    times. Windows skips the check: the sidecar is opened without
+    ``FILE_SHARE_DELETE``, so a name some process holds open cannot be unlinked
+    and the janitor's prune fails there instead of racing the holder.
+
+    Returns ``True`` with the ``flock`` held on ``state[0]``, ``False`` when it is
+    busy. Never sleeps, so the on-loop single attempt stays non-blocking; the
+    ``fstat``/``stat`` pair is the same fast local syscall class as the first-entry
+    ``os.open``. The caller holds the per-key RLock, so no other thread touches
+    *state* for this key; the swap is still made under *guard* (the class's
+    ``_flock_guard``) because :meth:`_flock_hold_witness` reads ``state[0]`` there.
+    """
+    for _ in range(_SIDECAR_REOPEN_LIMIT + 1):
+        if not platform_compat.try_acquire_lock(state[0], exclusive=True):
+            return False
+        if not platform_compat.IS_POSIX or _sidecar_still_named(state[0], lock_path):
+            return True
+        fresh = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
+        with guard:
+            stale, state[0] = state[0], fresh
+
+        def _drop_stale(fd: int = stale) -> None:
+            try:
+                platform_compat.release_lock(fd)
+            finally:
+                os.close(fd)
+
+        _run_fd_cleanup_off_loop(_drop_stale)
+    return False
 
 
 @contextlib.contextmanager

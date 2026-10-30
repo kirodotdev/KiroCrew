@@ -452,8 +452,8 @@ class TestTheCapCutsWhereTheReaderCannotRejoin:
 
     @pytest.mark.asyncio
     async def test_a_link_split_key_does_not_cross_two_bubbles(self) -> None:
-        # The acceptance case: a Markdown link whose target carries a comma, which no
-        # hand-written character class reached across six review rounds.
+        # The acceptance case: a Markdown link whose target carries a comma, which a
+        # hand-written character class does not reach.
         head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
         c = await _stream_across_a_rotation(_answer_whose_cap_lands_between(head, tail))
 

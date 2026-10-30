@@ -541,6 +541,11 @@ function weekLineText(t: TFn, entry: MemberActivityEntry): string {
       ? t('pages.membersPage.team_week_routed_in', { project })
       : t('pages.membersPage.team_week_routed')
   }
+  if (entry.via === 'spawn') {
+    return project
+      ? t('pages.membersPage.team_week_spawn_in', { project })
+      : t('pages.membersPage.team_week_spawn')
+  }
   return project ? t('pages.membersPage.team_week_chat_in', { project }) : t('pages.membersPage.team_week_chat')
 }
 
@@ -574,14 +579,17 @@ function TeamStatusRow({
 }) {
   const { t } = useTranslation()
   const row = member.row
-  // The projection's `today` is a rolling 24-hour count, but this surface says
-  // calendar "today". Derive it from the recent entries with the same local
-  // midnight boundary as the member drawer; the query stands in for gateways
-  // without that projection.
+  // The projection's `today` is a rolling 24-hour count and its counts include
+  // routing decisions, but this surface says calendar "today" and runs. Derive
+  // both counts from the recent entries, with the same local midnight boundary
+  // as the member drawer; the query stands in for gateways without that
+  // projection.
   const view = useMemberProjection<ActivityView>(member.slugCollides ? null : row.slug, 'activity')
   const activityEntries = (view?.recent as MemberActivityEntry[] | undefined) ?? entries
-  const today = activityEntries?.filter((e) => e.ts >= midnight).length
-  const week = view?.week ?? entries?.filter((e) => e.ts >= weekStart).length
+  // Routing decisions are intent, not runs.
+  const runs = activityEntries?.filter((e) => e.via !== 'select_crew')
+  const today = runs?.filter((e) => e.ts >= midnight).length
+  const week = runs?.filter((e) => e.ts >= weekStart).length
   const state: TeamMemberState = teamMemberState({
     running: member.running,
     waiting,

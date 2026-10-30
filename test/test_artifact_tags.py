@@ -12,6 +12,7 @@ import unicodedata
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.artifact_store import rules
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError, normalize_tag
@@ -37,18 +38,38 @@ class TestNormalizeTag:
     @pytest.mark.parametrize(
         "tag",
         [
-            "\u58f2\u4e0a",  # 売上 (CJK ideographs)
-            NFC_CAFE,
-            "M\u00fcnchen",
-            "\u0939\u093f\u0928\u094d\u0926\u0940",  # हिन्दी: vowel signs are marks NFC keeps apart
-            "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",  # Ελληνικά
-            "\u0440\u0443\u0441\u0441\u043a\u0438\u0439",  # русский
-            "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",  # العربية
-            "\u65e5\u672c\u8a9e2026",  # letters and digits mixed
-            "\u0661\u0662\u0663",  # Arabic-Indic digits: N* is admitted, not just 0-9
+            *named_cases(
+                "test_letters_marks_and_digits_of_any_script_are_admitted",
+                "tag",
+                [
+                    "\u58f2\u4e0a",  # 売上 (CJK ideographs)
+                    NFC_CAFE,
+                    "M\u00fcnchen",
+                    "\u0939\u093f\u0928\u094d\u0926\u0940",  # हिन्दी: vowel signs are marks NFC keeps apart
+                    "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",  # Ελληνικά
+                    "\u0440\u0443\u0441\u0441\u043a\u0438\u0439",  # русский
+                    "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",  # العربية
+                    "\u65e5\u672c\u8a9e2026",  # letters and digits mixed
+                    "\u0661\u0662\u0663",  # Arabic-Indic digits: N* is admitted, not just 0-9
+                ],
+            ),
+            *named_cases(
+                "test_existing_ascii_tags_pass_unchanged",
+                "tag",
+                [
+                    "release",
+                    "v1.2",
+                    "ns:name",
+                    "snake_case",
+                    "kebab-case",
+                    "9lives",
+                    "A.B_C:d-e",
+                    "a" * 64,
+                ],
+            ),
         ],
     )
-    def test_letters_marks_and_digits_of_any_script_are_admitted(self, tag: str) -> None:
+    def test_an_admitted_tag_passes_unchanged(self, tag: str) -> None:
         assert normalize_tag(tag) == tag
 
     def test_the_stored_spelling_is_nfc(self) -> None:
@@ -57,31 +78,41 @@ class TestNormalizeTag:
 
     @pytest.mark.parametrize(
         "tag",
-        ["release", "v1.2", "ns:name", "snake_case", "kebab-case", "9lives", "A.B_C:d-e", "a" * 64],
-    )
-    def test_existing_ascii_tags_pass_unchanged(self, tag: str) -> None:
-        assert normalize_tag(tag) == tag
-
-    @pytest.mark.parametrize(
-        "tag",
         [
-            "cr\n",  # the ``$`` anchor's before-newline match must stay closed
-            "a" * 63 + "\n",  # 64 code points, so the newline is what is refused
-            "tab\tx",
-            "nul\x00x",
-            "bad tag with spaces",
-            "a\u00a0b",  # no-break space is whitespace too
-            "a\u200bb",  # zero-width space (format)
-            "a\u202eb",  # right-to-left override (format)
-            "a\ufeffb",  # byte-order mark (format)
+            *named_cases(
+                "test_control_format_and_whitespace_characters_are_rejected",
+                "tag",
+                [
+                    "cr\n",  # the ``$`` anchor's before-newline match must stay closed
+                    "a" * 63 + "\n",  # 64 code points, so the newline is what is refused
+                    "tab\tx",
+                    "nul\x00x",
+                    "bad tag with spaces",
+                    "a\u00a0b",  # no-break space is whitespace too
+                    "a\u200bb",  # zero-width space (format)
+                    "a\u202eb",  # right-to-left override (format)
+                    "a\ufeffb",  # byte-order mark (format)
+                ],
+            ),
+            *named_cases(
+                "test_symbols_and_other_punctuation_are_rejected",
+                "tag",
+                ["a/b", "a'b", "a,b", "a\U0001f642", "a\u20ac", "a+b", "a@b"],
+            ),
+            *named_cases(
+                "test_enclosing_marks_are_rejected",
+                "tag",
+                [
+                    "1\ufe0f\u20e3",  # keycap digit one: digit + VS16 + COMBINING ENCLOSING KEYCAP
+                    "1\u20e3",  # the keycap renders as an emoji without the selector too
+                    "a\u20dd",  # COMBINING ENCLOSING CIRCLE
+                    "a\u0488",  # COMBINING CYRILLIC HUNDRED THOUSANDS SIGN
+                    "a\u1abe",  # COMBINING PARENTHESES OVERLAY
+                ],
+            ),
         ],
     )
-    def test_control_format_and_whitespace_characters_are_rejected(self, tag: str) -> None:
-        with pytest.raises(ValueError, match="is not allowed in a tag"):
-            normalize_tag(tag)
-
-    @pytest.mark.parametrize("tag", ["a/b", "a'b", "a,b", "a\U0001f642", "a\u20ac", "a+b", "a@b"])
-    def test_symbols_and_other_punctuation_are_rejected(self, tag: str) -> None:
+    def test_a_disallowed_character_is_rejected(self, tag: str) -> None:
         with pytest.raises(ValueError, match="is not allowed in a tag"):
             normalize_tag(tag)
 
@@ -143,22 +174,6 @@ class TestNormalizeTag:
                 "rules._DEFAULT_IGNORABLE_UNICODE_VERSION"
             )
         assert unicodedata.unidata_version == rules._DEFAULT_IGNORABLE_UNICODE_VERSION
-
-    @pytest.mark.parametrize(
-        "tag",
-        [
-            "1\ufe0f\u20e3",  # keycap digit one: digit + VS16 + COMBINING ENCLOSING KEYCAP
-            "1\u20e3",  # the keycap renders as an emoji without the selector too
-            "a\u20dd",  # COMBINING ENCLOSING CIRCLE
-            "a\u0488",  # COMBINING CYRILLIC HUNDRED THOUSANDS SIGN
-            "a\u1abe",  # COMBINING PARENTHESES OVERLAY
-        ],
-    )
-    def test_enclosing_marks_are_rejected(self, tag: str) -> None:
-        # ``Me`` marks draw a shape around their base: that is a symbol or an
-        # emoji, not a letter, so they are refused with the symbols.
-        with pytest.raises(ValueError, match="is not allowed in a tag"):
-            normalize_tag(tag)
 
     @pytest.mark.parametrize(
         "tag",

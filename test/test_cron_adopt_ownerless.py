@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.cli_commands import _cron
+from kiro_crew.cron import CronService
 from kiro_crew.history import ConversationLog
 
 
@@ -109,15 +110,21 @@ class TestCronAdopt:
         assert "results are delivered there" in out
         assert "dashboard:chat-3-1712793600" in out
 
-    def test_session_of_adds_the_prefix_the_consumers_strip(self):
+    @staticmethod
+    def _owner_after_adopt(tmp_path, session_of: str) -> str:
+        """Adopt a job held in a real store and return the owner it now carries."""
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="j", message="m", every_secs=60)
         with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.CronService", return_value=svc),
             patch("kiro_crew.cli_commands.sel"),
         ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+            _cron(_adopt_args(job.id, session_of=session_of))
+        return CronService(base_dir=tmp_path).get_job(job.id).session_key
+
+    def test_session_of_adds_the_prefix_the_consumers_strip(self, tmp_path):
+        owner = self._owner_after_adopt(tmp_path, "chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_session_of_round_trips_through_the_real_delivery_resolver(self):
         """Drift guard: ``--session-of`` must be the exact inverse of the
@@ -142,18 +149,12 @@ class TestCronAdopt:
 
         assert stored["abc12345"].removeprefix("dashboard:") == "chat-7-1712793999"
 
-    def test_session_of_accepts_an_already_qualified_key_unchanged(self):
+    def test_session_of_accepts_an_already_qualified_key_unchanged(self, tmp_path):
         """A key that already carries a namespace is passed through, so an
         operator pasting a full key into ``--session-of`` is not double-prefixed
         into an undeliverable ``dashboard:dashboard:...``."""
-        with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="dashboard:chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+        owner = self._owner_after_adopt(tmp_path, "dashboard:chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_release_clears_the_owner(self, capsys):
         with (
@@ -465,24 +466,24 @@ class TestAdoptIsDeniedFromBash:
             # A command separator ends the match: the words must belong to ONE
             # simple command, so an unrelated `adopt` in a LATER command does not
             # combine with an earlier harmless `kirocrew cron` read.
-            "kirocrew cron list; echo adopt",
-            "kirocrew cron list && git adopt-nothing",
-            "kirocrew cron list | grep adopt",
-        ],
-    )
-    def test_a_command_separator_ends_the_match(self, command):
-        import re
-
-        rule = self._rule()
-        assert not re.search(rule.pattern, command, re.IGNORECASE), command
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "kirocrew cron list",
-            "kirocrew cron add nightly 'sweep' --every 3600",
-            "kirocrew cron remove abc123",
-            "git commit -m 'adopt a cron convention'",
+            pytest.param(
+                "kirocrew cron list; echo adopt", id="a_command_separator_ends_the_match-semicolon"
+            ),
+            pytest.param(
+                "kirocrew cron list && git adopt-nothing",
+                id="a_command_separator_ends_the_match-and",
+            ),
+            pytest.param(
+                "kirocrew cron list | grep adopt", id="a_command_separator_ends_the_match-pipe"
+            ),
+            pytest.param("kirocrew cron list", id="read_and_sibling_verbs-list"),
+            pytest.param(
+                "kirocrew cron add nightly 'sweep' --every 3600", id="read_and_sibling_verbs-add"
+            ),
+            pytest.param("kirocrew cron remove abc123", id="read_and_sibling_verbs-remove"),
+            pytest.param(
+                "git commit -m 'adopt a cron convention'", id="read_and_sibling_verbs-git-commit"
+            ),
         ],
     )
     def test_the_pattern_does_not_catch_the_read_and_sibling_verbs(self, command):

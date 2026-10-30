@@ -194,9 +194,10 @@ def test_the_response_grants_only_what_the_embedding_frame_grants() -> None:
         "run model HTML on the dashboard origin"
     )
     for flag in ("allow-popups", "allow-popups-to-escape-sandbox"):
-        assert flag in csp, (
-            f"the CSP sandbox is missing {flag}, which the embedding iframe grants; "
-            "a narrower CSP silently removes a capability widgets already rely on"
+        assert flag not in csp, (
+            f"the CSP sandbox grants {flag}, which no embedding frame grants any more "
+            "(links open through the host's link bridge); a document opened "
+            "top-level could then open windows it cannot open inside the frame"
         )
     assert "allow-forms" not in csp, (
         "the CSP grants allow-forms, which NEITHER embedding frame grants — a "
@@ -395,6 +396,12 @@ async def test_the_served_response_carries_the_sandbox_headers() -> None:
     assert "sandbox allow-scripts" in csp, (
         "the response reached a frame without its sandbox directive — opened "
         "top-level, that HTML would run on the dashboard's own origin"
+    )
+    sandbox = next(d.strip() for d in csp.split(";") if d.strip().startswith("sandbox"))
+    assert sandbox.split() == ["sandbox", "allow-scripts"], (
+        f"the sandbox directive grants {sandbox.split()[1:]}; it must match the "
+        "embedding frames' AGENT_PAGE_SANDBOX ('allow-scripts' only), with no "
+        "popup grant: links open through the host's link bridge"
     )
     assert "frame-ancestors 'self'" in csp
     assert resp.headers["X-Content-Type-Options"] == "nosniff"

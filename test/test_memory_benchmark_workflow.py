@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "memory-benchmark.yml"
 
@@ -202,6 +203,10 @@ def _git_repo(tmp_path: Path) -> Path:
     # git instead would exercise the stub rather than the script.
     bare = tmp_path / "remote.git"
     _git(tmp_path, "init", "-q", "--bare", str(bare))
+    # The step's push starts receive-pack here with no env config and no global
+    # file, so only the remote's own config keeps auto maintenance off.
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        _git(bare, "config", key, value)
     _git(repo, "remote", "add", "origin", str(bare))
     return repo
 

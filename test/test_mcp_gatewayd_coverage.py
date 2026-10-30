@@ -41,6 +41,7 @@ from mcp_gatewayd_coverage_helpers import (  # noqa: F401 -- the autouse fixture
     _FakeWriter,
     _pool_key,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -142,28 +143,21 @@ class TestIdleSweeper:
 
 class TestHotKeysFlushSweeper:
     @pytest.mark.asyncio
-    async def test_flushes_off_the_loop(self):
+    @pytest.mark.parametrize(
+        "wrote", [True, False], ids=["flushes-off-the-loop", "no-write-is-a-quiet-noop"]
+    )
+    async def test_flush_logs_only_a_real_write(self, caplog, wrote):
         hot = MagicMock()
-        hot.flush = MagicMock(return_value=True)
+        hot.flush = MagicMock(return_value=wrote)
         hot.path = "hot-keys.json"
         stop = asyncio.Event()
-        task = asyncio.create_task(gw._hot_keys_flush_sweeper(cast(Any, hot), 0.01, stop))
-        await async_wait_until(lambda: bool(hot.flush.call_count))
-        stop.set()
-        await await_until(task)
+        with caplog.at_level("DEBUG"):
+            task = asyncio.create_task(gw._hot_keys_flush_sweeper(cast(Any, hot), 0.01, stop))
+            await async_wait_until(lambda: bool(hot.flush.call_count))
+            stop.set()
+            await await_until(task)
         assert hot.flush.call_count >= 1
-
-    @pytest.mark.asyncio
-    async def test_no_write_is_a_quiet_noop(self):
-        hot = MagicMock()
-        hot.flush = MagicMock(return_value=False)
-        hot.path = "hot-keys.json"
-        stop = asyncio.Event()
-        task = asyncio.create_task(gw._hot_keys_flush_sweeper(cast(Any, hot), 0.01, stop))
-        await async_wait_until(lambda: bool(hot.flush.call_count))
-        stop.set()
-        await await_until(task)
-        assert hot.flush.call_count >= 1
+        assert ("hot-keys: flushed to hot-keys.json" in caplog.text) is wrote
 
     @pytest.mark.asyncio
     async def test_stop_event_during_the_wait_skips_the_periodic_flush(self):
@@ -584,18 +578,36 @@ _AUDIT_CASES = [
 ]
 
 
+def _stored_sel_rows(root: Path):
+    """A reader for the rows the real SEL bound by ``sel_private_root`` stored."""
+
+    def _rows() -> list[dict[str, Any]]:
+        path = root / "security_events.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line]
+
+    return _rows
+
+
 class TestAuditEmitters:
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
-    def test_emits_the_documented_operation(self, monkeypatch, fn_name, args, operation):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_emits_the_documented_operation(self, sel_private_root, fn_name, args, operation):
+        rows = _stored_sel_rows(sel_private_root)
         getattr(gw, fn_name)(*args)
-        assert sel.log_api_access.call_args.kwargs["operation"] == operation
+        assert [r["operation"] for r in rows()] == [operation]
 
     @pytest.mark.parametrize("fn_name,args,operation", _AUDIT_CASES)
-    def test_audit_failure_never_breaks_the_caller(self, monkeypatch, fn_name, args, operation):
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(side_effect=RuntimeError("sel down")))
-        getattr(gw, fn_name)(*args)  # must not raise
+    def test_audit_failure_never_breaks_the_caller(
+        self, monkeypatch, caplog, fn_name, args, operation
+    ):
+        sel_factory = MagicMock(side_effect=RuntimeError("sel down"))
+        monkeypatch.setattr(gw, "SecurityEventLog", sel_factory)
+        with caplog.at_level("DEBUG"):
+            assert getattr(gw, fn_name)(*args) is None
+        sel_factory.assert_called_once_with()
+        assert "SEL audit emit" in caplog.text and "failed" in caplog.text
 
     def test_denied_abort_reports_the_reason_as_the_error(self, monkeypatch):
         sel = MagicMock()
@@ -605,11 +617,10 @@ class TestAuditEmitters:
         assert kwargs["outcome"] == "denied"
         assert kwargs["error"] == "no valid pids"
 
-    def test_empty_caller_is_normalised_to_unknown(self, monkeypatch):
-        sel = MagicMock()
-        monkeypatch.setattr(gw, "SecurityEventLog", MagicMock(return_value=sel))
+    def test_empty_caller_is_normalised_to_unknown(self, sel_private_root):
+        rows = _stored_sel_rows(sel_private_root)
         gw._audit_pool_fallback("", "demo-mcp", "pool full")
-        assert sel.log_api_access.call_args.kwargs["caller"] == "unknown"
+        assert [r["caller_identity"] for r in rows()] == ["unknown"]
 
 
 # --- frame codec -------------------------------------------------------------
@@ -657,13 +668,20 @@ class TestReadFirstFrame:
         assert await gw._read_first_frame(cast(Any, reader)) is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"not json\n", b"\xff\xfe\n"])
-    async def test_undecodable_or_invalid_json_returns_none(self, line):
-        assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("line", [b"[1,2]\n", b'"hello"\n', b"7\n"])
-    async def test_non_object_json_is_refused(self, line):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            *named_cases(
+                "test_undecodable_or_invalid_json_returns_none",
+                "line",
+                [b"not json\n", b"\xff\xfe\n"],
+            ),
+            *named_cases(
+                "test_non_object_json_is_refused", "line", [b"[1,2]\n", b'"hello"\n', b"7\n"]
+            ),
+        ],
+    )
+    async def test_a_bad_first_frame_returns_none(self, line):
         assert await gw._read_first_frame(cast(Any, _FakeReader(line=line))) is None
 
     @pytest.mark.asyncio
@@ -710,6 +728,8 @@ class TestWriteJsonLine:
         await await_until(
             asyncio.create_task(gw._write_json_line(cast(Any, writer), {"type": "registered"}))
         )
+        assert writer.frames() == [{"type": "registered"}]
+        assert writer.drains == 1
 
 
 class TestJsonRpcError:
@@ -773,9 +793,12 @@ class TestDrainInboxToStub:
         inbox: asyncio.Queue[bytes] = asyncio.Queue()
         await inbox.put(b'{"id":2}\n')
         writer = _FakeWriter(fail=BrokenPipeError("stub gone"))
-        await await_until(
-            asyncio.create_task(gw._drain_inbox_to_stub(inbox, cast(Any, writer), "stub-2"))
-        )
+        before = gw._active_stub_writes
+        task = asyncio.create_task(gw._drain_inbox_to_stub(inbox, cast(Any, writer), "stub-2"))
+        await await_until(task)
+        assert task.exception() is None
+        assert writer.writes == [b'{"id":2}\n']
+        assert gw._active_stub_writes == before
 
     @pytest.mark.asyncio
     async def test_stub_that_stops_reading_releases_the_writer_task(self, monkeypatch):
@@ -783,9 +806,12 @@ class TestDrainInboxToStub:
         inbox: asyncio.Queue[bytes] = asyncio.Queue()
         await inbox.put(b'{"id":3}\n')
         writer = _FakeWriter(hang=True)
+        before = gw._active_stub_writes
         await await_until(
             asyncio.create_task(gw._drain_inbox_to_stub(inbox, cast(Any, writer), "stub-3"))
         )
+        assert writer.writes == [b'{"id":3}\n']
+        assert gw._active_stub_writes == before
 
     @pytest.mark.asyncio
     async def test_write_lock_is_honoured_and_counter_returns_to_zero(self):
@@ -1379,12 +1405,16 @@ class TestMetricEmitters:
         assert "kirocrew.mcp.backend.acquire.duration" in names
         assert rec.counter.call_args.args[0] == "kirocrew.mcp.lazy_load.count"
 
-    def test_telemetry_failure_never_breaks_the_hot_path(self, monkeypatch):
-        monkeypatch.setattr(
-            gw, "get_recorder", MagicMock(side_effect=RuntimeError("recorder down"))
-        )
-        gw._emit_lazy_load_metrics(1.0, warm=False)  # must not raise
-        gw._emit_backend_acquire_metric(1.0, warm=True)
+    def test_telemetry_failure_never_breaks_the_hot_path(self, monkeypatch, caplog):
+        get_recorder = MagicMock(side_effect=RuntimeError("recorder down"))
+        monkeypatch.setattr(gw, "get_recorder", get_recorder)
+        with caplog.at_level("DEBUG"):
+            assert gw._emit_lazy_load_metrics(1.0, warm=False) is None
+            assert gw._emit_backend_acquire_metric(1.0, warm=True) is None
+        # lazy-load reads the recorder twice (its own emit, then backend.acquire).
+        assert get_recorder.call_count == 3
+        assert "lazy_load metric emit failed" in caplog.text
+        assert "backend.acquire metric emit failed" in caplog.text
 
 
 # --- register PID extraction / conn index -----------------------------------

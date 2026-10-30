@@ -255,9 +255,12 @@ def test_a_slot_closed_mid_create_takes_no_autocompact_gate_entry(tmp_path, monk
 
     monkeypatch.setattr(state.conversation_log, "update_metadata", write_then_close)
 
-    asyncio.run(sc.create_session(state, caller_session_key=_key(caller), autocompact_pct=85))
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), autocompact_pct=85)
+    )
 
     state.sessions.set_autocompact_pct.assert_not_called()
+    assert state.get_slot(created["target"]) is None, "the slot closed before the gate seed"
 
 
 def test_a_create_cancelled_after_its_birth_write_still_seeds_the_gate(tmp_path, monkeypatch):

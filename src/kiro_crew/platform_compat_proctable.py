@@ -62,8 +62,10 @@ class ProcessStartIdentity(NamedTuple):
 # with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
 # ``pti_total_user``, ``pti_total_system``, ``pti_threads_user``,
 # ``pti_threads_system`` (48 bytes) — followed by twelve int32 counters (48),
-# for a struct size of 96. Only the two total-CPU fields matter here, and both
-# are already NANOSECONDS; the total size doubles as the layout check.
+# for a struct size of 96. Only the two total-CPU fields matter here; the total
+# size doubles as the layout check. Both are in MACH TICKS, not nanoseconds: the
+# two coincide on Intel (1 GHz timebase), but on Apple Silicon one tick is 125/3
+# ns (24 MHz), so the reader scales them by ``hw.tbfrequency``.
 _DARWIN_PROC_PIDTASKINFO = 4
 _DARWIN_PROC_TASKINFO_SIZE = 96
 _DARWIN_PTI_TOTAL_USER_OFFSET = 16
@@ -274,6 +276,37 @@ def _darwin_process_start_microtime(pid: int) -> str | None:
     return identity.start_id if identity is not None else None
 
 
+def _darwin_tb_frequency() -> int | None:
+    """Mach ticks per second from ``sysctlbyname("hw.tbfrequency")``, or None.
+
+    ``hw.tbfrequency`` is the kernel's own timebase frequency: 1 GHz on Intel
+    (one tick is one nanosecond) and 24 MHz on Apple Silicon. It is read rather
+    than ``mach_timebase_info`` because Rosetta 2 answers that call with 1/1 for
+    an x86_64 process on Apple Silicon while ``proc_taskinfo`` still counts the
+    native ticks, which would undercount CPU about 41.7x; the sysctl is not
+    translated. psutil reads ``proc_taskinfo`` CPU the same way.
+
+    Read through the cached libc handle on every sample (a plain kernel read,
+    nothing cached here). The value is a 64-bit integer; a 32-bit answer is
+    accepted too. A failed call, any other size or a zero frequency reads as
+    unreadable.
+    """
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(8)
+        size = ctypes.c_size_t(8)
+        if libc.sysctlbyname(b"hw.tbfrequency", buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        if size.value not in (4, 8):
+            return None
+        frequency = int.from_bytes(buf.raw[: size.value], "little")
+        return frequency if frequency > 0 else None
+    except Exception:
+        return None
+
+
 def _darwin_process_cpu_nanos(pid: int) -> int | None:
     """macOS total (user+system) CPU nanoseconds of *pid* via ``libproc``.
 
@@ -281,9 +314,18 @@ def _darwin_process_cpu_nanos(pid: int) -> int | None:
     same-uid process, nothing is exec'd, and a fill size other than the exact
     struct size means the assumed layout does not hold, so the answer is
     refused rather than sliced out of the wrong place.
+
+    ``proc_taskinfo`` reports Mach ticks, which are nanoseconds only on Intel;
+    the sum is scaled by ``hw.tbfrequency`` so the answer is real nanoseconds
+    on Apple Silicon too, including under Rosetta 2. When the frequency cannot
+    be read the answer is refused for the same reason: an unscaled count would
+    be wrong by the timebase factor without saying so.
     """
     lib = _darwin_libproc_handle()
     if lib is None:
+        return None
+    frequency = _darwin_tb_frequency()
+    if frequency is None:
         return None
     try:
         buf = ctypes.create_string_buffer(_DARWIN_PROC_TASKINFO_SIZE)
@@ -304,7 +346,7 @@ def _darwin_process_cpu_nanos(pid: int) -> int | None:
             buf.raw[_DARWIN_PTI_TOTAL_SYSTEM_OFFSET : _DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8],
             "little",
         )
-        return user + system
+        return (user + system) * 1_000_000_000 // frequency
     except Exception:
         return None
 

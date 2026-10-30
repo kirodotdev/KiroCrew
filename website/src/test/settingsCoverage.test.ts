@@ -82,9 +82,10 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'WeComPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=wecom',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
-  'McpManagement.tsx': 'mounted only on the standalone Developer page — a settings deep link would be dead',
-  'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, on the standalone Developer page — a settings deep link would be dead",
-  'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, on the standalone Developer page — a settings deep link would be dead",
+  'McpManagement.tsx': 'the Settings > Developer > MCP Management page; its per-server switches are table rows keyed by server, not Settings* primitives',
+  'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, zero settings",
+  'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, per-server approvals rather than settings",
+  'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, on the Settings > Developer > MCP Management page, zero settings",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
@@ -218,6 +219,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { SegmentedControl: 2 },
     reason: 'the two channel SegmentedControls share manual: about.update-channel',
   },
+  'SessionEnvironmentsCard.tsx': {
+    counts: { input: 1, Input: 1 },
+    reason: 'transient: the provider radio only chooses which provider section is shown, and is not persisted; the Sprites API token is a vault credential field with Save/Remove semantics, never a config value',
+  },
   'ChatPanelLinkPatternsEditor.tsx': {
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
@@ -246,12 +251,8 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'per-instance add/edit CRUD form fields, not global settings',
   },
   'CustomSoundsSection.tsx': {
-    counts: { Input: 2 },
-    reason: 'add-a-custom-sound form (name + per-tone number fields) — creates an entry, not a persistent setting',
-  },
-  'McpManagement.tsx': {
-    counts: { Switch: 2 },
-    reason: 'Developer-page-only surface, deliberately outside settings search',
+    counts: { Input: 4 },
+    reason: 'add-a-custom-sound forms (tone card: name + per-tone number fields; audio-file card: name + file picker) — they create entries, not persistent settings',
   },
   'MobileLoginCard.tsx': {
     counts: { Input: 1 },
@@ -376,6 +377,10 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'one model row per enabled app, labelled with that app\'s own display name; the ' +
       'set of apps is whatever is installed, so there is no fixed label to index. The ' +
       'rows sit on the Model page every chat.* model entry already deep-links to',
+  },
+  'SessionEnvironmentsCard.tsx': {
+    count: 6,
+    reason: 'Coder, Sprites and boxd per-profile CRUD fields, the Coder per-profile template field (picker or free text) and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them behind its provider choice',
   },
   'BotChannelPanel.tsx': {
     count: 16,

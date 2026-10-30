@@ -536,7 +536,9 @@ class TestAgentRoutes:
         """
         import re
 
-        source = (_REPO_ROOT / "website/src/apps/meetings/hooks/useMeetingSession.ts").read_text()
+        source = (_REPO_ROOT / "website/src/apps/meetings/hooks/useMeetingSession.ts").read_text(
+            encoding="utf-8"
+        )
         block = re.search(
             r"ALLOWED_TRANSITIONS: Record<MeetingStatus, MeetingStatus\[\]> = \{(.*?)\n\}",
             source,

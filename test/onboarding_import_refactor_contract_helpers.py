@@ -14,6 +14,7 @@ _ENGINE_MODULES = (
     "kiro_crew.onboarding_plan",
     "kiro_crew.onboarding_apply",
     "kiro_crew.onboarding_sources",
+    "kiro_crew.onboarding_sources.amazon_quick",
     "kiro_crew.onboarding_sources.claude_code",
     "kiro_crew.onboarding_sources.codex",
     "kiro_crew.onboarding_sources.gemini",

@@ -22,6 +22,7 @@
 import { memo, useId, useMemo, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, ChevronRight, Square, Workflow as WorkflowIcon } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { agentState, groupByPhase, isTerminalRunStatus, latestBudget, type WfEvent } from './runModel'
@@ -145,9 +146,11 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
       {phases.map((phase, idx) => {
         const isCollapsed = !!collapsed[phase.title]
         const ps = phaseStatus(phase.agents, status, idx === phases.length - 1)
-        const title = sanitizeLlmOutput(
-          phase.title || i18nT('apps.workflows.workflowsRuns.unknown'),
-        ).slice(0, 80)
+        const title = sliceCodePoints(
+          sanitizeLlmOutput(phase.title || i18nT('apps.workflows.workflowsRuns.unknown')),
+          0,
+          80,
+        )
         return (
           <div key={phase.title} className="border border-border rounded">
             <button
@@ -177,8 +180,8 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
             {!isCollapsed && phase.agents.length > 0 && (
               <ul className="divide-y divide-border">
                 {phase.agents.map(a => {
-                  const label = sanitizeLlmOutput(a.label || a.agent_id).slice(0, 100)
-                  const lastTool = a.last_tool ? sanitizeLlmOutput(a.last_tool).slice(0, 60) : ''
+                  const label = sliceCodePoints(sanitizeLlmOutput(a.label || a.agent_id), 0, 100)
+                  const lastTool = a.last_tool ? sliceCodePoints(sanitizeLlmOutput(a.last_tool), 0, 60) : ''
                   const state = agentState(a, status)
                   return (
                     <li
@@ -217,7 +220,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
         <div className="text-[11px] font-mono text-muted border border-border rounded p-2 max-h-32 overflow-auto">
           {logLines.map((e, i) => (
             <div key={i} className="truncate">
-              · {sanitizeLlmOutput(String(e.data?.message ?? '')).slice(0, 200)}
+              · {sliceCodePoints(sanitizeLlmOutput(String(e.data?.message ?? '')), 0, 200)}
             </div>
           ))}
         </div>
@@ -243,12 +246,12 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
         </>
       )}
       {status !== 'failed' && error && !checkpointReport && (
-        <ErrorNotice message={sanitizeLlmOutput(error).slice(0, 200)} askAgent testId="workflow-run-tree-error" />
+        <ErrorNotice message={sliceCodePoints(sanitizeLlmOutput(error), 0, 200)} askAgent testId="workflow-run-tree-error" />
       )}
       {status === 'failed' && (
         <ErrorNotice
           message={i18nT('apps.workflows.workflowRunTree.failed_with_error', {
-            error: sanitizeLlmOutput(error || i18nT('apps.workflows.workflowRunTree.unknown_error')).slice(0, 200),
+            error: sliceCodePoints(sanitizeLlmOutput(error || i18nT('apps.workflows.workflowRunTree.unknown_error')), 0, 200),
           })}
           askAgent
           testId="workflow-run-tree-error"
@@ -272,7 +275,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
           </div>
           {status === 'finished' && result !== undefined && (
             <pre className="font-mono text-[11px] whitespace-pre-wrap break-all max-h-40 overflow-auto">
-              {sanitizeLlmOutput(JSON.stringify(result, null, 2)).slice(0, 2000)}
+              {sliceCodePoints(sanitizeLlmOutput(JSON.stringify(result, null, 2)), 0, 2000)}
             </pre>
           )}
         </div>

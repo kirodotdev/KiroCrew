@@ -25,6 +25,39 @@ from kiro_crew.dashboard.state import (
 # ── Unit tests: _dequeue_next_message ──
 
 
+class TestADecidedEntryDrainsAlone:
+    """A decision's receipt (``meta.decisions_strip``) names one message, and a
+    merged row has one meta, so a decided entry is never folded into a merge."""
+
+    def _strip(self, turn_id):
+        return {"point": "message.steer", "turn_id": turn_id, "choice": "queue", "p": 0.8}
+
+    def test_each_decided_entry_drains_on_its_own_row(self):
+        slot = _ChatSlot("s1")
+        slot._queue = [
+            {"id": "a", "content": "first", "meta": {"decisions_strip": self._strip("t-a")}},
+            {"id": "b", "content": "second", "meta": {"decisions_strip": self._strip("t-b")}},
+        ]
+        for expected_id, turn_id in (("a", "t-a"), ("b", "t-b")):
+            next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+            assert [c["id"] for c in consumed] == [expected_id]
+            assert "queued messages merged" not in next_msg
+            assert consumed[0]["meta"]["decisions_strip"]["turn_id"] == turn_id
+        assert slot._queue == []
+
+    def test_undecided_neighbours_still_merge_up_to_a_decided_entry(self):
+        slot = _ChatSlot("s1")
+        slot._queue = [
+            {"id": "a", "content": "one", "meta": {}},
+            {"id": "b", "content": "two", "meta": {}},
+            {"id": "c", "content": "three", "meta": {"decisions_strip": self._strip("t-c")}},
+        ]
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert next_msg == "[2 queued messages merged]\n\none\n\ntwo"
+        assert [c["id"] for c in consumed] == ["a", "b"]
+        assert [i["id"] for i in slot._queue] == ["c"]
+
+
 class TestDequeueNextMessage:
     """Tests for the extracted _dequeue_next_message helper."""
 
@@ -295,12 +328,10 @@ class TestDashboardConfigMergeQueued:
                 )
                 assert resp.status == 200
 
-                # Verify persisted
                 assert cfg_file.exists()
                 saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["merge_queued_messages"] is True
 
-                # Verify GET reflects the change
                 resp = await client.get("/api/dashboard/config")
                 data = await resp.json()
                 assert data["merge_queued_messages"] is True

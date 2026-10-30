@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import api_project_tree
@@ -273,21 +274,28 @@ def plain_project(tmp_path, monkeypatch):
     return tmp_path / "plain"
 
 
+def _fixture_git_env() -> dict[str, str]:
+    """The suite's env with a fixed identity, no host config and auto maintenance off."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "T",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "T",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 def _git(cwd, *args) -> None:
     subprocess.run(
         ["git", *args],
         cwd=str(cwd),
         check=True,
         capture_output=True,
-        env={
-            **os.environ,
-            "GIT_AUTHOR_NAME": "T",
-            "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "T",
-            "GIT_COMMITTER_EMAIL": "t@example.com",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-        },
+        env=_fixture_git_env(),
     )
 
 

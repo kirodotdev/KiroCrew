@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from named_cases_helpers import named_cases
 from source_corpus import repo_files_named, repo_root
 from yaml_helpers import load_with
 
@@ -673,16 +674,14 @@ class TestBlockScalarsAgreeWithARealYamlParser:
         [""],
         ["", ""],
     )
-    # The hand-written bodies above are REGRESSION rows: each group was added after a
-    # reviewer found a line shape the set could not express. That happened three rounds
-    # running -- whitespace-only trailing lines, then content followed by trailing
-    # spaces, then whitespace-only lines extending PAST an explicit indent -- because a
-    # hand-enumerated list only covers the shapes someone already thought of, and "0
-    # divergences" says nothing about the ones it never emits.
+    # The hand-written bodies above are REGRESSION rows: whitespace-only trailing
+    # lines, content followed by trailing spaces, and whitespace-only lines extending
+    # PAST an explicit indent. A hand-enumerated list only covers the shapes someone
+    # already thought of, and "0 divergences" says nothing about the ones it never emits.
     #
-    # So the space is now GENERATED from the line kinds that actually behave
-    # differently, and every 1- and 2-line combination of them is checked. New shapes
-    # come from naming a kind here, not from waiting for a reviewer to find one.
+    # So the space is GENERATED from the line kinds that actually behave differently,
+    # and every 1- and 2-line combination of them is checked. A new shape comes from
+    # naming a kind here.
     LINE_KINDS = (
         "",  # empty
         " ",  # whitespace, short of the indent
@@ -1079,7 +1078,8 @@ class TestChompingCannotFlipAnActivationFlag:
         # The facade and every ``skills_*`` owner it binds members from, joined.
         src_dir = Path(__file__).resolve().parents[1] / "src/kiro_crew"
         src = "\n".join(
-            p.read_text() for p in [src_dir / "skills.py", *sorted(src_dir.glob("skills_*.py"))]
+            p.read_text(encoding="utf-8")
+            for p in [src_dir / "skills.py", *sorted(src_dir.glob("skills_*.py"))]
         )
         reads = re.findall(r'"repo_scope":\s*meta\.get\("repo_scope"[^\n]*', src)
         reads += re.findall(r'scope\s*=\s*meta\.get\("repo_scope"[^\n]*', src)
@@ -1602,11 +1602,28 @@ class TestWrittenValuesStayLoadableYaml:
     # parses and the author's pattern comes back as something they never wrote.
     @pytest.mark.parametrize(
         "value",
-        ["a\x00b", "a\x01b", "a\x0bb", "a\x0cb", "a\x1bb", "a\x7fb",
-         "a\x85b", "a\x9fb", "a\u2028b", "a\u2029b"],
-        ids=["nul", "soh", "vt", "ff", "esc", "del", "nel", "c1", "ls", "ps"],
+        [
+            *named_cases(
+                "test_a_control_character_is_refused",
+                "value",
+                [
+                    "a\x00b",
+                    "a\x01b",
+                    "a\x0bb",
+                    "a\x0cb",
+                    "a\x1bb",
+                    "a\x7fb",
+                    "a\x85b",
+                    "a\x9fb",
+                    "a\u2028b",
+                    "a\u2029b",
+                ],
+                ids=["nul", "soh", "vt", "ff", "esc", "del", "nel", "c1", "ls", "ps"],
+            ),
+            *named_cases("test_unspellable_values_are_refused_not_mangled", "value", ['a"b', "a\\b"]),
+        ],
     )
-    def test_a_control_character_is_refused(self, value: str) -> None:
+    def test_an_unwritable_value_is_refused(self, value: str) -> None:
         with pytest.raises(ValueError):
             set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)
 
@@ -1636,14 +1653,3 @@ class TestWrittenValuesStayLoadableYaml:
         )
         assert yaml.safe_load(doc.split("---")[1])["fileMatchPattern"] == value
         assert parse_frontmatter(doc, STEERING_LOADER)["fileMatchPattern"] == value
-
-    @pytest.mark.parametrize("value", ['a"b', "a\\b"])
-    def test_unspellable_values_are_refused_not_mangled(self, value: str) -> None:
-        # This writer emits no escape sequences and its reader processes none,
-        # so a value carrying a double quote or a backslash has no spelling both
-        # agree on. Refusing beats writing a document that loads as something
-        # else. (Single-quote-edged values are spellable — see ROUND_TRIP: the
-        # reader removes exactly one wrapping level, so the writer's
-        # double-quoted form survives.)
-        with pytest.raises(ValueError):
-            set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)

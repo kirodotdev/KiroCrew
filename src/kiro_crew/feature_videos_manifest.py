@@ -274,6 +274,42 @@ def download_permitted_cached() -> bool:
     return not download_denied()
 
 
+def host_denied(url: str) -> bool:
+    """Whether the ceiling forbids fetching *url*'s host. Blocking, audited, fail-closed.
+
+    Asks :data:`DOWNLOAD_SCOPE` for ``hosts:<host>``, so a policy can name the exact
+    CDN or mirror hosts. A gate pinned off denies every host; a policy with no
+    ``hosts`` ruleset permits every one, as before the list existed. Called next to
+    :func:`download_denied` before each manifest, poster and clip request, and does
+    not touch its memo: one refused host does not turn the whole feature off.
+
+    Every host a client could read *url* as is asked (``url_policy_hosts``), and
+    the request is permitted only when all are, so a parser disagreement cannot
+    reach a host the list refused.
+    """
+    from kiro_crew.platform.governance_parts.matching import url_policy_hosts
+
+    try:
+        decisions = [
+            _governance_profiles.vet_and_audit(
+                DOWNLOAD_SCOPE,
+                f"hosts:{host}",
+                session_key=DASHBOARD_SURFACE_KEY,
+                tool_name=AUDIT_TOOL,
+                log_warning=False,
+                fail_closed=True,
+            )
+            for host in url_policy_hosts(url)
+        ]
+    except Exception as exc:
+        # The type only: the url can carry a credential, and a traceback would
+        # render the exception's own text, which may quote it.
+        logger.debug("feature-video host governance probe failed (%s); denying", type(exc).__name__)
+        _audit_unevaluable()
+        return True
+    return not all(getattr(d, "permitted", False) for d in decisions)
+
+
 def _audit_unevaluable() -> None:
     """Best-effort SEL record for the path ``vet_and_audit`` never reached."""
     try:
@@ -611,8 +647,8 @@ def _create_release_dir_held(root: Path, release: str) -> int:
             #
             # Matched on the CONDITION, not on the class. CPython maps a not-found
             # ``winerror`` onto ``FileNotFoundError``, but nothing here needs to
-            # depend on that: review asked whether the subclass really arrives on a
-            # real Windows host, and a translation that silently never fires is worse
+            # depend on that: whether the subclass really arrives on a real Windows
+            # host is unverified, and a translation that silently never fires is worse
             # than one errno test. Anything that is not a not-found propagates
             # unchanged, exactly as it did before.
             if exc.errno != errno.ENOENT and getattr(exc, "winerror", None) not in _WIN_NOT_FOUND:
@@ -1028,7 +1064,12 @@ def _fetch_json(url: str, *, operator_url: bool = False) -> "dict | None":
         # build_opener, never urlopen: the url was authorized against ONE host, and
         # urlopen's default handler would follow a cross-host redirect and spend
         # that authorization on a destination the CDN chose.
-        opener = asset_downloader.build_opener(allow_cross_host_redirects=operator_url)
+        # Every hop is held to the policy's ``hosts`` list as the first url was, so
+        # an operator mirror that redirects cannot reach a host the list omits.
+        opener = asset_downloader.build_opener(
+            allow_cross_host_redirects=operator_url,
+            redirect_allowed=lambda target: not host_denied(target),
+        )
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- manifest_url enforces https://, redirects are pinned (host-pinned unless the operator's own env url), and the document is signature-verified before use
         with opener.open(request, timeout=_MANIFEST_TIMEOUT_SECS) as resp:
             body = resp.read(_MANIFEST_MAX_BYTES + 1)
@@ -1164,6 +1205,10 @@ def fetch_manifest(version: str) -> "tuple[VideoManifest | None, dict]":
         if download_denied():
             logger.info("feature-video manifest fetch stopped: downloading withdrawn mid-walk")
             return None, {}
+        if host_denied(url):
+            # Every candidate shares one host, so the walk ends here too.
+            logger.info("feature-video manifest fetch stopped: the policy does not permit its host")
+            return None, {}
         raw = _fetch_json(url, operator_url=overridden)
         if raw is None:
             continue
@@ -1199,6 +1244,7 @@ __all__ = [
     "checked_cache_root",
     "download_denied",
     "download_permitted_cached",
+    "host_denied",
     "ensure_cache_dir",
     "fetch_manifest",
     "is_safe_media_name",

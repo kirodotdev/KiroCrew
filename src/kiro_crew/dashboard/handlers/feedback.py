@@ -196,7 +196,7 @@ def _customer_responses(body: dict[str, Any]) -> list[dict[str, Any]]:
     rating = str(body.get("rating") or "").strip()
     if not rating:
         raise ValueError("missing rating")
-    # `rating` is documented (security_posture.py) as a fixed frontend enum that
+    # `rating` is documented (security_posture_sinks_delivery.py) as a fixed frontend enum that
     # is intentionally NOT run through the redaction pass. Enforce that here so
     # the claim is true server-side: an unrecognized value is refused rather
     # than egressed verbatim, closing the "put a secret in the one unredacted

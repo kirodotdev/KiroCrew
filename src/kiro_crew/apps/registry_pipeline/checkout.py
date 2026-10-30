@@ -18,6 +18,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _GIT_EXEC_NEUTRALIZER_PAIRS,
+    _git_network_failure_hint,
     _git_output_is_auth_shaped,
     _git_target_is_unsupported,
     _git_transport_env,
@@ -31,7 +32,13 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _context_clone_sandbox_mode,
     is_clone_host_trusted,
 )
-from kiro_crew.apps.registry_pipeline.subprocess_env import anonymous_git_env, minimal_env
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _GIT_CLONE_LOCALE,
+    _git_network_env,
+    _proxy_env_has_credentials,
+    anonymous_git_env,
+    minimal_env,
+)
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -68,6 +75,35 @@ _CLONE_TIMEOUT = 60
 _HOOKS_NEUTRALIZER_ARGV: tuple[str, ...] = tuple(
     token for key, value in _GIT_EXEC_NEUTRALIZER_PAIRS for token in ("-c", f"{key}={value}")
 )
+
+
+def _names_a_missing_ref(output: str) -> bool:
+    """Whether git's fetch *output* says the requested ref does not exist.
+
+    Matches git's own ``couldn't find remote ref`` and the fixed label a redacted
+    (credentialed) transport reduces it to.
+    """
+    low = output.lower()
+    return "couldn't find remote ref" in low or "the requested ref does not exist" in low
+
+
+def _with_network_hint(error: str, output: str, *, named: bool = False) -> str:
+    """*error*, plus the fixed network/proxy hint when *output* says the remote was not reached.
+
+    *named* means *error* already names the failure class (``Git clone failed: the
+    connection timed out``), so only the remedy is added. *output* is only
+    classified, never copied into the result.
+    """
+    hint = _git_network_failure_hint(output)
+    if not hint:
+        return error
+    if named:
+        return f"{error}; {hint}"
+    if output.strip() == "timed out":
+        # The fetch helper's own deadline: the remote may be reachable but slow,
+        # so say what was measured. A proxy-only network looks exactly like this.
+        return f"{error}: timed out; {hint}"
+    return f"{error}: could not reach the remote; {hint}"
 
 
 async def _rmtree_force_settled(path: str | Path) -> None:
@@ -113,10 +149,14 @@ async def _communicate_with_timeout(
     ``platform_compat.kill_and_reap``, which drains the pipes via
     ``communicate()`` under a bound so a killed child blocked writing into a
     full pipe cannot hang the caller.
+
+    A cancelled wait abandons the child exactly as a timeout does, and the
+    child leads its own session, so nothing else stops it: the cancel arm
+    kills and reaps the tree too before re-raising.
     """
     try:
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         await platform_compat.kill_and_reap(proc)
         raise
 
@@ -172,7 +212,7 @@ async def _clone_origin_url(dest: Path) -> str | None:
     module — the argv is fixed, but *dest* is derived from an index-supplied
     app name, so the cwd is not ours to trust.
     """
-    if not (dest / ".git").is_dir():
+    if not await asyncio.to_thread((dest / ".git").is_dir):
         return None
     origin_cmd, _cleanup = await wrap_argv_async(
         ["git", "remote", "get-url", "origin"],
@@ -197,6 +237,9 @@ async def _clone_origin_url(dest: Path) -> str | None:
     except asyncio.TimeoutError:
         await _kill_process_group(proc)
         return None
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
     if proc.returncode != 0:
         return None
     return origin_out.decode(errors="replace").strip()
@@ -430,6 +473,9 @@ async def _git_fetch_ref(
             "name": dest.name,
             "error": "embedded git credentials require an HTTP(S) target",
         }
+    # The network step's output is reduced to fixed labels whenever it ran with a
+    # credential, a proxy password included, so no echo of one reaches the log.
+    redact_network_output = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     async def run(
         argv: list[str],
@@ -450,7 +496,12 @@ async def _git_fetch_ref(
         )
         sandboxed = cgroup_scope_argv(sandboxed)
         if network:
-            process_env = _git_transport_env(credential_target, git_url, clone_env)
+            process_env = _git_network_env(
+                _git_transport_env(credential_target, git_url, clone_env), git_url
+            )
+            # English output, whatever the operator's locale: the missing-ref retry
+            # and the network hint below classify it (see `_GIT_CLONE_LOCALE`).
+            process_env["LC_ALL"] = _GIT_CLONE_LOCALE
         elif mask_local_git_config:
             # Prewarm only. The local steps (init, checkout, branch) need no
             # credential helper, so they run with system and global git config
@@ -489,7 +540,7 @@ async def _git_fetch_ref(
             proc.returncode or 0,
             _loggable_git_transport_output(
                 out.decode(errors="replace").strip(),
-                credentialed=credentialed_transport if network else False,
+                credentialed=redact_network_output if network else False,
             ),
         )
 
@@ -504,19 +555,17 @@ async def _git_fetch_ref(
         "-c",
         "fetch.recurseSubmodules=no",
     ]
-    # Destination lifecycle, stated as one invariant because three reviewer findings
-    # were three exits from the same mistake:
+    # Destination lifecycle, stated as one invariant:
     #
     #   THIS FUNCTION MAY DELETE `dest` IF AND ONLY IF THIS INVOCATION CREATED IT
     #   AND DID NOT SUCCEED -- and that is decided in ONE place, not per branch.
     #
-    # The earlier drafts put cleanup on each failure branch, so each fix closed one
-    # exit and left the others: adopting a non-checkout destination (deleted the
-    # user's files), a moved-aside restore that skipped on cancellation, and finally
-    # a spawn exception between `git init` and `git remote add` that left a `.git`
-    # directory with no origin -- which then wedges every later attempt on
-    # `unreadable_clone_origin`, a fail-closed path that deliberately does not clean
-    # up after itself.
+    # Cleanup on each failure branch leaves the other exits open: adopting a
+    # non-checkout destination (deletes the user's files), a moved-aside restore
+    # skipped on cancellation, or a spawn exception between `git init` and
+    # `git remote add` that leaves a `.git` directory with no origin -- which then
+    # wedges every later attempt on `unreadable_clone_origin`, a fail-closed path
+    # that deliberately does not clean up after itself.
     #
     # Cleanup therefore belongs to the LIFETIME of the thing created, not to the
     # enumeration of ways to fail. The `finally` below covers return, raise and
@@ -568,23 +617,36 @@ async def _git_fetch_ref(
         )
         description = f"branch {checkout_branch}" if checkout_branch else f"commit {ref[:12]}"
         log_lines.append(f"Fetching {_strip_git_target_userinfo(git_url)} at {description}...")
-        code, out = await run(
-            [
-                "git",
-                *hardening,
-                "fetch",
-                "--no-auto-maintenance",
-                "--no-tags",
-                "--depth",
-                "1",
-                git_url,
-                refspec,
-            ],
-            cwd=dest,
-            timeout=_CLONE_TIMEOUT,
-            network=True,
-        )
+
+        async def fetch(spec: str) -> tuple[int, str]:
+            return await run(
+                [
+                    "git",
+                    *hardening,
+                    "fetch",
+                    "--no-auto-maintenance",
+                    "--no-tags",
+                    "--depth",
+                    "1",
+                    git_url,
+                    spec,
+                ],
+                cwd=dest,
+                timeout=_CLONE_TIMEOUT,
+                network=True,
+            )
+
+        code, out = await fetch(refspec)
         log_lines.append(out)
+        tag_ref = ""
+        if code != 0 and checkout_branch and _names_a_missing_ref(out):
+            # `git clone --branch` takes a tag as well as a branch and leaves HEAD
+            # detached at it. This split path stands in for that clone, so a name
+            # with no such branch is retried as a tag, with no tracking branch.
+            tag_ref = f"refs/tags/{checkout_branch}"
+            log_lines.append(f"No branch {checkout_branch}; fetching it as a tag...")
+            code, out = await fetch(f"+{tag_ref}:{tag_ref}")
+            log_lines.append(out)
         if code != 0:
             # Fail closed. A server that will not serve this object (unreachable
             # commit, or one no ref contains) must not degrade into "install the
@@ -592,14 +654,22 @@ async def _git_fetch_ref(
             return {
                 "ok": False,
                 "name": dest.name,
-                "error": f"git fetch failed (exit {code})",
+                "error": _with_network_hint(f"git fetch failed (exit {code})", out),
             }
 
-        checkout_cmd = (
-            ["git", "checkout", "--quiet", "-B", checkout_branch, f"origin/{checkout_branch}"]
-            if checkout_branch
-            else ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"]
-        )
+        if tag_ref:
+            checkout_cmd = ["git", "checkout", "--quiet", "--detach", tag_ref]
+        elif checkout_branch:
+            checkout_cmd = [
+                "git",
+                "checkout",
+                "--quiet",
+                "-B",
+                checkout_branch,
+                f"origin/{checkout_branch}",
+            ]
+        else:
+            checkout_cmd = ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"]
         code, out = await run(checkout_cmd, cwd=dest, timeout=15)
         if code != 0:
             log_lines.append(f"git checkout failed (exit {code}): {out}")
@@ -609,6 +679,9 @@ async def _git_fetch_ref(
                 "error": "git checkout of fetched tree failed",
             }
 
+        if tag_ref:
+            succeeded = True
+            return None
         if checkout_branch:
             code, out = await run(
                 [
@@ -772,6 +845,9 @@ async def _git_clone_or_pull(
     if _strip_git_target_userinfo(credential_target) != git_url:
         raise ValueError("credential_target does not match git_url")
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     clone_env = anonymous_git_env() if index_originated else minimal_env()
     sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
@@ -869,7 +945,7 @@ async def _git_clone_or_pull(
                         "Remove it manually and retry the install."
                     ),
                 }
-        elif credentialed_transport and not commit:
+        elif isolate_transport and not commit:
             # Never run a credentialed `git pull` inside an app-controlled
             # checkout. Pull can merge/checkout and invoke hooks or named filter
             # drivers from that repository while the raw URL rewrite is present.
@@ -961,11 +1037,10 @@ async def _git_clone_or_pull(
         if commit:
             # A PINNED INSTALL NEVER REUSES AN EXISTING TREE.
             #
-            # Four review rounds landed here, each a different way of trusting
-            # on-disk state: adopting a destination that was not a checkout, an
-            # exception leaving a half-built one, HEAD equality standing in for
-            # contents, and finally content `git status` cannot report at all. The
-            # last one is why no cleanliness check can close this class: `.git/`
+            # Reusing a tree means trusting on-disk state: a destination that is
+            # not a checkout, a half-built one an exception left, HEAD equality
+            # standing in for contents, or content `git status` cannot report at
+            # all. The last one is why no cleanliness check can close this class: `.git/`
             # is never reported by any `git status` variant, so an added
             # `.git/hooks/post-checkout` is invisible, and an untracked
             # `sitecustomize.py` executes on interpreter start if the tree lands on
@@ -978,8 +1053,8 @@ async def _git_clone_or_pull(
             # `git init --template=`, which is also what keeps hooks absent.
             #
             # The cost is one shallow fetch of a single commit per pinned reinstall.
-            # The fast path it replaces was buying that round-trip with trust in an
-            # agent-writable directory.
+            # Skipping it would buy that round-trip with trust in an agent-writable
+            # directory.
             moved_aside = await _move_checkout_aside(dest, log_lines)
             # This one is the SAME repository with the user's own edits, so a failed
             # transaction must put it back. The origin-mismatch move above is a
@@ -1027,7 +1102,9 @@ async def _git_clone_or_pull(
                 _prepare=wrap_argv,
             )
             pull_cmd = cgroup_scope_argv(pull_cmd)
-            pull_env = _git_transport_env(credential_target, git_url, clone_env)
+            pull_env = _git_network_env(
+                _git_transport_env(credential_target, git_url, clone_env), git_url
+            )
             proc = await create_subprocess_limited(
                 *pull_cmd,
                 cwd=str(dest),
@@ -1039,12 +1116,11 @@ async def _git_clone_or_pull(
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-                log_lines.append(
-                    _loggable_git_transport_output(
-                        stdout.decode(errors="replace").strip(),
-                        credentialed=credentialed_transport,
-                    )
+                pull_output = _loggable_git_transport_output(
+                    stdout.decode(errors="replace").strip(),
+                    credentialed=credentialed_transport,
                 )
+                log_lines.append(pull_output)
                 if proc.returncode != 0:
                     # Fail closed: installing whatever the checkout happens to hold
                     # while persisting the catalog URL as its provenance would
@@ -1052,9 +1128,9 @@ async def _git_clone_or_pull(
                     log_lines.append(f"git pull failed (exit {proc.returncode}) — aborting")
                     return {
                         "ok": False,
-                        "error": (
-                            f"git pull failed (exit {proc.returncode}); "
-                            "not installing stale code"
+                        "error": _with_network_hint(
+                            f"git pull failed (exit {proc.returncode}); not installing stale code",
+                            pull_output,
                         ),
                     }
             except asyncio.TimeoutError:
@@ -1064,6 +1140,9 @@ async def _git_clone_or_pull(
                     "ok": False,
                     "error": "git pull timed out; not installing stale code",
                 }
+            except asyncio.CancelledError:
+                await _kill_process_group(proc)
+                raise
             return None
 
     # Fresh checkout.
@@ -1091,7 +1170,7 @@ async def _git_clone_or_pull(
             clone_succeeded = True
             return None
 
-        if credentialed_transport:
+        if isolate_transport:
             result = await _git_fetch_branch(
                 git_url,
                 branch,
@@ -1124,7 +1203,9 @@ async def _git_clone_or_pull(
             clone_cmd, mode=sandbox_mode, forward_ssh_auth_sock=forward_sock, _prepare=wrap_argv
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        transport_env = _git_transport_env(credential_target, git_url, clone_env)
+        transport_env = _git_network_env(
+            _git_transport_env(credential_target, git_url, clone_env), git_url
+        )
 
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -1220,19 +1301,22 @@ async def _git_clone_or_pull(
                         "ok": False,
                         "name": dest.name,
                         "code": "git_clone_failed",
-                        "error": f"Git clone failed: {failure_class}.",
+                        "error": _with_network_hint(
+                            f"Git clone failed: {failure_class}", clone_output, named=True
+                        )
+                        + ".",
                     }
                 return {
                     "ok": False,
                     "name": dest.name,
                     "code": "git_clone_failed",
-                    "error": "git clone failed",
+                    "error": _with_network_hint("git clone failed", clone_output),
                 }
             return {
                 "ok": False,
                 "name": dest.name,
                 "code": "git_clone_failed",
-                "error": "git clone failed",
+                "error": _with_network_hint("git clone failed", clone_output),
             }
         clone_succeeded = True
         return None

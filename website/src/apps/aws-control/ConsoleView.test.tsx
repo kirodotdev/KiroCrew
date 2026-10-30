@@ -590,6 +590,29 @@ describe('SetupCard', () => {
     await waitFor(() => expect(awsControlApi.driveBootstrapConfirm).toHaveBeenCalledWith(ACCOUNT.account))
   })
 
+  it('names the searched region when the drive status reports one (#24913)', () => {
+    renderWithProviders(
+      <SetupCard account={ACCOUNT.account} region="us-west-2" searchedRegion="ap-southeast-2" />,
+    )
+
+    const line = screen.getByTestId('drive-searched-region')
+    expect(line).toHaveTextContent(
+      i18nT('apps.awsControl.console.setup_searched_region', { region: 'ap-southeast-2' }),
+    )
+    expect(line).toHaveTextContent('ap-southeast-2')
+    // The existing copy stays as it was.
+    expect(screen.getByTestId('drive-setup')).toHaveTextContent(i18nT('apps.awsControl.console.setup_body'))
+  })
+
+  it('keeps today\'s text when an older backend sends no searched region', () => {
+    renderWithProviders(<SetupCard account={ACCOUNT.account} region="us-west-2" />)
+
+    expect(screen.queryByTestId('drive-searched-region')).toBeNull()
+    const card = screen.getByTestId('drive-setup')
+    expect(card).toHaveTextContent(i18nT('apps.awsControl.console.setup_body'))
+    expect(card).toHaveTextContent(i18nT('apps.awsControl.console.setup_costs_note'))
+  })
+
   it('surfaces a preview error and does not advance to the confirm step', async () => {
     // The bootstrap preview rejects (e.g. AccessDenied): the error line shows
     // and the confirm button never appears.

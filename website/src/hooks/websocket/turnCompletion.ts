@@ -85,12 +85,17 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // and a silenced failure stalls it unseen. The unread badge is a
         // separate axis (criterion 7), exempt only for that failure.
         const muteSuppresses = muted && !completionNeedsInput && !turnErrored
+        // A Crew Mode worker's finished turn is its conductor's to read: no chime
+        // and no toast for the person. Gated like the mute above: a worker that
+        // paused on a question or errored has stopped, and until the conductor's
+        // own routing lands nothing else would say so, so those still sound.
+        const crewWorkerQuiet = !!soundSlot?.crew_root && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muteSuppresses
+        }) && !muteSuppresses && !crewWorkerQuiet
         // A live question card already requested audio. Keep its named
         // desktop toast eligible, but do not request a second chime.
         if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)
@@ -148,7 +153,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         dispatch(warmSlotCache(data.slot))
       }
       if (data.slot) {
-        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', ts: Date.now() }))
+        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle' }))
       }
       // The idle `slots` row that ended this same turn already dispatched this
       // refresh (`useSlotListSync`); any other `_done` refreshes.

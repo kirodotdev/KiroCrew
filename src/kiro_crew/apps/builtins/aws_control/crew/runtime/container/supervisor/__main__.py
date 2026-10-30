@@ -962,32 +962,6 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             "which would authenticate the task as another account without saying so."
         )
     backend_mod.require_model_identity(settings)
-    # Then satisfy kiro-cli's OWN login check, which is a separate question from
-    # whether this task has an identity.
-    #
-    # `kiro-cli acp` validates its own credential store before it offers an ACP
-    # handshake, so on a store it has never signed into it exits rc=1 "You are not
-    # logged in" and the `_kiro/auth/getAccessToken` request the vault answers is
-    # never reached: the container serves /health 200 and answers every dashboard
-    # turn with a 503. The row written here is a NON-SECRET sentinel, not a copy of
-    # the credential -- Crew is the auth owner and the engine asks the host for the
-    # token it uses, so what the store needs is the answer to "has this been signed
-    # into", which carries nothing worth reading.
-    #
-    # AFTER the vault check, because the order is what makes each refusal say the
-    # right thing: no identity is that check's verdict, and this one's is that
-    # kiro-cli would refuse to start. Both are startup refusals, because the thing
-    # they prevent is a container that starts and then 503s every turn.
-    #
-    # Handed `env`, NOT this process's own environment. The step runs kiro-cli to ask
-    # its login check a question, and this process still holds the delivered
-    # credential in its environment at this point -- the pop below has not run yet,
-    # and cannot run earlier because `build_backend_env` above is what reads it. An
-    # inherited copy would put the credential in a child that kiro-cli may outlive
-    # through a helper, readable by the later same-uid model worker. `env` is the
-    # dictionary `build_backend_env` already scrubbed of both credential shapes, and
-    # it carries the same HOME, so the store resolves to the same path either way.
-    kiro_login_mod.seed_kiro_cli_login(env=env)
     # Now drop BOTH credential shapes from this process's own environment. The front is
     # spawned with no env argument and so inherits this one whole, and
     # `build_backend_env` only ever cleaned the COPY handed to the backend -- so without
@@ -1023,7 +997,43 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
     # bundle may ship config, and this has to win on the keys it sets) and before the
     # backend, which reads this file at boot: a transport it starts there is already
     # connected by the time anything else could object.
-    backend_mod.write_backend_config(settings)
+    config_path = backend_mod.write_backend_config(settings)
+    # Then satisfy the SIGN-IN PROGRAM's own check, which is a separate question
+    # from whether this task has an identity, and which program that is depends on
+    # the config just written -- hence after it, not after the vault check.
+    #
+    # On the KAS bundle route (`agent.acp_backend` kas AND `agent.kas_bundle` on) the
+    # backend spawns the installed engine directly: there is no kiro-cli, no login
+    # check in front of the engine's credential request, and nothing to seed. Whether
+    # the engine is installed is the gateway's own readiness gate's question
+    # (`kiro_prerequisite_service`), which names a missing engine on every turn.
+    #
+    # Everywhere else `kiro-cli acp` validates its own credential store before it
+    # offers an ACP handshake, so on a store it has never signed into it exits rc=1
+    # "You are not logged in" and the `_kiro/auth/getAccessToken` request the vault
+    # answers is never reached: the container serves /health 200 and answers every
+    # dashboard turn with a 503. The row written here is a NON-SECRET sentinel, not a
+    # copy of the credential -- Crew is the auth owner and the engine asks the host
+    # for the token it uses, so what the store needs is the answer to "has this been
+    # signed into", which carries nothing worth reading.
+    #
+    # AFTER the vault check, because the order is what makes each refusal say the
+    # right thing: no identity is that check's verdict, and this one's is that the
+    # sign-in program would refuse to start. All are startup refusals, because the
+    # thing they prevent is a container that starts and then 503s every turn.
+    #
+    # Handed `env`, NOT this process's own environment. The kiro-cli step spawns
+    # kiro-cli to ask its login check a question; `env` is the dictionary
+    # `build_backend_env` scrubbed of both credential shapes, and it carries the same
+    # HOME, so the store resolves to the same path either way. (This process's own
+    # environment has been scrubbed too by now, above; handing the backend's copy
+    # keeps the seam the same whatever runs before it.)
+    if kiro_login_mod.kas_bundle_route(config_path):
+        log.info(
+            "KAS bundle route: kiro-cli's login store is not seeded (no kiro-cli on this route)"
+        )
+    else:
+        kiro_login_mod.seed_kiro_cli_login(env=env)
 
     # 1. Claim writer ownership in shared storage, THEN restore, THEN the backend. The
     #    claim is first because restoration takes the authority pair before any writer
@@ -1065,7 +1075,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
         # terminate on a backend that never existed. front and sidecar are declared here too,
         # BEFORE the first try, so no interruptible statement sits between the two cleanup
         # scopes: a stop at the readiness boundary is caught by one scope or the other rather
-        # than escaping both with the claim unreleased (GPT F1).
+        # than escaping both with the claim unreleased.
         backend = None
         front: ProcessGroup | None = None
         sidecar: ProcessGroup | None = None
@@ -1122,7 +1132,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
         try:
             # The readiness boundary is INSIDE this cleanup scope (not between the scopes): a
             # stop here still routes to the release-and-teardown below rather than escaping with
-            # the claim unreleased and the backend undrained (GPT F1).
+            # the claim unreleased and the backend undrained.
             log.info("backend: ready on %s", settings.backend_base_url)
             front = _start_front(settings)
             log.info("front: started")
@@ -1148,7 +1158,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             raise
 
         # The handoff from the startup guard to the supervise-phase handlers happens INSIDE
-        # the guard scope, not after it (GPT F1). If the `watched` list build and the
+        # the guard scope, not after it. If the `watched` list build and the
         # supervise `try` ran after `with _startup_signal_guard()` exited, its finally would
         # have already restored the default dispositions -- a SIGTERM in that span would then
         # kill the process and a SIGINT escape as KeyboardInterrupt, in both cases BEFORE

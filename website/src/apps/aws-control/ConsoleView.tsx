@@ -200,7 +200,12 @@ export function ConnectionsSection({ account, askAgent }: { account: AwsAccount;
 
 /* ── Section 3: drive-missing setup card ─────────────────────────────────── */
 
-export function SetupCard({ account, region }: { account: string; region: string }) {
+export function SetupCard({ account, region, searchedRegion }: {
+  account: string
+  region: string
+  /** The region the drive status searched, when the backend reports it. */
+  searchedRegion?: string
+}) {
   const qc = useQueryClient()
   const appKey = useAppQueryKey()
   const [showPolicy, setShowPolicy] = useState(false)
@@ -226,6 +231,13 @@ export function SetupCard({ account, region }: { account: string; region: string
         {i18nT('apps.awsControl.console.setup_title')}
       </CardTitle>
       <p className="mb-1 text-[13px] text-muted">{i18nT('apps.awsControl.console.setup_body')}</p>
+      {/* Discovery looks in one region only; say which, so an owner with a
+          drive elsewhere in this account does not create a second one. */}
+      {searchedRegion && (
+        <p className="mb-1 text-[13px] text-muted" data-testid="drive-searched-region">
+          {i18nT('apps.awsControl.console.setup_searched_region', { region: searchedRegion })}
+        </p>
+      )}
       <p className="mb-3 text-[13px] text-muted">{i18nT('apps.awsControl.console.setup_costs_note')}</p>
 
       {preview && !confirmMut.isSuccess && (

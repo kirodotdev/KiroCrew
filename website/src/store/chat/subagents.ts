@@ -260,6 +260,27 @@ export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string |
   return out.length ? out : _EMPTY_PENDING_SPAWNS
 }
 
+function sameRecordValues(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  return ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k])
+}
+
+/** Each background slot's `subagents` map, keyed by slot. `slotActivity`
+ *  changes identity on every background tool row (its `toolLog`), while the
+ *  `subagents` maps inside it keep theirs, so this keeps returning the same
+ *  object until one of those maps is replaced. The count selectors below read
+ *  it instead of `slotActivity`, so a tool row does not recount them. */
+export const selectSubagentsBySlot = createSelector(
+  [(state: RootState) => state.chat.slotActivity],
+  (slotActivity): Record<string, Record<string, SubagentActivity>> => {
+    const out: Record<string, Record<string, SubagentActivity>> = {}
+    for (const [slot, act] of Object.entries(slotActivity ?? {})) out[slot] = act.subagents
+    return out
+  },
+  { memoizeOptions: { resultEqualityCheck: sameRecordValues } },
+)
+
 /**
  * Total sub-agents in flight across EVERY slot — started (running/tool/pending)
  * plus accepted-but-queued. Drives the Sessions rail activity dot, which is the
@@ -274,17 +295,17 @@ export const selectSubagentActivityCount = createSelector(
   [
     (state: RootState) => state.chat.activeSlot,
     (state: RootState) => state.chat.subagents,
-    (state: RootState) => state.chat.slotActivity,
+    selectSubagentsBySlot,
     (state: RootState) => state.chat.subagentQueued,
   ],
-  (activeSlot, activeSubs, slotActivity, queued) => {
+  (activeSlot, activeSubs, bySlot, queued) => {
     let total = activeSlot ? countActiveSubagents(activeSubs) : 0
-    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+    for (const [slot, subs] of Object.entries(bySlot)) {
       // On switchSlot the active slot's map is aliased into both
       // state.subagents and slotActivity[active].subagents (same reference),
       // so this guard is what prevents double-counting it.
       if (slot === activeSlot) continue
-      total += countActiveSubagents(act.subagents)
+      total += countActiveSubagents(subs)
     }
     for (const q of Object.values(queued ?? {})) total += q > 0 ? q : 0
     return total
@@ -302,18 +323,18 @@ export const selectSidebarStartedSubagentCounts = createSelector(
   [
     (state: RootState) => state.chat.activeSlot,
     (state: RootState) => state.chat.subagents,
-    (state: RootState) => state.chat.slotActivity,
+    selectSubagentsBySlot,
   ],
-  (activeSlot, activeSubs, slotActivity) => {
+  (activeSlot, activeSubs, bySlot) => {
     const counts: Record<string, number> = {}
     if (activeSlot) {
       const n = countActiveSubagents(activeSubs)
       if (n > 0) counts[activeSlot] = n
     }
-    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+    for (const [slot, subs] of Object.entries(bySlot)) {
       // Load-bearing: active slot's map is aliased in both places; skip to avoid double-count.
       if (slot === activeSlot) continue
-      const n = countActiveSubagents(act.subagents)
+      const n = countActiveSubagents(subs)
       if (n > 0) counts[slot] = n
     }
     return counts
@@ -342,19 +363,19 @@ export const selectSidebarApprovalCounts = createSelector(
   [
     (state: RootState) => state.chat.activeSlot,
     (state: RootState) => state.chat.subagents,
-    (state: RootState) => state.chat.slotActivity,
+    selectSubagentsBySlot,
   ],
-  (activeSlot, activeSubs, slotActivity) => {
+  (activeSlot, activeSubs, bySlot) => {
     const approvalCounts: Record<string, number> = {}
     if (activeSlot) {
       const p = countPendingApprovals(activeSubs)
       if (p > 0) approvalCounts[activeSlot] = p
     }
-    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+    for (const [slot, subs] of Object.entries(bySlot)) {
       // Same aliasing guard as countActive above: the active slot's map is the
       // same object in both places, so skipping it here avoids double-counting.
       if (slot === activeSlot) continue
-      const p = countPendingApprovals(act.subagents)
+      const p = countPendingApprovals(subs)
       if (p > 0) approvalCounts[slot] = p
     }
     return approvalCounts
@@ -408,12 +429,13 @@ export const subagentReducers = {
     if (reason) state.subagentQueuedReason[key] = reason
     else delete state.subagentQueuedReason[key]
   },
-  /** Reconcile the queued counts with a `slots` push. Each row carries the
-   *  depth the gateway last published for its session (`subagents_queued`), so
-   *  a count a missed or misapplied `subagent_queued` frame left behind is
-   *  corrected by the next push, for every slot in the list and not only the
-   *  one on screen. A row without the field (a `slot_patch`, an older gateway)
-   *  leaves its count alone. The wait label is kept while rows still wait: the
+  /** Reconcile the queued counts with a `slots` push or a `slot_patch`. Each
+   *  full-list row, and each sub-agent patch row, carries the depth the gateway
+   *  last published for its session (`subagents_queued`), so a count a missed or
+   *  misapplied `subagent_queued` frame left behind is corrected by the next
+   *  push, for every slot it names and not only the one on screen. A row without
+   *  the field (a metadata `slot_patch` row, an older gateway) leaves its count
+   *  alone. The wait label is kept while rows still wait: the
    *  push carries the count, and the label stays the one the frames gave it. */
   reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown }>>) {
     state.subagentQueued ??= {}

@@ -1277,8 +1277,7 @@ class TestRealLocalJunctionAncestor:
 # ---------------------------------------------------------------- generators
 #
 # Every credential-shaped value below is SYNTHESIZED AT RUNTIME from a small
-# grammar rather than checked in as a literal, for the reason
-# ``test_file_delivery_consent`` states at length: a diff carrying working token
+# grammar rather than checked in as a literal: a diff carrying working token
 # strings reads as an exfiltration recipe to a review provider. The scanner sees
 # identical bytes either way, so the assertions are exactly as strong.
 

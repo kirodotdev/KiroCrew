@@ -52,8 +52,11 @@ class TestEmbedRateLimiter:
     def test_zero_rate_is_noop(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
         limiter = EmbedRateLimiter(rate_limit=0)
-        # Should not block
+        refill_before = limiter._last_refill
         asyncio.run(limiter.acquire())
+        # Returned before the bucket was touched: no refill, no token spent.
+        assert limiter._last_refill == refill_before
+        assert limiter._tokens == 0.0
 
     def test_high_rate_does_not_block(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
@@ -84,7 +87,6 @@ class TestEmbedRateLimiter:
         import kiro_crew.knowledge.ingestion as ing_mod
         from kiro_crew.knowledge.ingestion import get_embed_rate_limiter
 
-        # Reset the singleton
         ing_mod._embed_rate_limiter = None
         with patch("kiro_crew.config.loader.KiroCrewConfig.load") as mock_load:
             mock_load.return_value.knowledge.embed_rate_limit = 200
@@ -1004,4 +1006,10 @@ class TestUploadRefusesBeforeAccepting:
 
     def test_release_import_budget_tolerates_none(self):
         p = self._pipeline()
-        p.release_import_budget(None)            # nothing reserved; must not raise
+        p._import_budget.set_budget(50)
+        live = p._import_budget.reserve()
+        events_before = list(p._import_budget._events)
+        p.release_import_budget(None)
+        # A None release leaves another import's live reservation in place.
+        assert p._import_budget._events == events_before
+        assert live in p._import_budget._open

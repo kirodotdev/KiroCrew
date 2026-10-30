@@ -139,10 +139,15 @@ def git_checkout(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.resolve_remote_url",
-        lambda p, remote="", branch="": "https://github.com/kirodotdev/KiroCrew.git",
+        lambda p, remote="", branch="", **_k: "https://github.com/kirodotdev/KiroCrew.git",
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
+    )
+    # The fake `subprocess.run` below cannot answer the repo-config probe; that
+    # refusal is covered against a real repo in test_host_git_repo_exec_neutralization.
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
     )
     monkeypatch.setattr(cli_server.shutil, "which", lambda name: None)
     # The optional kiro-cli step spawns only a PINNED install (resolved with the
@@ -464,6 +469,23 @@ class TestUpdateGitPath:
         assert "Kiro Crew updated!" in capsys.readouterr().out
         assert poked == [True], "the completed update never poked the gateway"
 
+    def test_success_tells_the_user_to_restart(self, monkeypatch, git_checkout, capsys) -> None:
+        """The git path prints the same restart hint as the other paths."""
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert "Restart the gateway to use the new version:" in out
+        assert "kirocrew restart" in out
+        assert out.index("Kiro Crew updated!") < out.index("kirocrew restart")
+
+    def test_a_failed_update_prints_no_restart_hint(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        monkeypatch.setattr(subprocess, "run", _GitStub(reset=1))
+        with pytest.raises(SystemExit):
+            cli_server._update()
+        assert "kirocrew restart" not in capsys.readouterr().out
+
 
 class TestUpdateGatewayPoke:
     """``_revalidate_gateway_update_check`` — best-effort, never fatal.
@@ -744,6 +766,9 @@ def wheel_feed(monkeypatch):
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
+    )
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
     )
 
     def _no_network(*a, **k):
@@ -1325,9 +1350,9 @@ class TestStatusMemoryLine:
 
 
 class TestApproveBusyVsDown:
-    """The update-approve and file-delivery-approve CLI paths report a slow
-    gateway as busy, and a refused connection as not running. Both carry a
-    single-use nonce, so the busy line points at the dashboard, never a retry.
+    """The update-approve CLI path reports a slow gateway as busy, and a
+    refused connection as not running. It carries a single-use nonce, so the
+    busy line points at the dashboard, never a retry.
     """
 
     def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
@@ -1354,31 +1379,6 @@ class TestApproveBusyVsDown:
         monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", _timeout)
         with pytest.raises(SystemExit) as exc:
             cli_server._update_approve()
-        assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "is not running" not in out
-
-    def test_file_delivery_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
-        from kiro_crew import file_delivery_consent
-        from kiro_crew.dashboard import urls as dashboard_urls
-
-        pending = types.SimpleNamespace(destination_class="owner", expires_in=60, nonce="n" * 64)
-        monkeypatch.setattr(file_delivery_consent, "read_pending_grant", lambda: pending)
-        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
-        # No usable unix socket path -> the TCP loopback transport is used, which
-        # is the seam this stub raises a timeout at.
-        monkeypatch.setattr(
-            dashboard_urls, "dashboard_socket_path", lambda _p: (_ for _ in ()).throw(OSError())
-        )
-
-        def _timeout(*a, **k):
-            raise TimeoutError("timed out")
-
-        monkeypatch.setattr(cli_server, "loopback_urlopen", _timeout)
-        with pytest.raises(SystemExit) as exc:
-            cli_server._file_delivery_approve()
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "busy" in out

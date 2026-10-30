@@ -442,7 +442,7 @@ async def _cron_single_failure(
     safe_reason = self._slack_safe_fenced(exc_detail)
     # +1 only when the charge below will actually land. This run's
     # failure is recorded after the awaited Slack attempt, so the
-    # display count has to add it explicitly -- but it is now gated on
+    # display count has to add it explicitly -- but it is gated on
     # _job_owns_failure, and an exempted run that still claimed
     # "N+1 consecutive failures" would report a number the counter
     # driving auto-pause never reached.

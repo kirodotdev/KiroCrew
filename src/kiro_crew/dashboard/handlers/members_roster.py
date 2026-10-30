@@ -23,6 +23,7 @@ from aiohttp import web
 
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import load_config_with_content_stamp
+from kiro_crew.dashboard import members_roster_goals
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members_access import (
     _audit_owner_read,
@@ -149,6 +150,11 @@ _SOURCE_KIROCREW = "kirocrew"
 _SOURCE_BUILTIN = "builtin"
 _SOURCE_PACKAGE = "package"
 
+#: The reserved main member every install carries (``cfg.default_agent``'s
+#: seed). It is never a crewmate the person created, and the roster lists it
+#: only once its thread holds a message the person sent.
+RESERVED_DEFAULT_MEMBER = "default"
+
 
 def normalize_member_source(raw: object) -> str:
     """Bound a record's ``source`` to the three values the roster renders."""
@@ -167,6 +173,110 @@ def _member_is_created(member_id: object) -> bool:
     non-string or a blank reads as not created.
     """
     return isinstance(member_id, str) and bool(member_id.strip())
+
+
+def _transcript_holds_message(conversation_log: Any, log_key: str) -> bool:
+    """Whether the DM transcript under ``log_key`` holds a message, read off disk.
+
+    ``has_messages`` stops at the first non-metadata row, so this is one short
+    read: a metadata-only transcript (a thread opened, nothing sent) is not a
+    message. A file that cannot be read counts as holding one, so an unreadable
+    thread never hides its row. Shared by both rosters' listing rule.
+    """
+    try:
+        return bool(conversation_log.has_messages(log_key))
+    except OSError:
+        return True
+
+
+def _transcript_holds_person_message(conversation_log: Any, log_key: str) -> bool:
+    """Whether the DM transcript under ``log_key`` holds a message the person sent.
+
+    ``transcript_person_rows``: live file and archived segments. A
+    file that cannot be read counts as holding one, so an unreadable thread
+    never hides its row.
+    """
+    from kiro_crew.transcript_person_rows import transcript_has_person_message
+
+    try:
+        return bool(transcript_has_person_message(conversation_log, log_key))
+    except OSError:
+        return True
+
+
+def _live_slot_has_person_rows(state: DashboardState | None, slot_key: str) -> bool:
+    """Whether the live slot behind ``slot_key`` holds a person-sent row in memory."""
+    from kiro_crew.transcript_person_rows import is_person_sent_row
+
+    live = state._slots.get(slot_key) if (state and slot_key) else None
+    rows = getattr(live, "messages", None) if live is not None else None
+    return isinstance(rows, (list, tuple)) and any(is_person_sent_row(r) for r in rows)
+
+
+def _live_slot_has_rows(state: DashboardState | None, slot_key: str) -> bool:
+    """Whether the live slot behind ``slot_key`` holds any rows in memory.
+
+    A greeting just appended is a message whether or not it has reached disk.
+    Reads in-memory slot state, so it runs on the event loop.
+    """
+    live = state._slots.get(slot_key) if (state and slot_key) else None
+    rows = getattr(live, "messages", None) if live is not None else None
+    return isinstance(rows, (list, tuple)) and len(rows) > 0
+
+
+def read_dm_thread_message_state(name: str, cfg: Any, conversation_log: Any) -> tuple[str, bool]:
+    """``(slot_key, holds_message_on_disk)`` for crewmate ``name``'s DM thread.
+
+    File IO (the binding and one short transcript read), so callers run it off
+    the event loop. The same evidence ``GET /api/members`` folds into
+    ``has_dm_message``: only a binding whose ``member`` is exactly ``name``
+    counts, and the transcript is the thread alias that binding names. An
+    unbound thread, an unaddressable name, or no conversation log reads as
+    ``("", False)``.
+    """
+    try:
+        slug = members_mod.member_slug(name, cfg)
+    except MemberSlugError:
+        return "", False
+    binding = members_mod.read_dm_binding(slug)
+    if binding is None or binding.get("member") != name:
+        return "", False
+    slot_key = binding.get("slot_key", "") or ""
+    if not slot_key or conversation_log is None:
+        return slot_key, False
+    log_key = members_mod.member_thread_session_alias(slug, binding.get("memory_store", ""))
+    return slot_key, _transcript_holds_message(conversation_log, log_key)
+
+
+async def unchatted_legacy_bindings(cfg: Any, state: DashboardState | None) -> set[str]:
+    """Names of the legacy built-in bindings whose DM thread holds no message.
+
+    ``GET /api/agents`` leaves these out, the pickers' form of the listing rule
+    this roster ships as ``has_dm_message``. ``mate_worker.is_legacy_binding``
+    names the candidates; their binding and transcript reads run in one thread
+    hop, and the live-slot check runs on the loop.
+    """
+    from kiro_crew.mate_worker import is_legacy_binding
+
+    candidates = [name for name, a in cfg.agents.items() if is_legacy_binding(name, a)]
+    if not candidates:
+        return set()
+    log = state.conversation_log if state else None
+
+    def _read() -> dict[str, tuple[str, bool]]:
+        return {name: read_dm_thread_message_state(name, cfg, log) for name in candidates}
+
+    try:
+        threads = await asyncio.to_thread(_read)
+    except Exception:
+        # An unreadable thread state lists the rows rather than hiding a chat.
+        logger.warning("could not read the legacy bindings' DM threads", exc_info=True)
+        return set()
+    return {
+        name
+        for name, (slot_key, on_disk) in threads.items()
+        if not on_disk and not _live_slot_has_rows(state, slot_key)
+    }
 
 
 def _slot_flush_generation(slot: object) -> tuple[int, int, int] | None:
@@ -272,6 +382,8 @@ async def api_members(request: web.Request) -> web.Response:
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
+        # A legacy built-in binding (no member id) flows through like any other
+        # non-dashboard-created row: `has_dm_message` decides whether it is listed.
         if not _member_name_is_addressable(name):
             continue
         try:
@@ -318,6 +430,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # The per-crewmate Dynamic capabilities preview, the profile
+                # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
+                "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than
@@ -331,16 +446,20 @@ async def api_members(request: web.Request) -> web.Response:
                 # bool (the user's own favourite mark, PUT /api/agents/{name}).
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
-                # Whether this record was CREATED ON THE DASHBOARD: the crew
-                # manager's own origin (`source == "kirocrew"`) AND a member id,
-                # which is assigned when its member memory is allocated. With
-                # `has_dm_message` below it decides whether the Crewmates page
-                # lists the row unasked; anything else (an app's own stamp, a
-                # sync-generated row, a legacy kirocrew row) is listed only once
-                # its DM thread holds a message, and is otherwise reached
-                # through the search box. A boolean, never the id itself.
-                "dashboard_created": agent_cfg.source == _SOURCE_KIROCREW
-                and _member_is_created(agent_cfg.member_id),
+                # Whether the PERSON created this crewmate: the crew manager's
+                # own origin (`source == "kirocrew"`) AND a member id, which is
+                # assigned when its member memory is allocated. Both create
+                # paths the person takes write exactly that through
+                # `POST /api/agents`: the Crewmates page's create, and Mate's
+                # `crewmate.create` / `crewmate.import` card once approved. The
+                # Crewmates page lists such a row even while its chat is empty.
+                # Anything else (an app's own stamp, a sync-generated row, a
+                # legacy kirocrew row, the reserved `default` member) is listed
+                # only once its DM thread holds a message, and is otherwise
+                # reached through the search box. A boolean, never the id.
+                # The rule is owned by `members.is_person_created_crewmate`, which the
+                # `kirocrew.inventory.members` gauge counts with too.
+                "dashboard_created": members_mod.is_person_created_crewmate(name, agent_cfg),
                 # A crew's IDENTITY: who it is, and the phrasings that should
                 # reach it. Both are operator-authored prose already stored on the
                 # crew, and both are needed off-config — a roster that shows a
@@ -392,6 +511,9 @@ async def api_members(request: web.Request) -> web.Response:
     # Slot keys whose DM thread holds at least one message (filled by the tail
     # read below; see `has_dm_message`).
     has_message: set[str] = set()
+    # The subset whose thread holds a message the person sent (the `default`
+    # row only; see `has_user_dm_message`).
+    has_person_message: set[str] = set()
 
     def _read_transcript_tails() -> dict[str, tuple[float, str, bool, bool]]:
         if state is None or state.conversation_log is None:
@@ -412,19 +534,19 @@ async def api_members(request: web.Request) -> web.Response:
             generation = binding.get("memory_store", "") if binding is not None else ""
             log_key = members_mod.member_thread_session_alias(row["slug"], generation)
             # Whether the thread holds a message at all, for the roster's
-            # listing rule. `has_messages` stops at the first non-metadata row
-            # (two lines in practice), so this stays one short read per bound
-            # row -- the same evidence the crewmate prune uses: a metadata-only
-            # transcript (a thread opened, nothing sent) is not a message. A
-            # file that cannot be read counts as holding one, so an unreadable
-            # thread never hides the row. It runs BEFORE the mtime gate below:
-            # a transcript that cannot be stat'd is unreadable, not absent
+            # listing rule (`_transcript_holds_message`, the same evidence the
+            # crewmate prune uses). It runs BEFORE the mtime gate below: a
+            # transcript that cannot be stat'd is unreadable, not absent
             # (`has_messages` answers an absent file as empty).
-            try:
-                if state.conversation_log.has_messages(log_key):
-                    has_message.add(row["slot_key"])
-            except OSError:
+            if _transcript_holds_message(state.conversation_log, log_key):
                 has_message.add(row["slot_key"])
+                # The reserved `default` row is listed on a stricter signal:
+                # a message the PERSON sent (`has_user_dm_message`). Read for
+                # that one row only, since the read walks the whole thread.
+                if row["name"] == RESERVED_DEFAULT_MEMBER and _transcript_holds_person_message(
+                    state.conversation_log, log_key
+                ):
+                    has_person_message.add(row["slot_key"])
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
@@ -493,6 +615,12 @@ async def api_members(request: web.Request) -> web.Response:
     observed_rosters = await asyncio.to_thread(_observe_rosters)
     tails = await asyncio.to_thread(_read_transcript_tails)
     await asyncio.to_thread(_stamp_welcome_claimed, rows)
+    # Who has a goal and whose heartbeat is on, off each member's goal record:
+    # the row's goal marker and its on-watch cue (with the slot's automation).
+    # One thread hop for the roster, like the bindings and the transcript tails.
+    goal_facts = await asyncio.to_thread(members_roster_goals.goal_facts_for_rows, rows)
+    for row in rows:
+        row.update(goal_facts.get(row["name"], {}))
     # Slot keys whose speech-only read is trustworthy enough to correct the
     # member log with: a non-empty quote, or an empty one from a walk that
     # reached the start of the log -- and, either way, only for a slot whose
@@ -509,13 +637,14 @@ async def api_members(request: web.Request) -> web.Response:
         # crew log is the recency authority, and this value is its floor.
         row["last_active_ts"] = mt
         row["last_message"] = preview
-        # A live slot's rows count before they reach the disk: a greeting that
-        # has just been appended is a message whether or not it has flushed.
-        live = state._slots.get(row["slot_key"]) if (state and row["slot_key"]) else None
-        live_rows = getattr(live, "messages", None) if live is not None else None
-        row["has_dm_message"] = row["slot_key"] in has_message or (
-            isinstance(live_rows, (list, tuple)) and len(live_rows) > 0
+        # A live slot's rows count before they reach the disk.
+        row["has_dm_message"] = row["slot_key"] in has_message or _live_slot_has_rows(
+            state, row["slot_key"]
         )
+        if row["name"] == RESERVED_DEFAULT_MEMBER:
+            row["has_user_dm_message"] = row[
+                "slot_key"
+            ] in has_person_message or _live_slot_has_person_rows(state, row["slot_key"])
         if not (preview or exhaustive) or row["slot_key"] in unflushed_slot_keys:
             continue
         # Re-ask AFTER the awaits: a slot that was clean at the pre-await sample

@@ -243,7 +243,12 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
     shared_kiro_agents_writable,
 )
-from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
+from kiro_crew.env import (
+    mcp_search_path,
+    resolved_command_casing,
+    saved_command_casing,
+    spec_path_key,
+)
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
@@ -274,6 +279,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _filter_auto_approve,
         _may_auto_approve,
         _seed_kas_permissions,
+        _spec_permissions_accepted,
         _strip_ungoverned_auto_approve,
         _write_derived_permissions,
         declared_auto_approve,
@@ -303,6 +309,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     )
     from kiro_crew.agent_materialization.fork_refresh import (  # noqa: F401
         _FORK_REFRESH_WAIT_SECS,
+        SharedTemplateOverCeiling,
         _fork_refresh_count_lock,
         _fork_refresh_failed,
         _fork_refresh_lock,
@@ -312,6 +319,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _refresh_forked_templates_locked,
         fork_origin_is_owned,
         hold_spawn_gate,
+        name_has_another_claimant,
+        require_shared_template_within_ceiling,
     )
     from kiro_crew.agent_materialization.guide_platform import (  # noqa: F401
         grant_guide_platform_once,
@@ -414,6 +423,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         describe_search_path,
         emit_env,
         entry_as_enabled,
+        gateway_routed_names,
         invalid_disabled_flag,
         kiro_oauth_wire_entry,
         mcp_entries_muted,
@@ -430,15 +440,20 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _GUEST_AGENT_FILENAME,
         _KNOWLEDGE_AGENT_FILENAME,
         _LITE_AGENT_FILENAME,
+        _MATE_CONDUCTOR_AGENT_FILENAME,
+        _MATE_WORKER_AGENT_FILENAME,
         _RESEARCH_AGENT_FILENAME,
         _TEAM_LEAD_AGENT_FILENAME,
         _install_dashboard_manager_agent,
         _install_guest_agent,
         _install_knowledge_agent,
         _install_lite_agent_fallback,
+        _install_mate_conductor_agent,
+        _install_mate_worker_agent,
         _install_research_agent,
         _install_team_lead_agent,
         knowledge_agent_model,
+        repair_knowledge_agent_spec,
     )
     from kiro_crew.agent_materialization.skill_resources import (  # noqa: F401
         map_prompt_skills,
@@ -697,6 +712,21 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     "kirocrew-mate": {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-mate"),
     },
+    # Mediated secret requests (``mcp_secrets``): one tool,
+    # ``call_api_with_secret``, that sends a write to an owner-authorized https
+    # origin with a Custom secret the agent never sees. ``opt_in`` like the
+    # assignable sets above: the trust boundary is the host endpoint, not the
+    # mount, so an agent that is not granted the set loses nothing it could use,
+    # and a default session spends no process and no context on it.
+    #
+    # No ``autoApprove`` key, and none may ever be added: an autoApproved MCP
+    # tool is approved inside kiro-cli and never reaches ``hooks.on_tool_call``,
+    # and the approval is where the single-use capability the host endpoint
+    # demands is minted (``mediated_request_capability``).
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+        "opt_in": True,
+    },
 }
 
 
@@ -933,6 +963,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "declared_auto_approve",
         "_strip_ungoverned_auto_approve",
         "_write_derived_permissions",
+        "_spec_permissions_accepted",
         "_seed_kas_permissions",
         "_may_auto_approve",
         "_apply_allowed_tools_ceiling",
@@ -957,6 +988,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "describe_search_path",
         "emit_env",
         "entry_as_enabled",
+        "gateway_routed_names",
         "invalid_disabled_flag",
         "kiro_oauth_wire_entry",
         "mcp_entries_muted",
@@ -982,6 +1014,9 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_refresh_forked_templates",
         "_refresh_forked_templates_locked",
         "fork_origin_is_owned",
+        "require_shared_template_within_ceiling",
+        "SharedTemplateOverCeiling",
+        "name_has_another_claimant",
         "hold_spawn_gate",
     ),
     "kiro_crew.agent_materialization.service_agents": (
@@ -989,13 +1024,18 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
         "knowledge_agent_model",
+        "_install_mate_conductor_agent",
+        "_install_mate_worker_agent",
         "_install_research_agent",
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
+        "repair_knowledge_agent_spec",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
         "_LITE_AGENT_FILENAME",
+        "_MATE_CONDUCTOR_AGENT_FILENAME",
+        "_MATE_WORKER_AGENT_FILENAME",
         "_RESEARCH_AGENT_FILENAME",
         "_TEAM_LEAD_AGENT_FILENAME",
     ),

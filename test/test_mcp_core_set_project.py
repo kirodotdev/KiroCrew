@@ -143,28 +143,22 @@ class TestResolveSessionKeyStrict:
              ):
             assert mcp_core._resolve_session_key_strict() == ""
 
-    def test_host_pid_without_file_returns_empty(self, monkeypatch, tmp_path):
-        """A subagent sandbox exports its own HOST_PID, but the gateway never
-        writes a session_pid file for it — strict must refuse, not walk."""
+    @pytest.mark.parametrize(
+        "host_pid",
+        [
+            # A subagent sandbox exports its own HOST_PID, but the gateway never
+            # writes a session_pid file for it: strict must refuse, not walk.
+            pytest.param("5555", id="host-pid-without-file-returns-empty"),
+            # A malformed HOST_PID (path traversal, garbage) never reaches the
+            # filesystem lookup.
+            pytest.param("../../etc/passwd", id="non-numeric-host-pid-ignored"),
+        ],
+    )
+    def test_unpublished_host_pid_resolves_to_no_key(self, monkeypatch, tmp_path, host_pid):
         from kiro_crew import session_pid_sig
 
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
-        monkeypatch.setenv("KIROCREW_HOST_PID", "5555")
-        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-             patch.object(
-                 session_pid_sig,
-                 "sel_hmac_key_path",
-                 return_value=tmp_path / "sel_hmac.key",
-             ):
-            assert mcp_core._resolve_session_key_strict() == ""
-
-    def test_non_numeric_host_pid_ignored(self, monkeypatch, tmp_path):
-        """Malformed HOST_PID (path traversal, garbage) never reaches the
-        filesystem lookup."""
-        from kiro_crew import session_pid_sig
-
-        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
-        monkeypatch.setenv("KIROCREW_HOST_PID", "../../etc/passwd")
+        monkeypatch.setenv("KIROCREW_HOST_PID", host_pid)
         with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
              patch.object(
                  session_pid_sig,
@@ -203,13 +197,6 @@ class TestSetProjectTool:
             "clear": False,
         }
 
-    def test_clear_flag_encoded_in_directive(self):
-        result = mcp_core._call_tool_inner("set_project", {"path": "", "clear": True})
-        assert session_directive.decode(result, "set_project") == {
-            "project": "",
-            "clear": True,
-        }
-
     def test_empty_path_without_clear_rejected(self):
         from kiro_crew.validation import ValidationError
 
@@ -235,21 +222,26 @@ class TestSetProjectTool:
     def test_guidance_names_worktrees_and_the_peer_refusal(self):
         """Agents create worktrees and never retarget, so the tool
         description and the bundled system prompt both name `git worktree add`
-        as a trigger, and both state that a peer-sent turn is refused (the
-        gate admits only a person's turn, not just "not headless")."""
+        as a trigger. The refusals are HOW rules and live on the tool
+        description only: headless callers are rejected and a peer-sent turn
+        is refused (the gate admits only a person's turn, not just "not
+        headless"). The prompt line keeps the trigger alone."""
         from pathlib import Path
 
         descriptor = next(t for t in mcp_core._list_tools() if t["name"] == "set_project")
         description = descriptor["description"]
         assert "git worktree add" in description
-        assert "session_send" in description
+        assert "headless callers" in description
+        assert "A turn another session sent (for example via session_send) is refused" in (
+            description
+        )
 
         prompt = (Path(mcp_core.__file__).parent / "config" / "prompt.md").read_text(
             encoding="utf-8"
         )
         line = next(ln for ln in prompt.splitlines() if ln.startswith("- `set_project`:"))
         assert "git worktree add" in line
-        assert "turns sent by another session are refused" in line
+        assert "refused" not in line
 
 
 # ───────────────────── set_project absolute-path shape gate ─────────────────

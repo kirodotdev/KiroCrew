@@ -1,7 +1,7 @@
 """Run syscall-shaped work in a separate interpreter, behind an Executor face.
 
 See :mod:`kiro_crew.subprocess_pool.executor` for why a thread pool cannot isolate
-work that is syscall-shaped but Python-paced, and for the three steps to point a
+work that is syscall-shaped but Python-paced, and for the four steps to point a
 second pool at this base.
 """
 

@@ -108,11 +108,13 @@ export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID]
 export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
 /** Everything this page withholds once the thread is confirmed. The rule: the
  *  STANDING tabs here are Dashboard (the host-owned leading tab) and Files (the
- *  one pinned view this page keeps); everything the chat page reaches through
- *  the + menu stays reachable through the + menu here too (Side Chat, Terminal,
- *  Browser, Git, Subagents, Workflows, the Developer-Mode views and any
+ *  one pinned view this page keeps, labelled Workspace here); the + menu offers
+ *  the views a mate's owner works in (Side Chat, Terminal, Browser and any
  *  app-contributed tab), bound to the member's own slot. Withheld, then: the
- *  unfed views above, the chat page's Command Center (the task dashboard lives
+ *  unfed views above, Subagents, Workflows and Git (a mate hands work to
+ *  workers; the Dashboard is where a mate's owner follows it), the diagnostics group
+ *  (Logs, Context, Crew log), the chat page's Command Center (the task
+ *  dashboard lives
  *  in the permanent Dashboard tab, not a second chat view) and Artifacts — a
  *  PINNED standing tab on the chat page, and this page's standing set is
  *  Dashboard + Files, so it is the one withdrawal versus the plain chat panel.
@@ -125,7 +127,9 @@ export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEW
  *  on a tab or member switch loses nothing, and the selection toolbar's "Ask
  *  about this" needs the tab as its landing (`openMemberSideChat`); it stays
  *  dynamic, never standing. Exported so the test pins the set. */
-export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts']
+export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [
+  ...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'workflows', 'git', 'logs', 'context', 'crewlog',
+]
 /** Everything the panel withholds while the thread is UNCONFIRMED: every
  *  classified view, plus Terminal and app tabs. Derived from
  *  `VIEW_DATA_SOURCE` (the exhaustive `Record<ViewKind, …>`) rather than

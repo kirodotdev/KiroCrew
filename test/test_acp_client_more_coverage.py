@@ -164,28 +164,23 @@ class TestAdvisoryHelpers:
         err = {"code": -32603, "data": {"details": "Model 'x' is restricted by policy."}}
         assert _substitute_model_from_advisory(err) is None
 
-    def test_substitute_strips_surrounding_quotes(self):
-        err = {
-            "code": -32603,
-            "data": {
-                "details": (
-                    'Model "a" is restricted by your organization\'s settings. '
-                    "Using 'global.anthropic.sonnet' instead."
-                )
-            },
-        }
-        assert _substitute_model_from_advisory(err) == "global.anthropic.sonnet"
-
-    def test_substitute_strips_trailing_punctuation(self):
-        err = {
-            "code": -32603,
-            "data": {
-                "details": (
-                    "Model a is restricted by your organization's settings. "
-                    "Using global.anthropic.sonnet, instead."
-                )
-            },
-        }
+    @pytest.mark.parametrize(
+        "details",
+        [
+            pytest.param(
+                'Model "a" is restricted by your organization\'s settings. '
+                "Using 'global.anthropic.sonnet' instead.",
+                id="substitute_strips_surrounding_quotes",
+            ),
+            pytest.param(
+                "Model a is restricted by your organization's settings. "
+                "Using global.anthropic.sonnet, instead.",
+                id="substitute_strips_trailing_punctuation",
+            ),
+        ],
+    )
+    def test_substitute_is_bare(self, details):
+        err = {"code": -32603, "data": {"details": details}}
         assert _substitute_model_from_advisory(err) == "global.anthropic.sonnet"
 
 
@@ -795,13 +790,16 @@ class TestEnsureReady:
     @pytest.mark.asyncio
     async def test_shutdown_kills_and_resets(self, tmp_path):
         client = _client(tmp_path)
-        client._kill_process = AsyncMock()
-        client._reset_state = MagicMock()
+        order: list[str] = []
+        client._kill_process = AsyncMock(side_effect=lambda **kw: order.append(f"kill {kw}"))
+        client._reset_state = MagicMock(side_effect=lambda: order.append("reset"))
+        client._process_tree_confirmed_dead = True
 
         await client.shutdown()
 
-        client._kill_process.assert_awaited_once_with(force=True)
-        client._reset_state.assert_called_once()
+        assert order == ["kill {'force': True}", "reset"]
+        # A stale confirmation from an earlier kill does not survive into this one.
+        assert client._process_tree_confirmed_dead is False
 
 
 # ── JSON-RPC transport ──

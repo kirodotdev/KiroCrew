@@ -129,13 +129,17 @@ bytes it wrote; that seed carries deny rules translated from the spec's
 A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
 `permissions.defaultMode`, which puts Claude's own classifier in charge of approving
-tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call` and
-writes no SEL record, exactly as a project allow rule does. Only the literal value
+tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call`,
+exactly as a project allow rule does. Crew still records it: when a call of an `auto`
+session reaches a terminal status without a `session/request_permission`,
+`AcpClient._maybe_audit_unasked_tool_call` writes an SEL `tool_invocation` row for it
+(`outcome` `auto_approved` when it completed, else its status; `metadata.decided_by`
+`claude_classifier`). That row is an after-the-fact record, not a gate. Only the literal value
 `auto` resolves, a backend that seeds no settings file resolves to nothing, and with
 no opt-in no `defaultMode` is written at all. Crew never seeds `bypassPermissions`:
 `resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
 can only arrive from a foreign project settings file, which is the disclosed
-inherited-settings gap below. The audit half of the `auto` trade is tracked in #12744.
+inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is tracked in #12743.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any
@@ -283,14 +287,27 @@ none.
 
 ### Session-scoped Claude settings
 
-`_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json`
-before the primary spawn (not only on the model-substitution retry) with
-`permissions.defaultMode` when requested and `permissions.deny` rules derived
-from the spec's `disabledTools`. Once the provider-advertised model cache is warm,
-it also writes `availableModels` and a pinned `model`; on a cold cache both model
-keys are omitted so a stale static allowlist cannot collapse a versioned `[1m]`
-id to the 200K window. The post-capture re-seed fills them after `session/new`
-records the backend's actual list.
+`_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
+the primary spawn (not only on the model-substitution retry) with
+`permissions.defaultMode` when requested and `permissions.deny` rules derived from
+the spec's `disabledTools`. Once the provider-advertised model cache is warm it
+writes a pinned `model`, and it writes `availableModels` only when another settings
+source (user `settings.json`, project `.claude/settings.json`, or the managed
+`managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
+one; on a cold cache both keys are omitted. Claude Code's rule is that an allowlist
+entry naming a specific id disables that family's alias wildcard, so Crew's own list
+would cap `haiku` at Haiku 4.5 (issue #22995); a `model` key has no such effect. The
+post-capture re-seed fills them after `session/new` records the backend's actual
+list, under the same conditions. Managed policy that Claude Code reads from the OS
+rather than from a file (a macOS MDM profile, the Windows `HKLM`/`HKCU` policy keys)
+is not checked. Neither are server-managed settings, which the CLI caches as
+`remote-settings.json` in its config directory and applies under its own trust rules for
+that stored copy; the Windows managed-settings directory the CLI also reads under WSL
+when `wslInheritsWindowsSettings` is set; or a project `.claude/settings.json` that is
+itself a link, which Crew refuses to open. A list defined only there is
+missed: the seed then
+omits Crew's list as it does on a cold cache, so a versioned `[1m]` pick can resolve
+to the 200K window under that policy.
 
 With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
 model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
@@ -365,17 +382,19 @@ Only the model half (`availableModels`, `model`) may differ from the payload thi
 client would have written (`_share_sibling_settings_seed`). It grants no permission,
 and each session's own model reaches the adapter live: `_apply_startup_model` pushes
 it over `session/set_config_option`, which claude-agent-acp accepts only for an
-`availableModels` entry. So the seed must list this session's `model`, or name none
-when this session pins none. A pinned session then runs its own pin, and an
-unpinned one starts on the adapter's default rather than the owner's pin. The seed's
-bytes are read only when they match the durable record, through the same bounded,
-no-follow, non-blocking read the ownership check uses (`_settings_path_bytes`), and
-the share validates exactly those bytes. A seed that differs in a permission key —
-another permission mode, another agent's deny rules — or that would keep this
-session off its own model is refused exactly as before. The hazard the live-holder
-rule exists for only arises when the permissions differ, so they are the boundary
-of the relaxation. Every refusal logs the same quiet informational message
-(`_log_declined_share`) naming what the session runs without.
+`availableModels` entry. So the seed must list this session's `model`, name none
+when this session pins none, or, when neither seed carries `availableModels`, leave
+the adapter on its own advertised list, where the push is accepted. A pinned session
+then runs its own pin, and an unpinned one starts on the adapter's default rather
+than the owner's pin. The seed's bytes are read only when they match the durable
+record, through the same bounded, no-follow, non-blocking read the ownership check
+uses (`_settings_path_bytes`), and the share validates exactly those bytes. A seed
+that differs in a permission key — another permission mode, another agent's deny
+rules — or that would keep this session off its own model is refused exactly as
+before. The hazard the live-holder rule exists for only arises when the permissions
+differ, so they are the boundary of the relaxation. Every refusal logs the same
+quiet informational message (`_log_declined_share`) naming what the session runs
+without.
 
 The sharer's stake is a live registration (`seed_provenance.share`, taken BEFORE
 the byte checks so the owner's teardown cannot validate-race it; withdrawn on the
@@ -483,14 +502,14 @@ puts it on the wire for `session/new` and `session/load`:
 
 The claude CLI then loads neither project tier: not the project's local file, and not
 a checked-in `.claude/settings.json`. No `permissions.allow` a repository carries can
-pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules and
-model allowlist ride the inline settings. That makes the permission surface governed
-(`_permission_surface_governed`), so the session gets the full `mcpServers` array:
-`send_message`, `cron_add`, `spawn_run` and the spec's servers. A cron job on such a
-project delivers its result. The cost is that project-scope config does not load on
-this path either: its `settings.json` env and plugins, and its `CLAUDE.md` memory
-files, which the SDK loads only with the `project` source. The runtime warning names
-the same list.
+pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules, and
+its model allowlist when the seed carries one, ride the inline settings. That makes
+the permission surface governed (`_permission_surface_governed`), so the session gets
+the full `mcpServers` array: `send_message`, `cron_add`, `spawn_run` and the spec's
+servers. A cron job on such a project delivers its result. The cost is that
+project-scope config does not load on this path either: its `settings.json` env and
+plugins, and its `CLAUDE.md` memory files, which the SDK loads only with the
+`project` source. The runtime warning names the same list.
 
 What the project tiers REFUSE is carried, not dropped. Leaving a tier out must drop its
 allows, never its restrictions, so `_project_settings_restrictions` reads the
@@ -524,8 +543,13 @@ either key the same way, and stops the harness.
 Two smaller residuals. The adapter's own `SettingsManager` still reads
 `availableModels` from every tier for its model picker, so a project file can shape
 the picker even though the CLI loads Crew's inline allowlist; this is cosmetic for
-permissions. An operator's `dontAsk` is kept (below): it refuses every call that is
-not pre-approved, so it runs nothing `default` would not.
+permissions. For the same reason a project file that defines `availableModels` still
+counts as another source when the seed decides whether to write Crew's own list: the
+adapter merges it, so Crew's list still has a list to counter, though the CLI does
+not load the project tier. That session then carries the family-alias cap, as any
+session does when another source defines a list. An operator's `dontAsk` is kept
+(below): it refuses every call that is not pre-approved, so it runs nothing `default`
+would not.
 
 What still loads is the `user` tier. A session whose file Crew authored loads
 `user`, `project` and `local`, so this path is narrower than the normal one. The user
@@ -606,6 +630,74 @@ Crew-owned directory from the user's `~/.claude`, keeping credentials and models
 while stripping inherited `permissions` that would pre-approve past Crew's gate)
 is **not implemented here** — see the known gap below.
 
+### Native subagents (the Agent tool)
+
+Claude Code runs a subagent for its Agent (Task) tool inside the session's own
+process. `AcpClient` declares `clientCapabilities.subagents` on this backend
+(`client_native_children.CLAUDE_CLIENT_CAPABILITIES`), so claude-agent-acp
+(measured on 0.94.0) sends the child form:
+
+- `subagent_update` on the parent session: the child's `sessionId`, a `title` (the
+  agent type), a `description`, and a `state` (`running`, `requires_action`, or
+  `idle` with a `stopReason`);
+- `session_message` on the child session: the prompt the child was handed, whose
+  `messageId` is the Agent call's `toolCallId`;
+- the child's own `tool_call`, `tool_call_update` and `agent_message_chunk` frames
+  under the child's sessionId, each stamped `_meta.claudeCode.parentToolUseId`.
+
+`client_native_children` reads them in all three `AcpClient` readers. Each lifecycle
+change yields the roster of this turn's children that have a task, as `EVENT_SUBAGENT_LIST` in
+the kiro-cli shape, so the native Activity cards (`_native_subagent_sync`) draw one
+card per child. `requires_action` keeps the card running with no tool line, because
+nothing would clear that line when the child resumes. An idle child is completed,
+failed with `cancelled`, or failed with its error. A
+child's text becomes `EVENT_SUBAGENT_ACTIVITY` on its card and never the parent's
+answer. A child's tool call yields its activity prefix and then renders as an
+ordinary tool row, as a kiro-cli child's does on `AcpClient`, so its approval, hooks
+and SEL record are unchanged. The child's other frames are dropped. A child call the
+adapter left on the parent session is still attributed through the Agent call it
+serves.
+
+A child's text is redacted as a stream, as the parent's answer is at its sink:
+`client_turn._redact_native_child_events` feeds each child's chunks through that
+child's own `StreamRedactor` before the turn yields them, so a credential split
+across two chunks is still caught. The tail a redactor holds back is flushed into
+one more activity event just before the roster that reports the child done or
+failed, so the card's text is whole when the card closes. A turn cut short gets no
+such roster, and Claude Code stops its subagents at an interrupt, so nothing would
+complete that text: every held tail goes on its card before the cards close
+(`AcpClient.flush_native_child_text`). The client yields it just before a Stop's
+`cancelled` completion and a compaction-failed one, because the dashboard closes
+every card on a completion; the dashboard's release flushes a turn that gets no
+completion (a cancelled task, a timeout, a provider error;
+`native_cards._native_flush_cut_short`). Any other completion keeps the tail held,
+because a background child keeps running into the next turn. A child tool's title is redacted whole. The roster's display strings are cut to `NATIVE_CHILD_LABEL_CAP`
+for storage and redacted whole by the cards, so the cut drops a token it would
+split rather than leave part of a credential the card's redactor does not
+recognize. `client_native_children` itself calls no redactor.
+
+The child ids and the Agent-call links are bounded by `NATIVE_CHILD_ROSTER_CAP`,
+each link by its length too (parity row H16). A child past the cap gets no card: its
+text and side frames are dropped, and its tool calls render as ordinary rows, so the
+provenance its approvals are judged by still fills. The next turn's start logs how
+many ids or links were refused. Each such call, and each call on the parent session
+stamped with an Agent call that has no link, still yields an activity event that names
+it as a child's, with no title and nothing stored. A session directive is refused
+from any call an activity event names, with or without a card (`_native_child_tc` on
+the dashboard, as the messaging driver's own set), so no child can act on the
+parent's chat. The ids outlive
+the turn, because a background child keeps running after the turn that started it;
+a later turn that reads one of its frames lists it again. Not wired: the per-child
+`capabilities.cancel` the adapter offers (a card's Stop still only closes the card),
+a resume naming a child id (it misses as an unknown conversation), and reporting the
+children as uncharged residency. A child's permission request is answered like any
+other request on the session. The cards do not change the approval gate: the
+native-crew auto-approve rung (`hooks.auto_approve_subagent_tools` while a crew card
+is open, `tool_approval.py`) skips the claude backend, because a claude request does
+not name the session that sent it, and the rung cannot tell the parent's request
+from a child's. Every request takes the gate it takes with no child running.
+Contract tests: `test_claude_native_subagent_cards.py`.
+
 ### A Side Chat session
 
 A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which
@@ -663,6 +755,6 @@ pins the bare-ID case.
 `model_registry.available_models` and `display_list` sort default entries first
 rather than trusting JSON object order. This is load-bearing because the adapter
 uses the resulting allowlist when an automatic selection omits an explicit
-model. `TestModelRegistry.test_fable_5_not_default` and
+model. `TestModelRegistry.test_the_claude_code_default_is_canonical` and
 `TestModelRegistry.test_available_models_is_default_first` pin the default and
 ordering behavior.

@@ -17,13 +17,14 @@ to the model as text.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -34,6 +35,7 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.chat_runner import _run_chat, effective_session_key
+from kiro_crew.dashboard.chat_utils import _BLOCKED_SLASH_COMMANDS, _SLASH_COMMANDS
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -182,7 +184,13 @@ class TestKasOtherCommands:
         assert not any("doesn't work with KAS" in t for t in _texts(slot))
 
 
-_NO_NATIVE_CLEAR = (ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI, ACP_BACKEND_DEEPSEEK)
+_NO_NATIVE_CLEAR = (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_COPILOT,
+)
 
 
 class TestOtherHarnessesClear:
@@ -241,3 +249,73 @@ class TestKiroUnchanged:
 
         dispatched.assert_called_once_with("/clear")
         state.sessions.discard_conversation.assert_not_awaited()
+
+
+async def _menu_names(backend: str) -> set[str]:
+    """What GET /api/slash-commands lists when *backend* is the configured default."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers.agents import api_slash_commands
+
+    app = web.Application()
+    app.router.add_get("/api/slash-commands", api_slash_commands)
+    cfg = SimpleNamespace(agent=SimpleNamespace(provider="acp", acp_backend=backend))
+    with patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/slash-commands")
+            assert resp.status == 200
+            return {item["name"] for item in await resp.json()}
+
+
+class TestKasMenuMatchesTheGate:
+    """The ``/`` menu and the KAS gate read one set, so the menu never offers a
+    command that only ever gets the "doesn't work with KAS" notice."""
+
+    def test_membership_is_the_checked_set(self) -> None:
+        from kiro_crew.acp_backends import ACP_BACKENDS_LOCAL_HARNESS_COMMANDS
+
+        assert ACP_BACKENDS_LOCAL_HARNESS_COMMANDS == {ACP_BACKEND_KAS}
+
+    @pytest.mark.asyncio
+    async def test_every_command_left_out_of_the_menu_is_one_the_gate_refuses(
+        self, tmp_path
+    ) -> None:
+        """RED on main: the KAS menu listed /context, /help, /tools and the rest."""
+        listed = await _menu_names(ACP_BACKEND_KAS)
+        left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - listed
+        assert {"/context", "/help", "/mcp", "/model", "/tools", "/usage"} <= left_out
+
+        for command in sorted(left_out):
+            state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
+            await _run_chat(state, slot, command)
+            dispatched.assert_not_called()
+            assert any(
+                f"`{command}`" in t and "doesn't work with KAS" in t for t in _texts(slot)
+            ), (command, _texts(slot))
+
+    @pytest.mark.asyncio
+    async def test_the_menu_keeps_what_the_dashboard_serves_on_kas(self) -> None:
+        listed = await _menu_names(ACP_BACKEND_KAS)
+        assert listed == {"/agent", "/clear", "/compact", "/goal", "/prompts", "/side", "/workflow"}
+
+    @pytest.mark.asyncio
+    async def test_the_gate_reads_the_set_not_the_backend_name(
+        self, tmp_path, _floor_monkeypatch
+    ) -> None:
+        """A harness put in the set gets the same notice, so the gate and the
+        menu cannot answer from two different rules."""
+        _floor_monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.ACP_BACKENDS_LOCAL_HARNESS_COMMANDS",
+            frozenset({ACP_BACKEND_CODEX}),
+        )
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
+
+        await _run_chat(state, slot, "/help")
+
+        dispatched.assert_not_called()
+        assert any("`/help`" in t for t in _texts(slot)), _texts(slot)
+
+    @pytest.mark.asyncio
+    async def test_kiro_menu_is_unchanged(self) -> None:
+        assert await _menu_names(ACP_BACKEND_KIRO) == _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS

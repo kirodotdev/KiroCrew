@@ -9,6 +9,7 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import kiro_crew.config.session_environments as _session_environments
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -58,9 +59,11 @@ from kiro_crew.config.sections import (
     SESSION_SORT_MODES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
 )
+from kiro_crew.config.service_sections import ON_BATTERY_MODES
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -312,6 +315,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # next click with no restart. Only a literal `true` turns it on — a
     # hand-edited non-boolean stays off.
     "dashboard.terminal.reuse_current": {"type": "bool"},
+    # The per-row unread dot on sidebar session cards (Settings → Display →
+    # Sidebar). Default on; only a literal `false` hides it.
+    "dashboard.show_unread_dot": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in
@@ -398,6 +404,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # restart to take effect (the SSH manager + CSP relaxation init at startup),
     # so the Instances settings panel surfaces a "restart required" hint.
     "instances.enabled": {"type": "bool"},
+    # The crew *Send a copy to* lists first (Settings → Remote Crew → Default
+    # destination crew). It only orders the menu: nothing is sent until the
+    # person clicks. Capped like a folder's default_destination_crew.
+    "instances.default_destination": {"type": "str", "max_len": MAX_CREW_REF_LEN},
     # Skills: opt in to automatic skill generation (Settings → Skills). Both
     # default OFF/ON respectively in SkillsConfig; generated candidates still
     # require approval unless approval_required is turned off (scripts always
@@ -422,6 +432,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
     "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
+    # Background work on battery. Explicit adds never run through the sweeps it gates.
+    "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
     "knowledge.extraction_model": {"type": "str"},
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {
@@ -510,6 +522,34 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "max_items": BROWSER_LOCAL_ORIGINS_MAX,
         "max_item_len": 64,
         "item_pattern": BROWSER_LOCAL_ORIGIN_PATTERN,
+    },
+    # Session Environments holds credential-free profiles only, so the masked GET
+    # may return it. ``normalize`` is the loader's own validator, so this gate
+    # refuses what a load would drop; leaf paths update one scalar key alone.
+    # Coder profiles have no leaf path: only the whole section writes them.
+    "session_environments": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_session_environments,
+    },
+    "session_environments.coder_url": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_coder_url,
+    },
+    "session_environments.sprites_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_sprites_profiles,
+    },
+    "session_environments.boxd_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_boxd_profiles,
+    },
+    "session_environments.default_profile": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_default_profile,
+    },
+    "session_environments.stop_on_shutdown": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_stop_on_shutdown,
     },
 }
 

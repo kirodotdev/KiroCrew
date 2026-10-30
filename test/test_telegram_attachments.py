@@ -263,7 +263,6 @@ class TestProcessTelegramAttachments:
         result = await process_telegram_attachments(client, attachments)
         assert len(result.image_paths) == 1
         assert os.path.exists(result.image_paths[0])
-        # Clean up
         for p in result.temp_paths:
             os.unlink(p)
 

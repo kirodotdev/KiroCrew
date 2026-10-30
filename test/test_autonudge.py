@@ -17,6 +17,11 @@ from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.testing.wait import await_until, default_timeout
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
 
 class TestAutonudgeDisabledSettingLink:
     """All autonudge endpoints return 503 with code+setting when disabled."""
@@ -426,7 +431,7 @@ class TestAutonudgeUpdateConcurrency:
         gate = asyncio.Event()
 
         async def on_fire(_loop):
-            await gate.wait()
+            await asyncio.wait_for(gate.wait(), timeout=_LOST_RUN_SECS)
             return True
 
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -496,7 +501,7 @@ class TestAutonudgeUpdateConcurrency:
 
         async def on_fire(_loop):
             started.set()
-            await release.wait()
+            await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_SECS)
             return False  # delivery failed (e.g. slot busy)
 
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -642,9 +647,12 @@ class TestAutonudgeUpdateConcurrency:
             assert stored["message"] == "second", "a stale snapshot replaced the newer state"
         finally:
             gate.set()
-            await asyncio.gather(
-                *(task for task in (first, second) if task is not None),
-                return_exceptions=True,
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(task for task in (first, second) if task is not None),
+                    return_exceptions=True,
+                ),
+                timeout=_LOST_RUN_SECS,
             )
             svc.stop()
 
@@ -1292,6 +1300,28 @@ class TestPersistenceIsOffLoopAndOrdered:
         assert writes == []
 
     @pytest.mark.asyncio
+    async def test_removal_submission_failure_restores_the_live_row(self, tmp_path, monkeypatch):
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            loop = await svc.add(slot_key="dashboard:x", message="go", idle_secs=60)
+            persisted_before = svc._path.read_bytes()
+
+            def _refuse_submission(*_args, **_kwargs):
+                raise OSError("executor unavailable")
+
+            monkeypatch.setattr(svc, "_start_persistence", _refuse_submission)
+
+            with pytest.raises(OSError, match="executor unavailable"):
+                await svc.remove(loop.id)
+
+            assert svc.get_by_id(loop.id) is loop
+            assert loop.active is True
+            assert loop.id in svc._timers
+            assert svc._path.read_bytes() == persisted_before
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("delay_start", [False, True])
     async def test_cancelled_removal_holds_the_lock_until_the_write_settles(
         self, tmp_path, delay_start
@@ -1506,4 +1536,5 @@ class TestATimerOutlivesItsEventLoop:
 
         svc._cancel_timer("L1")
 
+        assert "L1" not in svc._timers
         await self._await_cancelled(task)

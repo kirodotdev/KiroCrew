@@ -362,12 +362,13 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
     Catches the broad ``OSError`` (not just ``FileNotFoundError``) so a
     ``PermissionError`` or ``IsADirectoryError`` on a user-owned file like
     ``~/.claude.json`` won't crash ``api_mcp_apply`` mid-batch and leave
-    partially-applied changes without a rebuild.
+    partially-applied changes without a rebuild. ``UnicodeDecodeError`` covers a
+    hand-edited file saved in a legacy code page, which is not valid UTF-8.
     """
     try:
         data = loads_user_jsonc(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 

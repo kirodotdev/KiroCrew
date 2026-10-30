@@ -485,6 +485,8 @@ kirocrew artifact delete <slug>
 ```
 
 The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
+`show --version N` takes N of 1 or more; a lower value or a non-number exits 2
+with a message before any request, and a given N always reads that version.
 
 ### HTTP
 
@@ -502,7 +504,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
-| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task |
+| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled; an entry bound to an event loop other than the running one is pruned before each spawn, since its cleanup can never run) |
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
@@ -1047,7 +1049,10 @@ deliberately does NOT delegate to `delete()`: re-checking under the lock and the
 calling a method that re-acquires it reopens the same window between the two
 acquisitions, so the removal is inlined.
 
-**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+**Star semantics in `WidgetFrame`** (the slug, probe and star live in the
+`useWidgetArtifact` hook of `website/src/components/WidgetArtifact.tsx`, which the
+HTML frame and the markdown-bodied widget, `MarkdownWidget`, both draw from, so a
+widget without an iframe keeps the same link and star). `exists` and `pinned` are separate states:
 `{exists: true, pinned: false}` is the normal steady state, so the star renders
 hollow (offering to save) while the title still links to `/artifacts/<slug>`.
 Starring pins; if the artifact is absent (a pre-feature widget, a failed
@@ -1315,13 +1320,15 @@ the page's shape in the canonicaliser:
   WRITER's half; the binding TARGET's eligibility is a separate question, asked
   at the HTTP layer and described below.
 - **`view.html` is an agent-written page, and its shape is checked while its
-  author is still there.** Exactly one of `view.html` or `view.blocks`, never
-  both and never neither. A package bound to a crewmate (`bound_to` of
-  `crewmate:<slug>`) is `view.html` only: the gate refuses its `view.blocks` and
-  names the `view.html` shape to send instead
-  (`dashboard_package._require_html_for_a_crewmate`), because the crewmate
-  Dashboard tab draws a page and has no block renderer. A package bound to a
-  session may still be written as blocks. The page is drawn wearing its
+  author is still there.** The view is `view.html`, one page, for every
+  binding; there is no block catalog. A stored `view.blocks` is migrated one
+  way on read (`dashboard_package._blocks_as_html`): each block
+  becomes a `section` with its title and one row per field it read (the field's
+  label and an empty `data-dashboard-field` cell), the block's type is dropped,
+  and the result is checked like any page. Every write stores the page, so a
+  package that held blocks holds `view.html` from its next write on, and a
+  version restored from history comes back as its page. A view holding both
+  `html` and `blocks`, or neither, is refused. The page is drawn wearing its
   `theme`: `member_dashboard_fields.render_package_page` puts one `<style>`
   ahead of the page, after the host's own stylesheet, holding the tokens on
   `:root` and then `theme.css` (`dashboard_package.theme_stylesheet`, which runs
@@ -1497,6 +1504,40 @@ CSS generic families, never a named typeface: `--font-sans: system-ui,
 sans-serif` (the body default), `--font-serif: ui-serif, serif` and
 `--font-mono: ui-monospace, monospace`.
 
+**A crewmate can look at its own page.** The `dashboard_snapshot` MCP tool on
+`kirocrew-panel` and `GET /api/agent-panel/dashboard/snapshot`
+(`handlers/agent_panel_snapshot.py`, no arguments) run the page IN FORCE through the same
+check with `capture=True` and `real_record=True`
+(`member_dashboard_fields.snapshot_package_page`), and the run also takes a PNG of the
+settled first paint (`dashboard_page_image.capture`, `Page.captureScreenshot` over the
+same DevTools pipe). This is the one run handed the record rather than the synthetic
+copy: the page is already applied and the tab already serves it that read, so the run
+gets the same `LivePage.arm` read through the same `_page_safe` redaction and
+`verification.data` says `record`; the page is drawn as the tab's own frame draws it: the dashboard's default light theme tokens (`dashboard_snapshot_look.LIGHT_TOKENS`, pinned by a test to the `[data-theme="light"]` block of `website/src/styles/design-tokens.css`, with the frame's aliases; the body's padding and font stay the frame's own host stylesheet's, as on the tab), the Tailwind runtime read from the built package (the same vendored file the tab loads, read and `</script`-escaped by `publish_sync._tailwind_runtime_js` and `_SCRIPT_CLOSE_RE` as a published widget is, inlined because the run fetches nothing; a build without it answers `no_image` saying so), then the package's own theme, with the UI language Settings stores (`dashboard.language`) as the page's locale; it is the default light look, not the person's own theme pack or dark mode, and the tool says so; and the script-grant audit row names the applied package and version rather than `(staged)`, so the picture shows what the person's tab shows and the log shows which applied page ran. The
+page is the tab's page in force: the instance's pinned snapshot (`instance.pinned_package`), or for an older unlocked record from before pins (`instance.keeps_older_package_rule`) the bound package's newest version a person cut, as `member_dashboard._serve` draws it, and must be
+bound to the caller the prefix's gate vetted; a page that is only saved is never run over
+the record. A template page, no applied page, a root session and a package bound elsewhere
+answer `snapshot.status: no_image` with a reason and run nothing. The picture is
+bounds-checked: the run's 1280x800 viewport only, at most `MAX_IMAGE_BYTES` (2 MiB) with
+one retry at half scale, and a DevTools reply cap of `MAX_REPLY_BYTES` raised for that one
+reply. Only a run judged `passed` or `failed` carries one; a skipped run (busy, short of
+memory, no browser, a page stopped by an unfetched CDN library, or one that also
+lacks such a library beside its own errors), a timed-out run and a
+crashed page answer `no_image` with the reason, so a stale picture is never offered as
+current. Because the PNG holds real values, it never travels in a response body: the
+gateway writes it to `<data home>/dashboard-snapshots/<crewmate>/page-<ms>-<random>.png`,
+mode `0600` under `0700` directories, opening each directory `O_NOFOLLOW` from the
+previous descriptor and creating the file `O_EXCL` (`pinned_fs`), so a link an agent
+plants in the data home cannot steer the write; the newest eight per crewmate are kept.
+The route answers the path, and the tool (`mcp_panel_snapshot.py`) hands only the calling
+crewmate that path, with the run's `verification` lines, for its own file-read tool; a
+`no_image` answer names no file. No route serves `dashboard-snapshots/` (the file
+explorer's data-home allowlist does not name it), and like the crew logs its values come
+from, the file is not fenced at the OS level from another process of the same user. Page
+and versions are untouched, and nothing is kept between calls apart from that cache.
+Granted without a prompt in `_MEMBER_PANEL_GRANTS`, on the same read test as
+`dashboard_fields`.
+
 The MCP text preserves the catalog's `row_keys`, `names_the_row`, `row_note`
 and `nested_rows` beside each path. Nested rows are script-readable metadata,
 not new dotted index paths. Each nested group is bracketed and retains its
@@ -1542,8 +1583,7 @@ bounded read, on the check's thread. The run has one hard limit (`RUN_TIMEOUT_SE
 counted from the save: at it the browser's whole process group is killed and the result is
 `timed_out`. The read of the record cannot be interrupted, so a read that outlasts the
 limit starts no browser, and the save route waits at most `REPLY_SECONDS` for the check
-whatever it is doing. A block layout has no script and
-returns `verification: null`. The page stays saved, and not live, whatever the run finds.
+whatever it is doing. The page stays saved, and not live, whatever the run finds.
 
 **Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a mate's binding only. The person's lock refuses the apply with `dashboard_locked`.
 
@@ -1622,13 +1662,38 @@ to this kind would store content no reader can parse.
   short TTL, and the
   response pins `Content-Security-Policy: sandbox` so the document keeps an
   opaque origin even when opened top-level. The sandbox flags match what the
-  embedding frame already grants. The header also sets `connect-src 'none'`,
+  embedding frame grants: `allow-scripts` only (`AGENT_PAGE_SANDBOX`), the same
+  as a crewmate's Dashboard frame. A link in the page opens through the host:
+  `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
+  and `window.open`, into a `kirocrew-dashboard:open` message, and
+  `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
+  against its origin, only on a real click in
+  that frame, once per click, with no dialog. The shim decides a click after
+  the page's own handlers, so a click the page cancels posts nothing. The host
+  opens at once only when it can tie the click to the asking frame
+  (`tiedToFrame`): focus came into that frame straight from the dashboard (the
+  dashboard's window blurred with that iframe focused), and has not been seen
+  anywhere else since, nor has the pointer reached another frame (focus moving
+  between frames fires nothing, so the entry is checked whenever the dashboard
+  hears anything and every 200 ms); the pointer is not over another frame, and no click or key in the dashboard or reported by another
+  bridged frame (`kirocrew-dashboard:input`) is within an activation's lifespan
+  (5 s). Otherwise it does not open: an "Open <host>" button
+  (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
+  right corner and takes focus, and the person's click on it opens the link.
+  It has no timer, so a slow reader does not lose it. It goes on the next click
+  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a link on a click
+  made in the dashboard or in another frame. Each web link gets its resolved URL
+  as a hover title, so the URL shows before the click, as it does for a link in a
+  session. A `<form>` in the page submits nowhere, whatever its `target`
+  (`_blank` included): the frames grant no `allow-forms` and the policy sets
+  `form-action 'none'`, as they did before the link bridge. That is not a bridge
+  fault. A page that wants to send someone elsewhere uses a link. The header also sets `connect-src 'none'`,
   `object-src 'none'`, `base-uri 'none'` and `form-action 'none'`, so a document
   cannot fetch, open a WebSocket or beacon to another host even without its own
   `<meta>` CSP. Every shipped caller's meta CSP already blocks the same channels,
   so nothing they render changes. `default-src` stays unset, so script, style,
-  image and font sources stay as the document's meta CSP decides; navigation and
-  `window.open` are not governed by CSP. The same response's
+  image and font sources stay as the document's meta CSP decides; in-frame
+  navigation is not governed by CSP. The same response's
   `frame-ancestors` is **`'self'` plus the ancestors `'self'` cannot express**
   (`origin.frame_ancestors_value`), and both halves are load-bearing. `'self'` is
   resolved by the BROWSER against the frame's real URL, so it stays correct behind
@@ -1660,7 +1725,8 @@ to this kind would store content no reader can parse.
   host's injected scripts carry, so the height reporter and comment bridge run and
   a page script, inline handler or `javascript:` URL is refused whatever the
   crewmate's egress rules allow. Nothing else moves the frame either: host
-  listeners cancel every click and auxclick, so no link navigates, and the
+  listeners cancel every click and auxclick, so no link navigates, and it gets no
+  link bridge (`artifactFrame`'s `linkBridge: false`), so none opens either; the
   finished document is re-parsed as the frame will parse it, dropping each `meta`,
   `link`, `noscript` and declarative shadow root (`template[shadowrootmode]`) in
   its body until a parse finds none (three rounds, then only the host's scripts

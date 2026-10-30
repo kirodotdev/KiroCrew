@@ -19,11 +19,11 @@ import logging
 import threading
 import time
 from collections import Counter
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from source_corpus import parsed_candidates, src_root
 
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
@@ -525,13 +525,13 @@ async def test_client_without_an_event_map_is_still_held_to_the_floor():
 # ── AcpSessionHandle ──
 
 
-def _handle():
+def _handle(*, session_key: str = ""):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = MagicMock()
     runtime.send_response = AsyncMock()
     runtime.send_error = AsyncMock()
-    return AcpSessionHandle("s1", asyncio.Queue(), runtime)
+    return AcpSessionHandle("s1", asyncio.Queue(), runtime, session_key=session_key)
 
 
 @pytest.mark.asyncio
@@ -786,7 +786,7 @@ async def test_resolve_permission_counts_transport_rejection_as_refused(monkeypa
         ToolApprovalPolicy.AUTO_APPROVE,
         hooks=None,
         session_key="test-session",
-        on_decision=lambda outcome, mech: decisions.append((outcome, mech)),
+        on_decision=lambda outcome, mech, _why: decisions.append((outcome, mech)),
     )
 
     assert approved is False
@@ -804,7 +804,7 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
         ("channel.py", "_stream_task"): 4,
         ("cli_chat.py", "_answer_permission"): 1,
         ("dashboard/chat_turn/permission_prompt.py", "_on_permission_prompt"): 1,
-        ("dashboard/chat_turn/tool_approval.py", "_on_permission_request"): 6,
+        ("dashboard/chat_turn/tool_approval.py", "_decide_permission_request"): 6,
         ("dashboard/handlers/hooks.py", "_run_hook_inner"): 1,
         ("eval/runner.py", "_run_turn"): 2,
         ("llm_helpers_parts/tool_approval.py", "_resolve_permission"): 2,
@@ -825,13 +825,16 @@ _TRANSPORT_ADAPTER_APPROVAL_CALLERS = Counter(
 
 
 def test_every_production_approval_consumer_is_reviewed_for_identity_gate():
-    source_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    source_root = src_root()
     callers = Counter()
-    for path in source_root.rglob("*.py"):
+    # A counted call spells ``approve_tool`` as its attribute, so only files whose
+    # text holds it are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=("approve_tool",), skip_syntax_errors=False
+    ):
         relative = path.relative_to(source_root)
         if "tests" in relative.parts:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         parents = {
             child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
         }
@@ -853,12 +856,13 @@ def test_every_production_approval_consumer_is_reviewed_for_identity_gate():
 
 
 def test_production_approval_results_are_not_discarded():
-    source_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    source_root = src_root()
     discarded = []
-    for path in source_root.rglob("*.py"):
+    for path, _text, tree in parsed_candidates(
+        require_any=("approve_tool",), skip_syntax_errors=False
+    ):
         if "tests" in path.relative_to(source_root).parts:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         parents = {
             child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
         }

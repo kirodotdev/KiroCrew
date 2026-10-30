@@ -127,8 +127,10 @@ Authorization: owner and allowed users. Unauthorized callers get
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear as 🔧 _tool name_ inline.
 
-With `slack.reactions_enabled` on, the reaction on your message tracks the phase: 👀 queued, 🤔 thinking,
-👨‍💻 coding, 🌐 browsing, 🔧 running a tool, 🦞 done, 😱 error.
+With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
+("is working on your request") your message gets no reaction; elsewhere it gets 👀
+while it is answered, removed when the reply lands (the reply is the done signal).
+A failed turn gets 😱.
 
 ## File attachments
 
@@ -184,9 +186,11 @@ Off by default. Applies to the next new session with no restart.
 
 ## OPTIONS Buttons
 
-When Kiro Crew presents choices, they render as interactive Block Kit buttons.
-Click a button to send that choice back to the conversation. You can select
-multiple options before submitting.
+When Kiro Crew presents choices, each one is a button: one click sends that
+choice back to the conversation. To send several at once, open the card's ⋯ menu
+and pick **Choose several…**, then tick them in the dialog and press Send. Once a
+card is answered its buttons give way to a line saying who chose what and when;
+a later click on it only gets a private "Already answered".
 
 ## Access control
 

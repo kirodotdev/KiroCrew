@@ -27,6 +27,7 @@ from kiro_crew.subagent import (
     _startup_memory_reserve_gb,
 )
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.mark.parametrize("platform", ["WINDOWS", "MACOS"])
@@ -34,10 +35,7 @@ from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 def test_startup_memory_guard_uses_native_host_reader(monkeypatch, platform, free, ok):
     for name in ("LINUX", "WINDOWS", "MACOS"):
         monkeypatch.setattr(subagent_mod.platform_compat, "IS_" + name, name == platform)
-    reader = (
-        "_windows_available_memory_gb" if platform == "WINDOWS" else "_macos_available_memory_gb"
-    )
-    monkeypatch.setattr(subagent_mod, reader, lambda: free)
+    monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: free)
     assert subagent_mod.check_memory_available(min_gb=4.5) == (ok, free)
 
 
@@ -243,14 +241,16 @@ async def test_startup_cost_cannot_lower_enabled_floor_on_exhausted_cgroup(
             assert info.id not in mgr._tasks
             worker.assert_not_called()
         else:
-            await asyncio.wait_for(mgr._tasks[info.id], 5)
+            await await_until(mgr._tasks[info.id], what="the spawned worker task finishes")
             worker.assert_awaited_once()
     finally:
         mgr._shutting_down = True
         tasks = [task for task in mgr._tasks.values() if not task.done()]
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), what="the cancelled tasks drain"
+        )
         mgr._taskq.close()
 
 
@@ -344,7 +344,7 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
         mgr._drain_queue()
         task = getattr(mgr, "_drain_task", None)
         if task is not None:
-            await asyncio.wait_for(asyncio.shield(task), 5)
+            await await_until(task, what="the queue drain task finishes")
         # Registration schedules the worker; a loop barrier lets it expose
         # its start before the next virtual host observation.
         await asyncio.sleep(0)
@@ -365,7 +365,7 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
                 # remain resident.
                 oldest = next(agent_id for agent_id in starts if not mgr._agents[agent_id].done)
                 finishes[oldest].set_result(None)
-                await asyncio.wait_for(asyncio.shield(mgr._tasks[oldest]), 5)
+                await await_until(mgr._tasks[oldest], what="the finished worker's task ends")
             if step % 20 == 0:
                 decisions.append((await ctl.tick()).action)
             if step == 40:
@@ -409,5 +409,80 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
             tasks.append(drain)
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), what="the cancelled tasks drain"
+        )
+        mgr._taskq.close()
+
+
+def test_a_remote_run_has_its_own_cost_bucket() -> None:
+    heavy = SimpleNamespace(template_id="heavy")
+    assert subagent_mod._cost_bucket("", heavy, remote=True) == "heavy@remote"
+    assert subagent_mod._cost_bucket("named", heavy, remote=True) == "named@remote"
+    # The default bucket keeps its own remote twin, never the bare default.
+    assert subagent_mod._cost_bucket("", None, remote=True) == "kirocrew@remote"
+
+
+@pytest.mark.parametrize(
+    ("remote", "free_gb", "admitted"),
+    [
+        # A local child keeps the floor: 3.6 GB free is under 4 GB + reserve.
+        (False, 3.6, False),
+        # A remote child's work runs in its workspace: only its engine's reserve.
+        (True, 3.6, True),
+        # ...which still binds: the engine itself must fit here.
+        (True, 0.3, False),
+    ],
+)
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_child_of_a_remote_session_is_held_to_its_engine_not_the_host_floor(
+    monkeypatch, remote, free_gb, admitted
+) -> None:
+    from kiro_crew import session_environment
+
+    parent = "dash:remote-parent"
+    cfg = KiroCrewConfig()
+    cfg.agent.subagent_cost_gb = 0.5
+    cfg.agent.spawn_min_memory_gb = 4.0
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(subagent_mod, "Stats", MagicMock())
+    monkeypatch.setattr(subagent_mod, "sel", MagicMock())
+    monkeypatch.setattr(subagent_mod.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(
+        subagent_mod,
+        "open",
+        lambda *a, **kw: StringIO("MemAvailable: 33554432 kB\n"),
+        raising=False,
+    )
+    monkeypatch.setattr(subagent_mod, "_cgroup_available_gb", lambda: free_gb)
+    if remote:
+        session_environment.remember_remote_workspace(parent, "ws", "/workspace/repo")
+    mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
+    await wait_taskq_open(mgr)
+    mgr._spawn_stagger_secs = 0.0
+    # A heavy LOCAL history for the default bucket must not price a remote child.
+    mgr._learned_costs_gb = {"kirocrew": 6.0}
+    worker = AsyncMock()
+    monkeypatch.setattr(mgr, "_run", worker)
+    try:
+        info = await mgr.spawn_async("work", parent_session_key=parent)
+        assert info is not None
+        assert info.queued is (not admitted)
+        if admitted:
+            await await_until(mgr._tasks[info.id], what="admitted remote child")
+            worker.assert_awaited_once()
+        else:
+            worker.assert_not_called()
+            # The wait record keeps the placement, so a wake rebuilds the same bar.
+            assert mgr._memory_waits[info.id].remote is remote
+    finally:
+        session_environment.forget_remote_workspace(parent)
+        mgr._shutting_down = True
+        tasks = [task for task in mgr._tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), what="remote child task cleanup"
+        )
         mgr._taskq.close()

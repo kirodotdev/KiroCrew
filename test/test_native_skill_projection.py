@@ -29,6 +29,9 @@ from kiro_crew.agent_spec_format import iter_agent_spec_files
 _legacy_alias = native_skill_projection_helpers._legacy_alias
 _no_eager_prune = native_skill_projection_helpers._no_eager_prune
 _prune_on_every_spawn = native_skill_projection_helpers._prune_on_every_spawn
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 native_tree = native_skill_projection_helpers.native_tree
 
 
@@ -275,7 +278,7 @@ def test_zero_tool_confirmation_judges_the_view_kiro_loads(
     from kiro_crew.acp import client as acp_client
 
     _home, agents, project = native_tree
-    spec = {"name": "custom", "tools": [], "resources": resources}
+    spec = {"name": "custom", "tools": [], "includeMcpJson": False, "resources": resources}
     (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
     client = acp_client.AcpClient(agent="custom", work_dir=project)
     client._native_skill_projection = projection.prepare_native_skill_projection(
@@ -301,7 +304,9 @@ def test_rollback_switch_confirms_a_zero_tool_spec_through_the_authored_bracket(
     project_agents = project / ".kiro" / "agents"
     project_agents.mkdir(parents=True)
     spec_path = project_agents / "custom.json"
-    spec_path.write_text(json.dumps({"name": "custom", "tools": []}), encoding="utf-8")
+    spec_path.write_text(
+        json.dumps({"name": "custom", "tools": [], "includeMcpJson": False}), encoding="utf-8"
+    )
     monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
     client = acp_client.AcpClient(agent="custom", work_dir=project)
     client._native_skill_projection = projection.prepare_native_skill_projection(

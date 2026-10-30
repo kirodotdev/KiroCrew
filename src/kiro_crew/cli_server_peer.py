@@ -1,6 +1,8 @@
 """The CLI's proven route to its own gateway: the loopback address and the peer proof.
 
-Every CLI request that carries the local secret goes through
+Every CLI request that carries the local secret to this install's own gateway
+over HTTP (the ``kiro_crew.cli_server`` commands, ``kirocrew spawn``,
+``kirocrew artifact`` and ``kirocrew doctor``) goes through
 ``_owner_verified_secret_urlopen``, which writes the secret only after the peer on that
 very connection is proven to be this install's recorded gateway (the owner-only unix
 socket's peer credentials, or the kernel's owner of the loopback TCP 4-tuple, against
@@ -326,6 +328,45 @@ class _ConnectedPeerVerdict(enum.Enum):
 _ConnectedPeerVerdict.__module__ = "kiro_crew.cli_server"
 
 
+def _connected_tcp_peer_pid(sock) -> int | None:
+    """The pid on the far end of THIS established loopback TCP connection.
+
+    Reads the exact 4-tuple (not who owns the port now) via
+    :func:`platform_compat.get_tcp_peer_pid` (Linux /proc inode, macOS lsof,
+    Windows ``GetExtendedTcpTable``). That resolver returns the pid owning the
+    socket whose ``local`` endpoint equals its ``client_endpoint`` argument and
+    whose ``remote`` endpoint equals its ``server_endpoint`` argument. We hold the
+    client's end, so to name the SERVER's pid we describe the server's socket: its
+    local end is our ``getpeername()`` and its remote end is our ``getsockname()``.
+
+    Retries briefly while the lookup returns ``None``: a connection the server has
+    not yet ``accept()``ed sits in the kernel accept queue with inode 0, which the
+    /proc resolver skips, so a healthy but slow-to-accept server would otherwise
+    read as unresolvable. The window is short and bounded; a foreign or
+    unresolvable peer stays ``None`` across it.
+
+    Returns ``None`` when the endpoints are not an address pair or the peer could
+    not be resolved. Shared by every loopback-TCP sender that must prove its peer
+    before writing a credential, so they agree on how the peer is named.
+    """
+    local = sock.getsockname()
+    peer = sock.getpeername()
+    if not (isinstance(local, tuple) and isinstance(peer, tuple)):
+        return None
+    cli_endpoint = (str(local[0]), int(local[1]))
+    gateway_endpoint = (str(peer[0]), int(peer[1]))
+    deadline = time.monotonic() + _PEER_RESOLVE_RETRY_SECONDS
+    peer_pid = platform_compat.get_tcp_peer_pid(
+        server_endpoint=cli_endpoint, client_endpoint=gateway_endpoint
+    )
+    while peer_pid is None and time.monotonic() < deadline:
+        time.sleep(_PEER_RESOLVE_RETRY_INTERVAL)
+        peer_pid = platform_compat.get_tcp_peer_pid(
+            server_endpoint=cli_endpoint, client_endpoint=gateway_endpoint
+        )
+    return peer_pid
+
+
 def _connected_peer_verdict(sock) -> "_ConnectedPeerVerdict":
     """Prove the peer of THIS established connection the secret will travel over.
 
@@ -350,34 +391,10 @@ def _connected_peer_verdict(sock) -> "_ConnectedPeerVerdict":
     access-token owner SID.
     """
     try:
-        local = sock.getsockname()
         peer = sock.getpeername()
-        if not (isinstance(local, tuple) and isinstance(peer, tuple)):
+        if not isinstance(peer, tuple):
             return _ConnectedPeerVerdict.MISMATCH
-        cli_endpoint = (str(local[0]), int(local[1]))
-        gateway_endpoint = (str(peer[0]), int(peer[1]))
-        # Resolve the GATEWAY's owning pid. get_tcp_peer_pid finds the socket
-        # whose local endpoint == client_endpoint and whose remote endpoint ==
-        # server_endpoint. The gateway's socket has local == gateway_endpoint
-        # (our peername) and remote == cli_endpoint (our sockname), so the
-        # gateway endpoint is the client_endpoint and our own endpoint is the
-        # server_endpoint. This is the gateway's socket, not ours.
-        #
-        # Retry briefly while the lookup returns None. A connection the gateway
-        # has not yet accept()ed sits in the kernel accept queue with inode 0,
-        # which the /proc resolver skips -- so a healthy TCP-only gateway slow to
-        # accept() would otherwise be refused on a transient None. The retry is
-        # short and bounded; a genuinely foreign or unresolvable peer stays None
-        # across it and still fails closed below.
-        deadline = time.monotonic() + _PEER_RESOLVE_RETRY_SECONDS
-        peer_pid = platform_compat.get_tcp_peer_pid(
-            server_endpoint=cli_endpoint, client_endpoint=gateway_endpoint
-        )
-        while peer_pid is None and time.monotonic() < deadline:
-            time.sleep(_PEER_RESOLVE_RETRY_INTERVAL)
-            peer_pid = platform_compat.get_tcp_peer_pid(
-                server_endpoint=cli_endpoint, client_endpoint=gateway_endpoint
-            )
+        peer_pid = _connected_tcp_peer_pid(sock)
         if peer_pid is None:
             # No unique connection resolved even after the retry window -- a
             # foreign peer, or a host that cannot resolve the peer at all (lsof-
@@ -386,7 +403,7 @@ def _connected_peer_verdict(sock) -> "_ConnectedPeerVerdict":
             # single refusal message carries the install-lsof / owner-only-socket
             # remedy.
             return _ConnectedPeerVerdict.MISMATCH
-        pid = _recorded_gateway_pid(gateway_endpoint[1])
+        pid = _recorded_gateway_pid(int(peer[1]))
         if pid is None or peer_pid != pid:
             return _ConnectedPeerVerdict.MISMATCH
         # Prove the peer process is owned by THIS account, in the form each

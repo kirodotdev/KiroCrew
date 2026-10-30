@@ -232,7 +232,7 @@ class TestGovernanceFloorOverridesTheOptIn:
         )
 
     def test_governed_host_raises_even_though_the_opt_in_is_set(self, governed):
-        """THE FIX. Before this, these exact conditions returned bare argv."""
+        """A governance floor overrides the opt-in: no bare argv under these conditions."""
         with patch("kiro_crew.sel.sel", return_value=MagicMock()):
             with pytest.raises(SandboxUnavailableError) as exc_info:
                 wrap_argv(_ARGV, mode="strict")

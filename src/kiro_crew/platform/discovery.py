@@ -13,11 +13,13 @@ import importlib.metadata
 import logging
 from typing import TYPE_CHECKING, List, Sequence
 
+from kiro_crew import edition
 from kiro_crew.platform.admission import (
     AdmissionPolicy,
     PluginManifest,
     evaluate_admission,
     load_admission_policy,
+    missing_policy_remedy,
     read_policy_trust_root,
     seed_default_policy,
 )
@@ -53,6 +55,11 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
     group from it.  Without this branch a 3.9 host silently sees zero plugins,
     and an Amazon host then fails closed at boot even with the companion
     installed.
+
+    In an enterprise build a failed scan raises :class:`PlatformCompositionError`
+    instead of answering ``[]``: an empty answer there means "no companion, boot
+    on the core defaults", so a scan that could not read an installed
+    companion's metadata must not be mistaken for one that found none.
     """
     try:
         eps = importlib.metadata.entry_points()
@@ -61,7 +68,12 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
             return list(eps.select(group=PLUGIN_GROUP))
         # Python 3.9: entry_points() returns a dict {group: [EntryPoint, ...]}.
         return list(eps.get(PLUGIN_GROUP, []))  # type: ignore[attr-defined]
-    except Exception:
+    except Exception as exc:
+        if edition.is_enterprise():
+            raise PlatformCompositionError(
+                f"could not read the installed {PLUGIN_GROUP!r} entry points "
+                f"({type(exc).__name__}: {exc}); refusing to boot (fail-closed)."
+            ) from exc
         logger.debug("entry-point discovery failed", exc_info=True)
         return []
 
@@ -125,6 +137,15 @@ def discover_companion_context(
 
     eps = list(entry_points) if entry_points is not None else plugin_entry_points()
     if not eps:
+        if edition.is_enterprise():
+            # resolve_profile ignores KIROCREW_PROFILE on this build, so the
+            # standalone advice below would send the operator round in a loop.
+            raise PlatformCompositionError(
+                f"this is an enterprise-edition build but no {PLUGIN_GROUP!r} entry "
+                "point is installed; refusing to boot with open-source defaults "
+                "(fail-closed). Install the companion package, or run an oss build "
+                "to use the open-source edition."
+            )
         raise PlatformCompositionError(
             f"profile={profile!r} but no {PLUGIN_GROUP!r} entry point is installed; "
             "refusing to boot with open-source defaults (fail-closed). Install the "
@@ -151,9 +172,15 @@ def discover_companion_context(
         # tampering still fails closed.
         seed_default_policy()
         policy = load_admission_policy()
+        # Read once, right after the load it explains: an absent policy is the one
+        # rejection whose cause is not the policy's own verdict.
+        remedy = missing_policy_remedy()
+    else:
+        remedy = None
     decision = evaluate_admission(ep, policy)
     if not decision.allowed:
-        logger.error("plugin %r rejected by admission policy: %s", ep.name, decision.reason)
+        reason = f"{decision.reason} ({remedy})" if remedy else decision.reason
+        logger.error("plugin %r rejected by admission policy: %s", ep.name, reason)
         # Land the DENY on the immutable audit trail, not just the app log —
         # plugin admission is an authorization-decision chokepoint (ban /
         # allowlist / invalid-signature / capability-ceiling). Mirrors the
@@ -172,9 +199,7 @@ def discover_companion_context(
             )
         except Exception:
             logger.debug("plugin-admission DENY SEL emit unavailable", exc_info=True)
-        raise PluginAdmissionError(
-            f"plugin {ep.name!r} rejected by admission policy: {decision.reason}"
-        )
+        raise PluginAdmissionError(f"plugin {ep.name!r} rejected by admission policy: {reason}")
     logger.info("plugin %r admitted: %s", ep.name, decision.reason)
     refresh_plugin_config_keys([decision.manifest] if decision.manifest is not None else [])
 

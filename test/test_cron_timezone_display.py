@@ -277,6 +277,60 @@ class TestCronTimezoneDst:
         assert next_local.hour == 1 and next_local.minute == 0
         assert next_local.tzname() in rendered
 
+    @pytest.mark.parametrize(
+        ("now_utc", "zone", "expr", "expected"),
+        [
+            # An ordinary week: the next run and the clock share an offset.
+            (
+                "2026-10-27T03:00:00+00:00",
+                "America/Los_Angeles",
+                "0 22 * * 1-5",
+                "At 10:00 PM PDT, Monday through Friday",
+            ),
+            ("2026-10-27T03:00:00+00:00", "America/Los_Angeles", "0 3 * * *", "At 3:00 AM PDT"),
+            # Clock in daylight time, next run after the autumn fall-back.
+            (
+                "2026-10-31T03:00:00+00:00",
+                "America/New_York",
+                "0 22 * * 1-5",
+                "At 10:00 PM EST, Monday through Friday",
+            ),
+            (
+                "2026-10-31T06:00:00+00:00",
+                "America/Los_Angeles",
+                "0 22 * * 1-5",
+                "At 10:00 PM PST, Monday through Friday",
+            ),
+            ("2026-11-01T06:00:00+00:00", "America/Los_Angeles", "0 3 * * *", "At 3:00 AM PST"),
+            # Clock in standard time, next run after the spring-forward.
+            (
+                "2027-03-13T12:00:00+00:00",
+                "America/Los_Angeles",
+                "0 22 * * 1-5",
+                "At 10:00 PM PDT, Monday through Friday",
+            ),
+        ],
+    )
+    def test_fixed_time_label_keeps_its_wall_time_across_a_dst_change(
+        self, now_utc: str, zone: str, expr: str, expected: str
+    ) -> None:
+        """A job that runs at 22:00 local reads 10:00 PM, whichever offset the clock is in."""
+        from datetime import datetime as real_datetime
+
+        fixed_now = real_datetime.fromisoformat(now_utc)
+
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return fixed_now.replace(tzinfo=None)
+                return fixed_now.astimezone(tz)
+
+        with patch("kiro_crew.cron.datetime", FrozenDateTime):
+            rendered = format_schedule(CronSchedule(kind="cron", cron_expr=expr), tz_name=zone)
+
+        assert rendered == expected
+
 
 class TestSlackCronListTimezone:
     """Slack cron list keyword uses job.timezone for display."""

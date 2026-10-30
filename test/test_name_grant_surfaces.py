@@ -24,6 +24,7 @@ chokepoint's decline-not-raise guard covers the dashboard seam too.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -622,10 +623,49 @@ class TestTurnDriverSurface:
 
         from kiro_crew.messaging import dispatch
         from kiro_crew.slack import transport_dispatch as slack_dispatch
+        from kiro_crew.slack.gateway_runtime import nudge_channel_fire
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
 
-        for mod in (dispatch, slack_dispatch, telegram_turn_engine):
+        for mod in (dispatch, slack_dispatch, nudge_channel_fire, telegram_turn_engine):
             assert "audit_session_key=" in inspect.getsource(mod), mod.__name__
+
+    def test_a_platform_scope_decline_warns_once_per_session_and_audits_each(
+        self, monkeypatch, caplog
+    ):
+        # A platform-scope refusal's text is one constant, so the warning is
+        # written once per session; each decline still gets its audit row.
+        from kiro_crew.messaging import driver as driver_mod
+
+        name_grant._DECLINE_NOTICES.clear()
+        _stub_verdict(
+            monkeypatch, name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "lookup not modelled")
+        )
+        p = _ScriptedProvider(
+            [
+                _shell_permission_event(request_id="rq1"),
+                _shell_permission_event(request_id="rq2"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        try:
+            with caplog.at_level(logging.WARNING), patch.object(driver_mod, "sel") as sel_factory:
+                _drive(
+                    p,
+                    approval_mode=APPROVAL_INTERACTIVE,
+                    tool_gate=lambda ev: "auto_approve",
+                    audit_session_key="chan:once",
+                    audit_agent="researcher",
+                )
+        finally:
+            name_grant._DECLINE_NOTICES.clear()
+        warnings = [r for r in caplog.records if "declining a hook auto-approve" in r.getMessage()]
+        declined = [
+            c.kwargs
+            for c in sel_factory.return_value.log_tool_invocation.call_args_list
+            if c.kwargs.get("outcome") == "auto_approve_declined"
+        ]
+        assert len(warnings) == 1
+        assert len(declined) == 2
 
 
 # ── spawn auto-approve rung: event identity, not the title ──────────
@@ -790,6 +830,34 @@ class TestGatewayReadsModeSurface:
         ev = _shell_permission_event(title="read repo status", raw_tool_params={"command": command})
         assert asyncio.run(approve_fn(ev)) is True  # answered by the prompt stub
         gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    def test_a_platform_scope_decline_warns_once_per_session_and_audits_each(
+        self, monkeypatch, caplog
+    ):
+        # A platform-scope refusal's text is one constant, so the warning is
+        # written once per session; each decline still gets its audit row.
+        name_grant._DECLINE_NOTICES.clear()
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "lookup not modelled")
+        _gateway, approve_fn = self._approve_fn(monkeypatch, refusal)
+        declines: list[dict] = []
+        monkeypatch.setattr(name_grant, "log_decline", lambda **kw: declines.append(kw))
+
+        async def _two_calls():
+            for rid in ("rq1", "rq2"):
+                await approve_fn(
+                    _shell_permission_event(title="head x", request_id=rid), "reads:once"
+                )
+
+        try:
+            with caplog.at_level(logging.WARNING):
+                asyncio.run(_two_calls())
+        finally:
+            name_grant._DECLINE_NOTICES.clear()
+        warnings = [
+            r for r in caplog.records if "declining a reads-mode auto-approve" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert [d["session_key"] for d in declines] == ["reads:once", "reads:once"]
 
 
 # ── stream_and_collect helper (cron / autonudge turns) ──────────────

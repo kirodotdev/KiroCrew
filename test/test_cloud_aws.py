@@ -112,6 +112,34 @@ class TestRunAws:
         assert seen["env"] is not None
         assert seen["env"]["PATH"].split(os.pathsep) == ["/usr/bin", "/bin", str(bin_dir)]
 
+    def test_spawn_decodes_child_output_as_utf8(self, monkeypatch):
+        """The child inherits ``PYTHONUTF8=1`` and writes UTF-8 on every platform.
+
+        A text-mode spawn without ``encoding=`` decodes with the locale's code
+        page, which on Windows is the ANSI code page, so a non-ASCII stack name,
+        path or localized error would come back as mojibake.
+        """
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
+        seen: dict = {}
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout):
+                return "caf\u00e9", ""
+
+        def fake_popen(argv, **kwargs):
+            seen.update(kwargs)
+            return FakeProc()
+
+        monkeypatch.setattr(aws, "popen_limited", fake_popen)
+
+        assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "caf\u00e9", "")
+        assert seen.get("text") is True
+        assert seen.get("encoding") == "utf-8"
+        assert seen.get("errors") == "replace"
+
     def test_aws_cli_missing_returns_127_not_traceback(self, monkeypatch):
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
 
@@ -436,6 +464,20 @@ class TestATimedOutCallReturnsWhileAHelperHoldsThePipes:
         thread.join(_JOIN_BOUND_SECS)
         assert not thread.is_alive()
         assert captured["value"] == (0, "ok", "e")
+
+    def test_utf8_output_decodes_and_a_bad_byte_degrades(self, monkeypatch):
+        # A real child writes UTF-8 plus one byte that is not valid UTF-8. The
+        # call returns the text with U+FFFD in that one spot instead of raising
+        # UnicodeDecodeError out of communicate().
+        args = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9 \\xff');"
+            " sys.stderr.buffer.write(b'\\xe2\\x9c\\x93')",
+        ]
+        thread, captured, _procs = self._run_in_thread(monkeypatch, args, timeout=30)
+        assert not thread.is_alive()
+        assert captured["value"] == (0, "caf\u00e9 \ufffd", "\u2713")
 
     def test_the_cli_runs_in_tmp_path_not_in_the_checkout(self, tmp_path, monkeypatch):
         args = [sys.executable, "-c", "import os, sys; sys.stdout.write(os.getcwd())"]

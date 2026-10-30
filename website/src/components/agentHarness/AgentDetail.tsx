@@ -15,12 +15,21 @@ import { i18nT } from '../../i18n/t'
  * one to install. Kiro CLI is the case with components and no one-liner — it is
  * installed from its own docs, so the probe sends `""` rather than an invented
  * command.
+ *
+ * A harness on the wrong release (`found_version`) is installed, so the first
+ * line says which release this host has instead of "Install it": the command
+ * below replaces it with the verified one.
  */
 export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBackendProbe }) {
   return (
     <>
       <p className="text-[13px] font-medium text-text">
-        {i18nT('components.kiroPrerequisiteGate.agent_install_on_host', { name })}
+        {probe.found_version
+          ? i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
+              name,
+              version: probe.found_version,
+            })
+          : i18nT('components.kiroPrerequisiteGate.agent_install_on_host', { name })}
       </p>
       {probe.install_command ? (
         <CopyCommand>

@@ -466,7 +466,6 @@ def test_windows_stale_pid_reclaimed_on_startup(tmp_path, monkeypatch):
     recreated before acquisition so that msvcrt.locking gets a clean file."""
     from kiro_crew import platform_compat
 
-    # Simulate Windows platform
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     # Make pid_liveness report the stale PID as dead
     monkeypatch.setattr(platform_compat, "pid_liveness", lambda pid: platform_compat.PID_DEAD)

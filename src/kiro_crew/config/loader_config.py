@@ -22,15 +22,24 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
 from kiro_crew.config.loader_agents import resolve_crew_identity
-from kiro_crew.config.loader_builders import _restore_stored_harness_fields, _stored_agent_dict
+from kiro_crew.config.loader_builders import (
+    _restore_stored_harness_fields,
+    _restore_stored_stt_provider,
+    _stored_agent_dict,
+)
 from kiro_crew.config.loader_credentials import (
     _JIRA_TOKEN_RE,
     CREDENTIAL_KEYS,
     EnvFileWideEncodingError,
     _shadow_checked_env_keys,
     _warned_env_keys,
+    adopt_env_owned_keys_from_reexec,
+    enforce_env_permissions,
     env_path,
+    note_env_owned_key,
+    parse_env_lines,
     read_env_text,
+    record_boot_raw_env,
     resolve_env_credentials,
     warn_undecodable_env,
 )
@@ -86,9 +95,11 @@ from kiro_crew.config.sections import (
     MemoryStoreConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     PublishConfig,
     ResourceLimitsConfig,
     SessionConfig,
+    SessionEnvironmentsConfig,
     SessionSummaryConfig,
     SkillsConfig,
     SlackConfig,
@@ -104,6 +115,7 @@ from kiro_crew.config.sections import (
     WeComConfig,
     WeixinConfig,
     WhatsAppConfig,
+    WorkLedgerConfig,
     WorkspaceConfig,
     _meta,
     coerce_effort,
@@ -153,6 +165,14 @@ class KiroCrewConfig:
         metadata=_meta(
             "Session Summary",
             "Intent-level session summaries for the chat right panel. Off by default.",
+        ),
+    )
+    session_environments: SessionEnvironmentsConfig = field(
+        default_factory=SessionEnvironmentsConfig,
+        metadata=_meta(
+            "Session Environments",
+            "Coder deployment URL and workspace profiles for remote session "
+            "environments. Configuration only: saving provisions nothing.",
         ),
     )
     telemetry: TelemetryConfig = field(
@@ -234,6 +254,14 @@ class KiroCrewConfig:
     watchdog: WatchdogConfig = field(
         default_factory=WatchdogConfig,
         metadata=_meta("Watchdog", "ACP per-session watchdog / liveness-oracle windows."),
+    )
+    work_ledger: WorkLedgerConfig = field(
+        default_factory=WorkLedgerConfig,
+        metadata=_meta("Work ledger", "Work-ledger nesting: how many levels may conduct."),
+    )
+    power: PowerConfig = field(
+        default_factory=PowerConfig,
+        metadata=_meta("Power", "What Knowledge Library sweeps do while on battery."),
     )
     resource_limits: ResourceLimitsConfig = field(
         default_factory=ResourceLimitsConfig,
@@ -668,6 +696,8 @@ class KiroCrewConfig:
             "mcp": asdict(self.mcp),
             "taskrunner": asdict(self.taskrunner),
             "watchdog": asdict(self.watchdog),
+            "work_ledger": asdict(self.work_ledger),
+            "power": asdict(self.power),
             "resource_limits": asdict(self.resource_limits),
             "messaging": asdict(self.messaging),
             "cron_history": asdict(self.cron_history),
@@ -678,6 +708,7 @@ class KiroCrewConfig:
             "browser": asdict(self.browser),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
+            "session_environments": asdict(self.session_environments),
             "telemetry": asdict(self.telemetry),
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,
@@ -820,6 +851,9 @@ class KiroCrewConfig:
         # watcher); a pick reaches disk through the delta writers (``config
         # set``, the dashboard PATCH).
         _restore_stored_harness_fields(d)
+        # A stored edition STT provider this snapshot degraded to ``off`` (it was
+        # loaded before the edition registered it) is written back as stored.
+        _restore_stored_stt_provider(d)
         # Strip overlay-owned values so they don't leak into config.json
         local_path = config_local_path()
         if local_path.is_file():
@@ -1151,35 +1185,17 @@ class KiroCrewConfig:
         creds: dict[str, str] = {}
         ep = env_path()
         if ep.exists():
-            # Enforce restrictive permissions on the credential file. POSIX
-            # only: on Windows mode bits are meaningless (a chmod there
-            # toggles the read-only attribute and succeeds without narrowing
-            # who can read), and the real owner-only lockdown --
-            # ``platform_compat.restrict_to_owner`` -- is not applied on this
-            # READ path. The reason is not cost: it is that a reader has no
-            # business rewriting a
-            # descriptor it did not create, and doing so here would apply the
-            # DACL of whichever process happened to read the file next.
-            # Windows enforcement therefore lives where the file is WRITTEN --
-            # the setup wizard and the dashboard credential writers all apply
-            # ``restrict_to_owner`` at write time.
-            try:
-                if platform_compat.IS_POSIX and ep.stat().st_mode & 0o077:
-                    ep.chmod(0o600)
-            except OSError:
-                logger.warning("Cannot enforce permissions on %s", ep)
+            # Narrow the credential file to owner-only on POSIX, then parse it
+            # with the one shared line parser the live watcher also uses, so the
+            # boot read and the hot-reload read agree on both the lockdown and
+            # what the file says.
+            enforce_env_permissions(ep)
             try:
                 env_text = read_env_text(ep)
             except EnvFileWideEncodingError as exc:
                 warn_undecodable_env(ep, exc)
                 env_text = ""
-            for line in env_text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    creds[k.strip()] = v.strip()
+            creds.update(parse_env_lines(env_text))
 
             # Warn once per boot about keys not in the recognised allowlist.
             # These keys still propagate (operators use them for proxy/feature
@@ -1246,6 +1262,18 @@ class KiroCrewConfig:
                         sk,
                     )
 
+        # Record the raw ``.env`` map this boot read, as the live watcher's diff
+        # baseline -- BEFORE the environment-wins loop below overwrites a key with
+        # its os.environ value, so the recorded map is exactly what
+        # ``read_env_credentials_raw`` returns (literal line values, no override,
+        # no vault resolution). Only the first load of the process is kept (the
+        # gateway boot); later dashboard/doctor loads are ignored. This seeds the
+        # watcher with what ``.env`` actually propagated at boot, so a rotation in
+        # the window before the watcher starts is diffed in rather than adopted as
+        # an already-applied baseline it never was. An absent file records the
+        # empty map, matching an absent-file raw read.
+        record_boot_raw_env(dict(creds), path=ep)
+
         for key in CREDENTIAL_KEYS:
             val = os.environ.get(key)
             if val:
@@ -1268,6 +1296,14 @@ class KiroCrewConfig:
         # .env read or via an explicit env= kwarg on Popen (the sandbox and ACP
         # spawners already do this).
         if propagate:
+            # An in-app restart keeps os.environ across os.execv but resets this
+            # process's Python state, so the .env ownership record would be empty
+            # on the successor and every .env key would read as inherited. Adopt
+            # the record the re-exec seam serialised into the environment (and
+            # delete the marker) BEFORE the propagate loop, so a later .env
+            # removal still pops what .env owned before the restart. A no-op on a
+            # fresh boot (no marker).
+            adopt_env_owned_keys_from_reexec()
             scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
             for k, v in creds.items():
                 if not v:
@@ -1282,6 +1318,17 @@ class KiroCrewConfig:
 
                     extend_process_path(v)
                     continue
+                # Record ownership by whether setdefault actually writes: only
+                # when the name is ABSENT does .env put the value in os.environ
+                # and own it. A key the process already holds (a service/shell
+                # value, or this process's own earlier propagation) is a
+                # setdefault no-op and is NOT noted -- so the live remover never
+                # pops an inherited value .env merely matched. Recording is
+                # additive: a later load_credentials re-run finds every key
+                # already present and notes nothing, so boot's ownership record
+                # is never erased by a subsequent dashboard/doctor load.
+                if k not in os.environ:
+                    note_env_owned_key(k)
                 os.environ.setdefault(k, v)
 
         # Resolve AFTER propagating: a child inherits the ``.env`` line as
@@ -1399,13 +1446,21 @@ class KiroCrewConfig:
             # kiro -- the member thread then runs as plain chat and the mount
             # step logs why.
             # circular import: members sits above config in the layering.
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
             from kiro_crew.members import select_provider_backend
 
+            # A crewmate's own harness pin outranks the member route and fails
+            # closed before the gate (H17), but only when it selects the harness.
+            # An explicit override outranks it, including "" (Kiro CLI), so an
+            # unstartable lower-priority pin must not block that choice (H3).
             _backend = select_provider_backend(
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
                 backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(self, session_key) if backend_override is None else None
+                ),
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

@@ -16,6 +16,8 @@ type Channel = {
    *  keystroke. */
   publishStake: (atStake: boolean, publisher: object) => void
   subscribeStake: (listener: (atStake: boolean) => void) => () => void
+  /** The published stake right now, read without prompting. */
+  stakeNow: () => boolean
 }
 
 /** Null outside a provider, so both hooks below degrade to no-ops for a surface
@@ -116,6 +118,7 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
       listener(stake.current)
       return () => { stakeListeners.current.delete(listener) }
     },
+    stakeNow: () => stake.current,
   }), [])
   return (
     <NavigationLeaveGuardContext.Provider value={channel}>
@@ -168,6 +171,25 @@ export function usePublishNavigationStake(atStake: boolean) {
 }
 
 const ALWAYS_MAY_LEAVE = () => true
+const NOTHING_AT_STAKE = () => false
+
+/**
+ * Read whether any surface is publishing a stake right now, without prompting.
+ *
+ * For a caller that asks the guard and then navigates LATER, after an await:
+ * the guard answers only a boolean, so it cannot say whether the user was
+ * actually asked or nothing was at stake. Read this just before the ask. A
+ * stake at that moment plus a granted ask means the user agreed to discard
+ * that work, so the delayed navigate should carry `leaveGranted` instead of
+ * asking the same question again. No stake means nobody was asked, and the
+ * delayed navigate must ask the live guard for work started in the meantime.
+ * `false` outside a provider, and for a page that registers a guard without
+ * publishing a stake.
+ */
+export function useNavigationStakeNow(): () => boolean {
+  const channel = React.useContext(NavigationLeaveGuardContext)
+  return channel?.stakeNow ?? NOTHING_AT_STAKE
+}
 
 /** Ask the page on screen before an action that navigates away from it. */
 export function useMayLeaveForNavigation(): () => boolean {
@@ -225,6 +247,25 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
   }, [mayLeave, isCurrentUrl])
 }
 
+/**
+ * A navigate that asks the page on screen at the moment it runs, and says
+ * whether it went. For a navigation that follows an await, such as
+ * `showCreatedChat` after a create: asking before the create would be asking
+ * about a page that may hold nothing yet, and the user can start a draft
+ * during the seconds the create takes. A refusal leaves the user where they
+ * are and returns `false`, so the caller can skip whatever depends on the
+ * destination being shown.
+ */
+export function useAskingNavigate(): (route: string) => boolean {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  return React.useCallback((route: string) => {
+    if (!mayLeave()) return false
+    navigate(route)
+    return true
+  }, [navigate, mayLeave])
+}
+
 /* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the
  * arrows' position store must recognise a trap duplicate too (a trap is never a
  * Forward destination), and the lib is the leaf of this import edge. */
@@ -262,13 +303,20 @@ const addressOf = (l: { pathname: string; search: string; hash: string }): strin
  * so Forward from one is unreachable and the same predicate serves both
  * directions.
  */
-export function useGuardedHistoryStep(): (delta: -1 | 1, onStep?: () => void) => void {
+export function useGuardedHistoryStep(): (delta: number, onStep?: () => void) => void {
   const navigate = useNavigate()
   const mayLeave = useMayLeaveForNavigation()
-  return React.useCallback((delta: -1 | 1, onStep?: () => void) => {
+  // `delta` may be more than one step: the arrows' history menu jumps straight
+  // to an entry (#17453). The trap below is built for that — it tells a pop
+  // that sailed past it from one that landed on it by stack position.
+  return React.useCallback((delta: number, onStep?: () => void) => {
     // Read at click time, from the platform — the trap is pushed and consumed
     // outside React's render cycle, so a rendered value could be stale.
-    if (!isTrapEntry(routerEntry().state) && !mayLeave()) return
+    // The trap asks only for the ONE pop that lands exactly under it; a jump
+    // past it reads as "page already gone" there and asks nothing, so any
+    // other move is asked about here.
+    const trapWillAsk = delta === -1 && isTrapEntry(routerEntry().state)
+    if (!trapWillAsk && !mayLeave()) return
     // Runs only once the step is allowed, so work tied to the step (a timed
     // one-shot) neither starts during the confirm nor leaks from a veto.
     onStep?.()

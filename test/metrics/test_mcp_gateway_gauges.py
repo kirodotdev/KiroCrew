@@ -345,7 +345,7 @@ def test_gatewayd_init_exports_to_edition_destination(gatewayd_env):
         assert expected in names, expected
     # Same resource attributes the main process exports.
     assert resource is not None
-    expected_attrs = provider_mod._resource_attributes()
+    expected_attrs = provider_mod._resource_attributes("kiro")
     for key in ("service.name", "service.version", "os.type", "host.cpu.logical_count"):
         assert resource[key] == expected_attrs[key]
     assert resource["process.pid"] == os.getpid()
@@ -409,7 +409,8 @@ def test_compose_telemetry_provider_applies_the_boot_security_floor(gatewayd_env
     gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
     set_config(True)
     cfg = KiroCrewConfig.load()
-    assert bootstrap.compose_telemetry_provider(cfg) is edition
+    # Wrapped only to carry the companion's ceiling; the provider is the edition's.
+    assert bootstrap.compose_telemetry_provider(cfg)._inner is edition
 
     def _weak(profile, cfg, *, entry_points=None, policy=None):
         base = build_default_context(cfg)

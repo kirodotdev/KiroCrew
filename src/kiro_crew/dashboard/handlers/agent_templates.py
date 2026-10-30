@@ -778,8 +778,11 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
         found: AgentInfo = matches[0]
         # The row's filename is a discovery string, not a path: only a plain
         # basename resolving to a regular file directly under the agents
-        # directory is a template this handler may unlink.
-        spec_path = _spec_file_beneath(kiro_agents_dir_path(), found.filename)
+        # directory is a template this handler may unlink. Its resolve and
+        # is_file calls run on a worker so a wedged mount cannot stall the loop.
+        spec_path = await asyncio.to_thread(
+            _spec_file_beneath, kiro_agents_dir_path(), found.filename
+        )
         if spec_path is None:
             return web.json_response(
                 {"error": f"Template '{name}' not found", "code": "template_not_found"}, status=404

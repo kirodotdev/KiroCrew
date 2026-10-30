@@ -630,13 +630,15 @@ class TestRunChatEarlyExitHandOff:
     async def test_a_refused_command_leaves_a_deferred_reset_armed(self, tmp_path, monkeypatch):
         """A turn that acquired no session consumes no deferred reset: a refused
         ``/compact`` or ``/quit`` behaves as if the turn never started."""
-        state, slot, _prompts = self._setup(tmp_path, monkeypatch)
+        state, slot, prompts = self._setup(tmp_path, monkeypatch)
         consume = AsyncMock(return_value=False)
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._consume_pending_reset", consume)
 
         await self._run(state, slot, "/quit")
 
         consume.assert_not_awaited()
+        assert prompts == []
+        assert slot.task is None
 
     @pytest.mark.asyncio
     async def test_a_setup_error_holds_the_queue(self, tmp_path, monkeypatch):
@@ -962,8 +964,11 @@ class TestRunChatEarlyExitHandOff:
                     ),
                     what="the error blocking response finishing",
                 )
-                assert response.status == 500
-                assert json.loads(response.text)["error"]["type"] == "server_error"
+                assert response.status == 502
+                error = json.loads(response.text)["error"]
+                assert error["type"] == "server_error"
+                assert error["code"] == "turn_failed"
+                assert "failed before it started" in error["message"]
         with pytest.raises(RuntimeError, match="setup broke"):
             await task
         assert prompts == []

@@ -452,17 +452,39 @@ async def _deliver_script_result(
                 slot = self.dashboard_state.get_slot(slot_key)
             label = redact(job.name)
             if slot:
-                wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
                 # Imported here: this function runs on the facade's globals,
                 # which a module-level import in this owner never reaches.
                 from kiro_crew.dashboard import session_deliver
+                from kiro_crew.dashboard.state import (
+                    CRON_NOTIFY_END,
+                    CRON_NOTIFY_PREFIX,
+                )
+
+                # The same wrapper a cron's send_message uses: the queue drain
+                # reads its prefix to write the cron row with the job's label.
+                wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{message}\n{CRON_NOTIFY_END}'
 
                 # The session decides idle (a cron row and a turn) vs running
-                # (a queued card); the cron names only itself.
-                await session_deliver.deliver(
-                    self.dashboard_state, slot, wrapped, session_deliver.cron(label)
+                # (a queued card); the cron names only itself. On a full live
+                # queue the oldest entry gives way, as for a cron's
+                # send_message: a script that fires faster than its
+                # notification turns run would otherwise grow the queue
+                # without bound.
+                delivery = await session_deliver.deliver(
+                    self.dashboard_state,
+                    slot,
+                    wrapped,
+                    session_deliver.cron(label),
+                    evict_oldest=True,
                 )
                 self.dashboard_state.push_slots_update()
+                if delivery in (session_deliver.QUEUE_FULL, session_deliver.NOT_DELIVERED):
+                    # Nothing in the full queue could give way, or the session
+                    # closed meanwhile: the result goes out as a notification,
+                    # as it does when the session is gone.
+                    self.dashboard_state.notify(
+                        "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                    )
             else:
                 self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
         elif message and not job.silent and self.dashboard_state:
@@ -673,7 +695,6 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # streak is a LIFETIME total, so after enough deaths the bound is
             # permanently tripped and the exemption silently stops applying.
             runtime_death.clear_shared_deaths(f"cron:{job.id}")
-            # Deliver Done message and remove job
             await self._deliver_script_result(job, script_msg, remove=True)
             try:
                 sel().log_tool_invocation(

@@ -261,8 +261,8 @@ async def generate_suggestions(state: DashboardState, *, ui_language: str) -> li
     catalog-localized cards, so no fixed English set reaches another language.
     """
     # _build_context() calls list_sessions() + recent() — O(all sessions) disk IO.
-    # Offload to keep the event loop responsive (same pattern as this PR's other
-    # two offload sites in sessions.py).
+    # Offload to keep the event loop responsive (same pattern as the offload
+    # sites in sessions.py).
     context = await asyncio.to_thread(_build_context, state)
     if not context or len(context) < 50:
         logger.debug("Insufficient context for suggestions; sending none")

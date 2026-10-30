@@ -51,7 +51,7 @@ class TestIsSensitivePath:
         assert is_sensitive_path(f"{home}/.kirocrew/playwright-storage-state.json") is True
 
     def test_sel_hmac_key(self) -> None:
-        # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
+        # The SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
         # The key lives at trust/sel_hmac.key (whole-dir gate); the bare leaf
@@ -64,7 +64,7 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kirocrew/trust/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
-        # security-review finding cdf82704: the SEL audit log itself must not be
+        # The SEL audit log itself must not be
         # readable/rewritable by the audited agent (tamper of the evidence trail).
         assert is_sensitive_path("~/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
@@ -124,7 +124,7 @@ class TestIsSensitivePath:
     def test_local_secret(self) -> None:
         # .local_secret is the shared internal-auth secret used, in turn, to
         # authenticate MCP/cron/hook callbacks back into the gateway
-        # (mcp_core.py, cron_script.py, mcp_shared_policy.py, etc.).
+        # (mcp_core.py, cron_script_child_env.py, mcp_shared_policy.py, etc.).
         assert is_sensitive_path("~/.kiro/crew/.local_secret") is True
         assert is_sensitive_path("~/.kirocrew/.local_secret") is True
 
@@ -245,6 +245,9 @@ class TestHomeDirTargetsCache:
         from kiro_crew import security
 
         security._home_targets_cache.clear()
+        # Clear any recorded stall so a PathResolutionStalled from one test
+        # does not poison the next test in this class.
+        security._path_resolve_degraded.clear()
 
     def test_cached_result_matches_uncached(self, monkeypatch, tmp_path) -> None:
         """Caching must not change WHAT is considered sensitive."""
@@ -436,6 +439,19 @@ class TestHomeDirTargetsCache:
 
         monkeypatch.setenv("HOME", str(tmp_path))
         self._clear()
+
+        # Stub the expensive uncached rebuild: 200 real rebuilds (~130 realpath
+        # calls each) race the mc-pathres budget on a loaded Windows runner
+        # (8 xdist workers + Defender), causing PathResolutionStalled to be
+        # raised and -- because the stall is recorded with a cooldown against
+        # roots.home -- every subsequent iteration in the loop refuses too.
+        # The test's intent is only "the cache dict stays bounded"; it does not
+        # need real filesystem rebuilds to verify that.
+        def _cheap_uncached(home_dirs, roots=None):
+            home = roots.home if roots is not None else ""
+            return {home}
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", _cheap_uncached)
         for i in range(200):
             monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / f"h{i}"))
             security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
@@ -795,13 +811,13 @@ class TestAdaptiveHomeTargetsExpiry:
     ) -> None:
         """The reachable stale-credential path is closed, not merely bounded.
 
-        The review finding: a keystone leaf such as ``security_policy.json`` is
-        not an anchor, so it is not in the cache key; repoint it and the stale
-        set answers with the old target until the entry expires. Under the
-        adaptive expiry alone that window grew with load, which made an ordinary
-        contended host the reachable case.
+        A keystone leaf such as ``security_policy.json`` is not an anchor, so it
+        is not in the cache key; repoint it and the stale set answers with the
+        old target until the entry expires. Under the adaptive expiry alone that
+        window grows with load, which makes an ordinary contended host the
+        reachable case.
 
-        The build now reports whether it traversed a symlink, and that pins the
+        The build reports whether it traversed a symlink, and that pins the
         expiry to the floor. So the very install where a repoint can strand a
         resolution-derived target is the install that keeps the 0.1s window it
         has today, while a host with no symlinked leaf keeps the long expiry. The
@@ -1007,6 +1023,11 @@ class TestAdaptiveHomeTargetsExpiry:
                 expected.add(os.path.join(roots.home, *gate._leaf_segments(entry)))
             if roots.kiro_home and gate._KIRO_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
+            if roots.kiro_home and gate._KIRO_MATE_AGENTS_DIR in tier:
+                expected.add(os.path.join(roots.kiro_home, "mates", "agents"))
+            for mate_leaf in gate._KIRO_MATE_STATE_LEAVES:
+                if roots.kiro_home and mate_leaf in tier:
+                    expected.add(os.path.join(roots.kiro_home, *gate._leaf_segments(mate_leaf)[1:]))
             # The registry leaf shares that class: one root, one guard shape. Derived
             # from the same constant the build reads, so it tracks a moved leaf.
             if roots.kiro_home and gate._KIRO_SETTINGS_MCP_JSON in tier:

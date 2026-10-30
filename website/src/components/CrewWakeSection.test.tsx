@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 import type { ReactNode } from 'react'
 
 /**
@@ -38,10 +39,13 @@ vi.mock('../api/client', () => ({
 vi.mock('react-router-dom', () => ({ useNavigate: () => H.navigate }))
 
 import CrewWakeSection from './CrewWakeSection'
+import { createTestStore } from '../test/helpers'
 
+// `useCronActions` reads the store's dispatch (its open-in-chat lists the tab),
+// so the section renders inside a Provider as it does in the app.
 function wrap(node: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>)
+  return render(<QueryClientProvider client={qc}><Provider store={createTestStore()}>{node}</Provider></QueryClientProvider>)
 }
 
 const JOB = {
@@ -198,10 +202,24 @@ describe('CrewWakeSection', () => {
 
   it('never lists a script job, even when it carries a stale agent', async () => {
     H.crons.mockResolvedValue({ jobs: [
-      { ...JOB, id: 'x1', name: 'stale-script', script: '~/.kiro/crew/crons/p.py:run' },
+      { ...JOB, id: 'x1', name: 'stale-script', member_id: '', agent: 'kirocrew-autofix', script: '~/.kiro/crew/crons/p.py:run' },
     ] })
     wrap(<CrewWakeSection crew="kirocrew-autofix" memberId="kirocrew-autofix" isDefaultCrew={false} />)
     expect(await screen.findByText(/No schedules run this agent automatically/i)).toBeTruthy()
+  })
+
+  // A crewmate that creates a script or command cron gets `member_id` stamped on
+  // it by the server, so the job is that crewmate's and belongs on its profile.
+  it('lists a script or command job owned through member_id', async () => {
+    H.crons.mockResolvedValue({ jobs: [
+      { ...JOB, id: 'm1', name: 'owned-poller', agent: '', member_id: 'kirocrew-autofix', script: '~/.kiro/crew/crons/p.py:run' },
+      { ...JOB, id: 'm2', name: 'owned-cleanup', agent: '', member_id: 'kirocrew-autofix', command: 'echo hi' },
+      { ...JOB, id: 'm3', name: 'other-poller', agent: '', member_id: 'ops-triage', script: '~/.kiro/crew/crons/p.py:run' },
+    ] })
+    wrap(<CrewWakeSection crew="kirocrew-autofix" memberId="kirocrew-autofix" isDefaultCrew={false} />)
+    expect(await screen.findByText('owned-poller')).toBeTruthy()
+    expect(screen.getByText('owned-cleanup')).toBeTruthy()
+    expect(screen.queryByText('other-poller')).toBeNull()
   })
 
   // Absence of an answer and an answer of "none" must not render the same.

@@ -249,6 +249,25 @@ def _bounded_status_title(value: object) -> str:
     return sanitize_outbound(str(value or ""))[:MAX_SESSION_STATUS_TITLE_CHARS]
 
 
+def process_state(state: "DashboardState", slot: Any) -> str:
+    """``"live"`` while *slot*'s session holds a running process, else ``"released"``.
+
+    A released session keeps its conversation: the idle sweep stops the process
+    and the next turn resumes it through ``session/load`` (session.md, "Idle
+    cleanup"). Read from the session manager's live table
+    (``SessionManager.has_session``, keyed by the slot's effective session key).
+    """
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+    sessions = getattr(state, "sessions", None)
+    try:
+        live = sessions is not None and sessions.has_session(effective_session_key(slot))
+    except Exception:  # noqa: BLE001 - an unanswerable probe reads as released
+        logger.debug("process probe failed for %s", getattr(slot, "key", "?"), exc_info=True)
+        live = False
+    return "live" if live else "released"
+
+
 def _pending_approval_fields(state: "DashboardState", slot: Any) -> dict[str, Any]:
     """``{"pending_approval": True, "pending_approval_tool": ...}`` while *slot* waits.
 
@@ -585,6 +604,7 @@ async def created_session_status(
                 "status": "working" if running else ("queued" if queue_depth else "idle"),
                 "running": running,
                 "queue_depth": queue_depth,
+                "process": process_state(state, slot),
                 **_pending_approval_fields(state, slot),
                 "source": "+".join(sources),
             }

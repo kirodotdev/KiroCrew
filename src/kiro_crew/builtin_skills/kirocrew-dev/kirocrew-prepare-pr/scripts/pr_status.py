@@ -137,6 +137,7 @@ design_lane_punchlines = _review_contract.design_lane_punchlines
 redact = _review_contract.redact
 parse_disposition_record = _review_contract.parse_disposition_record
 human_override_actors = _review_contract.human_override_actors
+human_override_classes = _review_contract.human_override_classes
 
 # The issue-link grammar.
 _CLOSING_VERB = _issue_links._CLOSING_VERB
@@ -629,6 +630,16 @@ def fetch_bot_comments(repo, number, trusted_authors, run_command=None):
     return None if comments is None else select_bot_comments(comments, trusted_authors)
 
 
+def override_class_label(info):
+    """`` as <class>[ #N]`` for an override row; empty when the record has no class line."""
+    if not info:
+        return ""
+    return " as {}{}".format(
+        sanitize(info.get("class") or ""),
+        " #{}".format(sanitize(info["issue"])) if info.get("issue") else "",
+    )
+
+
 def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=None):
     """Evaluate reviewer stamps and blocking markers against the current head.
 
@@ -639,6 +650,8 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
       findings  -- {name: BLOCKING-line count} for fresh comments
       overridden -- {name: actor} for lanes a repository writer adjudicated at
                    this head instead of the model (see human_override_actors)
+      override_classes -- {name: class record} for those lanes (see
+                   parse_override_class); {} when the record has no class line
       stampless -- sorted bound lane names whose own slot carries no stamp of
                    its own AND whose body names this head: the "skipped" /
                    "could not complete" notice the whole-design lanes rewrite their
@@ -778,7 +791,14 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
     for name, actor in named_overrides.items():
         if only is None or name in only:
             fresh_by_name.setdefault(name, False)
+    named_classes, blanket_class = human_override_classes(
+        comments,
+        head_sha,
+        bindings,
+        DEFAULT_MARKER_AUTHORS if authors is None else authors,
+    )
     overridden = {}
+    override_classes = {}
     for name, fresh in fresh_by_name.items():
         # A fresh stamp is the stronger statement and stays the reported one:
         # the model DID run for this commit, so calling the lane overridden
@@ -788,6 +808,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
         actor = named_overrides.get(name) or blanket_actor
         if actor:
             overridden[name] = actor
+            override_classes[name] = named_classes.get(name) or blanket_class or {}
     stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh and n not in overridden)
     return {
         "ok": True,
@@ -796,6 +817,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
         "findings": findings,
         "elided": sorted(elided),
         "overridden": dict(sorted(overridden.items())),
+        "override_classes": dict(sorted(override_classes.items())),
         "stampless": sorted((slots_seen - slots_stamped) & slots_naming_head),
         "seen": sorted(slots_seen),
         "verdicts": verdicts,
@@ -1295,8 +1317,12 @@ def main(argv):
         # read as though one does.
         for name, actor in sorted((marker_eval.get("overridden") or {}).items()):
             print(
-                "  - {}: OVERRIDDEN by @{} (human judgment recorded for this head; "
-                "the model was not re-run)".format(sanitize(name), sanitize(actor))
+                "  - {}: OVERRIDDEN by @{}{} (human judgment recorded for this head; "
+                "the model was not re-run)".format(
+                    sanitize(name),
+                    sanitize(actor),
+                    override_class_label((marker_eval.get("override_classes") or {}).get(name)),
+                )
             )
 
     # Each whole-design lane's reason, read from the lane bodies rather than

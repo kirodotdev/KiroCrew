@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from kiro_crew.mcp_caller import (
@@ -144,6 +144,13 @@ class _PendingRequest:
     # ``_REHANDSHAKE_STUB_SENTINEL``): the ``attempt_id`` it was sent under, a
     # log join key read by no decision. Empty for every other request.
     attempt_id: str = ""
+    # Identity server only: a release of this subscribe's URI for its caller
+    # fell due while it was in flight (the caller's last routed stub left)
+    # and was left to its verdict (``Backend._hold_identity_release``). A
+    # grant that routes the stub discharges it; any other verdict releases,
+    # unless a stub of the caller is routed by then or another same-caller
+    # subscribe inherits it.
+    release_owed: bool = False
 
 
 # Named by the path callers import it from, as ``BackendGone`` is.
@@ -311,6 +318,27 @@ def _log_safe_identifier(value: str, fallback: str = "?") -> str:
     if len(cleaned) > _MCP_IDENT_LOG_MAX:
         cleaned = cleaned[: _MCP_IDENT_LOG_MAX - 1] + "\u2026"
     return cleaned or fallback
+
+
+def _carry_tool_call_id(caller: CallerContext, msg: dict[str, Any]) -> CallerContext:
+    """Return ``caller`` carrying the request's harness ACP ``toolCallId``.
+
+    kiro-cli sends that id as the ``tools/call`` ``_meta.progressToken``. The
+    gateway promotes it onto the caller so :func:`build_caller_meta` emits it in
+    the gateway-authored block, giving an identity-aware backend the SAME id the
+    approval gate keyed its grant by. Returns ``caller`` unchanged when the
+    request carried no token, so the backend's own progressToken fallback still
+    applies.
+    """
+    params = msg.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return caller
+    call_id = str(token)
+    if not call_id:
+        return caller
+    return replace(caller, tool_call_id=call_id)
 
 
 def _inject_caller_meta(msg: dict[str, Any], caller: CallerContext) -> dict[str, Any]:

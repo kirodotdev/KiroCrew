@@ -1,0 +1,19 @@
+{
+ "base_public_names": [
+  "NON_EGRESS_REDACTION_MODULES",
+  "PostureControl",
+  "PostureItem",
+  "build_posture_snapshot",
+  "build_posture_snapshot_async",
+  "governance_executor",
+  "logger",
+  "posture_counts",
+  "posture_counts_async",
+  "security"
+ ],
+ "note": "Frozen at the split of src/kiro_crew/security_posture.py (S40): every public name it defined, and every name it bound from the rest of kiro_crew. A kiro_crew._facade_mirror facade: security_posture.py keeps NON_EGRESS_REDACTION_MODULES and serves each other name from the security_posture_<role> owner that binds it.",
+ "rebound": {
+  "governance_executor": "kiro_crew.executors",
+  "security": "kiro_crew"
+ }
+}

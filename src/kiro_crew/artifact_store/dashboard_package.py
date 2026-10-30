@@ -2,7 +2,7 @@
 
 A dashboard artifact's content is not a document but a PACKAGE: a JSON object
 holding ``bound_to`` (whose dashboard this is), ``model`` (the data types and
-field shapes the page may render), ``view`` (the blocks that render them) and
+field shapes the page may render), ``view`` (the page that renders them) and
 ``theme`` (tokens, optional CSS). Values never live here. They stay in the crew
 log and reach the page through the fold / bus / controller path, so a package is
 small, stable, and versioned only when the layout itself changes.
@@ -15,12 +15,11 @@ Three rules follow from that and are enforced here rather than at each caller:
   ``kind="dashboard"`` write. Both the dashboard tool path and a plain
   ``artifact_update`` funnel through the store, so neither can write a package
   the other would refuse.
-* **Closed vocabularies.** A model field's ``type`` must be in
-  :func:`data_type_catalog` and a view block's ``type`` in
-  :func:`view_block_catalog`; every key inside either is named by its catalog
-  entry and an unknown one is refused. Both catalogs are STUBS with a starter
-  set -- the data line owns the first, the display line the second -- and
-  replacing a stub moves the validator with it.
+* **A closed vocabulary.** A model field's ``type`` must be in
+  :func:`data_type_catalog`, every key inside a field is named by its catalog
+  entry, and an unknown one is refused. The view is one agent-written page,
+  ``view.html``; a stored view of ``blocks`` is read as the page it
+  becomes (:func:`_blocks_as_html`), and the next write stores the page.
 * **A version means a layout change.** :func:`layout_changed` compares the
   canonical ``model`` + ``view`` + ``theme`` of two packages, and the store
   snapshots a dashboard write only when that comparison says yes. ``bound_to``
@@ -37,6 +36,7 @@ artifact write path already renders as a 400 rather than a 500.
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -85,7 +85,6 @@ MAX_VIEW_HTML_BYTES = 3 * 1024 * 1024
 MAX_PACKAGE_BYTES = 2 * MAX_VIEW_HTML_BYTES + 128 * 1024
 
 MAX_MODEL_FIELDS = 64
-MAX_VIEW_BLOCKS = 48
 MAX_THEME_TOKENS = 64
 MAX_THEME_CSS_BYTES = 32 * 1024
 #: Cap on a human-readable string inside the package (a label, a title, a unit).
@@ -100,8 +99,6 @@ MAX_LABEL_LEN = 120
 _BOUND_TO_RE = re.compile(r"\A(?:crewmate|session):[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 #: A model field name: an identifier the view and the fold both spell the same way.
 _FIELD_NAME_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
-#: A view block id: unique within the view, and the key the controller pushes to.
-_BLOCK_ID_RE = re.compile(r"\A[a-z][a-z0-9_-]{0,63}\Z")
 #: A theme token: a CSS custom property name, so the page can inject it as one.
 _THEME_TOKEN_RE = re.compile(r"\A--[a-z][a-z0-9-]{0,63}\Z")
 #: A theme token's value: printable, single-line, no CSS statement punctuation --
@@ -135,8 +132,6 @@ _PATH_RE = re.compile(r"\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\Z")
 
 #: The keys every model field carries, whatever its type.
 _UNIVERSAL_FIELD_KEYS = ("type", "source", "label", "description")
-#: The keys every view block carries, whatever its type.
-_UNIVERSAL_BLOCK_KEYS = ("id", "type", "fields", "title")
 
 
 # --------------------------------------------------------------------------- #
@@ -182,17 +177,9 @@ def _a_choice_list(v: Any) -> list[str]:
     return out
 
 
-def _a_span(v: Any) -> int:
-    if isinstance(v, bool) or not isinstance(v, int):
-        raise ValueError(f"must be a whole number of columns, got {type(v).__name__}")
-    if v < 1 or v > 12:
-        raise ValueError("must be between 1 and 12 columns")
-    return v
-
-
 # --------------------------------------------------------------------------- #
-# The two catalogs. STUBS: a starter set so the package line is testable end to
-# end. Each is ONE function, so filling it in is a single edit and the validator
+# The data type catalog. A STUB: a starter set so the package line is testable end
+# to end. It is ONE function, so filling it in is a single edit and the validator
 # follows -- see data/INTERFACE.md.
 # --------------------------------------------------------------------------- #
 
@@ -210,17 +197,6 @@ class FieldType:
     name: str
     summary: str
     required: Mapping[str, Callable[[Any], Any]] = _dc_field(default_factory=dict)
-    optional: Mapping[str, Callable[[Any], Any]] = _dc_field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class BlockType:
-    """One admissible ``view.blocks[*].type``, and how many model fields it reads."""
-
-    name: str
-    summary: str
-    min_fields: int = 1
-    max_fields: int = 16
     optional: Mapping[str, Callable[[Any], Any]] = _dc_field(default_factory=dict)
 
 
@@ -253,33 +229,6 @@ _STUB_DATA_TYPES: tuple[FieldType, ...] = (
     FieldType(name="object", summary="a nested record, walked by the page's own script"),
 )
 
-#: STUB -- the display line owns this table.
-_STUB_BLOCK_TYPES: tuple[BlockType, ...] = (
-    BlockType(
-        name="stat",
-        summary="one field as a large number",
-        min_fields=1,
-        max_fields=1,
-        optional={"span": _a_span},
-    ),
-    BlockType(
-        name="table",
-        summary="fields as columns of a table",
-        optional={"span": _a_span},
-    ),
-    BlockType(
-        name="list",
-        summary="fields as rows of a plain list",
-        optional={"span": _a_span},
-    ),
-    BlockType(
-        name="timeline",
-        summary="fields ordered by a timestamp",
-        max_fields=8,
-        optional={"span": _a_span},
-    ),
-)
-
 
 def data_type_catalog() -> Mapping[str, FieldType]:
     """The data types a ``model`` field may declare, by type name.
@@ -290,15 +239,6 @@ def data_type_catalog() -> Mapping[str, FieldType]:
     ``timestamp`` / ``enum`` / ``bool``) -- see ``data/INTERFACE.md``.
     """
     return {t.name: t for t in _STUB_DATA_TYPES}
-
-
-def view_block_catalog() -> Mapping[str, BlockType]:
-    """The block types a ``view`` may place, by type name.
-
-    Same contract as :func:`data_type_catalog`, for the other half of the
-    package: a stub starter set the display line replaces.
-    """
-    return {b.name: b for b in _STUB_BLOCK_TYPES}
 
 
 # --------------------------------------------------------------------------- #
@@ -680,9 +620,21 @@ def _validate_model(raw: Any) -> dict[str, Any]:
 #: :mod:`kiro_crew.artifacts`. The cost is a page that MENTIONS the attribute in its own
 #: prose being read as binding it -- a refusal the author can act on, where the parse's
 #: own cost would be paid by every artifact write in the product.
+#: The attribute name a page binds a field with, as :data:`_HTML_BINDING_RE` reads it.
+_BINDING_RUN = "data-dashboard-field"
 _HTML_BINDING_RE = re.compile(
     r"data-dashboard-field\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>=`]+))"
 )
+
+
+def _page_too_large(size: int, *, at_least: bool = False) -> str:
+    """Why a page of *size* bytes is refused: the one sentence both size checks give."""
+    measured = f"at least {size}" if at_least else str(size)
+    return (
+        f"is {measured} bytes, over the {MAX_VIEW_HTML_BYTES}-byte limit for a page -- "
+        "inline less into it, and keep values out of it: they belong in the crew "
+        "log and reach the page through the fold / bus / controller path"
+    )
 
 
 def _validate_view_html(raw: Any, declared_fields: Mapping[str, Any]) -> str:
@@ -708,12 +660,7 @@ def _validate_view_html(raw: Any, declared_fields: Mapping[str, Any]) -> str:
         )
     size = len(raw.encode("utf-8"))
     if size > MAX_VIEW_HTML_BYTES:
-        raise _refuse(
-            "view.html",
-            f"is {size} bytes, over the {MAX_VIEW_HTML_BYTES}-byte limit for a page -- "
-            "inline less into it, and keep values out of it: they belong in the crew "
-            "log and reach the page through the fold / bus / controller path",
-        )
+        raise _refuse("view.html", _page_too_large(size))
     # The frame's own refusals, asked here so the author meets them at save time rather
     # than seeing a page that renders wrong. Imported lazily: this module is imported by
     # `kiro_crew.artifacts` and must stay cheap.
@@ -745,94 +692,88 @@ def _validate_view_html(raw: Any, declared_fields: Mapping[str, Any]) -> str:
     return raw
 
 
+def _migrated_text(text: str) -> str:
+    """*text* as page text that no binding scan reads as a binding.
+
+    REDACTED FIRST, on the raw text: escaping rewrites quotes and angle brackets, and
+    a credential written inside them (a quoted ``Authorization`` header) does not
+    match the page's own redaction pass once escaped. Then escaped, and only the run
+    ``data-dashboard-field`` written with ``&#45;`` for its hyphens: a browser shows
+    the same text, and a label that spells the run out is shown rather than read as a
+    cell bound to a field.
+    """
+    from kiro_crew.platform.context import redact_via_context
+
+    safe = _html.escape(redact_via_context(text))
+    return safe.replace(_BINDING_RUN, _BINDING_RUN.replace("-", "&#45;"))
+
+
+def _blocks_as_html(raw_blocks: Any, declared_fields: Mapping[str, Any]) -> str:
+    """A stored view of ``blocks``, as its page.
+
+    ONE WAY. A saved block layout is read as this page, and every write stores the
+    page, so ``blocks`` goes into a package and never comes out of one. Each block
+    becomes a ``section`` holding its ``title`` and one row per field it read: the
+    field's ``label`` (or its name) and an empty ``data-dashboard-field`` cell the host
+    fills as text. Nothing about a block's ``type`` is kept; the page is a plain
+    list the crewmate can redraw. Every title and label is written as text
+    (:func:`_migrated_text`), so none can read as a binding, and the result goes
+    through :func:`_validate_view_html` like any page, so a block naming a field the
+    model does not declare is refused there.
+
+    The page is measured as it is built, so a layout whose page would pass
+    :data:`MAX_VIEW_HTML_BYTES` is refused with that limit's own sentence before the
+    whole page is held in memory.
+    """
+    if not isinstance(raw_blocks, list):
+        raise _refuse("view.blocks", f"must be a list, got {type(raw_blocks).__name__}")
+    sections: list[str] = []
+    size = 0
+    for index, raw_block in enumerate(raw_blocks):
+        block = _an_object(raw_block, f"view.blocks[{index}]")
+        title = block.get("title")
+        head = f"<h2>{_migrated_text(title)}</h2>" if isinstance(title, str) and title else ""
+        names = block.get("fields", [])
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise _refuse(f"view.blocks[{index}].fields", "must be a list of model field names")
+        rows: list[str] = []
+        for name in names:
+            field = declared_fields.get(name)
+            label = field.get("label") if isinstance(field, Mapping) else None
+            shown = label if isinstance(label, str) and label else name
+            row = (
+                f"<div><dt>{_migrated_text(shown)}</dt>"
+                f'<dd data-dashboard-field="{_html.escape(name)}"></dd></div>'
+            )
+            size += len(row.encode("utf-8"))
+            if size > MAX_VIEW_HTML_BYTES:
+                raise _refuse("view.html", _page_too_large(size, at_least=True))
+            rows.append(row)
+        sections.append(f"<section>{head}<dl>{''.join(rows)}</dl></section>")
+    return "".join(sections)
+
+
 def _validate_view(raw: Any, declared_fields: Mapping[str, Any]) -> dict[str, Any]:
     view = _an_object(raw, "view")
     _check_keys(view, "view", ("blocks", "html"))
     # EXACTLY ONE. Two views has no answer to "what does this page look like", and
     # drawing one while ignoring the other picks for the author silently -- when the
-    # half that was ignored is the half they were editing. None is the same question
-    # with no answer at all.
-    if ("html" in view) == ("blocks" in view):
+    # half that was ignored is the half they were editing.
+    if "html" in view and "blocks" in view:
+        raise _refuse("view", "must hold only 'html', the page; this one also holds 'blocks'")
+    if "blocks" in view:
+        return {
+            "html": _validate_view_html(
+                _blocks_as_html(view["blocks"], declared_fields), declared_fields
+            )
+        }
+    if "html" not in view:
         raise _refuse(
             "view",
-            "must hold exactly one of 'html' (a page its owner wrote) or 'blocks' (a "
-            f"list of block types out of the catalog); this one holds {sorted(view)}",
+            "must hold 'html': the page, binding each field with data-dashboard-field "
+            "or reading it from window.kirocrew.subscribe",
         )
-    if "html" in view:
-        return {"html": _validate_view_html(view["html"], declared_fields)}
-    raw_blocks = view.get("blocks")
-    if not isinstance(raw_blocks, list):
-        raise _refuse("view.blocks", f"must be a list, got {type(raw_blocks).__name__}")
-    if not raw_blocks:
-        raise _refuse("view.blocks", "must place at least one block")
-    if len(raw_blocks) > MAX_VIEW_BLOCKS:
-        raise _refuse(
-            "view.blocks",
-            f"places {len(raw_blocks)} blocks; at most {MAX_VIEW_BLOCKS} are allowed",
-        )
-    catalog = view_block_catalog()
-    blocks: list[dict[str, Any]] = []
-    seen_ids: list[str] = []
-    for index, raw_block in enumerate(raw_blocks):
-        path = f"view.blocks[{index}]"
-        block = _an_object(raw_block, path)
-        block_id = block.get("id")
-        if not isinstance(block_id, str) or _BLOCK_ID_RE.fullmatch(block_id) is None:
-            raise _refuse(
-                f"{path}.id",
-                "is required and must be lowercase letters, digits, '_' or '-', "
-                "starting with a letter",
-            )
-        if block_id in seen_ids:
-            raise _refuse(f"{path}.id", f"{block_id!r} is used by an earlier block")
-        seen_ids.append(block_id)
-        type_name = block.get("type")
-        if not isinstance(type_name, str) or not type_name:
-            raise _refuse(f"{path}.type", "is required and must be a block type name")
-        entry = catalog.get(type_name)
-        if entry is None:
-            raise _refuse(
-                f"{path}.type",
-                f"unknown block type {type_name!r}: the catalog holds {sorted(catalog)}",
-            )
-        _check_keys(block, path, (*_UNIVERSAL_BLOCK_KEYS, *entry.optional))
-        raw_names = block.get("fields")
-        if not isinstance(raw_names, list):
-            raise _refuse(
-                f"{path}.fields",
-                f"is required and must be a list of model field names, got "
-                f"{type(raw_names).__name__}",
-            )
-        names: list[str] = []
-        for name in raw_names:
-            if not isinstance(name, str):
-                raise _refuse(
-                    f"{path}.fields", f"every name must be a string, got {type(name).__name__}"
-                )
-            if name not in declared_fields:
-                raise _refuse(
-                    f"{path}.fields",
-                    f"names {name!r}, which model.types does not declare "
-                    f"(declared: {sorted(declared_fields)})",
-                )
-            if name in names:
-                raise _refuse(f"{path}.fields", f"names {name!r} twice")
-            names.append(name)
-        if not (entry.min_fields <= len(names) <= entry.max_fields):
-            raise _refuse(
-                f"{path}.fields",
-                f"a {type_name!r} block reads between {entry.min_fields} and "
-                f"{entry.max_fields} fields (this one names {len(names)})",
-            )
-        out: dict[str, Any] = {"id": block_id, "type": type_name, "fields": names}
-        if "title" in block:
-            try:
-                out["title"] = _a_label(block["title"])
-            except ValueError as exc:
-                raise _refuse(f"{path}.title", str(exc)) from None
-        _apply(entry.optional, block, out, path, required=False)
-        blocks.append(out)
-    return {"blocks": blocks}
+    return {"html": _validate_view_html(view["html"], declared_fields)}
 
 
 def _validate_theme(raw: Any) -> dict[str, Any]:
@@ -948,9 +889,8 @@ def validate_package(raw: Any) -> dict[str, Any]:
     """Return the CANONICAL form of a dashboard package, or raise saying why not.
 
     Canonical means: the five top-level keys in a fixed order, model fields and
-    theme tokens in sorted key order, each field and block holding only the keys
-    its catalog entry names, and view blocks in the order the author placed them
-    (that order is the layout). Two packages that mean the same thing therefore
+    theme tokens in sorted key order, each field holding only the keys its catalog
+    entry names, and the view as its one page. Two packages that mean the same thing therefore
     serialize to the same bytes, which is what makes
     :func:`layout_changed` able to answer by comparison.
     """
@@ -1119,34 +1059,7 @@ def canonical_package_content(content: str) -> str:
     and the version history then read a package the author's whitespace cannot
     perturb.
     """
-    package = parse_package(content)
-    _require_html_for_a_crewmate(package)
-    return dump_package(package)
-
-
-#: The scope prefix of a crewmate's own page in ``bound_to``.
-_CREWMATE_BINDING_PREFIX = "crewmate:"
-
-
-def _require_html_for_a_crewmate(package: Mapping[str, Any]) -> None:
-    """Refuse a crewmate page whose view is a block layout. Write gate only.
-
-    A crewmate's Dashboard tab frames the package's own ``view.html`` and nothing
-    else (``member_dashboard_fields.render_package_page``), so a block layout would
-    store, apply and then draw as an empty page. Checked on writes and applies,
-    not on reads: a block package already stored still parses, and is told this
-    the next time it is applied.
-    """
-    bound = str(package.get("bound_to") or "")
-    view = package.get("view") or {}
-    if bound.startswith(_CREWMATE_BINDING_PREFIX) and "blocks" in view:
-        raise _refuse(
-            "view",
-            "a crewmate's page is drawn from view.html only, so a view of blocks "
-            'cannot be shown: send view as {"html": "..."} with one '
-            'data-dashboard-field="<name>" element per field the model declares, '
-            "which the host fills as text",
-        )
+    return dump_package(parse_package(content))
 
 
 # --------------------------------------------------------------------------- #

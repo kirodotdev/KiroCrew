@@ -31,7 +31,6 @@
   "LLMProvider",
   "MessageContext",
   "OUTCOME_REJECTED_TRANSPORT_FLOOR",
-  "PROVIDER_PIPER",
   "PROVIDER_SYSTEM",
   "PostedOptions",
   "SESSIONS_INCLUDE_ENDED_ARGS",

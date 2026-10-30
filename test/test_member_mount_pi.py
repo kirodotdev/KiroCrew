@@ -21,9 +21,7 @@ import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.harness.pi import pi_mcp_handoff_payload
 from kiro_crew.acp.types import (
-    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_PI,
-    ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -174,7 +172,8 @@ def test_a_switched_off_panel_tool_withholds_the_whole_panel(agents_dir, tmp_pat
     assert _names(client._resolve_session_mcp_servers()) == [MEMBER_DISPATCH_SERVER]
 
 
-# --- Saved-spec verification: pi stays out, for the three reasons the set's comment names.
+# --- Saved-spec verification: pi is a member (``test_pi_saved_spec.py``). What the
+# ``BROKER_ONLY`` handoff leaves out is still a fact of the mount, pinned here.
 
 
 def _spec_with_own_server(agents_dir) -> dict:
@@ -187,56 +186,14 @@ def _spec_with_own_server(agents_dir) -> dict:
     return spec
 
 
-def test_a_saved_spec_is_refused_before_spawn_on_pi() -> None:
-    from kiro_crew.agent_capabilities import member_backend_gap
-
-    assert ACP_BACKEND_PI not in ACP_BACKENDS_MEMBER_CAPABILITIES
-    assert member_backend_gap(ACP_BACKEND_PI, ()) == "harness_unsupported"
-    # A deepseek member with the same spec clears the gate: the refusal is pi's own.
-    assert member_backend_gap(ACP_BACKEND_DEEPSEEK, ()) is None
-
-
 def test_a_spec_with_its_own_mcp_server_does_not_reach_pi(agents_dir, tmp_path) -> None:
-    """With pooling off, the spec's server is absent: pi would run narrower than saved."""
+    """With pooling off, the spec's server is absent from what reaches pi.
+
+    So a saved member's pane cannot read applied for it: ``runtime_view`` wants every
+    declared server ready (``test_pi_saved_spec.py``).
+    """
     _spec_with_own_server(agents_dir)
     client = _client(tmp_path, MEMBER_KEY, backend=ACP_BACKEND_PI)
     names = _names(client._resolve_session_mcp_servers())
     assert "spec-probe" not in names
     assert names == [MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER]
-
-
-def test_a_spec_with_no_tools_is_enforced_on_pi() -> None:
-    """``"tools": []`` refuses pi's native tools too (``test_pi_zero_tool_ban.py``).
-
-    So of the reasons pi stays out of ``ACP_BACKENDS_MEMBER_CAPABILITIES`` the two
-    that hold are no consumed spec recorded and a ``BROKER_ONLY`` handoff, as
-    pinned below.
-    """
-    from kiro_crew.agent_sdk.backends import (
-        ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
-        ACP_BACKENDS_MEMBER_CAPABILITIES,
-    )
-
-    assert ACP_BACKEND_PI in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
-    assert ACP_BACKEND_PI not in ACP_BACKENDS_MEMBER_CAPABILITIES
-
-
-def test_pi_records_no_consumed_spec_so_a_confirmation_could_only_refuse(
-    agents_dir, tmp_path, monkeypatch
-) -> None:
-    """The mirror-less branch leaves ``_session_agent_spec`` unset; confirming it fails."""
-    import pytest
-
-    from kiro_crew import agent_state
-    from kiro_crew.agent_capabilities import CapabilityError, _digest
-    from kiro_crew.agent_capabilities_consumed import confirm_consumed_projection
-
-    spec = _spec_with_own_server(agents_dir)
-    client = _client(tmp_path, MEMBER_KEY, backend=ACP_BACKEND_PI)
-    client._session_agent_spec = None
-    client._resolve_session_mcp_servers()
-    assert client._session_agent_spec is None
-    monkeypatch.setattr(agent_state, "get_capabilities", lambda _t: {"materialized": _digest(spec)})
-    with pytest.raises(CapabilityError) as raised:
-        confirm_consumed_projection("kirocrew", client._session_agent_spec)
-    assert raised.value.code == "capability_runtime_unverified"

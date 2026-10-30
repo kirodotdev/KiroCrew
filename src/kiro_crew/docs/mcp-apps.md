@@ -18,8 +18,7 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 
 ### From the dashboard
 
-Both live on the **Developer** page (sidebar → **Developer**), which appears once
-Developer Mode is on:
+Both live on **Settings → Developer → MCP Management**:
 
 1. **Route the server through the gateway** in MCP Management. Turning the switch on shows the exact command, arguments and environment the server will launch with, and you approve that launch there. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
 2. **Share backends across sessions** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
@@ -30,6 +29,10 @@ Routing needs that approval. The approval is tied to the server's launch
 since you approved it, is refused: it is left unwrapped, runs directly inside each
 session, and its results render as plain text. MCP Management lists it as needing
 approval (`added_outside_dashboard`) or re-approval (`changed_needs_reapproval`).
+The MCP Servers list under Connections names each refused server with a link to
+MCP Management (`/settings/developer/mcp-pool`), and `kirocrew doctor` reports it
+as an issue. An approval takes effect for new
+chats after the gateway restarts.
 
 Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 

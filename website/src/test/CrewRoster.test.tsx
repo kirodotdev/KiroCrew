@@ -94,6 +94,13 @@ const mockApi = vi.hoisted(() => ({
 
 vi.mock('../api/client', () => ({ api: mockApi }))
 
+/* A crewmate that owns its file reads its worker kit for "Built from". */
+const mockKit = vi.hoisted(() => ({ get: vi.fn(), preview: vi.fn(), apply: vi.fn() }))
+vi.mock('../api/crewCapabilities', async (orig) => {
+  const real = await orig<typeof import('../api/crewCapabilities')>()
+  return { ...real, crewWorkerKitApi: mockKit }
+})
+
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 import CrewAvatar, { hasAvatarOverride, iconAvatarFrom, seededTraits } from '../components/CrewAvatar'
 import { poseDataUri } from '../lib/avatarPoses'
@@ -271,7 +278,9 @@ describe('crew roster — cards', () => {
 
     // Bindings are on the card itself — that is the whole point of the grid.
     expect(within(otherCard).getByText('oncall-agent')).toBeInTheDocument()
-    expect(within(otherCard).getByText('oncall-mem')).toBeInTheDocument()
+    // The memory store reads as whose it is, not as its directory id.
+    expect(within(otherCard).getByText(i18nT('pages.kiroCrewAgentsPage.memory_label_shared'))).toBeInTheDocument()
+    expect(within(otherCard).queryByText('oncall-mem')).not.toBeInTheDocument()
     expect(within(otherCard).getByText('claude-opus-5')).toBeInTheDocument()
     // A plain local spec is the normal case, so it needs no "Custom" badge.
     expect(within(otherCard).queryByText('Custom')).not.toBeInTheDocument()
@@ -477,7 +486,7 @@ describe('crew roster — view toggle', () => {
 
     const row = screen.getByRole('button', { name: 'Edit mate oncall' }).closest('tr')!
     expect(within(row).getByText('oncall-agent')).toBeInTheDocument()
-    expect(within(row).getByText('oncall-mem')).toBeInTheDocument()
+    expect(within(row).getByText(i18nT('pages.kiroCrewAgentsPage.memory_label_shared'))).toBeInTheDocument()
     expect(within(row).getByText('claude-opus-5')).toBeInTheDocument()
   })
 
@@ -567,7 +576,8 @@ describe('crew editor — opening', () => {
     // Unfolded, the card ends its Advanced settings with a second Create too.
     expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(2)
     expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(within(sheet).getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
   })
 })
 
@@ -626,9 +636,6 @@ describe('crew editor — save', () => {
 })
 
 describe('crew editor — Mate identity', () => {
-  // Mate is listed only with the Crewmates preview on (hideMateWithoutPreview).
-  beforeEach(() => { localStorage.setItem('mc-preview-crew', '1') })
-  afterEach(() => { localStorage.removeItem('mc-preview-crew') })
   it('renaming Mate writes display_name under its unchanged key', async () => {
     const mate = { name: 'mate', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, mate] })
@@ -729,19 +736,14 @@ describe('crew editor — delete', () => {
     expect(within(sheet).queryByTestId('next-rail-danger')).not.toBeInTheDocument()
   })
 
-  it.each(['kirocrew', 'my-template'])('lets the first mate on %s be deleted like any other crew (Mates preview on)', async (template) => {
-    localStorage.setItem('mc-preview-crew', '1')
-    try {
-      const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
-      mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
-      await renderRoster(3)
-      const sheet = await openEditor('Mate')
-      expect(within(sheet).getByTestId('next-rail-danger')).toBeEnabled()
-      gotoPane(sheet, 'danger')
-      expect(within(sheet).getByRole('button', { name: 'Delete mate' })).toBeInTheDocument()
-    } finally {
-      localStorage.removeItem('mc-preview-crew')
-    }
+  it.each(['kirocrew', 'my-template'])('lets the first mate on %s be deleted like any other crew', async (template) => {
+    const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
+    await renderRoster(3)
+    const sheet = await openEditor('Mate')
+    expect(within(sheet).getByTestId('next-rail-danger')).toBeEnabled()
+    gotoPane(sheet, 'danger')
+    expect(within(sheet).getByRole('button', { name: 'Delete mate' })).toBeInTheDocument()
   })
 })
 
@@ -1343,5 +1345,31 @@ describe('crew avatar — uploaded picture', () => {
     // The icon pane's draft survives the round-trip through the picture tab.
     fireEvent.click(within(builder).getByRole('radio', { name: 'Icon' }))
     expect(within(builder).getByTestId('avatar-icon-pane')).toBeInTheDocument()
+  })
+})
+
+describe('crew roster — Mate', () => {
+  /* The row a fresh install's gateway writes for Mate: created by Kiro Crew
+     (`source: builtin`), keyed and identified as `mate`, bound to its own file. */
+  const FRESH_MATE = {
+    name: 'mate',
+    display_name: 'Mate',
+    kiro_agent: 'mate',
+    source: 'builtin',
+    member_id: 'mate',
+    workspace: 'member-mate',
+    memory_store: 'member-mate-3cc71373',
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    mockKit.get.mockResolvedValue({ member: 'mate', template: '', origin: '', private_copy: false })
+    mockApi.kirocrewAgents.mockResolvedValue({ agents: [DEFAULT_CREW, FRESH_MATE], default_agent: 'kirocrew' })
+  })
+  afterEach(() => localStorage.clear())
+
+  it('lists a fresh-install Mate with no opt-in', async () => {
+    await renderRoster(2)
+    expect(crewCard('Mate')).toBeInTheDocument()
   })
 })

@@ -577,8 +577,10 @@ async def _handle_report(request: web.Request) -> web.Response:
     if not storage._validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     lifecycle._audit("campaign_report", cid)
+    # FINDINGS.md grows every cycle, so read it off the event loop.
+    text = await asyncio.to_thread(publication._read_report, cid)
     # FINDINGS.md is agent-authored — redact before serving to the dashboard.
-    report = untrusted._redact_finding({"v": publication._read_report(cid)})["v"]
+    report = untrusted._redact_finding({"v": text})["v"]
     return web.json_response({"report": report})
 
 

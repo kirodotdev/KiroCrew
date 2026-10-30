@@ -1,7 +1,6 @@
-"""LLM pool lifecycle tests: idle-TTL scale-to-zero, conversation recycling and URL fetches.
+"""LLM pool lifecycle tests: idle-TTL scale-to-zero and conversation recycling.
 
-This file pins ``fetch_url_content`` returning a pool's stripped reply and refusing an empty
-one, the ``knowledge.pool_idle_ttl_secs`` reader, the reaper that scales a fully idle pool
+This file pins the ``knowledge.pool_idle_ttl_secs`` reader, the reaper that scales a fully idle pool
 to zero and the respawn on the next acquire, and the recycling that resets a worker's
 conversation once its context or call count crosses the threshold. The pool's own mechanics
 live in ``test_llm_pool.py``, reasoning effort in ``test_llm_pool_effort.py``, and the
@@ -30,45 +29,6 @@ from kiro_crew.knowledge.llm_pool import (
     Worker,
     _get_idle_ttl,
 )
-
-# ---------------------------------------------------------------------------
-# Tests: fetch_url_content with pool
-# ---------------------------------------------------------------------------
-
-
-class TestFetchUrlContent:
-    @pytest.mark.asyncio
-    async def test_fetch_returns_stripped_content(self):
-        from kiro_crew.knowledge.agent_fetch import fetch_url_content
-
-        pool = _make_pool_with_fake_workers(
-            pool_size=1,
-            responses=[
-                "  This is a document with enough content to pass the minimum length validation check.  "
-            ],
-        )
-        result = await fetch_url_content("https://example.com/doc", pool)
-        assert (
-            result
-            == "This is a document with enough content to pass the minimum length validation check."
-        )
-
-    @pytest.mark.asyncio
-    async def test_fetch_raises_on_empty(self):
-        from kiro_crew.knowledge.agent_fetch import fetch_url_content
-
-        pool = _make_pool_with_fake_workers(pool_size=1, responses=[""])
-        with pytest.raises(RuntimeError, match="empty content"):
-            await fetch_url_content("https://example.com/doc", pool)
-
-    @pytest.mark.asyncio
-    async def test_fetch_raises_on_whitespace_only(self):
-        from kiro_crew.knowledge.agent_fetch import fetch_url_content
-
-        pool = _make_pool_with_fake_workers(pool_size=1, responses=["   \n  "])
-        with pytest.raises(RuntimeError, match="empty content"):
-            await fetch_url_content("https://example.com/doc", pool)
-
 
 # ---------------------------------------------------------------------------
 # Tests: idle-TTL config reader

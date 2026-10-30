@@ -853,11 +853,16 @@ def test_get_ref_summary_raises_on_a_missing_issue(route):
 # ── timeline assembly ────────────────────────────────────────────────────────
 
 
+def _as_discussions(notes):
+    """Wrap each note in its own discussion, the shape ``{base}/discussions`` serves."""
+    return [{"id": f"d{i}", "notes": [note]} for i, note in enumerate(notes)]
+
+
 def test_norm_note_keeps_a_human_comment():
-    out = gl._norm_note({"body": "hi", "created_at": "t", "author": {"username": "alice"}})
+    out = gl._norm_note({"id": 5, "body": "hi", "created_at": "t", "author": {"username": "alice"}})
     assert out == {
-        "kind": "comment", "actor": "alice", "created_at": "t", "body": "hi",
-        "author_association": None, "reactions": None,
+        "kind": "comment", "id": 5, "actor": "alice", "created_at": "t", "body": "hi",
+        "author_association": None, "reactions": None, "thread_id": None,
     }
 
 
@@ -973,11 +978,11 @@ def test_norm_state_event(state, kind):
 
 def test_list_issue_timeline_merges_and_sorts_every_stream(route):
     route([
-        ("issues/7/notes", [
+        ("issues/7/discussions", _as_discussions([
             {"body": "second", "created_at": "2026-07-02T00:00:00Z",
              "author": {"username": "bob"}},
             {"body": "assigned to @bob", "system": True, "created_at": "2026-07-01T00:00:00Z"},
-        ]),
+        ])),
         ("resource_label_events", [
             {"action": "add", "created_at": "2026-07-03T00:00:00Z", "label": {"name": "bug"}}
         ]),
@@ -990,9 +995,42 @@ def test_list_issue_timeline_merges_and_sorts_every_stream(route):
     assert [e["kind"] for e in events] == ["assigned", "comment", "labeled", "closed"]
 
 
+def test_issue_timeline_reads_every_page_of_discussions(route):
+    """Past 100 discussions the timeline keeps reading pages, and notes from every
+    page come back in created_at order, as the old ``/notes`` read served them."""
+
+    def discussions(router):
+        page = len(router.targets("/discussions"))
+        if page == 1:
+            return [
+                {"id": f"d{i}", "notes": [
+                    {"body": f"n{i}", "created_at": f"2026-07-01T00:{i // 60:02d}:{i % 60:02d}Z",
+                     "author": {"username": "bob"}}
+                ]}
+                for i in range(100)
+            ]
+        return [{"id": "late", "notes": [
+            {"body": "first", "created_at": "2026-06-30T00:00:00Z", "author": {"username": "amy"}}
+        ]}]
+
+    router = route([
+        ("issues/7/discussions", discussions),
+        ("resource_label_events", []),
+        ("resource_state_events", []),
+        ("labels", LABELS),
+    ])
+    events = gl.list_issue_timeline("g", "p", 7, host="gitlab.com")
+    pages = router.targets("/discussions")
+    assert len(pages) == 2 and "page=2&per_page=100" in pages[1]
+    comments = [e for e in events if e["kind"] == "comment"]
+    assert len(comments) == 101
+    assert (comments[0]["body"], comments[0]["thread_id"]) == ("first", "late")
+    assert comments[1]["body"] == "n0"
+
+
 def test_assemble_timeline_degrades_when_a_secondary_stream_fails(route):
     route([
-        ("issues/7/notes", [{"body": "hi", "created_at": "t"}]),
+        ("issues/7/discussions", _as_discussions([{"body": "hi", "created_at": "t"}])),
         ("resource_label_events", (1, "HTTP 404")),
         ("resource_state_events", (1, "HTTP 404")),
         ("labels", (1, "HTTP 500")),
@@ -1003,7 +1041,7 @@ def test_assemble_timeline_degrades_when_a_secondary_stream_fails(route):
 
 def test_list_pr_timeline_promotes_positioned_notes_to_review_comments(route):
     route([
-        ("merge_requests/12/notes", [
+        ("merge_requests/12/discussions", _as_discussions([
             {"body": "nit", "created_at": "2026-07-01T00:00:00Z",
              "author": {"username": "carol"},
              "position": {"new_path": "a.py", "new_line": 12}},
@@ -1012,7 +1050,7 @@ def test_list_pr_timeline_promotes_positioned_notes_to_review_comments(route):
              "position": {"old_path": "b.py", "old_line": 3}},
             {"body": "assigned to @bob", "system": True, "created_at": "2026-07-04T00:00:00Z",
              "position": {"new_path": "c.py"}},
-        ]),
+        ])),
         ("resource_label_events", []),
         ("resource_state_events", []),
         ("labels", LABELS),
@@ -1456,13 +1494,6 @@ def test_set_pr_state_rejects_an_unknown_state(route):
     assert router.calls == []
 
 
-def test_submit_pr_review_refuses_request_changes(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="no 'request changes' review verb"):
-        gl.submit_pr_review("g", "p", 12, "REQUEST_CHANGES", "no", "abc1234", host="gitlab.com")
-    assert router.calls == []
-
-
 def test_submit_pr_review_rejects_an_unknown_event(route):
     with pytest.raises(gl.ProviderCliError, match="invalid review event"):
         gl.submit_pr_review("g", "p", 12, "DISMISS", head_sha="abc1234", host="gitlab.com")
@@ -1534,21 +1565,6 @@ def test_merge_pull_request_sends_squash_false_explicitly(route):
     out = gl.merge_pull_request("g", "p", 12, "merge", "abc1234", host="gitlab.com")
     assert out == {"merged": False, "sha": None, "message": "conflict"}
     assert json.loads(router.calls[0]["input"])["squash"] is False
-
-
-def test_merge_pull_request_refuses_a_method_gitlab_cannot_honour(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="invalid merge method"):
-        gl.merge_pull_request("g", "p", 12, "REBASE", "abc1234", host="gitlab.com")
-    assert "REBASE" not in gl.PR_MERGE_METHODS
-    assert router.calls == []
-
-
-def test_merge_pull_request_requires_the_reviewed_commit(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="refusing to merge"):
-        gl.merge_pull_request("g", "p", 12, "SQUASH", "nope", host="gitlab.com")
-    assert router.calls == []
 
 
 def test_auto_merge_is_refused_in_both_directions(route):

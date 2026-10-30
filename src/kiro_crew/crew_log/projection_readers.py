@@ -4,10 +4,14 @@ them, and the public reads the routes serve.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
+from typing import Any
 
 from kiro_crew import session_ledger
+from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_FOLD_NAME,
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
     PANEL_FOLD_NAME,
@@ -17,6 +21,8 @@ from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.projection_catalogue import (
     KNOWN_TYPES,
     TREE_PROJECTION_NAMES,
+    WORKER_FOLD_NAME,
+    WORKERS_FOLD_NAME,
     WORKSTREAMS_FOLD_NAME,
     Projection,
 )
@@ -24,8 +30,14 @@ from kiro_crew.crew_log.projection_kernel import Checkpoint, advance, projection
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session_log import open_session_log
 from kiro_crew.crew_log.projection_slot_memo import fold_slot_warm_revised
-from kiro_crew.crew_log.projection_work import _work_units
-from kiro_crew.crew_log.projection_workstreams import _board_closure_units, _workstreams_units
+from kiro_crew.crew_log.projection_workers import (
+    merge_render,
+    tree_seeded,
+    worker_units,
+    workers_children,
+    workers_units,
+)
+from kiro_crew.crew_log.projection_workstreams import _own_board_units, _workstreams_units
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
 from kiro_crew.crew_log.store import (
@@ -97,7 +109,9 @@ def fold_slot(name: str, unit_ids: Sequence[str], *, slot: str = "") -> Projecti
     return projection_of(fold_slot_checkpoint(name, unit_ids, slot=slot))
 
 
-def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()) -> Projection:
+def read_slot_projection(
+    slot: str, name: str, *, also_slots: Sequence[str] = (), cold: bool = True
+) -> Projection:
     """One slot-keyed projection for *slot*, folded over every unit it ran under.
 
     The units come from the fold's OWNER, not from a raw store listing. For the ledger
@@ -109,7 +123,29 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
     further slots whose units join the fold after those -- a caller that knows of a
     party the record itself does not name yet (a worker bound before the board was
     recorded) says so here.
+
+    ``cold=False`` is the request-path form: where the slot has no warm cell and no
+    usable savepoint it raises
+    :class:`~kiro_crew.crew_log.projection_slot_memo.SlotFoldNotReady` instead of folding
+    every unit (see :mod:`kiro_crew.crew_log.slot_prime`).
     """
+    if name == WORKERS_FOLD_NAME:
+        return _read_workers(slot, cold=cold)
+    checkpoint, revision = read_slot_state(slot, name, also_slots=also_slots, cold=cold)
+    return projection_of(checkpoint, revision=revision)
+
+
+def read_slot_state(
+    slot: str, name: str, *, also_slots: Sequence[str] = (), cold: bool = True
+) -> "tuple[Checkpoint, int]":
+    """The fold state :func:`read_slot_projection` renders, with its revision.
+
+    The same warm in-memory cell, for a reader that needs more of the state than the
+    rendered value carries (the usage fold's past turns). Never the ``workers`` fold,
+    whose value merges several cells. ``cold`` is :func:`read_slot_projection`'s.
+    """
+    if name == WORKERS_FOLD_NAME:
+        raise ValueError("the workers fold has no single state; read its projection")
     units = list(_slot_units_for_fold(slot, name))
     known = set(units)
     for extra in also_slots:
@@ -117,8 +153,97 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot)
-    return projection_of(checkpoint, revision=revision)
+    return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
+
+
+#: Per ``(data home, crewmate slot)``, the part revisions the last ``workers`` read
+#: merged and the revision it was served at. Bounded: the oldest crewmate goes first.
+_WORKERS_REVISIONS: "dict[tuple[str, str], tuple[Any, int]]" = {}
+_WORKERS_REVISIONS_MAX = 512
+_WORKERS_REVISIONS_LOCK = threading.Lock()
+#: Held across ONE crewmate's whole ``workers`` read, from the first part to the
+#: revision, so a read that captured older parts cannot be handed a revision above one
+#: that captured newer parts and finished first. Striped by crewmate, a fixed set.
+_WORKERS_READ_LOCKS: "tuple[threading.Lock, ...]" = tuple(threading.Lock() for _ in range(64))
+
+
+def _read_workers(slot: str, *, cold: bool = True) -> Projection:
+    """``workers`` for crewmate *slot*: its own creates merged with each worker's row.
+
+    Each part is a warm cell of its own (:func:`fold_slot_warm_revised`): ``workers``
+    over the crewmate's units, and ``worker`` per child over that child's units
+    (:func:`~kiro_crew.crew_log.projection_workers.worker_units`). A worker that wrote
+    continues its own cell; every other part answers from the cell it holds.
+
+    The REVISION moves whenever any part's does: the merged value is new then, and a
+    consumer keeps the highest revision per (key, fold). A fresh one is minted when the
+    parts changed, never the highest part's -- a part that leaves the set (a worker
+    past the cap) would otherwise move the number backwards.
+    """
+    key = (str(data_home()), slot)
+    lock = _WORKERS_READ_LOCKS[hash(key) % len(_WORKERS_READ_LOCKS)]
+    if cold:
+        with lock:
+            return _read_workers_locked(slot, key, cold=cold)
+    # The request-path form must not wait out a COLD fold another read is doing under
+    # this stripe (a background prime of this crewmate, or of another one sharing the
+    # stripe): it answers "not ready" instead, the rule the per-cell lock follows.
+    from kiro_crew.crew_log.projection_slot_memo import (
+        _PRIMING_POLL_SECONDS,
+        SlotFoldNotReady,
+        any_cold_fold_running,
+    )
+
+    while not lock.acquire(timeout=_PRIMING_POLL_SECONDS):
+        if any_cold_fold_running(_WORKERS_PART_FOLDS):
+            raise SlotFoldNotReady(slot, WORKERS_FOLD_NAME)
+    try:
+        return _read_workers_locked(slot, key, cold=cold)
+    finally:
+        lock.release()
+
+
+#: The folds a ``workers`` read folds under its stripe lock.
+_WORKERS_PART_FOLDS: "frozenset[str]" = frozenset({WORKERS_FOLD_NAME, WORKER_FOLD_NAME})
+
+
+def _read_workers_locked(slot: str, key: "tuple[str, str]", *, cold: bool = True) -> Projection:
+    from kiro_crew.crew_log.projection_slot_memo import _minted_revision
+
+    seeded = tree_seeded()
+    own, own_revision = fold_slot_warm_revised(
+        WORKERS_FOLD_NAME, workers_units(slot), slot=slot, cold=cold
+    )
+    parts = [own_revision]
+    workers: dict[str, Any] = {}
+    for child in workers_children(slot):
+        units = worker_units(child, units_in_succession(child))
+        if not units:
+            continue
+        cell, revision = fold_slot_warm_revised(WORKER_FOLD_NAME, units, slot=child, cold=cold)
+        workers[child] = _FOLDS[WORKER_FOLD_NAME].render(cell.state)
+        parts.append(revision)
+    value = merge_render(own.state, slot, workers)
+    signature = (tuple(parts), tuple(workers))
+    with _WORKERS_REVISIONS_LOCK:
+        held = _WORKERS_REVISIONS.get(key)
+        if not seeded:
+            # The unseeded session tree names no workers, so this value is provisional
+            # and vouches for no revision: the one read once it is seeded outranks it.
+            revision = 0
+        elif held is not None and held[0] == signature:
+            revision = held[1]
+        elif 0 in parts:
+            # A part read outside a warm memo vouches for no revision, so neither does
+            # the whole.
+            revision = 0
+        else:
+            revision = _minted_revision()
+            _WORKERS_REVISIONS.pop(key, None)
+            _WORKERS_REVISIONS[key] = (signature, revision)
+            while len(_WORKERS_REVISIONS) > _WORKERS_REVISIONS_MAX:
+                del _WORKERS_REVISIONS[next(iter(_WORKERS_REVISIONS))]
+    return Projection(name=WORKERS_FOLD_NAME, seq=own.last_seq, value=value, revision=revision)
 
 
 def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
@@ -140,20 +265,57 @@ def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
     return session_units_for_slot(slot)
 
 
+#: Each slot's newest unit, keyed by the slot's unit listing it was computed from. The
+#: listing comes from the store's slot index, which re-checks a unit whose header was
+#: still unpublished when it was listed, so a unit that becomes provable later changes
+#: the key even though the root's stat does not move.
+_NEWEST_UNITS: "dict[str, tuple[tuple[Any, ...], str]]" = {}
+_NEWEST_UNITS_LIMIT = 1024
+_newest_units_guard = threading.Lock()
+
+
+def newest_unit_in_succession(slot: str) -> str:
+    """The last of :func:`units_in_succession` for *slot*, or ``""``; cached on its units.
+
+    A unit's place in the succession is written once (header, opening entry), so the
+    answer can only change when the slot's set of units does.
+    """
+    if not slot:
+        return ""
+    identity: "tuple[Any, ...]" = (str(data_home()), session_units_for_slot(slot))
+    with _newest_units_guard:
+        held = _NEWEST_UNITS.get(slot)
+    if held is not None and held[0] == identity:
+        return held[1]
+    units = units_in_succession(slot)
+    unit = units[-1] if units else ""
+    # Cached only when at most one unit lacks a readable predecessor (the chain start).
+    # A unit whose opening entry has not landed yet reads as a second start and would
+    # be ordered by the clock; caching that guess would outlive the opener's arrival.
+    settled = sum(1 for u in units if unit_opened_previous(KIND_SESSION, u) is None) <= 1
+    if unit and settled:
+        with _newest_units_guard:
+            _NEWEST_UNITS.pop(slot, None)
+            _NEWEST_UNITS[slot] = (identity, unit)
+            while len(_NEWEST_UNITS) > _NEWEST_UNITS_LIMIT:
+                _NEWEST_UNITS.pop(next(iter(_NEWEST_UNITS)))
+    return unit
+
+
 def units_in_succession(slot: str) -> "tuple[str, ...]":
     """The slot's session units ordered by DURABLE succession rather than by the clock.
 
     Read by every fold whose answer depends on which unit is folded LAST: ``usage``,
-    whose per-turn window trims from the front, and ``agentic``, which keeps the newest
+    whose context part keeps the newest turn and a ring of the newest rows, and ``agentic``, which keeps the newest
     value per field and so lets a predecessor folded last overwrite a newer one.
 
     The header fallthrough orders units by ``createdAt``, a wall-clock stamp: a clock
     that steps backward between two units of one slot -- an NTP correction, a VM
     resume -- sorts the genuinely-newer unit BEFORE its predecessor. The usage fold
-    appends each ``context/composed`` as a per-turn row and trims the OLDEST off the
-    front at ``CONTEXT_TURNS_LIMIT``, so an inverted order lands the newest unit's rows
-    at the front and the trim evicts them, keeping a retired session's rows as the
-    "newest" the panel draws.
+    keeps the newest composed turn and pushes each closed turn into a fixed ring that
+    drops the OLDEST row (``TREND_TURNS``), so an inverted order makes a retired
+    session's turn the "newest" the panel draws and can push the newest unit's rows
+    out of the ring.
 
     So the units are ordered by the ``previous_sid`` succession chain the store itself
     wrote -- each ``session/opened`` names the unit it replaced -- via the same
@@ -242,15 +404,22 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
     if name == LEDGER_FOLD_NAME:
         return session_ledger.crew_log_units(slot)
     if name == "work":
-        return _work_units(slot, session_ledger.work_crew_log_units(slot))
+        # The board's OWN units and nothing else. A bound worker's report is written by
+        # the gateway into the conductor's unit as well as the worker's
+        # (``api_work_report``), so the board is complete without reading -- or walking
+        # the binds to find -- any worker's log.
+        return session_ledger.work_crew_log_units(slot)
     if name == WORKSTREAMS_FOLD_NAME:
-        # The same units the ``work`` fold reads -- the conductor's, then every bound
-        # worker's -- because one session appends its work records AND its turn closers
-        # to one crew log, so the files carrying the boards are the files carrying the
-        # spend. No wider: the fold answers for the boards THIS slot reaches, and
-        # reading a slot nothing here binds would be a scan for data no reader asked
-        # for.
+        # The board's own units, like ``work``: a bound worker's charges and a nested
+        # board's records are relayed into them (``work_relay``), so the project report
+        # needs no worker's log.
         return _workstreams_units(slot)
+    if name == WORKERS_FOLD_NAME:
+        # The crewmate's own units: its creates. Each worker's own log is read by that
+        # worker's ``worker`` cell, merged in by :func:`_read_workers`.
+        return workers_units(slot)
+    if name == WORKER_FOLD_NAME:
+        return worker_units(slot, units_in_succession(slot))
     if name == PANEL_FOLD_NAME:
         # NOT the header fallthrough. A header's ``createdAt`` is stamped once and never
         # rewritten, so a backward clock step between two units of one slot would order
@@ -264,12 +433,13 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         # units would evict the newest unit's rows and keep a retired session's. Order by
         # the durable succession chain instead of the header clock.
         return units_in_succession(slot)
-    if name == DASHBOARD_FOLD_NAME:
+    if name in (DASHBOARD_FOLD_NAME, CUSTOM_FOLD_NAME):
         # Nor here, and for the reason the panel fold gives: this fold keeps the LATEST
         # value per field, so whichever unit is folded last wins each cell. A backward
         # clock step between two units of one slot sorts the retired unit last under the
         # header clock, and its stale value would then overwrite a value the live session
         # wrote and the write path accepted -- silently, because both are well-formed.
+        # The custom fold keeps the latest record per TYPE and is the same case.
         return units_in_succession(slot)
     if name in (GOAL_FOLD_NAME, WAITING_FOLD_NAME):
         # The same reason again: each keeps the NEWEST snapshot whole, so a retired
@@ -288,12 +458,10 @@ def tree_fold_units(root: str, name: str) -> "tuple[tuple[str, ...], int]":
     """The units *name* is folded over for the tree rooted at *root*, and how many the
     selection refused.
 
-    THE THIRD KEY KIND'S unit resolver, and the reason it is a third kind: this answer is
-    not a property of the key. It walks what the record SAYS -- the root's own units,
-    every worker those units recorded a bind for, and every board those workers conduct,
-    to closure (:func:`_board_closure_units`) -- so a bind appended after the last read
-    changes the population with nothing about *root* having changed. A slot fold's units
-    come from the store's listing for one slot and cannot do that.
+    The root board's OWN units only (:func:`_own_board_units`). A nested board's records
+    are relayed up into its parent's log by the gateway (``work_relay``), so each board
+    of the tree is already in the root's units and no bind is walked and no other
+    board's log is opened to find them.
     """
     if require_name(name) not in TREE_PROJECTION_NAMES:
         # The same refusal shape ``require_name`` raises for a name the registry does not
@@ -306,7 +474,7 @@ def tree_fold_units(root: str, name: str) -> "tuple[tuple[str, ...], int]":
             code=CODE_BAD_DATA,
             field="name",
         )
-    return _board_closure_units(root)
+    return _own_board_units(root)
 
 
 def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
@@ -348,21 +516,28 @@ def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
 def read_tree_projection(root: str, name: str) -> Projection:
     """One tree-keyed projection for the tree rooted at *root*. The read a block gets.
 
-    COLD every time, and that is the posture the key kind earns rather than an omission:
-    a warm cell would be invalidated by growth in ANY member's log, including a member
-    the cell did not know existed, and there is no publisher for that event. So this fold
-    is lazy, has no bus scope, and belongs on a page load and on a refetch -- which the
-    controller contract already covers, since a gap triggers a full refetch anyway.
+    Folded over the root's own units (:func:`tree_fold_units`) in the root's warm cell,
+    the same cell a slot fold uses: a read with nothing new appended reads no entry, and
+    after a restart the fold resumes from its savepoint.
 
     Its production caller is the dashboard controller:
     :meth:`kiro_crew.dashboard.handlers.member_dashboard_fields.LivePage._read_trees`,
     reached from ``GET /api/members/{slug}/dashboard`` when the page's model binds a
-    tree fold, and again from that route's refetch. The controller calls it on arm and
-    on refetch and never from the fold worker, which is what keeps this read off the
-    thread that folds.
+    tree fold, and again from that route's refetch. It is never called from the fold
+    worker.
 
     BOTH routes that take a fold name -- the owner's per-session read and the internal
     per-unit one -- REFUSE a tree-keyed name rather than folding the one unit they
     address, so this is the only way in.
     """
-    return projection_of(fold_tree_checkpoint(require_name(name), root))
+    fold_name = require_name(name)
+    units, dropped = tree_fold_units(root, fold_name)
+    checkpoint, revision = fold_slot_warm_revised(fold_name, list(units), slot=root)
+    projected = projection_of(checkpoint, revision=revision)
+    if dropped and isinstance(projected.value, dict):
+        # The refused count belongs to this read's selection, not to the cell's state.
+        value = {**projected.value, "dropped": int(projected.value.get("dropped", 0)) + dropped}
+        projected = Projection(
+            name=projected.name, seq=projected.seq, value=value, revision=projected.revision
+        )
+    return projected

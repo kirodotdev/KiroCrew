@@ -67,6 +67,8 @@ interface MessageActionsOptions {
   connected: boolean
   activeSlot: string | null
   messages: ChatMessage[]
+  /** The page's latest-value ref of `messages`, read by edit-and-resend so it keeps one identity across frames. */
+  messagesRef: MutableRefObject<ChatMessage[]>
   slotRunning: boolean
   activityOpen: boolean
   activeSlotRef: MutableRefObject<string | null>
@@ -95,12 +97,15 @@ interface MessageActionsOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useMessageActions({
-  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
+  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
   tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
 }: MessageActionsOptions) {
+  // Reads `messagesRef`, not `messages`: the array is new on every streamed
+  // frame, and this callback feeds the transcript renderers memo, so a
+  // `messages` dep re-rendered every mounted row on every frame.
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
     if (!activeSlot || slotRunning || activeSlotRemoteBound) return
-    const snapshot = [...messages]
+    const snapshot = [...messagesRef.current]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))
     setRegenerating(true)
@@ -112,7 +117,7 @@ export function useMessageActions({
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, slotRunning, activeSlotRemoteBound, messages, dispatch, setRegenerating])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating])
 
   // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
   // Edit & resend editor. The chord itself is claimed by the composer

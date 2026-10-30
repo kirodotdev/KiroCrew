@@ -14,13 +14,27 @@ packaging. Vite emits content-hashed filenames that change on every build, so
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
+from types import ModuleType
 
 from setuptools import Command, setup
 from setuptools.command.build_py import build_py
+
+
+def _load_edition_stamp() -> ModuleType:
+    """Load ``kiro_crew/_edition_stamp.py`` by path; importing the package here would pull its deps."""
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "src", "kiro_crew", "_edition_stamp.py"
+    )
+    spec = importlib.util.spec_from_file_location("_kiro_crew_edition_stamp", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class E2eTestCommand(Command):
@@ -101,6 +115,7 @@ class BuildWithFrontend(build_py):
 
     def run(self) -> None:
         super().run()
+        self._stamp_edition()
         base = os.path.dirname(os.path.abspath(__file__))
         src_dist = os.path.join(base, "src", "kiro_crew", "static", "dist")
         if os.path.isdir(src_dist):
@@ -121,6 +136,32 @@ class BuildWithFrontend(build_py):
                 "             PYTHONPATH=src python -m kiro_crew.frontend stage ."
             )
         self._copy_changelog(base)
+
+    def _stamp_edition(self) -> None:
+        """Write ``$KIROCREW_BUILD_EDITION`` (default ``oss``) into the BUILT edition.py.
+
+        Only the copy under ``build_lib`` changes, so the source tree stays
+        ``oss``. It is rewritten on every build, ``oss`` included: ``build_py``
+        skips copying a source file older than its built copy, so a stale
+        enterprise stamp in a reused ``build/`` would otherwise survive into the
+        next default build.
+        """
+        stamp = _load_edition_stamp()
+        edition = stamp.requested_edition(os.environ)
+        path = os.path.join(self.build_lib, "kiro_crew", "edition.py")
+        try:
+            if getattr(self, "editable_mode", False):
+                # An editable install runs the source tree, which stays oss. The
+                # packaging targets run one as a prerequisite with the variable
+                # still set, so check the value but stamp nothing.
+                base = os.path.dirname(os.path.abspath(__file__))
+                stamp.check_edition(os.path.join(base, "src", "kiro_crew", "edition.py"), edition)
+                print(f"Editable install: {stamp.ENV}={edition} not stamped; source is oss")
+                return
+            stamp.stamp_file(path, edition)
+        except ValueError as exc:
+            raise SystemExit(f"ERROR: {exc}") from exc
+        print(f"Stamped edition={edition} -> {path}")
 
     def _copy_changelog(self, base: str) -> None:
         """Bundle the repo-root CHANGELOG.md into the package.

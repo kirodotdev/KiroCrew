@@ -5,6 +5,7 @@
  */
 
 import type { ClientTransport } from './transport'
+import type { TranslucentPanelsStored } from '../../utils/liquidGlass'
 
 export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const branding = {
@@ -30,6 +31,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: Clie
       color?: string
       /** BCP-47 UI language tag; '' means follow the browser. */
       language?: string
+      /** The Translucent panels switch; '' means never chosen on this workspace. */
+      translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
       /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */

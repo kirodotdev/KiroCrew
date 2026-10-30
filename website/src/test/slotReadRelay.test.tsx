@@ -29,6 +29,8 @@ import dashboardReducer, { addSlotOptimistic, removeSlotOptimistic, updateSlot, 
 import type { ChatSlot } from '../types'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
+import { sharedItem } from './unreadStorageTestUtils'
+import { flushSharedUnread } from '../store/dashboard/unread'
 
 /** Flip jsdom's document.hidden and fire the visibilitychange the hook listens for. */
 const setDocumentHidden = (v: boolean) => {
@@ -420,8 +422,8 @@ describe('slot_read over the dashboard socket', () => {
     // GPT F2 regression (span cf2f388263a4, head a30c8e312): the manual badge
     // never publishes to the shared store — a sibling window's boot must not
     // surface this window's private reminder.
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['remember-me']).toBeUndefined()
-    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[]).not.toContain('remember-me')
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['remember-me']).toBeUndefined()
+    expect(JSON.parse(sharedItem('mc-unread-slots') ?? '[]') as string[]).not.toContain('remember-me')
     dashboardReducer(st, markSlotRead('remember-me'))
     const cleared = JSON.parse(sessionStorage.getItem('mc-unread-since') ?? '{}') as Record<string, string>
     expect(cleared['remember-me']).toBeUndefined()        // pruned on local read
@@ -441,10 +443,10 @@ describe('slot_read over the dashboard socket', () => {
     st = dashboardReducer(st, markSlotUnread({ slot: 'reload-slot', ts: '2026-01-01T00:05:00Z' }))
     expect(st.unreadSince['reload-slot']).toBe('2026-01-01T00:05:00Z')
     // Badge and watermark landed together in the ONE shared record.
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['reload-slot']).toBe('2026-01-01T00:05:00Z')
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['reload-slot']).toBe('2026-01-01T00:05:00Z')
     // FRESH TAB: per-tab sessionStorage is empty; boot from shared state only.
     sessionStorage.clear()
-    const restoredBadges = JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[]
+    const restoredBadges = JSON.parse(sharedItem('mc-unread-slots') ?? '[]') as string[]
     expect(restoredBadges).toContain('reload-slot')                // badge restored
     const restoredSince = restoreUnreadSince()
     expect(restoredSince['reload-slot']).toBe('2026-01-01T00:05:00Z')  // WITH its watermark
@@ -452,15 +454,15 @@ describe('slot_read over the dashboard socket', () => {
     // The stale relay for the older message clears nothing, locally or shared...
     let after = dashboardReducer(rebooted, remoteSlotRead({ slot: 'reload-slot', readTs: '2026-01-01T00:03:00Z' }))
     expect(after.unreadSlots).toContain('reload-slot')
-    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toContain('reload-slot')
+    expect(JSON.parse(sharedItem('mc-unread-slots') ?? '[]')).toContain('reload-slot')
     // ...and a covering relay still clears badge and watermark together.
     after = dashboardReducer(after, remoteSlotRead({ slot: 'reload-slot', readTs: '2026-01-01T00:06:00Z' }))
     expect(after.unreadSlots).not.toContain('reload-slot')
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['reload-slot']).toBeUndefined()
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['reload-slot']).toBeUndefined()
   })
 
   it('persisting is a per-slot delta: sibling-window keys survive every write site', () => {
-    const stored = () => Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)
+    const stored = () => Object.keys(JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)
     let st = dashboardReducer(undefined, { type: '@@INIT' })
     // Slot metadata so a local read can PROVE coverage of the shared
     // watermark (shared clears are guarded by the slot's last_ts).
@@ -489,21 +491,21 @@ describe('slot_read over the dashboard socket', () => {
     st = dashboardReducer(st, markSlotUnread({ slot: 'stale-slot', ts: '2026-01-01T00:02:00Z' }))
     // Sibling B advances the SHARED watermark past this window's view.
     localStorage.setItem('mc-unread-shared', JSON.stringify({
-      ...(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>),
+      ...(JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>),
       'stale-slot': '2026-01-01T00:08:00Z',
     }))
     // Relay covers the stale local watermark (00:02) but not shared (00:08).
     st = dashboardReducer(st, remoteSlotRead({ slot: 'stale-slot', readTs: '2026-01-01T00:05:00Z' }))
     // Shared state survives...
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['stale-slot']).toBe('2026-01-01T00:08:00Z')
-    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toContain('stale-slot')
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['stale-slot']).toBe('2026-01-01T00:08:00Z')
+    expect(JSON.parse(sharedItem('mc-unread-slots') ?? '[]')).toContain('stale-slot')
     // ...and this window ADOPTS the newer watermark, keeping the badge lit.
     expect(st.unreadSince['stale-slot']).toBe('2026-01-01T00:08:00Z')
     expect(st.unreadSlots).toContain('stale-slot')
     // A relay covering the shared watermark clears everything, everywhere.
     st = dashboardReducer(st, remoteSlotRead({ slot: 'stale-slot', readTs: '2026-01-01T00:09:00Z' }))
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['stale-slot']).toBeUndefined()
-    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).not.toContain('stale-slot')
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['stale-slot']).toBeUndefined()
+    expect(JSON.parse(sharedItem('mc-unread-slots') ?? '[]')).not.toContain('stale-slot')
     expect(st.unreadSlots).not.toContain('stale-slot')
   })
 
@@ -519,14 +521,14 @@ describe('slot_read over the dashboard socket', () => {
     const restored = restoreUnreadSince()
     expect(restored['legacy-L']).toBeUndefined()          // '' = no watermark recorded
     expect(restored['manual-M']).toBe(MANUAL_UNREAD)      // per-tab sentinel joins
-    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toEqual({ 'legacy-L': '' })
+    expect(JSON.parse(sharedItem('mc-unread-shared') ?? '{}')).toEqual({ 'legacy-L': '' })
     expect(restoreUnreadBadges(restored).sort()).toEqual(['legacy-L', 'manual-M'])
     // The seeded badge accepts any relayed read — and the clear removes the
     // record entry, badge and (absent) watermark together.
     const rebooted = { ...dashboardReducer(undefined, { type: '@@INIT' }), unreadSlots: restoreUnreadBadges(restored), unreadSince: restored }
     const after = dashboardReducer(rebooted, remoteSlotRead({ slot: 'legacy-L', readTs: '2026-01-01T00:00:01Z' }))
     expect(after.unreadSlots).not.toContain('legacy-L')
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['legacy-L']).toBeUndefined()
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['legacy-L']).toBeUndefined()
   })
 
   it('badge and watermark persist in ONE record write: no torn state exists for a booting sibling', () => {
@@ -547,6 +549,7 @@ describe('slot_read over the dashboard socket', () => {
     try {
       let st = dashboardReducer(undefined, { type: '@@INIT' })
       st = dashboardReducer(st, markSlotUnread({ slot: 'atomic-A', ts: '2026-01-01T00:00:07Z' }))
+      flushSharedUnread()
       expect(st.unreadSlots).toContain('atomic-A')
       const recordWrites = writes.filter(w => w.key === 'mc-unread-shared')
       expect(recordWrites).toHaveLength(1)  // ONE write carries both facts
@@ -559,7 +562,7 @@ describe('slot_read over the dashboard socket', () => {
     const restored = restoreUnreadSince()
     expect(restored['atomic-A']).toBe('2026-01-01T00:00:07Z')
     expect(restoreUnreadBadges(restored)).toContain('atomic-A')
-    expect((JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)['atomic-A']).toBe('2026-01-01T00:00:07Z')
+    expect((JSON.parse(sharedItem('mc-unread-shared') ?? '{}') as Record<string, string>)['atomic-A']).toBe('2026-01-01T00:00:07Z')
   })
 
   it('a superseded slot switch does not relay a read for a transcript that never rendered', async () => {

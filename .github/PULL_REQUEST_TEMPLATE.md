@@ -47,7 +47,7 @@
        `implemented`; an RFC shipped in this PR, or
        whose status this PR flips, does not count. Without one the First
        Principles lane BLOCKs until a maintainer records the decision with
-       `/ai-review override first-principles <head-sha>: <reason>`. -->
+       `/ai-review override first-principles <head-sha> <class>: <reason>`. -->
 
 ## Backwards compatibility
 
@@ -77,7 +77,16 @@
 
 ## Tests
 
-<!-- Automated tests added/updated and the behavior each one locks in. -->
+<!-- Automated tests added/updated and the behavior each one locks in.
+     fix PRs: add one line under this heading, pasted from the kirocrew-prepare-pr
+     skill's prove.py (it reverts your production hunks and re-runs the changed tests):
+       Proof: PROVEN <the tests that fail without the fix> (head <sha12>)
+     or, when it cannot run:
+       Proof: not provable -- <reason>
+     Reasons: frontend test (prove.py runs Python only) | test-only change |
+     copy-only change | docs or config only | prove.py timed out |
+     other: <20+ characters>
+     A new test that still passes with the fix reverted does not test the fix. -->
 
 ## Manual verification
 

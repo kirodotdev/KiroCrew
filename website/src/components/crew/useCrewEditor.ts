@@ -24,8 +24,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useAppDispatch } from '../../store'
-import { createSlot } from '../../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
@@ -55,16 +53,11 @@ import {
 import { ApiError } from '../../api/apiError'
 import type { CronJob } from '../../types'
 import { type KiroCrewAgent } from '../AgentSelector'
-import { errMessage } from '../../utils/thunkError'
 import { modelSupportsEffort } from '../../lib/effort'
 import { type TemplateProvenance } from '../../lib/templateSource'
+import { INHERIT_MODEL } from './crewFields'
 
-/** The stored spelling for "no per-agent pin, inherit the next tier down". The
- *  select shows this as a real option; the backend normalizes it back to ''.
- *  Same value as KiroCrewAgentsPage's export; defined here so the hook (and the
- *  dialog that consumes it) never import back into the page — that would close
- *  a cycle (page -> CrewEditorNextDialog -> useCrewEditor -> page). */
-export const INHERIT_MODEL = 'auto'
+export { INHERIT_MODEL }
 
 /** How long a schedule-draft discard confirm stays fully locked while the
  *  create request is in flight. The lock exists because discarding cannot
@@ -278,11 +271,10 @@ export interface CrewEditorController {
   sheetHint: string
   save: () => void
   requestClose: () => void
-  requestChat: () => void
 
   // Discard confirm dialog.
-  discardAsk: CrewPaneKey | 'close' | 'chat' | 'collapse' | null
-  setDiscardAsk: (v: CrewPaneKey | 'close' | 'chat' | 'collapse' | null) => void
+  discardAsk: CrewPaneKey | 'close' | 'collapse' | null
+  setDiscardAsk: (v: CrewPaneKey | 'close' | 'collapse' | null) => void
   discardTakesSheet: boolean
   askSchedOnly: boolean
   schedSaving: boolean
@@ -313,7 +305,6 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     leave = (perform) => { void perform() },
   } = args
 
-  const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -751,33 +742,6 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     deleteMut.mutate({ name: editing, epoch: sheetEpoch.current })
   }, [deleteMut, editing])
 
-  // ── Chat with this crew ──
-  const chatWith = useCallback((crew: string) => {
-    setError('')
-    // Everything — slot creation, closing the editor, navigating — happens
-    // INSIDE the guard's perform callback. `useGuardedLeave` skips `perform`
-    // on a veto ("stay"), so a `createSlot` run before `leave` would mint a
-    // durable slot the user never reaches when they choose to stay, orphaning
-    // it; and closing before the veto would unmount the editor while they
-    // stayed, leaving neither chat nor editor. The whole side-effecting path
-    // runs only once the leave is confirmed.
-    leave(async () => {
-      const epoch = sheetEpoch.current
-      try {
-        await dispatch(createSlot(crew)).unwrap()
-      } catch (e) {
-        const msg = errMessage(e)
-        settleFor(epoch, msg || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
-        return
-      }
-      if (epoch !== sheetEpoch.current) return
-      closeSheetRef.current()
-      navigate('/chat')
-    }, '/chat')
-  }, [dispatch, navigate, settleFor, leave])
-  const chatWithRef = useRef(chatWith)
-  chatWithRef.current = chatWith
-
   // ── Sharing collisions (read off the IN-FLIGHT selection, not persisted) ──
   const sharingWorkspace = editing
     ? agents.filter(a => a.name !== editing && a.workspace === workspace).map(a => a.name)
@@ -796,7 +760,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const [pane, setPane] = useState<CrewPaneKey>('overview')
   const [schedDraft, setSchedDraft] = useState(false)
   const [schedSaving, setSchedSaving] = useState(false)
-  const [discardAsk, setDiscardAsk] = useState<CrewPaneKey | 'close' | 'chat' | 'collapse' | null>(null)
+  const [discardAsk, setDiscardAsk] = useState<CrewPaneKey | 'close' | 'collapse' | null>(null)
   const [discardForce, setDiscardForce] = useState(false)
   useEffect(() => {
     if (discardAsk === null || !schedSaving) { setDiscardForce(false); return }
@@ -910,15 +874,6 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const requestCloseRef = useRef<() => void>(() => {})
   useEffect(() => { requestCloseRef.current = requestClose }, [requestClose])
 
-  const requestChat = useCallback(() => {
-    if (capabilityBusy) return
-    // Any unsaved pane, not just a schedule/capability draft: chatWith closes
-    // the editor unconditionally, so an ordinary identity/model/place edit would
-    // be lost with no prompt otherwise.
-    if (dirtyPanes.size > 0) { setDiscardAsk('chat'); return }
-    void chatWithRef.current(editing)
-  }, [dirtyPanes, editing, capabilityBusy])
-
   const requestCancelDraft = useCallback((proceed: () => void) => {
     collapseProceed.current = proceed
     setDiscardAsk('collapse')
@@ -929,17 +884,16 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     setDiscardAsk(null)
     settleDiscardAnswer(true)
     if (target === 'close') closeSheet()
-    else if (target === 'chat') void chatWithRef.current(editing)
     else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
     else if (target) setPane(target)
-  }, [discardAsk, closeSheet, editing, settleDiscardAnswer])
+  }, [discardAsk, closeSheet, settleDiscardAnswer])
 
   useEffect(() => {
     if (discardAsk === null) settleDiscardAnswer(false)
   }, [discardAsk, settleDiscardAnswer])
 
   const discardTakesSheet =
-    (discardAsk === 'close' || discardAsk === 'chat')
+    discardAsk === 'close'
     && [...dirtyPanes].some(k => k !== 'schedules')
   const askSchedOnly = schedDraft && !discardTakesSheet
 
@@ -1122,7 +1076,6 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     sheetHint,
     save,
     requestClose,
-    requestChat,
     discardAsk, setDiscardAsk,
     discardTakesSheet,
     askSchedOnly,

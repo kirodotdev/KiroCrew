@@ -13,6 +13,7 @@ import { KILLING_ESCAPE_MS } from '../hooks/useStopEscapeHatch'
 import { parseDirTokens } from '../utils/fileTokens'
 import { formatToken } from '../utils/pasteTokens'
 import { renderWithProviders as renderWithAppProviders } from './helpers'
+import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 import { changeLanguage, registerCatalogs } from '../i18n'
 import ru from '../i18n/locales/ru.json'
 import bn from '../i18n/locales/bn.json'
@@ -22,6 +23,8 @@ registerCatalogs({ ru: { translation: ru }, bn: { translation: bn } })
 const terminal = vi.hoisted(() => ({
   enabled: true,
   addTab: vi.fn<(cwd?: string) => string | null>(),
+  /** The chat the last minted dock tab names, for the gateway's placement check. */
+  chatSlot: undefined as string | undefined,
   send: vi.fn(),
   bringBack: vi.fn(),
   unsubscribe: vi.fn(),
@@ -30,7 +33,7 @@ const terminal = vi.hoisted(() => ({
   callbacks: new Map<string, () => void>(),
 }))
 vi.mock('../hooks/useBottomTerminal', () => ({
-  addTab: (cwd?: string) => terminal.addTab(cwd),
+  addTab: (cwd?: string, chatSlot?: string) => { terminal.chatSlot = chatSlot; return terminal.addTab(cwd) },
 }))
 vi.mock('../utils/terminalPopout', () => ({
   bringBack: () => terminal.bringBack(),
@@ -91,6 +94,19 @@ function confirmRun() {
 }
 
 describe('direct terminal commands', () => {
+  it("names the chat on the dock shell it opens, so the gateway checks that chat's placement", () => {
+    terminal.chatSlot = undefined
+    renderWithProviders(
+      <SlotProvider slotId="chat-7">
+        <ChatInput value="! pwd" onChange={vi.fn()} onSend={vi.fn()} terminalCommands="local" project="/work/p" />
+      </SlotProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
+    confirmRun()
+    expect(terminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/p')
+    expect(terminal.chatSlot).toBe('chat-7')
+  })
+
   it('names the workspace folder in the hint when the project chip is absent or compact', () => {
     const observers = new Map<Element, ResizeObserverCallback>()
     vi.stubGlobal('ResizeObserver', class {
@@ -307,8 +323,8 @@ describe('direct terminal commands', () => {
 
   it.each([
     ['idle', 'Stop generation'],
-    ['soft_pending', 'Force kill session (discards in-progress work and queued messages)'],
-    ['killing', 'Force reset session (taking longer than expected)'],
+    ['soft_pending', 'Force stop (your messages stay; in-progress work and queued messages are discarded)'],
+    ['killing', 'Force stop again (taking longer than expected)'],
   ] as const)('keeps voice and %s cancellation usable outside terminal review', (stopState, stopLabel) => {
     const onStop = vi.fn()
     const onVoiceToggle = vi.fn()
@@ -330,7 +346,7 @@ describe('direct terminal commands', () => {
     fireEvent.click(mic)
     expect(onVoiceToggle).toHaveBeenCalledOnce()
     if (stopState === 'killing') {
-      expect(screen.getByRole('button', { name: 'Killing session' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Force stopping session' })).toBeDisabled()
       act(() => { vi.advanceTimersByTime(KILLING_ESCAPE_MS) })
     }
 
@@ -451,7 +467,7 @@ describe('direct terminal commands', () => {
       )
     }
     renderWithProviders(<Host />)
-    const input = await screen.findByRole('textbox')
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     fireEvent.click(screen.getByRole('button', { name: option }))
     const expectDraft = () => {
       if (lexicalComposer) expect(input).toHaveTextContent(option)
@@ -512,7 +528,7 @@ describe('direct terminal commands', () => {
       )
     }
     const { rerender } = renderWithProviders(<Host />)
-    const input = await screen.findByRole('textbox')
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     const expectDraft = (text: string) => {
       if (lexicalComposer) expect(input).toHaveTextContent(text)
       else expect(input).toHaveValue(text)
@@ -723,7 +739,7 @@ describe('direct terminal commands', () => {
       )
     }
     const { rerender } = renderWithProviders(<Host />)
-    const input = await screen.findByRole('textbox')
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     expect(screen.getByRole('button', { name: 'Review terminal command' })).toBeDisabled()
     expect(screen.getByText(/Remove the leading ! to return to chat\./)).toBeVisible()
     await user.click(input)

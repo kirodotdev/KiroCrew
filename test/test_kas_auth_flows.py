@@ -17,6 +17,7 @@ from kiro_crew.auth.login.portal import (
 from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
 from kiro_crew.auth.refresh import (
     IdentitySignedOut,
+    RefreshBlocked,
     RefreshError,
     RefreshRejected,
     ensure_fresh,
@@ -292,8 +293,14 @@ async def test_refresh_sso_oidc_needs_client_creds(tmp_path: Path):
         refresh_token="r",
     )  # no client_id/secret
     store.save(tok)
-    with pytest.raises(RefreshError, match="client credentials"):
+    # A missing local precondition is RefreshBlocked: permanent like a rejection
+    # (a reader maps both to "sign in again"), still a RefreshError for every
+    # existing handler, and no issuer was asked so no rejection marker lands.
+    with pytest.raises(RefreshBlocked, match="client credentials"):
         await ensure_fresh(store, tok, session=_FakeSession([]))
+    assert issubclass(RefreshBlocked, RefreshError)
+    assert not issubclass(RefreshBlocked, RefreshRejected)
+    assert store.refresh_rejected("builder_id") is None
 
 
 async def test_refresh_sso_oidc_success(tmp_path: Path):

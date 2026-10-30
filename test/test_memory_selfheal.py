@@ -15,6 +15,8 @@ from __future__ import annotations
 import threading
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from kiro_crew import memory as memory_module
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.memory import MemoryStore, _is_corruption_error
@@ -116,6 +118,36 @@ class TestFtsSelfHealGating:
         assert count >= 1
         results = store.search("Python")
         assert len(results) >= 1
+
+    def test_self_heal_closes_the_connection_that_found_the_corruption(self, tmp_path, monkeypatch):
+        """The open that met the corruption is closed before the index is deleted.
+
+        Windows refuses to delete a file that has an open handle, so a connection
+        left to the collector keeps the corrupt index in place and every later
+        open meets it again.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        (tmp_path / "memory_index.db").write_bytes(b"this is not a valid sqlite database")
+
+        opened: list[sqlite3.Connection] = []
+        real_connect = memory_module.sqlite3.connect
+
+        def recording_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(memory_module.sqlite3, "connect", recording_connect)
+        conn = store._get_db()
+        try:
+            assert len(opened) >= 2, "the corrupt index was never opened and healed"
+            assert opened[-1] is conn
+            for stale in opened[:-1]:
+                with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                    stale.execute("SELECT 1")
+        finally:
+            conn.close()
 
     def test_connection_has_busy_timeout(self, tmp_path):
         """The connection must carry a non-zero busy_timeout to wait out locks."""

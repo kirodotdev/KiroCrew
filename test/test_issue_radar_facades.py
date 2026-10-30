@@ -40,8 +40,11 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_issue_radar_facades")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("corpus_gate", "owners_in_layer_order_each_facade")
+
 PKG = "kiro_crew.apps.builtins.issue_radar.backend"
-_THIS_FILE = Path(__file__).resolve()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -216,37 +219,6 @@ def _corpus_patched_names() -> dict[str, frozenset[str]]:
 def test_the_patch_scan_finds_every_known_seam(facade: Facade) -> None:
     """Non-vacuity: a scan that finds nothing would pass the shared reach check over nothing."""
     assert sorted(facade.known_seams - _corpus_patched_names()[facade.stem]) == []
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
-
-
-@each_facade
-def test_the_owners_are_every_sibling_module_in_layer_order(facade: Facade) -> None:
-    """``_OWNERS`` lists every ``<stem>_*.py`` sibling, and each owner imports only owners
-    listed before it -- the order the facade loads them and a read resolves in."""
-    owners = list(facade.index.owners)
-    paths = facade.owner_paths()
-    assert sorted(owners) == sorted(paths)
-    late: dict[str, list[str]] = {}
-    for position, owner in enumerate(owners):
-        tree = ast.parse(paths[owner].read_text(encoding="utf-8"))
-        imported = {
-            f"{PKG}.{node.module}" if node.level else node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module
-        }
-        later = sorted(m for m in imported if m in owners and owners.index(m) >= position)
-        if later:
-            late[owner] = later
-    assert late == {}
 
 
 def _home_imports(facade: Facade) -> dict[str, tuple[str, str]]:

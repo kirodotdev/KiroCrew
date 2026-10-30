@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
-import { setPendingInput, switchSlot } from '../store/chatSlice'
+import { setPendingInput, openCreatedSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
 import { SendBtn, Btn, Checkbox, Input, Badge } from '../components/ui'
@@ -107,6 +107,13 @@ export default function ProjectsPage() {
   const [planError, setPlanError] = useState('')
   const [editingName, setEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
+  const [projectRenameAnnouncement, setProjectRenameAnnouncement] = useState('')
+  // Close-reason contract for project rename: Enter and Escape restore focus to
+  // the title trigger; a pointer blur moves nothing (WCAG 3.2.2). Mirrors the
+  // pattern in SessionTitleControl.
+  const nameTriggerRef = useRef<HTMLSpanElement | null>(null)
+  const enterRenameRef = useRef(false)
+  const cancelRenameRef = useRef(false)
   const [refined, setRefined] = useState('')
   const [autoApprove, setAutoApprove] = useState(false)
   // Compose-panel auto-approve intent. Distinct from `autoApprove` above, which
@@ -416,10 +423,15 @@ export default function ProjectsPage() {
 
   const runs = data?.runs || []
   const anyPlanning = isPlanning || runs.some(r => r.status === 'planning')
+  // Newest first, like the Workflows tab: the run just started or just finished
+  // is the one the user wants. The wire order is the registry's insertion order,
+  // so sort on `started_at`; the stable sort over the reversed array keeps the
+  // later row first when two stamps are equal (an unstarted plan reads 0).
+  const listedRuns = [...runs].reverse().sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
 
   const projectList = (
     <div className="flex flex-col gap-1.5">
-      {runs.map(r => {
+      {listedRuns.map(r => {
         const name = r.name || r.spec_name || r.task_id
         const icon: ReactNode = r.running ? <RefreshCw className="lucide-inline" /> : r.status === 'completed' ? <CheckCircle className="lucide-inline" /> : r.status === 'failed' ? <XCircle className="lucide-inline" /> : r.status === 'cancelled' ? <Square className="lucide-inline" /> : r.status === 'planned' ? <ClipboardList className="lucide-inline" /> : <Square className="lucide-inline" />
         const pct = r.tasks > 0 ? Math.round((r.completed / r.tasks) * 100) : 0
@@ -636,21 +648,60 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        {/* Project rename announcement — always mounted so it is present before any run is selected. */}
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    // Early-return BEFORE the blur: a committing IME Enter must not commit.
-                    if (ime.isComposing(e)) return
-                    ;(e.target as HTMLInputElement).blur()
-                  } else if (e.key === 'Escape') setEditingName(false)
-                }} />
+                <input
+                  aria-label={i18nT('pages.projectsPage.project_name')}
+                  className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring"
+                  autoFocus maxLength={200} value={editNameValue}
+                  onChange={e => setEditNameValue(e.target.value)}
+                  data-testid="project-rename-input"
+                  {...ime.bindComposition({ onBlur: () => {
+                    const viaEnter = enterRenameRef.current
+                    const cancelled = cancelRenameRef.current
+                    enterRenameRef.current = false
+                    cancelRenameRef.current = false
+                    if (!cancelled) {
+                      const v = editNameValue.trim()
+                      if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) {
+                        setProjectRenameAnnouncement('')
+                        void runAction(
+                          () => api.renameTaskRun(selectedRun.task_id, v),
+                          () => { load(); setProjectRenameAnnouncement(i18nT('pages.projectsPage.project_renamed_to', { name: v })) },
+                        )
+                      }
+                    }
+                    setEditingName(false)
+                    if (viaEnter && !cancelled) {
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  } })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      if (ime.isComposing(e)) return
+                      enterRenameRef.current = true
+                      ;(e.target as HTMLInputElement).blur()
+                    } else if (e.key === 'Escape') {
+                      cancelRenameRef.current = true
+                      // Explicitly blur so onBlur fires while the input is still
+                      // mounted — only onBlur clears cancelRenameRef, and React
+                      // does not reliably fire it on an element it is removing.
+                      ;(e.target as HTMLInputElement).blur()
+                      setEditingName(false)
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  }}
+                />
               ) : (
                 <span
+                  ref={nameTriggerRef}
                   role="button"
                   tabIndex={0}
+                  data-testid="project-name-trigger"
                   aria-label={i18nT('pages.projectsPage.rename_project')}
                   className="text-[13px] font-semibold text-text-strong truncate cursor-pointer hover:text-accent transition-all"
                   onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
@@ -703,7 +754,7 @@ export default function ProjectsPage() {
                     // No slot means the run was NOT moved — the user clicked and
                     // nothing happened, which is a failure, not a quiet no-op.
                     if (!res.slot) return { ok: false, error: res.error }
-                    dispatch(switchSlot(res.slot)); navigate('/chat')
+                    openCreatedSlot(dispatch, res.slot); navigate('/chat')
                     return res
                   })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 )}

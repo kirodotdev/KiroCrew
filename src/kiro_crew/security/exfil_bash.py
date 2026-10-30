@@ -16,6 +16,7 @@ import fnmatch
 import re
 
 from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from .shell_commands import read_commands as _read_commands
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
 # of SUSPICIOUS_BASH_PATTERNS. These are enforced at the
@@ -148,19 +149,18 @@ _DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
 #: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
 _CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
 
-#: Bash splits words on space and tab only; `str.split()` also splits on
-#: Unicode spaces such as NBSP, which would misread `date<NBSP>x` as `date`.
-_BASH_BLANKS_RE = re.compile(r"[ \t]+")
-
 
 def _data_at_carveout_allows(command: str) -> bool:
     """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
     `denied_rules._exception_eligible` (the blessed single-plain-command test)
-    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand."""
+    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand.
+
+    The first word is the shared reader's RAW word, split at live space and tab
+    only (never NBSP), with its quotes kept: `'date'` is not the verb `date`."""
     if not _exception_eligible(command):
         return False
-    words = _BASH_BLANKS_RE.split(command.strip(" \t"))
-    return words[0] in _CARVEOUT_VERBS
+    words = _read_commands(command)[0].words
+    return bool(words) and words[0].raw in _CARVEOUT_VERBS
 
 
 def audit_bash_exfiltration(

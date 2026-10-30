@@ -25,12 +25,14 @@ from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
+    drain_when_free,
     entry_channel,
     entry_person_origin,
     person_tag,
 )
 from kiro_crew.messaging.queue_receipt import MAX_COLLAPSE as _MAX_COLLAPSE
 from kiro_crew.messaging.queue_receipt import ReceiptSurface, receipt_address_key
+from kiro_crew.telegram.client import frame_reply_context
 from kiro_crew.telegram.dispatch import origin as _origin
 from kiro_crew.telegram.transport import TelegramInboundMessage
 
@@ -108,6 +110,11 @@ async def _pump_queue(
     """
     while True:
         texts: list[str] = []
+        # The user's OWN words, parallel to ``texts`` but WITHOUT the reply-
+        # context framing. ``texts`` (framed) builds the replayed turn the agent
+        # sees; ``raw_texts`` is what the "Now answering" receipt shows the chat,
+        # matching the "⏳ Queued" bubble, so internal framing is never surfaced.
+        raw_texts: list[str] = []
         all_attachments: list[Any] = []
         remainder: list[tuple[str, str, dict]] = []
         privacy_requests: list[str] = []
@@ -118,6 +125,28 @@ async def _pump_queue(
         # Whether a person sent any entry this turn collapses.
         person = False
         async with self._queue.lock:
+            # Something else holds this session's lease: a dashboard, cron or
+            # auto-nudge turn on the same key, or another channel's turn under a
+            # unified ``dm_scope``. Replaying now would only reach ``_handle_busy``,
+            # which queues the same text again, and the next iteration would
+            # dequeue it straight back -- flipping the receipt to "Now answering"
+            # every lap without a turn ever starting. So nothing is
+            # dequeued and nothing is flipped. The entries stay queued in order,
+            # and ``drain_when_free`` runs this drain again once the lease is
+            # free: that holder's turn may be one no channel drain follows, and
+            # it may hand its permit back without a release hook ever running.
+            if self.sessions.is_busy(session_key):
+                drain_when_free(
+                    channel=_origin._CHANNEL,
+                    session_key=session_key,
+                    is_busy=self.sessions.is_busy,
+                )
+                logger.debug(
+                    "telegram: session %s is held by another turn; its queue drains "
+                    "once the lease is free",
+                    session_key,
+                )
+                return
             # Drain the ENTIRE queue under the lock, then split: the first
             # _MAX_COLLAPSE messages FROM ONE SENDER collapse into this turn;
             # the rest are re-enqueued IN ORIGINAL ORDER (the queue is now
@@ -164,7 +193,24 @@ async def _pump_queue(
                     and item_origin.sender_key == origin.sender_key
                 )
                 if fits:
-                    texts.append(item[1])
+                    # Frame THIS entry's own reply context onto its own text
+                    # before it joins the collapsed burst, so each queued reply
+                    # carries exactly its own parent — never another entry's and
+                    # never duplicated. Screened/fenced inside frame_reply_context;
+                    # the combined turn is then replayed with no reply_context, so
+                    # _run_turn does not frame it a second time.
+                    entry_reply_context = item[2].get("reply_context") or ""
+                    entry_text = item[1]
+                    if isinstance(entry_reply_context, str) and entry_reply_context:
+                        entry_text = frame_reply_context(
+                            entry_text,
+                            entry_reply_context,
+                            chat_id=str(item_origin.chat_id),
+                            session_key=session_key,
+                        )
+                    texts.append(entry_text)
+                    # The receipt shows the user's own words, never the framing.
+                    raw_texts.append(item[1])
                     all_attachments.extend(item_attachments)
                     person = person or entry_person_origin(item[2])
                     requested = item[2].get("privacy_request") or ""
@@ -211,7 +257,7 @@ async def _pump_queue(
                 await self._receipt_flip_locked(
                     session_key,
                     int(origin.chat_id),
-                    texts,
+                    raw_texts,
                     own_deferred,
                     owner=_origin._entry_owner(origin),
                 )
@@ -309,6 +355,7 @@ async def _enqueue_with_receipt(
     thread: int | None = None,
     attachments: list[Any] | None = None,
     privacy_request: str = "",
+    reply_context: str = "",
     origin: _QueuedOrigin,
     person_origin: bool = False,
 ) -> bool:
@@ -345,6 +392,10 @@ async def _enqueue_with_receipt(
             # modifier was already stripped from, so a request left behind here
             # is one no later parse can recover.
             privacy_request=privacy_request,
+            # The reply's quoted context rides with its own entry so the drain
+            # can frame it onto THIS entry's text before collapsing — kept out
+            # of ``text`` so it never reached the activation gate.
+            reply_context=reply_context,
             **_origin._origin_kwargs(origin),
         ):
             return False

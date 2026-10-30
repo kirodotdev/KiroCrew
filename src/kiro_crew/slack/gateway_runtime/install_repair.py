@@ -233,25 +233,42 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
     checkout to reinstall from.
     """
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-    if not proj or self._is_brazil_install(proj):
+    if not proj:
         return
-    method_file = Path(proj) / ".install-method"
-    if not (method_file.is_file() and method_file.read_text().strip() == "pip"):
+    dep_sync_file = dep_sync.__file__
+
+    def _probe() -> tuple[Path, Path, str | None] | None:
+        # Every stat and read here is against the checkout, which can sit on a
+        # network mount, and this runs at gateway startup -- so the whole probe
+        # runs in a thread rather than on the loop that serves every session.
+        if self._is_brazil_install(proj):
+            return None
+        method_file = Path(proj) / ".install-method"
+        if not (
+            method_file.is_file()
+            and method_file.read_text(encoding="utf-8", errors="replace").strip() == "pip"
+        ):
+            return None
+        # The venv interpreter under the project, platform-aware (Scripts on
+        # Windows, bin on POSIX), shared with dep_sync's ownership exception.
+        venv_py = dep_sync.project_venv_python(Path(proj))
+        script = dep_sync.console_script_path(venv_py)
+        if script.exists() and os.access(script, os.X_OK):
+            return None
+        resolved = str(Path(dep_sync_file).resolve()) if dep_sync_file is not None else None
+        return venv_py, script, resolved
+
+    probed = await asyncio.to_thread(_probe)
+    if probed is None:
         return
-    # The venv interpreter under the project, platform-aware (Scripts on
-    # Windows, bin on POSIX), shared with dep_sync's ownership exception.
-    venv_py = dep_sync.project_venv_python(Path(proj))
-    script = dep_sync.console_script_path(venv_py)
-    if script.exists() and os.access(script, os.X_OK):
-        return
+    venv_py, script, dep_sync_path = probed
 
     logger.warning("kirocrew console script missing/not executable at %s — reinstalling", script)
     print("👻 Repairing kirocrew install (console script missing)…")
     # Run the stdlib-only module by absolute file path: the target venv may
     # not currently contain an importable kiro_crew package. A dedicated
     # child session lets cancellation own pip and its build descendants.
-    dep_sync_file = dep_sync.__file__
-    if dep_sync_file is None:
+    if dep_sync_path is None:
         raise RuntimeError("dep_sync module has no source path")
     # Route through the sandbox chokepoint: this child EXECUTES
     # ``venv_py`` (dep_sync probes the target interpreter via
@@ -272,7 +289,7 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
     try:
         argv, env, cleanup = await sandboxed_spawn_argv_async(
             platform_compat.isolated_python_argv(
-                str(Path(dep_sync_file).resolve()),
+                dep_sync_path,
                 "--repair-missing-package",
                 str(proj),
                 str(venv_py),
@@ -385,7 +402,17 @@ async def _warn_if_kiro_cli_outdated(self: GatewayOrchestrator) -> None:
     this probe runs unattended at boot, so a shim planted on `PATH` would
     execute here regardless of the `--version` argument. A binary the pin
     refuses has no version worth warning about — and the pin logs why.
+
+    Skipped on the KAS bundle route: the selected harness runs Crew's own
+    engine, so a kiro-cli that happens to be installed decides nothing about
+    this gateway's sessions, and the warning's remedy (update it, or switch
+    backend) would send the operator to fix a program nothing here spawns.
     """
+    # Local import: this body runs on the gateway facade's globals.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+        return
     kiro_cli_bin = await _pinned_kiro_cli("the kiro-cli version check")
     if kiro_cli_bin is None:
         return

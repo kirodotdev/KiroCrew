@@ -1,0 +1,29 @@
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "sess_4f063ee6-e4b0-4937-99fa-32b71e613e33",
+    "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+        "kiro": {
+          "promptTurnSummaries": [
+            {
+              "unit": "credit",
+              "unitPlural": "credits",
+              "usage": 0.17678328839137641
+            }
+          ],
+          "elapsedTime": 7300,
+          "status": "success",
+          "kind": "turn_completion",
+          "executionId": "c31c6fa0-9ee3-4ddb-8037-c0a01df4e2c6",
+          "turnId": "c31c6fa0-9ee3-4ddb-8037-c0a01df4e2c6",
+          "requestIds": [
+            "0a73a186-087e-4816-820d-f4d6ee03a7cd"
+          ]
+        }
+      }
+    }
+  }
+}

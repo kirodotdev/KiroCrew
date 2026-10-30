@@ -1298,11 +1298,23 @@ class TestInitAgents:
     ):
         manager = FakeSessionManager()
         completed: list[str] = []
-        base_budget = 0.1
+        budgets: list[float | None] = []
+        calls = 0
+        redelivery_started = asyncio.Event()
+        release_redelivery = asyncio.Event()
 
-        class SlowProvider:
+        class SlowKickoffProvider:
             async def stream(self, message: str):
-                await asyncio.sleep(base_budget * 1.5)
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    # The first kickoff never finishes inside the init budget.
+                    await asyncio.Event().wait()
+                elif calls == 2:
+                    # The redelivered kickoff stays in flight until the test has
+                    # read the budget it was given, then finishes inside it.
+                    redelivery_started.set()
+                    await release_redelivery.wait()
                 completed.append(message)
                 if False:  # pragma: no cover - makes this an async generator
                     yield None
@@ -1311,11 +1323,17 @@ class TestInitAgents:
                 return "acked"
 
         async def get_or_create(_key: str, agent: str | None = None, **_kwargs):
-            return SlowProvider(), True, False
+            return SlowKickoffProvider(), True, False
+
+        real_dispatch = sess.dispatch_to_agent
+
+        async def recording_dispatch(*args, timeout_secs=None, **kwargs):
+            budgets.append(timeout_secs)
+            await real_dispatch(*args, timeout_secs=timeout_secs, **kwargs)
 
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
-        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", base_budget)
-        monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", base_budget * 4)
+        monkeypatch.setattr(sess, "dispatch_to_agent", recording_dispatch)
+        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", 0.01)
         session = sess.MeetingSession(
             meeting_id="m",
             sessions=manager,
@@ -1326,10 +1344,26 @@ class TestInitAgents:
 
         await sess._safe_dispatch(session, "note-taker", "OUTPUT_FILE contract", "")
         assert queue.pending_kickoff == "OUTPUT_FILE contract"
+        assert completed == []
 
+        # A redelivery budget no loaded runner can exhaust, so the result depends
+        # only on the budget formula and the release signal below.
+        base_budget = 30.0
+        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", base_budget)
+        monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", base_budget * 4)
         queue.queue = ["opening transcript"]
-        await queue.flush()
+        flush = asyncio.ensure_future(queue.flush())
+        try:
+            await await_until(redelivery_started, what="the kickoff redelivery")
+            assert budgets == [0.01, base_budget * 2]
+            assert completed == []
+            release_redelivery.set()
+            assert await await_until(flush, what="the redelivery flush") is False
+        finally:
+            if not flush.done():
+                flush.cancel()
 
+        assert budgets == [0.01, base_budget * 2, None]
         assert completed == ["OUTPUT_FILE contract", "opening transcript"]
         assert queue.pending_kickoff is None
         assert queue.queue == []

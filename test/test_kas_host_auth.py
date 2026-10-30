@@ -75,6 +75,32 @@ class TestVaultProbe:
         assert "expired social identity" in caplog.text
         assert "at-value" not in caplog.text
 
+    def test_warn_false_keeps_the_verdict_and_logs_at_debug(self, data_home, caplog):
+        """A timer-driven caller asks the same question without repeating the
+        spawn-time WARNING: same verdicts, diagnostics at DEBUG."""
+        TokenStore(data_home).save(_token(expires_in=-60, refresh_token=None))
+        with caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"):
+            assert vault_holds_identity(warn=False) is False
+            with patch(
+                "kiro_crew.auth.store.TokenStore.resolve",
+                side_effect=TokenStoreError("refusing linked token-store directory"),
+            ):
+                assert vault_holds_identity(warn=False) is False
+            with patch("kiro_crew.auth.store.TokenStore.resolve", side_effect=RuntimeError("boom")):
+                assert vault_holds_identity(warn=False) is False
+        bridge_records = [r for r in caplog.records if r.name == "kiro_crew.auth.bridge"]
+        assert [r.levelname for r in bridge_records] == ["DEBUG", "DEBUG", "DEBUG"]
+        assert "at-value" not in caplog.text
+        caplog.clear()
+        # The default still warns, for the spawn and doctor.
+        with caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"):
+            assert vault_holds_identity() is False
+        assert [r.levelname for r in caplog.records if r.name == "kiro_crew.auth.bridge"] == [
+            "WARNING"
+        ]
+        TokenStore(data_home).save(_token())
+        assert vault_holds_identity(warn=False) is True
+
     def test_describe_is_token_free_and_names_the_usability_fields(self, data_home):
         assert describe_vault_identity() is None
         TokenStore(data_home).save(_token())

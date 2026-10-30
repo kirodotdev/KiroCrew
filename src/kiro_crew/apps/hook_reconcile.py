@@ -62,6 +62,10 @@ import logging
 from functools import partial
 from typing import Any
 
+from kiro_crew.apps.bridges import (
+    deregister_app_crons_reporting_failures,
+    pending_reload_cron_rollback,
+)
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
     compute_hook_signature,
@@ -152,8 +156,14 @@ _broadcast_fn: Any = None
 _spawn_impl: Any = None
 
 
-async def _disable_loaded(name: str, app_info: dict[str, Any] | None) -> bool:
+async def _disable_loaded(
+    name: str, app_info: dict[str, Any] | None, *, keep_manifest_crons: bool = False
+) -> bool:
     """Drive the in-process teardown for an app whose hooks are currently loaded.
+
+    ``keep_manifest_crons`` is passed through to ``on_app_disable`` by the reload
+    branch only, where the app stays enabled and is re-enabled straight after:
+    its manifest-declared cron jobs keep their run history and enabled state.
 
     The CALLER holds ``app_lifecycle_lock(name)``. Returns True when teardown
     settled — ``on_app_disable`` cleared the shared loaded-signature past its
@@ -204,6 +214,7 @@ async def _disable_loaded(name: str, app_info: dict[str, Any] | None) -> bool:
         app_info,
         run_app_hooks=run_app_hooks,
         bounded_startup_cleanup=True,
+        keep_manifest_crons=keep_manifest_crons,
     )
     if str(result.get("startup_cleanup", "")).startswith("failed:"):
         logger.info("hook reconcile: %s still has a retained startup hook; will retry", name)
@@ -284,6 +295,12 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 name,
             )
             return
+        # A failed reload whose cron removal also failed: finish the removal before
+        # anything else, so the kept jobs never run beside unloaded hooks and the
+        # retry below registers them fresh. Still owed, so nothing else runs yet.
+        owed = name in pending_reload_cron_rollback
+        if owed and not await _roll_back_crons_after_failed_load(name):
+            return
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
@@ -362,13 +379,18 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 return
             await _enable_app(name, current)
             return
+        reloaded = False
         if loaded is not None:
             # Reinstall of new code under a still-enabled app: evict the stale
             # module + old startup task BEFORE reimporting, or the new on_startup
             # is refused as a duplicate and the stale module (old .app_secret)
-            # keeps serving. If teardown does not settle, retry next tick.
-            if not await _disable_loaded(name, current):
+            # keeps serving. If teardown does not settle, retry next tick. The
+            # app stays enabled across the swap, so its manifest crons are kept
+            # (a Sync must not wipe their run history or enabled state); if the
+            # enable below fails they are removed again.
+            if not await _disable_loaded(name, current, keep_manifest_crons=True):
                 return
+            reloaded = True
             logger.info("hook reconcile: reloading changed hooks for %s", name)
         else:
             logger.info("hook reconcile: loading hooks for newly-enabled %s", name)
@@ -380,6 +402,47 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # re-attempts next tick; clear defensively against a partial enable.
             clear_loaded_hook_signature(name)
             logger.exception("hook reconcile: reload failed for %s", name)
+        if reloaded and loaded_hook_signature(name) is None:
+            # Only a reload whose enable failed: its teardown above KEPT the
+            # app's manifest crons, so remove them and leave the app exactly as
+            # a plain disable would. A first load (or the retry after this
+            # removal) is not touched, so a failing load does not delete and
+            # recreate the app's jobs on every tick.
+            await _roll_back_crons_after_failed_load(name)
+
+
+async def _roll_back_crons_after_failed_load(name: str) -> bool:
+    """Remove every cron job the app owns after its hooks failed to load.
+
+    The CALLER holds ``app_lifecycle_lock(name)``. This is the removal a plain
+    disable does, so the failed reload leaves the app's jobs as a disable would;
+    the retry tick's enable registers the manifest crons again from scratch,
+    as it does for any first load. Run history is kept only across a reload
+    whose enable succeeds. A store failure is logged rather than raised, and
+    the app is added to ``pending_reload_cron_rollback`` so the next tick removes
+    the jobs before it retries the enable. Returns True once the removal is done.
+    """
+    if _cron_service is None:
+        pending_reload_cron_rollback.discard(name)
+        return True
+    try:
+        removed = await deregister_app_crons_reporting_failures(name, _cron_service)
+    except Exception:  # noqa: BLE001 - a cron store fault must not wedge the loop
+        pending_reload_cron_rollback.add(name)
+        logger.exception(
+            "hook reconcile: %s failed to load and its cron jobs could not be "
+            "removed; retrying next tick",
+            name,
+        )
+        return False
+    pending_reload_cron_rollback.discard(name)
+    if removed:
+        logger.warning(
+            "hook reconcile: %s failed to load; removed its %d cron job(s) until it loads",
+            name,
+            removed,
+        )
+    return True
 
 
 async def reconcile_once(installed: list[dict[str, Any]]) -> None:
@@ -408,6 +471,9 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # whose detached startup task is still live -- they must be torn down when they
     # go away, not orphaned (see app_has_retained_startup / the teardown branch).
     candidates_set.update(apps_with_retained_startup())
+    # And apps still owed a post-reload cron rollback, even once disabled or
+    # uninstalled, so a store that was busy at the rollback is retried.
+    candidates_set.update(pending_reload_cron_rollback)
     # A stable order so the gather arg list and the result zip below line up.
     candidates = sorted(candidates_set)
     # Reconcile every candidate CONCURRENTLY, isolating each app's failure.

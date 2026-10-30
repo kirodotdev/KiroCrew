@@ -1524,10 +1524,12 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.builtins.md_notebook.server_host import (  # noqa: F401
+        _F,
         PICK_FOLDER_SCRIPT,
         PICK_FOLDER_TIMEOUT_SEC,
         REVEAL_BINARIES,
         REVEAL_TIMEOUT_SEC,
+        _timeout_as_api_error,
         _windows_gh_candidates,
     )
     from kiro_crew.apps.builtins.md_notebook.server_http import (  # noqa: F401

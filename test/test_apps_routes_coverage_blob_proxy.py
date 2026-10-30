@@ -1421,3 +1421,113 @@ class TestBlobProxyOwnerDesignatedWiring:
         assert ok is False  # the fake clone fails → graceful fallback
         # The resolver ran off the event-loop thread (on a threadpool worker).
         assert ran_on[0] != loop_thread
+
+
+# ---------------------------------------------------------------------------
+# Blob cache directory creation runs off the event loop
+# ---------------------------------------------------------------------------
+
+
+def _record_mkdir_threads(monkeypatch: pytest.MonkeyPatch, target: Path) -> list[str]:
+    """Wrap ``Path.mkdir`` and record the thread each ``target.mkdir`` call ran on.
+
+    Every other ``mkdir`` passes straight through, so the test harness's own
+    directories are unaffected.
+    """
+    real_mkdir = Path.mkdir
+    ran_on: list[str] = []
+
+    def _mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == target:
+            ran_on.append(threading.current_thread().name)
+        real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _mkdir)
+    return ran_on
+
+
+class TestBlobCacheMkdirOffLoop:
+    """Both blob-cache ``mkdir`` calls run on a worker thread, not the event loop.
+
+    ``handle_blob_proxy`` creates the cache directory after the containment check
+    and before the cache lookup; ``_fetch_git_blob`` creates it again before it
+    writes the fetched bytes. On a slow or hung data-home mount an inline
+    ``mkdir`` would stall every session on the gateway loop.
+    """
+
+    @pytest.mark.asyncio
+    async def test_handler_creates_cache_dir_off_the_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(routes_mod, "known_registry_repos", lambda: {"acme"})
+        clone_url = "ssh://forge.example/org/acme.git"
+        monkeypatch.setattr(
+            routes_mod,
+            "get_registry_app_by_repo",
+            lambda repo: {"repo": repo, "gitUrl": clone_url, "branch": "main"},
+        )
+        cache_dir = (
+            routes_mod._blob_cache_dir()
+            / routes_mod._blob_cache_key("acme", clone_url)
+            / "main"
+            / "assets"
+        )
+        loop_thread = threading.current_thread().name
+        ran_on = _record_mkdir_threads(monkeypatch, cache_dir)
+
+        async def _fail(*args: Any, **kwargs: Any) -> bool:
+            return False
+
+        monkeypatch.setattr(routes_mod, "_fetch_git_blob", _fail)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/apps/blob",
+                params={"repo": "acme", "path": "assets/logo.png", "ref": "main"},
+            )
+            assert resp.status == 502
+
+        # The handler created the directory (indexing ``ran_on[0]`` fails rather
+        # than passing vacuously if it never did), and not on the loop thread.
+        assert cache_dir.is_dir()
+        assert ran_on[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_fetch_creates_cache_dir_off_the_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.apps.registry as reg_mod
+
+        monkeypatch.setattr(reg_mod, "is_clone_host_trusted", lambda url: True)
+        monkeypatch.setattr(routes_mod, "minimal_env", lambda **extra: {"BASE": "1"})
+        monkeypatch.setattr(routes_mod, "_context_clone_sandbox_mode", lambda url: "context-mode")
+        monkeypatch.setattr(routes_mod, "_sel_credential_grant", lambda *args: None)
+
+        async def _split_fetch(
+            git_url: str,
+            branch: str,
+            dest: Path,
+            log_lines: list[str],
+            **kwargs: Any,
+        ) -> None:
+            (dest / "assets").mkdir(parents=True)
+            (dest / "assets" / "logo.png").write_bytes(b"png")
+            return None
+
+        monkeypatch.setattr(routes_mod, "_git_fetch_branch", _split_fetch)
+
+        cache_path = tmp_path / "cache" / "acme" / "main" / "logo.png"
+        loop_thread = threading.current_thread().name
+        ran_on = _record_mkdir_threads(monkeypatch, cache_path.parent)
+
+        assert await routes_mod._fetch_git_blob(
+            "acme",
+            "main",
+            "assets/logo.png",
+            cache_path,
+            git_url="https://user:secret@example.invalid/owner/registry.git",
+            owner_designated=True,
+        )
+
+        assert cache_path.read_bytes() == b"png"
+        assert ran_on[0] != loop_thread

@@ -1230,48 +1230,35 @@ class TestArrayFormGuards:
         assert normalize_spec_hooks(["/bin/true"]) == []
         assert [c[2] for c in sel_calls] == ["hook document is not an object"]
 
-    def test_trigger_must_be_known(self, sel_calls) -> None:
-        assert (
-            normalize_spec_hooks(
-                [
-                    {
-                        "name": "h",
-                        "trigger": "WheneverIFeelLikeIt",
-                        "action": {"type": "command", "command": "/bin/true"},
-                    }
-                ]
-            )
-            == []
-        )
-        assert [c[2] for c in sel_calls] == ["unknown trigger"]
-
-    def test_trigger_must_be_a_string(self, sel_calls) -> None:
-        assert (
-            normalize_spec_hooks(
-                [{"name": "h", "trigger": 7, "action": {"type": "command", "command": "/bin/true"}}]
-            )
-            == []
-        )
-        assert [c[2] for c in sel_calls] == ["unknown trigger"]
+    @pytest.mark.parametrize(
+        ("trigger", "action_type", "reason"),
+        [
+            pytest.param(
+                "WheneverIFeelLikeIt",
+                "command",
+                "unknown trigger",
+                id="test_trigger_must_be_known",
+            ),
+            pytest.param(7, "command", "unknown trigger", id="test_trigger_must_be_a_string"),
+            pytest.param(
+                "Stop", "eval", "unknown action type", id="test_action_type_must_be_known"
+            ),
+        ],
+    )
+    def test_trigger_and_action_type_must_be_known(
+        self, sel_calls, trigger: object, action_type: str, reason: str
+    ) -> None:
+        hook = {
+            "name": "h",
+            "trigger": trigger,
+            "action": {"type": action_type, "command": "/bin/true"},
+        }
+        assert normalize_spec_hooks([hook]) == []
+        assert [c[2] for c in sel_calls] == [reason]
 
     def test_action_must_be_an_object(self, sel_calls) -> None:
         assert normalize_spec_hooks([{"name": "h", "trigger": "Stop", "action": "/bin/true"}]) == []
         assert [c[2] for c in sel_calls] == ["action is not an object"]
-
-    def test_action_type_must_be_known(self, sel_calls) -> None:
-        assert (
-            normalize_spec_hooks(
-                [
-                    {
-                        "name": "h",
-                        "trigger": "Stop",
-                        "action": {"type": "eval", "command": "/bin/true"},
-                    }
-                ]
-            )
-            == []
-        )
-        assert [c[2] for c in sel_calls] == ["unknown action type"]
 
     @pytest.mark.parametrize("command", [None, "", 7, ["/bin/true"]])
     def test_command_action_needs_a_command(self, sel_calls, command: object) -> None:

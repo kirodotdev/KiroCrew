@@ -19,7 +19,7 @@ import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
 import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
 import type { Slot } from './types'
-import { sessionRowIdentity } from './rowIdentity'
+import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
 import { PinnedSessionDivider, dateSegment } from './chrome'
@@ -70,12 +70,12 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
     heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, laneRowWindow, laneScrollMemory,
-    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
+    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
-    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders } = shell
+    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders, pinnedBandCaption } = shell
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -180,12 +180,15 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
               // way its own row is drawn, and a subagent awaiting approval is an ask
               // even though the slot itself carries no `pending_approval`.
               const isRunning = sidebarRows.isRunning
+              // The approval counts and the unread set are LOCAL state keyed by
+              // local slot key; a peer row's raw key can spell a local one, so
+              // only a local row reads them.
               const wantsUser = (s: Slot) =>
                 !!(
                   s.pending_approval
                   || s.needs_input
-                  || (subagentApprovalCounts[s.key] || 0) > 0
-                  || (unreadSet.has(s.key) && !isRunning(s))
+                  || (!isPeerRow(s) && (subagentApprovalCounts[s.key] || 0) > 0)
+                  || (!isPeerRow(s) && unreadSet.has(s.key) && !isRunning(s))
                 )
 
               const emit = (key: string, depth: number) => {
@@ -334,6 +337,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                *  never console-only in this layout. */}
               {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
               {localGroupHeader}
+              {/* Caption header before the pinned band when a property filter narrows the list. */}
+              {pinnedBandCaption && flatSlots.length > 0 && sidebarRows.isPinned(flatSlots[0]) && (
+                <PinnedSessionDivider caption={pinnedBandCaption} />
+              )}
               {(() => {
                 // Date segments (Today / Yesterday / Last 7 Days / …) between
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -483,6 +490,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                               const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(freshRootRaw, 'list', 'tree:root')
                               return (
                                 <>
+                                  {/* Caption header before the pinned band when a property filter narrows the list. */}
+                                  {pinnedBandCaption && freshRoot.length > 0 && sidebarRows.isPinned(freshRoot[0]) && (
+                                    <PinnedSessionDivider caption={pinnedBandCaption} />
+                                  )}
                                   {freshRoot.map((s, i) => {
                                     const nextIsActive = isActiveRow(freshRoot[i + 1])
                                     const isActive = isActiveRow(s)
@@ -497,7 +508,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                                   })}
                                   {!searchRanked && staleExpanded.has('root')
                                     && staleRoot.length > 0 && freshRoot.length > 0
-                                    && pinned.has(freshRoot[freshRoot.length - 1].key) && <PinnedSessionDivider />}
+                                    && sidebarRows.isPinned(freshRoot[freshRoot.length - 1]) && <PinnedSessionDivider />}
                                   {renderStaleSection('root', staleRoot, 0)}
                                   {/* After the dormant expander, so it stays the
                                    *  lane's last line even when rows are folded. */}

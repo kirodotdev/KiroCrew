@@ -1,7 +1,8 @@
 import { useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../../store'
-import { createSlot, appendSlotMessage, startLocalTurn, endLocalTurn } from '../../store/chatSlice'
+import { appendSlotMessage, startLocalTurn, endLocalTurn } from '../../store/chatSlice'
+import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { api } from '../../api/client'
@@ -12,13 +13,13 @@ import { i18nT } from '../../i18n/t'
 /** The top bar's "Request a Feature": a new session that files the request as an agent turn. */
 export function useRequestFeature(colorTheme: string) {
   const dispatch = useAppDispatch()
-  const navigate = useNavigate()
+  const navigate = useAskingNavigate()
   // The Provider's store, for reads inside async callbacks (requestFeature):
   // the module-level singleton would bypass a test-injected store.
   const appStore = useAppStore()
   const requestFeature = useCallback(async () => {
-    const result = await dispatch(createSlot({ sessionFolder: false })).unwrap()
-    const slot = result.key
+    const view = await createChatForView(dispatch, appStore.getState, { sessionFolder: false })
+    const slot = view.slot.key
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance
     // refuses it. The transcript can offer the non-inference route -- the
@@ -34,7 +35,9 @@ export function useRequestFeature(colorTheme: string) {
     const sendId = mintSendId()
     const meta = { sendId, [FEATURE_REQUEST_ROW_META_KEY]: true }
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
-    navigate('/chat')
+    // The request is filed in its own session either way; only a user still
+    // where they asked, on a page that agrees to be left, is brought to it.
+    showCreatedChat(view, navigate)
     // Both optimistic writes are addressed to the slot this flow CREATED, not
     // the active one: createSlot.fulfilled has a switched-away guard, so when
     // the user changes session while the create round-trip is in flight the

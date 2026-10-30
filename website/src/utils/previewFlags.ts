@@ -12,7 +12,7 @@
  * Deliberately localStorage, not backend config: this is a per-device "show me
  * the unfinished thing" switch with no server behavior attached (the surface's
  * own API is unaffected either way), which is exactly the shape of the existing
- * Developer Mode gate (`mc-dev-mode`). Putting it in `config.json` would imply
+ * other per-device switches in localStorage. Putting it in `config.json` would imply
  * a fleet-wide setting and a backend contract that does not exist.
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
@@ -31,8 +31,7 @@ import { safeGetItem, safeSetItem } from './safeStorage'
  * Fired on the window whenever a preview flag changes, so the nav rail updates
  * in the same tick as the toggle instead of waiting for a reload.
  *
- * Mirrors `mc-dev-mode-changed`. One event for all flags (the `detail` names
- * which one) rather than one event per flag, so adding a flag stays a data
+ * One event for all flags (the `detail` names which one) rather than one event per flag, so adding a flag stays a data
  * change.
  */
 export const PREVIEW_FLAG_EVENT = 'mc-preview-flag-changed'
@@ -50,6 +49,9 @@ export interface PreviewFlagChange {
   key: string
   on: boolean
 }
+
+/** Developer-only Session Environments configuration. Reveals settings, not runtime availability. */
+export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-environments`
 
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
@@ -72,31 +74,9 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
 
 /**
- * Crew Members: the Crew Members page (`/members`) and its rail item.
- *
- * This flag used to hold a second door too — the "New Crew Mode chat" entry in
- * the sidebar's create menu. Crew Mode retired in favour of the Members page,
- * and that menu entry is now "Crewmates": rendered whatever this flag says,
- * it opens `/members` when the flag is on and, when off, the Settings card that
- * turns it on (`ChatSidebar.openCrewMembers`). The flag therefore gates only the
- * page and where the entry lands, never whether the entry exists — a user who
- * has not opted in still finds the door and is walked to the switch.
- *
- * Gating the INGRESS only. Turning the flag off hides the rail item and reroutes
- * the menu entry; it does not orphan existing work — it stops advertising the
- * page to someone who has not opted in.
- */
-export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
-
-/**
  * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
- * entry in the sidebar's create menu.
- *
- * Its own flag, deliberately NOT {@link PREVIEW_CREW}. The word "crew" carries
- * two unrelated meanings here: `PREVIEW_CREW` holds the Crew Members page, while
- * this holds sessions dispatched to another MACHINE over the instances tunnel.
- * Sharing one key would release or hold both at once, which is the same
- * half-ship failure a per-feature flag exists to prevent.
+ * entry in the sidebar's create menu: sessions dispatched to another MACHINE
+ * over the instances tunnel.
  *
  * ONE flag for the whole feature: it also merges each connected crew's live
  * sessions into the Sessions list, grouped per crew. It used to share that half
@@ -110,8 +90,7 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * unreleased surface, and NOT on Settings > Remote Crew where it started: a
  * held feature is found by looking at the one page that lists held features, so
  * scattering an opt-in onto the page it happens to act on hides it from the only
- * reader who wants it. It keeps its own card there rather than sharing
- * {@link PREVIEW_CREW}'s, for the two-meanings reason above.
+ * reader who wants it.
  *
  * Gating the INGRESS only. A session already created on a peer keeps running
  * there and stays reachable through that crew's own dashboard; turning the flag
@@ -167,6 +146,18 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
  * This key holds the layout and nothing else.
  */
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
+
+/**
+ * A crewmate's own agent harness: the Harness row on a crewmate's profile
+ * Settings page, which pins the harness its chat and its workers run on
+ * (`agents.<name>.acp_backend`) and scopes the Model list to that harness.
+ *
+ * A developer control: most people never need a crewmate off the install's
+ * harness, and a pin moves that crewmate's work to another provider. Gating the
+ * INGRESS only, like every flag here: a pin already saved keeps applying with
+ * the flag off, and the server never reads this key.
+ */
+export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
 
 /**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —

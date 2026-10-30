@@ -62,8 +62,10 @@ import { repoScopeKey } from '../lib/links'
 import { useIssueRadar } from '../context'
 import { useImeGuard } from '../../../hooks/useImeGuard'
 
-/** Backstop wake, in seconds. A CONSTANT, not state: see the file header. */
-const BACKSTOP_WAKE_SECONDS = 120
+/** Backstop wake, in seconds. A CONSTANT, not state: see the file header.
+ *  Mirrors `crew_runtime_session.DEFAULT_IDLE_SECS`, the `idle_secs` every
+ *  crew loop is armed with; `IssueRadarCrewEditor.test.tsx` fails if they drift. */
+const BACKSTOP_WAKE_SECONDS = 300
 
 /** `crew_store._DEFAULT_CREW`, mirrored so a fresh dialog shows what the store
  *  would have stored anyway — a create form that disagrees with the server's

@@ -292,6 +292,16 @@ def _shebang_argv(entry: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _starting_reservation(app_name: str) -> AppProcess:
+    """A STARTING record that holds *app_name*'s slot while a spawn is in flight.
+
+    It names no process and carries no provenance. The single-flight spawn below and the
+    restart's drain both publish one, so a concurrent start waits on it instead of
+    reading the slot as free.
+    """
+    return AppProcess(app_name=app_name, starting=True, started_at=time.time())
+
+
 def start_app_backend(app_name: str) -> AppProcess | None:
     """Start an app's backend process if it declares one.
 
@@ -337,9 +347,7 @@ def _start_app_backend(app_name: str) -> AppProcess | None:
                 await_inflight = True
         if not await_inflight:
             # Reserve a STARTING placeholder so a concurrent call sees this spawn in flight.
-            spawn_placeholder = AppProcess(
-                app_name=app_name, starting=True, started_at=time.time()
-            )
+            spawn_placeholder = _starting_reservation(app_name)
             _processes[app_name] = spawn_placeholder
     if await_inflight:
         logger.info("App %s backend is already starting — awaiting the in-flight spawn", app_name)
@@ -732,6 +740,12 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # start an app on a host that is running perfectly well.
     if central_ceiling_installed():
         _platform_extra[POLICY_CACHE_ONLY_ENV] = "1"
+        # An enterprise child adopts only the cache for the profile this gateway is
+        # pinned to; minimal_env() would otherwise drop the pin it inherits.
+        from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
+
+        if os.environ.get(PROFILE_PIN_ENV):
+            _platform_extra[PROFILE_PIN_ENV] = os.environ[PROFILE_PIN_ENV]
         # The EFFECTIVE bound, not the env var: a fleet is just as likely to declare
         # max_cache_age_secs in the published document, and reading only the environment
         # would leave this child with no bound at all — accepting an arbitrarily stale

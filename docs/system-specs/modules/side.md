@@ -190,7 +190,7 @@ second time.
 | turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues. A dashboard-user caller must be the owner (`chat.side_turn`); app tokens keep slot scoping |
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
 | queue edit | PATCH | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Rewrite a queued entry in place |
-| close | POST | `/api/chat/slots/{slot}/side/close` | Drop buffer + queue + destroy LLM session |
+| close | POST | `/api/chat/slots/{slot}/side/close` | Drop buffer + queue + destroy LLM session, then tell every tab (`chat.side_closed`, whose `dropped` names every queue entry the close dropped by queue id, plus the steer id for a requeued steer, when there are any); body `{client}` names the tab that asked |
 | stop | POST | `/api/chat/slots/{slot}/side/stop` | Cancel the in-flight side turn (hung-turn escape hatch); idempotent when none is running. Owner-gated like turn (`chat.side_stop`); 409 `side_not_open` when no sidecar is open |
 | tools | GET | `/api/chat/side/tools` | `{read_only_tools, claude_adapter_outdated, claude_adapter_min_version, claude_adapter_update_command, config_unavailable}`: whether a side turn runs read-only tools, from the same check the turn makes (`_side_read_only_tools`), whether an old claude adapter is the only reason it does not, that adapter's floor (`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`) and `npm i -g` step (`claude_adapter_install_command`), and whether the config failed to load; the footer reads it |
 
@@ -206,15 +206,19 @@ until it is closed or the gateway restarts, and the next question joins it. So
 the panel reads `GET .../side` once per page per slot, on mount, and merges the
 result in (`restoreSideConversation` in `store/chatSlice.ts`, which dispatches
 `sideRestore` from `store/chat/side.ts`). Every way of asking waits for that read
-before the turn is sent: the panel's send, within the send's own deadline
-(`SEND_ABORT_MS`), and the `/side` command; one read in flight serves them all. A
+before the turn is sent, the panel's send and the `/side` command alike, within
+the send's own deadline (`SEND_ABORT_MS`, `awaitSideRestore`); one read in flight
+serves them all. A read still outstanding at the deadline stops being shared, so
+the next question asks the gateway again; it still lands, and the first read to
+land is the one restored, which settles a question still waiting on its own read. A
 404 is nothing to restore (the slot is gone, or the gateway predates the route).
 Any other failure, or a read that outruns the deadline, sends nothing, because the
 question would join a conversation the panel cannot show: the panel hands the text
 back with a line saying the conversation has not loaded (not a connection error),
 and a failed read also shows a notice with **Retry**. `/side` is refused with
 composer wording that names no Retry button, since none is on screen there, and
-the command stays in the composer.
+the command stays in the composer. `/side` gives up on its `/side/open` at the same
+deadline, with the composer's plain refusal.
 The draft stays in memory only (`sideChatDrafts`).
 The read and the frames travel separately, so either can be ahead:
 
@@ -234,13 +238,27 @@ The read and the frames travel separately, so either can be ahead:
   receipt, its user frame, or a receipt that hands the text back settles it.
 - The queue keeps the sidecar's order, with an entry the tab saw pushed to the front
   ahead of it and other entries the tab saw pushed at the end; an entry the tab saw
-  leave stays out, even one it never had a card for. Restored entries are redacted,
+  leave stays out, even one it never had a card for. An entry another tab edited
+  while this tab's read was in flight shows the edited text, even one this tab never
+  had a card for, unless the read's copy is at least as new: every queued entry
+  carries a `rev` that each edit bumps, and both the edit frame and the read send it
+  (`SideState.editedBeforeRestore`, kept only while `slotSideReading` marks the read
+  in flight: a read issued later is answered after the edit, so it carries the text
+  itself). Restored entries are redacted,
   so, like another tab's cards, they drain but cannot be edited or cancelled here.
 - A close in this tab marks the slot settled (`slotSideRestored`), so a read still
   in flight cannot bring the closed conversation back.
 - The context banner of a restored conversation counts the parent turns newer
   than its `created_at` (`SideState.countsTurnsSinceCreated`), at render, since the
   parent transcript can load after the restore.
+- A queue frame or a send status can make an empty side state before any row, and
+  a read that finds nothing open leaves it so. The first row starts the
+  conversation there: its age begins at that row, and its banner counts the main
+  chat's turns newer than that row (`countsTurnsSinceCreated`), as for a restored
+  conversation, because the turns this tab holds then can be another slot's or
+  still loading. A question this tab sent dates it until the question's frame
+  lands, then the gateway's copy does, so its start and the main chat's turns
+  share a clock.
 
 An interrupted turn (`PromptBusyExhaustedError`) stores what streamed and then
 its notice, broadcasts the partial answer as its own final frame before the notice's
@@ -248,6 +266,34 @@ final frame, and carries each stored row's id, so a restored panel draws it as t
 live one did. The other error notices a turn can end with are not stored, so after
 a reload such a turn shows its question without the notice, which is also what
 the model holds.
+
+**After the socket connects.** Side frames reach owner sockets only, so a turn
+that ends while this tab cannot hear it (after the restore read was answered but
+before the socket connected, or while the socket is down) sends its final frame
+to no socket of this tab. So each time the socket opens, a restored panel still
+waiting on a turn reads `GET .../side` again, once any restore read still in
+flight has landed (`resyncWaitingSideConversations` in `store/chatSlice.ts`,
+`sideResync` in `store/chat/side.ts`). The read is judged against the panel as it
+was when the read was sent. When the socket opens again while a read is out, only
+the newer read is applied: the older one can answer last and would undo what the
+newer one learned. A read that shares one of its runs is merged the way a
+restore merges it: the stored rows and the busy state. The send receipt records
+the started run on its optimistic question. A stored row settles that question
+only when its run matches the receipt; without a receipt, the optimistic copy
+stays pending even when the read already holds its stored and answered row. A
+receipt that lands after its question's frame drops the copy still shown as
+unsent, and ends the wait when that copy was all that kept a finished turn busy.
+The queue keeps to its own frames. A read with no open conversation, or one that
+shares none of those runs and so describes another conversation (this one was
+closed while the tab could not hear it), stops the wait and leaves the panel's
+rows as they are, except that a question accepted into one of those runs is no
+longer shown as unsent. Runs decide which conversation a read describes, not
+`created_at`: a conversation this tab started carries this tab's own time, and a
+question whose receipt named its run counts as that run. Either
+way a turn begun after the read was sent stays busy, and so does a question still
+unaccepted when it was sent, since the read is older than both. A read that lands
+after its conversation was closed and replaced in this tab changes nothing
+(`sideResync` checks the conversation's `createdAt`).
 
 ## Wire Protocol
 
@@ -288,6 +334,62 @@ The main chat assembler never sees these frames — isolation is structural
 (separate event type → separate reducer → separate `slotSide` state key), not
 filter-based.
 
+A run broadcasts its frames only while its sidecar is still the slot's
+(`_run_side_turn`'s `_broadcast`). A close drops the sidecar and every tab clears
+the conversation, and a reopen makes a new sidecar, so a later frame of the old
+run would land in a conversation it does not belong to.
+
+`chat.side_closed` (`{kind, slot, origin_client?, dropped?}`) says the slot's
+side conversation was closed. `dropped` is present only when the close dropped
+queue entries. It names each one by queue id, plus the steer id for a requeued
+steer. A tab immediately returns a named requeued steer when it holds that
+steer's submitted text. It notes each named entry it has not handed back as a
+card or from that text, outside the panel, so a delayed queued, pending,
+demoted, or `/side` receipt returns its question instead of creating a card in
+a replacement conversation. That dropped-entry
+record lives for the page, is bounded per slot, and is consumed when the delayed
+receipt returns its question. The submitted-text record lives for the page, is
+bounded per slot, and is dropped when its card goes back or is cancelled here,
+or when a close names its steer. Refresh context issues that close
+optimistically. The API client records every close request in flight, and a
+later send waits until each same-slot close is acknowledged, whether its request
+resolves or rejects, before `/side/open` and `/side/turn`. A close that does not
+settle keeps that fence; the later send reaches its own deadline and hands its
+text back without asking it. If the close settles after that, the send's
+`/side/open` still goes out and opens an empty conversation. Every tab but the
+one named by `origin_client`, which cleared its panel when it sent the close,
+applies `sideClose`. The named tab also applies `sideClose` when its slot holds
+rows, a run ID, or a queue card the gateway sent after that clear: those belong
+to a turn that reached the gateway before the close. Before that, a question the
+tab queued into the conversation (`raw`) goes back to its composer, since the
+gateway dropped the queue with it, behind any question already cancelled here
+whose text still waits for that slot's panel (`releasedText`). A plain-text
+requeued steer is marked `raw` and handed back too, even when its broadcast
+content is identical to the submitted text. The submitted text is kept by slot
+and steer ID outside the panel, so the card goes back when the panel showed
+another slot or was closed before it could mark the card as this tab's own. Once
+marked, the card is never rewritten from the submitted text, so a saved edit's
+wording is what goes back. When that card's queue editor is open, its current
+non-blank text goes back instead of the card's saved wording. The typed words
+are what is checked: when they are blank after trimming the editor reports no
+draft, matching its commit rule, so a card's quote or knowledge does not make a
+cleared editor count as an edit. When the close frame beats a question's own
+receipt, the tab holds only the scrubbed card the queue frame made, so it
+records that card's queue ID before clearing the conversation. A requeued steer
+records its steer ID too, because its demoted
+receipt carries no queue ID. The receipt consumes the matching record and hands
+the text back even if a new user frame has reopened the slot. A steer still
+pending in the running turn whose requeued card the close dropped goes back the
+same way, matched by its `steer_id`. A different queue ID from the replacement
+conversation still makes its card. While the slot stays closed, a queued receipt
+hands the text back even if its card never reached this tab, which happens when
+the queue frame was lost to a dropped socket. Follow-up chip questions use the
+same path, and so does a question asked with `/side` from the main composer: its
+queued receipt puts the raw text on the card the same way, or hands it to the
+slot's side draft when the close came first. A card whose edit is still in
+flight goes back with the edit's wording, and the edit's own result does not
+hand it back a second time.
+
 ## Backend Modules
 
 ### `dashboard/ws.py` — `broadcast_side_queue`
@@ -319,7 +421,9 @@ return the id for the frame that announces the row.
 `settle_consumed_steers(pending, snapshot)` — pure, and shared with the main chat
 (`chat_runner._settle_consumed_steers` delegates to it). Matches by EQUALITY and
 is count-aware: containment would false-positive a short steer against a longer
-one, and a falsely-settled steer is never requeued, so the question is lost.
+one, and a falsely-settled steer is never requeued, so the question is lost. Each
+steer is wrapped by `wrap_user_message`, which escapes tags inside the text, so the
+echo splits one way and settling compares the escaped text.
 
 ### `dashboard/side_prompts.py`
 
@@ -442,12 +546,18 @@ request, and the gate judges all of them. kiro-cli trusts `fs_read` natively
 (observed on a live pod: an `fs_read` ran with no permission request and no host
 decision row, while `pwd` under `execute_bash` raised one the gate approved); a
 native read runs outside the gate, and the guarantee holds because it is a
-read. FAIL CLOSED: a turn whose spec cannot be derived or published is refused
-with a coded error (`ReadOnlySpecError.code`: `unsafe_name`,
-`base_spec_missing`, `base_spec_unreadable`, `derived_name_shadowed`,
-`derived_path_foreign`, `spec_write_failed`, `base_spec_malformed` — a
-`mcpServers`/`toolsSettings` value or entry that is neither an object nor
-`null`). The code is logged and SEL-audited (`chat.side_turn`, `denied`); the
+read. kiro-cli trusts it only inside the session cwd; a read outside it raises
+a permission request. So the derived spec also adds `deniedPaths` under
+`toolsSettings` `fs_read`, `read`, `grep` and `glob`, built from
+`security.sandbox_credential_targets()` (the list the claude side session
+denies), and kiro-cli refuses those reads itself even inside the cwd
+(`side_readonly_spec.credential_denied_paths`). FAIL CLOSED: a turn whose spec
+cannot be derived or published is refused with a coded error
+(`ReadOnlySpecError.code`: `unsafe_name`, `base_spec_missing`,
+`base_spec_unreadable`, `derived_name_shadowed`, `derived_path_foreign`,
+`spec_write_failed`, `base_spec_malformed` — a `mcpServers`/`toolsSettings`
+value or entry that is neither an object nor `null`,
+`credential_paths_unresolved`). The code is logged and SEL-audited (`chat.side_turn`, `denied`); the
 panel shows a generic message without it. The turn never runs under the base agent.
 
 **Orphaned derived specs are reaped.** kiro-cli lists every file in the
@@ -581,8 +691,9 @@ session confined (`AcpClient._claude_session_meta`):
 
 In `default` mode Claude Code runs Read, Grep and Glob inside the work dir
 without asking; the `ask` rules above override that, so each such call reaches
-the gate and gets an SEL row (captured on claude-agent-acp 0.93.0,
-`test/fixtures/claude_side_read_ask`). A call under a denied path is refused
+the gate and gets an SEL row (captured on claude-agent-acp 0.94.0,
+`test/fixtures/acp_frames/claude/side-read-ask-live.jsonl` and
+`side-read-no-ask-live.jsonl`). A call under a denied path is refused
 by claude before it asks. A call that reaches the gate is proven read-only by `harness_builtin_tool`: the kiro-cli
 built-in that the tool name claude-agent-acp stamped on the call's `tool_call`
 frame (`_meta.claudeCode.toolName`) maps to, never the title or the permission
@@ -785,6 +896,12 @@ Module-level helper emitting `chat.side_result` frames to owner sockets only
 (`broadcast_ws_owners`), never to app sockets, matching `_check_slot_ownership`.
 Deliberately separate from `broadcast_ws` main-channel events.
 
+### `dashboard/ws.py` — `broadcast_side_closed`
+
+Emits `chat.side_closed` to owner sockets only, from `api_side_close`, whether or
+not a conversation was open: a tab can still show one the gateway lost in a
+restart.
+
 ## Frontend Modules
 
 ### `ActivityViewer.tsx`
@@ -901,9 +1018,10 @@ action types stay `chat/<name>` and every consumer keeps importing them from
 
 ### `useWebSocket.ts`
 
-`case 'chat.side_result':` dispatches `sseSideResult` and
-`case 'chat.side_queue':` dispatches `sseSideQueue` — two lines alongside the
-existing subagent/tool dispatch cases.
+`case 'chat.side_result':` dispatches `sseSideResult`,
+`case 'chat.side_queue':` dispatches `sseSideQueue` and `case 'chat.side_closed':`
+dispatches `sideClose` (see Wire Protocol), alongside the existing subagent/tool
+dispatch cases.
 
 ## Security & Isolation
 
@@ -944,7 +1062,7 @@ Busy-send invariants live in `test/test_side_steer_queue.py`:
 | Unavailable steer never drops text | `test_steer_unavailable_falls_through_to_the_queue` |
 | Queue mode leaves the session alone | `test_queue_mode_defers_even_when_steer_is_available` |
 | FIFO, one entry per turn | `test_queue_drains_fifo_one_entry_per_turn` |
-| Cancel / edit | `test_queue_cancel_removes_the_entry_and_echoes_content`, `test_queue_edit_rewrites_in_place_preserving_order` |
+| Cancel / edit | `test_queue_cancel_removes_the_entry_and_echoes_content`, `test_queue_edit_rewrites_in_place_preserving_order`, `test_the_read_and_the_edit_frame_carry_the_entry_revision` |
 | Bounded queue | `test_queue_refuses_past_its_bound` |
 | No stranding past the finally | `test_entry_queued_after_completion_is_not_stranded` |
 | Steer identity binding | `test_a_steer_that_lands_after_its_run_ended_is_queued_not_claimed`, `test_a_steer_cannot_land_on_a_sidecar_that_was_replaced` |

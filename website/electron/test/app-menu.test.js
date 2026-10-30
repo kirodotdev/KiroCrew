@@ -224,11 +224,11 @@ for (const isMac of [true, false]) {
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Alt+N");
   });
 
-  test(`${os}: devtools item keeps its id and starts hidden`, () => {
+  test(`${os}: devtools item keeps its id and starts visible`, () => {
     const { deps } = makeDeps({ isMac });
     const item = findItem(buildMenuTemplate(deps), (i) => i.id === "devtools-toggle");
     assert.ok(item, "devtools-toggle present");
-    assert.strictEqual(item.visible, false);
+    assert.strictEqual(item.visible, true);
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Shift+I");
   });
 

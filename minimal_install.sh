@@ -37,6 +37,9 @@ done
 # Repo root = directory containing this script.
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_DIR"
+# ACP_NPM_PKG and acp_adapter_spec (the exact pinned version).
+# shellcheck source=scripts/lib/acp-adapter-pin.sh
+. "$REPO_DIR/scripts/lib/acp-adapter-pin.sh"
 
 has() { command -v "$1" >/dev/null 2>&1; }
 die() { echo "ERROR: $1" >&2; exit 1; }
@@ -147,13 +150,17 @@ echo "→ Checking optional agent backend (claude-agent-acp)…"
 if has claude-agent-acp; then
     echo "✓ claude-agent-acp already on PATH"
 elif has npm; then
-    echo "  Installing @agentclientprotocol/claude-agent-acp via npm…"
-    npm install -g @agentclientprotocol/claude-agent-acp >/dev/null 2>&1 \
-        && echo "✓ claude-agent-acp installed" \
-        || echo "⚠ npm i -g @agentclientprotocol/claude-agent-acp failed — install it manually before running"
+    if ! ACP_NPM_SPEC="$(acp_adapter_spec "$REPO_DIR")"; then
+        echo "⚠ Could not read the pinned $ACP_NPM_PKG version (packaging/acp-adapters/package.json) — skipping"
+    else
+        echo "  Installing $ACP_NPM_SPEC via npm…"
+        npm install -g "$ACP_NPM_SPEC" >/dev/null 2>&1 \
+            && echo "✓ claude-agent-acp installed" \
+            || echo "⚠ npm i -g $ACP_NPM_SPEC failed — install it manually before running"
+    fi
 else
     echo "⚠ npm not found — install the agent backend later:"
-    echo "    npm i -g @agentclientprotocol/claude-agent-acp"
+    echo "    npm i -g $ACP_NPM_PKG"
 fi
 echo "⚠ The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
 echo "  Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"

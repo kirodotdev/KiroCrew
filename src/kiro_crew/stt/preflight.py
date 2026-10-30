@@ -319,11 +319,11 @@ def binary_identity() -> _BinaryIdentity | None:
 def host_flags(cpuinfo_path: Path | None = None) -> frozenset[str] | None:
     """The CPU feature tokens the kernel reports, lower-cased, or ``None``.
 
-    Linux only. x86-64 goes through :func:`kiro_crew.embeddings._linux_x86_64_cpu_flags`,
-    the reader the embedding runtime already uses against the same ggml/SIGILL
+    Linux only. x86-64 goes through :func:`kiro_crew.embeddings._linux_x86_64_cpu_flags`
+    and AArch64 through :func:`kiro_crew.embeddings._linux_aarch64_cpu_features`,
+    the readers the embedding runtime already uses against the same ggml/SIGILL
     threat (features shared by EVERY visible core, ``sse3`` added beside ``pni``),
-    so this repository keeps one x86 cpuinfo parser. AArch64 has no reader there;
-    its ``Features`` line is intersected across cores here the same way.
+    so this repository keeps one cpuinfo parser per architecture.
 
     ``None`` means "unknown", and an unknown host is never refused on -- the
     subprocess probe is the evidence that stands on its own on every platform;
@@ -345,24 +345,16 @@ def host_flags(cpuinfo_path: Path | None = None) -> frozenset[str] | None:
 
         return _linux_x86_64_cpu_flags(path)
     if not machine.startswith(("aarch64", "arm64")):
-        # The `Features` reader below is an AArch64 reader: a 32-bit ARM kernel
+        # The `Features` reader is an AArch64 reader: a 32-bit ARM kernel
         # (`armv7l`, or an `armv8l` userspace) spells `neon` where the 64-bit
         # kernel spells `asimd`, so a source-built recogniser that runs fine
         # would be refused on a spelling. Any architecture without a reader is
         # "unknown", and an unknown host is never refused on.
         return None
-    try:
-        cpuinfo = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    per_cpu: list[frozenset[str]] = []
-    for line in cpuinfo.splitlines():
-        key, sep, value = line.partition(":")
-        if sep and key.strip().lower() == "features":
-            per_cpu.append(frozenset(tok.lower() for tok in value.split()))
-    if not per_cpu:
-        return None
-    return frozenset.intersection(*per_cpu)
+    # Same circular import as above.
+    from kiro_crew.embeddings import _linux_aarch64_cpu_features
+
+    return _linux_aarch64_cpu_features(path)
 
 
 def missing_features(

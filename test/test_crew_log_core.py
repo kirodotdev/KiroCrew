@@ -638,17 +638,23 @@ def test_a_session_log_refuses_the_app_type_namespace_outright():
     assert _code(exc) == lg.CODE_NAMESPACE_VIOLATION
 
 
-def test_a_guest_may_not_write_another_guests_namespace():
+@pytest.mark.parametrize(
+    ("entry_type", "src"),
+    [
+        pytest.param(
+            "app:other/scan", "app:radar", id="test_a_guest_may_not_write_another_guests_namespace"
+        ),
+        pytest.param(
+            "app:radar/scan",
+            "gateway",
+            id="test_a_non_guest_emitter_may_not_borrow_a_guest_namespace",
+        ),
+    ],
+)
+def test_an_app_namespace_is_written_only_by_its_own_guest(entry_type, src):
     crew = _crew()
     with _raises(lg.CODE_NAMESPACE_VIOLATION) as exc:
-        crew.append("app:other/scan", {}, src="app:radar")
-    assert _code(exc) == lg.CODE_NAMESPACE_VIOLATION
-
-
-def test_a_non_guest_emitter_may_not_borrow_a_guest_namespace():
-    crew = _crew()
-    with _raises(lg.CODE_NAMESPACE_VIOLATION) as exc:
-        crew.append("app:radar/scan", {}, src="gateway")
+        crew.append(entry_type, {}, src=src)
     assert _code(exc) == lg.CODE_NAMESPACE_VIOLATION
 
 

@@ -8,13 +8,15 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_available_models``, ``_available_models_captured_at``,
+Instance fields written: ``_advertised_models_changed``, ``_available_models``,
+``_available_models_captured_at``,
 ``_available_models_probe_confirmed``, ``_available_models_read_probe_at``,
 ``_config_options``, ``_kas_auto_fallback``, ``_mode_model_unjudged``, ``_model``,
 ``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
 ``model_pin_refused``.
 
-Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``.
+Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``,
+``request_vault_identity``.
 """
 
 from __future__ import annotations
@@ -53,8 +55,11 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODEL,
     MODEL_CONFIG_ID,
     effort_config_option_id,
+    model_registry_namespace,
 )
+from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
 from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
@@ -285,6 +290,24 @@ async def _served_default_after_set_mode(self: AcpSessionHandle) -> None:
     await self.ensure_served_default(activated_model=activated)
 
 
+def _kas_model_spelling(model_id: str, advertised: list[str]) -> str:
+    """The kiro-cli spelling of *model_id* for a KAS session.
+
+    KAS reads models in the ``acp`` namespace (``claude-opus-5.5``). A pin
+    stored in another namespace's spelling -- the claude_code id
+    ``global.anthropic.claude-opus-5-5[1m]``, from a slot or an agent default
+    -- is accepted by KAS's ``model`` option and then fails the turn as an
+    improperly formed request. The registry names the kiro-cli id for any
+    spelling it knows, so that id is sent instead. An id the session
+    advertised verbatim, or one the registry does not know, is left as it is.
+    So is a version-less family alias (``opus``): it names no one model, and
+    the registry's answer for it would pick a generation for the user.
+    """
+    if not model_id or model_id in advertised or not any(c.isdigit() for c in model_id):
+        return model_id
+    return model_registry.acp_id_correction(model_id) or model_id
+
+
 async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     """Switch model via session/set_model.
 
@@ -310,6 +333,8 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     # must not survive a later one, or a read-after-call reports a pick that
     # landed (or inherited the default) as refused.
     self.model_pin_refused = ""
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
     # list is the picker's vocabulary while the ``model`` config option's is
     # the BARE id, so a bare pin misses the list yet is exactly what the wire
@@ -573,9 +598,10 @@ def get_valid_effort_levels(self: AcpSessionHandle) -> list[str]:
         if opt.get("id") == effort_option:
             options = opt.get("options", [])
             if isinstance(options, list):
-                return [
-                    o.get("value", "") for o in options if isinstance(o, dict) and o.get("value")
-                ]
+                return effort_config_option_levels(
+                    self._runtime.acp_backend,
+                    [o.get("value", "") for o in options if isinstance(o, dict) and o.get("value")],
+                )
     return []
 
 
@@ -614,6 +640,20 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
+    # The same select is the KAS engine's CATALOG (its served models with their
+    # credit multipliers), kept for the bundle-route picker, which has no
+    # ``--list-models`` to read. A catalog, not this session's advertised list:
+    # ``_available_models`` below is untouched by it. Positive KAS gate inside;
+    # stamped with the vault identity read when this session's request went out,
+    # so a response is served only to the account it was asked for. Per request,
+    # not per process: the engine fetches its credential per call
+    # (``_kiro/auth/getAccessToken``), so a long-lived runtime answers for
+    # whoever is in the vault NOW.
+    record_catalog(
+        resp,
+        self._runtime.acp_backend,
+        identity=self.request_vault_identity,
+    )
     # Where this host's model list lives is asked in ONE place
     # (``session_models_envelope``): a host in
     # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object
@@ -658,6 +698,58 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     elif isinstance(models, list):
         self._available_models = parse_advertised_models({"availableModels": models})
         self._mark_available_models_captured()
+
+
+def _feed_advertised_model_cache(self: AcpSessionHandle) -> None:
+    """Record this session's advertised ids in the cross-session model cache.
+
+    The shared-runtime twin of ``AcpClient._capture_available_models``'s cache
+    feed. ``store_session_config`` captures the backend's advertised list into
+    ``self._available_models``, but without this the list lived ONLY on the live
+    handle: the dashboard picker (``_advertised_cc_models``) reads a live session
+    when one exists and otherwise falls back to
+    ``model_registry.advertised_models(namespace)``, so a harness whose models
+    are captured only here (codex, opencode, goose, pi, deepseek) lost its whole
+    picker list the moment no session of it was live — a harness switch away and
+    back, or a gateway restart — leaving only ``auto`` and the configured
+    default. kiro does not hit this because its catalog is seeded from
+    ``--list-models`` (``refresh_kiro_catalog``), which persists.
+
+    Gated on the advertised-selection capability, not on a backend id
+    (harness-parity H6): only a backend whose served list is the authority on
+    what it accepts feeds this cache, keyed by its own registry namespace so one
+    harness's ids never overwrite another's. In-memory and synchronous; the
+    runtime's create and load call it right after ``store_session_config``,
+    inside the same membership gate as
+    :meth:`_persist_advertised_models_if_changed`, which offloads the disk write
+    when this reports a change.
+    """
+    backend = self._runtime.acp_backend
+    if backend not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        return
+    ids = advertised_model_ids(self._available_models)
+    if not ids:
+        return
+    if model_registry.refresh_advertised_models(
+        model_registry_namespace(backend), ids, rows=self._available_models
+    ):
+        self._advertised_models_changed = True
+
+
+async def _persist_advertised_models_if_changed(self: AcpSessionHandle) -> None:
+    """Offload a disk persist of the provider-model cache when it changed.
+
+    The shared-runtime twin of ``AcpClient._persist_advertised_models_if_changed``.
+    :meth:`_feed_advertised_model_cache` did the cheap in-memory update and set
+    ``_advertised_models_changed``; this offloads only the blocking write so the
+    init path never persists on the event loop, and never for an unchanged cache.
+    Best-effort — a write failure is swallowed
+    by ``persist_advertised_models`` itself.
+    """
+    if not self._advertised_models_changed:
+        return
+    self._advertised_models_changed = False
+    await asyncio.to_thread(model_registry.persist_advertised_models)
 
 
 async def ensure_served_default(self: AcpSessionHandle, *, activated_model: str = "") -> None:

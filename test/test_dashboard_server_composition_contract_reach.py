@@ -658,13 +658,18 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 
 #: The full middleware chain of each entrypoint, outermost first, by the name of each
 #: layer and the factory that built it. The order is a security contract: latency is
-#: outermost, the deny-audit boundary is outer to every barrier that can refuse, the
-#: SEL request audit is inner to them, the per-slot ownership checkpoint is inner to
-#: token auth and the audit record, and the workflow and crewmate-prune gates and the
+#: outermost, the relay-path header rule is next so it reads a verified handover before
+#: any inner layer, the client-sent relay-header strip sits just inside it so no inner
+#: layer reads a client-sent relay header, the
+#: deny-audit boundary is outer to every barrier that can refuse, the SEL request
+#: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
+#: and the audit record, and the workflow and crewmate-prune gates and the
 #: change-card hook (innermost, after auth has classified the caller) are appended
 #: after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("_relay_ingress", "relay_ingress_middleware.<locals>."),
+    ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
@@ -681,6 +686,8 @@ _DASHBOARD_CHAIN = (
 )
 _API_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("_relay_ingress", "relay_ingress_middleware.<locals>."),
+    ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -759,20 +766,21 @@ _DASHBOARD_BOOT = tuple("""
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -785,8 +793,9 @@ _DASHBOARD_BOOT = tuple("""
     build_allowed_origins _make_host_validation_middleware _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _register_prevent_sleep_shutdown _register_listener_guard_shutdown
+    _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
@@ -810,13 +819,15 @@ _DASHBOARD_TEARDOWN = tuple("""
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_stt_idle_sweep
+    S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
-    T:_live_sibling_port T:_register_deploy_skills T:_take_prior_dropped_grant
+    T:_live_sibling_port T:_register_deploy_skills
+    T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
-    T:migrate_channel_transcripts T:newest_dump_with_stacks T:open_dump_file
+    T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
     T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
@@ -829,21 +840,24 @@ _API_BOOT = tuple("""
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
@@ -980,9 +994,32 @@ async def _traced_dashboard(
 
     monkeypatch.setattr(server, "start_dashboard", _start)
     runner, state, _spies = await harness._start_dashboard(tmp_path, monkeypatch)
+    await _knowledge_reclaim_finished(state)
     boot = list(holder["trace"])
     del holder["trace"][:]
     return runner, state, boot, holder["trace"]
+
+
+#: How long the boot's knowledge-reclaim task may run before the test gives up on it.
+_RECLAIM_WAIT_SECONDS = 30
+
+
+async def _knowledge_reclaim_finished(state: Any) -> None:
+    """Wait for the boot's knowledge reclaim task, which then calls the memory prebuild.
+
+    ``_kick_knowledge_orphan_reclaim`` reaches ``_prebuild_memory_after_preparation``
+    only after its worker thread returns. The teardown cancels every stray task, so
+    on a slow runner the prebuild is never called and drops out of the trace.
+    This one task is finite, unlike the boot's other background loops, so waiting
+    for it alone records the prebuild on every runner.
+    """
+    reclaim = [
+        task
+        for task in state._background_tasks
+        if task.get_coro().__qualname__.endswith("._knowledge_orphan_reclaim")
+    ]
+    if reclaim:
+        await asyncio.wait_for(asyncio.gather(*reclaim), timeout=_RECLAIM_WAIT_SECONDS)
 
 
 async def _traced_api(
@@ -1058,8 +1095,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 293
-_MCP_TABLE_DIGEST = "86d78a14e9300a471521c758df16910ba4c3ba7feab6ae47d0739f1f4036f7ec"
+_MCP_TABLE_ROWS = 324
+_MCP_TABLE_DIGEST = "8dd185f753c62320e0ebc8918f1c007480efcb11489dec57d5772ff8315f1048"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

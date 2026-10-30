@@ -118,8 +118,9 @@ def _attach_file_paths(store, items: list[dict]) -> None:
 
 _NO_SOURCE = "__none__"
 
-# Candidate-pool escalation for a source-scoped hybrid search: start here, then
-# double until retrieval is exhausted. Capped so a pathological corpus cannot
+# Candidate-pool escalation for a filtered hybrid search: start here, then
+# double until retrieval is exhausted (a type/status/namespace filter also stops
+# once the page is filled). Capped so a pathological corpus cannot
 # turn one request into an unbounded scan.
 # Ids bound per `IN (...)` statement. Comfortably under the 999-variable floor
 # of older SQLite builds (SQLITE_MAX_VARIABLE_NUMBER).
@@ -241,36 +242,59 @@ async def list_items(request: web.Request) -> web.Response:
         # later pages could never reach the real ones. Under a source scope,
         # escalate the candidate pool until retrieval is exhausted (it returns
         # fewer rows than asked for), which makes the scoped total exact.
-        # Unscoped searches keep the cheap limit * 3 window.
-        if source_id:
-            all_results = await _search_until_exhausted(retriever, q, limit)
-        else:
-            all_results = await run_in_embed_pool(retriever.search, q, limit=limit * 3)
-        # Batch fetch all candidate items (avoid N+1). A scoped search escalates
-        # its candidate pool, so this query and the row serialization can both be
-        # large: run them in a worker thread rather than on the event loop.
-        # `store.db` is a thread-local property, so the thread gets its own
-        # connection.
-        result_ids = [r["id"] for r in all_results]
-        items_by_id = await asyncio.to_thread(_load_items_by_id, store, result_ids)
-        filtered = []
-        for r in all_results:
-            item = items_by_id.get(r["id"])
-            if not item:
-                continue
-            if status and item.get("status") != status:
-                continue
-            if item_type and item.get("item_type") != item_type:
-                continue
-            if namespace and item.get("namespace") != namespace:
-                continue
-            if source_id and not _matches_source(item, source_id):
-                continue
-            item["_score"] = r["score"]
-            item["_match_type"] = r["match_type"]
-            filtered.append(item)
-        total = len(filtered)
         offset = (page - 1) * limit
+
+        async def _ranked_matches(results: list[dict]) -> list[dict]:
+            # Batch fetch all candidate items (avoid N+1). The candidate pool
+            # can escalate, so this query and the row serialization can both be
+            # large: run them in a worker thread rather than on the event loop.
+            # `store.db` is a thread-local property, so the thread gets its own
+            # connection.
+            result_ids = [r["id"] for r in results]
+            items_by_id = await asyncio.to_thread(_load_items_by_id, store, result_ids)
+            matches = []
+            for r in results:
+                item = items_by_id.get(r["id"])
+                if not item:
+                    continue
+                if status and item.get("status") != status:
+                    continue
+                if item_type and item.get("item_type") != item_type:
+                    continue
+                if namespace and item.get("namespace") != namespace:
+                    continue
+                if source_id and not _matches_source(item, source_id):
+                    continue
+                item["_score"] = r["score"]
+                item["_match_type"] = r["match_type"]
+                matches.append(item)
+            return matches
+
+        if source_id:
+            filtered = await _ranked_matches(await _search_until_exhausted(retriever, q, limit))
+        else:
+            # type/status/namespace are post-ranking filters too, but the
+            # dashboard sends status=active on every search, so exhausting the
+            # ranking for them would make every search pay the full escalation.
+            # Start from the cheap limit * 3 window and widen it only while the
+            # filter leaves the requested page short and retrieval still has
+            # rows: a narrow filter finds its matches, and a filter most hits
+            # pass costs one retriever call, as an unfiltered search does.
+            want = limit * 3
+            need = max(want, offset + limit)
+            narrowed = bool(item_type or status or namespace)
+            while True:
+                results = await run_in_embed_pool(retriever.search, q, limit=want)
+                filtered = await _ranked_matches(results)
+                if (
+                    not narrowed
+                    or len(filtered) >= need
+                    or len(results) < want
+                    or want >= _SCOPED_SEARCH_MAX
+                ):
+                    break
+                want = min(max(want * 2, _SCOPED_SEARCH_START), _SCOPED_SEARCH_MAX)
+        total = len(filtered)
         items = filtered[offset : offset + limit]
         await asyncio.to_thread(_attach_file_paths, store, items)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})

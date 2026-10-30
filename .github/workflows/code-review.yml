@@ -315,7 +315,12 @@ jobs:
   sast:
     name: SAST (Semgrep)
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # The baseline scan re-runs every rule on the merge-base for each changed
+    # file, so the job's length grows with the diff: 2-3 min on the CodeBuild
+    # fleet for a typical PR, but 9-14 min measured on ubuntu-latest for a large
+    # one (#14818). A 15-min cap left that case cancelled by runner variance,
+    # and a cancelled lane publishes no verdict. 30 min gives it headroom.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -526,6 +531,29 @@ jobs:
             exit 1
           fi
           echo "Pattern harvest section present."
+
+      # ── Proof line on fix PRs ───────────────────────────────────────
+      # A test that still passes with the fix reverted does not test the fix.
+      # "fix:" PRs state, in ONE line under "## Tests", whether their tests fail
+      # without the fix (format: proof_line_check.py). Presence, place and shape
+      # only; a hand-typed PROVEN line passes here, and only the local
+      # diff_signals.py --check-body comparison with prove.py's record catches
+      # it. The script is read from the base ref so a branch cannot weaken its
+      # own check; the checkout copy runs only while the base has none. WARN
+      # mode: findings annotate and exit 0 until ENFORCE_FROM in the script
+      # names a date.
+      - name: Require a Proof line inside ## Tests on fix PRs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+        run: |
+          script="$(mktemp)"
+          if ! git show "$BASE_TIP:.github/scripts/proof_line_check.py" > "$script" 2>/dev/null; then
+            cp .github/scripts/proof_line_check.py "$script"
+          fi
+          python3 "$script"
 
       # ── Reader list on take-away diffs ──────────────────────────────
       # A diff that hides, deletes, tightens or migrates something must list

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -11,11 +12,14 @@ from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.cron import CronService, resolve_cron_memory
 from kiro_crew.cron_service.identity import rebind_cron_session_template
 from kiro_crew.execution_context import (
+    ExecutionContext,
+    MemoryStoreRef,
     bind_session_execution,
     execution_from_record,
     read_session_execution,
 )
-from kiro_crew.memory_stores import provision_member_memory
+from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
+from kiro_crew.session_agent_selection import record_agent_selection
 
 
 def _capture(job):
@@ -136,6 +140,73 @@ def test_a_session_record_naming_another_execution_is_left_alone(tmp_path):
     assert read_session_execution(key) == other
 
 
+def _switch_tab_agent(key, agent):
+    """What the cron tab's agent picker publishes under the cron key.
+
+    ``api_chat_slot_agent`` resolves the tab to ``effective_session_key`` --
+    the schedule's own ``cron:<id>`` -- and records the pick through
+    ``_record_explicit_agent_selection`` -> ``record_agent_selection(replace=True)``,
+    which writes the new template, the picked name and a fresh revision.
+    """
+    bindings = SimpleNamespace(
+        selection_kind="template",
+        resolved_alias="",
+        kiro_agent=agent,
+        requested_resolved=True,
+        memory_store_name="default",
+        selection_revision=None,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef("default"), "template", agent, "persistent", "", agent
+        ),
+    )
+    record_agent_selection(key, agent, bindings, replace=True, memory_mode="persistent")
+
+
+@pytest.mark.parametrize("picked", ["gamma", "alpha"], ids=["other-agent", "same-agent"])
+def test_a_dashboard_agent_switch_on_the_cron_tab_does_not_wedge_the_schedule(tmp_path, picked):
+    # A tab switch leaves `selection_name`/`selection_revision` different from
+    # the capture; the rebind must still restore the capture, or the plain bind
+    # at dispatch refuses every fire and `cron update` cannot clear it.
+    service = CronService(base_dir=tmp_path / "cron")
+    job = service.add_job("daily", "task", every_secs=60, agent_id="alpha")
+    key = f"cron:{job.id}"
+    bind_session_execution(key, _capture(job))
+    _switch_tab_agent(key, picked)
+
+    service.update_job(job.id, agent_id="beta")
+    _fire_rebind(_reloaded(tmp_path, job.id))
+
+    assert read_session_execution(key) == _capture(_reloaded(tmp_path, job.id))
+
+
+def test_a_session_record_on_another_store_is_left_alone(tmp_path):
+    service = CronService(base_dir=tmp_path / "cron")
+    job = service.add_job("daily", "task", every_secs=60, agent_id="alpha")
+    key = f"cron:{job.id}"
+    other = replace(_capture(job), store=MemoryStoreRef("elsewhere"), selection_name="x")
+    bind_session_execution(key, other)
+
+    rebind_cron_session_template(key, _capture(job), job.name)
+
+    assert read_session_execution(key) == other
+    with pytest.raises(UnknownMemoryStore, match="belongs to another execution"):
+        bind_session_execution(key, _capture(job))
+
+
+def test_a_legacy_member_named_only_by_selection_is_left_alone(tmp_path):
+    # With no persisted member_id, selection_kind + selection_name ARE the member.
+    service = CronService(base_dir=tmp_path / "cron")
+    job = service.add_job("daily", "task", every_secs=60, agent_id="alpha")
+    key = f"cron:{job.id}"
+    capture = replace(_capture(job), selection_kind="member", selection_name="writer")
+    other = replace(capture, selection_name="reader")
+    bind_session_execution(key, other)
+
+    rebind_cron_session_template(key, capture, job.name)
+
+    assert read_session_execution(key) == other
+
+
 def test_an_unchanged_record_is_not_rewritten(tmp_path):
     service = CronService(base_dir=tmp_path / "cron")
     job = service.add_job("daily", "task", every_secs=60, agent_id="alpha")
@@ -146,6 +217,7 @@ def test_an_unchanged_record_is_not_rewritten(tmp_path):
         rebind_cron_session_template(key, _capture(job), job.name)
 
     bind.assert_not_called()
+    assert read_session_execution(key) == _capture(job)
 
 
 @pytest.fixture

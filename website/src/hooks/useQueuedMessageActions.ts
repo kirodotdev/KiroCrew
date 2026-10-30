@@ -5,6 +5,7 @@ import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '.
 import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import type { ChatMessage } from '../types'
+import type { PasteBlock } from '../utils/pasteTokens'
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
  *  host's send path when the `queued: true` receipt names the entry. */
@@ -47,7 +48,9 @@ export const queuedSendStash = new Map<string, QueuedSendRecord>()
 export interface QueuedMessageActions {
   onCancel: (queueId: string) => void
   onInterrupt: (queueId: string) => void
-  onEdit: (queueId: string, content: string) => void
+  /** `pastes`: the paste blocks the edit kept, when the card carried any
+   *  (`QueueStack`'s `onEdit`); the optimistic row takes exactly that set. */
+  onEdit: (queueId: string, content: string, pastes?: PasteBlock[]) => void
   onReorder: (queueId: string, direction: 'next' | 'later') => void
   /** Feed straight to `QueueStack`'s `pendingIds`. */
   pendingIds: ReadonlySet<string>
@@ -280,12 +283,12 @@ export function useQueuedMessageActions({
     )
   }, [slot, markPending])
 
-  const onEdit = useCallback((queueId: string, content: string) => {
+  const onEdit = useCallback((queueId: string, content: string, pastes?: PasteBlock[]) => {
     if (!slot) return
     const trimmed = content.trim()
     if (!trimmed) return
     // Optimistically update the card; the WS event reconciles other clients.
-    dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
+    dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed, ...(pastes ? { pastes } : {}) }))
     run(queueId, api.editQueuedMessage(slot, queueId, trimmed))
   }, [slot, dispatch, run])
 

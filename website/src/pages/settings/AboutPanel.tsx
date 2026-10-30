@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -16,12 +16,13 @@ import ReportProblemCard from './ReportProblemCard'
 import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand } from './AboutPanelUpdateFlow'
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
 import { api } from '../../api/client'
-import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useUpdateSwitchesShown } from '../../utils/updateSwitches'
+import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
 import { i18nT } from '../../i18n/t'
@@ -29,6 +30,7 @@ import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
 import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
+import { useInstallDispatch } from '../../hooks/useInstallDispatch'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
@@ -241,12 +243,19 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * a note says so (the Privacy tab's pin note); the switch stays usable, since
  * a click is how a removed override is noticed.
  */
-export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff }: {
+export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff, contextNote, sectionHeading }: {
   /** `false` for a copy outside Settings, so deep links land on About's row. */
   anchor?: boolean
   /** Re-read the saved value on every mount, not only once it is 30 s old. */
   readOnMount?: boolean
   onHandoff?: () => void
+  /** Optional sub-heading rendered inside the gateway section (below the divider),
+   *  before the context note and toggle. Makes the gateway controls visually
+   *  separate from the app's own update card above. */
+  sectionHeading?: string
+  /** Optional context note rendered below the section heading, before the toggle. */
+  contextNote?: string
+
 }) {
   const canApply = useAppSelector(s => s.dashboard.status?.update_can_apply) === true
   const copy = gatewayAutoUpdateCopy(useGatewayAutoUpdateEffect(), { canApply })
@@ -259,6 +268,12 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
   const describedBy = [copy.hint ? noteId : '', showPinNote ? pinNoteId : ''].filter(Boolean).join(' ') || undefined
   return (
     <div className="pt-2.5 border-t border-border">
+      {sectionHeading && (
+        <p className="text-[13px] font-semibold text-text mb-0.5">{sectionHeading}</p>
+      )}
+      {contextNote && (
+        <p className="text-[13px] text-muted mb-2">{contextNote}</p>
+      )}
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
@@ -351,15 +366,9 @@ export function AboutPanel() {
   // Explicit consent actions (macOS Software Update semantics): downloading
   // and installing each happen only when the user clicks.
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download!() })
-  const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
-  // Install is a ONE-WAY door, so the control must never become actionable
-  // again. Note isSuccess, not just isPending: `update:install` resolves as soon
-  // as the install is DISPATCHED, and on macOS the platform installer then works
-  // for several more seconds before the app quits. Keying `disabled` on
-  // isPending alone lets the button re-arm during that window, so the user sees
-  // a clickable install-and-restart action followed by an unexplained quit -- which reads
-  // as a crash.
-  const installDispatched = installMutation.isPending || installMutation.isSuccess
+  // Install-and-restart, with its one-way latch and the reset for a refused or
+  // aborted handoff (see useInstallDispatch).
+  const { installMutation, dispatched: installDispatched, dispatchInstall } = useInstallDispatch(updateState)
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -379,6 +388,13 @@ export function AboutPanel() {
   // download and let the `downloaded` state's Install button (or the
   // deferred-on-quit install) finish it — exactly as a manual click would.
   const [agentInstallArmed, setAgentInstallArmed] = useState(false)
+  const agentInstallArmedRef = useRef(false)
+  // The armed click has seen its download START (`downloading`, which the main
+  // process emits at once for a click it re-checks). What makes a later
+  // `checking` or `not-available` mean "that download was dropped" rather than
+  // the state the click was made from (see agentDownloadDropped).
+  const [agentArmSawDownload, setAgentArmSawDownload] = useState(false)
+  const agentArmSawDownloadRef = useRef(false)
   // Before dispatching the install, retire the request by the id the card
   // showed. The install quits the app; on relaunch into the new version, a
   // request left on disk would put the card straight back up asking for a
@@ -389,23 +405,52 @@ export function AboutPanel() {
     if (id) void api.dismissUpdateArm(id).catch(() => {})
   }
   const installFromAgentRequest = () => {
-    setAgentInstallArmed(true)
     if (updateState?.state === 'downloaded') {
+      // Installs now, so nothing is armed: an armed click left standing would
+      // re-fire on the next `downloaded` once the dispatch latch resets after a
+      // refused or aborted handoff, installing with nobody clicking.
       retireAgentRequest()
-      installMutation.mutate()
+      dispatchInstall()
     } else {
+      agentArmSawDownloadRef.current = false
+      agentInstallArmedRef.current = true
+      setAgentArmSawDownload(false)
+      setAgentInstallArmed(true)
       downloadMutation.mutate()
     }
   }
+  // Query-cache listeners run for every updater payload, before React Query
+  // batches observer renders. The refs preserve the event order for one armed
+  // click even when `downloading` and its cancellation share a render.
+  useEffect(() => queryClient.getQueryCache().subscribe(event => {
+    if (event.type !== 'updated'
+      || event.query.queryKey.length !== 1
+      || event.query.queryKey[0] !== 'update-state') return
+    const pushed = event.query.state.data as UpdateState | null | undefined
+    if (!agentInstallArmedRef.current) return
+    if (pushed?.state === 'downloading') {
+      agentArmSawDownloadRef.current = true
+      setAgentArmSawDownload(true)
+    } else if (agentArmSawDownloadRef.current
+      && (pushed?.state === 'not-available' || pushed?.state === 'checking')) {
+      agentInstallArmedRef.current = false
+      agentArmSawDownloadRef.current = false
+      setAgentInstallArmed(false)
+      setAgentArmSawDownload(false)
+    }
+  }), [queryClient])
   const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
   useEffect(() => {
     // The download the request card started has landed: finish it. One shot —
     // `agentInstallArmed` is cleared so a later, unrelated download does not
     // ride this click.
     if (!agentDownloadLanded || installDispatched) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
     setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
     retireAgentRequest()
-    installMutation.mutate()
+    dispatchInstall()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentDownloadLanded, installDispatched])
   // A download the card started that then FAILED — the updater's own
@@ -413,9 +458,32 @@ export function AboutPanel() {
   // both request actions stay disabled with no way forward.
   const agentDownloadFailed = agentInstallArmed
     && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
+  // A download the card asked for that the main process then DROPS must release the
+  // click too: it re-checks the feed first, and a retraction (`not-available`) or a
+  // channel switch (a fresh `checking`) ends that click without an error. A click
+  // left armed keeps both request actions disabled and installs the next build that
+  // downloads, hours later, with nobody clicking.
+  //
+  // Only AFTER the click's `downloading`: both states are also ones a click is made
+  // FROM (the card stays enabled through them), and from there the main process
+  // discovers first and then downloads. Read off the current state alone, that
+  // click would be released on the next render and its download would land with
+  // nothing left to install it.
   useEffect(() => {
-    if (agentDownloadFailed) setAgentInstallArmed(false)
-  }, [agentDownloadFailed])
+    if (!agentInstallArmed || updateState?.state !== 'downloading') return
+    agentArmSawDownloadRef.current = true
+    setAgentArmSawDownload(true)
+  }, [agentInstallArmed, updateState?.state])
+  const agentDownloadDropped = agentInstallArmed && agentArmSawDownload
+    && (updateState?.state === 'not-available' || updateState?.state === 'checking')
+  const agentDownloadEnded = agentDownloadFailed || agentDownloadDropped
+  useEffect(() => {
+    if (!agentDownloadEnded) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
+    setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
+  }, [agentDownloadEnded])
   // Failures the request card must SHOW (errors-use-error-notice): a poll that
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
@@ -540,6 +608,11 @@ export function AboutPanel() {
   // owns them, so self-managed installer copy would instruct the user to run
   // the exact mechanism the policy excluded.
   const gwManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
+  // True when the provider governs this bundled install and can apply on this
+  // platform. Shared predicate: see selectPolicyGoverned in dashboardSlice.
+  // True when the policy provider governs this bundled install.
+  // Read from the main-process-confirmed update-state (useIsPolicyGoverned).
+  const isGatewayPolicyManaged = useIsPolicyGoverned(infoQuery.data)
   // In-app arm+approve applies only where the backend probed the managed-venv
   // shape; managed_by alone also covers bare source installs whose arm would 409.
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm) === true
@@ -639,7 +712,7 @@ export function AboutPanel() {
         </div>
         <div className="shrink-0">
           {ctaOwnedByRequest ? null : cardReady ? (
-            <Btn primary onClick={() => installMutation.mutate()} disabled={installDispatched}>
+            <Btn primary onClick={dispatchInstall} disabled={installDispatched}>
               <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
                 ? i18nT('pages.settings.aboutPanel.restarting')
                 : i18nT('pages.settings.aboutPanel.install_update_restart_app')}
@@ -1026,7 +1099,7 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && !isExternallyManaged && (
+        {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
@@ -1099,7 +1172,21 @@ export function AboutPanel() {
               )}
             </div>
           ) : (
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              {info?.channelLockedByPolicy ? (
+                <span className="inline-flex items-center gap-2">
+                  {channel}
+                  {/* A build that cannot follow the required channel names both:
+                      the lane it is on, and the one the policy requires. */}
+                  {info.requiredChannel && info.requiredChannel !== channel && (
+                    <span className="text-muted" data-testid="channel-requires">
+                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
+                    </span>
+                  )}
+                  <LockedByPolicyBadge />
+                </span>
+              ) : channel}
+            </Row>
           )
         )}
         {showGwChannelSwitcher && (
@@ -1307,10 +1394,75 @@ export function AboutPanel() {
                       // Falling through to the platform string would blame the
                       // OS and hide the way back.
                       ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
-                      : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
+                      : updatesDisabled === 'policy-channel'
+                        // The policy names a channel this build cannot follow:
+                        // name it, and link its build as the way back.
+                        ? (
+                          <span data-testid="updates-policy-channel">
+                            {i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_policy_channel', { build: channel, channel: info?.requiredChannel })}
+                            {manualUrl && (
+                              <>
+                                {' '}
+                                <Trans
+                                  i18nKey="pages.settings.aboutPanel.automatic_updates_policy_channel_download"
+                                  values={{ channel: info?.requiredChannel }}
+                                  components={{
+                                    // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                                    download: <a href={manualUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                                  }}
+                                />
+                              </>
+                            )}
+                          </span>
+                        )
+                        : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
             </p>
+          ) : isGatewayPolicyManaged ? (
+            // The gateway's security policy provider owns updates on this
+            // bundled install. The intro line and the Check button are hidden:
+            // clicking Check would return "not-available" from the feed lane
+            // that stands down, which is false when the provider has an update
+            // ready.
+            <>
+              <p className="text-sm text-text" data-testid="gateway-policy-managed-note">
+                {i18nT('pages.settings.aboutPanel.updates_managed_by_policy_desktop')}
+              </p>
+              {/* When the provider has a pending update, render the gateway's
+                  check/apply controls so the user can act on it. Shown ONLY
+                  when showUpdate is true to avoid displaying a "Check for
+                  updates" button that contradicts the policy notice above. */}
+              {showUpdate && (
+                <AboutPanelGatewayUpdates
+                  gwUpdate={gwUpdate}
+                  showUpdate={showUpdate}
+                  channelMovePending={channelMovePending}
+                  showManualUpdate={showManualUpdate}
+                  effectiveGwCanArm={effectiveGwCanArm}
+                  effectiveCommand={effectiveCommand}
+                  effectiveGwChannel={effectiveGwChannel}
+                  gwChannelMovePending={gwChannelMovePending}
+                  gwManagedByCommand={gwManagedByCommand}
+                  gwStatusLatest={gwStatusLatest}
+                  gwStatusLatestDisplay={gwStatusLatestDisplay}
+                  gwDiverged={gwDiverged}
+                  gwDivergedText={gwDivergedText}
+                  lastCheckedAt={lastCheckedAt}
+                  checkIntervalSecs={checkIntervalSecs}
+                  botName={botName}
+                  autoUpdateSwitch={null}
+                />
+              )}
+            </>
           ) : (
             <div className="flex flex-col gap-2.5">
+              {/* When a gateway updates section is also shown in this window,
+                  label the app's section so "Check for updates" is unambiguously
+                  about this app, not the gateway. */}
+              {updateSwitches.gateway && (
+                <h4 className="text-[11px] font-medium uppercase tracking-wide text-muted mt-0">
+                  {i18nT('pages.settings.aboutPanel.app_updates_heading')}
+                </h4>
+              )}
               {/* Managed lane: the marker names an external owner even though
                   the updater is armed; show the managed-by notice and the
                   copyable command above the regular update controls. */}
@@ -1404,8 +1556,20 @@ export function AboutPanel() {
           )}
           {/* Outside the app updater's branches on purpose: a gateway the app
               does not own (a reused cli.sh service, an SSH-forwarded one)
-              installs on its own switch whatever this build's updater says. */}
-          {updateSwitches.gateway && <GatewayAutoUpdateSwitch />}
+              installs on its own switch whatever this build's updater says.
+              On a policy-governed install the switch still controls whether
+              the provider's apply command runs unattended, as the existing
+              WhatsNewAutoUpdateToggle comment documents. */}
+          {updateSwitches.gateway && (
+            <GatewayAutoUpdateSwitch
+              sectionHeading={isDesktop && !isGatewayPolicyManaged
+                ? i18nT('pages.settings.aboutPanel.gateway_updates_heading')
+                : undefined}
+              contextNote={isDesktop && !isGatewayPolicyManaged
+                ? i18nT('pages.settings.aboutPanel.gateway_auto_update_desktop_context')
+                : undefined}
+            />
+          )}
         </>) : (
           <AboutPanelGatewayUpdates
             gwUpdate={gwUpdate}

@@ -97,7 +97,7 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     sessionMeta: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key) + '/meta')
       .then(r => (r.status === 404 ? null : j(r))) as Promise<{ key: string; title?: string } | null>,
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
-    clearSessions: () => del('/api/sessions').then(j),
+    clearSessions: (userOnly = false) => del('/api/sessions' + (userOnly ? '?user_only=1' : '')).then(j),
   }
 
   const crewBoard = {

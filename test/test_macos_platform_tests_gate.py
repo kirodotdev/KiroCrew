@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 from macos_lane_helpers import verdict_script as _verdict_script
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,25 @@ def _triggers(document: dict) -> dict:
 def _needs(job: dict) -> list[str]:
     needs = job.get("needs", [])
     return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _fixture_git_env(home: Path) -> dict[str, str]:
+    """A git env built from nothing but ``PATH``, with *home* as ``HOME``.
+
+    Built from nothing, it carries none of the suite's ``GIT_CONFIG_*``
+    entries, so it adds back the ones that keep auto maintenance off.
+    """
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    env.update(git_maintenance_off_entries(env))
+    return env
 
 
 def _grep_has_pcre() -> bool:
@@ -127,14 +147,14 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
 class TestTheMovedLaneIsTheSameLane:
     """A move that quietly drops shards or canaries is a deletion with a receipt."""
 
-    def test_the_full_suite_still_runs_in_five_shards(self) -> None:
+    def test_the_full_suite_still_runs_in_six_shards(self) -> None:
         job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
         assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
-        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4, 5]
-        assert job["env"]["SHARD_COUNT"] == 5
-        # 5 shards on a max-parallel of 4: the fifth queues behind the first, and
-        # the cap is per JOB, so the lane spends one more shard of wall time and
-        # no shard gets closer to 40 (test_workflow_matrix_max_parallel.py pins
+        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4, 5, 6]
+        assert job["env"]["SHARD_COUNT"] == 6
+        # 6 shards on a max-parallel of 4: two waves, 4 then 2, and the cap is
+        # per JOB, so each shard drops to about 25 minutes while the lane's wall
+        # time stays about the same (test_workflow_matrix_max_parallel.py pins
         # the 4).
         assert job["strategy"]["max-parallel"] == 4
         # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
@@ -404,20 +424,12 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         if bash is None:
             pytest.skip("the verdict step is Bash")
         run = _verdict_step()["run"]
-        start = run.index('if [ -n "${BASE_SHA:-}" ]')
+        start = run.index('if added="$(git diff -U0 --no-color HEAD^1 HEAD')
         end = run.index("\nfi\n", run.index("content switch is off")) + len("\nfi\n")
         block = run[start:end]
         repo = tmp_path / "repo"
         repo.mkdir()
-        env = {
-            "PATH": os.environ["PATH"],
-            "HOME": str(tmp_path),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.invalid",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.invalid",
-        }
+        env = _fixture_git_env(tmp_path)
 
         def git(*args: str) -> str:
             return subprocess.run(
@@ -461,7 +473,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # The lane is advisory, so a diff it cannot read must not fail
         # `decide` -- but it must say so rather than fall silent.
         run = _verdict_step()["run"]
-        assert 'added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}"' in run
+        assert 'added="$(git diff -U0 --no-color HEAD^1 HEAD' in run
         assert "content switch is off for this run" in run
         assert "grep -qP" not in run
 

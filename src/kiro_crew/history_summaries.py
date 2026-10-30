@@ -49,6 +49,9 @@ def get_cached_summary(self: ConversationLog, key: str) -> str | None:
         data = json.loads(self._summary_cache_path(key).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):
+        # JSON that is not an object is as unusable as bad JSON: no cache.
+        return None
     summary = data.get("summary")
     sig = self.session_mtime(key)
     if (

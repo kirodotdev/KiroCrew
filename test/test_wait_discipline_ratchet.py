@@ -771,9 +771,12 @@ def test_the_baseline_is_not_stale() -> None:
 def test_the_baseline_is_well_formed() -> None:
     """Sorted, one line per file, no zero or stray entry, header intact -- so two
     changes lowering different files merge without conflict and a hand edit that
-    adds a path the scan never visits is refused rather than quietly unenforced."""
+    adds a path the scan never visits is refused rather than quietly unenforced.
+
+    An empty baseline is the goal state, not a broken scan: every short fixed wait
+    under ``test/`` has moved to a signal, so the file holds the header alone. The
+    positive controls below prove the needles still bite on a planted site."""
     baseline = read_baseline()
-    assert baseline, f"{BASELINE_FILE.name} is empty; the scan is broken or the file was wiped"
     files = {p.relative_to(TEST_ROOT).as_posix() for p in scanned_files()}
     strays = sorted(rel for rel in baseline if rel not in files)
     assert (
@@ -888,14 +891,17 @@ def test_the_detector_ignores_each_near_miss(case: str) -> None:
 
 
 def test_the_scan_matches_known_sites() -> None:
-    """POSITIVE CONTROL on the real tree: the counts above are not low because the
-    needles match nothing. Every kind the gate names is found somewhere under
-    ``test/`` today."""
+    """POSITIVE CONTROL on the real tree: the counts are not low because the
+    needles match nothing. The tree holds no un-excused short fixed wait, so the
+    scan must come back empty AND agree with the baseline; a planted site is
+    still named (``test_a_planted_short_wait_is_named``) and every shape is
+    still detected on the scratch trees above."""
     found = _tree_scan()
-    assert found, "no short fixed wait anywhere under test/; the needles are broken"
-    kinds = {site.kind for sites in found.values() for site in sites}
-    # asyncio.timeout sites have all been migrated; the gate still detects the shape.
-    assert {"wait_for", "result", "sleep-in-loop"} <= kinds, kinds
+    assert not found, (
+        "a short fixed wait is back under test/ with no baseline line: "
+        f"{sorted(str(s) for sites in found.values() for s in sites)}. {HELPERS_HINT}"
+    )
+    assert _counts(found) == Counter(read_baseline())
 
 
 def test_a_planted_short_wait_is_named(tmp_path: Path) -> None:

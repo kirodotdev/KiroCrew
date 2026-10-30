@@ -512,6 +512,43 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
 
 
+async def _lite_spec_unconfirmed(
+    sessions: Any, key: str, client: Any, *, agent: str, authored_before_spawn: bool
+) -> bool:
+    """True when a ``kirocrew-lite`` session's spec cannot be confirmed tool-less.
+
+    The background agent reads text Crew does not author (issue bodies, meeting
+    transcripts, chat history), so a tool another program wrote into its spec
+    would be one that text could reach. Checked like the knowledge pool's worker:
+    only for a backend that mounts what the spec names (``Routing.AGENT_SPEC``),
+    with the read taken before the spawn and the spec the harness loaded, read
+    after it (``effective_spec_declares_zero_tools``). Any other agent, or a
+    backend that reads no spec of Crew's, answers False. Never raises.
+    """
+    from kiro_crew.agent_sdk.backends import Routing, routing_for
+    from kiro_crew.session import BACKGROUND_AGENT  # circular import
+
+    try:
+        bound = sessions.get_agent(key) if hasattr(sessions, "get_agent") else agent
+    except Exception:
+        bound = agent
+    if bound != BACKGROUND_AGENT:
+        return False
+    acp = getattr(client, "client", None)
+    backend = getattr(acp, "backend", None)
+    if not isinstance(backend, str) or routing_for(backend) is not Routing.AGENT_SPEC:
+        return False
+    confirm = getattr(acp, "effective_spec_declares_zero_tools", None)
+    if not callable(confirm):
+        return True
+    try:
+        confirmed = await asyncio.to_thread(confirm, authored_before_spawn=authored_before_spawn)
+    except Exception:
+        logger.warning("kirocrew-lite spec confirmation failed", exc_info=True)
+        return True
+    return confirmed is not True
+
+
 @asynccontextmanager
 async def background_turn(
     sessions: Any,
@@ -584,6 +621,33 @@ async def background_turn(
         except BaseException:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
             raise
+    # The pre-spawn read of the background agent's spec, before ``get_or_create``
+    # can start the harness on it (see :func:`_lite_spec_unconfirmed`).
+    resolved_agent = agent if agent is not None else BACKGROUND_AGENT
+    lite_before_spawn = False
+    if resolved_agent == BACKGROUND_AGENT:
+        from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
+
+        verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
+        lite_before_spawn = verdict is True
+        if verdict is False:
+            # A spec that mounts something is refused before ``get_or_create``:
+            # starting the session would run what it names (an MCP server's startup
+            # code), which no reset undoes. A missing spec is left to the check
+            # after the start.
+            logger.warning(
+                "Background session %s: %s spec mounts a tool, a grant, an MCP server or "
+                "a hook; not starting task=%s",
+                key,
+                BACKGROUND_AGENT,
+                task,
+            )
+            if memory_store:
+                await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            raise RuntimeError(
+                f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
+                "could not be confirmed to mount nothing"
+            )
     try:
         if agent is None:
             client, _new, _resumed = await sessions.get_or_create(key)
@@ -593,6 +657,45 @@ async def background_turn(
         if memory_store:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
         raise
+    # Checked on every turn, not only when ``_new`` says the session is new: a
+    # background runtime started by ``_ensure_background`` reports ``_new=False``,
+    # and a warm one may have been started on a spec rewritten since. The permit is
+    # held from here, so a cancellation during the check gives it back.
+    try:
+        unconfirmed = await _lite_spec_unconfirmed(
+            sessions, key, client, agent=resolved_agent, authored_before_spawn=lite_before_spawn
+        )
+    except BaseException:
+        try:
+            sessions.release(key)
+        except Exception:
+            logger.debug("background session release failed task=%s", task, exc_info=True)
+        if memory_store:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+        raise
+    if unconfirmed:
+        logger.warning(
+            "Background session %s: %s spec mounts a tool, a grant, an MCP server or a "
+            "hook; closing the session instead of running task=%s",
+            key,
+            BACKGROUND_AGENT,
+            task,
+        )
+        try:
+            await sessions.reset(key)
+        except Exception:
+            logger.warning("Background session %s: reset after refusal failed", key, exc_info=True)
+        finally:
+            try:
+                sessions.release(key)
+            except Exception:
+                logger.debug("background session release failed task=%s", task, exc_info=True)
+        if memory_store:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+        raise RuntimeError(
+            f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
+            "could not be confirmed to mount nothing"
+        )
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
     # begins, so identity is what separates a turn that ran from one whose

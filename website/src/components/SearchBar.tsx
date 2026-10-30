@@ -85,7 +85,14 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
   }
 
   return (
-    <div className={docked
+    <div
+      // The bar only renders while message search is open, and useMessageSearch's
+      // document Escape handler closes it (without preventDefault). Mark it as
+      // the current Escape owner so the composer's Escape-to-stop gate yields
+      // (chat-input/escapeOwners.ts) — one Escape closes search, it does not
+      // also stop the running turn (#22315).
+      data-escape-owner=""
+      className={docked
       ? 'flex items-center gap-1.5 w-full text-[13px]'
       : 'absolute top-14 right-4 z-20 flex items-center gap-1.5 bg-bg-elevated border border-border focus-within:border-accent rounded-lg shadow-md px-2.5 py-1.5 text-[13px]'}>
       <input

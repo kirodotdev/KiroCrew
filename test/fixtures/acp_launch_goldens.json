@@ -37,6 +37,25 @@
     "env_removed": [],
     "served_by": "AcpRuntime"
   },
+  "copilot": {
+    "argv": [
+      "/opt/bin/copilot",
+      "--acp",
+      "--stdio",
+      "--no-auto-update",
+      "--disable-builtin-mcps",
+      "--disallow-temp-dir"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "copilot --acp --stdio --no-auto-update --disable-builtin-mcps --disallow-temp-dir",
+    "stderr_label": "copilot"
+  },
   "deepseek": {
     "argv": [
       "/opt/bin/dsh",
@@ -140,6 +159,8 @@
       "KIROCREW_PI_GATE_SESSION": "<nonce>",
       "KIROCREW_PI_MCP_HANDOFF": "/opt/run/kirocrew_pi_gate_mcp_handoff.json",
       "KIROCREW_PI_MCP_KEY": "0000000000000000000000000000000000000000000000000000000000000000",
+      "KIROCREW_PI_STEER": "<steer-stem>",
+      "KIROCREW_PI_STEER_KEY": "<steer-key>",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",

@@ -446,15 +446,16 @@ class TestListenerKeyedCredentialFile:
         site, so a direct call reintroduced in any coroutine fails here.
         """
         import ast
-        from pathlib import Path as _Path
 
-        root = _Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+        from source_corpus import parsed_candidates, src_root
+
+        root = src_root()
         offenders: list[str] = []
-        for py in root.rglob("*.py"):
-            try:
-                tree = ast.parse(py.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError):  # pragma: no cover - unreadable source
-                continue
+        # A flagged callee's spelling ends in one of the two names, so only the files
+        # whose text holds one are parsed.
+        for py, _text, tree in parsed_candidates(
+            require_any=("clear_marker", "clear_late_marker_write")
+        ):
             for fn in ast.walk(tree):
                 if not isinstance(fn, ast.AsyncFunctionDef):
                     continue
@@ -1132,6 +1133,10 @@ class TestTheSharedHelperOwnsThePairing:
             text = path.read_text(encoding="utf-8")
             if rel == pathlib.Path("dashboard/server.py"):
                 text += "".join(owner.read_text(encoding="utf-8") for owner in owners)
+            if rel == pathlib.Path("cron_script.py"):
+                text += "".join(
+                    p.read_text(encoding="utf-8") for p in sorted(src.glob("cron_script_*.py"))
+                )
             reads_per_port = "run_marker.read_secret(" in text
             reads_shared = '".local_secret"' in text
             if reads_per_port and reads_shared:
@@ -1557,6 +1562,7 @@ class TestTheServingResolverIsTheOneGatewaySideChokepoint:
         for rel in (
             "computer_use/screencast.py",
             "cron_script.py",
+            *sorted(path.name for path in src.glob("cron_script_*.py")),
             "mcp_cron.py",
             "mcp_cron_list_render.py",
         ):

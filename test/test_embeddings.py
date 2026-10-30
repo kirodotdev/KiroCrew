@@ -378,14 +378,16 @@ class TestModelContextPolicy:
     @pytest.mark.parametrize(
         ("architecture", "context_length", "expected_sizes"),
         [
-            # gpt2: 1,024 learned absolute positions; the micro-batch stays 256.
-            ("gpt2", 1024, (1024, 1024, 256)),
+            # gpt2: 1,024 learned absolute positions; the micro-batch stays 128.
+            ("gpt2", 1024, (1024, 1024, 128)),
+            # A decoder trained for four times the micro-batch count.
+            ("starcoder", 512, (512, 512, 128)),
             # A decoder trained for twice the micro-batch count.
-            ("starcoder", 512, (512, 512, 256)),
-            # A decoder trained for exactly the micro-batch count.
-            ("gpt2", 256, (256, 256, 256)),
-            # Below the micro-batch: n_ubatch may never exceed n_batch.
+            ("gpt2", 256, (256, 256, 128)),
+            # Exactly the micro-batch count: n_ubatch may never exceed n_batch.
             ("gpt2", 128, (128, 128, 128)),
+            # Below the micro-batch: n_ubatch may never exceed n_batch.
+            ("gpt2", 64, (64, 64, 64)),
             # Qwen3-Embedding declares 32,768: the ceiling, the shipped sizes.
             ("qwen3", 32768, _DECODER_SIZES),
             ("qwen3", 8192, _DECODER_SIZES),
@@ -396,6 +398,7 @@ class TestModelContextPolicy:
             "starcoder-512",
             "gpt2-256",
             "gpt2-128",
+            "gpt2-64",
             "qwen3-32768",
             "qwen3-8192",
             "qwen3-absent",
@@ -438,7 +441,7 @@ class TestModelContextPolicy:
 
     @pytest.mark.parametrize(
         ("architecture", "expected_sizes"),
-        [("bert", (512, 512, 512)), ("gpt2", (512, 512, 256))],
+        [("bert", (512, 512, 512)), ("gpt2", (512, 512, 128))],
         ids=["encoder", "decoder"],
     )
     def test_trained_position_count_reaches_llama_constructor_with_one_warning(
@@ -615,9 +618,36 @@ class TestModelContextPolicy:
 
 
 class TestLlamaCppEmbedder:
+    @pytest.fixture(autouse=True)
+    def _close_built_embedders(self):
+        """Every backend ``_embedder`` builds is closed when the test ends.
+
+        A published model starts a daemon idle evictor that re-reads the data home on
+        every tick (``_evict_loop`` -> ``embedding_idle_evict_secs`` -> ``config_dir``),
+        so a backend left open keeps resolving paths from under every later test on
+        the worker; the rootdir ``_no_leaked_embed_evictor`` fails the test that does.
+        ``close()`` is idempotent, so a test that closes on its own path is unaffected.
+
+        The evictor is joined here as well: ``close()`` bounds its join by
+        ``_INFER_STOP_TIMEOUT_SECS``, which a test of the straggler path pins to zero,
+        and the shared ``monkeypatch`` unwinds AFTER this fixture, so that pin is still
+        in force when this runs. The bound is the production default of that constant:
+        a shorter one would let a loaded host hand the still-live thread to the rootdir
+        ``_no_leaked_embed_evictor`` floor, which fails the test.
+        """
+        self._built: list[LlamaCppEmbedder] = []
+        yield
+        for emb in self._built:
+            emb.close()
+            evictor = emb._evict_thread
+            if evictor is not None:
+                evictor.join(timeout=30)
+
     def _embedder(self, tmp_path: Path) -> LlamaCppEmbedder:
         model = _write_model_file(tmp_path / "model.gguf")
-        return LlamaCppEmbedder(model_path=model)
+        emb = LlamaCppEmbedder(model_path=model)
+        self._built.append(emb)
+        return emb
 
     def test_embed_returns_vector(self, tmp_path: Path, monkeypatch) -> None:
         fake_cls = _make_fake_llama_class()

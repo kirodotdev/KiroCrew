@@ -1,7 +1,7 @@
 """Tests for voice_reply module — text preparation and provider resolution.
 
 Markdown stripping, SSML, rate and pitch validation and sentence splitting, then
-which TTS provider and engine a host resolves (system, Piper, Polly), the system
+which TTS provider and engine a host resolves (system, Polly), the system
 engine's rate mapping and SAPI command, and how the system voices are listed. Each provider's synthesis is covered in
 ``test_voice_reply_synthesis.py``; the pipeline around it (dispatch, upload,
 streaming, stitching) in ``test_voice_reply_pipeline.py``.
@@ -19,15 +19,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from voice_reply_helpers import _no_argv_prefixers  # noqa: F401
-from voice_reply_helpers import _make_executable, _mock_subprocess
+from voice_reply_helpers import _mock_subprocess
 
 from kiro_crew.voice_reply import (
     _SAY_VOICE_RE,
-    DEFAULT_LENGTH_SCALE,
     DEFAULT_PITCH,
     DEFAULT_PROVIDER,
     DEFAULT_RATE,
-    PROVIDER_PIPER,
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
     SYSTEM_ENGINE_ESPEAK,
@@ -37,7 +35,6 @@ from kiro_crew.voice_reply import (
     VALID_PROVIDERS,
     SystemVoiceProbeError,
     _parse_system_voices,
-    _resolve_piper_binary,
     _sapi_encoded_command,
     _sapi_rate,
     _system_wpm,
@@ -50,8 +47,8 @@ from kiro_crew.voice_reply import (
     resolve_system_tts_async,
     split_sentences,
     strip_markdown,
+    synthesis_settings,
     text_to_ssml,
-    validate_length_scale,
 )
 
 
@@ -293,18 +290,6 @@ class TestValidation:
         assert _validate_pitch("10%") == DEFAULT_PITCH  # missing +/-
         assert _validate_pitch("") == DEFAULT_PITCH
 
-    def test_valid_length_scale(self) -> None:
-        assert validate_length_scale(1.5) == 1.5
-        assert validate_length_scale("0.85") == 0.85
-        assert validate_length_scale(2) == 2.0
-
-    def test_invalid_length_scale_returns_default(self) -> None:
-        # Non-numeric, non-finite, zero/negative, and OverflowError (huge int)
-        # all fall back to the default rather than reaching synthesis or being
-        # persisted as unserializable JSON.
-        for bad in ["fast", None, float("inf"), float("nan"), 0, -1.0, 10 ** 400, [1]]:
-            assert validate_length_scale(bad) == DEFAULT_LENGTH_SCALE
-
     def test_valid_engines(self) -> None:
         assert "neural" in VALID_ENGINES
         assert "generative" in VALID_ENGINES
@@ -339,7 +324,6 @@ class TestSplitSentences:
 class TestProviderConstants:
     def test_constants_defined(self) -> None:
         assert PROVIDER_POLLY == "polly"
-        assert PROVIDER_PIPER == "piper"
         assert PROVIDER_SYSTEM == "system"
         # The host's built-in engine is the default because it is the only
         # provider that needs nothing installed, so auto-speak works on a fresh
@@ -348,7 +332,7 @@ class TestProviderConstants:
         assert DEFAULT_PROVIDER == PROVIDER_SYSTEM
         assert DEFAULT_PROVIDER != PROVIDER_POLLY
         assert PROVIDER_POLLY in VALID_PROVIDERS
-        assert PROVIDER_PIPER in VALID_PROVIDERS
+        assert "piper" not in VALID_PROVIDERS
         assert PROVIDER_SYSTEM in VALID_PROVIDERS
 
 
@@ -363,47 +347,6 @@ class TestIsAvailable:
     def test_polly_unavailable_when_aws_missing(self) -> None:
         with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
             assert is_available(PROVIDER_POLLY) is False
-
-    def test_piper_unavailable_when_binary_missing(self, tmp_path) -> None:
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"fake")
-        with patch(
-            "kiro_crew.voice_reply._resolve_piper_binary", return_value=None,
-        ):
-            assert is_available(
-                PROVIDER_PIPER, piper_binary="", piper_model=str(model),
-            ) is False
-
-    def test_piper_unavailable_when_model_empty(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        with patch(
-            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ):
-            assert is_available(PROVIDER_PIPER, piper_model="") is False
-
-    def test_piper_unavailable_when_model_file_missing(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        with patch(
-            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ):
-            # Model path provided but file doesn't exist.
-            assert is_available(
-                PROVIDER_PIPER, piper_model=str(tmp_path / "nope.onnx"),
-            ) is False
-
-    def test_piper_available_when_binary_and_model_exist(self, tmp_path) -> None:
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"fake model")
-        with patch(
-            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ):
-            assert is_available(
-                PROVIDER_PIPER, piper_model=str(model),
-            ) is True
 
     def test_unknown_provider_returns_false(self, caplog) -> None:
         assert is_available("bogus") is False
@@ -801,106 +744,19 @@ class TestResolvePollyCli:
         assert is_available(PROVIDER_POLLY) is False
 
 
-# ── _resolve_piper_binary() ─────────────────────────────────────────────
-
-
-class TestResolvePiperBinary:
-    def test_configured_path_preferred(self, tmp_path) -> None:
-        bin_path = tmp_path / "my-piper"
-        _make_executable(str(bin_path))
-        assert _resolve_piper_binary(str(bin_path)) == str(bin_path)
-
-    def test_configured_path_missing_returns_none(self, tmp_path) -> None:
-        assert _resolve_piper_binary(str(tmp_path / "nope")) is None
-
-    def test_windows_rejects_a_non_launchable_suffix(self, tmp_path, monkeypatch) -> None:
-        """A `.txt` must not pass as a Windows binary.
-
-        `os.access(X_OK)` calls any readable file executable there, so without a
-        suffix check a configured notes file reports the provider available, the
-        caller skips its "voice unavailable" notice, and the spawn then fails
-        with nothing shown to the user.
-        """
-        monkeypatch.setattr("kiro_crew.voice_reply.IS_WINDOWS", True)
-        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-        notes = tmp_path / "piper_notes.txt"
-        notes.write_text("not a binary")
-        assert _resolve_piper_binary(str(notes)) is None
-        exe = tmp_path / "piper.exe"
-        exe.write_text("stub")
-        assert _resolve_piper_binary(str(exe)) == str(exe)
-        # Case is not significant on Windows, and PATHEXT is operator-extensible.
-        ps1 = tmp_path / "piper.PS1"
-        ps1.write_text("stub")
-        assert _resolve_piper_binary(str(ps1)) is None
-        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.PS1")
-        assert _resolve_piper_binary(str(ps1)) == str(ps1)
-        # An extensionless explicit path stands: PATHEXT governs how a bare NAME
-        # resolves against PATH, not what CreateProcess launches from a full
-        # path, and a PE image carries no required suffix.
-        bare = tmp_path / "my-piper"
-        bare.write_text("stub")
-        assert _resolve_piper_binary(str(bare)) == str(bare)
-
-    def test_configured_path_not_executable_returns_none(self, tmp_path) -> None:
-        p = tmp_path / "not-exec"
-        p.write_bytes(b"")  # exists but not chmod +x
-        assert _resolve_piper_binary(str(p)) is None
-
-    def test_configured_expanduser(self, tmp_path, monkeypatch) -> None:
-        bin_path = tmp_path / "piper-home"
-        _make_executable(str(bin_path))
-        monkeypatch.setenv("HOME", str(tmp_path))
-        assert _resolve_piper_binary("~/piper-home") == str(bin_path)
-
-    def test_falls_back_to_path(self, tmp_path) -> None:
-        with patch(
-            "kiro_crew.voice_reply.shutil.which", return_value="/usr/local/bin/piper",
-        ), patch("os.path.isfile", return_value=False):
-            assert _resolve_piper_binary("") == "/usr/local/bin/piper"
-
-    def test_falls_back_to_venv(self, tmp_path, monkeypatch) -> None:
-        venv_bin = tmp_path / "piper-venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        bin_path = venv_bin / "piper"
-        _make_executable(str(bin_path))
-        monkeypatch.setenv("HOME", str(tmp_path))
-        with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
-            assert _resolve_piper_binary("") == str(bin_path)
-
-    def test_nothing_found_returns_none(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))  # no venv exists
-        with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
-            assert _resolve_piper_binary("") is None
-
-
 # ── resolve_configured_provider() ────────────────────────────────────────
+
+
+@pytest.fixture
+def fresh_removed_warning(monkeypatch):
+    """The removed-provider notice fires once per process; give each test its own."""
+    monkeypatch.setattr("kiro_crew.voice_reply._warned_removed_providers", set())
 
 
 class TestResolveConfiguredProvider:
     def test_named_provider_is_kept(self) -> None:
-        for name in (PROVIDER_SYSTEM, PROVIDER_PIPER, PROVIDER_POLLY):
+        for name in (PROVIDER_SYSTEM, PROVIDER_POLLY):
             assert resolve_configured_provider({"provider": name}) == name
-
-    @pytest.mark.parametrize("malformed", [{}, [], 0, 3, None, "", "   "])
-    def test_a_malformed_piper_model_does_not_claim_a_piper_install(self, malformed):
-        """The migration gate must read a real path, not any truthy stringification.
-
-        It answers one question -- did an operator configure Piper? -- and keeping
-        Piper for an upgrader is only correct when the answer is yes. ``str({})``
-        is ``"{}"``, which is truthy, so a malformed value would answer yes and
-        hand that operator a provider with no model file: silence, which is the
-        precise failure the new default exists to remove. A config with no usable
-        model resolves to the default instead.
-        """
-        assert resolve_configured_provider({"piper_model": malformed}) == DEFAULT_PROVIDER
-
-    def test_a_real_piper_model_still_keeps_piper(self):
-        """The migration guarantee itself -- tightening the gate must not drop it."""
-        assert (
-            resolve_configured_provider({"piper_model": "/models/en_US.onnx"})
-            == PROVIDER_PIPER
-        )
 
     def test_absent_section_resolves_to_the_default(self) -> None:
         assert resolve_configured_provider(None) == DEFAULT_PROVIDER
@@ -917,28 +773,79 @@ class TestResolveConfiguredProvider:
     def test_unhashable_provider_does_not_raise(self) -> None:
         # config.json can hold a list or dict where a string belongs; `in
         # VALID_PROVIDERS` would raise TypeError on those.
-        assert resolve_configured_provider({"provider": ["piper"]}) == DEFAULT_PROVIDER
+        assert resolve_configured_provider({"provider": ["polly"]}) == DEFAULT_PROVIDER
         assert resolve_configured_provider({"provider": {"a": 1}}) == DEFAULT_PROVIDER
 
-    def test_a_configured_piper_model_keeps_piper_when_unnamed(self) -> None:
-        # The upgrade case: a working Piper install from before the built-in
-        # engine became the default. Resolving it to the default would silently
-        # downgrade the voice with nothing to alert the operator.
-        assert (
-            resolve_configured_provider({"piper_model": "~/voices/en.onnx"})
-            == PROVIDER_PIPER
-        )
-        assert resolve_configured_provider({"provider": "", "piper_model": "~/v.onnx"}) == (
-            PROVIDER_PIPER
-        )
 
-    def test_a_blank_piper_model_does_not_win(self) -> None:
-        assert resolve_configured_provider({"piper_model": "   "}) == DEFAULT_PROVIDER
+class TestRemovedPiperProvider:
+    """A saved Piper config keeps speaking, through the local default, and says why."""
 
-    def test_an_explicit_provider_outranks_a_configured_model(self) -> None:
-        assert (
-            resolve_configured_provider(
-                {"provider": PROVIDER_SYSTEM, "piper_model": "~/voices/en.onnx"}
+    def test_a_named_piper_provider_resolves_to_the_local_default(
+        self, caplog, fresh_removed_warning
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            got = resolve_configured_provider({"provider": "piper", "piper_model": "~/v.onnx"})
+        assert got == DEFAULT_PROVIDER == PROVIDER_SYSTEM
+        notices = [r.message for r in caplog.records if "was removed" in r.message]
+        assert len(notices) == 1
+        assert "'piper'" in notices[0] and "23154" in notices[0]
+        # The remedy must be one the operator can act on: Settings shows the
+        # resolved `system` already selected, so re-picking it saves nothing.
+        assert "config.json" in notices[0]
+
+    def test_an_unnamed_provider_with_a_piper_model_resolves_to_the_default(
+        self, caplog, fresh_removed_warning
+    ) -> None:
+        # The pre-system-default upgrade shape: no provider, only a model path.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            assert resolve_configured_provider({"piper_model": "~/v.onnx"}) == DEFAULT_PROVIDER
+            assert resolve_configured_provider({"provider": "", "piper_model": "~/v.onnx"}) == (
+                DEFAULT_PROVIDER
             )
-            == PROVIDER_SYSTEM
+        assert sum("was removed" in r.message for r in caplog.records) == 1
+
+    @pytest.mark.parametrize("malformed", [{}, [], 0, 3, None, "", "   "])
+    def test_a_malformed_piper_model_resolves_quietly(
+        self, malformed, caplog, fresh_removed_warning
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            assert resolve_configured_provider({"piper_model": malformed}) == DEFAULT_PROVIDER
+        assert not any("was removed" in r.message for r in caplog.records)
+
+    def test_the_notice_is_logged_once_per_process(self, caplog, fresh_removed_warning) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            for _ in range(3):
+                resolve_configured_provider({"provider": "piper"})
+        assert sum("was removed" in r.message for r in caplog.records) == 1
+
+    def test_an_explicit_provider_outranks_a_leftover_model(
+        self, caplog, fresh_removed_warning
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            got = resolve_configured_provider(
+                {"provider": PROVIDER_POLLY, "piper_model": "~/voices/en.onnx"}
+            )
+        assert got == PROVIDER_POLLY
+        assert not any("was removed" in r.message for r in caplog.records)
+
+    def test_leftover_piper_keys_are_not_synthesis_settings(self, fresh_removed_warning) -> None:
+        settings = synthesis_settings(
+            {
+                "provider": "piper",
+                "piper_binary": "/opt/piper",
+                "piper_model": "~/v.onnx",
+                "piper_length_scale": 0.8,
+            }
         )
+        assert settings["provider"] == PROVIDER_SYSTEM
+        assert not any("piper" in key or "length_scale" in key for key in settings)

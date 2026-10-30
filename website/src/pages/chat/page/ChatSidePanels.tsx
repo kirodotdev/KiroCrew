@@ -15,6 +15,7 @@ import SearchResultsList from '../../../components/SearchResultsList'
 import SidePanel from '../SidePanel'
 import DetailPanel from '../../../components/DetailPanel'
 import { i18nT } from '../../../i18n/t'
+import { coversPaneProps } from '../../../hooks/paneVisibility'
 
 interface ChatSidePanelsProps {
   mode?: string
@@ -79,6 +80,9 @@ export default function ChatSidePanels({
   handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
   pinSummary,
 }: ChatSidePanelsProps) {
+  // A narrow desktop window where the panel fills the chat column needs no mark:
+  // it squeezes the transcript to zero width, which the on-screen backstop sees
+  // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
   return (
     <>
       {search.isOpen && (
@@ -136,6 +140,11 @@ export default function ChatSidePanels({
             className={isMobile
               ? 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-[47] flex justify-end bg-bg'
               : 'h-full overflow-hidden flex justify-end shrink-0'}
+            // On a phone this is an opaque overlay over the whole content area,
+            // so while OPEN the transcript under it is not on screen
+            // (paneVisibility, #23564); not while sliding out, and the desktop
+            // panel sits beside the transcript instead.
+            {...(isMobile && sideOverlayPhase === 'open' ? coversPaneProps : {})}
             // Kept mounted for a live app tab: hide instead of unmounting so the
             // iframe (and the drawing inside it) survives a panel close. On
             // mobile the overlay phase already owns mount/hide timing, and the

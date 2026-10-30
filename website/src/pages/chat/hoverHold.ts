@@ -92,3 +92,33 @@ export function heldSeat<T extends { key: string }>(
   }
   return held
 }
+
+/**
+ * `seat` kept inside the held row's own section of `rest`, the list with the
+ * held row removed.
+ *
+ * A lane sorts its pinned rows first, so the pinned rows are a run at the top
+ * of `rest` and everything after them is the automatically sorted section.
+ * The pixel anchor knows nothing of that boundary: when a pinned row arrives
+ * above an unpinned held row (a fork of a pinned session lands at the end of
+ * the pinned run, right where the pointer rests), the anchor seats the held
+ * row ABOVE the newcomer, so the list reads pinned, unpinned, pinned. The
+ * sidebar then draws its pinned-section divider twice. A held row may move
+ * inside its section, never across the boundary: the pinned section is an
+ * order the person chose, and a hover must not reorder it.
+ *
+ * `leads` answers whether a row belongs to the leading (pinned) section. A
+ * list whose leading rows are not one run at the top has no such boundary, so
+ * its seat is returned unchanged.
+ */
+export function seatInSection<T>(
+  seat: number,
+  rest: readonly T[],
+  heldLeads: boolean,
+  leads: (s: T) => boolean,
+): number {
+  let boundary = 0
+  while (boundary < rest.length && leads(rest[boundary])) boundary++
+  for (let i = boundary; i < rest.length; i++) if (leads(rest[i])) return seat
+  return heldLeads ? Math.min(seat, boundary) : Math.max(seat, boundary)
+}

@@ -314,6 +314,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _trim_preview,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.drive_writes import (  # noqa: F401
+        _TLS_POLICY_CHECKED,
+        _confirm_tls_policy,
         _drive_object_keys,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.library import (  # noqa: F401
@@ -333,6 +335,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.job_sdk import UnknownJobKind  # noqa: F401
     from kiro_crew.apps.job_sdk import get_sdk as get_job_sdk  # noqa: F401
     from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
+    from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response  # noqa: F401
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,

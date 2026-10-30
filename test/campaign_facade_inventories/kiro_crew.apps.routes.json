@@ -125,7 +125,7 @@
   "wrap_argv",
   "wrap_argv_async"
  ],
- "note": "Frozen at the split of src/kiro_crew/apps/routes.py (S51): every public name it defined, and every name it bound from the rest of kiro_crew. A kiro_crew._facade_mirror facade that keeps the handlers the sync-io fs baseline pins to it: each other name is served from the owner that binds it, so a read through the facade is the owner's own object.",
+ "note": "Frozen at the split of src/kiro_crew/apps/routes.py (S51): every public name it defined, and every name it bound from the rest of kiro_crew. A kiro_crew._facade_mirror facade that keeps only the route table: each other name is served from the owner that binds it, so a read through the facade is the owner's own object.",
  "rebound": {
   "BUILTIN_NAMES": "kiro_crew.apps.builtins",
   "ConfigReadError": "kiro_crew.config.loader",

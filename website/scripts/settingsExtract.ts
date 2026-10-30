@@ -90,9 +90,7 @@ export function __resetCatalogCache(): void {
 /** Panel file → tab key mapping (derived from SettingsPage.tsx switch).
  *  Only panels that actually render inside a Settings tab are mapped — the
  *  fork is KiroACP-only and de-Amazoned, so upstream's Provider / Secretary /
- *  Sync / TaskKeeper panels are absent, and controls that live on the
- *  standalone Developer page rather than a Settings tab (e.g. McpManagement)
- *  are intentionally excluded to avoid dead deep-links.
+ *  Sync / TaskKeeper panels are absent.
  *
  *  Entries may carry `params` — extra query params the deep link needs for
  *  the panel to actually mount (the Channels tab is a list-detail view, so
@@ -109,9 +107,13 @@ export function __resetCatalogCache(): void {
 type PanelTargetSingle = string | { tab: string; params: Record<string, string>; labelSuffix?: string }
 type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
 
+/** The Settings > Developer page the opt-in switches render on. */
+const DEVELOPER_PREVIEWS: PanelTargetSingle = { tab: 'developer', params: { sub: 'feature-previews' } }
+
 /** Exported for the coverage gate (settingsCoverage.test.ts): a panel file
  *  that renders Settings* primitives but is absent from this map is silently
  *  dropped from search, so the gate cross-checks every panel file against it. */
+
 export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
@@ -174,16 +176,17 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   ],
   'DeveloperPanel.tsx': 'developer',
-  // The Feature Previews cards DeveloperPanel mounts. Indexed on purpose: the
-  // old Developer-page tab kept itself out of search so "webhooks" would not
-  // advertise a hidden page, but a control visible on a Settings pane that
+  // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
+  // page. Indexed on purpose: a control visible on a Settings pane that
   // search cannot find is the coverage gap settingsCoverage.test.ts exists to
   // close — and the hit reaches the labelled opt-in switch, not the page.
-  'FeaturePreviewsSection.tsx': 'developer',
+  'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
+  // The URL is offered only while its preview is enabled (settingsSearchCore).
+  'SessionEnvironmentsCard.tsx': 'session-environments',
   // The Crewmates section DeveloperPanel mounts under Feature Previews: the
   // server-side crewmate switches (reply threads today). Same tab, so a
   // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
-  'CrewmatesSection.tsx': 'developer',
+  'CrewmatesSection.tsx': DEVELOPER_PREVIEWS,
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
@@ -195,12 +198,12 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // that knows the feature is denied. A control added here without being added
   // there would advertise a row the page does not draw — `settingsSearchGovernance`
   // asserts the two stay in step.
-  'DecisionsCard.tsx': 'developer',
+  'DecisionsCard.tsx': DEVELOPER_PREVIEWS,
   // The card's per-point DETAIL panel, split into its own module so the card can
   // stay synchronous while this rides a lazy boundary. Mapped to the same tab: a
   // control added to it belongs to the same deep link, and leaving it unmapped
   // would mean the extractor never looks at the file at all.
-  'DecisionsPointPanel.tsx': 'developer',
+  'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
   // install's Updates card body). Mapped with it so a control either one gains stays
@@ -219,10 +222,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
-  'AutomaticCardSetting.tsx': 'developer',
+  'AutomaticCardSetting.tsx': DEVELOPER_PREVIEWS,
   // The built-in KAS engine card, which FeaturePreviewsSection mounts from
   // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
-  'KasBundleCard.tsx': 'developer',
+  'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
@@ -234,11 +237,13 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
+  'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;
  *  each entry gets `params.sub` from the case it is rendered under. */
-const SUBNAV_CASE_PANELS = new Set(['ChatPanel.tsx', 'DisplayPanel.tsx', 'NotificationsPanel.tsx'])
+const SUBNAV_CASE_PANELS = new Set(['ChatPanel.tsx', 'DisplayPanel.tsx', 'NotificationsPanel.tsx', 'DeveloperPanel.tsx'])
 
 /** Map component name → our type enum. */
 const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {

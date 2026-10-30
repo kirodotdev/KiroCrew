@@ -16,9 +16,9 @@ import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { fmtRelative, toDate } from '../i18n/format'
-import { cardsApi, CARD_FINISHED_STATUSES, type Card } from '../api/cards'
+import { cardsApi, CARD_FINISHED_STATUSES, WORKFLOW_DEFINITIONS_QUERY_KEY, type Card } from '../api/cards'
 import { CardChanges, reachNames } from './CardChanges'
-import { cardChanges, cardTitle, FALLBACK_ICON, specFor } from './cardRegistry'
+import { cardChanges, cardTitle, FALLBACK_ICON, isToolAccessCard, specFor } from './cardRegistry'
 import { oneShotRunAt } from './oneShot'
 import { CardRow, UserInputs } from './kindBodies'
 import CardResultLine from './CardResultLine'
@@ -27,6 +27,10 @@ import { problemFrom, problemText, wantsRefresh, type CardProblem } from './refu
 import { useCardCorners } from './cardCorners'
 import { useCardAuthor } from './cardAuthor'
 import { MEMBER_GOALS_QUERY_PREFIX, MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
+
+// The card can mount inside a dialog's zoom-in; a layout height ignores that scale.
+const layoutHeight = (node: HTMLElement) => node.offsetHeight
 
 const GOALS_CARD_KINDS = new Set(['crewmate.goal', 'crewmate.key_results', 'crewmate.check_ins'])
 
@@ -76,6 +80,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const headingId = useId()
   const rootRef = useRef<HTMLElement>(null)
   const lineRef = useRef<HTMLDivElement>(null)
+  const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>(layoutHeight)
   const [running, setRunning] = useState<null | 'apply' | 'undo'>(null)
   const [problem, setProblem] = useState<CardProblem | null>(null)
   // The stored error the user closed (by content, since a refetch rebuilds it).
@@ -214,6 +219,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
       // A goal, milestone or check-in card rewrites the Goals record an open
       // Goals tab is showing, so that tab re-reads it without a page reload.
       if (GOALS_CARD_KINDS.has(card.kind)) void queryClient.invalidateQueries({ queryKey: MEMBER_GOALS_QUERY_PREFIX })
+      // A workflow card saves into the library an open Workflows tab is listing.
+      if (card.kind.startsWith('workflow.')) void queryClient.invalidateQueries({ queryKey: WORKFLOW_DEFINITIONS_QUERY_KEY })
     }
   }, [running, runAt, stranded, card, inputs, reload, store, refresh, queryClient])
 
@@ -254,17 +261,24 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const title = cardTitle(card)
 
   return (
-    <motion.section
+    <section
       ref={rootRef}
-      // Size only: a scroll moves the card inside the virtual list, and
-      // animating that position change would make it jitter.
-      layout={reduce ? false : 'size'}
-      transition={reduce ? { duration: 0 } : { duration: 0.2 }}
       aria-labelledby={headingId}
       data-testid="change-card"
       data-card-status={card.status}
       className={`@container ${corners} border border-border bg-card text-card-fg`}
     >
+      {/* The collapse animates the real height to the measured content, never
+          a layout scale: a scale stretched the text and let the rows below
+          jump over the still-tall card (#24534). */}
+      <motion.div
+        data-testid="change-card-sizer"
+        initial={false}
+        animate={{ height: contentHeight || 'auto' }}
+        transition={reduce ? { duration: 0 } : { duration: 0.2 }}
+        className="overflow-hidden"
+      >
+      <div ref={contentRef}>
       {finished ? (
         <CardResultLine
           ref={lineRef}
@@ -292,7 +306,18 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               <span className="min-w-0 break-words">{spec?.label() ?? card.kind}</span>
             </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-0.5">
-              <h3 id={headingId} className="m-0 min-w-0 flex-1 basis-[14rem] text-[14px] font-semibold leading-5 text-text break-words">{title}</h3>
+              <h3 id={headingId} className="m-0 min-w-0 flex-1 basis-[14rem] text-[14px] font-semibold leading-5 text-text break-words">
+                {title}
+                {isToolAccessCard(card) && (
+                  // A preview opt-in: the same badge the Profile card's switch wears.
+                  <span
+                    className="ml-2 inline-block rounded-md bg-accent/15 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wide text-accent"
+                    data-testid="change-card-preview"
+                  >
+                    {i18nT('pages.membersPage.profile_preview_tag')}
+                  </span>
+                )}
+              </h3>
               {runAt !== null && !timePassed && !expired && card.status === 'pending' ? (
                 <span className="text-[12px] leading-5 text-muted @min-[480px]:ml-auto" data-testid="change-card-due">
                   {i18nT('components.changeCards.due', { when: fmtRelative(runAt, { now, style: 'long' }) })}
@@ -308,8 +333,12 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               <div className="mt-3 rounded-md border border-warn/30 bg-warn-subtle px-3 py-2 text-[13px] leading-5 text-text" data-testid="change-card-risk">
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={14} className="mt-[3px] shrink-0 text-warn" aria-hidden="true" />
-                  <span>{card.risk === 'widen' ? widenText(card) : i18nT('components.changeCards.risk_code_exec')}</span>
+                  <span>{card.risk === 'widen' ? widenText(card) : (spec?.riskNote?.() ?? i18nT('components.changeCards.risk_code_exec'))}</span>
                 </div>
+                {/* What the press does, read beside the warning, before any code. */}
+                {spec?.pressNote && card.status === 'pending' && !expired && (
+                  <p className="m-0 mt-1 pl-[22px]" data-testid="change-card-press-note">{spec.pressNote()}</p>
+                )}
                 {widen && (
                   <label className="mt-1 flex min-h-11 items-center gap-2 cursor-pointer">
                     <input
@@ -325,6 +354,10 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                   </label>
                 )}
               </div>
+            )}
+
+            {spec?.pressNote && card.risk !== 'widen' && card.risk !== 'code_exec' && card.status === 'pending' && !expired && (
+              <p className="m-0 mt-3 text-[13px] leading-5 text-text" data-testid="change-card-press-note">{spec.pressNote()}</p>
             )}
 
             <div className="mt-2 [&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border" data-testid="change-card-rows">
@@ -385,7 +418,9 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 disabled={busy}
                 data-testid="change-card-cancel"
               >
-                {i18nT('components.changeCards.cancel')}
+                {isToolAccessCard(card)
+                  ? i18nT('components.changeCards.tool_access_not_now')
+                  : spec?.decline?.() ?? i18nT('components.changeCards.cancel')}
               </Btn>
             )}
             {(card.status === 'failed' || expired) && (
@@ -405,11 +440,14 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               {running === 'apply' && <LoaderCircle size={14} className="animate-spin" aria-hidden="true" />}
               {stranded ? i18nT('components.changeCards.continue_apply')
                 : card.status === 'failed' ? i18nT('components.changeCards.retry')
+                : isToolAccessCard(card) ? i18nT('components.changeCards.tool_access_turn_on')
                 : spec?.primary(card) ?? i18nT('components.changeCards.apply_fallback')}
             </Btn>}
           </div>
         </div>
       )}
-    </motion.section>
+      </div>
+      </motion.div>
+    </section>
   )
 }

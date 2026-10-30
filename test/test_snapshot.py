@@ -234,7 +234,6 @@ class TestSnapshot:
         src, _, _, tmp_path = env
         out2 = tmp_path / "out2"
         out2.mkdir()
-        # Create 3 fake old snapshots
         for i in range(3):
             (out2 / f"kirocrew-snapshot-2026010{i}T000000Z.tar.gz").write_text("fake")
         monkeypatch.setenv("KIROCREW_HOME", str(src))
@@ -881,6 +880,26 @@ class TestSecurity:
         # An unrelated file in a trust/ dir is NOT dropped (basename match only).
         other = tarfile.TarInfo(name="snap/trust/notes.txt")
         assert _data_filter(other) is not None
+
+    def test_data_filter_drops_special_files(self):
+        """_data_filter claims tarfile "data" filter equivalence, and the
+        data filter refuses special files. A FIFO or device member must be
+        dropped, not staged: a later restore pass that opens a staged FIFO
+        for reading blocks on a writer that never comes."""
+        from kiro_crew.snapshot import _data_filter
+
+        fifo = tarfile.TarInfo(name="snap/workspace/pipe")
+        fifo.type = tarfile.FIFOTYPE
+        assert _data_filter(fifo) is None
+        device = tarfile.TarInfo(name="snap/workspace/node")
+        device.type = tarfile.CHRTYPE
+        assert _data_filter(device) is None
+        # Regular files and directories still pass.
+        regular = tarfile.TarInfo(name="snap/workspace/file.txt")
+        assert _data_filter(regular) is not None
+        directory = tarfile.TarInfo(name="snap/workspace")
+        directory.type = tarfile.DIRTYPE
+        assert _data_filter(directory) is not None
 
     def test_symlink_filtered_out(self, env, monkeypatch):
         """TEST 30 — symlinks are silently dropped by _data_filter."""

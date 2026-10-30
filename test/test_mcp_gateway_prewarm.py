@@ -144,3 +144,32 @@ def test_flush_closes_fd_when_restrict_to_owner_raises(
     assert closed_fds, "the raw fd from mkstemp must be closed on failure"
     # _dirty must be re-armed so the next flush retries.
     assert store._dirty is True
+
+
+def test_load_treats_an_undecodable_file_as_empty(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``load()`` promises a corrupt file yields an empty store and never
+    raises. A byte that is not UTF-8 is corruption like ``{not json`` is: it
+    must degrade the same way, or the warm pool's prewarm pass fails on every
+    start until someone deletes the file."""
+    path = tmp_path / "hot-keys.json"
+    path.write_bytes(b'{"keys": [{"k": "caf\xe9"}]}')
+    store = HotKeyStore(path)
+
+    with caplog.at_level("WARNING", logger="kiro_crew.mcp_gateway.prewarm"):
+        try:
+            store.load()
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"load() must never raise, but an undecodable file raised {exc!r}")
+
+    assert store.top_register_payloads(5) == []
+    assert "hot-keys" in caplog.text
+
+    # The store stays usable: a fresh record persists over the bad file and
+    # a new store reads it back.
+    store.record(_register())
+    assert store.flush() is True
+    reloaded = HotKeyStore(path)
+    reloaded.load()
+    assert [p["server_name"] for p in reloaded.top_register_payloads(5)] == ["test-mcp"]

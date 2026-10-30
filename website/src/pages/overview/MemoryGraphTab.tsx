@@ -57,6 +57,8 @@ const GROUP_DOT_COLOR: Record<string, string> = {
 
 interface GraphNode { id: string; label: string; group: string; title: string }
 interface GraphEdge { from: string; to: string }
+/** Which capped populations the server left rows out of (`/api/memory/graph`). */
+interface GraphPartial { semantic?: boolean; lessons?: boolean }
 
 export default function MemoryGraphTab() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -74,7 +76,7 @@ export default function MemoryGraphTab() {
     queryKey: ['memory-graph'],
     queryFn: async () => {
       const r = await api.memoryGraph().catch(() => ({ nodes: [], edges: [] }))
-      return r as { nodes: GraphNode[]; edges: GraphEdge[] }
+      return r as { nodes: GraphNode[]; edges: GraphEdge[]; partial?: GraphPartial }
     },
   })
   // Memoize the derived arrays so the `?? []` fallback doesn't hand the sigma
@@ -83,6 +85,9 @@ export default function MemoryGraphTab() {
   // `data`, which is itself reference-stable between renders until a refetch.
   const nodes = useMemo(() => data?.nodes ?? [], [data])
   const edges = useMemo(() => data?.edges ?? [], [data])
+  // The server caps the semantic and lesson populations it draws; say so, since
+  // search below only finds the nodes that were sent.
+  const partial = Boolean(data?.partial?.semantic || data?.partial?.lessons)
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchImmediate), 300)
@@ -327,6 +332,9 @@ export default function MemoryGraphTab() {
           <Btn key={key} onClick={() => setFilter(filter === key ? null : key)} className={filter === key ? '!border-accent !text-accent' : ''}><StatusDot color={GROUP_DOT_COLOR[key]} /> {i18nT(GROUP_LABEL_KEY[key], { count: counts[key] })}</Btn>
         ) : null)}
       </div>
+      {partial && (
+        <p className="text-muted text-sm mb-2" role="note" data-testid="memory-graph-partial">{i18nT('pages.overview.memoryGraphTab.partial_notice')}</p>
+      )}
       <div ref={containerRef} className="w-full border border-border rounded-md bg-bg-elevated" style={{ height: '500px' }} />
       {selected && (
         <div className="mt-3 p-3 bg-bg-elevated border border-border rounded-md">

@@ -18,6 +18,7 @@ from prepare_pr_status_helpers import (
     _load_script,
     _pr_payload,
 )
+from skill_script_helpers import load_skill_script
 
 # ---------------------------------------------------------------------------
 # Accepted human-override records.
@@ -395,3 +396,106 @@ def test_the_evaluator_itself_refuses_an_untrusted_override_record() -> None:
         [forged], _HEAD, bindings, only=["GPT"], authors=("coverage-app[bot]",)
     )
     assert widened["overridden"] == {"GPT": "maintainer"}, widened
+
+
+def _classed_override(record: str, **kwargs: object) -> dict[str, object]:
+    """An override record whose second line is the class record the handler writes."""
+    comment = _override_comment(**kwargs)
+    first, rest = str(comment["body"]).split("\n", 1)
+    comment["body"] = f"{first}\n{record}\n{rest}"
+    return comment
+
+
+_DEFERRED_RECORD = (
+    "<!-- ai-review-override-record class=deferred issue=1234 author_is_actor=false -->"
+)
+
+
+def test_the_class_record_is_read_from_a_trusted_override() -> None:
+    contract = _load_script()._review_contract
+
+    assert contract.parse_override_class(_classed_override(_DEFERRED_RECORD)) == {
+        "class": "deferred",
+        "issue": "1234",
+        "author_is_actor": False,
+    }
+    plain = (
+        "<!-- ai-review-override-record class=false-positive issue=none author_is_actor=true -->"
+    )
+    assert contract.parse_override_class(_classed_override(plain)) == {
+        "class": "false-positive",
+        "issue": "",
+        "author_is_actor": True,
+    }
+
+
+def test_a_record_from_before_classes_is_unclassified_not_an_error() -> None:
+    contract = _load_script()._review_contract
+
+    assert contract.parse_override_class(_override_comment()) == {
+        "class": "unclassified",
+        "issue": "",
+        "author_is_actor": None,
+    }
+
+
+def test_a_class_line_on_a_forged_or_malformed_record_has_no_class() -> None:
+    contract = _load_script()._review_contract
+
+    forged = _classed_override(_DEFERRED_RECORD, login="someone", user_type="User")
+    assert contract.parse_override_class(forged) is None
+    bad_marker = _classed_override(_DEFERRED_RECORD, marker="<!-- ai-review-human-override -->")
+    assert contract.parse_override_class(bad_marker) is None
+    # A class line anywhere but line 2 is prose, not a record.
+    late = _override_comment()
+    late["body"] = str(late["body"]) + "\n" + _DEFERRED_RECORD
+    assert contract.parse_override_class(late)["class"] == "unclassified"
+    # An unknown shape for any field reads as unclassified, never as a guess.
+    odd = _classed_override(
+        "<!-- ai-review-override-record class=deferred issue=x author_is_actor=maybe -->"
+    )
+    assert contract.parse_override_class(odd)["class"] == "unclassified"
+
+
+def test_the_marker_line_is_unchanged_by_the_class_line() -> None:
+    contract = _load_script()._review_contract
+    comment = _classed_override(_DEFERRED_RECORD)
+
+    assert contract.parse_override_record(comment) == ("gpt", _HEAD, "maintainer")
+
+
+def test_pr_status_prints_the_class_of_an_override(capsys) -> None:
+    module = _load_script()
+    comments = json.dumps([_override_lane_comment(), _classed_override(_DEFERRED_RECORD)])
+    _install_fake_gh(module, _pr_payload(_clean_checks()), comments=comments)
+
+    assert module.main(["pr_status.py", "42"]) == 0
+    out = capsys.readouterr().out
+    assert "GPT: OVERRIDDEN by @maintainer as deferred #1234 (" in out, out
+
+
+def test_an_unclassified_record_prints_no_class(capsys) -> None:
+    module = _load_script()
+    comments = json.dumps([_override_lane_comment(), _override_comment()])
+    _install_fake_gh(module, _pr_payload(_clean_checks()), comments=comments)
+
+    assert module.main(["pr_status.py", "42"]) == 0
+    out = capsys.readouterr().out
+    assert "GPT: OVERRIDDEN by @maintainer as unclassified (" in out, out
+
+
+def test_the_producer_writes_a_class_line_the_consumer_reads() -> None:
+    """The handler's second line and ``OVERRIDE_CLASS_RE`` are one shape."""
+    contract = _load_script()._review_contract
+    release = load_skill_script(
+        "release_record_for_status", ROOT / ".github" / "scripts" / "release_record.py"
+    )
+    line = release.render_record("deferred", "1234", True)
+
+    parsed = contract.parse_override_class(_classed_override(line))
+    assert parsed["class"] == "deferred" and parsed["author_is_actor"] is True
+    for cls in release.CLASSES + (release.LEGACY_CLASS,):
+        got = contract.parse_override_class(
+            _classed_override(release.render_record(cls, "", False))
+        )
+        assert got["class"] == cls, cls

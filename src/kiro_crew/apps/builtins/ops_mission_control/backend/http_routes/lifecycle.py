@@ -61,7 +61,7 @@ async def _handle_transition(
             # mirror. An investigating agent that pasted a provider token into its writeup
             # stored that token in the incident index and painted it on the dashboard. Same
             # shape as the action-note, Slack and ledger sinks, which were already covered
-            # while this one was not. Found in review.
+            # while this one was not.
             #
             # `slot_key`/`slack_thread_ts` are machine ids, shape-checked downstream, and are
             # deliberately NOT run through the redactor: it would corrupt an id that happened
@@ -83,12 +83,11 @@ async def _handle_transition(
             {"error": "unknown incident", "code": "unknown_incident"}, status=404
         )
     except (json.JSONDecodeError, OSError) as exc:
-        # BEFORE the `ValueError` arm, and that order is the whole point: a corrupt index
-        # was being reported as `409 illegal_transition` carrying the JSON parser's message
+        # BEFORE the `ValueError` arm, and that order is the whole point: otherwise a corrupt
+        # index is reported as `409 illegal_transition` carrying the JSON parser's message
         # -- corruption misclassified as the operator making an illegal move, which sends
-        # them to fix their own request instead of the file. Found in review (Opus 4.8),
-        # and it is the same `JSONDecodeError`-under-`ValueError` accident this change
-        # already closed at three other callers.
+        # them to fix their own request instead of the file. Other callers guard the same
+        # `JSONDecodeError`-under-`ValueError` case.
         return _store_read_refusal(exc, code="dispatch_index")
     except ValueError as exc:
         # An illegal transition is a client error, not a server fault.
@@ -126,11 +125,11 @@ async def _handle_transition(
     # Running them here is also strictly BETTER for the blocking I/O, which is why
     # `to_thread` is not needed to protect the loop: `_deliver_note` already offloads its
     # own disk append via `run_in_executor`, but only when it can see a running loop.
-    # Called from a worker thread it took the `RuntimeError` fallback and wrote to disk
-    # INLINE in that thread — so the thread hop bought no I/O isolation while costing
-    # thread-safety. Found in review (GPT 5.6); the review proposed deleting both calls,
-    # which would have removed the replyable-thread link and the needs-human alert —
-    # features, not incidental work — so they are marshalled instead.
+    # Called from a worker thread it takes the `RuntimeError` fallback and writes to disk
+    # INLINE in that thread — so a thread hop buys no I/O isolation while costing
+    # thread-safety. Deleting both calls is not an option: they carry the replyable-thread
+    # link and the needs-human alert — features, not incidental work — so they are
+    # marshalled instead.
     thread_linked = slack_out.link_thread_to_investigation(incident, request.app.get("state"))
 
     # The one state change worth interrupting for: an incident now waiting on a person.
@@ -183,7 +182,7 @@ async def _handle_claim(
     # (`resource="prod-db-1"`, matching `resource_glob="prod-*"`) with a DIFFERENT provider's
     # target in `labels` (`dd_monitor_id=<someone else's monitor>`) — the resource satisfies
     # the gate while a different field drives the downstream sink. The authorization then
-    # describes a signal that does not exist. Found in review.
+    # describes a signal that does not exist.
     #
     # The provider is the authority on what is firing, so we ask it: poll, and take the
     # server's OWN copy of the signal with this id. The claim is refused if the id is not
@@ -195,7 +194,6 @@ async def _handle_claim(
     # signal that recovered between the board's poll and this one came back as `ok`, matched
     # on id alone, and minted an incident for a fault that had already cleared. The two other
     # `poll_all` consumers (`dispatch.run_cycle`, `GET /signals`) both filter explicitly.
-    # Found in review.
     #
     # `suppressed` is excluded by the same predicate and must be: somebody parked that signal
     # at the provider, so claiming it is precisely what they asked not to happen.
@@ -213,7 +211,8 @@ async def _handle_claim(
             status=409,
         )
 
-    mode = rotation.resolve_mode(signal)
+    # `resolve_mode` reads the app mode and the act-rules from the policy file on disk.
+    mode = await asyncio.to_thread(rotation.resolve_mode, signal)
     # `operator`, not the heartbeat default: this route IS the board's manual claim,
     # and telling the two apart afterwards is the whole point of the field.
     try:
@@ -224,7 +223,7 @@ async def _handle_claim(
         # `claim` raises on both failures by design -- a compare-and-set has no safe
         # degraded answer, since `None` already means "another instance owns this signal".
         # The board's manual claim therefore needs the same coded translation as its
-        # siblings; unwrapped it answered a bare 500. Found in review (Opus 4.8).
+        # siblings; unwrapped it answered a bare 500.
         return _store_read_refusal(exc, code="dispatch_index")
     if incident is None:
         return web.json_response(
@@ -246,11 +245,11 @@ async def _handle_claim(
     #
     # The claim is already durably on disk and the webhook is already acked, so a fault from
     # HERE ON must not be reported as a failed claim. `attach_ledger_matches` writes through
-    # `store.update_fields` -> `transition` -> `_read_index_for_update()`, which this change
-    # gave two new ways to raise -- and unguarded it answered a bare uncoded 500 while every
-    # sibling mutating route got the coded translation. Found in review (Opus 4.8).
+    # `store.update_fields` -> `transition` -> `_read_index_for_update()`, which can raise
+    # -- and unguarded it would answer a bare uncoded 500 while every sibling mutating route
+    # gives the coded translation.
     #
-    # Deliberately NOT the coded refusal that review suggested, for the same reason
+    # Deliberately NOT a coded refusal, for the same reason
     # `_schedule_verification` reports rather than raises: a 503 here says "the claim failed,
     # retry" about a claim that SUCCEEDED, and the retry answers `409 signal_already_claimed`.
     # It would also skip the audit entry, leaving a real claim unrecorded. The ledger

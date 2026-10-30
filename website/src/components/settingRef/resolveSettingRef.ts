@@ -23,6 +23,11 @@ export interface SchemaEntry {
    * a missing flag means "applies live" and the UI must show no restart hint.
    */
   requiresRestart?: boolean
+  /**
+   * This build ignores the local value: only the organization's policy can turn
+   * it on. Omitted for every field that is not locked, and always on oss.
+   */
+  lockedByPolicy?: boolean
 }
 
 export type SettingRefResolution =

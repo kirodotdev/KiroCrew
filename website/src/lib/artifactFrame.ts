@@ -18,15 +18,20 @@
  */
 import type { Artifact } from '../types'
 import { CREW_DASHBOARD_SANDBOX } from './crewDashboardSandbox'
+import { AGENT_PAGE_SANDBOX } from './widgetSrcdoc'
 
-/** The library frame's grants, unchanged for every artifact that is not a report. */
-export const ARTIFACT_FRAME_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
+/** The library frame's grants for every artifact that is not a report: the
+ * agent-page grant, with links leaving through the host's link bridge. */
+export const ARTIFACT_FRAME_SANDBOX = AGENT_PAGE_SANDBOX
 
 export interface ArtifactFrame {
   /** The iframe's `sandbox` attribute. */
   sandbox: string
   /** `buildSrcdoc`'s `offlineScripts`: drop the CDN script origins. */
   offlineScripts: boolean
+  /** `buildSrcdoc`'s `linkBridge`: a web link opens through the host after a real
+   * click. Off for a report, whose links are inert. */
+  linkBridge: boolean
   /** `buildSrcdoc`'s `rewriteBareLinks`: off where popups are withheld, since a
    * `_blank` link would then be a dead click. */
   rewriteBareLinks: boolean
@@ -36,7 +41,7 @@ export interface ArtifactFrame {
 
 export function artifactFrame(artifact: Pick<Artifact, 'goal_report'> | null | undefined): ArtifactFrame {
   if (artifact?.goal_report === true) {
-    return { sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, rewriteBareLinks: false, pageScripts: false }
+    return { sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, linkBridge: false, rewriteBareLinks: false, pageScripts: false }
   }
-  return { sandbox: ARTIFACT_FRAME_SANDBOX, offlineScripts: false, rewriteBareLinks: true, pageScripts: true }
+  return { sandbox: ARTIFACT_FRAME_SANDBOX, offlineScripts: false, linkBridge: true, rewriteBareLinks: false, pageScripts: true }
 }

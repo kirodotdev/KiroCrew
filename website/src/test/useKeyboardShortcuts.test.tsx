@@ -10,6 +10,7 @@ import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { matchShortcutEvent, resolveShortcuts } from '../lib/shortcutRegistry'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
+import { escapeStoppedSpeech } from '../utils/speechStopKey'
 import { recordRouteNavigation, _resetRouteHistoryPositionForTest } from '../lib/routeHistoryPosition'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import chatReducer from '../store/chatSlice'
@@ -1583,6 +1584,31 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
     pressEscape()
     window.removeEventListener('voice-stop', spy)
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the Escape it spent on speech, and only that one (#22315)', () => {
+    // The composer's Escape-to-stop gate reads this mark so the press that
+    // silences read-back never also stops the running turn.
+    const seen: Event[] = []
+    const record = (e: Event) => { seen.push(e) }
+    document.addEventListener('keydown', record)
+    setup({ voicePlaying: true })
+    pressEscape()
+    document.removeEventListener('keydown', record)
+    expect(seen).toHaveLength(1)
+    expect(escapeStoppedSpeech(seen[0])).toBe(true)
+    expect(escapeStoppedSpeech(new KeyboardEvent('keydown', { key: 'Escape' }))).toBe(false)
+  })
+
+  it('does not mark an Escape when nothing is speaking', () => {
+    const seen: Event[] = []
+    const record = (e: Event) => { seen.push(e) }
+    document.addEventListener('keydown', record)
+    setup({ voicePlaying: false })
+    pressEscape()
+    document.removeEventListener('keydown', record)
+    expect(seen).toHaveLength(1)
+    expect(escapeStoppedSpeech(seen[0])).toBe(false)
   })
 
   it('does nothing on Escape when not speaking', () => {

@@ -146,6 +146,37 @@ class TestSetScopeEntry:
         assert not kpath.exists()
 
 
+# A hand-edited mcp.json saved in a legacy code page (Notepad "ANSI", any
+# latin-1 editor): one accented character is not valid UTF-8.
+_LATIN1_MCP_JSON = '{"mcpServers": {"x": {"command": "caf\xe9"}}}'.encode("latin-1")
+
+
+class TestLoadJsonOrEmptyUndecodable:
+    def test_non_utf8_file_reads_as_empty(self, tmp_path):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        path = tmp_path / "mcp.json"
+        path.write_bytes(_LATIN1_MCP_JSON)
+        try:
+            data = mcp_mod._load_json_or_empty(path)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"an undecodable config escaped the helper: {exc!r}")
+        assert data == {}
+
+    def test_write_to_non_utf8_file_leaves_it_untouched(self, tmp_path, monkeypatch):
+        """Reading the file as empty must not let a writer replace it with
+        just the new entry: the JSONC check before every write still cannot
+        decode it, so the write is refused and the user's bytes stay."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        path = tmp_path / "mcp.json"
+        path.write_bytes(_LATIN1_MCP_JSON)
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", path)
+        with pytest.raises(UnicodeDecodeError):
+            mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "c"})
+        assert path.read_bytes() == _LATIN1_MCP_JSON
+
+
 # ---------------------------------------------------------------------------
 # api_mcp_apply: preservation rule + batched writes
 # ---------------------------------------------------------------------------

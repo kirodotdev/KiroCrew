@@ -123,16 +123,13 @@ describe('SkillsTab', () => {
     expect(otherRow.className).not.toMatch(/\bborder(-|\b)/)
   })
 
-  it('skill list uses the overlay (autohide, no-layout-shift) scrollbar', async () => {
+  it('skill list is its own scroll box', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'a', name: 'a', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
     const list = await screen.findByRole('listbox', { name: 'Skills' })
-    // ``scrollbar-overlay`` keeps the scrollbar hidden until hover and
-    // overlays it so the row width never shifts.
-    expect(list.className).toContain('scrollbar-overlay')
     expect(list.className).toContain('overflow-y-auto')
   })
 
@@ -1389,7 +1386,7 @@ describe('SkillsTab update/delete failure surfacing', () => {
     resolveDelete({ ok: true })
     // The editor must remain mounted with the draft intact.
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
-    expect(screen.getByText('Save')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
     expect(screen.getByText('Cancel')).toBeInTheDocument()
     confirmSpy.mockRestore()
   })

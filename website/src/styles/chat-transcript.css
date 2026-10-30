@@ -36,6 +36,14 @@
    being hidden behind an opaque grey slab, and picks up the accent so it reads
    as a first-class app surface in every theme (light/dark/monokai/custom). */
 .optimize-overlay{background:color-mix(in srgb,var(--card) 62%,transparent);animation:ft-fade .25s ease-out both}
+/* Touch screens get no title tooltip, so the X alone does not say what it does.
+   Under a coarse pointer the button grows to a 44px-tall labelled "Cancel" chip;
+   a mouse keeps the 28px icon with its tooltip. */
+.optimize-overlay-cancel-label{display:none}
+@media (pointer: coarse){
+  .optimize-overlay-cancel{width:auto;min-width:2.75rem;height:2.75rem;padding:0 .875rem 0 .75rem;gap:.375rem;color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
+  .optimize-overlay-cancel-label{display:inline}
+}
 .optimize-overlay-pill{background:color-mix(in srgb,var(--accent) 12%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);box-shadow:0 8px 24px var(--accent-glow),0 1px 3px rgba(0,0,0,.12)}
 @media (prefers-reduced-motion:reduce){
   .optimize-overlay{animation:none}
@@ -98,7 +106,7 @@
 .csb4{display:flex;gap:5px;padding:2px 0}
 .csb4 .slot{position:relative;width:14px;height:14px}
 .csb4 .slot .lyr{position:absolute;inset:0;display:block;color:var(--accent)}
-.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img{display:block;width:100%;height:100%;overflow:visible}
+.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img,.csb4 .slot .lyr>canvas{display:block;width:100%;height:100%;overflow:visible}
 .csb4 .slot .lyr:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
 .csb4 .slot .lyr:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
 .csb4 .slot:nth-child(2) .lyr{animation-delay:.25s}
@@ -238,6 +246,11 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
 [data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
 [data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Amethyst OLED gives --card the page colour too (#000000 in dark, a near-match in light), so its
+   borderless user bubble takes the same --bg-hover step as kiro-light's. */
+[data-theme="amethyst-oled-dark"] .user-bubble,[data-theme="amethyst-oled-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Color-blind safe light keeps a white --card on a white page as well. */
+[data-theme="colorblind-light"] .user-bubble{background-color:var(--bg-hover)}
 /* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
    `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
    the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every

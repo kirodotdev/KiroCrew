@@ -40,6 +40,7 @@ is.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import re
@@ -223,14 +224,33 @@ def rejection_notes(rejections: Sequence[Rejection]) -> str:
     return _display_safe("\n".join(lines))
 
 
+def remaining_upload_limits(spent: Sequence[OutboundFile]) -> ExtractLimits:
+    """What is left of one message's :data:`UPLOAD_LIMITS` after *spent* files.
+
+    For a reply whose files are extracted in more than one pass: each pass gets
+    only what the earlier ones left, so together they never admit more files or
+    bytes than one message may carry.
+    """
+    return dataclasses.replace(
+        UPLOAD_LIMITS,
+        max_files=max(0, UPLOAD_LIMITS.max_files - len(spent)),
+        max_total_bytes=max(0, UPLOAD_LIMITS.max_total_bytes - sum(f.size_bytes for f in spent)),
+    )
+
+
 async def extract_outbound_with_audit(
     text: str,
     *,
     within_root: str,
     audit_caller: str,
     scratch_root: str = "",
+    limits: ExtractLimits = UPLOAD_LIMITS,
 ) -> tuple[str, list[OutboundFile], str]:
     """Extract local image refs for upload, writing the mandatory SEL audit.
+
+    *limits* is the budget this extraction may spend: Slack's whole per-message
+    budget by default, or what is left of it when one reply's files are
+    extracted in more than one pass.
 
     Returns ``(body, files, notes)`` where ``body`` is the reply with local
     paths stripped and any refusal ``notes`` already folded in, ``files`` are the
@@ -245,7 +265,7 @@ async def extract_outbound_with_audit(
     """
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=within_root, limits=UPLOAD_LIMITS, scratch_root=scratch_root
+            text, within_root=within_root, limits=limits, scratch_root=scratch_root
         )
     except Exception:
         logger.warning("slack: outbound file extraction failed", exc_info=True)
@@ -442,4 +462,22 @@ async def process_slack_files(
     # Rejection notes ride along as prompt text, matching the previous behaviour
     # of inlining size and validation failures for the model to see.
     paths = [*result.image_paths, *result.file_paths]
-    return paths, [*result.text_blocks, *result.rejections]
+    locations = [image_location_note(p) for p in result.image_paths]
+    return paths, [*result.text_blocks, *locations, *result.rejections]
+
+
+def image_location_note(path: str) -> str:
+    """Tell the agent where an inlined Slack image is saved.
+
+    ``build_prompt_blocks`` replaces an inlined image's path with
+    ``[image: <name>]``, so the model sees the picture but not where the file
+    is, and its file tools cannot open the original. This note names the folder
+    and the file SEPARATELY: a whole path ending in an image suffix would be
+    rewritten to the marker again, while a folder alone matches no image path.
+    Slack only; other channels and the dashboard keep their prompt unchanged.
+    """
+    folder, name = os.path.split(path)
+    return (
+        f"[Image {name} is saved in the folder {folder}{os.sep} until this turn ends; "
+        "join the two to open the original file]"
+    )

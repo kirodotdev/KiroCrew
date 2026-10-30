@@ -199,7 +199,7 @@ jobs:
       # downloads every artifact on the run into artifacts/<name>/ -- the
       # universal leg. A single-arch leg names its one build artifact, whose
       # files land directly under artifacts/.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.mac_artifact }}
           path: artifacts
@@ -718,7 +718,7 @@ jobs:
 
       - name: Download gated artifact
         if: env.HAS_SIGNING_SECRETS
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.promote && inputs.promotion_artifact || format('KiroCrew-notarized-{0}-{1}{2}', inputs.channel, inputs.version, inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }}
           path: work
@@ -852,7 +852,9 @@ jobs:
       #
       # Format: electron-updater channel metadata (latest-mac.yml), the
       # exact shape electron-builder generates -- version, files[] with
-      # url + sha512 + size, legacy top-level path/sha512, releaseDate.
+      # url + sha512 + size, legacy top-level path/sha512, releaseDate --
+      # plus minimumSystemVersion, which electron-builder never writes but
+      # electron-updater enforces (scripts/feed_min_system_version.py).
       # website/electron/auto-update.js reads the per-channel feed
       # DIRECTORY (updates.crew.kiro.dev/feed/<channel>/) and the library
       # appends the platform filename.
@@ -947,8 +949,16 @@ jobs:
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
+          # The OS floor, read from the artifact's own Info.plist and written as
+          # the Darwin kernel version electron-updater compares with
+          # os.release(): a client below it declines the update instead of
+          # installing a build it cannot launch. Fails closed (set -e) when the
+          # ZIP names no floor this script can translate.
+          MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")
+          echo "Feed floor: minimumSystemVersion ${MIN_OS}"
           cat > /tmp/latest-mac.yml <<EOF
           version: ${VERSION}
+          minimumSystemVersion: '${MIN_OS}'
           files:
             - url: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
               sha512: '${ZIP_SHA512}'

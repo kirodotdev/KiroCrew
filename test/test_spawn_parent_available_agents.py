@@ -144,9 +144,19 @@ class TestParentAllowlistResolution:
     def test_declared_parent_resolves_to_its_list(self, triage_fixture: Path) -> None:
         assert sa.parent_spawn_allowlists("orchestrator") == (("agent1", "agent2", "agent3"),)
 
-    def test_undeclared_parent_resolves_to_nothing(self, triage_fixture: Path) -> None:
-        assert sa.parent_spawn_allowlists("plain") == ()
-        assert sa.parent_spawn_allowlists("trust-only") == ()
+    @pytest.mark.parametrize(
+        "parents",
+        [
+            pytest.param(("plain", "trust-only"), id="test_undeclared_parent_resolves_to_nothing"),
+            # No spec for the parent means no declaration to honour.
+            pytest.param(("no-such-agent", ""), id="test_unknown_parent_resolves_to_nothing"),
+        ],
+    )
+    def test_a_parent_without_a_declaration_resolves_to_nothing(
+        self, triage_fixture: Path, parents: tuple[str, ...]
+    ) -> None:
+        for parent in parents:
+            assert sa.parent_spawn_allowlists(parent) == (), parent
 
     def test_unreadable_parent_record_is_unknown_not_parentless(self, triage_fixture: Path) -> None:
         """A record that exists but cannot be read is UNKNOWN (refuse); a caller
@@ -190,11 +200,6 @@ class TestParentAllowlistResolution:
         monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", tmp_path / "agents")
         agent_discovery.clear_list_agents_cache()
         assert sa.parent_spawn_allowlists("orchestrator") is None
-
-    def test_unknown_parent_resolves_to_nothing(self, triage_fixture: Path) -> None:
-        # No spec for the parent means no declaration to honour: unchanged behaviour.
-        assert sa.parent_spawn_allowlists("no-such-agent") == ()
-        assert sa.parent_spawn_allowlists("") == ()
 
     def test_unreadable_parent_spec_is_unknown_not_allow_all(self, triage_fixture: Path) -> None:
         """The hardened reader folds an unparseable file into "no spec"; for the
@@ -472,6 +477,20 @@ class TestGateWiring:
             if c.kwargs.get("outcome") == "denied"
         ]
         assert len(denied) == 1 and "availableAgents" in denied[0].kwargs.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_gate_refuses_every_spawn_from_a_crewmate_conductor(
+        self, triage_fixture: Path
+    ) -> None:
+        """A crewmate's own chat runs on the conductor and hands work to a worker
+        session; the gate refuses its spawns whatever the child and whatever its
+        spec declares, and points at the hand-off it does have."""
+        for child in ("kirocrew", "agent1", ""):
+            manager, info, _sel = await self._spawn("kirocrew-mate-conductor", child)
+            assert info is not None and info.done is True
+            assert info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+            assert "session_create" in info.error
+            assert manager._running_count == 0
 
     @pytest.mark.asyncio
     async def test_gate_admits_listed_agent(self, triage_fixture: Path) -> None:
@@ -876,6 +895,197 @@ class TestProjectScopeParent:
         lists = sa.parent_template_allowlists("dashboard:repo", "lead")
         assert lists == (("agent1",),)
         assert sa._vet_parent_available_agents(("lead", lists), "rogue") is not None
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+class TestQueuedRowKeepsTheParentProjectScope:
+    """A queued spawn records the parent's project directories when it is
+    accepted, and every drain reads the parent's declaration from them as well
+    as from the parent's live scope.
+
+    The case pinned: a project-scope parent tightens ``availableAgents`` while
+    its row waits, then its session ends so its live scope reads empty. The
+    drain still reads the project spec and refuses the agent it now excludes.
+    """
+
+    PARENT = "chat-parent"
+
+    @pytest.fixture
+    def project(self, tmp_path: Path, agents_dir: Path) -> Path:
+        root = tmp_path / "repo"
+        (root / ".kiro" / "agents").mkdir(parents=True)
+        for name in ("agent1", "rogue"):
+            _write_spec(agents_dir, name)
+        _write_spec(
+            root / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1", "rogue"]}},
+        )
+        return root
+
+    @pytest.fixture
+    def live_dirs(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """The parent's live project scope; clear it to end the parent session."""
+        dirs = [str(project)]
+        monkeypatch.setattr(
+            sa,
+            "_parent_project_resolver",
+            lambda key: list(dirs) if key == self.PARENT else [],
+        )
+        return dirs
+
+    @staticmethod
+    def _tighten_and_end_parent(project: Path, live_dirs: list[str]) -> None:
+        _write_spec(
+            project / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        agent_discovery.clear_list_agents_cache()
+        live_dirs.clear()
+
+    def _patches(self) -> Any:
+        from contextlib import ExitStack
+
+        from kiro_crew.subagent import SubagentManager
+
+        parent = _parent_execution("proj-lead")
+        stack = ExitStack()
+        stack.enter_context(patch("kiro_crew.subagent.Stats"))
+        stack.enter_context(patch("kiro_crew.subagent.sel"))
+        stack.enter_context(
+            patch("kiro_crew.execution_context.read_session_execution", return_value=parent)
+        )
+        stack.enter_context(patch("kiro_crew.subagent.read_session_execution", return_value=parent))
+        stack.enter_context(patch.object(SubagentManager, "_run", new=AsyncMock()))
+        return stack
+
+    async def _queued(self) -> tuple[Any, dict]:
+        from kiro_crew.subagent import SubagentManager
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder(), max_concurrent=1
+        )
+        await manager.wait_taskq_ready()
+        manager._spawn_stagger_secs = 0.0
+        manager.spawn("occupy", parent_session_key=self.PARENT, agent="agent1")
+        queued = manager.spawn("waiting", parent_session_key=self.PARENT, agent="rogue")
+        assert queued is not None and queued.queued and not queued.done
+        return manager, manager._queue[0]
+
+    @pytest.mark.asyncio
+    async def test_the_queued_entry_and_the_durable_row_carry_the_accepted_dirs(
+        self, project: Path, live_dirs: list[str]
+    ) -> None:
+        with self._patches():
+            manager, params = await self._queued()
+        assert params["_parent_project_dirs"] == [str(project)]
+        record = manager._admission.taskq_build_record(
+            "x",
+            params,
+            parent_session_key=self.PARENT,
+            memory_store="",
+            app="",
+            model=None,
+            allowed_tools=None,
+            approval_mode=None,
+        )
+        assert record.params["_parent_project_dirs"] == [str(project)]
+
+    @pytest.mark.asyncio
+    async def test_sync_drain_after_the_parent_ended_reads_the_accepted_scope(
+        self, project: Path, live_dirs: list[str]
+    ) -> None:
+        drained: list[Any] = []
+        with self._patches():
+            manager, _params = await self._queued()
+            self._tighten_and_end_parent(project, live_dirs)
+            real_spawn = manager.spawn
+            manager.spawn = lambda *a, **kw: drained.append(real_spawn(*a, **kw)) or drained[-1]  # type: ignore[method-assign]
+            manager._running_count = 0
+            manager._drain_queue()
+        assert drained, "the queue did not drain"
+        info = drained[-1]
+        assert info is not None and info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+        assert "rogue" in info.error
+
+    @pytest.mark.asyncio
+    async def test_pump_dispatch_after_the_parent_ended_reads_the_accepted_scope(
+        self, project: Path, live_dirs: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+        from kiro_crew.testing.wait import finished
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+        with self._patches():
+            manager, _params = await self._queued()
+            params = manager._queue.pop(0)
+            manager._running_count = 0
+            self._tighten_and_end_parent(project, live_dirs)
+            info = await finished(
+                manager._admission._dispatch_async_impl(params), "the drained dispatch"
+            )
+        assert info is not None and info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+        assert info.done and params["_preassigned_id"] not in manager._tasks
+
+    @pytest.mark.asyncio
+    async def test_spawn_async_keeps_the_scope_the_parent_had_when_it_asked(
+        self, project: Path, live_dirs: list[str]
+    ) -> None:
+        """The parent's session ends while ``spawn_async`` awaits the parent
+        record read: the request is still checked against the project scope it
+        had when it asked, not the empty scope it has after the await."""
+        from kiro_crew.subagent import SubagentManager
+
+        _write_spec(
+            project / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        parent = _parent_execution("proj-lead")
+
+        def _read_then_end_parent(_key: str) -> ExecutionContext:
+            live_dirs.clear()
+            return parent
+
+        manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder())
+        await manager.wait_taskq_ready()
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch(
+                "kiro_crew.execution_context.read_session_execution",
+                side_effect=_read_then_end_parent,
+            ),
+            patch("kiro_crew.subagent.read_session_execution", return_value=parent),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            info = await manager.spawn_async("t", parent_session_key=self.PARENT, agent="rogue")
+        assert not live_dirs, "the parent record read did not run"
+        assert info is not None and info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+
+    def test_accepted_dirs_add_to_the_live_scope(
+        self, project: Path, live_dirs: list[str], tmp_path: Path
+    ) -> None:
+        """Live and accepted directories both apply, so either can only narrow."""
+        other = tmp_path / "other"
+        (other / ".kiro" / "agents").mkdir(parents=True)
+        _write_spec(
+            other / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        lists = sa.parent_template_allowlists(self.PARENT, "proj-lead", [str(other)])
+        assert lists == (("agent1", "rogue"), ("agent1",))
+        assert sa._vet_parent_available_agents(("proj-lead", lists), "rogue") is not None
+
+    def test_a_malformed_accepted_value_falls_back_to_the_live_scope(
+        self, project: Path, live_dirs: list[str]
+    ) -> None:
+        for junk in ("not-a-list", 7, [None, 3, ""], {"a": 1}):
+            assert sa.parent_template_allowlists(self.PARENT, "proj-lead", junk) == (
+                ("agent1", "rogue"),
+            )
 
 
 class TestSessionProjectForSpawnGate:

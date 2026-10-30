@@ -8,10 +8,8 @@ import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import {
-  $createLineBreakNode,
   $createParagraphNode,
   $createRangeSelection,
-  $createTextNode,
   $getRoot,
   $getSelection,
   $isElementNode,
@@ -38,6 +36,7 @@ import {
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
+  KEY_ESCAPE_COMMAND,
   KEY_MODIFIER_COMMAND,
   PASTE_COMMAND,
   REDO_COMMAND,
@@ -48,10 +47,11 @@ import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
+import type { StopTurnOnEscape } from './chat-input/stopKey'
 import { BACKSPACE_KEY, DELETE_KEY } from './domDeleteKeys'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import type { MentionKeyMods } from './chat-input/props'
-import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
+import { livePromptHistoryCursor, promptHistoryKeyEngages, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
   isRawPasteChord,
   clipboardFiles,
@@ -62,6 +62,7 @@ import { listLineBreakEdit, listMarkerBackspaceEdit, type ListLineBreakEdit } fr
 import {
   $createPasteTokenNode,
   $isPasteTokenNode,
+  appendPlainText,
   PasteTokenNode,
 } from './PasteTokenNode'
 import {
@@ -134,14 +135,12 @@ interface LexicalComposerInputProps {
    *  result of removing the touched mention(s) whole, or null when the edit
    *  touches no staged mention (then the editor's own delete runs). */
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
-}
-
-function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
-  const lines = text.split('\n')
-  lines.forEach((line, index) => {
-    if (line) append($createTextNode(line))
-    if (index < lines.length - 1) append($createLineBreakNode())
-  })
+  /** A bare Escape: stop the running turn. The SAME precedence gate the
+   *  textarea's keydown runs (useComposerStopKey), so the binding behaves
+   *  identically in both editors; it returns true when it claimed the key and
+   *  false when a picker, dictation, an approval, a dialog, IME composition or
+   *  voice read-back owns Escape, or no turn is running (#22315). */
+  onEscapeStop?: StopTurnOnEscape
 }
 
 function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
@@ -477,7 +476,8 @@ function InteractionPlugin({
   showFullPastes,
   onEndUndoBurst,
   onMentionKey,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst' | 'onMentionKey'>) {
+  onEscapeStop,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst' | 'onMentionKey' | 'onEscapeStop'>) {
   const [editor] = useLexicalComposerContext()
   const endUndoBurstRef = useRef(onEndUndoBurst)
   endUndoBurstRef.current = onEndUndoBurst
@@ -485,6 +485,10 @@ function InteractionPlugin({
   // re-register the whole command block; the handler reads the live value.
   const onMentionKeyRef = useRef(onMentionKey)
   onMentionKeyRef.current = onMentionKey
+  // Same ref pattern: the stop gate's identity changes whenever the running
+  // state does, which must not re-register the command block.
+  const onEscapeStopRef = useRef(onEscapeStop)
+  onEscapeStopRef.current = onEscapeStop
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
   const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
@@ -702,8 +706,11 @@ function InteractionPlugin({
           editor.dispatchCommand(INSERT_LINE_BREAK_COMMAND, false)
           return true
         }
+        // Shift is excluded in ctrl-enter mode too: on a host that offers no
+        // optimize (no `onOptimizeChord`) the optimize chord reaches this rule
+        // and must not submit the draft.
         const shouldSend = sendOnEnter === 'ctrl-enter'
-          ? commandKey
+          ? commandKey && !event.shiftKey
           : !event.shiftKey
         if (!shouldSend) return false
         event.preventDefault()
@@ -743,10 +750,12 @@ function InteractionPlugin({
       COMMAND_PRIORITY_HIGH,
     )
 
-    const moveAfterRecall = (value: string, position: 'start' | 'end') => {
+    // A recalled prompt leaves the caret at its end, as readline does; the
+    // first-line ↑ gate lets the next ↑ keep walking older from there.
+    const moveToEndAfterRecall = (value: string) => {
       requestAnimationFrame(() => {
         editor.update(() => {
-          const offset = position === 'start' ? 0 : value.length
+          const offset = value.length
           const selection = $createRangeSelection()
           $setPointAtOffset(selection.anchor, offset)
           $setPointAtOffset(selection.focus, offset)
@@ -774,17 +783,21 @@ function InteractionPlugin({
       const current = $getRoot().getTextContent()
       const cursor = livePromptHistoryCursor(historyCursorRef.current, current)
       historyCursorRef.current = cursor
-      if (direction === 'up' && current !== '' && selection.start !== 0) return false
+      const historyDirection = direction === 'up' ? 'older' : 'newer'
+      if (!promptHistoryKeyEngages(historyDirection, current, selection.start, cursor !== null)) return false
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (direction === 'up' && event.repeat && !cursor && current !== '') return false
-      if (direction === 'down' && selection.end !== current.length) return false
-      const step = stepPromptHistory(sentMessages, cursor, direction === 'up' ? 'older' : 'newer', current)
+      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current)
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor
-      onChange(step.text)
-      moveAfterRecall(step.text, direction === 'up' ? 'start' : 'end')
+      // ↑ on the oldest entry resolves to the text already shown: consume the
+      // key so the caret does not jump, but leave the value alone.
+      if (step.cursor === null || step.text !== current || cursor === null) {
+        onChange(step.text)
+        moveToEndAfterRecall(step.text)
+      }
       return true
     }
     const unregisterArrowUp = editor.registerCommand(
@@ -795,6 +808,21 @@ function InteractionPlugin({
     const unregisterArrowDown = editor.registerCommand(
       KEY_ARROW_DOWN_COMMAND,
       event => navigateHistory(event, 'down'),
+      COMMAND_PRIORITY_HIGH,
+    )
+    // Escape stops the running turn (#22315), through the same precedence
+    // gate as the textarea. The composition verdict is THIS editor's: Lexical's
+    // own flag, the shared latch (which outlives `compositionend` on WebKit)
+    // and the native flags, so an Escape that only cancels an IME candidate
+    // window never also stops the turn. A modified Escape is not the binding.
+    const unregisterEscape = editor.registerCommand(
+      KEY_ESCAPE_COMMAND,
+      event => {
+        const stop = onEscapeStopRef.current
+        if (!stop || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false
+        const composing = editor.isComposing() || latch.isLatched() || event.isComposing || event.keyCode === 229
+        return stop(event, { native: event, composing })
+      },
       COMMAND_PRIORITY_HIGH,
     )
 
@@ -813,6 +841,7 @@ function InteractionPlugin({
       unregisterMarkerBackspace()
       unregisterArrowUp()
       unregisterArrowDown()
+      unregisterEscape()
       rootListeners()
       // Drop any pending post-composition timer with the listeners so a stale
       // timer cannot write to the latch after teardown (useImeGuard contract).
@@ -850,6 +879,7 @@ export default function LexicalComposerInput({
   historyScope,
   onEditLastRequest,
   onMentionKey,
+  onEscapeStop,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -927,6 +957,7 @@ export default function LexicalComposerInput({
           sendOnEnter={sendOnEnter}
           onEndUndoBurst={onEndUndoBurst}
           onMentionKey={onMentionKey}
+          onEscapeStop={onEscapeStop}
         />
       </div>
     </LexicalComposer>

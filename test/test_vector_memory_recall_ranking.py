@@ -121,7 +121,7 @@ class TestMmrJaccardCacheAndRecall:
         return [{"text": f"fragment number {i} alpha{i}", "score": float(n - i)} for i in range(n)]
 
     def test_diverse_tail_item_is_selectable(self) -> None:
-        # The crux of the reviewer's objection: a low-relevance but highly DIVERSE item
+        # A low-relevance but highly DIVERSE item
         # must remain selectable. Top items are near-duplicates; one tail item is
         # unrelated. With limit=2, MMR must pick a top item + the diverse tail item.
         cands = [

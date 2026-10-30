@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, _normalize_slot_key
 
@@ -242,8 +243,9 @@ def select_idle_slot_keys(
     """Pick the live slots idle since before *cutoff*.
 
     Skips pinned slots, slots in *looped* (an armed auto-nudge loop is idle by
-    nature between cycles, and archiving its tab ends the loop for good), slots of
-    another app when *request_app* is set, slots whose activity is unknown, with
+    nature between cycles, and archiving its tab ends the loop for good), when
+    *request_app* is set every slot that app does not own on its own session and
+    transcript (the per-slot checkpoint's rule), slots whose activity is unknown, with
     *skip_running* slots with a turn in flight, with *skip_app_owned* every
     app-owned slot, and with *skip_busy* slots a connected dashboard shows in
     the foreground, waiting on an approval or with sub-agent work attached
@@ -257,7 +259,7 @@ def select_idle_slot_keys(
         slot = state._slots.get(name)
         if slot is None or slot.pinned or name in looped:
             continue
-        if request_app and slot._app != request_app:
+        if request_app and not app_owns_slot_session(request_app, slot):
             continue
         if skip_running and slot.running:
             continue
@@ -396,7 +398,11 @@ async def sweep_idle_slots(
             # Synchronous and immediately before the call: no await may separate
             # this check from close_slot retiring the slot's loop.
             still_idle()
-            await chat_handlers.close_slot(state, slot, name, pre_pop_check=still_idle)
+            # hand_back=False: an idle archive leaves the sessions it managed naming it,
+            # so reviving it brings it back to them (docs/session-control.md).
+            await chat_handlers.close_slot(
+                state, slot, name, pre_pop_check=still_idle, hand_back=False
+            )
         except chat_handlers.SlotCloseError as exc:
             logger.info("Idle slot sweep kept %s: %s", name, exc.code)
             continue

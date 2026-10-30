@@ -18,12 +18,18 @@ from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 #: One-time marker for :func:`create_first_crewmate_once`, under the data home.
 FIRST_CREWMATE_MARKER = "mate_member_created.json"
 
-#: The template a crewmate gets when the config names no default one.
-_ORDINARY_TEMPLATE = "kirocrew"
+#: The template the ``default`` binding (a plain chat) gets when the config
+#: names no default one.
+_PLAIN_TEMPLATE = "kirocrew"
+
+#: The template the first crewmate gets when the config names no default one:
+#: its chat runs on the conductor (rfc-mate-owned-agent-config.md, migration
+#: step 1). Never the ``default`` binding's: a plain chat is not a crewmate.
+_ORDINARY_TEMPLATE = "kirocrew-mate-conductor"
 
 
-def _default_template(*sections: object) -> str:
-    """The configured ``agent.default_agent`` among *sections*, else ``kirocrew``.
+def _configured_template(*sections: object) -> str:
+    """The configured ``agent.default_agent`` among *sections*, else ``""``.
 
     The last section that names one wins, so the ``config.local.json`` overlay,
     passed last, outranks ``config.json`` the way the loader merges them.
@@ -32,7 +38,12 @@ def _default_template(*sections: object) -> str:
     for section in sections:
         if isinstance(section, dict) and isinstance(section.get("default_agent"), str):
             template = section["default_agent"].strip()
-    return template or _ORDINARY_TEMPLATE
+    return template
+
+
+def _default_template(*sections: object) -> str:
+    """The template the first crewmate is created on: the configured one, else the conductor."""
+    return _configured_template(*sections) or _ORDINARY_TEMPLATE
 
 
 def _marker(name: str):
@@ -109,12 +120,14 @@ def create_first_crewmate_once() -> None:
         ):
             _mark(FIRST_CREWMATE_MARKER)
             return None
-        template.append(_default_template(data.get("agent"), overlay.get("agent")))
+        configured = _configured_template(data.get("agent"), overlay.get("agent"))
+        template.append(configured or _ORDINARY_TEMPLATE)
         if rows:
             return None
         data["agents"] = {
             "default": {
-                "kiro_agent": template[0],
+                # A plain chat runs the configured template, else the default one.
+                "kiro_agent": configured or _PLAIN_TEMPLATE,
                 "workspace": "default",
                 "memory_store": "default",
             }

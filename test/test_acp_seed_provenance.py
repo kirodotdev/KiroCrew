@@ -969,6 +969,11 @@ class TestCrossSessionAdoption:
     """A seed orphaned by a killed session is Crew's to re-seed; nothing else is."""
 
     def test_an_orphaned_seed_is_reseeded_by_the_next_session(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         # Session 1: cold cache, so no model keys (the adapter's own provider list
         # is better than a guessed one) -- then the process dies without reset.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
@@ -1174,6 +1179,11 @@ class TestPostCaptureModelResolution:
 
     @pytest.mark.asyncio
     async def test_step_six_reseeds_off_the_loop(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, model="claude-opus-5")
         client._model = mr.resolve_wire_model_id(client._model, "claude_code")
@@ -1228,12 +1238,16 @@ class TestPostCaptureModelResolution:
     async def test_a_failed_reseed_does_not_kill_the_session(self, tmp_path, monkeypatch):
         # Model fidelity is worth a warning, not a dead session: the adapter still
         # has its own settings sources and tool calls still reach the host gate.
+        attempts = []
+
         def _boom():
+            attempts.append(True)
             raise OSError("read-only filesystem")
 
         client = _client(tmp_path)
         monkeypatch.setattr(client, "_write_claude_local_settings", _boom)
         await client._reseed_after_capture()  # must not raise
+        assert attempts == [True]
 
     def test_session_init_reseeds_right_after_every_model_capture(self):
         """The step is only worth anything if session init still calls it.
@@ -1288,6 +1302,11 @@ class TestPostCaptureModelResolution:
         ``"model": "claude-opus-5"`` next to an allowlist with no Opus 5 entry, so
         the pick resolved to 200K.
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         client = _client(tmp_path, model="claude-opus-5")
 
@@ -1305,6 +1324,11 @@ class TestPostCaptureModelResolution:
         assert data["model"] in data["availableModels"]
 
     def test_the_seed_never_ships_a_base_window_sibling(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         # The adapter reads [1m] as a context-window MODIFIER on one base model and
         # dedups availableModels by base name, so shipping both spellings lets it
         # pick the 200K one.

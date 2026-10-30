@@ -111,6 +111,7 @@
     "session_retry": "Retry session turn",
     "session_continue": "Continue session",
     "session_set_model": "Set session model",
+    "session_set_color": "Set session color",
     "session_reload": "Reload session",
     "session_rename": "Rename session",
     "session_generate_title": "Regenerate session title",
@@ -120,10 +121,12 @@
     "session_close": "Close session",
     "session_send": "Send to session",
     "session_adopt": "Adopt session",
+    "session_handoff": "Hand off session",
     "session_broadcast": "Broadcast to sessions",
     "session_release": "Release session",
     "session_read_message": "Read session message",
-    "session_summary": "Read session summary"
+    "session_summary": "Read session summary",
+    "work_dispatch": "Dispatch work item"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

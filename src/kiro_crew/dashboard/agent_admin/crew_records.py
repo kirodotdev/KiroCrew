@@ -52,6 +52,41 @@ if TYPE_CHECKING:
     )
 
 
+async def _eager_copy_mate_config(name: str) -> str:
+    """Write crewmate *name*'s own custom-agent file and repoint its binding at it.
+
+    The eager copy of ``rfc-mate-owned-agent-config`` §5.4. Reads whatever the
+    crewmate's ``kiro_agent`` resolves to right now (its template, after the
+    mate-tools grant has run), copies it into ``~/.kiro/mates/agents/<name>.json``
+    with the prompt inlined as literal text, then repoints ``kiro_agent`` to
+    *name* so resolution finds the owned file and the picker never offers it.
+
+    Best-effort and never raises: a crewmate that was already published must not
+    be reported as a failed create over this copy. Returns a short outcome code
+    for the log. On any failure ``kiro_agent`` is left pointing at the source
+    template, which still resolves and runs (the pre-RFC shared-pointer model),
+    so the degradation is graceful.
+
+    Runs with :mod:`kiro_crew.dashboard.handlers.agents`'s injected namespace, so
+    ``KiroCrewConfig``, ``persist_member_config``, ``_get_config_lock`` and
+    ``_drained_to_thread`` resolve there -- this helper is ALSO re-exported into
+    that module (the namespace-injection contract), or it NameErrors live.
+    """
+    from kiro_crew.mate_config import MateConfigError, adopt_own_file
+
+    try:
+        async with _get_config_lock():
+            # The one copy-and-repoint every creation path shares, which also
+            # publishes the file so the crewmate's first chat is on the conductor.
+            return await _drained_to_thread(adopt_own_file, name)
+    except MateConfigError:
+        logger.warning("crewmate %s: mate config copy failed; kept source pointer", name)
+        return "copy_failed"
+    except Exception:
+        logger.warning("crewmate %s: mate config copy errored; kept source pointer", name)
+        return "errored"
+
+
 async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
     """GET /api/agents/resolved-model?agent=NAME[&app=APP] — the model a new session uses.
 
@@ -85,20 +120,72 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
     # configured default crew rather than for no crew at all.
     crew_effort = cfg.crew_pinned_effort(None, alias)
     session_effort = cfg.resolve_session_effort(kiro_agent, alias)
-    return web.json_response(
-        {
-            "model": model,
-            "agent": agent_name,
-            "kiro_agent": kiro_agent,
-            # Whether the agent itself pins the model, vs inheriting it.
-            "pinned": bool(model_pin),
-            # The effort a new session on this crew starts at, and whether the
-            # crew pinned it or inherited a default. "" means no tier pins one
-            # and the model's own default applies.
-            "reasoning_effort": session_effort,
-            "effort_pinned": bool(crew_effort),
+    body: dict[str, object] = {
+        "model": model,
+        "agent": agent_name,
+        "kiro_agent": kiro_agent,
+        # Whether the agent itself pins the model, vs inheriting it.
+        "pinned": bool(model_pin),
+        # The effort a new session on this crew starts at, and whether the
+        # crew pinned it or inherited a default. "" means no tier pins one
+        # and the model's own default applies.
+        "reasoning_effort": session_effort,
+        "effort_pinned": bool(crew_effort),
+    }
+
+    # The crewmate's harness pin is read HERE and nowhere else on the dashboard
+    # (GET /api/agents and GET /api/members leave it out), and only by the owner.
+    def _crew_harness_readout(cfg: KiroCrewConfig, crew: str, app_kw: dict) -> dict[str, object]:
+        """The harness half of the resolved-model readout for crew *crew*. Blocking.
+
+        ``acp_backend`` is the stored pin (``""`` inherits); ``harness`` is what the
+        crewmate's chat runs on, in the same spelling, or ``""`` with ``harness_error``
+        when the pin cannot start; ``inherited_harness`` is what clearing the pin
+        would run; ``model`` is re-resolved for that harness, so an
+        inherited model reads as the one the pinned harness will get.
+        """
+        from kiro_crew.acp_backends import backend_to_stored, resolve_selected_backend
+        from kiro_crew.crewmate_harness import (
+            CrewmateHarnessUnavailable,
+            crewmate_pin_for,
+            selectable_harnesses,
+            worker_harnesses,
+        )
+
+        pin = crewmate_pin_for(cfg, crew)
+        out: dict[str, object] = {
+            "acp_backend": pin.display_stored if pin is not None else "",
+            # What Inherited gives, pinned or not, so the picker can always say it.
+            "inherited_harness": backend_to_stored(
+                resolve_selected_backend(cfg.agent.member_acp_backend)
+            ),
+            "harnesses": selectable_harnesses(),
+            "worker_harnesses": worker_harnesses(),
         }
-    )
+        try:
+            runtime = (
+                pin.resolve()
+                if pin is not None
+                else resolve_selected_backend(cfg.agent.member_acp_backend)
+            )
+        except CrewmateHarnessUnavailable as exc:
+            out.update({"harness": "", "harness_error": str(exc)})
+            return out
+        out["harness"] = backend_to_stored(runtime)
+        if pin is not None:
+            out["model"] = resolve_effective_model(cfg, crew, backend=runtime, **app_kw)
+        return out
+
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    try:
+        owner = is_owner_dashboard_request(request)
+    except (KeyError, AttributeError):
+        # No dashboard state to name an owner by: not an owner request.
+        owner = False
+    if alias and alias in cfg.agents and owner:
+        body.update(await asyncio.to_thread(_crew_harness_readout, cfg, alias, app_kw))
+    return web.json_response(body)
 
 
 async def _refresh_session_defaults(request: web.Request, crew: str) -> None:
@@ -375,6 +462,28 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Provenance of a crewmate imported from a .crewmate file (rfc-crewmate-share.md
+    # §5.4 step 5). The caller names what it read; the instant is the gateway's.
+    imported: dict = {}
+    if "imported" in body:
+        from datetime import datetime, timezone
+
+        from kiro_crew.config.sections import safe_imported
+
+        raw_imported = body["imported"]
+        stamp = {
+            **(raw_imported if isinstance(raw_imported, dict) else {}),
+            "imported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        imported = safe_imported(stamp) if isinstance(raw_imported, dict) else {}
+        if not imported or "imported_at" in raw_imported:
+            return web.json_response(
+                {
+                    "error": "imported must be {format_version, sender_label, sha256}",
+                    "code": "invalid_imported",
+                },
+                status=400,
+            )
     # Old clients still send default/empty on create. They now mean automatic
     # private allocation; no caller can choose or reuse another member's store.
     memory_store = body.get("memory_store", DEFAULT_MEMORY_STORE)
@@ -414,6 +523,15 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 status=409,
             )
         name, display_name = keyed.key, keyed.display_name
+        # Judged against the key, not the typed name: the key is what
+        # adopt_own_file compares the template with.
+        from kiro_crew.mate_config import start_template_refusal
+
+        template_refusal = start_template_refusal(kiro_agent, name)
+        if template_refusal:
+            return web.json_response(
+                {"error": template_refusal, "code": "mate_template_unsupported"}, status=400
+            )
         model_reason = _model_pin_rejected(
             model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
         )
@@ -421,8 +539,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         # Checked INSIDE the config lock, immediately before the binding is
         # added: a fork recording lineage after a pre-lock validation must not
-        # slip another crew's private copy into this new binding (GPT
-        # round-34, same shape as the locked rebind's in-mutate check).
+        # slip another crew's private copy into this new binding (same shape
+        # as the locked rebind's in-mutate check).
         try:
             owner = await asyncio.to_thread(_foreign_private_copy_owner, name, kiro_agent)
         except _UnverifiableLineage as exc:
@@ -439,6 +557,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                     "error": f"Template '{kiro_agent}' is crew '{owner}'s private copy; "
                     "it cannot be bound to another crew.",
                     "code": "foreign_private_copy",
+                },
+                status=409,
+            )
+        from kiro_crew.mate_config import user_agent_named
+
+        if kiro_agent == name or await asyncio.to_thread(user_agent_named, name):
+            # The crewmate's own file is resolved under its name, and a template
+            # of the same name would read as that file already being there (or,
+            # at the user level, win over it): the crewmate would run that
+            # template instead of its own copy.
+            return web.json_response(
+                {
+                    "error": f"A template is already named '{name}'; give this crew "
+                    "another name.",
+                    "code": "template_name_in_use",
                 },
                 status=409,
             )
@@ -463,6 +596,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             source=body.get("source", "kirocrew"),
             session_color=session_color,
             avatar=avatar,
+            imported=imported,
         )
         # Provision against this snapshot; publish the agent, its owned store and
         # its own workspace together through persist_member_config's flocked delta
@@ -524,8 +658,28 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
-    # A template without the crewmate's own tools gets them on the new member's
-    # private copy (member_mate_tools); the create stands whatever the outcome.
+    # Eager copy (``rfc-mate-owned-agent-config`` §5.4), FIRST. The crewmate owns
+    # a custom-agent file in ``~/.kiro/mates/agents/<name>.json``, copied from
+    # whatever ``kiro_agent`` resolves to right now (its chosen template), with
+    # its prompt inlined so no ``file://`` link back to the source survives, and
+    # the binding's ``kiro_agent`` is repointed to the crewmate id. This runs
+    # BEFORE the mate-tools grant so the grant has an owned file to edit directly
+    # (the severed-copy model): if the eager copy ran second it would re-copy the
+    # source AFTER the grant and the grant's additions would be lost, and if the
+    # grant ran first via the capability editor it would mint a ``crew-`` draft
+    # and repoint the binding to it, clobbering the mate id (the create-ordering
+    # bug the live pod surfaced).
+    #
+    # Best-effort: a crewmate that was published must not be reported as a failed
+    # create over the copy. A copy that does not land leaves ``kiro_agent``
+    # pointing at the source template (the pre-RFC shared-pointer model), and the
+    # grant below then skips (``mate_file_missing``) rather than minting a fork.
+    mate_copy = await _eager_copy_mate_config(name)
+    logger.info("new crewmate %s: mate-owned config %s", name, mate_copy)
+    # A template without the crewmate's own tools gets them on the member's OWNED
+    # config file (member_mate_tools edits ``mates/agents/<name>.json`` in place --
+    # no fork, no enroll, no ``crew-`` draft); the create stands whatever the
+    # outcome.
     from kiro_crew.member_mate_tools import grant_mate_tools_to_new_member
 
     async with _get_config_lock():

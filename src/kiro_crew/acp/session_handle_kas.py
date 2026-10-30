@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen``,
 ``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``kas_auto_approved``,
-``kas_projected_agent``, ``last_compaction_transient``.
+``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_projected_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_crew_agent``, ``_listed_hooks``, ``_prompt_starts``,
 ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
@@ -23,7 +23,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_wire
+from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
 from kiro_crew.acp.types import (
@@ -34,6 +34,8 @@ from kiro_crew.acp.types import (
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
     METHOD_KAS_CHECKPOINT_REVERT,
+    UPDATE_AGENT_MESSAGE_CHUNK,
+    UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_CURRENT_MODE,
     UPDATE_SESSION_INFO,
     AcpEvent,
@@ -262,13 +264,26 @@ def _handle_kas_update(
         # -- chosen by wire id, so a built-in of the same name never inherits
         # the crewmate's approvals.
         if self.kas_projected_agent:
-            from kiro_crew.acp.kas_agents import switched_auto_approved
+            from kiro_crew.acp.kas_agents import (
+                switched_auto_approved,
+                switched_crew_answered,
+                switched_crew_answered_commands,
+            )
 
             self.kas_projected_agent = crew_id
             self.kas_auto_approved = switched_auto_approved(registered, mode_id)
+            self.kas_crew_answered = switched_crew_answered(registered, mode_id)
+            self.kas_crew_answered_commands = switched_crew_answered_commands(registered, mode_id)
         return [AcpEvent(kind=EVENT_AGENT_SWITCHED, text=crew_id)]
     if session_update == UPDATE_SESSION_INFO:
         return self._handle_kas_session_info(update)
+    if session_update in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
+        # Read for its ``ttft`` stamp, then handed on: the chunk itself is the
+        # shared parser's to render.
+        kiro = kas_wire.kiro_meta(update)
+        if kiro is not None and _kas_turn_running(self):
+            kas_profile.record_ttft(self.last_prompt_stats, kiro)
+        return None
     # available_commands_update / any other KAS discriminant falls through to
     # the shared parser, which already returns [] for it — Crew surfaces no
     # available-commands UI for any backend (kiro-cli's
@@ -396,3 +411,17 @@ def _apply_kas_turn_completion(self: AcpSessionHandle, kiro: dict) -> None:
     total = kas_wire.turn_credits(kiro)
     if total is not None:
         self.last_prompt_stats.credits = total
+    if _kas_turn_running(self):
+        kas_profile.record_breakdown(self.last_prompt_stats, kiro)
+
+
+def _kas_turn_running(handle: AcpSessionHandle) -> bool:
+    """Whether a prompt of this handle is in flight, so a frame belongs to it.
+
+    ``session/load`` replays every recorded turn's ``turn_completion``, breakdown
+    included, before any prompt runs; those describe turns the crew log already
+    recorded, and recording them again would count each one twice per resume. Read
+    defensively: a handle assembled without ``__init__`` carries no event.
+    """
+    done = getattr(handle, "_turn_done", None)
+    return done is not None and not done.is_set()

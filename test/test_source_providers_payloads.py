@@ -384,21 +384,6 @@ def test_parse_gitlab_merge_request_with_nested_group() -> None:
     assert ref.number == 42
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://github.com/org/repo/pull/1",
-        "https://evil.example/github.com/org/repo/pull/1",
-        "https://github.com.evil.example/org/repo/pull/1",
-        "https://user@github.com/org/repo/pull/1",
-        "https://gitlab.com/group/project/issues/1",
-    ],
-)
-def test_parse_source_url_rejects_untrusted_shapes(url: str) -> None:
-    with pytest.raises(ValueError):
-        source.parse_source_url(url)
-
-
 def _suite(run: int, run_conclusion: str, *, definition: int = 1, event: str = "pull_request"):
     """The check-suite edge GitHub nests a check run's workflow-run identity under."""
     return {

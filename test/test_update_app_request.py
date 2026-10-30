@@ -13,6 +13,7 @@ the managed-venv step-up staying exactly as it was.
 from __future__ import annotations
 
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -403,6 +404,48 @@ class TestStatusAndDecline:
         r.query = {"request_id": "anything"}
         await updates.api_update_disarm(r)
         assert update_stepup.read_pending() is not None
+
+
+@pytest.mark.asyncio
+class TestReleaseChannelReadOffTheLoop:
+    """The floor check's channel read is a file read; it must not run on the loop.
+
+    ``release_channel()`` reads ``<data home>/channel``. The arm-status route is
+    the About panel's poll, so an inline read stalls the loop once per poll.
+    """
+
+    @pytest.fixture()
+    def channel_reads(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        reads: list[int] = []
+
+        def _tracked_read() -> str:
+            reads.append(threading.get_ident())
+            return "stable"
+
+        monkeypatch.setattr(updates, "_release_channel", _tracked_read)
+        return reads
+
+    async def test_arm_reads_the_channel_off_the_loop(self, packaged, channel_reads) -> None:
+        loop_thread = threading.get_ident()
+        resp = await updates._arm_packaged_app(_request({"version": "0.6.0"}))
+        assert resp.status == 200
+        assert channel_reads, "the floor check must still resolve the channel"
+        assert loop_thread not in channel_reads, "the channel read ran on the event loop"
+
+    async def test_status_reads_the_channel_off_the_loop(self, packaged, channel_reads) -> None:
+        packaged.arm(target_version="0.6.0", requested_by="chat-1")
+        loop_thread = threading.get_ident()
+        resp = await updates.api_update_arm_status(_request())
+        assert json.loads(resp.body.decode())["armed"] is True
+        assert channel_reads, "the floor re-check must still resolve the channel"
+        assert loop_thread not in channel_reads, "the channel read ran on the event loop"
+
+    async def test_no_version_skips_the_channel_read(self, packaged, channel_reads) -> None:
+        """No target version means no floor check, so no read at all."""
+        await updates._arm_packaged_app(_request({}))
+        packaged.arm(target_version="", requested_by="chat-1")
+        await updates.api_update_arm_status(_request())
+        assert channel_reads == []
 
 
 class TestAgentReachability:

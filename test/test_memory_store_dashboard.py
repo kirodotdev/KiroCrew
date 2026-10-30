@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1191,3 +1192,34 @@ class TestAnUndecodableDocumentIsRefused:
         assert _body(written)["code"] == "memory_document_undecodable"
         assert _body(written)["file"] == filename
         assert target.read_bytes() == b"\xff"
+
+
+# ── 11. The stats probe for legacy markdown runs off the event loop ──────────
+
+
+class TestTheLegacyMemoryProbeRunsOffTheLoop:
+    """``legacy_memory_present`` reads two markdown files, globs ``history/`` and
+    stats ``lessons.jsonl``. ``api_memory_stats`` already offloads the store's own
+    counts, so the probe beside them must not block the loop either.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_probe_runs_in_a_worker_thread(self, env, monkeypatch) -> None:
+        from kiro_crew import memory as memory_mod
+
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def _probe() -> bool:
+            seen.append(threading.get_ident())
+            return True
+
+        monkeypatch.setattr(memory_mod, "legacy_memory_present", _probe)
+        resp = await memory_handlers.api_memory_stats(
+            _request("GET", "/api/memory/stats", env.state())
+        )
+
+        assert resp.status == 200
+        assert _body(resp)["has_legacy_memory"] is True
+        assert len(seen) == 1
+        assert seen[0] != loop_thread

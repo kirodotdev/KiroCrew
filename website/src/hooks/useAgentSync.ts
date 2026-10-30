@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { RootState } from '../store'
+import { selectSlotsWithLiveLastTs } from '../store/slotLastTs'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { recencyEpoch } from '../components/commandPalette/providers/recentsProvider'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { sliceCodePoints } from '../components/CommentOverlay'
 
 export interface AgentSource {
   id: string
@@ -30,11 +31,11 @@ const SPAWN_POLL_MS = 3000
 
 function shortName(s: string, max = 45): string {
   if (s.length <= max) return s
-  return s.slice(0, max - 1) + '…'
+  return sliceCodePoints(s, 0, max - 1) + '…'
 }
 
 export function useAgentSync() {
-  const slots = useSelector((s: RootState) => s.dashboard.slots)
+  const slots = useSelector(selectSlotsWithLiveLastTs)
   const [extras, setExtras] = useState<AgentSource[]>([])
   // Slots created before the default was stamped into metadata at creation
   // carry agent:'' — label them with the default custom agent (a template),

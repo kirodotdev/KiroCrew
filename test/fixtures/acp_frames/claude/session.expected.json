@@ -27,10 +27,14 @@
         "fork": {},
         "list": {},
         "resume": {},
-        "subagents": {}
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
       }
     },
-    "agent_version": "0.76.0",
+    "agent_version": "0.94.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -49,47 +53,32 @@
     "config_options": [
       {
         "category": "mode",
-        "currentValue": "default",
+        "currentValue": "auto",
         "description": "Session permission mode",
         "id": "mode",
         "name": "Mode",
         "options": [
           {
-            "_meta": {
-              "kind": "standard"
-            },
             "description": "Always ask before making changes",
             "name": "Manual",
             "value": "default"
           },
           {
-            "_meta": {
-              "kind": "standard"
-            },
             "description": "Automatically accept all file edits",
             "name": "Accept edits",
             "value": "acceptEdits"
           },
           {
-            "_meta": {
-              "kind": "plan"
-            },
             "description": "Create a plan before making changes",
             "name": "Plan",
             "value": "plan"
           },
           {
-            "_meta": {
-              "kind": "auto_review"
-            },
             "description": "Claude handles permission decisions",
             "name": "Auto",
             "value": "auto"
           },
           {
-            "_meta": {
-              "kind": "full_access"
-            },
             "description": "Accepts all permissions",
             "name": "Bypass permissions",
             "value": "bypassPermissions"
@@ -103,13 +92,7 @@
         "description": "AI model to use",
         "id": "model",
         "name": "Model",
-        "options": [
-          {
-            "description": "",
-            "name": "Default",
-            "value": "default"
-          }
-        ],
+        "options": [],
         "type": "select"
       },
       {
@@ -159,7 +142,7 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "default",
+      "current": "auto",
       "ids": [
         "default",
         "acceptEdits",
@@ -168,39 +151,18 @@
         "bypassPermissions"
       ]
     },
-    "session_id": "132b43d6-5859-48c0-8291-e4a5f91a6789"
+    "session_id": "claude-session-1"
   },
   {
     "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_bdrk_6ndj7kyqkna5azoiu7663xeninazyomc2hwlkszp4ruxeogxdiwq",
-        "text": "Done"
-      }
-    ],
+    "events": [],
     "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "Done",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_bdrk_6ndj7kyqkna5azoiu7663xeninazyomc2hwlkszp4ruxeogxdiwq",
-        "text": "."
-      }
+    "session_update": "usage_update",
+    "usage": [
+      31167,
+      1000000
     ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": ".",
-      "thinking": false
-    }
+    "usage_cost": null
   },
   {
     "action": "update",
@@ -208,7 +170,7 @@
       {
         "kind": "tool_call",
         "title": "Preparing file…",
-        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
+        "tool_call_id": "toolu_bdrk_018YnsuxpHJnGSf612bDooFx",
         "tool_kind": "edit",
         "wire_title": "Preparing file…"
       }
@@ -222,13 +184,12 @@
       {
         "kind": "tool_call_update",
         "raw_tool_params": {
-          "file_path": "~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt"
+          "file_path": "/work/corpus-probe.txt"
         },
-        "title": "Write ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt",
-        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
-        "tool_input": "{\n  \"file_path\": \"~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt\"\n}",
-        "tool_kind": "edit",
-        "wire_title": "Write ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt"
+        "title": "Write corpus-probe.txt",
+        "tool_call_id": "toolu_bdrk_018YnsuxpHJnGSf612bDooFx",
+        "tool_input": "{\n  \"file_path\": \"/work/corpus-probe.txt\"\n}",
+        "wire_title": "Write corpus-probe.txt"
       }
     ],
     "frame": "session/update",
@@ -238,17 +199,14 @@
     "action": "update",
     "events": [
       {
-        "diff_path": "~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt",
+        "diff_path": "/work/corpus-probe.txt",
         "kind": "tool_call_update",
         "raw_tool_params": {
           "content": "hello-from-corpus",
-          "file_path": "~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt"
+          "file_path": "/work/corpus-probe.txt"
         },
-        "title": "Write ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt",
-        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
-        "tool_input": "--- ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt\n+++ ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt\n@@ -0,0 +1 @@\n+hello-from-corpus",
-        "tool_kind": "edit",
-        "wire_title": "Write ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt"
+        "tool_call_id": "toolu_bdrk_018YnsuxpHJnGSf612bDooFx",
+        "tool_input": "--- /work/corpus-probe.txt\n+++ /work/corpus-probe.txt\n@@ -0,0 +1 @@\n+hello-from-corpus"
       }
     ],
     "frame": "session/update",
@@ -260,8 +218,8 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      33949,
-      200000
+      31251,
+      1000000
     ],
     "usage_cost": null
   },
@@ -278,7 +236,7 @@
           },
           {
             "id": "allow-with-updates",
-            "label": "Yes, allow all edits in lcorp-drqe8uho/ during this session"
+            "label": "Yes, allow all edits during this session"
           },
           {
             "id": "reject",
@@ -288,12 +246,12 @@
         "raw_params_trusted": true,
         "raw_tool_params": {
           "content": "hello-from-corpus",
-          "file_path": "~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt"
+          "file_path": "/work/corpus-probe.txt"
         },
         "shell_classified": true,
-        "title": "Write ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt",
-        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
-        "tool_input": "--- ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt\n+++ ~/.kiro/crew/scratch/runtime-83b6130e/lcorp-drqe8uho/corpus-probe.txt\n@@ -0,0 +1 @@\n+hello-from-corpus",
+        "title": "Write corpus-probe.txt",
+        "tool_call_id": "toolu_bdrk_018YnsuxpHJnGSf612bDooFx",
+        "tool_input": "--- /work/corpus-probe.txt\n+++ /work/corpus-probe.txt\n@@ -0,0 +1 @@\n+hello-from-corpus",
         "tool_kind": "edit"
       }
     ],
@@ -315,7 +273,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
+        "tool_call_id": "toolu_bdrk_018YnsuxpHJnGSf612bDooFx",
         "tool_final": true,
         "tool_status": "completed"
       }
@@ -325,33 +283,28 @@
   },
   {
     "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_bdrk_gpng5zsobbshsr47iw7ga463dqqljeup2ssjamovcd54rxwiuzcq",
-        "text": "Created"
-      }
-    ],
+    "events": [],
     "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "Created",
-      "thinking": false
-    }
+    "session_update": "usage_update",
+    "usage": [
+      31376,
+      1000000
+    ],
+    "usage_cost": null
   },
   {
     "action": "update",
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_bdrk_gpng5zsobbshsr47iw7ga463dqqljeup2ssjamovcd54rxwiuzcq",
-        "text": " `cor"
+        "message_id": "msg_bdrk_zv4z6hpfh7v667w5yve7fia4clens5r5krwwdlh7hfawydybfmvq",
+        "text": "Done."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " `cor",
+      "text": "Done.",
       "thinking": false
     }
   },
@@ -361,19 +314,30 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      51269,
-      200000
+      31379,
+      1000000
     ],
     "usage_cost": null
   },
   {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31379,
+      1000000
+    ],
+    "usage_cost": 0.0670947
+  },
+  {
     "frame": "response",
-    "id": 3,
+    "id": 6,
     "prompt_tokens": [
       4,
-      164,
-      45107,
-      39943
+      94,
+      48934,
+      13598
     ],
     "stop_reason": "end_turn"
   }

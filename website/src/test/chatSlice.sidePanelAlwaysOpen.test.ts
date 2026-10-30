@@ -9,8 +9,9 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { UnknownAction } from '@reduxjs/toolkit'
-import reducer, { captureForkOrigin, setActiveSlot, setSidePanelAlwaysOpen, toggleActivity, openActivityToTab, resumeFromHistory, switchSlot } from '../store/chatSlice'
+import reducer, { captureForkOrigin, setActiveSlot, setSidePanelAlwaysOpen, toggleActivity, openActivityToTab, switchSlot } from '../store/chatSlice'
 import './mockApiClient'
+import { reduceResume } from './resumeLanded'
 
 const initial = () => reducer(undefined, { type: '@@INIT' })
 /** The user's setting turning on or off, on a chat page that allows it (the
@@ -38,10 +39,9 @@ const created = (key: string, from: ReturnType<typeof initial>) => {
     payload: { key },
   }
 }
-const resumed = (key: string) => resumeFromHistory.fulfilled(
-  { ok: true, key, nextBefore: 0, messages: [], hasMore: false, total: 0 },
-  `resume-${key}`,
-  { key, title: key },
+/** A resume of `key` that started on state `from` and took the view. */
+const resumed = (from: ReturnType<typeof initial>, key: string) => reduceResume(
+  reducer, from, { ok: true, key, nextBefore: 0, messages: [], hasMore: false, total: 0 }, `resume-${key}`, { key, title: key },
 )
 
 beforeEach(() => { localStorage.clear() })
@@ -62,7 +62,7 @@ describe('Keep side panel open', () => {
     expect(s.activeSlot).toBe('NEW')
     expect(s.activityOpen).toBe(true)
     s = reducer(s, toggleActivity())
-    s = reducer(s, resumed('OLD'))
+    s = resumed(s, 'OLD')
     expect(s.activityOpen).toBe(true)
   })
 

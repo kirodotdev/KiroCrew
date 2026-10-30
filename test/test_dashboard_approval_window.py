@@ -28,6 +28,7 @@ from turn_harness import (
     REJECTED,
     REJECTED_ONCE,
     UNANSWERED,
+    Do,
     Emit,
     ScriptedProvider,
     SlotSpec,
@@ -455,6 +456,16 @@ def _cards(record: TurnRecord) -> list[str]:
     return [row["content"] for row in record.rows("error")]
 
 
+def _expiry_notes(record: TurnRecord) -> list[Any]:
+    """The bell-feed notes the turn published for an expired approval."""
+    return [
+        frame.payload
+        for frame in record.ws_frames
+        if isinstance(frame.payload, dict)
+        and frame.payload.get("title") == td.APPROVAL_EXPIRED_NOTE_TITLE
+    ]
+
+
 def _steers(record: TurnRecord) -> list[str]:
     return [call.args[0] for call in record.calls("steer")]
 
@@ -577,6 +588,57 @@ class TestTheRunnersApprovalWindow:
             _prompt_turn(answers={"req-1": REJECTED}), slot=SlotSpec(autonudge=True)
         )
         assert record.notify_approval_stalled == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot", "window"),
+        [(SlotSpec(key="chat-1"), 600), (SlotSpec(key="worker-1", app="issue-radar"), 180)],
+        ids=["attended", "unattended"],
+    )
+    async def test_an_expired_prompt_leaves_one_bell_note(
+        self, slot: SlotSpec, window: int
+    ) -> None:
+        # The card reaches only someone looking at the session; the bell note is
+        # how anyone else learns the turn went on without the tool.
+        named = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="req-1",
+            title="fs_write",
+            tool_kind="edit",
+            tool_name="fs_write",
+        )
+        record = await run_turn(TurnScript(events=[named, _AFTER, _DONE]), slot=slot)
+        [note] = _expiry_notes(record)
+        assert note["kind"] == "agent"
+        assert note["channel"] == "system.agent"
+        assert note["slot"] == slot.key
+        assert note["body"].startswith("fs_write in ")
+        assert f"waited {window // 60} minutes for approval and was declined" in note["body"]
+
+    @pytest.mark.asyncio
+    async def test_an_answered_prompt_leaves_no_bell_note(self) -> None:
+        record = await run_turn(_prompt_turn(answers={"req-1": REJECTED}))
+        assert _expiry_notes(record) == []
+
+    @pytest.mark.asyncio
+    async def test_a_no_budget_decline_leaves_no_bell_note(self) -> None:
+        # Nothing was asked, so nothing expired: the card already says the turn
+        # was too close to its limit to ask.
+        record = await run_turn(
+            _prompt_turn(Wait(_CEILING - 5)),
+            config={"agent": {"chat_turn_timeout_secs": _CEILING}},
+        )
+        assert _cards(record) == [td.format_approval_no_budget_card()]
+        assert _expiry_notes(record) == []
+
+    @pytest.mark.asyncio
+    async def test_a_muted_session_still_leaves_the_bell_note(self) -> None:
+        # Muting a session hides the notes it publishes itself. This one is the
+        # gateway's report about it, which a mute leaves alone.
+        record = await run_turn(_prompt_turn(Do(lambda ctx: setattr(ctx.slot, "muted", True))))
+        [note] = _expiry_notes(record)
+        assert not note.get("silenced")
+        assert note["priority"] != "passive"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

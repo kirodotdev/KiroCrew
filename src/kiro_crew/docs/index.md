@@ -21,7 +21,9 @@ kirocrew gateway     # → http://localhost:5476
 
 `kiro-cli` must be installed, on your `PATH`, and logged in. See
 [Getting Started](getting-started.md) for the source install, the pip channel
-index, first-time setup, and connecting messaging channels.
+index, first-time setup, and connecting messaging channels. Already using
+kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
+over and what changes.
 
 ## Core Capabilities
 
@@ -49,7 +51,7 @@ index, first-time setup, and connecting messaging channels.
 | [Artifacts](artifacts.md) | Save, version, and revert generated UI and documents so they outlive the chat scrollback |
 | [Monitor Loops](monitor-loops.md) | Keep one session checking something on an interval — a pull request, a CI run, a deployment — until an exit condition fires |
 | [Session Ledger](session-ledger.md) | A durable per-session record of goal, phase, and next step that survives context compaction |
-| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, retry, continue, switch models on, reload, rename, retitle, close, list and revive another one — the 37 `kirocrew-dashboard` MCP tools, plus the sidebar folders, tags, board columns and pins that keep them findable |
+| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, retry, continue, switch models on, reload, rename, retitle, color, close, list and revive another one — the 40 `kirocrew-dashboard` MCP tools, plus the sidebar folders, tags, board columns and pins that keep them findable |
 | [Work Ledger](work-ledger.md) | Split a goal across one session per item: a conductor dispatches workers, reads their status as data, and settles every completion claim against an acceptance condition |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
@@ -83,7 +85,7 @@ documented by their own in-panel help.
 | Import / Export | Bringing data in from another AI agent, and backing up or restoring Kiro Crew configuration | [Snapshot and restore](snapshot-and-restore.md) |
 | Agent Harness | Which agent new sessions start | — |
 | Chat | Composer behaviour, queued messages, feature tips | [Feature Tips](feature-tips.md) |
-| Display | Theme, language, and layout | — |
+| Display | Theme, language, and layout; in the desktop app, whether closing the window keeps the app running or quits it | — |
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
 | Notifications | Where a proactive message is delivered | — |
 | Shortcuts | Keyboard bindings | — |
@@ -97,7 +99,7 @@ documented by their own in-panel help.
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
 | OAuth Apps | OAuth apps for providers that need a registered client; MCP servers live on Customize → Connections | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
-| Developer | The Developer Mode consent switch, Feature Previews, plus an optional local-gateway toggle; turning Developer Mode on adds a separate Developer page that holds logs, metrics, storage and the rest | [Dashboard](dashboard.md) |
+| Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage, MCP Management and the other developer views | [Dashboard](dashboard.md) |
 | Releases | Release notes for each version | — |
 | About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
 
@@ -116,6 +118,8 @@ gracefully rather than failing the turn.
 ## Guides
 
 - [Getting Started](getting-started.md): installation, first-time setup, running in the background
+- [Coming from kiro-cli](coming-from-kiro-cli.md): how Kiro Crew relates to kiro-cli, what
+  carries over, why a chat behaves differently, and how to get CLI-style behaviour
 - [Configuration](configuration.md): config file reference, environment variables, sandbox
 - [Use Cases](use-cases.md): real-world workflows from the community
 - [Troubleshooting](troubleshooting.md): common issues and fixes

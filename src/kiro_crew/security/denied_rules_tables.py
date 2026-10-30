@@ -157,8 +157,9 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
-# The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
-# approve, gateway restart, cloud <destructive> -- have NO catalog row and NO opt-out.  A regex
+# The self-management SUBCOMMAND floors named in this set -- restart, update,
+# gateway restart, cloud <destructive>, skills authority-retire -- have NO catalog row
+# and NO opt-out.  A regex
 # row (``.*kiro.?crew ... restart.*`` and siblings) opening with an unbounded any-run would
 # match the product name in a worktree path plus the verb word later, denying
 # ``ls ~/kirocrew-wt/restart.log``, and adds nothing to the structural predicate, which requires
@@ -173,9 +174,9 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
     {
         "self-protection-restart",
         "self-protection-update",
-        "self-protection-file-delivery",
         "self-protection-gateway-restart",
         "self-protection-cloud",
+        "self-protection-skills-authority-retire",
     }
 )
 
@@ -223,14 +224,6 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "program and its leading subcommand self-updates this gateway. This floor has "
         "no catalog row and no opt-out."
     ),
-    "self-protection-file-delivery": (
-        "Matched structurally on the command's argv: the product CLI is the argv's own "
-        "program and its leading subcommands are 'file-delivery approve', which would "
-        "complete a flagged-file delivery consent step-up. This floor has no catalog row "
-        "and no opt-out. The read-only forms that dispatch nothing -- 'file-delivery' "
-        "with no verb, and 'file-delivery --help' -- are not refused, so the usage this "
-        "command family is quoted from stays reachable."
-    ),
     "self-protection-gateway-restart": (
         "Matched structurally on the command's argv: the product CLI is the argv's own "
         "program and its leading subcommands restart the gateway server. This floor has "
@@ -240,6 +233,12 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "Matched structurally on the command's argv: the product CLI is the argv's own "
         "program and its leading subcommand is a destructive cloud lifecycle operation. "
         "This floor has no catalog row and no opt-out."
+    ),
+    "self-protection-skills-authority-retire": (
+        "Matched structurally on the command's argv: the product CLI is the argv's own "
+        "program and its leading subcommands retire the auto-skill authority. This "
+        "stopped-installation recovery must run from the operator's own terminal, so "
+        "this floor has no catalog row and no opt-out."
     ),
     "self-protection-dev-mode-out-of-root-confirm": (
         "Matched structurally on the command's argv, not by the pattern text above: "

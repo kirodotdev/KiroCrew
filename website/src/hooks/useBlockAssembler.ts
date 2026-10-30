@@ -406,7 +406,8 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   return blocks
 }
 
-const THROTTLE_MS = 100
+/** How often the streaming structural parse runs. Exported so tests advance fake timers by it. */
+export const THROTTLE_MS = 100
 
 /** Shared empty result so the streaming path allocates nothing per render. */
 const NO_BLOCKS: ContentBlock[] = []
@@ -432,6 +433,128 @@ function nextLineOf(text: string): number {
  *  with their text goes through here so `nextLine` can never drift from `text`. */
 function snapOf(blocks: ContentBlock[], text: string): ParseSnap {
   return { blocks, text, nextLine: nextLineOf(text) }
+}
+
+// A list item opener at column 0: bullet, or ordered `1.` / `1)`.
+const LIST_ITEM_START = /^(?:[*+-]|\d{1,9}[.)])(?:[ \t]|$)/
+// A top-level list item opener, which may sit up to three spaces in.
+const LIST_ITEM_OPEN = /^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]|$)/
+// Lines from which nothing later may be split off: a fence delimiter anywhere
+// on the line (fixCodeFences can turn a glued run into a fence the line
+// scanner here never sees), a display-math delimiter (`$$`, and the `\[` and
+// `\begin{` forms remarkLatexDelimiters reads), or any `<` that does not open
+// an autolink. Raw HTML of every kind (tags, comments, CDATA, declarations,
+// processing instructions) starts with `<`, and rehype-raw can nest later
+// paragraphs inside it, so matching the character rather than each construct
+// keeps the rule closed: a `<` in prose only costs the split.
+const SPLIT_STOP = /`{3}|~{3}|\$\$|\\\[|\\begin\{|<(?![A-Za-z][\w+.-]*:[^\s<>]*>)/
+/** True when `text` may hold a link reference or footnote definition, or a
+ *  footnote reference. Each binds text across blank lines, so such a block is
+ *  never split. Every definition, at any indent, inside any container and with
+ *  a label that spans lines or escapes a bracket, contains `]:`, so two
+ *  substring searches find them all in linear time; prose that merely contains
+ *  `]:` only loses the split. */
+function hasCrossBlockRef(text: string): boolean {
+  return text.includes(']:') || text.includes('[^')
+}
+
+/**
+ * Split one markdown block at blank-line boundaries that no later text can
+ * reach back across. Returns the block alone when nothing can be split.
+ *
+ * A boundary is a run of blank lines followed by a line with no leading
+ * whitespace (an indented line may continue a list item or an indented code
+ * block). It is skipped between two list items, which may form one loose
+ * list even when an item has lazy continuation lines, and before a bordered
+ * table row. Scanning stops at the first line holding a fence or display-math
+ * delimiter, or a `<` that does not open an autolink, and a block holding a
+ * reference or footnote definition anywhere is left whole. Every
+ * remaining construct ends at a blank line, so each piece parses to the same
+ * tree it has inside the whole block.
+ *
+ * A reference or footnote definition can arrive after the paragraphs that use
+ * it, and the pieces then merge back into one block, remounting them. The
+ * merge is what makes the link resolve, so correctness wins over keeping the
+ * pieces mounted.
+ */
+function splitParagraphs(last: ContentBlock): ContentBlock[] {
+  if (last.startLine == null) return [last]
+  const text = last.content
+  if (!text.includes('\n\n') || hasCrossBlockRef(text)) return [last]
+  const lines = text.split('\n')
+  const from = last.startLine
+  const pieces: ContentBlock[] = []
+  let start = 0 // first line of the current piece
+  // Inside a list that a later item may still join. An item line indented up
+  // to three spaces opens it. Only an unindented non-item line ends it, and
+  // only when it starts a new paragraph after a blank line; directly under an
+  // item it is a lazy continuation of that item, so the list goes on.
+  let inList = false
+  let afterBlank = true
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (SPLIT_STOP.test(line)) break
+    if (line.trim() !== '') {
+      if (LIST_ITEM_OPEN.test(line)) inList = true
+      else if (afterBlank && line[0] !== ' ' && line[0] !== '\t') inList = false
+      afterBlank = false
+      continue
+    }
+    afterBlank = true
+    let j = i
+    while (j < lines.length && lines[j].trim() === '') j++
+    // The blank run reaches the end: the paragraph after it has not started.
+    if (j >= lines.length) break
+    const next = lines[j]
+    const nextIsItem = LIST_ITEM_START.test(next)
+    // A bordered table row stays with the paragraph above it: the live tail
+    // holds back an incomplete table (deferIncompleteStreamingTable), and a
+    // piece holding only that table would render nothing and drop the caret.
+    if (next[0] !== ' ' && next[0] !== '\t' && next[0] !== '|' && !(inList && nextIsItem) && i > start) {
+      pieces.push({
+        type: 'markdown',
+        content: lines.slice(start, i).join('\n'),
+        complete: true,
+        startLine: from + start,
+        split: { from, part: pieces.length },
+      })
+      start = j
+    }
+    i = j - 1
+  }
+  if (pieces.length === 0) return [last]
+  pieces.push({
+    ...last,
+    content: lines.slice(start).join('\n'),
+    startLine: from + start,
+    split: { from, part: pieces.length },
+  })
+  return pieces
+}
+
+/** The no-split counterpart of splitMarkdownBlocks. */
+const keepBlocks = (blocks: ContentBlock[]): ContentBlock[] => blocks
+
+/**
+ * Split every markdown block of a parse into paragraph pieces (splitParagraphs),
+ * so settled paragraphs render as separate memoized blocks and only the last
+ * piece of the open tail re-parses on each animation frame. Without this the
+ * whole prose tail re-parses every frame: per-frame cost grows with answer
+ * length and the stream as a whole costs O(n^2).
+ *
+ * Every markdown block is split, not only the open tail: the tail stops being
+ * last the moment a fence opens after it, and splitting it only while last
+ * would merge its pieces back into one block and remount them, dropping state
+ * such as an image the reader allowed to load. Splitting the same text gives
+ * the same pieces, so a piece keeps its key from the parse where it settled.
+ *
+ * Applied to the streaming snapshot, and to the finished parse of a message
+ * that streamed in the same mount (see useBlockAssembler). A message mounted
+ * already finished renders from one unsplit parse.
+ */
+export function splitMarkdownBlocks(blocks: ContentBlock[]): ContentBlock[] {
+  if (!blocks.some((b) => b.type === 'markdown')) return blocks
+  return blocks.flatMap((b) => (b.type === 'markdown' ? splitParagraphs(b) : [b]))
 }
 
 /**
@@ -496,18 +619,30 @@ function extendTail(snap: ParseSnap, rawText: string): ContentBlock[] {
  * lurch in ~10Hz chunks and only animate smoothly during the post-stream
  * drain, after the completion sound.
  */
-export function useBlockAssembler(rawText: string, streaming: boolean): ContentBlock[] {
+export function useBlockAssembler(rawText: string, streaming: boolean, splitPieces = true): ContentBlock[] {
+  // `splitPieces` false keeps every markdown block whole, streaming or not.
+  const split = splitPieces ? splitMarkdownBlocks : keepBlocks
+  // Latched once this instance has streamed. Its finished render then keeps the
+  // paragraph pieces it streamed with, so the pieces after the first keep
+  // their React keys when the stream ends instead of remounting, and state in
+  // them (an image the reader allowed to load, a selection) survives. A
+  // message first mounted already finished renders from one unsplit parse.
+  // Set during render, which React allows for a component's own state.
+  const [streamedHere, setStreamedHere] = useState(streaming)
+  if (streaming && !streamedHere) setStreamedHere(true)
+
   // Gated on !streaming: during a stream this must not parse, or the throttle
   // below would only be deferring work the render had already paid for.
-  const immediateBlocks = useMemo(
-    () => (streaming ? NO_BLOCKS : parseBlocks(rawText, false)),
-    [rawText, streaming],
-  )
+  const immediateBlocks = useMemo(() => {
+    if (streaming) return NO_BLOCKS
+    const parsed = parseBlocks(rawText, false)
+    return streamedHere ? split(parsed) : parsed
+  }, [rawText, streaming, streamedHere, split])
 
   // Gated too: the early return below never reads this when !streaming, so a
   // completed message would otherwise pay a second full parse for nothing.
   const [throttledSnap, setThrottledSnap] = useState<ParseSnap>(() =>
-    streaming ? snapOf(parseBlocks(rawText, true), rawText) : EMPTY_SNAP,
+    streaming ? snapOf(split(parseBlocks(rawText, true)), rawText) : EMPTY_SNAP,
   )
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestTextRef = useRef(rawText)
@@ -532,10 +667,10 @@ export function useBlockAssembler(rawText: string, streaming: boolean): ContentB
       timerRef.current = setTimeout(() => {
         timerRef.current = null
         const text = latestTextRef.current
-        setThrottledSnap(snapOf(parseBlocks(text, true), text))
+        setThrottledSnap(snapOf(split(parseBlocks(text, true)), text))
       }, THROTTLE_MS)
     }
-  }, [rawText, streaming, immediateBlocks])
+  }, [rawText, streaming, immediateBlocks, split])
 
   useEffect(() => {
     return () => {

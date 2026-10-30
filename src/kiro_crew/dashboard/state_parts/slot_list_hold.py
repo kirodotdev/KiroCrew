@@ -12,7 +12,7 @@ Fields of ``DashboardState`` this module reads and writes:
 Writes: ``slot_list_rebuilding``, ``_slot_list_channel_held_keys``,
 ``_slot_list_released_keys``, ``_slot_list_hold_channels``,
 ``_slot_list_rebuild_finish_requested``, ``_slot_list_rebuild_began``,
-``_slot_list_rebuild_deadline``.
+``_slot_list_rebuild_deadline``, ``startup_tabs_rebuilt``.
 
 Reads: ``unrestored_slot_notice``, ``unrestored_slot_keys``, ``_slots``,
 ``_slots_under_construction``, ``_slots_push_suspend``.
@@ -132,8 +132,13 @@ def arm_slot_list_rebuild_deadline(self: DashboardState) -> None:
 
 
 def _expire_slot_list_rebuild(self: DashboardState) -> None:
-    """Clear the label at the deadline; while a transient hold remains, re-check each second."""
-    if self._complete_slot_list_rebuild_if_ready():
+    """Clear the label at the deadline; while a transient hold remains, re-check each second.
+
+    The timer firing is the deadline, so it is not re-measured. The loop runs a
+    timer up to its clock resolution early (about 16 ms on Windows), which
+    re-measuring would read as not yet overdue.
+    """
+    if self._complete_slot_list_rebuild_if_ready(deadline_reached=True):
         self.push_slots_update()
         return
     if not self.slot_list_rebuilding:
@@ -159,7 +164,9 @@ def _persistent_slot_list_hold(self: DashboardState) -> str | None:
     return None
 
 
-def _complete_slot_list_rebuild_if_ready(self: DashboardState) -> bool:
+def _complete_slot_list_rebuild_if_ready(
+    self: DashboardState, *, deadline_reached: bool = False
+) -> bool:
     """Clear the partial label once every dropped tab is listed, or once the hold is overdue.
 
     A suspended push always holds. Other causes hold globally until
@@ -172,7 +179,7 @@ def _complete_slot_list_rebuild_if_ready(self: DashboardState) -> bool:
     hold = self._persistent_slot_list_hold()
     if hold is not None:
         elapsed = time.monotonic() - self._slot_list_rebuild_began
-        if elapsed < _SLOT_LIST_PARTIAL_DEADLINE_S:
+        if not deadline_reached and elapsed < _SLOT_LIST_PARTIAL_DEADLINE_S:
             return False
         held_count = len(self.slot_list_held_keys())
         channel_scope = " and every channel slot" if self.slot_list_hold_channels() else ""
@@ -211,7 +218,14 @@ def finish_slot_list_rebuild(self: DashboardState) -> None:
     Once called, later slot-list pushes retry the same condition. This lets a
     dropped tab rebuilt after boot clear the label even when channel surfacing is
     off, while a running channel reconciler still owns the first finish request.
+
+    Each call also sets ``startup_tabs_rebuilt``, whether or not the label
+    clears: each caller runs once this boot's rebuilt tabs are in ``_slots`` and
+    published (the restore after its pass; the channel reconciler after a
+    complete pass, which publishes what it surfaced before it returns), and a
+    dropped tab still holding the label will not come back by waiting.
     """
     self._slot_list_rebuild_finish_requested = True
+    self.startup_tabs_rebuilt.set()
     if self._complete_slot_list_rebuild_if_ready():
         self.push_slots_update()

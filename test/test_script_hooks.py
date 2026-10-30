@@ -192,7 +192,6 @@ class TestScriptHookStore:
             }
         )
 
-        # Load from same file
         store2 = ScriptHookStore(tmp_path)
         retrieved = store2.get(hook.id)
         assert retrieved is not None

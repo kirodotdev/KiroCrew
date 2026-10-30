@@ -16,6 +16,7 @@ from aiohttp import web
 
 import kiro_crew.config.loader as loader_module
 from kiro_crew.dashboard.handlers import api_agent_config
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +120,10 @@ async def test_api_agent_config_put_strips_governed_grants(tmp_path, monkeypatch
         patch("kiro_crew.dashboard.handlers._find_agent_config", return_value=defaults),
         patch("kiro_crew.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock),
         patch("kiro_crew.dashboard.handlers.config_path", return_value=mc_cfg),
-        patch("kiro_crew.dashboard.handlers.agents.get_shipped_tools", return_value={"tools": [], "allowedTools": []}),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.get_shipped_tools",
+            return_value={"tools": [], "allowedTools": []},
+        ),
     ):
         response = await api_agent_config(request)
 
@@ -395,9 +399,9 @@ async def test_agent_config_write_holds_the_mcp_transaction_lock(tmp_path):
     # not.
     spec_writes = [entry for entry in writes if entry[0] == str(installed)]
     assert spec_writes, "the agent-spec write never happened"
-    assert all(held for _p, held, _f in spec_writes), (
-        "the agent-spec write ran OUTSIDE the MCP transaction lock"
-    )
+    assert all(
+        held for _p, held, _f in spec_writes
+    ), "the agent-spec write ran OUTSIDE the MCP transaction lock"
     # bridges_mcp.py does whole-file read-modify-writes of THIS SAME file under its
     # own flock (kirocrew.lock), which the transaction lock does not cover: a
     # concurrent app enable and this PUT would each write the whole file and the
@@ -509,9 +513,11 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
         "the PUT's durable writes were dispatched as several offloads, so a "
         f"cancellation can land between them: {offloaded}"
     )
-    assert {label for label, _ in writes} == {"bookkeeping", "mc_cfg", "spec"}, (
-        f"not every durable write of the PUT was observed: {writes}"
-    )
+    assert {label for label, _ in writes} == {
+        "bookkeeping",
+        "mc_cfg",
+        "spec",
+    }, f"not every durable write of the PUT was observed: {writes}"
     outside = [label for label, inside in writes if not inside]
     assert not outside, (
         f"{outside} ran OUTSIDE the shielded offload: a cancellation at the "
@@ -593,7 +599,7 @@ async def test_agent_config_put_persists_nothing_before_the_transaction_lock(tmp
     ):
         task = asyncio.ensure_future(api_agent_config(request))
         try:
-            await asyncio.wait_for(reached_lock.wait(), timeout=5)
+            await await_until(reached_lock, what="handler reached the MCP lock")
             # Cancel while the handler is suspended on the lock wait.
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -717,13 +723,15 @@ async def test_agent_config_put_lock_releases_only_after_every_write_landed(tmp_
             await asyncio.to_thread(worker_entered.wait, 5)
             assert worker_entered.is_set(), "test bug: the first durable write never started"
 
-            # Cancel with the write parked. Give the loop room to deliver it and
-            # to run any unwind the handler's shape allows.
+            # Cancel with the write parked. cancel() wakes the task through the
+            # loop alone (no thread is involved until ``release`` opens), so a
+            # few loop turns deliver it and run whatever unwind the handler's
+            # shape allows while the worker is still parked.
             task.cancel()
             for _ in range(10):
                 if task.done():
                     break
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0)
 
             release.set()
             with pytest.raises(asyncio.CancelledError):
@@ -774,7 +782,9 @@ async def test_agent_config_put_unreadable_config_persists_nothing(tmp_path, mon
     # ``model_managed`` already set, so only the ``cc_model`` below can lift --
     # enough for the bookkeeping write to be observable, and it keeps the
     # sidecar off the developer's real ~/.kiro/crew.
-    state.write_text(json.dumps({"test": {"model_managed": False}}, indent=2, sort_keys=True) + "\n")
+    state.write_text(
+        json.dumps({"test": {"model_managed": False}}, indent=2, sort_keys=True) + "\n"
+    )
     monkeypatch.setattr("kiro_crew.agent_state._state_path", lambda: state)
 
     before_cfg = mc_cfg.read_text()
@@ -1173,9 +1183,9 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     assert [step for step, _held in observed] == ["read", "write"], observed
     # BOTH halves, not just the write: a lock taken around the write alone still
     # lets a sibling RMW land between this read and it, which is the whole defect.
-    assert all(held for _step, held in observed), (
-        f"the default-agent read-modify-write ran OUTSIDE the config lock: {observed}"
-    )
+    assert all(
+        held for _step, held in observed
+    ), f"the default-agent read-modify-write ran OUTSIDE the config lock: {observed}"
     # And the ADVISORY lock was taken too, not just the in-process one.
     # The asyncio lock above serializes same-loop callers only, so on its own it
     # leaves the CLI and other processes free to interleave with this RMW.

@@ -112,8 +112,9 @@ def _rejection_recording_filter(
 def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | None:
     """Equivalent to tarfile ``"data"`` filter (Python 3.12+), with 3.10 fallback.
 
-    Also rejects path traversal, symlinks, and hardlinks to eliminate TOCTOU
-    race between pre-scan and extraction.
+    Also rejects path traversal, symlinks, hardlinks, and special files
+    (FIFO and device members) to eliminate TOCTOU race between pre-scan
+    and extraction.
     Excludes sel_hmac.key (must be regenerated on restore, not shipped).
     Security-sensitive files get 0o600 permissions.
     """
@@ -144,6 +145,14 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
     # Reject symlinks and hardlinks
     if info.issym() or info.islnk():
         print(f"⚠️  Rejecting symlink/hardlink entry: {_safe_name(info.name)}")
+        return None
+    # Reject special files (FIFO, character/block device). The "data" filter
+    # this claims equivalence with refuses them, and the sibling tar filters
+    # in this repo (papyrus tectonic, pptx_maker engine_source) refuse them
+    # too. A staged FIFO blocks any later pass that opens it for reading,
+    # and bundle content is only ever regular files and directories.
+    if not (info.isreg() or info.isdir()):
+        print(f"⚠️  Rejecting special file entry: {_safe_name(info.name)}")
         return None
     # Never ship these — each must be regenerated on the restoring host, or is that
     # host's own runtime state (the host-local half of ``memory_stores/``).
@@ -421,8 +430,7 @@ def _copy_database_consistently(
             raise DatabaseCopyFailed(src, e) from e
         if require_database:
             # A DECLARED component file, so this is a hard failure. The asymmetry with the
-            # tree pass below is deliberate, and an earlier revision of this change got it
-            # backwards by "unifying" the two -- review caught the consequence:
+            # tree pass below is deliberate; "unifying" the two has this consequence:
             #
             # A corrupt `memory.db` staged as bytes makes the snapshot SUCCEED. `--keep N`
             # then counts that archive as the newest backup and prunes a real one, while
@@ -742,8 +750,7 @@ def _restage_databases(
         # copy of a PRODUCT database in the bundle without its checkpointed rows, and
         # restore's strict integrity check passes such a copy: rows present only in the
         # write-ahead log are then silently gone. A recorded note does not prevent that.
-        # Failing closed is both the safe direction and what this call did before the
-        # tolerance elsewhere in this change existed. Nothing is published on the way
+        # Failing closed is the safe direction. Nothing is published on the way
         # out, so no retention pass can prune a bundle that does restore.
         try:
             src_st = src.lstat()
@@ -1007,12 +1014,12 @@ def _copytree_safe(
         # rather than on the failure to write it, in a bundle reporting success.
         pinned_fs.copy_file_pinned(source, target, on_skip=report, skip_unreadable=skip_unreadable)
 
-    # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. Review found the gap:
-    # `must_create` reached the pinned walk and stopped there, so on a platform that cannot
-    # pin -- Windows, the dashboard's replace -- a root recreated after the rmtree was still
-    # merged into and stale files survived a successful replace. That is the same mistake as
-    # the earlier Windows import refusal in this PR: a guard added to the pinned path and not
-    # carried to the by-name one. Every mutating path gets the gate or the gate is decorative.
+    # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. If `must_create`
+    # reached only the pinned walk, then on a platform that cannot pin -- Windows, the
+    # dashboard's replace -- a root recreated after the rmtree would still be merged into
+    # and stale files would survive a successful replace: a guard added to the pinned path
+    # and not carried to the by-name one. Every mutating path gets the gate or the gate is
+    # decorative.
     # The tree's OWN directory, which `_ignore_unsafe` never sees: `copytree` lists the
     # root before consulting it. Asked HERE rather than by wrapping the call, because a
     # wrapper cannot tell the root's own refusal from a failure to CREATE the
@@ -1047,7 +1054,16 @@ class ManifestUnreadable(Exception):
 
 
 class _ArchiveTooLarge(Exception):
-    """An archive declares more content than a memory bundle can justify."""
+    """An archive declares more content than a memory bundle can justify.
+
+    *kind* names the bound that refused it: ``"bytes"`` for the uncompressed-content
+    bound, which ``--max-archive-gib`` raises, or ``"entries"`` for the member-count
+    bound, which no flag moves. A caller reads it to offer only a remedy that can work.
+    """
+
+    def __init__(self, *args: object, kind: str = "bytes") -> None:
+        super().__init__(*args)
+        self.kind = kind
 
 
 # Generous next to a real memory bundle (megabytes, a few thousand members) and still
@@ -1059,8 +1075,82 @@ _MAX_ARCHIVE_MEMBERS = 200_000
 
 _MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
 
+#: Highest value ``--max-archive-gib`` accepts. The override is for an install that is
+#: honestly larger than the default bound, not a way to switch the bound off: a ceiling
+#: keeps a typo (``40000``) from turning the decompression guard into no guard.
+MAX_ARCHIVE_GIB_CEILING = 1024
 
-def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
+
+def archive_byte_bound(max_archive_gib: int | None) -> int:
+    """The declared-content bound in bytes: the operator's ``--max-archive-gib`` or the default.
+
+    Read through the facade when no override is given, so a test that lowers
+    ``snapshot._MAX_ARCHIVE_BYTES`` lowers the bound every reader and the writer enforce.
+    The caller validates the override against :data:`MAX_ARCHIVE_GIB_CEILING` first.
+    """
+    if max_archive_gib is None:
+        return int(_facade()._MAX_ARCHIVE_BYTES)
+    return int(max_archive_gib) * (1024**3)
+
+
+def _bound_gib(max_bytes: int) -> str:
+    """The bound as the operator would type it, never rounding a sub-GiB test bound to 0."""
+    gib = max_bytes / (1024**3)
+    return f"{gib:.0f}" if gib >= 1 else f"{gib:.3g}"
+
+
+def _refuse_oversized_tree(stage: Path, *, max_bytes: int | None = None) -> None:
+    """Refuse a staged bundle the archive bound would refuse, BEFORE it is archived.
+
+    The writer's half of :func:`_refuse_oversized_archive`. It counts the same two
+    quantities the reader counts from the member headers -- the entries (the root
+    directory, every directory, every file) and the bytes of regular files -- so a bundle
+    this lets through is one restore accepts at the same bound. Running it on the staged
+    tree, not the finished tarball, is what keeps a refusal from costing a full
+    compression pass and from ever publishing an archive this tool cannot restore.
+
+    Links are counted as entries and never followed. The staging pass does not carry
+    them, so a count that includes one only refuses earlier, never later, than restore.
+    The message names the largest top-level entry, because that is the operator's
+    cheapest way back under the bound with ``--components``.
+    """
+    facade = _facade()
+    max_count = facade._MAX_ARCHIVE_MEMBERS
+    if max_bytes is None:
+        max_bytes = facade._MAX_ARCHIVE_BYTES
+    total = 0
+    count = 1  # the bundle's root directory is a member of its own
+    by_top: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(stage):
+        count += len(dirnames) + len(filenames)
+        if count > max_count:
+            raise _ArchiveTooLarge(
+                f"This snapshot declares more than {max_count:,} entries, which "
+                "`kirocrew restore` refuses",
+                kind="entries",
+            )
+        rel_dir = Path(dirpath).relative_to(stage)
+        for fn in filenames:
+            try:
+                st = os.lstat(os.path.join(dirpath, fn))
+            except FileNotFoundError:
+                continue
+            if not _stat.S_ISREG(st.st_mode):
+                continue
+            total += st.st_size
+            top = rel_dir.parts[0] + "/" if rel_dir.parts else fn
+            by_top[top] = by_top.get(top, 0) + st.st_size
+    if total > max_bytes:
+        largest, largest_bytes = max(by_top.items(), key=lambda kv: kv[1])
+        raise _ArchiveTooLarge(
+            f"This snapshot declares more than {_bound_gib(max_bytes)} GiB of uncompressed "
+            f"content ({total / (1024**3):.2f} GiB; largest entry {_safe_name(largest)} at "
+            f"{largest_bytes / (1024**3):.2f} GiB), which `kirocrew restore` refuses at that "
+            "bound"
+        )
+
+
+def _refuse_oversized_archive(probe: tarfile.TarFile, *, max_bytes: int | None = None) -> int:
     """Refuse an archive that would not fit, before anything is extracted.
 
     A compressed archive can declare orders of magnitude more content than it occupies,
@@ -1076,8 +1166,16 @@ def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
     materialising the whole index is itself the denial of service an archive with
     millions of members performs. Bailing on the member that crosses the bound means the
     work is bounded by the bound, not by what the archive claims.
+
+    *max_bytes* is the operator's explicit ``--max-archive-gib`` override in bytes, and
+    defaults to ``_MAX_ARCHIVE_BYTES``. Only the byte bound moves: the member-count bound
+    is the one that stops an index-exhaustion archive, and no install needs more than it.
+    Returns the declared regular-file total, so a caller that raised the bound can also
+    hold it to the space the extraction has.
     """
     facade = _facade()
+    if max_bytes is None:
+        max_bytes = facade._MAX_ARCHIVE_BYTES
     total = 0
     count = 0
     while (member := probe.next()) is not None:
@@ -1085,18 +1183,22 @@ def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
         if count > facade._MAX_ARCHIVE_MEMBERS:
             raise _ArchiveTooLarge(
                 f"This archive declares more than {facade._MAX_ARCHIVE_MEMBERS:,} "
-                "entries, which no memory bundle produces"
+                "entries, which no memory bundle produces",
+                kind="entries",
             )
         # Only regular files carry payload; a directory or link header declares a size
         # that extraction never writes, so counting those would refuse honest archives.
         if member.isfile():
             total += max(member.size, 0)
-            if total > facade._MAX_ARCHIVE_BYTES:
+            if total > max_bytes:
                 raise _ArchiveTooLarge(
                     "This archive declares more than "
-                    f"{facade._MAX_ARCHIVE_BYTES // (1024 ** 3)} GiB of uncompressed content, "
-                    "which no memory bundle produces"
+                    f"{_bound_gib(max_bytes)} GiB of uncompressed content, "
+                    "which no memory bundle produces. If you made it with "
+                    "`kirocrew snapshot --max-archive-gib N`, pass "
+                    "--max-archive-gib N (or larger) here"
                 )
+    return total
 
 
 def _manifest_components(snap: Path) -> list[str] | None:
@@ -1186,12 +1288,8 @@ def _print_manifest(snap: Path) -> None:
         m = json.loads(mf.read_text(encoding="utf-8"))
         print("📋 Snapshot info:")
         # Every string below comes out of an archive the caller supplied, so all of them
-        # go through _terminal_safe. Review named the omission list this change added;
-        # created_at, user and hostname are the same class and pre-date this diff. They
-        # are fixed here rather than left as a matching hole three lines away, because
-        # the renderer makes each one a one-word change and shipping a function that
-        # sanitizes two of five attacker-controlled fields would be worse than either
-        # extreme. Named as a drive-by rather than smuggled in.
+        # go through _terminal_safe: a function that sanitizes two of five
+        # attacker-controlled fields would be worse than either extreme.
         print(f"  Created: {_terminal_safe(m.get('created_at', 'unknown'))}")
         print(
             f"  From: {_terminal_safe(m.get('user', 'unknown'))}"

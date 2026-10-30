@@ -202,9 +202,22 @@ class TestTheBindingIsStructural:
             ]
         )
 
+        # A handler queues a recovery itself, or through the turn phase it awaits.
+        queuing_phases = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name.startswith(("_on_", "_turn_"))
+            and any(
+                isinstance(call, ast.Call) and getattr(call.func, "id", "") == "_queue_recovery"
+                for call in ast.walk(node)
+            )
+        }
+
         def _queues_recovery(node: ast.AST) -> bool:
             return any(
-                isinstance(call, ast.Call) and getattr(call.func, "id", "") == "_queue_recovery"
+                isinstance(call, ast.Call)
+                and getattr(call.func, "id", "") in {"_queue_recovery", *queuing_phases}
                 for call in ast.walk(node)
             )
 

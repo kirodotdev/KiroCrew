@@ -2,10 +2,12 @@
  * The chat sidebar's session lanes must not paint a vertical scrollbar.
  *
  * Why this is a test and not just a class in the JSX: the lane is permanently
- * scrollable once a user has more than a screenful of sessions, so the 6px
- * ::-webkit-scrollbar track from index.css reads as a fixed stripe down the
- * sidebar rather than a transient hint. It is easy to lose the hiding again
- * while editing that long className, and nothing else would fail.
+ * scrollable once a user has more than a screenful of sessions, and it is one
+ * of the surfaces that hides its scrollbar ENTIRELY rather than showing the
+ * global scroll-only thumb (index.css, scrollbarRevealOnly.test.ts): a thumb
+ * flashing beside the session rows on every scroll would read as chrome. It is
+ * easy to lose the hiding again while editing that long className, and
+ * nothing else would fail.
  *
  * Both halves of the mechanism are asserted, because they cover different
  * engines and only one of them is visible to jsdom:

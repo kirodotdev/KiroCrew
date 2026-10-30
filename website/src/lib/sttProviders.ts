@@ -9,7 +9,7 @@
  * dictation socket reports its own failures by `code` too, so its vocabulary
  * is here beside the availability one rather than inlined in the hook.
  */
-import { fmtBytes, fmtPercent } from '../i18n/format'
+import { fmtBytes, fmtLanguageName, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 /** Resident speech recogniser inside the gateway process. The default, every OS. */
@@ -38,6 +38,14 @@ export const FALLBACK_STREAMING_PROVIDERS = [
   PROVIDER_APPLE,
   PROVIDER_TRANSCRIBE,
 ]
+
+/**
+ * Which providers identify languages among `transcribe_languages`, used only
+ * while the backend has served no `language_identification_providers` list.
+ * Of the built-ins only Transcribe does; an edition provider joins through the
+ * served list.
+ */
+export const FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS = [PROVIDER_TRANSCRIBE]
 
 /**
  * Providers whose model is a name from the downloadable catalog, so the model
@@ -105,6 +113,12 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
  * Refusals where the recogniser IS installed but could not be, or would not be, loaded.
  * The Status badge shows "not working" for these, not "not installed".
  */
+/**
+ * A registered provider's own check said it cannot run now. Nothing is missing
+ * from the host, so the Status badge says "unavailable", not "not installed".
+ */
+export const CODE_PROVIDER_UNAVAILABLE = 'stt_provider_unavailable'
+
 export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
   'stt_import_failed',
   'stt_unsupported_cpu',
@@ -204,6 +218,18 @@ export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
  */
 export function localeLanguage(code: string): string {
   return code.split('-', 1)[0]
+}
+
+/**
+ * A locale code as a picker option: the language's name in the app language for
+ * the reader, then the code, which is what tells two dialects apart. Shared by
+ * the Speech-to-Text and Text-to-Speech Language pickers.
+ */
+export function languageOptionLabel(code: string): string {
+  return i18nT('pages.settings.sttSettings.language_option', {
+    name: fmtLanguageName(localeLanguage(code)),
+    code,
+  })
 }
 
 /**

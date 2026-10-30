@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from pipeline_conductor_claim_preflight_helpers import mod_fixture  # noqa: F401
 from pipeline_conductor_claim_preflight_helpers import (
     ITEM,
@@ -1243,6 +1244,8 @@ def _fixture_git_env() -> dict[str, str]:
             "GIT_CONFIG_VALUE_0": "",
         }
     )
+    # Last, so the entry lands after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 

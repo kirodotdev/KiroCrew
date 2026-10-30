@@ -196,14 +196,17 @@ class TestAgentLoadsSkill:
         }
         assert _agent_loads_skill(agent_json, tmp_path / "a.json", skill_md) is False
 
-    def test_handles_non_string_resources(self, tmp_path):
-        skill_md = tmp_path / "SKILL.md"
-        agent_json = {"name": "x", "resources": [{"oops": "object"}, None, "skill://*/SKILL.md"]}
-        # Should not crash on garbage; should still match the valid glob
-        # (matches anything ending in /SKILL.md so depending on path).
+    def test_handles_non_string_resources(self, fake_home, tmp_path):
+        skill_md = fake_home / ".kiro" / "skills" / "linear" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
         skill_md.write_text("")
-        # Returns True/False — just checks no exception.
-        _agent_loads_skill(agent_json, tmp_path / "a.json", skill_md)
+        valid = "skill://~/.kiro/skills/*/SKILL.md"
+        garbage: list = [{"oops": "object"}, None, 7]
+        # Garbage entries are skipped, and the valid glob beside them still matches.
+        agent_json = {"name": "x", "resources": [*garbage, valid]}
+        assert _agent_loads_skill(agent_json, tmp_path / "a.json", skill_md) is True
+        only_garbage = {"name": "x", "resources": garbage}
+        assert _agent_loads_skill(only_garbage, tmp_path / "a.json", skill_md) is False
 
     def test_resources_can_be_missing_or_non_list(self, tmp_path):
         skill_md = tmp_path / "SKILL.md"
@@ -581,6 +584,7 @@ class TestOneRowPerSkillFile:
         rows = [
             {"key": "s", "source": "kirocrew", "owned": False, "path": str(md),
              "deliveries": 7, "last_used_at": 1700000000.0,
+             "created_at": 1690000000.0,
              "size_bytes": 42, "inject_on_trigger": False},
             {"key": "kiro-user/s", "source": "kiro-user", "path": str(md)},
         ]
@@ -588,6 +592,7 @@ class TestOneRowPerSkillFile:
         assert [r["key"] for r in out] == ["kiro-user/s"]
         assert out[0]["deliveries"] == 7
         assert out[0]["last_used_at"] == 1700000000.0
+        assert out[0]["created_at"] == 1690000000.0
         assert out[0]["size_bytes"] == 42
         # A pointer-only skill stays pointer-only on the kept row.
         assert out[0]["inject_on_trigger"] is False

@@ -18,11 +18,12 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
-from kiro_crew import agent_state, kiro_cli
+from kiro_crew import agent_state, mate_capabilities
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
     _is_confirmed_managed_dashboard_author,
     _read_spec_capped,
+    _spec_permissions_accepted,
     agents_spec_lock,
     kiro_agents_dir_path,
 )
@@ -41,7 +42,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     update_config_locked,
 )
-from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
@@ -129,7 +130,7 @@ def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Pa
     if not is_registered_agent_name(name):
         raise CapabilityError("invalid_template_name")
     roots = [(project_agents_dir(project), "project")] if project else []
-    roots.append((kiro_agents_dir_path(), "global"))
+    roots += [(kiro_agents_dir_path(), "global"), (mate_agents_dir(), "mate")]
     for root, scope in roots:
         try:
             path = agent_spec_path(name, agents_dir=root)
@@ -221,14 +222,14 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
             result["mcpServers"][server].setdefault("autoApprove", []).append(tool)
     for section in ("tools", "allowedTools"):
         result[section] = list(rows[section])
+    # Ambient loading serves the global mcp.json, whose servers can back a grant too.
+    ambient, servers = result.get("includeMcpJson", True) is not False, result["mcpServers"]
     result["allowedTools"] = [
         ref
         for ref in result["allowedTools"]
         if not ref.startswith("@")
-        or (
-            ref[1:].split("/", 1)[0] in result["mcpServers"]
-            and not result["mcpServers"][ref[1:].split("/", 1)[0]].get("disabled")
-        )
+        or (ambient and ref[1:].split("/", 1)[0] not in servers)
+        or not servers.get(ref[1:].split("/", 1)[0], {"disabled": True}).get("disabled")
     ]
     # Preserve the relative order of all surviving custom resource entries.
     wanted = list(rows["resources"].values()) + list(rows["skills"].values())
@@ -789,17 +790,15 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
         spec.get("allowedTools"), str(spec.get("name", ""))
     ):
         vouched.add("permissions")
-    parent = snap["parent_spec"]
+    parent, reviewed = snap["parent_spec"], set((snap["intent"] or {}).get("reviewed_keys", ()))
     if "permissions" not in spec and "permissions" in parent:
-        # ``_write_derived_permissions`` removes the block itself on a release
-        # that refuses it, so its absence is then Crew's output, not a hand edit.
-        if not kiro_cli.spec_permissions_supported(kiro_cli.installed_kiro_cli_version()):
+        # The writer's own gate removed it, so it is Crew's output, not a hand edit.
+        if not _spec_permissions_accepted():
             vouched.add("permissions")
-    # A deleted key is drift too: kiro-cli reads an absent key as its default
-    # (``includeMcpJson`` absent means true), so a dropped parent key can grant.
+    # A deleted key can grant (absent ``includeMcpJson`` reads true): it is drift too.
     return sorted(
         key
-        for key in (set(spec) | set(parent)) - vouched
+        for key in (set(spec) | set(parent) | reviewed) - vouched
         if key not in spec or key not in parent or spec[key] != parent[key]
     )
 
@@ -818,6 +817,7 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
         error.file = snap["target"] + ".json"
         raise error
     intent["materialized"] = _digest(spec)
+    intent["reviewed_keys"] = sorted(spec)  # every stamp, so no baseline is read stale
     return drifted
 
 
@@ -961,7 +961,7 @@ class CapabilityService:
         error = ""
         try:
             parent_path, parent, descriptor = _source(parent_name, project)
-            if intent and descriptor != intent["parent"]:
+            if intent and _parent_identity(descriptor) != _parent_identity(intent["parent"]):
                 raise CapabilityError("parent_identity_changed")
         except CapabilityError as exc:
             if not lineage:
@@ -1004,7 +1004,12 @@ class CapabilityService:
         snapshot["revision"] = self._token([snapshot["revision"], snapshot["generation"]])
         return snapshot
 
+    def _mate_catalog(self, member: str) -> dict[str, str]:
+        return mate_capabilities.skill_catalog(member, self._catalog)
+
     def get(self, member: str) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.get(member, self._mate_catalog(member))
         return self._view(self._snapshot(member))
 
     def _project(
@@ -1093,7 +1098,7 @@ class CapabilityService:
                         "oauthScopes",
                         "oauth",
                     }
-                    if set(value) - allowed or ("command" in value and "url" in value):
+                    if set(value) - allowed or ("command" in value and value.get("url", "") != ""):
                         raise CapabilityError("invalid_transport", 400)
                     if "oauth" in value and (
                         not isinstance(value["oauth"], dict)
@@ -1363,6 +1368,8 @@ class CapabilityService:
         )
 
     def preview(self, member: str, body: Any, *, reset_parent: bool = False) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.preview(member, body, self._mate_catalog(member))
         request = validate_request(body)
         plans = self._plans(member, request, reset_parent=reset_parent)
         snap, spec, intent, changes = plans[0]
@@ -1725,6 +1732,8 @@ class CapabilityService:
         return self._finish_publish(member, expected_template, name)
 
     def put(self, member: str, body: Any, *, reset_parent: bool = False) -> dict:
+        if mate_capabilities.binding_is_mate(member):
+            return mate_capabilities.put(member, body, self._mate_catalog(member))
         request = validate_request(body, commit=True)
         prepared = {
             plan[0]["member"]: plan[0]
@@ -1826,14 +1835,14 @@ def require_unmanaged_template(name: str) -> None:
 
 
 def _parent_identity(descriptor: dict) -> dict:
-    """The Parent file a descriptor names, without the project it was resolved from.
+    """The Parent file a descriptor names, as two resolutions of it are compared.
 
-    ``_source`` records the project it searched in, but a global Parent is the
-    same file from every project that does not shadow its name, so that field
-    alone never makes two resolutions different Parents. Name, scope, source and
-    resolved path still must all match.
+    A global Parent is the same file from every project that does not shadow its
+    name, so there the project never counts; a project Parent belongs to its own
+    project, so it does. Name, scope, source and resolved path must all match.
     """
-    return {key: value for key, value in descriptor.items() if key != "project"}
+    glob = descriptor.get("scope") == "global"
+    return {key: value for key, value in descriptor.items() if key != "project" or not glob}
 
 
 def prepare_member_capabilities(member: str, project_dir: str | Path | None = None) -> dict:

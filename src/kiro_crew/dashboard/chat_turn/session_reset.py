@@ -1,21 +1,33 @@
 """The deferred reset of a dashboard session: consuming a pending reset before the next turn
-allocates, and the retry armed while the reset cannot run yet."""
+allocates, and the retry armed while the reset cannot run yet; and the hand-back of the
+session when a turn ends, on any exit path (``_turn_release_session``): the deferred OPTIONS
+expiry, the mirror stream's close, the reset or conversation discard the turn asked for, the
+session permit's release, the turn identity's clear and the unclaimed-directive report."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
 
+from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
-        _broadcast_expired_oauth_banners,
         _ChatSlot,
         _pending_reset_retries,
         effective_session_key,
+        expire_slack_options,
         logger,
         subagents_attached_async,
     )
+    from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        _retire_mirror_thinking,
+        cross_surface_withheld,
+        slack_publication_withheld,
+    )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 # Retry cadence for a deferred project-change reset whose consume DECLINED
 # (busy channel turn, attached children). A dashboard slot gets its retry for
@@ -294,3 +306,137 @@ async def _consume_pending_reset(
                 exc_info=True,
             )
     return torn_down
+
+
+async def _turn_release_session(turn: _ChatTurn) -> None:
+    """Hand the session back: OPTIONS expiry, mirror close, reset or discard, permit."""
+    _acquired = turn._acquired
+    _deferred_options_expiry = turn._deferred_options_expiry
+    _mirror_active_task = turn._mirror_active_task
+    _mirror_active_task_title = turn._mirror_active_task_title
+    _mirror_chan = turn._mirror_chan
+    _mirror_stream_ts = turn._mirror_stream_ts
+    _mirror_thread = turn._mirror_thread
+    _seen_tool_identity = turn._seen_tool_identity
+    _turn_started = turn._turn_started
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    # Clean up mirror stream on any exit path.
+    #
+    # The release below MUST happen however this block exits. Each await in
+    # here is already guarded against ``Exception``, but ``CancelledError``
+    # derives from ``BaseException`` (since 3.8), so a cancellation
+    # delivered while one of them is suspended slips past every
+    # ``except Exception`` and skips the release entirely.
+    #
+    # The permit is keyed by SESSION, so leaking it does not merely lose
+    # this turn: the session reads as permanently busy, every later turn for
+    # it blocks forever, no queued turn drains, and only a gateway restart
+    # clears it. The nested try/finally makes the release unconditional
+    # while preserving the reset-then-release ordering.
+    try:
+        if _deferred_options_expiry:
+            _deferred_options_expiry = False
+            turn._deferred_options_expiry = _deferred_options_expiry
+            await expire_slack_options(state, session_key)
+        if _mirror_stream_ts and state.slack_client and _mirror_chan:
+            try:
+                # Fenced for the same reason _on_tool_call's in-progress append is:
+                # if that one was withheld, marking it complete here would publish the
+                # title for the first time. This runs BEFORE the fence is
+                # cleared in _end_turn_tail (chat_turn/queue_cycle.py), so it still
+                # sees the turn's own records.
+                if (
+                    _mirror_active_task
+                    and not cross_surface_withheld(state, slot)
+                    and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
+                ):
+                    await state.slack_client.append_task(
+                        _mirror_chan,
+                        _mirror_stream_ts,
+                        _mirror_active_task,
+                        _mirror_active_task_title,
+                        "complete",
+                    )
+            except Exception:
+                logger.debug("Task append cleanup failed", exc_info=True)
+            try:
+                await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
+            except Exception:
+                logger.debug("Stream cleanup failed", exc_info=True)
+        if turn._mirror_thinking_ts and state.slack_client and _mirror_chan:
+            # A turn that ended with neither a tool nor a mirrored answer
+            # (an error, a cancel, a withheld reply) still owes the thread
+            # its placeholder's removal. Best-effort and never raises.
+            turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+            )
+        if _acquired and (turn.needs_session_reset or turn.needs_conversation_discard):
+            # Neither branch below goes through `_reset_slot_session`, so the
+            # withhold verdict is dropped here: both replace the session that
+            # advertised the model list (an agent switch can even change the
+            # provider), and the verdict describes that session. Dropped for
+            # both branches and before the await, so a failed teardown leaves
+            # the slot at "unknown" rather than carrying a verdict it can no
+            # longer vouch for.
+            slot.forget_session_model_state()
+            try:
+                if turn.needs_conversation_discard:
+                    # Poisoned-conversation escalation: clear ONLY the
+                    # resume sid (keeping the session-map entry with its
+                    # Slack thread/channel linkage), so the re-queued
+                    # recovery turn cold-starts a fresh native
+                    # conversation instead of session/load-ing the same
+                    # rejected one (which reset() would do).
+                    await state.sessions.discard_conversation(session_key)
+                else:
+                    await state.sessions.reset(session_key)
+            except Exception:
+                logger.warning("Failed to reset session %s after agent switch", session_key)
+            # Freshness push for open tabs. Unconditional where the old
+            # write-time retirement needed an outcome gate: the helper
+            # re-resolves the live child at call time, so a swallowed
+            # teardown failure leaves the child alive, the stamps still
+            # match, and nothing is broadcast (see
+            # _broadcast_expired_oauth_banners).
+            _broadcast_expired_oauth_banners(state, slot)
+    finally:
+        if _acquired:
+            # A successful reset() above already popped the key under its
+            # own lock, so this is a no-op on that path (the popped
+            # session's semaphore is discarded with it). Kept unconditional
+            # so a reset that failed or was cancelled still hands back the
+            # permit rather than stranding the session.
+            state.sessions.release(session_key)
+        # This turn's identity dies WITH its session, and inside the same
+        # finally for the same reason the release is: the reset above can be
+        # cancelled, and CancelledError derives from BaseException, so a
+        # clear placed after this block is simply skipped and the slot keeps
+        # advertising a turn that is gone.
+        #
+        # It must also land before `_start_next_queued_turn` in `_end_turn_tail`'s hand-off
+        # can install the SUCCESSOR's key — a clear after that would wipe a
+        # live turn's identity and drop the cancel routes back to mutable
+        # routing. Compare-and-clear keeps that true if the ordering is ever
+        # rearranged: only the turn that installed a key may retire it.
+        #
+        # Outside the `_acquired` guard: the identity is published before
+        # the permit is taken, so a cold start that never acquired one still
+        # has something to retire.
+        if slot._active_turn_session_key == session_key:
+            slot._active_turn_session_key = ""
+        # Spelling-independent backstop for a directive call whose tool
+        # identity and result marker were both lost by the backend. The
+        # validated payload reached the gateway, but no frame claimed it,
+        # so every per-frame diagnostic in _on_tool_result was structurally unreachable.
+        # Inspect only records parked during THIS turn: residue from an
+        # earlier abandoned turn must not blame the current one. Diagnostic
+        # only — claim, refusal, and expiry semantics stay unchanged.
+        await _report_unclaimed_directives(
+            state,
+            slot,
+            session_key,
+            _turn_started=_turn_started,
+            _seen_tool_identity=_seen_tool_identity,
+        )

@@ -34,6 +34,8 @@
  *   - themes: broadcastTheme — Mochi follows the KiroCrew theme.
  *   - dictation: sendDictationTranscript, cancelDictation, onDictationState,
  *     onDictationStopRecording — push-to-talk is not ported.
+ *   - voice config write: updateSttConfig — no Mochi UI edits voice settings;
+ *     the dashboard owns them through `api.saveSttConfig` (PUT /api/config/stt).
  *   - onHide: DEAD UPSTREAM — the original's preload exposed it but nothing in
  *     its main process ever sent `pet:hide`.
  *   - `send` / `invoke`: a generic IPC relay is on the preload's never-expose
@@ -427,19 +429,6 @@ async function discoverMcpTools(
     return { tools: body.tools ?? [], fromCache: body.cached === true }
   } catch {
     return { tools: [], fromCache: false, errorCode: 'network' }
-  }
-}
-
-async function updateSttConfig(patch: Record<string, unknown>): Promise<void> {
-  try {
-    await fetch('/api/config/stt', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    })
-  } catch {
-    // Voice is optional; a failed write must not take the settings window down.
   }
 }
 
@@ -959,7 +948,6 @@ const impl = {
   getQuietUntil,
   setQuiet,
   discoverMcpTools,
-  updateSttConfig,
   readLocalImage,
   openWidgetExternal,
   startCapture,

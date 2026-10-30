@@ -56,6 +56,13 @@ export interface ChatPaneProps {
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** This pane's composer owns the document-wide "Start Dictation with a Key"
+   *  binding. Defaults to false: the key listens on the whole document, so
+   *  exactly one mounted composer may have it set (N armed panes would
+   *  open N captures on one keystroke). The Members page's DM pane sets it;
+   *  in split view the grid sets it on the focused pane only, since the
+   *  single-chat composer is not mounted there. */
+  pushToTalk?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -101,23 +108,17 @@ export interface ChatPaneProps {
    *  (components/chat/crewmateBubbles). Undefined = an ordinary transcript;
    *  decided by the host, never inferred from the slot. */
   crewmate?: CrewmateIdentity
-  /** A message from the crewmate the HOST draws after the last row (the
-   *  Members page's warm resume / cold welcome, `mateGreeting.ts`). It sits in
-   *  the transcript like a reply but is not one: never a slot row, never sent,
-   *  so it costs no model call and the model never reads it back. Only
-   *  meaningful with `crewmate`. */
-  crewmateGreeting?: React.ReactNode
+  /** Whether a person can see this crewmate's thread right now: the window is
+   *  visible AND focused and nothing covers the chat. The unread landing marks
+   *  a message read only while this is true; a reply landing in a parked or
+   *  covered window stays unseen, so the next visit still lands on it. Default
+   *  `true`. Only meaningful with `crewmate`. */
+  crewmateShown?: boolean
   /** Focus the crewmate's Work log tab (the side-panel tab that holds what
    *  the filter hid). When given, the quiet hint's "where the work went" line
    *  is a link that opens it, so the words that read as a destination are one;
    *  without it the line is plain text. Only meaningful with `crewmate`. */
   onOpenCrewWorkLog?: () => void
-  /** Open this host's Subagents view. The `spawn_run` launch card a crewmate's
-   *  chat draws offers "Open Subagents panel"; on the chat page the card opens
-   *  the chat store's panel itself, but a host with its own side-panel tab
-   *  model (the Members page) must pass this or the click opens nothing on the
-   *  page the reader is looking at. Only meaningful with `crewmate`. */
-  onOpenSubagents?: () => void
   /** Reply threads on this pane's messages. Only a host presenting a
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */

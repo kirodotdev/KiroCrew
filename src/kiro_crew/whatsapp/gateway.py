@@ -10,6 +10,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.messaging.dispatch import warn_if_toolless_turns_unservable
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.whatsapp.client import (
+    FAILED_STATES,
     STATE_CONNECTED,
     WhatsAppClient,
     default_db_path,
@@ -28,7 +29,8 @@ logger = logging.getLogger(__name__)
 def _warn_if_non_operator_turns_unservable(cfg) -> None:
     """Name, at startup, the configurations that silently answer no non-operator.
 
-    Two of them. A configured group with an empty ``allowed_wa_ids`` admits only
+    Two of them. A configured group with an empty allowlist (its own
+    ``allowed_wa_ids`` when the entry has one, else the global list) admits only
     the linked account, so every other member is dropped without a reply. The
     other, non-operators admitted on a backend that cannot run a tool-less turn,
     is the shared :func:`warn_if_toolless_turns_unservable`; this only supplies
@@ -51,21 +53,33 @@ def _warn_if_non_operator_turns_unservable(cfg) -> None:
         and str(g.get("mode", "mention") or "mention").strip().lower() != "off"
     ]
     allowlist = [w for w in (wa.allowed_wa_ids or []) if str(w).strip()]
+
+    def _group_allowlist(group: dict) -> list:
+        # A group's own list replaces the global one, exactly as the transport
+        # reads it; a present value that is not a list admits nobody.
+        if "allowed_wa_ids" not in group:
+            return allowlist
+        own = group["allowed_wa_ids"]
+        return [w for w in own if str(w).strip()] if isinstance(own, list) else []
+
+    unanswered_groups = [g for g in live_groups if not _group_allowlist(g)]
     # Normalized the way the transport reads it; a value outside the known
     # policies denies everyone there (fail closed), so it admits nobody.
     policy = str(wa.dm_policy or "").strip().lower()
-    if live_groups and not allowlist:
+    if unanswered_groups:
         # A configured group with nobody allowlisted answers only the operator;
         # every other member is dropped silently. Said once here, since the
         # members see nothing and the operator otherwise learns it from the SEL.
         logger.warning(
-            "whatsapp: %d group(s) configured but allowed_wa_ids is empty: only the "
-            "linked account can make the agent reply there; other members are dropped. "
-            "Add their numbers to allowed_wa_ids to admit them.",
-            len(live_groups),
+            "whatsapp: %d group(s) configured with an empty allowlist (the group's own "
+            "allowed_wa_ids, else the global allowed_wa_ids): only the linked account "
+            "can make the agent reply there; other members are dropped. Add their "
+            "numbers to the group's allowed_wa_ids, or to the global allowed_wa_ids "
+            "for a group without its own list, to admit them.",
+            len(unanswered_groups),
         )
     admits_others = (
-        bool(live_groups and allowlist)
+        len(unanswered_groups) < len(live_groups)
         or policy == DM_POLICY_OPEN
         or (policy == DM_POLICY_ALLOWLIST and bool(allowlist))
     )
@@ -161,6 +175,7 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
         logger.warning("whatsapp: %s", MISSING_EXTRA_HINT)
         if state is not None:
             state.whatsapp_connected = False
+            state.whatsapp_connect_failed = True
             state.whatsapp_connect_error = MISSING_EXTRA_STATUS[:120]
         return None
 
@@ -213,6 +228,9 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
             nonlocal checked_groups
             if state is not None:
                 state.whatsapp_connected = new_state == STATE_CONNECTED
+                # The structured verdict the settings panel reads; the error
+                # text below is the human detail only.
+                state.whatsapp_connect_failed = new_state in FAILED_STATES
                 state.whatsapp_connect_error = (
                     "" if new_state == STATE_CONNECTED else f"{new_state}: {detail}"[:120]
                 )
@@ -240,5 +258,6 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
         logger.exception("Failed to start WhatsApp channel; continuing without it.")
         if state is not None:
             state.whatsapp_connected = False
+            state.whatsapp_connect_failed = True
             state.whatsapp_connect_error = str(exc)[:120]
         return None

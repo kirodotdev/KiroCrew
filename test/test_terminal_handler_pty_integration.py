@@ -390,7 +390,6 @@ class TestTerminalWsIntegration:
             assert sess.ws is None
             assert sess.last_ws_disconnect is not None
 
-            # Cleanup: kill the PTY
             await terminal._kill_session(sess)
 
     @pytest.mark.asyncio

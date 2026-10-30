@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 
 import push_guard_helpers
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 from push_guard_helpers import _bless, _git, _run_push_guard
 
 # pytest resolves a fixture in the requesting test's module, so each shared
@@ -32,6 +33,14 @@ from push_guard_helpers import _bless, _git, _run_push_guard
 _no_inherited_git_c = push_guard_helpers._no_inherited_git_c
 _repo_pair_template = push_guard_helpers._repo_pair_template
 repo_pair = push_guard_helpers.repo_pair
+
+
+def test_the_template_origin_keeps_auto_maintenance_off(_repo_pair_template) -> None:
+    # A push into a copy starts receive-pack there without the fixture env, so
+    # only the origin's own config keeps it from starting auto maintenance.
+    _, template_origin = _repo_pair_template
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        assert (key, _git(template_origin, "config", "--local", "--get", key)) == (key, value)
 
 
 class TestPushGuardSafe:

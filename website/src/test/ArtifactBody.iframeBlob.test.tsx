@@ -27,6 +27,7 @@ vi.mock('../hooks/useCommentBridge', () => ({
 
 const { buildSrcdocSpy } = vi.hoisted(() => ({ buildSrcdocSpy: vi.fn() }))
 vi.mock('../lib/widgetSrcdoc', () => ({
+  AGENT_PAGE_SANDBOX: 'allow-scripts',
   THEME_VAR_NAMES: [] as string[],
   readThemeVars: () => ({}) as Record<string, string>,
   buildSrcdoc: (opts: { html: string }) => {

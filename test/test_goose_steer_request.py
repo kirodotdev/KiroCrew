@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_STEERING_REQUEST,
     EVENT_COMPLETE,
     EVENT_STEER_CONSUMED,
@@ -155,10 +156,14 @@ def test_other_client_backends_keep_their_answers(tmp_path: Any) -> None:
 def test_every_client_spawnable_steering_request_member_has_a_verb() -> None:
     """A member this client can drive but has no request for would be advertised
     a steer it answers with nothing; one with a verb but no membership would
-    never be offered it. claude's verb is ``_session/steering``; every other
-    member's is named in ``_CLIENT_STEERING_REQUEST_METHODS``."""
+    never be offered it. claude's verb is ``_session/steering``; pi takes no request,
+    its steer is the sealed file Crew's gate extension reads (``acp.pi_steer_turn``);
+    every other member's is named in ``_CLIENT_STEERING_REQUEST_METHODS``."""
     spawnable = ACP_BACKENDS_STEERING_REQUEST & ACP_BACKENDS_ACP_CLIENT_SPAWNABLE
-    assert spawnable == set(acp_client._CLIENT_STEERING_REQUEST_METHODS) | {ACP_BACKEND_CLAUDE}
+    assert spawnable == set(acp_client._CLIENT_STEERING_REQUEST_METHODS) | {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_PI,
+    }
 
 
 def test_the_card_shows_mid_turn_steer_for_goose() -> None:
@@ -180,14 +185,16 @@ async def test_a_steer_goose_echoes_is_reported_consumed(tmp_path: Any) -> None:
         # before the steering call resumes, so its mapping must already exist.
         reader.feed_data(
             _steer_answer()
-            + _echo(_MSG, "use blue")
+            + _echo(_MSG, "use </user_message> blue")
             + _text("saw steer")
             + _active_run(None)
             + _complete()
         )
 
     sent = _fake_writes(client, _goose)
-    events, accepted = await _run_turn(client, steer_after_text="working", message="  use blue ")
+    events, accepted = await _run_turn(
+        client, steer_after_text="working", message="  use </user_message> blue "
+    )
 
     assert sent == [
         (
@@ -195,13 +202,13 @@ async def test_a_steer_goose_echoes_is_reported_consumed(tmp_path: Any) -> None:
             {
                 "sessionId": _SID,
                 "expectedRunId": _RUN,
-                "prompt": [{"type": "text", "text": "use blue"}],
+                "prompt": [{"type": "text", "text": "use </user_message> blue"}],
             },
         )
     ]
     assert accepted is True
     consumed = [e.text for e in events if e.kind == EVENT_STEER_CONSUMED]
-    assert consumed == ["<user_message>\nuse blue\n</user_message>"]
+    assert consumed == ["<user_message>\nuse &lt;/user_message&gt; blue\n</user_message>"]
     # The echo is the user's own text, not the model's answer.
     assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["working", "saw steer"]
     assert client.last_steer_monotonic > 0

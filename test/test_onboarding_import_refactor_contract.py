@@ -873,6 +873,15 @@ def _hermes_profile_home(home: Path) -> Path:
     return profiles
 
 
+def _amazon_quick_profile_home(home: Path) -> Path:
+    """An Amazon Quick root whose one ``profiles/`` entry holds a skill package."""
+    profiles = home / ".quickwork" / "profiles"
+    skill = profiles / "work" / "skills" / "drafting" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: drafting\ndescription: d\n---\nDraft notes.\n", encoding="utf-8")
+    return profiles
+
+
 def _codex_automations_home(home: Path) -> None:
     """A Codex automations database with an empty ``automations`` table."""
     database = home / ".codex" / "sqlite" / "codex-dev.db"
@@ -1058,6 +1067,16 @@ def _hermes_profiles_scenario(tmp_path: Path, original: Any, patch_seam, install
     assert "memories" not in _counts(_preview("hermes", home), "hermes")
 
 
+def _amazon_quick_profiles_scenario(
+    tmp_path: Path, original: Any, patch_seam, install_sources
+) -> None:
+    home = tmp_path / "home"
+    profiles = _amazon_quick_profile_home(home)
+    assert _counts(_preview("amazon_quick", home), "amazon_quick") == {"skills": 1}
+    patch_seam(lambda path, file_stat=None: path == profiles or original(path, file_stat))
+    assert "skills" not in _counts(_preview("amazon_quick", home), "amazon_quick")
+
+
 def _codex_automations_scenario(tmp_path: Path, original: Any, patch_seam, install_sources) -> None:
     home = tmp_path / "home"
     _codex_automations_home(home)
@@ -1151,6 +1170,7 @@ _CROSS_MODULE_READERS: dict[tuple[str, str], Callable[..., None]] = {
     ("_is_link_like", "kiro_crew.onboarding_apply"): _apply_ancestor_scenario,
     ("_is_link_like", "kiro_crew.onboarding_import"): _facade_probe_scenario,
     ("_is_link_like", "kiro_crew.onboarding_sources"): _scan_source_scenario,
+    ("_is_link_like", "kiro_crew.onboarding_sources.amazon_quick"): _amazon_quick_profiles_scenario,
     ("_is_link_like", "kiro_crew.onboarding_sources.hermes"): _hermes_profiles_scenario,
     ("_is_link_like", "kiro_crew.onboarding_sources.openclaw"): _openclaw_agents_scenario,
     ("_scan_lineage_install", "kiro_crew.onboarding_sources"): _scan_lineage_install_scenario,

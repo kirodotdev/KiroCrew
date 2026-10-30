@@ -48,6 +48,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.hooks_scripts import _sel
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _HOOK_BODY_MAX_BYTES,
@@ -140,18 +141,26 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             status=503,
         )
     if not switch_on:
+        from kiro_crew.webhook_sources import SOURCE_AGENT, source_refusal
+
+        # A policy refusal reads as a switched-off store; say which one refused.
+        by_policy = await asyncio.to_thread(source_refusal, SOURCE_AGENT)
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="hooks.agent",
             outcome="denied",
             source="webhook",
-            error="webhooks disabled by operator",
+            error=by_policy or "webhooks disabled by operator",
         )
         await asyncio.to_thread(
             webhooks.run_store().record,
             outcome=webhooks.OUTCOME_DISABLED,
             name="Rejected",
-            detail="Inbound webhooks are switched off in the dashboard",
+            detail=(
+                f"Inbound webhooks: {by_policy}"
+                if by_policy
+                else "Inbound webhooks are switched off in the dashboard"
+            ),
         )
         return web.json_response(
             {"error": "inbound webhooks are disabled", "code": "webhooks_disabled"}, status=503
@@ -402,10 +411,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         timeout_secs = max(
             60,
-            min(int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
+            min(body_int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
         )
-    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError):
         webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},

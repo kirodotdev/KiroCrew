@@ -22,6 +22,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.dashboard import git_repo_touches as touches
 from kiro_crew.dashboard.chat_runner import _flush_file_changes
@@ -60,12 +61,14 @@ def mock_sel():
 
 def _init_repo(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    env.update(git_maintenance_off_entries(env))
     subprocess.run(
         ["git", "init", "-q", "-b", "trunk"],
         cwd=root,
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull},
+        env=env,
     )
     return root
 
@@ -910,6 +913,40 @@ class TestReposRoute:
             {"path": _real(b), "source": "agent"},
             {"path": _real(a), "source": "agent"},
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_remote_session_lists_no_gateway_repository(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import files
+
+        proj = _init_repo(tmp_path / "proj")
+        state = _State(s=_Slot(project=str(proj), repos=[_real(proj)]))
+        monkeypatch.setattr(files, "session_runs_remotely", lambda key: True)
+        async with TestClient(TestServer(_app(state))) as client:
+            resp = await client.get("/api/project/git/repos?slot=s")
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["repos"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_placement_read_runs_off_the_event_loop(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import files
+
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+
+        def placement(key):
+            threads.append(threading.get_ident())
+            return False
+
+        monkeypatch.setattr(files, "session_runs_remotely", placement)
+        state = _State(s=_Slot(project="", repos=[]))
+        async with TestClient(TestServer(_app(state))) as client:
+            assert (await client.get("/api/project/git/repos?slot=s")).status == 200
+        assert threads and loop_thread not in threads
 
     @pytest.mark.asyncio
     async def test_project_outside_a_repo_is_not_listed(self, tmp_path, mock_sel):

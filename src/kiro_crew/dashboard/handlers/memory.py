@@ -19,6 +19,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.memory_sections import memory_writes_off_key
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.memory_graph import _build_memory_graph
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
@@ -588,7 +589,7 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                 )
         if "history_max_days" in body:
             try:
-                updates["history_max_days"] = max(7, int(body["history_max_days"]))
+                updates["history_max_days"] = max(7, body_int(body["history_max_days"]))
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_max_days must be an integer"}, status=400
@@ -1051,9 +1052,10 @@ async def api_memory_stats(request: web.Request) -> web.Response:
     stats["embedding_provider"] = cfg.memory.embedding_provider
     stats["migrated"] = cfg.memory.migrated
     # Legacy markdown presence (diagnostics; migration is automatic at boot).
+    # Offload: it reads two markdown files, globs history/ and stats lessons.jsonl.
     from kiro_crew.memory import legacy_memory_present  # noqa: F811
 
-    stats["has_legacy_memory"] = legacy_memory_present()
+    stats["has_legacy_memory"] = await asyncio.to_thread(legacy_memory_present)
     return web.json_response(stats)
 
 
@@ -1210,7 +1212,13 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    key = body.get("key", "").strip()
+    key = body.get("key", "")
+    if not isinstance(key, str):
+        return web.json_response(
+            {"error": "session key must be a string", "code": "invalid_session_key"},
+            status=400,
+        )
+    key = key.strip()
     if not key:
         return web.json_response({"error": "session key required"}, status=400)
     from kiro_crew.context import store_of_session
@@ -1419,9 +1427,9 @@ async def api_memory_promote(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     try:
-        min_count = int(body.get("min_count", 5))
+        min_count = body_int(body.get("min_count", 5))
         min_sim = float(body.get("min_sim", 0.75))
-    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
+    # OverflowError: float() of a JSON integer beyond float range raises it.
     except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
     # Run in executor (can take 10+ seconds)
@@ -1436,8 +1444,9 @@ async def api_memory_graph(request: web.Request) -> web.Response:
     mem = _get_memory(state)
 
     try:
+        partial: dict[str, bool] = {}
         nodes, edges = await asyncio.to_thread(
-            lambda: _build_memory_graph(mem, state.lessons.load_all())
+            lambda: _build_memory_graph(mem, state.lessons.load_all(), partial)
         )
 
         for n in nodes:
@@ -1447,7 +1456,8 @@ async def api_memory_graph(request: web.Request) -> web.Response:
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="memory_graph", outcome="success"
         )
-        return web.json_response({"nodes": nodes, "edges": edges})
+        # ``partial`` says which capped populations left rows out of the graph.
+        return web.json_response({"nodes": nodes, "edges": edges, "partial": partial})
     except Exception:
         logging.getLogger(__name__).exception("memory_graph failed")
         _sel().log_tool_invocation(
@@ -1475,6 +1485,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_memory_embedding_status,
         api_memory_enable_embeddings,
     )
+    from kiro_crew.dashboard.handlers.memory_graph import (  # noqa: F401
+        GRAPH_LESSON_LIMIT,
+        GRAPH_SEMANTIC_LIMIT,
+    )
     from kiro_crew.dashboard.handlers.memory_services import (  # noqa: F401
         _get_vector_store,
     )
@@ -1500,7 +1514,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         LEGACY_EMBEDDING_WARNING,
         ReembedProgress,
         _custom_model_id,
+        _load_llama_class,
         _model_file_stamp,
+        _platform_libs_dirname,
         _read_memory_config,
         activate_shared_embedder,
         active_embedding_space_signature,

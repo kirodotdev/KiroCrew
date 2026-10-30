@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -728,6 +729,43 @@ async def test_ensure_repo_initializes_only_when_dot_git_is_missing(omc):
     assert not omc.git.ran("init")
 
 
+def _record_path_probe(monkeypatch, method: str, wanted) -> list[tuple[str, bool]]:
+    """Wrap ``Path.<method>`` so each call on a path ``wanted`` accepts records its thread.
+
+    Returns ``(path name, ran on the loop thread)`` per matching call. Asserting by thread
+    identity rather than a timed heartbeat keeps the off-loop tests from being
+    timing-flaky. Must be called from the test coroutine, i.e. on the loop thread.
+    """
+    loop_thread = threading.get_ident()
+    seen: list[tuple[str, bool]] = []
+    real = getattr(Path, method)
+
+    def probe(self, *args, **kwargs):
+        if wanted(self):
+            seen.append((self.name, threading.get_ident() == loop_thread))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, probe)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_ensure_repo_checks_for_dot_git_off_the_loop(omc, monkeypatch):
+    """``sync_safely`` awaits ``_ensure_repo`` on the event loop, so its stat must not be."""
+    omc.enable()
+    omc.git.aligned()
+    dot_git = omc.root / ".git"
+    seen = _record_path_probe(monkeypatch, "is_dir", lambda p: p == dot_git)
+
+    ok, _ = await ls._ensure_repo()
+
+    assert ok is True
+    assert omc.git.ran("init"), "no .git yet, so the check must still say 'missing'"
+    # A floor, so the test cannot pass by recording nothing.
+    assert seen, "the .git check was never made"
+    assert [name for name, on_loop in seen if on_loop] == [], f"stat on the loop: {seen}"
+
+
 @pytest.mark.asyncio
 async def test_ensure_repo_reports_a_failed_init(omc):
     omc.enable()
@@ -914,6 +952,36 @@ async def test_stage_and_commit_skips_files_that_do_not_exist(omc):
     await ls._stage_and_commit("update ops ledger")
     assert omc.git.ran("add", "--", "ledger.jsonl")
     assert not omc.git.ran("add", "--", "rotation.yaml")
+
+
+@pytest.mark.asyncio
+async def test_stage_and_commit_checks_the_tracked_files_off_the_loop(omc, monkeypatch):
+    """One stat per tracked file, on every push and every conflict merge: all off the loop."""
+    omc.ledger_lines(_entry("dlq fills"))
+    _write(omc.root / ".gitignore", _WANTED_GITIGNORE)
+    omc.git.when("status", out=" M ledger.jsonl\n")
+    tracked = {omc.root / name for name in ls.TRACKED_FILES}
+    seen = _record_path_probe(monkeypatch, "exists", lambda p: p in tracked)
+    # `_repo_root` creates and chmods the data directory, so it belongs in the same hop.
+    loop_thread = threading.get_ident()
+    real_root = ls._repo_root
+    root_on_loop: list[bool] = []
+
+    def recording_root() -> Path:
+        root_on_loop.append(threading.get_ident() == loop_thread)
+        return real_root()
+
+    monkeypatch.setattr(ls, "_repo_root", recording_root)
+
+    assert await ls._stage_and_commit("update ops ledger") is True
+
+    # Same staging decisions as before: present files added, the missing schedule skipped.
+    assert omc.git.ran("add", "--", "ledger.jsonl")
+    assert omc.git.ran("add", "--", ".gitignore")
+    assert not omc.git.ran("add", "--", "rotation.yaml")
+    assert sorted(name for name, _ in seen) == sorted(ls.TRACKED_FILES)
+    assert [name for name, on_loop in seen if on_loop] == [], f"stat on the loop: {seen}"
+    assert root_on_loop and not any(root_on_loop), f"_repo_root on the loop: {root_on_loop}"
 
 
 @pytest.mark.asyncio

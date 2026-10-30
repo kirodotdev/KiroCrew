@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
+import { normalizeModelKey } from '../lib/model'
 import type { ModelInfo } from '../providers/types'
 
 const EFFORT_SUFFIX = /^(.*)\[(low|medium|high|xhigh|max)\]$/
@@ -122,15 +123,55 @@ export function normalizeHiddenModels(value: unknown): string[] {
   return result
 }
 
+/** Does a stored hidden id name the model `name`?
+ *
+ *  The hidden list is one list of ids, but each harness spells the same model
+ *  its own way: the kiro backend lists kiro-cli ids (`claude-opus-4.8`), the
+ *  Claude Code backend lists registry keys or its own wire ids
+ *  (`opus-4.8-1m`, `global.anthropic.claude-opus-4-8[1m]`). Comparing raw
+ *  strings let a model hidden under one harness come back after a switch, so
+ *  ids are compared by their canonical key, the same fold the picker uses for
+ *  "same model?" everywhere else. Distinct registry models stay distinct. */
+export function hiddenModelMatcher(hiddenModels: readonly string[]): (name: string) => boolean {
+  const keys = new Set(hiddenModels.map(hiddenModelKey).filter(key => key && key !== 'auto'))
+  return name => keys.has(hiddenModelKey(name))
+}
+
+/** A bare family alias (`opus`, `sonnet`, `fable`): letters only, no version. */
+const BARE_FAMILY_ALIAS = /^[a-z]+$/i
+
+/** The key a hidden id is compared by.
+ *
+ *  A bare family alias names whatever model the backend currently serves under
+ *  it (Claude Code's `opus` is its newest Opus), while the registry folds it to
+ *  one fixed row (`opus` -> `opus-4.8-1m`). Folding it would hide that older
+ *  model when the user hid `opus`, and hide `opus` when they hid Opus 4.8, so a
+ *  bare alias only matches itself. */
+function hiddenModelKey(name: string): string {
+  const trimmed = (name || '').trim()
+  return BARE_FAMILY_ALIAS.test(trimmed) && trimmed.toLowerCase() !== 'auto'
+    ? `bare:${trimmed.toLowerCase()}`
+    : normalizeModelKey(name)
+}
+
+/** The stored hidden ids that name `name`, in any harness's spelling. */
+export function hiddenIdsFor(hiddenModels: readonly string[], name: string): string[] {
+  const key = hiddenModelKey(name)
+  return hiddenModels.filter(value => value === name || (!!key && hiddenModelKey(value) === key))
+}
+
 export function filterInteractiveModels(
   models: ModelInfo[],
   hiddenModels: readonly string[],
   activeModels: readonly string[] = [],
   groupEffortPairs = false,
 ): ModelInfo[] {
-  const hidden = new Set(hiddenModels)
+  const isHidden = hiddenModelMatcher(hiddenModels)
+  // An active pin may be spelled by the other harness, so compare it by key too.
   const kept = new Set(activeModels.filter(Boolean))
-  const visible = models.filter(model => model.name === 'auto' || kept.has(model.name) || !hidden.has(model.name))
+  const keptKeys = new Set([...kept].map(hiddenModelKey).filter(Boolean))
+  const isKept = (name: string) => kept.has(name) || keptKeys.has(hiddenModelKey(name))
+  const visible = models.filter(model => model.name === 'auto' || isKept(model.name) || !isHidden(model.name))
   if (!groupEffortPairs) return visible
 
   const seen = new Set<string>()
@@ -149,20 +190,32 @@ export function filterInteractiveModels(
     seen.add(name)
     // Prefer metadata from an explicitly advertised base model. Without one,
     // retain a description only if every advertised effort variant agrees;
-    // a price remains level-specific and cannot describe the grouped row.
+    // a price and a display name are level-specific and cannot describe the
+    // grouped row.
     const base = baseModels.get(name)
-    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { description: pairDescriptions.get(name) || '', rateMultiplier: undefined } : {}) }]
+    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { description: pairDescriptions.get(name) || '', rateMultiplier: undefined, displayName: undefined } : {}) }]
   })
 }
+
+/** The hidden list while the config is loading or failed to load. */
+const NO_HIDDEN_MODELS: string[] = []
 
 export function useModelPickerHiddenModelsQuery() {
   const query = useQuery({
     queryKey: ['dashboardConfig'],
     queryFn: fetchDashboardConfig,
+    // In `select`, React Query structurally shares the output, so an equal
+    // hidden list keeps its array across refetches and renders. Normalizing in
+    // the hook body made a new array on every render, which broke the model
+    // picker memos that depend on it.
+    select: config => normalizeHiddenModels(config?.model_picker_hidden_models),
   })
   return {
-    ...query,
-    data: normalizeHiddenModels(query.data?.model_picker_hidden_models),
+    // Getters, not a `...query` spread: a spread reads every result field, so
+    // React Query re-renders the caller for every fetch-state flip.
+    get data() { return query.data ?? NO_HIDDEN_MODELS },
+    get isError() { return query.isError },
+    refetch: query.refetch,
   }
 }
 

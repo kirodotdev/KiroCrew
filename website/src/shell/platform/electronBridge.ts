@@ -20,10 +20,12 @@ export function setNativeBadgeCount(count: number): void {
   api?.setBadgeCount?.(count)
 }
 
-/** The View > DevTools menu follows developer mode. */
-export function setNativeDevMode(on: boolean): void {
+/** Show the View > Toggle Developer Tools menu item. A desktop shell older
+ *  than this dashboard builds that item hidden and reveals it only on this
+ *  call, so the shell sends it once at startup. */
+export function showNativeDevTools(): void {
   const electronAPI = window.electronAPI
-  electronAPI?.setDevMode?.(on)
+  electronAPI?.setDevMode?.(true)
 }
 
 /**
@@ -48,6 +50,20 @@ export function subscribeNativeNavigate(onPath: (path: string) => void): (() => 
 export function subscribeNativeFocusModeToggle(onToggle: () => void): (() => void) | undefined {
   const electronAPI = window.electronAPI
   return electronAPI?.onToggleFocusMode?.(onToggle)
+}
+
+/**
+ * One route-history step the main process relays from a macOS swipe (mouse
+ * software such as Logitech's Options sends Back/Forward as swipes).
+ * Accepts only -1 (Back) and 1 (Forward). Returns the unsubscribe, or nothing
+ * outside the desktop app.
+ */
+export function subscribeNativeHistoryStep(onStep: (delta: -1 | 1) => void): (() => void) | undefined {
+  const electronAPI = window.electronAPI
+  if (!electronAPI?.onHistoryStep) return
+  return electronAPI.onHistoryStep(delta => {
+    if (delta === -1 || delta === 1) onStep(delta)
+  })
 }
 
 /**

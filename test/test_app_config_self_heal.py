@@ -7,6 +7,7 @@ config endpoint must not hang or error: it seeds an empty config and returns
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 from aiohttp import web
@@ -92,3 +93,75 @@ async def test_config_put_then_get(tmp_path, monkeypatch):
         resp = await client.get("/api/apps/cfg-app/config")
         assert resp.status == 200
         assert (await resp.json())["key"] == "value"
+
+
+def _record_threads(monkeypatch, attr):
+    """Wrap ``kiro_crew.apps.routes.<attr>`` to record the thread each call runs on."""
+    import kiro_crew.apps.routes as routes_mod
+
+    real = getattr(routes_mod, attr)
+    seen: list[int] = []
+
+    def _spy(name):
+        seen.append(threading.get_ident())
+        return real(name)
+
+    monkeypatch.setattr(routes_mod, attr, _spy)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_config_reads_the_installed_record_off_the_event_loop(tmp_path, monkeypatch):
+    """GET /config resolves the installed app on a worker thread, not the loop.
+
+    Every app iframe fetches /config on load, and get_app reads installed.json,
+    app.json and the grants row from disk.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    seen = _record_threads(monkeypatch, "get_app")
+    loop_thread = threading.get_ident()
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps/cfg-app/config")
+        assert resp.status == 200
+        assert await resp.json() == {}
+
+    assert seen, "/config never called get_app"
+    assert all(t != loop_thread for t in seen)
+
+
+@pytest.mark.asyncio
+async def test_detail_reads_the_installed_record_off_the_event_loop(tmp_path, monkeypatch):
+    """GET /api/apps/{name} resolves the installed app on a worker thread."""
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    seen = _record_threads(monkeypatch, "get_app")
+    loop_thread = threading.get_ident()
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps/cfg-app")
+        assert resp.status == 200
+        assert (await resp.json())["name"] == "cfg-app"
+
+    assert seen, "the detail route never called get_app"
+    assert all(t != loop_thread for t in seen)
+
+
+@pytest.mark.asyncio
+async def test_manifest_reads_off_the_event_loop(tmp_path, monkeypatch):
+    """GET /manifest parses app.json on a worker thread and keeps its 200/404 answers."""
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    seen = _record_threads(monkeypatch, "get_app_manifest")
+    loop_thread = threading.get_ident()
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps/cfg-app/manifest")
+        assert resp.status == 200
+        assert (await resp.json())["name"] == "cfg-app"
+        resp = await client.get("/api/apps/does-not-exist/manifest")
+        assert resp.status == 404
+
+    assert len(seen) == 2
+    assert all(t != loop_thread for t in seen)

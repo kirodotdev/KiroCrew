@@ -356,11 +356,15 @@ async def test_the_hook_ignores_an_inactive_loop(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_the_hooks_are_silent_for_an_unknown_slot(svc, _nosleep):
-    await _armed(svc)
+    """Neither hook may reach a loop on another slot: the start never charges it
+    and the landed turn never clears its streak."""
+    loop = await _armed(svc)
+    svc.notify_cycle_start_failed(SLOT)
 
     svc.notify_cycle_start_failed("chat-9-nobody")
-    svc.notify_cycle_landed("chat-9-nobody")  # must not raise
+    svc.notify_cycle_landed("chat-9-nobody")
 
+    assert svc._loops[loop.id].consecutive_start_failures == 1
     await _stop_and_drain(svc)
 
 

@@ -8,6 +8,8 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
 import { setActiveId } from '../../store/instancesSlice'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useAckCronNotesInView } from '../../hooks/useAckCronNotesInView'
+import { useCrewWindow } from '../../pages/chat/crew-window/crewWindowStore'
 import { animateDrawer, registerDrawerTargets, takeOverDrawer } from '../../hooks/useDrawerSwipe'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -15,6 +17,7 @@ import AskAgentButton from '../../components/AskAgentButton'
 import NotificationDetailPanel from '../../components/notifications/NotificationDetailPanel'
 import NotificationFeed from '../../components/notifications/NotificationFeed'
 import NotificationBanner from '../../components/notifications/NotificationBanner'
+import FileMenuResultToast from '../../components/notifications/FileMenuResultToast'
 import { recordEvent } from '../../rum'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -222,6 +225,20 @@ export function useNotificationSheet() {
     openPanel()
     setSelectedTs(ts)
   }, [openPanel, crewHidden, dispatch])
+  // Lives with the bell because it reads the bell's notes: a cron run's note is
+  // read when the user opens its chat or it arrives while a pane shows that
+  // chat (#23564), never behind a remote Crew, while a crew window covers the
+  // pane (ChatPaneChrome draws it over the transcript without unmounting it),
+  // or while this sheet covers it: its detail card is opaque and spans the page
+  // from the gutter to the sheet, and on a phone the sheet itself is the whole
+  // width. OPEN only, never while closing: every jump out of the sheet ("Go to
+  // chat", a row's link) closes it in the same gesture that opens the chat, and
+  // the transcript it uncovers is what the user is looking at. The bell lives
+  // in the main document only, where the crew-window cover shows exactly while
+  // a target is stored.
+  const crewWindowOpen = useCrewWindow() !== null
+  const sheetCovers = open && (selected !== null || isMobile)
+  useAckCronNotesInView({ hidden: crewHidden || crewWindowOpen || sheetCovers })
 
   // See NC_CLOSE_BACKSTOP_MS: `animateDrawer`'s arrival callback owns the
   // unmount, and this only rescues a phase that never heard back at all.
@@ -408,7 +425,6 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
                 gate={proceed => leave(proceed, '/chat')}
                 onHandoff={closePanel}
               />
-              <div className="text-[12px] text-muted">{i18nT('app.notifications_ask_agent_help')}</div>
               <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}>{i18nT('app.open_the_full_inbox')}</button>
             </div>
           )}
@@ -492,6 +508,9 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
             <NotificationDetailPanel
               n={selected}
               onClose={() => setSelectedTs(null)}
+              // A jump out of the card closes the sheet even when the
+              // pathname stays /chat (#23564).
+              onLeave={closePanel}
             />
           </div>
         )}
@@ -512,6 +531,7 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
         bellRef={bellRef}
         popoverOpen={phase !== 'closed'}
         onOpenNote={openPanelOn}
+        after={<FileMenuResultToast />}
       />,
       document.body
     )}

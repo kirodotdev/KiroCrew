@@ -9,6 +9,7 @@ persistence, ``_safe_cleanup``, and the compaction cooldown each lifecycle event
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -329,7 +330,6 @@ class TestResetWithPid:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
-        # Simulate ACP client with PID
         mock_client = AsyncMock()
         mock_client._pid = 12345
         mock_client._child_pids = {}
@@ -363,6 +363,8 @@ class TestResetWithPid:
         ):
             await mgr.reset("k1")
             mock_killpg.assert_called_once()
+            assert mock_killpg.call_args.args[0] == 12345
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_reset_with_cc_provider_proc(self, cfg):
@@ -381,12 +383,15 @@ class TestResetWithPid:
 
         with (
             patch("os.kill", side_effect=ProcessLookupError),
+            patch("kiro_crew.platform_compat.pid_exists", return_value=False) as probe,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.platform_compat.get_process_start_id", return_value=None),
         ):
             await mgr.reset("k1")
 
         provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1")
+        assert 99999 in [c.args[0] for c in probe.call_args_list], "the _proc pid is probed"
 
     @pytest.mark.asyncio
     async def test_reset_child_sweep(self, cfg):
@@ -408,7 +413,6 @@ class TestResetWithPid:
         ):
             await mgr.reset("k1")
             mock_sweep.assert_called_once()
-            # Should include both original children and discovered ones
             call_arg = mock_sweep.call_args[0][0]
             assert 111 in call_arg
             assert 222 in call_arg
@@ -418,7 +422,8 @@ class TestResetWithPid:
     async def test_reset_nonexistent_session(self, cfg):
         """reset() on missing key is a no-op."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.reset("nonexistent")  # should not raise
+        assert await mgr.reset("nonexistent") is False
+        assert not mgr.has_session("nonexistent")
 
 
 class TestDestroy:
@@ -728,6 +733,8 @@ class TestDestroy:
             await mgr.destroy("k1")
 
         provider.shutdown.assert_awaited_once()
+        assert map_deleted is True
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_destroy_deletes_map_before_end_metric_can_yield(self, cfg):
@@ -754,6 +761,7 @@ class TestDestroy:
             mock_delete.assert_called_once_with("k1", reason="session_destroyed")
             release_metric.set()
             await await_until(destroy, what="the destroy finishing")
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_destroy_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
@@ -770,19 +778,23 @@ class TestDestroy:
     @pytest.mark.asyncio
     async def test_destroy_nonexistent_still_deletes_map(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        with patch.object(mgr._session_map, "delete") as mock_delete:
+        mgr._session_map.set("nonexistent", "stale-sid")
+        with patch.object(mgr._session_map, "delete", wraps=mgr._session_map.delete) as mock_delete:
             await mgr.destroy("nonexistent")
         mock_delete.assert_called_once_with("nonexistent", reason="session_destroyed")
+        assert mgr._session_map.get("nonexistent") is None
 
     @pytest.mark.asyncio
     async def test_unconditional_destroy_is_not_refused_by_a_reservation(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._allocation_boundary()._allocation_reservations["k1"] = {object()}
 
-        with patch.object(mgr._session_map, "delete") as mock_delete:
+        mgr._session_map.set("k1", "reserved-sid")
+        with patch.object(mgr._session_map, "delete", wraps=mgr._session_map.delete) as mock_delete:
             await mgr.destroy("k1")
 
         mock_delete.assert_called_once_with("k1", reason="session_destroyed")
+        assert mgr._session_map.get("k1") is None
 
     @pytest.mark.asyncio
     async def test_destroy_shutdown_exception_still_deletes_map(self, cfg):
@@ -1135,16 +1147,13 @@ class TestCloseAllPersistence:
         mock_provider.client.backend = ""  # kiro-cli backend
 
         mgr._sessions["dashboard:slot0"] = _Session(provider=mock_provider)
-        with patch.object(mgr._session_map, "set") as mock_set:
-            await mgr.close_all()
-        # provider= is now persisted so the next-startup detect_provider_switch
-        # doesn't see a missing label and falsely fire an acp/cc switch.
-        mock_set.assert_called_once_with(
-            "dashboard:slot0",
-            "sid-persist-test",
-            provider="acp",
-            cwd="/tmp/test",
-        )
+        await mgr.close_all()
+        # provider= is persisted so the next-startup detect_provider_switch
+        # does not see a missing label and falsely fire an acp/cc switch.
+        stored = mgr._session_map
+        assert stored.mapped_sid("dashboard:slot0") == "sid-persist-test"
+        assert stored.get_provider("dashboard:slot0") == "acp"
+        assert stored.get_cwd("dashboard:slot0") == "/tmp/test"
 
 
 class TestRemove:
@@ -1173,44 +1182,38 @@ class TestRemove:
 
         assert not img.exists()
 
-    @pytest.mark.asyncio
-    async def test_remove_missing_key_is_noop(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.remove("nonexistent")  # should not raise
-
 
 class TestSafeCleanup:
     """Tests for _safe_cleanup best-effort session file removal."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_calls_provider(self, cfg):
+    async def test_cleanup_calls_provider(self, cfg, caplog):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
         mock_p.cleanup_session = AsyncMock()
-        await mgr._safe_cleanup(mock_p, "sid-123")
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+            await mgr._safe_cleanup(mock_p, "sid-123")
         mock_p.cleanup_session.assert_awaited_once_with("sid-123")
+        assert "Cleaned up session files for sid-123" in caplog.messages
 
     @pytest.mark.asyncio
-    async def test_cleanup_swallows_exception(self, cfg):
+    async def test_cleanup_swallows_exception(self, cfg, caplog):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
         mock_p.cleanup_session = AsyncMock(side_effect=OSError("disk full"))
-        await mgr._safe_cleanup(mock_p, "sid-456")  # should not raise
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._safe_cleanup(mock_p, "sid-456")
+        assert "Failed to clean up session files for sid-456" in caplog.messages
 
 
 class TestCloseSession:
     @pytest.mark.asyncio
-    async def test_close_removes_session(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        p, _, _ = await mgr.get_or_create("thread1")
-        mgr.release("thread1")
-        await mgr.destroy("thread1")
-        assert not mgr.has_session("thread1")
-
-    @pytest.mark.asyncio
     async def test_close_nonexistent_is_noop(self, cfg):
+        """An unmapped, unheld key: nothing to delete, and nothing is created."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.destroy("nonexistent")  # should not raise
+        await mgr.destroy("nonexistent")
+        assert mgr._session_map.get("nonexistent") is None
+        assert not mgr.has_session("nonexistent")
 
     @pytest.mark.asyncio
     async def test_close_calls_shutdown(self, cfg):
@@ -1219,6 +1222,7 @@ class TestCloseSession:
         mgr.release("thread1")
         await mgr.destroy("thread1")
         p.shutdown.assert_awaited_once()
+        assert not mgr.has_session("thread1")
 
 
 class TestCloseAll:

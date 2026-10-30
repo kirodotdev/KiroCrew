@@ -63,6 +63,11 @@ const ToolRiskBadge = memo(function ToolRiskBadge({ record }: { record: ToolRisk
           ({confidence(record.p)})
         </span>
       )}
+      {/* The tooltip's key claim, in visible text: a title is unreachable on
+          touch and by keyboard (#12298 item 3). */}
+      <span className="min-w-0" data-testid="tool-risk-badge-note">
+        {i18nT('pages.chat.toolRiskBadge.annotation_note')}
+      </span>
       <VerdictThumbs
         turnId={record.turnId}
         side="jev"

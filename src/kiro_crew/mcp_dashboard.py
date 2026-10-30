@@ -82,6 +82,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from kiro_crew.mcp_instructions import SESSION_CONTROL as _INSTRUCTIONS
 from kiro_crew.mcp_shared import run_mcp_stdio_loop
 from kiro_crew.mcp_tools.table import Tool, ToolContext, ToolTable
 from kiro_crew.validation import MCP_DASHBOARD_SCHEMAS
@@ -737,8 +738,10 @@ from typing import TYPE_CHECKING  # noqa: E402
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.mcp_dashboard_caller_scope import (  # noqa: E402, F401
     _DELEGATED_CALLER_PREFIXES,
+    CREW_MODE_FOLDER_NOTE,
     SERVER_NAME,
     _caller_app_scope,
+    _caller_in_crew_tree,
     _is_messaging_caller,
     _own_chat_slot,
     _refuse_channel_board_write,
@@ -792,11 +795,18 @@ from kiro_crew.mcp_dashboard_references import (  # noqa: E402, F401
 )
 from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _PROFILE_COPY_NOTE,
+    _WORK_RECORD_ROUTE,
     GENERATE_TITLE_TIMEOUT_SECS,
     SESSION_STATUS_READ_TIMEOUT_SECS,
     _closed_at_display,
     _create_refusal_remedy,
+    _create_session,
+    _Created,
+    _dispatch_cleanup,
+    _dispatch_failed,
+    _dispatch_outcome,
     _pending_approval_phrase,
+    _RefusalCodes,
     _render_session_summary,
     _resolve_folder_for_new_session,
     _run_session_adopt,
@@ -807,6 +817,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_end_wait,
     _run_session_fork,
     _run_session_generate_title,
+    _run_session_handoff,
     _run_session_history_list,
     _run_session_read_message,
     _run_session_release,
@@ -815,11 +826,14 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_retry,
     _run_session_revive,
     _run_session_send,
+    _run_session_set_color,
     _run_session_set_model,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
+    _run_work_dispatch,
     _summary_time,
+    _worker_capabilities_line,
 )
 from kiro_crew.mcp_dashboard_session_tools import (  # noqa: E402, F401
     _session_tools,
@@ -923,7 +937,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 #: backend advertised this capability — so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" — it was pooled AND identity-blind. For this server that fail-closed
 #: every scoped tool on a pooled backend: an unverifiable caller is refused, so
@@ -944,6 +958,7 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )
 
 
@@ -967,6 +982,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
+    from kiro_crew import crew_mode  # noqa: F401
     from kiro_crew.conductor_patrol import reply_line  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401

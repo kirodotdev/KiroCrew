@@ -9,57 +9,67 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
+from kiro_crew.dashboard.chat_delivery import (
+    attachment_meta,
+    queue_entry_is_user_origin,
+    queued_text_for_display,
+    quote_meta,
+)
+from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
+from kiro_crew.dashboard.chat_utils import (
+    AUTOMATION_NOTICE_KIND,
+    MCP_APP_MESSAGE_KIND,
+    STEER_INTENT_META,
+    STEER_POSSIBLY_DELIVERED_META,
+    SUBAGENT_DELIVERY_KINDS,
+    TURN_END_WIRE_CLS,
+    _remove_queued_by_id,
+    app_inject_row,
+    is_synthetic_payload_item,
+    is_synthetic_recovery_item,
+    is_system_injection_item,
+)
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.session_directive_apply import (
+    REFUSAL_SELF_WAKE_META_KEY,
+    REFUSAL_WAKE_LOOP_ID_META_KEY,
+)
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
+from kiro_crew.history import HUMAN_TURN_META_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _PARKED_FOR_MEMORY,
-        AUTOMATION_NOTICE_KIND,
         COMMANDS_OFF_META_KEY,
         CRON_NOTIFICATION_KIND,
         CRON_NOTIFY_PREFIX,
-        CRON_NOTIFY_RE,
-        HUMAN_TURN_META_KEY,
-        MCP_APP_MESSAGE_KIND,
-        REFUSAL_SELF_WAKE_META_KEY,
-        REFUSAL_WAKE_LOOP_ID_META_KEY,
-        RESTORED_QUEUE_KEY,
-        RESTORED_TURN_META_KEY,
-        STEER_INTENT_META,
-        STEER_POSSIBLY_DELIVERED_META,
         SUBAGENT_COMPLETION_KIND,
-        SUBAGENT_COMPLETION_PREFIXES,
-        SUBAGENT_DELIVERY_KINDS,
-        TURN_END_WIRE_CLS,
         DashboardState,
         KiroCrewConfig,
         _ChatSlot,
         _dequeue_next_message,
         _dequeue_next_system_message,
-        _remove_queued_by_id,
         _run_chat,
-        app_inject_row,
         append_and_surface,
-        attachment_meta,
         effective_session_key,
-        is_synthetic_payload_item,
-        is_synthetic_recovery_item,
-        is_system_injection_item,
         logger,
-        queue_entry_is_user_origin,
-        queued_text_for_display,
-        quote_meta,
         redact_credentials,
         redact_exfiltration_urls,
-        replays_of,
         shutdown_event,
         spawn_guarded_turn,
+    )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _batch_recovery_echo_owed,
     )
     from kiro_crew.dashboard.chat_turn.recovery import (
         _drop_revoked_replays,
         _forget_swept_replays,
         _purge_superseded_continuations,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import adopt_regenerate_target
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
@@ -388,6 +398,28 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
 
+def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether an injector may start the queued head of an idle *slot* now.
+
+    Read under ``slot._lock``. The slot is still the one registered under its
+    key, owns no turn (its task, when set, is done), holds no send's admission
+    reservation, is not closing, is not held for sign-in and has no Stop in
+    flight. Shutdown and memory preparation are refused by
+    :func:`_start_next_queued_turn` itself.
+    """
+    task = slot.task
+    return (
+        state.get_slot(slot.key) is slot
+        and not slot.running
+        and (task is None or task.done())
+        and not slot._turn_admission_reserved
+        and not slot.is_closing
+        and not slot._last_turn_auth_required
+        and not slot._stopping
+        and slot._stop_state == "idle"
+    )
+
+
 def subagents_hold_user_messages(state: DashboardState, session_key: str) -> bool:
     """Whether a live child of *session_key* should keep user messages queued.
 
@@ -402,6 +434,41 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
         return False
     agents = subs.running_agents_for(session_key) or []
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
+
+
+def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
+    """Record the person's queued steers into a Crew Mode worker as they are delivered.
+
+    A send the person typed into a busy worker is queued with ``(root, worker)``
+    on its entry (``chat_send.mark_crew_steer``). The ``steer`` event is written
+    HERE, when the drain hands the entry to the worker, from the entry's text as it
+    is now (an edit while queued is what the worker gets), so a cancelled entry
+    records nothing. Off the drain's path: a tracked task, and a fault never
+    blocks the turn. The marker is in memory only, so an entry a restart restores
+    is delivered and never recorded.
+    """
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
+
+    for item in consumed:
+        marker = item.pop(CREW_STEER_QUEUE_KEY, None)
+        if not (isinstance(marker, tuple) and len(marker) == 2):
+            continue
+        root, worker = marker
+        text = item.get("content")
+        if not isinstance(text, str) or not text:
+            continue
+        try:
+            from kiro_crew.dashboard.handlers import crew_workers
+
+            task = asyncio.get_running_loop().create_task(
+                crew_workers.person_steer(state, root, worker, text)
+            )
+            tasks = getattr(state, "_background_tasks", None)
+            if isinstance(tasks, set):
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+        except Exception:
+            logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
 async def _start_next_queued_turn(
@@ -479,7 +546,7 @@ async def _start_next_queued_turn(
     _forget_swept_replays(slot)
 
     # Above the dequeue, so a held note's visible line lands before this turn's
-    # user row: its context half drains inside _run_chat via drain_pending_context.
+    # user row: its context half drains inside _turn_build_prompt via drain_pending_context.
     # Withheld when the next queued item carries a structural origin tag -- a cron
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
@@ -597,6 +664,7 @@ async def _start_next_queued_turn(
         )
     if next_msg is None:
         return False
+    _record_queued_crew_steers(state, consumed)
 
     # A successor turn is now certain to dispatch (every no-successor path above
     # already returned False), so the predecessor turn's assistant bubble must be
@@ -902,6 +970,9 @@ async def _start_next_queued_turn(
     _drained_meta.pop(AUTOMATION_STEER_META, None)
     if automation_nudge is not None:
         _drained_meta["nudge"] = dict(automation_nudge)
+    # Read off the consumed entries (``_batch_recovery_echo_owed``); the merged
+    # row's union says nothing about each entry, so it does not ride along.
+    _drained_meta.pop(MIRROR_ECHO_OWED_META_KEY, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1052,6 +1123,10 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    # A verbatim replay of a dashboard prompt that died before its mirror echo:
+    # set only when every consumed entry carries the stamp, so it is echoed once.
+    if _batch_recovery_echo_owed(consumed):
+        _run_kwargs["_recovery_echo_owed"] = True
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something
@@ -1119,6 +1194,9 @@ async def _start_next_queued_turn(
         _run_chat(state, slot, next_msg, **_run_kwargs),
     )
     slot.task = task
+    # A recovery replay of a Regenerate's message takes over its target now
+    # that ``slot.task`` gave it the slot's generation.
+    adopt_regenerate_target(slot, consumed, task)
     if _settleable:
         # Open the retention clock on the result files this row promises — but
         # only once the turn has actually run and the model has consumed the

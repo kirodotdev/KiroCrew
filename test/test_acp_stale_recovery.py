@@ -768,6 +768,51 @@ async def test_established_flat_model_wait_gets_extended_window():
 
 
 @pytest.mark.asyncio
+async def test_platform_limited_model_wait_gets_extended_window():
+    """macOS has no socket evidence to tell a non-streamed think from a wedge,
+    so a flat wait there (tagged platform_limited) gets the same
+    model_silent_probe_secs window as an established_flat one on Linux."""
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=0.05,
+        model_silent_probe_secs=10.0,
+        tool_stall_hard_cap_secs=999.0,
+    )
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_model_wait = lambda pid: (
+        "unknown",
+        "platform_limited: backend subtree flat (cpu +0ns (darwin cpu-only))",
+    )
+
+    await _drain(handle, req_id=1, timeout=0.3)
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_platform_limited_model_wait_probes_past_the_extended_window():
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=999.0,
+        model_silent_probe_secs=0.05,
+        tool_stall_hard_cap_secs=999.0,
+    )
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_model_wait = lambda pid: (
+        "unknown",
+        "platform_limited: backend subtree flat (cpu +0ns (darwin cpu-only))",
+    )
+
+    await _drain(handle, req_id=1, timeout=0.3)
+
+    assert handle._stale_probe is True
+    handle._runtime.send_notification.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_dead_model_wait_probes_immediately():
     """A DEAD model-wait verdict (no backend socket, flat counters — the
     done-but-lost-frame wedge) probes without waiting for the stale window."""
@@ -951,6 +996,9 @@ def _make_one_shot_oracle(dead_evidence: str):
     """
     oracle_entered = asyncio.Event()
     oracle_release = asyncio.Event()
+    # Set on the second consult: the watchdog has moved past the first verdict,
+    # so an absent cancel is the guard's doing, not a check that never ran.
+    oracle_rechecked = asyncio.Event()
     call_count = 0
 
     async def oracle(*, model_wait: bool) -> tuple[str, str]:
@@ -960,9 +1008,10 @@ def _make_one_shot_oracle(dead_evidence: str):
             oracle_entered.set()
             await oracle_release.wait()
             return ("dead", dead_evidence)
+        oracle_rechecked.set()
         return ("working", "activity observed")
 
-    return oracle, oracle_entered, oracle_release
+    return oracle, oracle_entered, oracle_release, oracle_rechecked
 
 
 @pytest.mark.asyncio
@@ -1001,7 +1050,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
     verdict reach _end_stalled_tool → session/cancel.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
-    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+    oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
 
     wd = WatchdogSettings(check_after_secs=0.01)
     handle = _make_handle(watchdog=wd)
@@ -1024,7 +1073,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
     handle._ingress_seq += 1
 
     oracle_release.set()
-    await asyncio.sleep(0.1)
+    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
     drain_task.cancel()
     try:
         await drain_task
@@ -1033,7 +1082,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
 
     # _ingress_seq advanced → TOCTOU guard fired → first DEAD verdict skipped
     # → second call returned WORKING → no session/cancel.
-    handle._runtime.send_notification.assert_not_awaited()
+    assert handle._runtime.send_notification.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -1053,7 +1102,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
     but delivers items added via put_nowait() on the next get() call.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
-    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+    oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
 
     wd = WatchdogSettings(check_after_secs=0.01)
     handle = _make_handle(watchdog=wd)
@@ -1079,7 +1128,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
     )
 
     oracle_release.set()
-    await asyncio.sleep(0.1)
+    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
     drain_task.cancel()
     try:
         await drain_task
@@ -1088,7 +1137,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
 
     # qsize() grew → TOCTOU guard fired → first DEAD skipped → WORKING →
     # no session/cancel.
-    handle._runtime.send_notification.assert_not_awaited()
+    assert handle._runtime.send_notification.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -1103,7 +1152,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
     Oracle returns DEAD on first call; WORKING on subsequent calls.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
-    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+    oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
 
     wd = WatchdogSettings(check_after_secs=0.01)
     handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
@@ -1124,7 +1173,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
     )
 
     oracle_release.set()
-    await asyncio.sleep(0.1)
+    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
     drain_task.cancel()
     try:
         await drain_task
@@ -1132,7 +1181,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
         pass
 
     # TOCTOU guard on the stale branch prevented the probe cancel.
-    handle._runtime.send_notification.assert_not_awaited()
+    assert handle._runtime.send_notification.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -1152,7 +1201,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     arm lets the first DEAD verdict reach the probe → session/cancel.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
-    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+    oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
 
     wd = WatchdogSettings(check_after_secs=0.01)
     handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
@@ -1171,7 +1220,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     handle._runtime._last_activity = time.monotonic()
 
     oracle_release.set()
-    await asyncio.sleep(0.1)
+    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
     drain_task.cancel()
     try:
         await drain_task
@@ -1179,7 +1228,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
         pass
 
     # Runtime-clock arm fired → first DEAD skipped → WORKING → no probe.
-    handle._runtime.send_notification.assert_not_awaited()
+    assert handle._runtime.send_notification.await_count == 0
 
 
 # ── F3: hard cap bounds UNKNOWN forbearance absolutely ───────────────────────

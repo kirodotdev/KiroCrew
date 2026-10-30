@@ -3,6 +3,7 @@ import { renderWithProviders } from '../test/helpers'
 import KasLoginGate from './KasLoginGate'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
+import { COMPANY_SIGN_IN_URL_KEY } from '../utils/companySignIn'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -254,6 +255,60 @@ describe('KasLoginGate', () => {
       start_url: 'https://acme.awsapps.com/start',
       region: 'eu-west-1',
     })
+  })
+
+  it('company SSO form remembers the submitted URL and region for the next visit', async () => {
+    const first = renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
+      target: { value: ' https://acme.awsapps.com/start ' },
+    })
+    fireEvent.change(screen.getByLabelText('AWS Region (optional)'), {
+      target: { value: 'eu-west-1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    first.unmount()
+
+    // A reload or gateway restart mounts the chooser again; the fields are filled.
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('https://acme.awsapps.com/start')
+    expect(screen.getByLabelText('AWS Region (optional)')).toHaveValue('eu-west-1')
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
+  })
+
+  it('company SSO normalizes a remembered scheme-less URL before submitting', async () => {
+    localStorage.setItem(COMPANY_SIGN_IN_URL_KEY, 'example.awsapps.com/start')
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    const input = screen.getByLabelText('Company sign-in URL') as HTMLInputElement
+    expect(input).toHaveValue('https://example.awsapps.com/start')
+    expect(input.checkValidity()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(kasLoginBeginDevice).toHaveBeenCalledWith('idc', {
+      start_url: 'https://example.awsapps.com/start',
+    })
+  })
+
+  it('company SSO form keeps nothing that was only typed, never submitted', async () => {
+    const first = renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
+      target: { value: 'https://half.awsapps.com/start' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    first.unmount()
+
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('')
   })
 
   // ---- loopback transport ---------------------------------------------------

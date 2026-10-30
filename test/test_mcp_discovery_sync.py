@@ -601,10 +601,25 @@ class TestSyncTriggerMatchesTheMerge:
 
 
 class TestCommandsDiverged:
-    def test_identical_commands(self) -> None:
+    @pytest.mark.parametrize(
+        "old,new,diverged",
+        [
+            pytest.param("foo", "foo", False, id="identical-commands"),
+            pytest.param("/usr/bin/server", "server", False, id="resolved-vs-short"),
+            pytest.param("old-server", "new-server", True, id="genuinely-different-commands"),
+            # Two different binaries with the same file name are NOT the same server.
+            pytest.param(
+                "/opt/a/bin/srv",
+                "/opt/b/bin/srv",
+                True,
+                id="distinct-absolute-paths-sharing-a-basename-diverge",
+            ),
+        ],
+    )
+    def test_command_spellings(self, old, new, diverged) -> None:
         from kiro_crew.mcp_discovery import _commands_diverged
 
-        assert _commands_diverged("foo", "foo") is False
+        assert _commands_diverged(old, new) is diverged
 
     def test_short_vs_resolved_path(self, tmp_path) -> None:
         """A bare name and the live absolute path it resolved to are one server."""
@@ -647,22 +662,6 @@ class TestCommandsDiverged:
         first = _make_executable(tmp_path / "a" / "srv")
         second = _make_executable(tmp_path / "b" / "srv")
         assert _commands_diverged(str(first), str(second)) is True
-
-    def test_resolved_vs_short(self) -> None:
-        from kiro_crew.mcp_discovery import _commands_diverged
-
-        assert _commands_diverged("/usr/bin/server", "server") is False
-
-    def test_genuinely_different_commands(self) -> None:
-        from kiro_crew.mcp_discovery import _commands_diverged
-
-        assert _commands_diverged("old-server", "new-server") is True
-
-    def test_distinct_absolute_paths_sharing_a_basename_diverge(self) -> None:
-        """Two different binaries with the same file name are NOT the same server."""
-        from kiro_crew.mcp_discovery import _commands_diverged
-
-        assert _commands_diverged("/opt/a/bin/srv", "/opt/b/bin/srv") is True
 
     def test_relative_path_does_not_match_unrelated_rooted_path(self) -> None:
         """A CWD-relative path names a specific file, not a PATH lookup.

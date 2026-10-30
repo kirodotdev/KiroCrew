@@ -260,6 +260,9 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
         # keeps the route's own default rather than asserting one here.
         FieldSpec("scope", str, allowed=ALLOWED_LESSON_SCOPES),
         FieldSpec("workspace", str, max_len=MAX_SHORT_STRING, pattern=WORKSPACE_NAME_RE),
+        # Collapse duplicates: of the matches, keep the oldest row of each
+        # (rule, scope) group and remove the rest.
+        FieldSpec("keep_one", bool),
     ],
 )
 

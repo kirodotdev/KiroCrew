@@ -54,11 +54,12 @@ DM_FILE_NAME = "dm.json"
 
 #: Per-member PERMANENT RULES (the user-owned layer of the member system
 #: prompt: approval boundaries, forbidden actions, evidence requirements).
-#: Lives under the keystone-gated ``trust/`` subtree for the same reason the
-#: DM binding does: these rules are precisely what the member must not be able
-#: to rewrite for itself, so they cannot sit on a path the agent's file tools
-#: can write. Only the gateway (via the dashboard rules endpoint — a human
-#: action) writes here.
+#: Lives under the gateway-only ``member-records/`` leaf
+#: (:mod:`kiro_crew.member_records`) for the same reason the DM binding does:
+#: these rules are precisely what the member must not be able to rewrite for
+#: itself, so they sit where the OS sandbox masks every name and the agent's
+#: file tools are refused. Only the gateway (via the dashboard rules endpoint —
+#: a human action) writes here.
 RULES_DIR_NAME = "member-rules"
 
 #: Hard cap on a member's permanent-rules text. Enforced on WRITE (the write
@@ -79,15 +80,15 @@ BRIEFING_FILE_NAME = "briefing.md"
 #: an archive). Enforced on read with a visible truncation marker so the
 #: member learns its briefing overflowed instead of silently losing the tail.
 MEMBER_BRIEFING_MAX_CHARS = 4000
-# Bindings live under the keystone-gated ``trust/`` subtree, NOT inside the
+# Bindings live under the gateway-only ``member-records/`` leaf, NOT inside the
 # member's own directory. The binding IS the thread's identity authority (the
 # resume/send/thread-open guards all defer to it precisely because transcript
-# metadata is operator-editable), so it must not sit on a path the agent's
-# file tools can write: a prompt-injected write that re-points ``member`` at a
-# colliding crew would hand that crew the thread's entire transcript at the
-# next restore. ``trust/`` is already in the sensitive-path floor as a whole
-# directory (like the SEL HMAC key and Spec Builder's decision record), and
-# keystone writers open paths there directly, so the gateway keeps working.
+# metadata is operator-editable), so nothing an agent runs may write it: a
+# prompt-injected write that re-points ``member`` at a colliding crew would
+# hand that crew the thread's entire transcript at the next restore. The leaf
+# is masked by the OS sandbox in every mode and refused by the sensitive-path
+# floor, and the gateway opens paths there directly
+# (:mod:`kiro_crew.member_records`).
 DM_BINDINGS_DIR_NAME = "member-bindings"
 
 #: Slot ``mode`` tag for member DM threads. The frontend's single
@@ -347,6 +348,55 @@ def member_pin_matches(mode: object, current_agent: object, requested_agent: obj
         and isinstance(requested_agent, str)
         and requested_agent == current_agent
     )
+
+
+def is_person_created_crewmate(name: object, agent_cfg: object) -> bool:
+    """Whether the crew record *agent_cfg* under *name* is a crewmate the PERSON created.
+
+    The Crewmates roster's ``dashboard_created`` rule, owned here so the roster and
+    the inventory gauge cannot drift apart: the crew manager's own origin
+    (``source == "kirocrew"``) AND a member id, which is assigned when the member's
+    memory is allocated. Both create paths the person takes write exactly that --
+    the Crewmates page's create, and Mate's ``crewmate.create`` /
+    ``crewmate.import`` card once approved. Mate itself (``source == "builtin"``),
+    package-synced rows, app-made rows, legacy rows and the reserved ``default``
+    member are not counted. ``member_id`` is never coerced by the loader, so only a
+    non-blank string counts.
+    """
+    member_id = getattr(agent_cfg, "member_id", None)
+    # "default" is the reserved main member every install carries; "kirocrew" is
+    # the crew manager's own origin, the one both person-driven create paths write.
+    return (
+        name != "default"
+        and getattr(agent_cfg, "source", None) == "kirocrew"
+        and isinstance(member_id, str)
+        and bool(member_id.strip())
+    )
+
+
+def count_person_created_crewmates(config=None) -> int:
+    """How many crewmates the person created on this install.
+
+    Walks the same rows ``GET /api/members`` builds -- a dispatchable name with a
+    resolvable slug -- and counts the ones :func:`is_person_created_crewmate`
+    accepts. Config only: no transcript, member directory or network is read, so
+    the cost is one (fingerprint-cached) config load.
+    """
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    count = 0
+    for name, agent_cfg in config.agents.items():
+        if not is_dispatchable_member_name(name):
+            continue
+        try:
+            member_slug(name, config)
+        except MemberSlugError:
+            continue
+        if is_person_created_crewmate(name, agent_cfg):
+            count += 1
+    return count
 
 
 def members_root() -> Path:

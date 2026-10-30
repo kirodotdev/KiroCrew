@@ -3,12 +3,9 @@
  * features. One today -- `dashboard.crewmate_threads`, reply threads on crewmate
  * chat messages (RFC crewmates launch, screen 07), off by default.
  *
- * Sits under its own heading, right after Feature Previews, because that is
- * where the Crew Members preview card lives -- the one door to the `/members`
- * page this flag changes. The heading is visual only: config has no crewmate
- * parent flag (Crew Members is a client-side preview flag, `previewFlags.ts`),
- * so this toggle nests under a section title rather than under a parent key.
- * Whether crewmate features should share a parent flag is out of scope here.
+ * Sits under its own heading, right after Feature Previews. The heading is
+ * visual only: config has no crewmate parent flag, so this toggle nests under a
+ * section title rather than under a parent key.
  *
  * Server-side, like the Power toggle on the Chat tab: the value is PATCHed to
  * `dashboard.crewmate_threads` and read back through the shared

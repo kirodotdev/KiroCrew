@@ -398,7 +398,21 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         note = conductor_patrol.patrol_note(state, caller, reason, has_ledger=ledger)
         if note:
             result["patrol_note"] = note
+        await _add_worker_capabilities(request, state, result)
     return web.json_response(result)
+
+
+async def _add_worker_capabilities(
+    request: web.Request, state: "DashboardState", result: dict
+) -> None:
+    """Add a crewmate conductor's own-worker capability line to *result*, if this is one."""
+    from kiro_crew.dashboard.crewmate_dispatch_capabilities import own_worker_note
+
+    note = await own_worker_note(
+        request.app, state, _read_session_key(request), str(result.get("target") or "")
+    )
+    if note:
+        result["worker_capabilities"] = note
 
 
 @_counted("fork")
@@ -622,6 +636,33 @@ async def api_session_control_generate_title(request: web.Request) -> web.Respon
     return web.json_response(result)
 
 
+# ``set_color`` is not in ``SESSION_CONTROL_OPS`` either, so it folds to ``other``
+# like ``revive`` and ``history`` below; the real verb is passed for the same reason.
+@_counted("set_color")
+async def api_session_control_set_color(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-color — tint a session the caller created."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        color = body.get("color")
+        if not isinstance(color, str):
+            raise sc.SessionControlError("color must be a string", code="bad_request")
+        result = await sc.set_color_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            color=color,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 @_counted("close")
 async def api_session_control_close(request: web.Request) -> web.Response:
     """POST /api/session-control/close — archive another session (tab ✕)."""
@@ -725,10 +766,18 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         handback = await work_ledger_routes.read_send_handback(
             _read_session_key(request), _target(body)
         )
+        # A crewmate's conductor messaging a worker of its own that was archived
+        # (the idle sweep, a closed tab) revives it first, under revive's fence.
+        target = await sc.revive_own_archived_worker(
+            state,
+            _read_session_key(request),
+            _target(body),
+            caller_fenced=_carried_fence(request),
+        )
         result = await sc.send_to_target(
             state,
             caller_session_key=_read_session_key(request),
-            target=_target(body),
+            target=target,
             message=message,
             steer=steer,
             caller_fenced=_carried_fence(request),
@@ -749,6 +798,9 @@ async def api_session_control_send(request: web.Request) -> web.Response:
             delivered_to=str(result.get("target") or ""),
             message=message,
         )
+    if isinstance(result, dict):
+        result = dict(result)
+        await _add_worker_capabilities(request, state, result)
     return web.json_response(result)
 
 
@@ -814,12 +866,20 @@ async def api_session_control_broadcast(request: web.Request) -> web.Response:
                         "a session key, transcript name, or exact title",
                         code="target_too_long",
                     )
+        # A JSON boolean only. A string such as "false" is truthy in Python, so
+        # reading it loosely would let a malformed value select the whole fleet.
+        all_created = body.get("all", False)
+        if all_created is None:
+            all_created = False
+        if not isinstance(all_created, bool):
+            raise sc.SessionControlError("all must be a boolean", code="invalid_field_type")
         result = await sc.broadcast_to_targets(
             state,
             caller_session_key=_read_session_key(request),
             message=message,
             mode=mode,
             targets=targets,
+            all_created=all_created,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
@@ -862,6 +922,30 @@ async def api_session_control_adopt(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+@_counted("handoff")
+async def api_session_control_handoff(request: web.Request) -> web.Response:
+    """POST /api/session-control/handoff — give a session to another session to manage."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        recipient = body.get("to")
+        if not isinstance(recipient, str) or not recipient.strip():
+            raise sc.SessionControlError("to is required", code="recipient_required")
+        result = await sc.handoff_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            to=recipient.strip(),
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

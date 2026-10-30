@@ -106,7 +106,8 @@ describe('EmbeddingModelCard Apply label follows the path it will submit', () =>
     reject(apiError)
     const failed = await screen.findByText('No file at that path.')
     expect(screen.queryByText('Checking the file…')).not.toBeInTheDocument()
-    expect(failed.closest('.text-danger')).not.toBeNull()
+    // A failed check is an error surface: ErrorNotice, announced as an alert.
+    expect(failed.closest('[role="alert"]')).toBe(screen.getByTestId('embed-model-check-error'))
     expect(api.vectorValidateEmbedModel).toHaveBeenCalledWith('/models/other.gguf')
     expect(applyButton()).toBeDisabled()
     expect(applyButton()).toHaveTextContent('Apply model')
@@ -223,7 +224,8 @@ describe('EmbeddingModelCard keeps a known-bad path gated until the live check h
     // One fault stated once: the live verdict, not the stale status notice.
     expect(screen.queryByTestId('embed-model-path-status-error')).not.toBeInTheDocument()
     expect(screen.queryByText('No file at that path.')).not.toBeInTheDocument()
-    expect(failed.closest('.text-danger')).not.toBeNull()
+    // A failed check is an error surface: ErrorNotice, announced as an alert.
+    expect(failed.closest('[role="alert"]')).toBe(screen.getByTestId('embed-model-check-error'))
     expect(applyButton()).toBeDisabled()
     // Emptying the field is a change back to the bundled model; the check
     // needs no request for that and its verdict enables Apply.
@@ -476,4 +478,24 @@ it.each([true, false])('offers a separate Logs page only for unknown repair scop
     expect(within(notice).queryByRole('link')).not.toBeInTheDocument()
   }
   expect(input).toHaveValue('/models/unsaved.gguf')
+})
+
+// The env override refusal is an error like any other check failure: one
+// ErrorNotice, with the control that says how to unset the variable inside it.
+it('renders an env-override refusal through the check ErrorNotice, with the unset control in it', async () => {
+  setStatus(CUSTOM_OK)
+  const apiError = Object.assign(new Error('override'), {
+    name: 'ApiError', status: 409,
+    body: JSON.stringify({ ok: false, error: 'KIROCREW_EMBED_MODEL_PATH is set', code: 'env_override_active' }),
+  })
+  vi.mocked(api.vectorValidateEmbedModel).mockRejectedValueOnce(apiError)
+  renderWithProviders(<EmbeddingModelCard />)
+  const input = await screen.findByDisplayValue('/models/model.gguf')
+  fireEvent.change(input, { target: { value: '/models/other.gguf' } })
+  fireEvent.blur(input)
+  const notice = await screen.findByTestId('embed-model-check-error')
+  expect(notice).toHaveAttribute('role', 'alert')
+  expect(notice).toHaveTextContent('KIROCREW_EMBED_MODEL_PATH is set and overrides this setting. Unset it to change the model here.')
+  expect(within(notice).getByRole('button', { name: /KIROCREW_EMBED_MODEL_PATH/ })).toBeInTheDocument()
+  expect(applyButton()).toBeDisabled()
 })

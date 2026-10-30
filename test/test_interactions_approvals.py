@@ -26,7 +26,7 @@ from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.slack import handler as sh
 from kiro_crew.slack import interactions as ix
 from kiro_crew.start_priority import StartPriority
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 LOGGER = "kiro_crew.slack.interactions"
 OWNER = "UOWNER"
@@ -739,3 +739,30 @@ class TestReviewReviseSubmit:
         assert audit.call_args_list[-1].kwargs["error"] == "handle_message failed"
         assert audit.call_args_list[-1].kwargs["resources"] == "C1"
         assert f"Review revision failed for {REQUESTER} in C1" in _messages(caplog)
+
+    @pytest.mark.asyncio
+    async def test_the_orchestrator_holds_the_revision_turn_until_it_ends(
+        self, orch: MagicMock, audit: MagicMock, turns: AsyncMock
+    ) -> None:
+        # The event loop keeps only a weak reference to a task, so a revise turn
+        # nobody holds can be collected mid-turn after the modal has closed.
+        orch._handler_tasks = set()
+        release = asyncio.Event()
+
+        async def _turn(*_a: Any, **_k: Any) -> None:
+            await release.wait()
+
+        turns.side_effect = _turn
+        sh._review_drafts_set(DRAFT_KEY, "draft", REQUESTER)
+        before = asyncio.all_tasks()
+        await ix._handle_review_revise_submit(_revise_submission(REQUESTER, "shorter"))
+        (task,) = [
+            t
+            for t in asyncio.all_tasks() - before
+            if getattr(t.get_coro(), "__qualname__", "").endswith("_do_revise")
+        ]
+        assert orch._handler_tasks == {task}
+        release.set()
+        await await_until(task, what="the background revise turn")
+        await async_wait_until(lambda: not orch._handler_tasks)
+        turns.assert_awaited_once()

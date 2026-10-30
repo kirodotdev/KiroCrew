@@ -33,6 +33,7 @@ import {
 import { freshnessVerdict, STALE_EXIT, strictFromEnv } from '../../scripts/lib/ui-index-freshness.mjs'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import { Glass } from '../components/Glass'
+import HeaderControl from '../pages/members/HeaderControl'
 import { MemoryModeChip } from '../components/MemoryModeChip'
 import { Btn, IconButton, SendBtn } from '../components/ui'
 import Clickable from '../components/Clickable'
@@ -257,7 +258,7 @@ describe('a marker on a custom component reaches the DOM only if the component f
  * site test above until it is added here with its own rendered test.
  */
 const FORWARDING_PROVEN = [
-  'Btn', 'SendBtn', 'DropdownMenuItem', 'Glass',
+  'Btn', 'SendBtn', 'DropdownMenuItem', 'Glass', 'HeaderControl',
   // Proven ahead of the wave-3 area batches (so none of them edits this file):
   // each forwards unknown props to the element a person activates.
   'IconButton', 'Clickable', 'Link',
@@ -270,6 +271,9 @@ const FORWARDING_PROVEN = [
   // Proven in src/test/sidePanelAddMenu.test.tsx: the side panel "+" menu's
   // AddMenuItem forwards the marker to the DropdownMenuItem it renders.
   'AddMenuItem',
+  // Proven in src/test/Tablist.test.tsx: a `segments` entry's marker lands on
+  // that tab's <button> and on no other.
+  'Tablist',
   // Proven below: SimpleSelect forwards only the marker, to its trigger (Radix)
   // or its native <select> (touch); SegmentedControl draws a segment's own
   // marker on that segment's radio.
@@ -436,6 +440,18 @@ describe('the custom components real markers sit on forward them', () => {
     r.unmount()
   })
 
+  it('HeaderControl puts the marker on its button, as a Glass chip and as a bare bar icon', () => {
+    for (const inBar of [false, true]) {
+      const r = render(React.createElement(HeaderControl, { inBar, chipClassName: 'chip', barClassName: 'bar', ...uiLocation('members.back') }, 'Roster'))
+      const marked = r.container.querySelectorAll(`[${UI_LOCATION_ATTR}]`)
+      expect(marked).toHaveLength(1)
+      expect(marked[0].tagName).toBe('BUTTON')
+      expect(marked[0].getAttribute(UI_LOCATION_ATTR)).toBe('members.back')
+      expect(unregisteredMarkers()).toEqual([])
+      r.unmount()
+    }
+  })
+
   it('the memory-mode chip carries its marker in every mode, on the button it is', () => {
     for (const mode of ['persistent', 'incognito', 'temporary']) {
       const r = render(React.createElement(MemoryModeChip, { memoryMode: mode, onSwitchMode: () => {} }))
@@ -546,6 +562,20 @@ describe('index assembly', () => {
     expect(byId['setting:chat.a-setting'].placements[0].parent_ids).toEqual(['page.settings', 'settings.tab.chat'])
     expect(index.labels['zh-CN']['k.older']).toBe('较早的会话')
     expect(missing['zh-CN']).toContain('k.toggle')
+  })
+
+  it('gives a setting and a sub-page on a preview-gated tab the tab\'s preview requirement', () => {
+    const { index, errors } = build({
+      settingsTabPreview: { chat: 'mc-preview-x' },
+      previewEnablers: { 'mc-preview-x': 'chat.a-setting' },
+      settingsSubs: { chat: [{ id: 'sub', key: 'tab.chat' }] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-x', location: 'setting:chat.a-setting' }]
+    expect(byId['settings.tab.chat'].placements[0].requires).toEqual(want)
+    expect(byId['settings.sub.chat.sub'].placements[0].requires).toEqual(want)
+    expect(byId['setting:chat.a-setting'].placements[0].requires).toEqual(want)
   })
 
   it('derives a chain through a registered parent', () => {
@@ -792,7 +822,7 @@ describe('ui.show select and gate steps', () => {
     },
     markerSites: [...baseInputs().markerSites, site('chat.picker', 'k.inner', 3)],
     selectionScopes: { session_open: { picker: 'chat.picker', entity: 'session' } },
-    gates: { developer_mode: { setting: 'chat.a-setting' } },
+    gates: { terminal_enabled: { setting: 'chat.a-setting' } },
     ...over,
   })
   const plan = (b: ReturnType<typeof build>) => b.index.locations.find(l => l.id === 'chat.older')?.guide_plan as UiGuidePlan | undefined
@@ -810,18 +840,18 @@ describe('ui.show select and gate steps', () => {
   })
 
   it('a gate condition or a preview flag becomes a leading gate step naming its setting', () => {
-    const b = build(withPicker([{ kind: 'condition', id: 'developer_mode' }, { kind: 'shown_by', location: 'chat.toggle' }]))
+    const b = build(withPicker([{ kind: 'condition', id: 'terminal_enabled' }, { kind: 'shown_by', location: 'chat.toggle' }]))
     expect(b.errors).toEqual([])
-    expect(plan(b)!.placements[0].steps.map(s => s.id)).toEqual(['any:gate:developer_mode', 'any:chat.toggle', 'any:chat.older'])
-    expect(plan(b)!.placements[0].steps[0]).toEqual({ id: 'any:gate:developer_mode', kind: 'gate', gate: 'developer_mode', setting_id: 'chat.a-setting' })
+    expect(plan(b)!.placements[0].steps.map(s => s.id)).toEqual(['any:gate:terminal_enabled', 'any:chat.toggle', 'any:chat.older'])
+    expect(plan(b)!.placements[0].steps[0]).toEqual({ id: 'any:gate:terminal_enabled', kind: 'gate', gate: 'terminal_enabled', setting_id: 'chat.a-setting' })
     const flagged = build(withPicker([], { previewEnablers: { 'mc-preview-x': 'chat.a-setting' } }))
     const raw = flagged.index as unknown as { guide_gates: Record<string, unknown> }
     expect(raw.guide_gates['preview_flag:mc-preview-x']).toEqual({ setting_id: 'chat.a-setting' })
   })
 
   it('refuses a gate on an unknown setting, a picker that is not registered, and an overlap with a predicate', () => {
-    expect(build(withPicker([], { gates: { developer_mode: { setting: 'no.such' } } })).errors)
-      .toContainEqual(expect.stringMatching(/gate 'developer_mode' names unknown setting 'no.such'/))
+    expect(build(withPicker([], { gates: { terminal_enabled: { setting: 'no.such' } } })).errors)
+      .toContainEqual(expect.stringMatching(/gate 'terminal_enabled' names unknown setting 'no.such'/))
     expect(build(withPicker([], { selectionScopes: { session_open: { picker: 'no.picker', entity: 'session' } } })).errors)
       .toContainEqual(expect.stringMatching(/picker 'no.picker' is not a registered location/))
     expect(build(withPicker([], { selectionScopes: { has_open_sessions: { picker: 'chat.picker', entity: 'session' } } })).errors)
@@ -1196,7 +1226,7 @@ describe('gen:ui --out', () => {
   it('refuses to write the build-time auto tier next to the committed index, or with no file', () => {
     const r = run('--auto-out', path.join(path.dirname(COMMITTED), 'ui-index.auto.json'))
     expect(r.status).toBe(2)
-    expect(r.stderr).toMatch(/--auto-out must not be in src\/kiro_crew\/docs/)
+    expect(r.stderr).toMatch(/--auto-out must not be in src[\\/]kiro_crew[\\/]docs/)
     expect(fs.existsSync(path.join(path.dirname(COMMITTED), 'ui-index.auto.json'))).toBe(false)
     expect(run('--auto-out').stderr).toMatch(/--auto-out needs a file path/)
   })
@@ -1386,11 +1416,18 @@ describe('the committed index', () => {
     expect(preview.placements[0].parent_ids).toEqual(['page.settings', 'settings.tab.chat', 'settings.sub.chat.transcript'])
   })
 
-  it('keeps Mates behind its preview, naming the switch that shows it', () => {
-    expect(byId.get('page.members')!.placements[0].requires).toEqual([
-      { kind: 'preview_flag', flag: 'mc-preview-crew', location: 'setting:developer.mates' },
-    ])
-    expect(byId.has('setting:developer.mates')).toBe(true)
+  it('keeps the Session Environments tab and every setting on it behind its preview', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-session-environments', location: 'setting:developer.session-environments' }]
+    expect(byId.get('settings.tab.session-environments')!.placements[0].requires).toEqual(want)
+    const onTab = committed.locations.filter(l => l.kind === 'setting' && l.setting_id?.startsWith('session-environments.'))
+    expect(onTab.map(l => l.setting_id)).toContain('session-environments.coder-url')
+    for (const loc of onTab) expect(loc.placements[0].requires).toEqual(want)
+    // The switch that shows the tab is not itself behind it.
+    expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
+  })
+
+  it('shows Mates with no prerequisite', () => {
+    expect(byId.get('page.members')!.placements[0].requires).toEqual([])
   })
 
   it('resolves every parent, prerequisite and label it references', () => {
@@ -1503,7 +1540,6 @@ describe('the committed index', () => {
       { kind: 'condition', id: 'session_open' },
       // The shelf unmounts with a collapsed message box.
       { kind: 'shown_by', location: 'composer.expand', when: 'composer_collapsed' },
-      { kind: 'condition', id: 'no_response_running' },
     ])
     expect(byId.get('chat.memory-mode')!.placements[0].requires).toEqual([{ kind: 'condition', id: 'empty_session' }])
     // Only a description location carries a description key.

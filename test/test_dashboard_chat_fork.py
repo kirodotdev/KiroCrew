@@ -1071,7 +1071,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_rejects_when_slot_cap_reached(self, tmp_path, monkeypatch):
-        """Review finding: fork must return 429 + denied audit when slot cap hit."""
+        """Fork must return 429 + denied audit when slot cap hit."""
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()

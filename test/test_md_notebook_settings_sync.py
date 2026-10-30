@@ -489,6 +489,38 @@ async def test_a_corrupt_settings_file_degrades_to_defaults(fixtures, raw: str) 
         assert body["settings"] == _default_settings_body(server_mod)
 
 
+# A hand edit saved in a legacy code page: valid JSON shape, but 0xE9 is not UTF-8.
+_NON_UTF8_STATE = '{"autoSync": true, "note": "café"}'.encode("latin-1")
+
+
+@pytest.mark.asyncio
+async def test_a_non_utf8_settings_file_degrades_to_defaults(fixtures) -> None:
+    """Undecodable bytes are as corrupt as malformed JSON: the read degrades to
+    defaults (autoSync OFF) instead of raising out of the settings endpoint."""
+    server_mod, _remote, _seed = fixtures
+    path = server_mod._settings_json()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_NON_UTF8_STATE)
+    async with signed_client(server_mod) as client:
+        status, body = await client.get("/api/settings")
+        assert status == 200, body
+        assert body["settings"] == _default_settings_body(server_mod)
+
+
+@pytest.mark.asyncio
+async def test_a_non_utf8_vault_registry_reads_as_empty(fixtures) -> None:
+    """vaults.json shares the settings file's read contract: undecodable bytes read
+    as no vaults, the same as malformed JSON, so the app still opens."""
+    server_mod, _remote, _seed = fixtures
+    path = server_mod._vaults_json()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_NON_UTF8_STATE)
+    async with signed_client(server_mod) as client:
+        status, body = await client.get("/api/vaults")
+        assert status == 200, body
+        assert body["vaults"] == []
+
+
 @pytest.mark.asyncio
 async def test_a_mangled_last_sync_entry_does_not_cost_the_others(fixtures) -> None:
     """Per-entry filtering: one bad timestamp must not erase every vault's."""

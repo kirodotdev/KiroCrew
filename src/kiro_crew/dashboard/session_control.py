@@ -73,8 +73,10 @@ _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.model_switch",
     "kiro_crew.dashboard.session_control_parts.session_titles",
     "kiro_crew.dashboard.session_control_parts.session_messaging",
+    "kiro_crew.dashboard.session_control_parts.crew_filing",
     "kiro_crew.dashboard.session_control_parts.session_create",
     "kiro_crew.dashboard.session_control_parts.session_tree",
+    "kiro_crew.dashboard.session_control_parts.session_handoff",
     "kiro_crew.dashboard.session_control_parts.session_status",
     "kiro_crew.dashboard.session_control_parts.session_revive",
 )
@@ -95,8 +97,12 @@ __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.sta
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
     from kiro_crew.dashboard.session_control_parts.caller_access import (  # noqa: F401
         APP_CRON_OWNER_PREFIX,
+        CONDUCTOR_AGENTS,
         CRON_LINK_PREFIX,
         CRON_SLOT_PREFIX,
+        HANDOFF_WIDENED_OPERATIONS,
+        MAX_MANAGER_CHAIN,
+        OWNER_CHAT_SLOT_PREFIX,
         UNATTENDED_SLOT_PREFIXES,
         WORKFLOW_SLOT_PREFIX,
         SessionControlError,
@@ -105,19 +111,33 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _audit_denials,
         _caller_is_ownership_fenced,
         _channel_link_of,
+        _conductor_bypass,
+        _conductor_fenced,
         _created_by_other,
         _cron_caller,
         _delegation_lineage_fenced,
+        _dispatch_bypass,
+        _manager_chain_on,
         _member_bypass,
         _member_caller,
+        _outside_reach,
+        _owner_tab_conductor,
         _sel_off_loop,
         _store_is_member_owned,
         caller_slot_key,
+        manager_chain_enabled,
+        manager_chain_snapshot,
         member_admitted_to_scoped_surface,
         member_dispatch_enabled,
         member_owns_slot,
         prewarm_enabled_check,
+        refresh_manager_chain,
         session_control_enabled,
+    )
+    from kiro_crew.dashboard.session_control_parts.crew_filing import (  # noqa: F401
+        _crew_filing_answer,
+        _frame_parents,
+        _in_turned_on_crew_tree,
     )
     from kiro_crew.dashboard.session_control_parts.delivery_containment import (  # noqa: F401
         _AUDIENCE_CONSTRAINTS,
@@ -164,29 +184,50 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_origin_tab,
     )
     from kiro_crew.dashboard.session_control_parts.model_switch import (  # noqa: F401
+        _CHANNEL_PICK_LANDINGS,
         _JEV_ROUTE_SPELLINGS,
+        _LANDING_LEASES,
         PendingModelPick,
         _another_alias_is_mid_turn,
         _caller_tab_id,
+        _log_landing_failure,
         _pending_pick_view,
         _pick_audit_fields,
         _pick_fields,
         _target_busy_error,
+        apply_deferred_model_switch,
         apply_pending_model_pick,
         arm_model_switch_reset,
+        channel_drives_session,
+        channel_pick_waits_on,
         effort_commit_needs_reset,
+        land_model_pick_after_channel_turn,
+        landing_holds_lease,
         legacy_effort_base,
         model_switch_deferred,
+        schedule_channel_pick_landing,
         set_model_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_create import (  # noqa: F401
         _STOCK_WORKER_AGENT,
         _caller_member_workspace,
+        _conducts_for_a_worker,
         _dispatching_crewmate,
+        _hands_off_to_own_worker,
         _inherited_pin_foreign_to_child,
         _model_pin_refusal,
         _record_spawn,
+        _register_spawn_pending_edge,
+        _store_s_crewmate,
         create_session,
+    )
+    from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
+        _HANDOFF_LOCK,
+        _manages_up_the_line,
+        _move_tree_edge,
+        _note_in_transcript,
+        hand_back_on_close,
+        handoff_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_messaging import (  # noqa: F401
         _FORGED_PROVENANCE_RE,
@@ -212,21 +253,26 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_to_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_revive import (  # noqa: F401
+        _PENDING_REBINDS,
         DEFAULT_HISTORY_LIST_ROWS,
         MAX_HISTORY_FOLDER_ID_CHARS,
         MAX_HISTORY_LIST_ROWS,
         MAX_HISTORY_SCAN_ENTRIES,
+        UNVERIFIED_CREATOR,
         _archived_link_and_mirror,
         _archived_session_is_channel_linked,
         _archived_session_is_mirrored,
         _archived_target_refusal,
         _bounded_folder_id,
+        _creation_parent,
         _fold_slot_key,
+        _rebind_in_background,
         _resolve_archived_target,
         _revived_slot_refusal,
         _scan_archived_candidates,
         _scan_revivable_history,
         list_archived_sessions,
+        revive_own_archived_worker,
         revive_session,
     )
     from kiro_crew.dashboard.session_control_parts.session_status import (  # noqa: F401
@@ -249,6 +295,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _pending_approval_fields,
         _summary_text,
         created_session_status,
+        process_state,
         read_messages,
         read_summary,
     )
@@ -261,10 +308,12 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _clean_new_session_title,
         _clean_rename_title,
         _is_allowed_format_char,
+        _parse_session_color,
         _refuse_hidden_title_characters,
         _shows_nothing,
         generate_title_target,
         rename_target,
+        set_color_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_tree import (  # noqa: F401
         _MAX_FORK_TITLE_CHARS,
@@ -354,6 +403,8 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.context_assembly.markers import _marker_spans  # noqa: F401
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
+    from kiro_crew.dashboard import session_managers  # noqa: F401
+    from kiro_crew.dashboard.approval_inheritance import inherit_posture  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
@@ -387,11 +438,13 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_ERROR  # noqa: F401
     from kiro_crew.dashboard.relay_archive import is_relay_archive  # noqa: F401
+    from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
     from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
     from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR  # noqa: F401
     from kiro_crew.dashboard.state import SlotOrigin  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.dashboard.state import _safe_folder_tree  # noqa: F401
+    from kiro_crew.dashboard.state import append_and_surface  # noqa: F401
     from kiro_crew.dashboard.state import load_window_off_loop  # noqa: F401
     from kiro_crew.dashboard.stop_retry import allow_escalation  # noqa: F401
     from kiro_crew.effort import EFFORT_LEVELS  # noqa: F401
@@ -412,6 +465,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.memory_stores import named_store_or_empty  # noqa: F401
     from kiro_crew.messaging.link import CHAT_TYPE_DIRECT  # noqa: F401
     from kiro_crew.messaging.link import ChannelLink  # noqa: F401
+    from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
     from kiro_crew.messaging.link import parse_session_key  # noqa: F401
     from kiro_crew.messaging.transport import DM_TARGET_PREFIX  # noqa: F401
     from kiro_crew.messaging.transport import sole_direct_target  # noqa: F401
@@ -430,3 +484,5 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.validation import MAX_SESSION_STATUS_ROWS  # noqa: F401
     from kiro_crew.validation import MAX_SESSION_STATUS_TITLE_CHARS  # noqa: F401
     from kiro_crew.validation import MAX_SHORT_STRING  # noqa: F401
+    from kiro_crew.validation import SESSION_COLOR_CHOICES  # noqa: F401
+    from kiro_crew.validation import SESSION_PALETTE_SIZE  # noqa: F401

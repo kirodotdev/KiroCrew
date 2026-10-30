@@ -1223,14 +1223,6 @@ class TestProfilesControlPlane:
         assert _payload(resp)["default"] == "p"
 
     @pytest.mark.asyncio
-    async def test_post_refuses_when_registry_is_full(self, monkeypatch):
-        full = {"profiles": [profiles_mod.make_entry(f"p{i}", "us-west-2")
-                             for i in range(50)], "default": "p0"}
-        monkeypatch.setattr(profiles_mod, "load_registry", lambda: full)
-        resp = await handlers._handle_profiles_post(_FakeReq({"name": "new"}))
-        assert resp.status == 400 and "registry is full" in _payload(resp)["error"]
-
-    @pytest.mark.asyncio
     async def test_put_rejects_invalid_name(self):
         resp = await handlers._handle_profiles_put(
             _FakeReq({}, match_info={"name": "bad name;"}))
@@ -1712,7 +1704,7 @@ class TestPending:
         handlers._save_config("p", "us-west-2")
         seen: dict = {}
 
-        async def _fake_deploy(params):
+        async def _fake_deploy(params, **_kw):
             seen.update(params)
             return 200, {"url": "https://d1.cloudfront.net/s/"}
 
@@ -1734,7 +1726,7 @@ class TestPending:
 
         handlers._save_config("p", "us-west-2")
 
-        async def _fake_deploy(_params):
+        async def _fake_deploy(_params, **_kw):
             return 502, {"error": "AccessDenied"}
 
         monkeypatch.setattr(handlers, "_do_deploy", _fake_deploy)

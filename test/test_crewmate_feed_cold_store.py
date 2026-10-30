@@ -33,11 +33,23 @@ def _isolated(tmp_path, _floor_monkeypatch):
     crewmate_feed._inflight.clear()
     crewmate_feed._sessions.clear()
     crewmate_feed._held_seq.clear()
+    if crewmate_feed._timer is not None:
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+    crewmate_feed._keep.clear()
+    crewmate_feed._pending.clear()
+    crewmate_feed._recorded_in.clear()
     yield
     crewmate_feed._last.clear()
     crewmate_feed._inflight.clear()
     crewmate_feed._sessions.clear()
     crewmate_feed._held_seq.clear()
+    if crewmate_feed._timer is not None:
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+    crewmate_feed._keep.clear()
+    crewmate_feed._pending.clear()
+    crewmate_feed._recorded_in.clear()
 
 
 @pytest.fixture

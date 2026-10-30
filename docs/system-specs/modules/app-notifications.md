@@ -85,6 +85,8 @@ Channels register lazily on the first push to each declared channel. App lifecyc
 
 System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `system.monitor` (see Per-channel settings). A legacy `DashboardState.notify(kind, ...)` call maps `kind` to `system.<kind>`, falling back to `system.agent`, unless the caller passes `channel=`. `payload_from_legacy` raises `NotificationValidationError` when that override names anything but a system channel, and `NotificationCoordinator.notify` drops such a note with a warning; `test_monitor_notice_channel.py::TestLegacyChannelOverride` pins the override and the rejection.
 
+An approval prompt in a dashboard chat that expires unanswered also posts one `system.agent` bell note (`kind` `agent`, title `turn_dispatch.APPROVAL_EXPIRED_NOTE_TITLE`, body `format_approval_expired_note`) from the runner's timeout branch, so someone who is not looking at the session learns the turn went on without the tool. The body names the tool and the session's display title, never the prompt's agent-authored text, and `meta.slot` gives the detail panel its open-session action. It is not `kind` `approval`, which the feed renders with live Approve and Reject buttons. It carries no `publisher_session`, so a muted session's expiry still notifies. A no-budget decline, where nothing was asked, posts none. `test_dashboard_approval_window.py` pins all three.
+
 ## Per-channel settings
 
 `notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
@@ -266,7 +268,7 @@ gated on catch-up, only the frame's live banner is (see Trigger below).
 ### Settings and resolution
 
 Settings persist in `localStorage` under `mc-notification-sound`
-(`{ enabled, volume, perCategory, customTones? }`). `presetForKind(kind, settings)` resolves
+(`{ enabled, volume, perCategory, customTones?, customFiles? }`). `presetForKind(kind, settings)` resolves
 the preset for a kind, in order:
 
 1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
@@ -307,11 +309,11 @@ reader goes through `loadSoundSettings`, so the load-time check is the one
 gate between a stored value and the speakers. Playback scales a custom sound by
 its loudest overlap of step gains, so it never drives the output past full
 scale. The form edits one row per tone (Pitch, Start, Length, Volume), starts
-from a two-note example, and can play the draft ("Test") before it is saved;
+from a two-note example, and can play the draft ("Play") before it is saved;
 the draft plays under a throwaway id and is never stored. Bound failures show
 as plain hints, not error banners, each under the field it is about (a name
 problem under Name, a tone bound under its row); the offending inputs get
-`aria-invalid`, and "Add sound" stays off until the user edits. A save that
+`aria-invalid`, and "Save sound" stays off until the user edits. A save that
 fails (add, delete, undo, or a sound, volume or category setting) shows through
 `ErrorNotice` with a next step (free up this site's browser storage, then try
 again), without the agent hand-off because the form holds an unsaved draft.
@@ -324,6 +326,75 @@ withdraws the Undo, and an Undo refused because the name was reused elsewhere
 is withdrawn after its hint, so no notice says a listed sound was deleted.
 Pickers label a custom sound
 "<name> (yours)". Crew avatar sounds still offer only the built-ins.
+
+#### Sound files
+
+A user can also add a sound from an audio file (the "Use an audio file" card in the
+same pane). The bytes stay in the browser: `hooks/customSoundFiles.ts` keeps
+each file in IndexedDB (database `kirocrew-notification-sounds`, store `files`)
+and playback reads it into a `blob:` URL that is revoked once the `<audio>`
+element is released, or at the latest a few seconds past the 5 s limit, so a
+platform pause that fires neither `ended` nor `error` cannot pin it. Nothing is
+uploaded to or stored by the gateway. The settings blob holds only the record
+that makes the sound pickable, under `customFiles`
+(`{ [name]: { bytes, seconds, key } }`), and a category selects it as
+`file:<name>`.
+
+Bytes are stored under a key made for each write (`newSoundFileKey`: its
+creation time, then a random id), never under the sound's name, and the record
+carries that key; a record without a well-formed key is dropped on load. Two
+adds of the same name, from two tabs or a retry, therefore write two entries,
+and each one's clean-up can only delete its own bytes.
+
+`readAudioFile` checks a picked file before it can be saved, against
+`CUSTOM_FILE_LIMITS`: at most 256 KB (checked first, so an oversized file is
+never read), then a decode by an
+`OfflineAudioContext` (which opens no output device) that proves the file plays
+and measures it exactly, at most 5 s. `validateCustomFile` holds the
+record to the same limits on add, on Undo and on every load, so a hand-edited
+or restored record past them is dropped like a tone sound. Tone sounds and
+sound files share one name space (case-insensitive) and one limit of 20,
+because both validators check against `allCustomSounds`.
+
+Adding writes the bytes first and the record second, re-checking the record
+against the settings as they are after the write: if another tab took the name
+or the last slot meanwhile, this add deletes its own bytes and saves nothing.
+Deleting a file forgets its record, with the same category clean-up and Undo as
+a tone sound, and leaves its bytes in place for that Undo. Opening the pane
+brings the two back in line (`pruneSoundFiles`): bytes no record points at are
+deleted, reading the records again before each delete, and a record whose
+bytes are not stored (settings restored from `ui-prefs.json` into another
+browser) is dropped with its categories at that opening. Until then a
+notification for a category set to it plays what that category would play
+with its file choices unset (`missingFileFallback`), so restored settings never
+silence a category. Bytes and records
+younger than `ORPHAN_GRACE_MS` (10 minutes, read from the key) are exempt from
+both, because an add in another tab writes its bytes before its record; a key
+dated further than that in the future (a clock that ran ahead, a hand-edited
+record) is not exempt, so it cannot shield a record forever. Collecting can
+still remove the bytes another tab is holding for an Undo; that Undo first
+checks the bytes are there, and when they are not it restores nothing and says
+the file is gone. Two tabs can still race inside that check (one tab's Undo
+passes it just before the other's collection runs); the record left without
+bytes is then dropped at the next opening of the pane. Undo is off while it
+runs, so a double click restores once. When IndexedDB cannot be read at all
+nothing is concluded and every record is kept; a file sound that cannot be
+read plays silence, and a connection the browser closes is reopened on the
+next call.
+
+The pane is three titled cards, each a named region. "Your sounds" lists every
+saved sound with a small "File" or "Tones" tag and its Play and Delete
+buttons. "Use an audio file" comes next, as the quicker way, then "Build from
+tones" (the tone form). Both forms use the same words on purpose (Name, Play,
+Save sound): the card title says which way the user is making a sound. In the
+file card, Save sound stays off until a picked file has passed its checks; a
+refused file's reason is shown under the picker in the danger colour, stays
+until another file is picked, and is the only thing that marks the picker
+`aria-invalid` (a limit or name problem is shown as a hint without blaming the
+file). A successful save, from either form, says "Saved <name>." with a link,
+"Choose where it plays in Per-category sounds", that opens that sub-page
+through `SettingsSubNav`'s `select`, because a saved sound is heard only once a
+category is set to it.
 
 ### Persistence and cross-surface sync
 
@@ -357,8 +428,9 @@ instance forward when the banner is clicked, posts only when its own permission
 is `granted`, and never prompts. The pane keeps its own mute, away and `silent`
 rules, so only a note it would have shown is relayed. It watches the count of unacked,
 unsilenced notes in the Redux store and, when the count grows, posts one toast
-carrying the newest note's title and flattened body, tagged with its
-`approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
+carrying the newest note's title and flattened body, tagged with the
+gateway-stamped `tag` (else its `approval_id` / `job_id` / `task_id`, or
+`kirocrew-notif`) so a burst about
 one subject replaces rather than stacks. An `approval` frame reaches the OS
 through the feed entry the socket's approval registry
 (`website/src/hooks/websocket/approvals.ts`) dispatches for it; the socket layer
@@ -385,6 +457,51 @@ surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
 
 An interactive chat's tool prompt (the chat runner's `permission` row, which has no feed note) is toasted by the socket's transcript owner `website/src/hooks/websocket/chatStream.ts` on the row's live arrival, behind the same gate as its chime (`shouldChimeOnPermissionRow`: not `resolved`, not a reconnect replay). It is on by default, posts only with the OS permission granted and while `isWindowAway()`, is `silent`, reads like the chat-complete toast (session title as the title, `Waiting for your approval: <tool>` as the body), and carries a `kirocrew-approval:<slot>:<request_id>` tag, so one pending prompt is one banner however many windows receive the row. Neither mute suppresses it, the session's own per-row mute or its creator's: a prompt is the session waiting on the user.
+
+## Web Push (closed app)
+
+Web Push is a second sink on the bus. `NotificationCoordinator.deliver` stamps
+`note["tag"] = native_notification_tag(note)` (the approval, job or task id,
+else the note timestamp, hashed when its JSON-serialized form is over 128
+bytes), runs local delivery, then calls the `web_push_fanout` hook
+(`DashboardState._fan_out_web_push`) for every note that is not silenced or
+passive. The fan-out schedules `_send_web_push_all` on the running loop; it is
+best effort and logs any failure, so a failed push never affects the note that
+already landed.
+
+- **Payload.** `_web_push_payload` builds one declarative payload
+  (`web_push: 8030` plus `notification`) that iOS and Safari 18.4+ render with no
+  service worker and that `sw.js`'s `push` handler reads on Chromium and
+  Firefox. Every string field has a budget in serialized bytes so the encrypted
+  message stays under 4096 bytes; a deep link over budget becomes `/`.
+- **One banner.** The tab toast (`useNativeNotification`) and the push banner use
+  the stamped `tag`, so a hidden tab plus a push shows one banner, and both carry
+  the note's `url` in `data.url` for `notificationclick`.
+- **Service worker.** The `push` handler skips the banner only when a visible
+  dashboard window answers its probe (`kc-push-probe` over a `MessageChannel`,
+  answered by `website/src/lib/swConnectedProbe.ts` from `dashboard.connected`)
+  with `connected: true`, since only a connected tab receives the note over the
+  WebSocket. No answer within 500 ms, `false`, or no visible dashboard shows the
+  banner, so a visible tab whose socket was refused never swallows a push.
+  `notificationclick` focuses or opens only dashboard windows. A standalone app window (`/app-windows/...`), a popout (`/popout/...`)
+  and an embed (`/embed/...`) count as neither: none renders the notification
+  banner or hosts the dashboard's routes, so none is probed or focused. Pinned by
+  `website/src/test/serviceWorkerNotificationClick.test.ts`.
+- **Sender.** `notifications/web_push.py` signs VAPID ES256 and encrypts RFC 8291
+  `aes128gcm` with `cryptography`. Its session resolves through
+  `PublicAddressResolver`, which drops every address
+  `link_unfurl.address_is_not_public` rejects. A 404 or 410 removes the
+  subscription.
+- **Stores.** The subscriptions (`push_store.py`) and the VAPID keypair
+  (`vapid_keys.py`) live in the `web-push` directory of the data home, which is
+  pre-created and masked in every sandbox and fenced from agents
+  (`sandbox_leaves.py`, `sandbox_precreate.py`, `security/paths_lists.py`).
+- **Routes.** Owner only: `GET /api/notifications/push/vapid-public-key`,
+  `POST /api/notifications/push/subscribe` (HTTPS endpoint, vetted by
+  `link_unfurl.vet_unfurl_url`) and `POST /api/notifications/push/unsubscribe`.
+- **Client.** `usePushSubscription` and `NotificationsPushSection.tsx` drive the
+  Settings toggle. `test/test_web_push.py`, `test/test_notification_push_routes.py`
+  and `website/src/test/notificationSharedTag.test.ts` cover the contract.
 
 ## Bell sheet dismissal (client)
 
@@ -490,6 +607,30 @@ vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
 inbox" line that goes to `/notifications` (through the navigation leave guard) —
 the same place the popover's "Open inbox" goes, so "inbox" names one place. On the mobile breakpoint only the newest card renders,
 full width, with its close visible at rest (no hover on touch).
+
+On the mobile breakpoint the card also goes with a sideways or upward swipe
+(`components/notifications/SwipeToDismiss.tsx`, wrapped around the card; inert on
+desktop). The gesture is touch-only and calls the same `removeNotes` the close
+control calls, so a swiped note waits unread in the bell exactly as a closed one
+does, and the close stays visible for keyboard and screen-reader users. A touch
+locks the sideways axis once it has travelled `SWIPE_DISMISS_SLOP` (10 px)
+sideways, or the upward axis once it has travelled that far up, whichever comes
+first; a touch that first drifts past `SWIPE_DISMISS_SCROLL_SLOP` (8 px) downward
+is declined for good. The wrapper is `touch-action: none`, because under `pan-y`
+the browser claims an upward drag as a scroll and cancels it (WebKit has no
+`pan-up`); this covers the card's own box only, so a finger that starts anywhere
+else still scrolls the page, and a `pointercancel` snaps the card back. The card
+follows the finger 1:1 sideways in either direction, and upward but never below
+its rest position; a release past `SWIPE_DISMISS_DISTANCE` (80 px) on the locked
+axis dismisses, a shorter one snaps back
+(`transition-transform`, none under `prefers-reduced-motion`), and the click a
+release fires is swallowed for `SWIPE_CLICK_SWALLOW_MS` (350 ms, the drawer's
+own ceiling) so a snapped-back swipe does not also open the note; a cancel arms
+no swallow, and past the window a keyboard activation goes through, since a
+touch that moved past the tap slop may fire no click at all.
+`NotificationBanner.test.tsx` ("swipe to dismiss") pins the thresholds on both
+axes, the snap-back, the axis lock, the downward decline, the cancel, the click
+swallow, the mouse and desktop no-ops and the reduced-motion class.
 
 ### Motion
 

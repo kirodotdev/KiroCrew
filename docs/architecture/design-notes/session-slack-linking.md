@@ -133,7 +133,7 @@ need a fresh @mention.
 
 In the dashboard turn, gated on `not is_slash and not _is_synthetic` (`_turn_open` and
 `_turn_dispatch_gates` run steps 1-2, `_on_tool_call` step 3, `_turn_stop_hook` step 4 and
-`_run_chat`'s `finally` step 5):
+`_turn_release_session` (`chat_turn/session_reset.py`) step 5, from `_run_chat`'s `finally`):
 
 1. Read `get_slack_link(session_key)`. A dashboard session may hold its link on
    the bare key while the turn runs under the `dashboard:`-prefixed one, so the

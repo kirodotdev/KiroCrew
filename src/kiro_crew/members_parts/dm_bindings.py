@@ -1,4 +1,4 @@
-"""The crew-to-thread binding of a member's DM thread, kept under ``trust/``.
+"""The crew-to-thread binding of a member's DM thread, kept under ``member-records/``.
 
 Its containment-checked path, the read and the atomic write, the slug a DM slot key
 names, the resolution of a slot without letting a newer generation adopt its history,
@@ -16,9 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
-from kiro_crew.config.paths import data_home
 from kiro_crew.members_parts.member_sessions import is_member_session_key, member_slot_key
 from kiro_crew.members_parts.member_space import (
     DM_BINDINGS_DIR_NAME,
@@ -38,17 +37,18 @@ logger = logging.getLogger("kiro_crew.members")
 def dm_binding_path(slug: str) -> Path:
     """Absolute path to one member's DM-thread binding, containment-checked.
 
-    Lives under the keystone-gated ``trust/`` subtree (see the note on
-    ``DM_BINDINGS_DIR_NAME``): agent file tools cannot reach it, the gateway
-    opens it directly. One flat ``<slug>.json`` per member — the slug is
-    already validated to a safe charset, so the filename cannot traverse.
-    Does NOT create the directory; :func:`write_dm_binding` does on demand.
+    Lives under the gateway-only ``member-records/`` leaf (see the note on
+    ``DM_BINDINGS_DIR_NAME``): the OS sandbox masks it and agent file tools
+    refuse it; the gateway opens it directly. One flat ``<slug>.json`` per
+    member — the slug is already validated to a safe charset, so the filename
+    cannot traverse. Does NOT create the directory; :func:`write_dm_binding`
+    does on demand.
     """
     validate_slug(slug)
-    root = (data_home() / "trust" / DM_BINDINGS_DIR_NAME).resolve()
+    root = member_records.records_dir(DM_BINDINGS_DIR_NAME).resolve()
     target = (root / f"{slug}.json").resolve()
     # Defence in depth behind validate_slug, mirroring member_dir: a symlinked
-    # component must not land the binding outside its trust-rooted directory.
+    # component must not land the binding outside its records directory.
     if target.parent != root and root not in target.parents:
         raise MemberSlugError(f"member slug {slug!r} escapes {root}")
     return target
@@ -169,9 +169,9 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
     if memory_store:
         binding["memory_store"] = memory_store
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The trust subtree is owner-only everywhere else (sel_trust_root.py creates it 0o700);
-    # a parents=True mkdir would otherwise leave a default-mode directory chain.
-    # Best-effort: the sensitive-path floor is the real fence, the mode is
+    # The records leaf is owner-only (the sandbox precreates it 0o700); a
+    # parents=True mkdir would otherwise leave a default-mode directory chain.
+    # Best-effort: the sandbox mask and the sensitive-path floor are the real fences, the mode is
     # defence in depth, and a chmod failure must not cost the thread its binding.
     for _dir in (path.parent, path.parent.parent):
         try:

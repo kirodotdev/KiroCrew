@@ -26,9 +26,7 @@ import urllib.request
 from kiro_crew.app_lifecycle_client import _socket_unavailable
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
-from kiro_crew.instances import run_marker
 from kiro_crew.loopback_http import unix_socket_urlopen
-from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -75,24 +73,42 @@ def _gateway_peer_verifier(port: int):
 
     The socket file sits in a directory its owner can rewrite, so a same-UID
     process could rebind it and receive the local secret and the credential. The
-    kernel names the listener's pid on the connected socket; it must equal the
-    pid the gateway recorded for *port*, and that pid must still have the start
-    identity recorded beside it, or nothing is sent.
+    check is the recorded-identity check the unix arm of
+    ``_owner_verified_secret_urlopen`` also applies
+    (``cli_server_peer._connected_unix_peer_is_recorded_gateway``): the kernel
+    names the listener's pid on the connected socket, and it must equal the pid
+    the gateway recorded for *port*, with the start identity recorded beside it,
+    or nothing is sent. A record that is missing, or whose start token does not
+    match the live pid, refuses before connecting, so the operator hears why
+    rather than a generic socket refusal.
     """
-    record = run_marker.read_pid_record_path(run_marker.pid_path(port))
-    if record is None or not record[1]:
+    from kiro_crew.cli_server_peer import (
+        _audit_peer_allowed,
+        _audit_peer_denied,
+        _connected_unix_peer_is_recorded_gateway,
+        _recorded_gateway_pid,
+    )
+
+    if _recorded_gateway_pid(port) is None:
         raise ForgetRefused(
-            "the running gateway's pid record could not be read, so the process "
-            "answering its socket cannot be verified. Nothing was forgotten."
+            "the running gateway's pid record could not be read or does not match "
+            "the running gateway, so the process answering its socket cannot be "
+            "verified. If this is your own gateway, restart it to re-publish its "
+            "identity record. Nothing was forgotten."
         )
 
     def _verify(sock: socket.socket) -> None:
-        pid, start = record
-        if get_peer_pid(sock) != pid or run_marker.pid_start_token(pid) != start:
+        # Both arms of this permission decision are audited, in the same SEL
+        # shape the CLI's other connection-bound proofs emit.
+        if not _connected_unix_peer_is_recorded_gateway(sock, port):
+            _audit_peer_denied(
+                "memory_forget", port, "connected socket peer is not this install's gateway"
+            )
             raise ForgetRefused(
                 "the dashboard socket is not answered by the recorded gateway; "
                 "nothing was forgotten."
             )
+        _audit_peer_allowed("memory_forget", port)
 
     return _verify
 

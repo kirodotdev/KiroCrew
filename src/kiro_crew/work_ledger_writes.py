@@ -13,12 +13,14 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
+from kiro_crew import work_preview
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.work_ledger_records import (
     BLOCKED_REASONS,
     CODE_ALREADY_BOUND,
     CODE_DEPTH_EXCEEDED,
+    CODE_DUPLICATE_ITEM,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
@@ -31,7 +33,7 @@ from kiro_crew.work_ledger_records import (
     ITEM_STATES,
     LEGACY_GOAL_BASE,
     MAX_DECISION_CHARS,
-    MAX_DEPTH,
+    MAX_EVENT_TEXT_CHARS,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
     MAX_GOAL_ITEM_CAP,
@@ -41,7 +43,6 @@ from kiro_crew.work_ledger_records import (
     SCHEMA_VERSION,
     TERMINAL_ITEM_STATES,
     VERDICTS,
-    WORKER_STATUSES,
     ConductorRecord,
     WorkItem,
     WorkLedgerError,
@@ -57,6 +58,7 @@ from kiro_crew.work_ledger_rules import (
     _require_count,
     _require_pr,
     _require_text,
+    depth_cap_hint,
     is_acceptance_concrete,
     may_conduct,
 )
@@ -84,7 +86,7 @@ from kiro_crew.work_ledger_store import (
     read_conductor,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES
+from kiro_crew.work_vocab import WORK_REASON_STATUSES, worker_statuses
 
 # --------------------------------------------------------------------------- #
 # Bindings. One file per worker, written only by a conductor's ``bind`` action, and
@@ -218,7 +220,7 @@ def ensure_conductor(
     checked_depth = _require_count(depth, "depth")
     if not may_conduct(checked_depth):
         raise WorkLedgerError(
-            f"depth {checked_depth} may not conduct; the cap is {MAX_DEPTH} levels",
+            f"depth {checked_depth} may not conduct; {depth_cap_hint()}",
             code=CODE_DEPTH_EXCEEDED,
             field="depth",
         )
@@ -496,61 +498,15 @@ def _create_item(
     checked_round = None if round_number is None else _require_count(round_number, "round")
     if not may_conduct(record.depth):
         raise WorkLedgerError(
-            f"conductor is at depth {record.depth} and the cap is {MAX_DEPTH}; it may "
+            f"conductor is at depth {record.depth} and {depth_cap_hint()}; it may "
             "not dispatch further work",
             code=CODE_DEPTH_EXCEEDED,
             field="depth",
         )
     with _existing_conductor_lock(slot_key):
-        # The header is re-read INSIDE the lock and is REQUIRED to be present and
-        # readable. The default round must come from the live header, not the
-        # pre-lock snapshot, so a concurrent ``goal`` round bump is seen. A header
-        # that is GONE means the ledger was purged while this call waited on the
-        # lock: minting an item now would write a record into a store with no
-        # header -- a ledger destroyed down to the records that made it one. And
-        # the header holds the create count the goal's spend is measured against,
-        # which the pre-lock snapshot may hold low, so a header that is present
-        # but torn refuses too; see ``_header_under_lock``.
-        live = _header_under_lock(slot_key, "no item can be created in it")
+        live = _admit_create_locked(slot_key)
         if checked_round is None:
             checked_round = live.round
-        if live.created_total == 0:
-            # Backfill, once, for a header written before the counter existed:
-            # every record the board holds is a create it admitted, so the count
-            # starts there rather than at zero. Persisted by the header write
-            # below; a refusal here leaves it unwritten and the next create seeds
-            # it again, to the same value.
-            live.created_total = len(_stored_item_ids(slot_key))
-        # A header from before the per-goal count: its goal counts from here.
-        _settle_goal_base(live)
-        # Only OPEN items count toward either fan-out cap: a closed item is history,
-        # not fan-out. It stays on the board and ``list_work_items`` still returns
-        # it; it does not block a create. Read off the listing, since only a
-        # readable record has a state.
-        open_items = [
-            item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
-        ]
-        if len(open_items) >= MAX_ITEMS_PER_CONDUCTOR:
-            raise WorkLedgerError(
-                f"conductor holds {len(open_items)} open items; the cap is "
-                f"{MAX_ITEMS_PER_CONDUCTOR}",
-                code=CODE_ITEM_CAP_EXCEEDED,
-                field="items",
-            )
-        # The goal's own fan-out bound: how much of this goal may run at once. A
-        # person decides past it. Only a board that recorded a goal has one: a
-        # queue board never writes ``goal``. The goal's item cap is NOT checked
-        # here -- what the goal has spent over its life is reported, not refused.
-        if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
-            raise WorkLedgerError(
-                f"this goal holds {len(open_items)} open items and its concurrency cap "
-                f"is {live.concurrency_cap}. Dispatch nothing new until one lands; to "
-                "run more at once, ask the user, and if they agree raise the cap with "
-                "work_ledger_record action=goal concurrency_cap=<new cap> "
-                f"(at most {MAX_GOAL_CONCURRENCY_CAP})",
-                code=CODE_GOAL_CONCURRENCY_CAP_REACHED,
-                field="concurrency_cap",
-            )
         item_id = mint_item_id()
         while (items_dir(slot_key) / f"{item_id}.json").exists():
             item_id = mint_item_id()
@@ -576,6 +532,130 @@ def _create_item(
             _restore_text(header_path, header_before)
             raise
         return {"conductor": live, "item": item, "event": event}
+
+
+def _admit_create_locked(slot_key: str) -> ConductorRecord:
+    """The live header for one more create, or the refusal. HOLD THE CONDUCTOR LOCK.
+
+    Every bound a create is held to, shared by :func:`_create_item` and
+    :func:`create_bound_item` so both count and refuse alike. Writes nothing; the
+    caller bumps ``created_total`` in the same hold.
+    """
+    # The header is re-read INSIDE the lock and is REQUIRED to be present and
+    # readable. The default round must come from the live header, not the
+    # pre-lock snapshot, so a concurrent ``goal`` round bump is seen. A header
+    # that is GONE means the ledger was purged while this call waited on the
+    # lock: minting an item now would write a record into a store with no
+    # header -- a ledger destroyed down to the records that made it one. And
+    # the header holds the create count the goal's spend is measured against,
+    # which the pre-lock snapshot may hold low, so a header that is present
+    # but torn refuses too; see ``_header_under_lock``.
+    live = _header_under_lock(slot_key, "no item can be created in it")
+    if live.created_total == 0:
+        # Backfill, once, for a header written before the counter existed:
+        # every record the board holds is a create it admitted, so the count
+        # starts there rather than at zero. Persisted by the header write
+        # below; a refusal here leaves it unwritten and the next create seeds
+        # it again, to the same value.
+        live.created_total = len(_stored_item_ids(slot_key))
+    # A header from before the per-goal count: its goal counts from here.
+    _settle_goal_base(live)
+    # Only OPEN items count toward either fan-out cap: a closed item is history,
+    # not fan-out. It stays on the board and ``list_work_items`` still returns
+    # it; it does not block a create. Read off the listing, since only a
+    # readable record has a state.
+    open_items = [
+        item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
+    ]
+    if len(open_items) >= MAX_ITEMS_PER_CONDUCTOR:
+        raise WorkLedgerError(
+            f"conductor holds {len(open_items)} open items; the cap is "
+            f"{MAX_ITEMS_PER_CONDUCTOR}",
+            code=CODE_ITEM_CAP_EXCEEDED,
+            field="items",
+        )
+    # The goal's own fan-out bound: how much of this goal may run at once. A
+    # person decides past it. Only a board that recorded a goal has one: a
+    # queue board never writes ``goal``. The goal's item cap is NOT checked
+    # here -- what the goal has spent over its life is reported, not refused.
+    if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
+        raise WorkLedgerError(
+            f"this goal holds {len(open_items)} open items and its concurrency cap "
+            f"is {live.concurrency_cap}. Dispatch nothing new until one lands; to "
+            "run more at once, ask the user, and if they agree raise the cap with "
+            "work_ledger_record action=goal concurrency_cap=<new cap> "
+            f"(at most {MAX_GOAL_CONCURRENCY_CAP})",
+            code=CODE_GOAL_CONCURRENCY_CAP_REACHED,
+            field="concurrency_cap",
+        )
+    return live
+
+
+def create_bound_item(
+    slot_key: str,
+    item_id: str,
+    *,
+    title: Any,
+    acceptance: Any,
+    decision: Any,
+    worker_session_key: str,
+) -> dict[str, Any]:
+    """Create an item under a caller-chosen *item_id*, already bound to a worker.
+
+    The create a peer makes for a hub's item (remote dispatch): the id is the hub's,
+    so it is kept rather than minted. Otherwise it is :func:`_create_item` followed
+    by ``bind``, in one hold: the same open-item caps (:func:`_admit_create_locked`),
+    the same ``created_total`` bump, and the lock order the facade states
+    (conductor, item, binding). An *item_id* the board already holds is refused
+    :data:`CODE_DUPLICATE_ITEM`. Every refusal leaves every record byte-identical
+    (an ``already_bound`` one may leave the new item's empty lock file, and no
+    reader counts lock files), and a failure after the first write puts the header and binding
+    back.
+    """
+    checked_id = _require_item_id(item_id)
+    checked_title = _require_text(title, MAX_TITLE_CHARS, "title")
+    checked_acceptance = _require_acceptance(acceptance)
+    checked_decision = _require_text(decision, MAX_DECISION_CHARS, "decision", required=False)
+    checked_worker = _require_text(worker_session_key, 512, "worker_session_key")
+    with _existing_conductor_lock(slot_key):
+        live = _admit_create_locked(slot_key)
+        if (items_dir(slot_key) / f"{checked_id}.json").exists():
+            raise WorkLedgerError(
+                f"item {checked_id!r} already exists on this board",
+                code=CODE_DUPLICATE_ITEM,
+                field="item_id",
+            )
+        now = _now_iso()
+        item = WorkItem(
+            item_id=checked_id,
+            title=checked_title,
+            acceptance=checked_acceptance,
+            state="open",
+            round=live.round,
+            decision=checked_decision,
+            decided_at=now if checked_decision else None,
+            worker_session_key=checked_worker,
+            created_at=now,
+        )
+        _require_record_fits(item.to_dict())
+        header_path = conductor_dir(slot_key) / _CONDUCTOR_FILE
+        with item_lock(slot_key, checked_id), binding_lock(checked_worker):
+            prior_binding = _read_binding_text(checked_worker)
+            _refuse_if_worker_holds_open_item(checked_worker)
+            header_before = _read_text_or_none(header_path)
+            live.created_total += 1
+            _write_record(header_path, live.to_dict())
+            try:
+                # Binding before item, as ``bind`` orders them: a failure between
+                # the two leaves a stale binding, never an item naming a worker
+                # with no binding behind it.
+                _write_binding(checked_worker, slot_key, checked_id)
+                event = _commit_item_locked(slot_key, item, "create", checked_title)
+            except BaseException:
+                _restore_binding_text(checked_worker, prior_binding)
+                _restore_text(header_path, header_before)
+                raise
+    return {"conductor": live, "item": item, "event": event}
 
 
 def _write_item_action(
@@ -736,7 +816,12 @@ def apply_worker_report(
     :func:`_coalesce_progress` — but the item's own fields always hold the newest
     report.
     """
-    checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
+    # The statuses this report may be WRITTEN with: ``reply`` only under the
+    # remote-dispatch preview, so with it off the refusal is exactly the old one.
+    # Checked before the item is read, so a ``reply`` on a closed item is refused
+    # ``item_closed`` with the preview on and ``invalid_status`` with it off.
+    admitted = frozenset(worker_statuses(work_preview.remote_dispatch()))
+    checked_status = _require_choice(status, admitted, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary")
     checked_artifacts = _require_artifacts(artifacts)
     checked_pr = _require_pr(pr)
@@ -769,6 +854,33 @@ def apply_worker_report(
         event = _commit_item_locked(
             slot_key, item, "report", checked_summary, status=checked_status
         )
+        return {"item": item, "event": event}
+
+
+# --------------------------------------------------------------------------- #
+# Person writes
+# --------------------------------------------------------------------------- #
+
+
+def apply_person_steer(slot_key: str, item_id: str, text: Any) -> dict[str, Any] | None:
+    """Record a person's steer into a worker as one ``steer`` event on its item.
+
+    The event is the whole write: no item field moves, so acceptance, verdict and
+    state stay the conductor's and the worker's. *text* is already redacted by the
+    caller and is cut at the event's length cap here. ``None`` for a closed item:
+    a steer into a worker whose item ended records nothing.
+    """
+    checked_text = text[:MAX_EVENT_TEXT_CHARS] if isinstance(text, str) else ""
+    checked_id = _require_item_id(item_id)
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            return None
+        event = _commit_item_locked(slot_key, item, "steer", checked_text)
         return {"item": item, "event": event}
 
 

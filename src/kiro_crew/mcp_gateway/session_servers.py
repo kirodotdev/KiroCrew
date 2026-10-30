@@ -56,6 +56,7 @@ from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
+from kiro_crew.mcp_gateway.rewriter_spec import is_unpoolable
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +447,11 @@ def pooled_session_servers(
         ):
             # Not a broker stub: leave it to the agent spec entirely.
             continue
+        if is_unpoolable(str(name)):
+            # Never pooled (a credential vendor), even if an overlay written
+            # before it was listed still holds its stub: the session resolves it
+            # from the agent spec, inside its own sandbox.
+            continue
         if exempt is not None and str(name) not in exempt:
             # Registry ceiling (:func:`_registry_ceiling_exemptions`): withheld,
             # so the session resolves this server from the agent spec instead --
@@ -499,5 +505,7 @@ def injection_server_names(
         for name, entry in servers.items()
         if isinstance(entry, dict)
         and (entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY))
-        and (exempt is None or str(name) in exempt)
+        # Same skips as pooled_session_servers: naming a server that is not
+        # injected would withhold the spec's only copy of it.
+        and not is_unpoolable(str(name)) and (exempt is None or str(name) in exempt)
     )

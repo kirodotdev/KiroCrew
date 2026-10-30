@@ -28,7 +28,15 @@ jobs:
   # release on the insider channel; bare semver tags are stable.
   version:
     name: Derive Version + Channel
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Release capacity does not depend on who tagged. An actor-gated fleet
+    # route falls back to the shared standard pool for any tagger outside
+    # CODEBUILD_ACTOR_IDS, and the tagger rotates with the on-call; every other
+    # job here `needs` this one, so that queue delays the whole release.
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     outputs:
       version: ${{ steps.channel.outputs.version }}
@@ -190,7 +198,11 @@ jobs:
     name: Resolve Tested Candidate
     if: needs.version.outputs.promote_mode == 'true'
     needs: version
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     permissions:
       actions: read
       contents: read
@@ -259,7 +271,11 @@ jobs:
   stable-gate:
     name: Stable publication gate
     needs: [version]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     # Replaces the workflow default: `actions: read` is what lets the promotion
     # check ask whether a prerelease tag's release run actually SUCCEEDED.
@@ -960,7 +976,11 @@ jobs:
           needs.sign-and-notarize.result == 'success' &&
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # 60, not 20: the assets now upload one at a time (see `preserve_order` on
     # the Create GitHub Release step), several GB in all.
     timeout-minutes: 60
@@ -971,7 +991,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 
@@ -1361,6 +1381,41 @@ jobs:
           fi
 
 
+      # The generated notes compare this tag against a previous one. Left to
+      # choose, GitHub takes the newest release tag that is an ancestor of this
+      # one, and because every release is tagged on its own release branch that
+      # is a tag from the project's first weeks: v0.9.0 and v0.10.0 each listed
+      # thousands of old pull requests. The script picks the base by lineage
+      # instead (previous stable for stable, previous prerelease of the same
+      # line for a prerelease); see its docstring. The checkout is shallow and
+      # carries no tags, so the names come from the API.
+      - name: Choose the previous tag for the generated notes
+        id: notes_base
+        if: steps.page.outputs.action == 'create'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Only the notes' base depends on this, so a failed listing or a failed
+          # choice falls back to GitHub's choice rather than holding back the
+          # release page.
+          if ! tags=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref'); then
+            echo "::warning::could not list tags; GitHub chooses the base for the generated notes of $TAG."
+            tags=""
+          fi
+          if ! previous=$(printf '%s\n' "$tags" | python3 scripts/release_previous_tag.py "$TAG"); then
+            echo "::warning::could not choose a previous tag; GitHub chooses the base for the generated notes of $TAG."
+            previous=""
+          fi
+          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
+          if [ -n "$previous" ]; then
+            echo "Generated notes for $TAG compare against $previous."
+          else
+            echo "::notice::no previous release tag fits $TAG; GitHub chooses the base for its generated notes."
+          fi
+
       # A STABLE page is created as a DRAFT, and record-stable-promotion is what
       # makes it visible. This action creates the release and uploads every asset
       # in one call, so publishing on create means the page is public from its
@@ -1385,6 +1440,7 @@ jobs:
         with:
           body_path: release-notes.md
           generate_release_notes: true
+          previous_tag: ${{ steps.notes_base.outputs.previous_tag }}
           draft: ${{ steps.page.outputs.draft }}
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
@@ -1420,7 +1476,11 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
     needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, sign-and-notarize-arm64, sign-and-notarize-x64, build-windows]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     permissions:
       contents: read
     steps:
@@ -1429,7 +1489,7 @@ jobs:
           persist-credentials: false
 
       - name: Download this run's immutable artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 

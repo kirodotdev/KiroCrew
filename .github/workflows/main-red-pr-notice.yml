@@ -1,0 +1,212 @@
+name: Main Red PR Notice
+
+# `main-red-watch.yml` files one `Main is red:` issue naming the failing tests of a
+# red push run on main. A pull request opened meanwhile fails the same test and
+# its author loops on a red they did not cause (#23689: one test, fifteen pull
+# requests). This workflow tells that author, on the pull request, which of their
+# failing tests are red on main.
+#
+# WHAT IT DOES: when a `CI` run of a same-repository pull request that targets
+# main ends `failure`, it looks for the open `Main is red:` issue. With none it
+# stops before it reads a log. Otherwise it reads the logs of the pull request's
+# failed jobs, takes the pytest node ids, and when at least one is also in the
+# issue's set it writes ONE comment, found by a hidden marker and edited in place
+# on every later failed run: main is red on N tests (issue, fix line), these of
+# yours fail the same way, these are not shown to be on main and are yours.
+#
+# "SAME AS MAIN" needs all four: the node id is in the issue's set; the message
+# start (80 characters) equals main's; the pull request does not change that test
+# file; the pull request's base contains the main commit that supplied the issue's
+# current failing set (its last red run). A list of changed files
+# that cannot be read or that GitHub cuts at 300 files makes every failure the
+# author's. A failing check that names no test is always the author's.
+# The comment never says the pull request is fine.
+#
+# COMMENT ONLY: it changes no check result and cannot fail a job (`continue-on-error`).
+# It adds no label, no assignee, no status and no mention. Deleting this one file
+# and `main_red_pr_notice.py` removes it.
+#
+# NEVER RUNS PR CODE: the script is read from a sparse checkout of main
+# (`workflow_run` checks out the default branch). Log text is data: it is written
+# to files by `gh`, cut to printable ASCII with backticks removed, and put in code
+# spans. The issue is trusted only as far as it can be: only an issue the Actions
+# token filed is read (anyone can file one titled `Main is red: ...`), only its
+# checked state record is used (the body is editable), and the fix line is rebuilt
+# from the issue timeline instead of copied, with every `@` removed. Event values
+# (sha, ids) are matched before they reach an API path or the comment. It is never a shell word or a `${{ }}` expression. A fork's run is
+# skipped by the gate.
+#
+# PERMISSIONS: the same three as `main-red-watch.yml`. `actions: read` for the run's
+# jobs and logs; `issues: write` to read the issue and to write the comment (a
+# pull request is an issue to the comments endpoint, which accepts `issues` or
+# `pull-requests` write); `contents: read` for the checkout and the compare read
+# that lists the pull request's changed files. No `pull-requests` scope.
+#
+# `test/test_main_red_pr_notice.py` pins the watched name, the gate, the permissions
+# and the untrusted-text rule, and runs the step with `gh` stubbed.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+# One notice per pull request at a time, never killed: two side by side is how a
+# marker lookup passes twice and posts two comments. A newer failed run queues
+# behind the running one and evicts an older queued one, which is the order wanted.
+# Runs the gate skips get a group of their own.
+concurrency:
+  group: >-
+    ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.pull_requests[0].number
+    && format('main-red-pr-notice-{0}', github.event.workflow_run.pull_requests[0].number)
+    || format('main-red-pr-notice-skip-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  notice:
+    name: Name the tests that are red on main in a failed pull request run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.pull_requests[0].base.ref == 'main'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Comment which failing tests are red on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+        run: |
+          set -euo pipefail
+          notice=.github/scripts/main_red_pr_notice.py
+          nodeids=.github/scripts/main_red_nodeids.py
+          work="$RUNNER_TEMP/main-red-pr"
+          mkdir -p "$work/logs"
+
+          is_sha() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{40}$'; }
+          # Event values reach API paths and the comment, so each is checked first.
+          case "$PR_NUMBER$RUN_ID" in ''|*[!0-9]*) echo "No usable pull request or run id; writing nothing."; exit 0 ;; esac
+          if ! is_sha "$HEAD_SHA"; then
+            echo "The run's head is not a commit sha; writing nothing."
+            exit 0
+          fi
+
+          # The open main-red issue, by label and then by title prefix and record.
+          # Anyone can file an issue with that title and a record, so `pick-issue`
+          # keeps only one the Actions token filed (the same rule, in the same
+          # function, as `main-red-watch.yml`); it needs `author` in the list.
+          existing=""
+          for label_args in "--label main-red" ""; do
+            # shellcheck disable=SC2086
+            gh issue list --repo "$REPO" --state open $label_args --limit 200 \
+              --json number,title,body,author > "$work/issues.json" \
+              || echo '[]' > "$work/issues.json"
+            existing="$(python3 "$nodeids" pick-issue "$work/issues.json" --body-out "$work/issue-body.md")"
+            if [ -n "$existing" ]; then
+              break
+            fi
+          done
+          if [ -z "$existing" ]; then
+            echo "No open main-red issue; writing nothing."
+            exit 0
+          fi
+
+          # Open pull requests that cross-reference the issue, for the fix line. The
+          # issue body's own copy of that line is editable and is not read.
+          timeline_args=()
+          if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
+            --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at}' \
+            > "$work/timeline.ndjson" 2>/dev/null; then
+            timeline_args=(--timeline "$work/timeline.ndjson")
+          else
+            echo "::notice::Could not read the timeline of #$existing; the fix line says unknown."
+          fi
+
+          # The failed jobs of this pull request run, newest cap 20 logs, as files.
+          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id' \
+            > "$work/failed-jobs.txt"
+          fetched=0
+          while read -r job_id; do
+            case "$job_id" in ''|*[!0-9]*) continue ;; esac
+            if [ "$fetched" -ge 20 ]; then
+              echo "::notice::More than 20 failed jobs; reading the first 20 logs."
+              break
+            fi
+            fetched=$((fetched + 1))
+            gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$work/logs/$job_id.log" 2>/dev/null \
+              || { echo "::notice::Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
+          done < "$work/failed-jobs.txt"
+          python3 "$nodeids" extract "$work/logs" > "$work/pr-failures.json"
+          if [ "$(jq 'length' "$work/pr-failures.json")" = "0" ]; then
+            echo "No failing pytest node id in $RUN_URL; writing nothing."
+            exit 0
+          fi
+
+          # Rule 4: the base contains the main commit that supplied the failing set the
+          # issue now holds (its last red run, not the first: a test that went red
+          # later in the streak is not on a base that lacks the commit that broke it).
+          # Unknown counts as no.
+          base_ok=0
+          red_run="$(python3 "$notice" last-run "$work/issue-body.md" || true)"
+          red_sha=""
+          if [ -n "$red_run" ]; then
+            red_sha="$(gh api "repos/$REPO/actions/runs/$red_run" --jq .head_sha 2>/dev/null || true)"
+          fi
+          if is_sha "$red_sha" && is_sha "$BASE_SHA"; then
+            relation="$(gh api "repos/$REPO/compare/$red_sha...$BASE_SHA" --jq .status 2>/dev/null || true)"
+            case "$relation" in ahead|identical) base_ok=1 ;; esac
+          fi
+
+          # Rule 3: the files this pull request changes. Unknown or cut short counts
+          # as "every failure is the author's".
+          changed_args=(--changed-unknown)
+          if is_sha "$BASE_SHA" && gh api "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA?per_page=100" --paginate \
+            --jq '.files[]? | .filename, (.previous_filename // empty)' > "$work/changed-raw.txt" 2>/dev/null; then
+            sort -u "$work/changed-raw.txt" > "$work/changed.txt"
+            if [ "$(wc -l < "$work/changed.txt")" -lt 300 ]; then
+              changed_args=(--changed-files "$work/changed.txt")
+            fi
+          fi
+
+          rc=0
+          python3 "$notice" notice --issue-body "$work/issue-body.md" --issue-number "$existing" \
+            --pr-failures "$work/pr-failures.json" --repo "$REPO" \
+            ${timeline_args[@]+"${timeline_args[@]}"} ${changed_args[@]+"${changed_args[@]}"} --base-ok "$base_ok" \
+            --sha "$HEAD_SHA" --run-url "$RUN_URL" --out "$work/comment.md" || rc=$?
+          if [ "$rc" = 11 ]; then
+            exit 0
+          fi
+          [ "$rc" = 0 ] || exit "$rc"
+
+          # One comment, found by its marker among the bot's own, edited in place.
+          comment_id="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- main-red-pr-notice -->"))) | .id' \
+            | sed -n 1p)"
+          case "$comment_id" in
+            ''|*[!0-9]*)
+              gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@"$work/comment.md" >/dev/null
+              echo "Commented on #$PR_NUMBER."
+              ;;
+            *)
+              gh api --method PATCH "repos/$REPO/issues/comments/$comment_id" -F body=@"$work/comment.md" >/dev/null
+              echo "Updated the comment on #$PR_NUMBER."
+              ;;
+          esac

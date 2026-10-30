@@ -150,14 +150,233 @@ def test_the_page_carries_the_default_palette_in_both_sets(harness: Any) -> None
 
 def test_the_frame_is_sandboxed_like_the_chat_widget_frame(harness: Any) -> None:
     source = WIDGET_FRAME.read_text(encoding="utf-8")
-    grants = set(re.findall(r'sandbox="([^"]*)"', source))
-    grants |= set(re.findall(r"setAttribute\('sandbox', '([^']*)'\)", source))
-    assert grants == {harness.FRAME_SANDBOX}
+    # The widget frame names its grant once, as AGENT_PAGE_SANDBOX, on the inline
+    # frame and on the popped-out one; a literal grant beside it would be a second
+    # policy the harness does not mirror.
+    assert not re.findall(r'sandbox="([^"]*)"', source)
+    assert not re.findall(r"setAttribute\('sandbox', '([^']*)'\)", source)
+    assert source.count("sandbox={AGENT_PAGE_SANDBOX}") == 1
+    assert source.count("setAttribute('sandbox', AGENT_PAGE_SANDBOX)") == 1
+    declared = re.findall(
+        r"export const AGENT_PAGE_SANDBOX = '([^']*)'", WIDGET_SRCDOC.read_text(encoding="utf-8")
+    )
+    assert declared == [harness.FRAME_SANDBOX]
     # Without it the frame has an opaque origin: no storage, no cookies, no page.
     assert "allow-same-origin" not in harness.FRAME_SANDBOX.split()
     page = harness.page("<p>x</p>")
     assert _config(page)["sandbox"] == harness.FRAME_SANDBOX
     assert "frame.setAttribute('sandbox', CONFIG.sandbox);" in page
+
+
+_LINK_SCENARIO = r"""
+const posted = [];
+const handlers = {};
+// A listener added while a click is dispatched (the shim's last word on a modified
+// click) runs after the page's, as it does on a real window.
+let late = [];
+let dispatching = false;
+const window = {
+  addEventListener: (type, fn) => { if (dispatching) late.push(fn); else handlers[type] = fn; },
+};
+const parent = { postMessage: (message) => { posted.push(message.url); } };
+const document = { baseURI: 'file:///tmp/preview.html' };
+function link(attrs) {
+  return {
+    nodeType: 1, localName: 'a', attrs,
+    hasAttribute(k) { return k in this.attrs; },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    hasAttributeNS(ns, k) { return ns === 'http://www.w3.org/1999/xlink' && ('xlink:' + k) in this.attrs; },
+    getAttributeNS(ns, k) { return this.hasAttributeNS(ns, k) ? this.attrs['xlink:' + k] : null; },
+    closest() { return null; },
+  };
+}
+function fire(type, a, extra = {}, page = null) {
+  const e = { defaultPrevented: false, composedPath: () => [a], ...extra };
+  e.preventDefault = function () { e.defaultPrevented = true; };
+  dispatching = true;
+  handlers[type](e);
+  dispatching = false;
+  if (page) page(e);
+  late.splice(0).forEach((fn) => fn(e));
+  return e.defaultPrevented;
+}
+__SHIM__
+const bare = link({ href: 'https://example.test/bare' });
+const seen = {
+  blank: fire('click', link({ href: 'https://example.test/blank', target: '_blank' })),
+  bare: fire('click', bare),
+  bareTarget: bare.attrs.target,
+  cancelled: fire('click', link({ href: 'https://example.test/panel', target: '_blank' }), {}, (e) => e.preventDefault()),
+  ctrl: fire('click', link({ href: 'https://example.test/ctrl' }), { ctrlKey: true }),
+  ctrlCancelled: fire('click', link({ href: 'https://example.test/ctrl-panel' }), { ctrlKey: true }, (e) => e.preventDefault()),
+  middle: fire('auxclick', link({ href: 'https://example.test/middle', target: '_self' }), { button: 1 }),
+  self: fire('click', link({ href: 'https://example.test/self', target: '_self' })),
+  mail: fire('click', link({ href: 'mailto:a@example.test', target: '_blank' })),
+  relative: fire('click', link({ href: '//example.test/rel', target: '_blank' })),
+  svg: fire('click', link({ 'xlink:href': 'https://example.test/svg', target: '_blank' })),
+};
+// window.open relays a web URL and returns null; any other scheme posts nothing.
+seen.openReturned = window.open('https://example.test/scripted');
+window.open('javascript:alert(1)');
+setTimeout(() => { console.log(JSON.stringify({ seen, posted })); }, 20);
+"""
+
+
+def test_a_widget_preview_hands_web_links_to_the_page(harness: Any) -> None:
+    """The frame's link relay, run in Node over stand-in links and events."""
+    node = shutil.which("node")
+    assert node is not None, "Node is needed on PATH to run the frame's link relay"
+    done = subprocess.run(
+        [node, "-"],
+        check=False,
+        input=_LINK_SCENARIO.replace("__SHIM__", harness.LINK_SHIM),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    # A plain click is left to the sandbox; a middle or modified one is cancelled now.
+    assert out["seen"] == {
+        "blank": False,
+        "bare": False,
+        "bareTarget": "_blank",
+        "cancelled": True,
+        "ctrl": True,
+        "ctrlCancelled": True,
+        "middle": True,
+        "self": False,
+        "mail": False,
+        "relative": False,
+        "svg": False,
+        "openReturned": None,
+    }
+    # Posted, except where the page cancelled the click: a plain click a task later, a
+    # middle or modified one from the shim's last listener, so the order differs.
+    assert sorted(out["posted"]) == [
+        "https://example.test/bare",
+        "https://example.test/blank",
+        "https://example.test/ctrl",
+        "https://example.test/middle",
+        "https://example.test/rel",
+        "https://example.test/scripted",
+        "https://example.test/svg",
+    ]
+
+
+_PAGE_OPEN_SCENARIO = r"""
+const listeners = {};
+const opened = [];
+function element(id) {
+  return {
+    id, style: {}, dataset: {}, children: [], removed: false, title: '', textContent: '',
+    setAttribute() {}, append(child) { this.children.push(child); child.parent = this; },
+    focus() { doc.activeElement = this; }, blur() { if (doc.activeElement === this) doc.activeElement = null; },
+    remove() { this.removed = true; }, contains(t) { return t === this; },
+    addEventListener(type, fn) { this['on' + type] = fn; },
+  };
+}
+const frame = element('lui-frame');
+frame.contentWindow = {};
+const nodes = { 'lui-bar': element('lui-bar'), 'lui-frame': frame, 'lui-errors': element('lui-errors') };
+const doc = {
+  activeElement: null, documentElement: { style: {} }, body: { style: {} },
+  getElementById: (id) => nodes[id], createElement: () => element('button'),
+};
+const nav = { userActivation: { isActive: true } };
+const win = { open: (url) => { opened.push(url); } };
+const on = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+const fire = (type, e = {}) => (listeners[type] || []).forEach((fn) => fn(e));
+let clock = 100000;
+performance.now = () => clock;
+new Function('CONFIG', 'document', 'navigator', 'location', 'addEventListener', 'window', SCRIPT)(
+  CONFIG, doc, nav, { search: '' }, on, win);
+const ask = (url) => fire('message', { source: frame.contentWindow, data: { type: 'lui-preview-open', url } });
+const offers = () => nodes['lui-bar'].children.filter((c) => !c.removed);
+const out = {};
+// Focus came in from the page, no page input for a while: opens at once.
+frame.focus(); fire('blur');
+ask('https://example.test/a');
+out.tied = { opened: opened.splice(0), offers: offers().length };
+// A click on the page's bar, then the frame takes focus back: the button instead.
+fire('focus'); fire('pointerdown', { target: nodes['lui-bar'] }); frame.focus();
+ask('https://example.test/b');
+const button = offers()[0];
+out.borrowed = { opened: opened.splice(0), offers: offers().length, label: button && button.textContent, title: button && button.title };
+// The person's own click on the button opens it.
+button.onclick();
+out.clicked = { opened: opened.splice(0), offers: offers().length };
+// Long after any page input, but focus reached the frame without coming in from
+// the page: still the button.
+clock += 6000;
+frame.focus();
+ask('https://example.test/c');
+out.unentered = { opened: opened.splice(0), offers: offers().length };
+offers().forEach((c) => c.remove());
+// Focus came in from the page, but a key on the page is still live: the button.
+fire('focus'); frame.focus(); fire('blur'); fire('keydown', { target: nodes['lui-bar'] });
+ask('https://example.test/d');
+out.recent = { opened: opened.splice(0), offers: offers().length };
+offers().forEach((c) => c.remove());
+// The dashboard bridge's URL rule: a user name or password, or another scheme, is refused.
+clock += 6000;
+fire('focus'); frame.focus(); fire('blur');
+ask('https://user:pass@example.test/e');
+ask('javascript:alert(1)');
+out.refused = { opened: opened.splice(0), offers: offers().length };
+console.log(JSON.stringify(out));
+"""
+
+
+def test_a_preview_opens_only_a_click_tied_to_its_frame_and_offers_a_button_otherwise(
+    harness: Any,
+) -> None:
+    """The page script's open path, run in Node over stand-ins for the page."""
+    node = shutil.which("node")
+    assert node is not None, "Node is needed on PATH to run the page script"
+    config = _config(harness.page("<p>x</p>"))
+    program = "\n".join(
+        (
+            f"const CONFIG = {json.dumps(config)};",
+            f"const SCRIPT = {json.dumps(harness._PAGE_SCRIPT)};",
+            _PAGE_OPEN_SCENARIO,
+        )
+    )
+    done = subprocess.run(
+        [node, "-"],
+        check=False,
+        input=program,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["tied"] == {"opened": ["https://example.test/a"], "offers": 0}
+    assert out["borrowed"] == {
+        "opened": [],
+        "offers": 1,
+        "label": "Open example.test",
+        "title": "https://example.test/b",
+    }
+    assert out["clicked"] == {"opened": ["https://example.test/b"], "offers": 0}
+    assert out["unentered"] == {"opened": [], "offers": 1}
+    assert out["recent"] == {"opened": [], "offers": 1}
+    assert out["refused"] == {"opened": [], "offers": 0}
+
+
+def test_the_page_opens_a_link_only_right_after_a_click_in_the_frame(harness: Any) -> None:
+    page = harness.page("<p>x</p>")
+    assert _config(page)["shims"]["link"] == harness.LINK_SHIM
+    assert "navigator.userActivation.isActive" in page
+    assert "document.activeElement === frame" in page
+    assert "window.open(url, '_blank', 'noopener,noreferrer')" in page
+    # The Dashboard tab has no link bridge, and neither does its preview.
+    dashboard = _config(harness.dashboard_page("<p>x</p>", {"n": 1}))
+    assert "link" not in dashboard["shims"]
 
 
 def test_the_frame_body_starts_from_the_same_style(harness: Any) -> None:

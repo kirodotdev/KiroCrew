@@ -1,4 +1,4 @@
-"""Phase 3 — self-protection of the governance trust-root files (KEYSTONE).
+"""Self-protection of the governance trust-root files (KEYSTONE).
 
 Under "secure by default, not by mandate", what prevents a prompt-injected agent
 from rewriting its own ceiling is that the policy/profile files are on the
@@ -32,17 +32,6 @@ _GOV_FILES = (
     "~/.kirocrew/profiles/app-deploy-web.json",
     "~/.kirocrew/admission_policy.json",
 )
-
-
-@pytest.mark.parametrize("path", _GOV_FILES)
-def test_governance_files_are_sensitive(path):
-    assert security.is_sensitive_path(path)
-
-
-@pytest.mark.parametrize("path", _GOV_FILES)
-def test_validate_file_path_rejects_governance_files(path):
-    # The dashboard / taskrunner / skills write path gate rejects them.
-    assert validate_file_path(path) is None
 
 
 def test_profiles_dir_and_children_blocked():
@@ -84,13 +73,24 @@ _RUN_EXEC_PATHS = (
 )
 
 
-@pytest.mark.parametrize("path", _RUN_EXEC_PATHS)
-def test_run_exec_dir_is_sensitive(path):
+_SENSITIVE_CASES = [
+    *(("test_governance_files_are_sensitive", p) for p in _GOV_FILES),
+    *(("test_run_exec_dir_is_sensitive", p) for p in _RUN_EXEC_PATHS),
+]
+_WRITE_GATE_CASES = [
+    *(("test_validate_file_path_rejects_governance_files", p) for p in _GOV_FILES),
+    *(("test_validate_file_path_rejects_run_exec_dir", p) for p in _RUN_EXEC_PATHS),
+]
+
+
+@pytest.mark.parametrize(("origin", "path"), _SENSITIVE_CASES)
+def test_trust_root_path_is_sensitive(origin, path):
     assert security.is_sensitive_path(path)
 
 
-@pytest.mark.parametrize("path", _RUN_EXEC_PATHS)
-def test_validate_file_path_rejects_run_exec_dir(path):
+@pytest.mark.parametrize(("origin", "path"), _WRITE_GATE_CASES)
+def test_validate_file_path_rejects_trust_root_path(origin, path):
+    # The dashboard / taskrunner / skills write path gate rejects them.
     assert validate_file_path(path) is None
 
 
@@ -109,8 +109,8 @@ def test_the_named_ceiling_and_secret_leaves_are_fenced_at_the_OS_LAYER():
     wrong layer, and the layer it tested could not hold: a spawned shell reaches a file
     through an ``open()`` that never routes through the tool gate, so a path fenced only
     there is readable in any sandbox mode whatever the text matcher recognises. Matching
-    one more spelling never converged -- six review rounds produced a new one each time
-    (``/./``, a glued redirect, ``pushd``, an assignment, a conditional assignment).
+    one more spelling never converges (``/./``, a glued redirect, ``pushd``, an
+    assignment, a conditional assignment).
 
     What binds a subprocess is the OS layer in :mod:`kiro_crew.sandbox`, so that is what
     is pinned: every leaf named here carries a HIDDEN (bind-masked in every mode) or

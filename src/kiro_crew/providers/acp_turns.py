@@ -89,6 +89,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping this would leave every spec-granted KAS built-in prompting on
+        # this surface: the gate's spec-builtin-grant row reads it.
+        spec_granted_builtins=e.spec_granted_builtins,
+        # Same row: dropping this would leave every allowedCommands match prompting.
+        spec_granted_commands=e.spec_granted_commands,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
@@ -132,6 +137,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # it before the evidence text, and the sub-agent run loop yields
         # its lane slot (``waiting_input`` WaitRecord) on it.
         status=e.status,
+        # The MCP server's ask itself (mode, message, fields or URL). Dropping
+        # it hands the dashboard runner an EVENT_ELICITATION_REQUEST with
+        # nothing to render: an empty card the person cannot answer, while
+        # the engine holds the tool call open for the whole window.
+        elicitation=e.elicitation,
     )
 
 

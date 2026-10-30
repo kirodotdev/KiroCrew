@@ -1,6 +1,7 @@
 import { api } from '../../api/client'
 import { noteUserChat } from '../../api/membersQuery'
 import { queryClient } from '../../api/queryClient'
+import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { confirmedDelivered, readSendReceipt, SendReceiptBody, SendResponseLike } from '../../utils/sendDelivery'
 
 /** The one send-id minter lives in `utils/sendDelivery`; re-exported here so a
@@ -250,6 +251,9 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
     // Accepted either way: the send is the DM's newest message, which the
     // Crewmates list orders by.
     noteUserChat(queryClient, opts.slot)
+    // A person's steer into a Crew Mode worker says whether it reached the
+    // worker's ledger; a delivered-but-unrecorded one is shown under its composer.
+    if (opts.slot) noteCrewSteerReceipt(opts.slot, body)
     if (confirmedDelivered(body)) return { status: 'dispatched', body }
     return { status: 'queued', body }
   } catch (e: unknown) {

@@ -55,10 +55,8 @@ class TestCleanupMigratedBuiltin:
         assert result.ok is True
         assert "cleaned up" in result.message
 
-        # Metadata removed
         assert not (app_path / INSTALLED_META_FILENAME).exists()
         assert not (app_path / "app.json").exists()
-        # Data preserved
         assert (app_path / "data" / "user-file.txt").exists()
 
     def test_idempotent_already_gone(self, tmp_path, monkeypatch):
@@ -95,7 +93,6 @@ class TestCleanupMigratedBuiltin:
         result = cleanup_migrated_builtin("deploy_web")
         assert result.ok is True
         assert "already migrated" in result.message
-        # File was NOT deleted
         assert (app_path / INSTALLED_META_FILENAME).exists()
 
 
@@ -160,7 +157,6 @@ class TestBootSkillReconcile:
         monkeypatch.setattr(bridges, "_skills_dir", lambda: skills_root)
         monkeypatch.setattr(bridges, "app_dir", lambda name: apps_root / name)
 
-        # Verify NO symlinks exist yet
         assert not (skills_root / "test-app").exists()
         assert not (skills_root / "my-skill").exists()
 
@@ -232,7 +228,6 @@ class TestBootSkillReconcile:
         # symlink on POSIX, directory junction on non-admin Windows.
         assert platform_compat.is_link_or_junction(skills_root / "test-app" / "kept-skill")
         assert (skills_root / "test-app" / "kept-skill").resolve() == kept_skill.resolve()
-        # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()
 

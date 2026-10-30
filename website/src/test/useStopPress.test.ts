@@ -53,7 +53,52 @@ describe('useStopPress (embed)', () => {
     act(() => hook.result.current.onStop())
     await waitFor(() => expect(onSettled).toHaveBeenCalled())
     expect(hook.result.current.stopState).toBe('idle')
-    expect(hook.result.current.stopError).toContain('boom')
+    // A 5xx is said in plain words; the backend's text is only the detail line.
+    expect(hook.result.current.stopError).toBe("The server hit a problem and couldn't stop this turn. Press Stop again.")
+    expect(hook.result.current.stopErrorDetail).toContain('boom')
+  })
+
+  // #20398: a known refusal is said in plain words, never as the backend's text.
+  it('says a missing chat in plain words and drops the raw API text', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const body = JSON.stringify({ error: 'not found', code: 'slot_not_found' })
+    const err = new ApiError(404, `API 404: ${body}`, body)
+    const { hook, onSettled } = setup(() => Promise.reject(err), { slotKey: 's1', running: true })
+    act(() => hook.result.current.onStop())
+    await waitFor(() => expect(onSettled).toHaveBeenCalled())
+    expect(hook.result.current.stopError).toBe("This chat wasn't found, so nothing was stopped. Reload the page.")
+    expect(hook.result.current.stopErrorDetail).toBe('')
+    expect(hook.result.current.stopError).not.toContain('API 404')
+  })
+
+  it('says a signed-out stop in plain words', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const err = new ApiError(403, 'auth required', '', true)
+    const { hook, onSettled } = setup(() => Promise.reject(err), { slotKey: 's1', running: true })
+    act(() => hook.result.current.onStop())
+    await waitFor(() => expect(onSettled).toHaveBeenCalled())
+    expect(hook.result.current.stopError).toBe("You're signed out, so nothing was stopped. Sign in again, then press Stop.")
+    expect(hook.result.current.stopErrorDetail).toBe('')
+  })
+
+  it('shows a proxy sign-in challenge as its own remedy, not as signed out', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const err = new ApiError(403, 'Your access proxy needs you to sign in. Reload the page.', '', true, true)
+    const { hook, onSettled } = setup(() => Promise.reject(err), { slotKey: 's1', running: true })
+    act(() => hook.result.current.onStop())
+    await waitFor(() => expect(onSettled).toHaveBeenCalled())
+    expect(hook.result.current.stopError).toBe('Your access proxy needs you to sign in. Reload the page.')
+    expect(hook.result.current.stopError).not.toMatch(/signed out/)
+  })
+
+  it('keeps an unknown refusal as a detail line under a plain message', async () => {
+    const { hook, onSettled } = setup(() => Promise.resolve({ ok: false, error: 'crew went away', code: 'crew_gone' }), {
+      slotKey: 's1', running: true,
+    })
+    act(() => hook.result.current.onStop())
+    await waitFor(() => expect(onSettled).toHaveBeenCalled())
+    expect(hook.result.current.stopError).toBe("Couldn't stop this turn. Press Stop again.")
+    expect(hook.result.current.stopErrorDetail).toBe('crew went away')
   })
 
   it('drops a reply that arrives after the embed moved to another slot', async () => {
@@ -179,7 +224,7 @@ describe('useStopPress (embed) after a compaction decline', () => {
     act(() => { vi.advanceTimersByTime(FORCE_KILL_ARMING_MS + 1) })
     act(() => hook.result.current.onStop())
     await flush()
-    expect(hook.result.current.stopError).toContain('boom')
+    expect(hook.result.current.stopErrorDetail).toContain('boom')
     expect(hook.result.current.stopDeclined).toBe(true)
   })
 

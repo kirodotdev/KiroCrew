@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
-import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe } from 'lucide-react'
+import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
-import { fmtCompact, fmtNumber } from '../../i18n/format'
+import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -14,6 +14,23 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { servedUploadMb } from '../../utils/fileTokens'
 import ErrorNotice from '../../components/ErrorNotice'
+import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
+import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+
+/** A site name as the gateway compares it: lowercase, no trailing dot. */
+function normalizeSite(site: string): string {
+  return site.trim().toLowerCase().replace(/\.$/, '')
+}
+
+/** The site of *value* when it is an https link, else null. */
+function typedHttpsSite(value: string): string | null {
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'https:' && url.hostname ? normalizeSite(url.hostname) : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -283,7 +300,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
   const [showAdd, setShowAdd] = useState(false)
-  const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
+  const [addType, setAddType] = useState<'local_file' | 'local_folder' | 'url'>('local_file')
   const [addUri, setAddUri] = useState('')
   const [addName, setAddName] = useState('')
   const [addIgnorePatterns, setAddIgnorePatterns] = useState('')
@@ -335,12 +352,27 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     }
   }
 
-  const { data: kbConfig } = useQuery({
+  const { data: kbConfig, error: kbConfigError } = useQuery({
     queryKey: ['knowledge-config'],
-    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean }>('/config'),
+    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean; url_allowed_hosts?: string[] | null }>('/config'),
     staleTime: 60_000,
   })
   const folderPickerAvailable = kbConfig?.folder_picker ?? false
+  const configSetHints = useConfigSetHintsV1()
+  // The gateway fetches a web page only from these hosts; empty by default.
+  // `null` until the list is known, so a failed or pending read is never shown
+  // as an empty list. The gateway answers `null` when it could not read it.
+  const urlAllowedHosts = kbConfig && !kbConfigError && Array.isArray(kbConfig.url_allowed_hosts) ? kbConfig.url_allowed_hosts : null
+  const urlHostsUnavailable = Boolean(kbConfigError) || (kbConfig !== undefined && !Array.isArray(kbConfig.url_allowed_hosts))
+  // The site of the typed https link, compared the way the gateway compares it
+  // (case and a trailing dot aside), so an unlisted site is named before the
+  // click rather than refused after it.
+  const typedSite = typedHttpsSite(addUri)
+  const typedSiteListed = typedSite !== null && (urlAllowedHosts ?? []).some(h => normalizeSite(h) === typedSite)
+  const typedSiteMissing = urlAllowedHosts !== null && typedSite !== null && !typedSiteListed
+  const showSiteCommand = urlAllowedHosts !== null && (urlAllowedHosts.length === 0 || typedSiteMissing)
+  // The command sets the whole list, so it starts from the listed sites plus the typed one.
+  const siteCommandValue = [...(urlAllowedHosts ?? []), ...(typedSiteMissing && typedSite ? [typedSite] : [])].join('\n')
 
   const pickFolderMutation = useMutation({
     mutationFn: () => knowledgeApi<{ path?: string | null }>('/pick-folder', { method: 'POST' }),
@@ -420,7 +452,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   const handleAdd = () => {
     if (!addUri.trim()) return
-    const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
+    // A pasted link often carries a trailing newline, which the gateway refuses.
+    const uri = addType === 'url' ? addUri.trim() : addUri
+    const body: Record<string, unknown> = { name: addName || uri, source_type: addType, uri }
     if (addType === 'local_folder') {
       const props: Record<string, unknown> = { recursive: addRecursive }
       if (addIgnorePatterns.trim()) props.ignore_patterns = addIgnorePatterns.split('\n').map(s => s.trim()).filter(Boolean)
@@ -443,21 +477,31 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <span>{i18nT('pages.knowledge.sourcesList.indexing_uses_kiro_requests_each_source_costs_mo')}</span>
       </div>
       <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        <button onClick={() => {
+          // Each opening reads the site list again, so a failed read can be retried
+          // and a site added in a terminal shows up without a reload.
+          queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
+          setShowAdd(true)
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
           <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
           <div className="flex gap-2 flex-wrap">
-            {(['local_file', 'local_folder'] as const).map(t => (
+            {(['local_file', 'local_folder', 'url'] as const).map(t => (
               <button key={t} onClick={() => setAddType(t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
+                {t === 'local_file'
+                  ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</>
+                  : t === 'local_folder'
+                  ? <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>
+                  : <><Globe size={12} /> {i18nT('pages.knowledge.sourcesList.web_page')}</>}
               </button>
             ))}
           </div>
-          <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
+          {/* A fetched page is stored in the default namespace, so no picker is offered for it. */}
+          {addType !== 'url' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
           {addType === 'local_file' ? (
             <>
               <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} caption={i18nT('pages.knowledge.helpers.supported_formats', { formats: supportedFormatsDisplay })} />
@@ -472,6 +516,55 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 variant="inline"
                 testId="sources-upload-limit-notice"
                 message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
+              />
+            </>
+          ) : addType === 'url' ? (
+            <>
+              <Input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+                aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
+                className="w-full" />
+              <Input value={addUri} onChange={e => setAddUri(e.target.value)} type="url" inputMode="url"
+                placeholder={i18nT('pages.knowledge.sourcesList.page_url_e_g')}
+                aria-label={i18nT('pages.knowledge.sourcesList.page_url')}
+                aria-describedby="sources-url-hosts"
+                className="w-full" />
+              {/* Says which sites can be fetched before the user tries one: the list
+                  is empty by default, and a refusal after the click explains less. */}
+              <div id="sources-url-hosts" className="text-[11px] text-muted">
+                {urlAllowedHosts === null ? null : <>
+                  {urlAllowedHosts.length === 0
+                    ? i18nT('pages.knowledge.sourcesList.web_page_no_hosts_allowed')
+                    : typedSiteMissing && typedSite
+                      ? i18nT('pages.knowledge.sourcesList.web_page_site_not_allowed', { site: typedSite, hosts: fmtList(urlAllowedHosts) })
+                      : i18nT('pages.knowledge.sourcesList.web_page_hosts_allowed', { hosts: fmtList(urlAllowedHosts) })}
+                  {/* The shared command row: one copyable command per shell, built
+                      from the sites in the box, so no quoting is left to the user.
+                      Keyed by its starting value so a newly typed site restarts it. */}
+                  {showSiteCommand && (
+                    <div className="mt-1.5">
+                      <ConfigSetCommandRow key={siteCommandValue} configKey="knowledge.doc_ingest_hosts" schemaType="array" initialValue={siteCommandValue || undefined} hints={configSetHints} />
+                    </div>
+                  )}
+                </>}
+              </div>
+              <div className="flex gap-2 justify-end">
+                <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
+                {/* Nothing can be fetched from a site that is not listed, so the button waits for it. */}
+                <Btn type="button" primary onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing}>
+                  {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}
+                </Btn>
+              </div>
+              {/* No hand-off: the add-source panel holds the unsaved page name and link drafts.
+                  Both failures render in one place, under the buttons. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-hosts-error"
+                message={urlHostsUnavailable ? i18nT('pages.knowledge.sourcesList.web_page_hosts_unavailable') : ''}
+              />
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-error"
+                message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
               />
             </>
           ) : (

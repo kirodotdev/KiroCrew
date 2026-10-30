@@ -292,7 +292,10 @@ def test_gate_executes_fail_closed_for_ipv6_in_every_scope(jobs, tmp_path, mode,
     env = dict(
         _env(tmp_path),
         IPV6=status,
-        KERNEL_LOCK_OWNER="success",
+        # kernel-lock-owner is skipped on a frontend-only diff; use the correct
+        # per-mode value so the gate is satisfied on the kernel-lock-owner check
+        # before it reaches the IPV6 check.
+        KERNEL_LOCK_OWNER="skipped" if mode == "frontend" else "success",
         BE="success",
         FE="success",
         FCM="success",

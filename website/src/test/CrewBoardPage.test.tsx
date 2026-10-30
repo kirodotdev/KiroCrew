@@ -11,7 +11,7 @@
 // shape itself is pinned server-side in `test/test_work_ledger_board.py`, and the
 // committed screenshot fixtures are real handler output.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -265,6 +265,37 @@ describe('CrewBoardPage', () => {
     // column, which names what the row IS. Both are correct, so assert on both.
     expect(screen.getAllByText('stale').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/no acceptance criteria/i)).toBeTruthy()
+  })
+
+  it('says a worker could not send its report, or read its brief', async () => {
+    await mount(board({
+      items: [
+        item({
+          item_id: 'it_r', title: 'tried to report',
+          report_undelivered: { tool: 'work_report', at: '2026-09-22T10:01:00+00:00' },
+        }),
+        item({
+          item_id: 'it_b', title: 'tried to read',
+          report_undelivered: { tool: 'work_brief', at: '2026-09-22T10:02:00+00:00' },
+        }),
+        item({ item_id: 'it_ok', title: 'reported fine', report_undelivered: null }),
+      ],
+    }))
+    expect(await screen.findByText('tried to report')).toBeTruthy()
+    // A failed call renders through the shared error surface, with its hand-off,
+    // once per affected row and never on the row whose calls got through.
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts).toHaveLength(2)
+    expect(alerts.filter((a) => a.textContent?.includes("couldn't send its report"))).toHaveLength(1)
+    expect(alerts.filter((a) => a.textContent?.includes("couldn't read its brief"))).toHaveLength(1)
+    for (const alert of alerts) {
+      expect(alert.textContent).toContain("the harness couldn't resolve the tool name")
+    }
+    // Each hand-off is scoped to its own row, and the text it hands off names the item.
+    expect(within(alerts[0]).getByText('Ask the agent about tried to report')).toBeTruthy()
+    expect(alerts[0].textContent).toContain('it_r:')
+    expect(within(alerts[1]).getByText('Ask the agent about tried to read')).toBeTruthy()
+    expect(alerts[1].textContent).toContain('it_b:')
   })
 
   it('shows the conductor goal and an event count that expands', async () => {

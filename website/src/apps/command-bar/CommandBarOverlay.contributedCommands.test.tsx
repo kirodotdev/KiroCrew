@@ -41,6 +41,7 @@ vi.mock('../../store/chatSlice', () => ({
   switchSlot: (arg: string | { key: string; keepTargetOnMissing?: boolean }) =>
     typeof arg === 'string' ? { type: 'switchSlot', key: arg } : { type: 'switchSlot', ...arg },
   requestFolderReveal: (folderId: string) => ({ type: 'requestFolderReveal', folderId }),
+  requestSlotFolderOpen: (arg: Record<string, unknown>) => ({ type: 'requestSlotFolderOpen', ...arg }),
 }))
 vi.mock('../../components/commandPalette/paletteActions', () => ({
   usePaletteActions: () => ({ navigate, enterInsertOrNewSession, newSessionWithToken }),
@@ -257,6 +258,29 @@ describe('CommandBarOverlay contributed commands', () => {
     // The row's own title, so a second command lands in a folder of its own rather
     // than sharing one with every other row this app contributed.
     expect(folderName).toBe('Write my standup')
+  })
+
+  it('opens the folder path it filed the run in, while the run is still in view', async () => {
+    // The command's folder can be collapsed after an earlier run, which would leave
+    // the session on screen with no visible row. The request waits for the filing,
+    // the only place the folder id is known, and the reducer drops it if the reader
+    // has moved to another session by then.
+    dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
+    mountWithApps([appWith([STANDUP])])
+    enterCommand(/Write my standup/)
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({
+      type: 'requestSlotFolderOpen', key: 'slot-new', folder_id: 'folder-1', onlyIfActive: true,
+    }))
+  })
+
+  it('asks for no folder path when the filing did not land', async () => {
+    fileSessionInCommandFolder.mockResolvedValueOnce(null as never)
+    dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
+    mountWithApps([appWith([STANDUP])])
+    enterCommand(/Write my standup/)
+    await waitFor(() => expect(fileSessionInCommandFolder).toHaveBeenCalled())
+    await act(async () => {})
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'requestSlotFolderOpen' }))
   })
 
   it('files an argument-taking command under its title too', async () => {

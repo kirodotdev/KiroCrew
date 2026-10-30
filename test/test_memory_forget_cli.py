@@ -293,9 +293,14 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(client, "resolve_client_port_ex", lambda _p: (4242, True))
     monkeypatch.setattr(client, "read_local_secret", lambda _port: script["secret"])
     monkeypatch.setattr(client, "dashboard_socket_path", lambda _port: "/run/dash.sock")
-    monkeypatch.setattr(client.run_marker, "read_pid_record_path", lambda _p: script["record"])
-    monkeypatch.setattr(client.run_marker, "pid_start_token", lambda _pid: script["live_start"])
-    monkeypatch.setattr(client, "get_peer_pid", lambda _sock: script["peer"])
+    # The peer proof is the shared one in ``cli_server_peer``: the record and its
+    # start token are read through ``run_marker``, and the kernel peer pid through
+    # the ``kiro_crew.cli_server`` facade, which reaches that owner.
+    from kiro_crew.instances import run_marker
+
+    monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: script["record"])
+    monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: script["live_start"])
+    monkeypatch.setattr("kiro_crew.cli_server.get_peer_pid", lambda _sock: script["peer"])
 
     def fake_open(req, timeout, *, socket_path, verify_peer):
         assert socket_path == "/run/dash.sock"
@@ -335,8 +340,10 @@ class TestClient:
         assert transport["sent"] == []
 
     def test_a_recycled_gateway_pid_receives_nothing(self, transport):
+        # A start token that differs from the live pid's fails the record's
+        # freshness proof, so nothing is sent.
         transport["live_start"] = "start-2"
-        with pytest.raises(client.ForgetRefused, match="not answered by the recorded gateway"):
+        with pytest.raises(client.ForgetRefused, match="pid record|recorded gateway"):
             client.forget_via_gateway(_KEY, expect_value_json='"vim"', superseded_by=None)
         assert transport["sent"] == []
 

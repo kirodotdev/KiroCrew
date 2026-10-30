@@ -742,7 +742,11 @@ def _family_reads() -> set[str]:
     """Every global the facade's code and the composed owner functions read."""
     facade = Path(agent.__file__)
     read = set(_global_names(compile(facade.read_text(encoding="utf-8"), str(facade), "exec")))
-    read |= {n for _s, _n, fn in _owner_functions() for n in _global_names(fn.__code__)}
+    # Unwrapped: a decorated owner function (``rebuild_agent_config``) reads its
+    # globals in the wrapped body, not in the decorator's wrapper.
+    read |= {
+        n for _s, _n, fn in _owner_functions() for n in _global_names(inspect.unwrap(fn).__code__)
+    }
     return read
 
 

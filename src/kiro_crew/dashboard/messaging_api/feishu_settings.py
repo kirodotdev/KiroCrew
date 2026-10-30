@@ -121,7 +121,10 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
         # marker are filesystem reads, and the panel polls this endpoint every
         # 15s, so giving them their own thread hop would double the cost of a
         # poll for no isolation benefit.
-        return loaded, loaded.load_credentials(), _channel_sdk_status("feishu")
+        # propagate=False: a post-boot dashboard read must not re-seed
+        # os.environ (a worker-thread setdefault could restore a credential the
+        # live watcher just popped); boot owns the one propagation.
+        return loaded, loaded.load_credentials(propagate=False), _channel_sdk_status("feishu")
 
     cfg, creds, (sdk_installed, sdk_supported, sdk_command) = await asyncio.to_thread(_read)
     app_id = creds.get(CRED_FEISHU_APP_ID, "")

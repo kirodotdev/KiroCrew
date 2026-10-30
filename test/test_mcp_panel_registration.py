@@ -305,6 +305,9 @@ class TestWhatThisSetGrants:
     #: sibling here, ``dashboard_preview`` records nothing at all, and ``apply``
     #: takes no argument so it cannot be pointed at a page nobody looked at. A
     #: server of their own would ask the user to grant the same thing twice.
+    #: ``dashboard_snapshot`` joins as a read of the same page: it draws the calling
+    #: crewmate's own page in force over the values its tab already shows, and changes
+    #: nothing on the page.
     GRANTED_TOOLS = {
         "panel_publish",
         "panel_templates",
@@ -316,6 +319,7 @@ class TestWhatThisSetGrants:
         "dashboard_preview",
         "dashboard_apply",
         "dashboard_rollback",
+        "dashboard_snapshot",
     }
 
     def test_the_set_is_exactly_the_panel_tools(self) -> None:

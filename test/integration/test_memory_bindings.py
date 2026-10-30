@@ -3,23 +3,20 @@
 Each test drives the booted gateway over HTTP the way the dashboard, an MCP
 server or a second boot would, and asserts the contract at the seam where
 the bug report sat: the persistence layer after a restart (11), workflow
-admission on a home nothing has opted into (12), and the tool-policy read
-when one spec in the agents directory is unreadable (13).
+admission on a home nothing has opted into and on behalf of a member enrolled
+in private memory (12), and the tool-policy read when one spec in the agents
+directory is unreadable (13).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import pytest
 
-#: The tracked follow-up that seeds the enrolled-member state bug 12 was
-#: reported from and runs a workflow on its behalf; the happy-path test below
-#: is not that reproduction.
-BUG_12_REPRODUCTION_FOLLOW_UP = "GH #14145"
+from kiro_crew.testing.wait import async_wait_until
 
 # A one-step workflow whose result is a literal: admission is the only thing
 # that can make it fail before a run exists.
@@ -29,14 +26,19 @@ _TRIVIAL_WORKFLOW = (
 
 
 async def _finished(gw, run_id: str, *, secs: float = 60.0) -> dict:
-    deadline = time.monotonic() + secs
     run: dict = {}
-    while time.monotonic() < deadline:
+
+    async def _terminated() -> bool:
+        nonlocal run
         run = await gw.get_json(f"/api/workflows/runs/{run_id}")
-        if run.get("status") != "running":
-            return run
-        await asyncio.sleep(0.1)
-    pytest.fail(f"workflow {run_id} did not terminate: {json.dumps(run)[:500]}")
+        return run.get("status") != "running"
+
+    await async_wait_until(
+        _terminated,
+        timeout=secs,
+        describe=lambda: f"workflow {run_id} did not terminate: {json.dumps(run)[:500]}",
+    )
+    return run
 
 
 # ---------------------------------------------------------------- bug 11 ---
@@ -130,20 +132,70 @@ async def test_workflow_runs_on_a_home_nothing_opted_into_private_memory(gateway
     Global rather than refusing with ``workflow_memory_unavailable``.
 
     This is NOT the bug-12 reproduction. That report's home had a member
-    enrolled with bindings ``doctor`` called valid; seeding that state through
-    the product (a private-memory member, then a workflow on its behalf) is
-    the tracked follow-up named by ``BUG_12_REPRODUCTION_FOLLOW_UP``, and it is
-    the test that would have gone red in 0.7.0.8.
+    enrolled with bindings ``doctor`` called valid; the reproduction seeds that
+    state through the product and is
+    ``test_workflow_runs_for_a_member_enrolled_in_private_memory`` below.
     """
     async with gateway_boot() as gw:
         resp = await gw.post("/api/workflows/run", {"source": _TRIVIAL_WORKFLOW})
         body = await resp.json()
         assert resp.status == 200, body
         assert body.get("code") != "workflow_memory_unavailable", body
-        assert "run_id" in body, (body, BUG_12_REPRODUCTION_FOLLOW_UP)
+        assert "run_id" in body, body
         run = await _finished(gw, body["run_id"])
         assert run["status"] == "finished", run
         assert run["result"] == "admitted", run
+
+
+@pytest.mark.asyncio
+async def test_workflow_runs_for_a_member_enrolled_in_private_memory(gateway_boot, capsys) -> None:
+    """The bug-12 reproduction: the state the report's home was in.
+
+    A member is created through ``POST /api/agents`` the way the Crew page
+    creates one, so it gets its own private (V2) store, a ``member_id`` and
+    the binding record together; ``doctor``'s binding check calls that binding
+    valid. A chat picked on that member pins its store to the session, and a
+    workflow started as that session is admitted, runs on the member's own
+    store and identity, and finishes. The report saw every such run refused
+    with ``workflow_memory_unavailable``.
+    """
+    from kiro_crew import cli_doctor
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    member = "bug-twelve"
+    async with gateway_boot() as gw:
+        created = await gw.post_json("/api/agents", {"name": member, "kiro_agent": "kirocrew"})
+        store, member_id = created["memory_store"], created["member_id"]
+        assert store and store != "default", created
+        assert member_id, created
+
+        cfg = KiroCrewConfig.load()
+        declaration = cfg.memory_stores[store]
+        assert declaration.memory_version == 2, declaration
+        assert declaration.owner_member_id == member_id, declaration
+        issues: list[str] = []
+        capsys.readouterr()
+        cli_doctor._doctor_member_memory_bindings(cfg, issues)
+        assert issues == [], issues
+        assert f"{member!r} -> {store!r}: valid binding" in capsys.readouterr().out
+
+        slot = (await gw.post_json("/api/chat/slots", {"agent": member}))["key"]
+        resp = await gw.post(
+            "/api/workflows/run",
+            {"source": _TRIVIAL_WORKFLOW},
+            headers={"X-Session-Key": f"dashboard:{slot}"},
+        )
+        body = await resp.json()
+        assert resp.status == 200, body
+        assert body.get("code") != "workflow_memory_unavailable", body
+        assert "run_id" in body, body
+
+        run = await _finished(gw, body["run_id"])
+        assert run["status"] == "finished", run
+        assert run["result"] == "admitted", run
+        execution = run["execution_context"]
+        assert execution["member_id"] == member_id, execution
+        assert execution["store"]["store_id"] == store, execution
 
 
 # ---------------------------------------------------------------- bug 13 ---
@@ -159,11 +211,11 @@ async def _agents_dir(*, secs: float = 30.0) -> Path:
     from kiro_crew.config.paths import kiro_agents_dir
 
     directory = kiro_agents_dir()
-    deadline = time.monotonic() + secs
-    while not (directory / "kirocrew.json").is_file():
-        if time.monotonic() > deadline:
-            pytest.fail(f"boot did not write the managed agent specs under {directory}")
-        await asyncio.sleep(0.05)
+    await async_wait_until(
+        (directory / "kirocrew.json").is_file,
+        timeout=secs,
+        describe=lambda: f"boot did not write the managed agent specs under {directory}",
+    )
     return directory
 
 

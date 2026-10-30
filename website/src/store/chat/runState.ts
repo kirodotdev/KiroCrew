@@ -6,6 +6,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { TurnIdentityFields } from '../../types'
 import type { ChatState, EndedTurn, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
+import { jsonEqual } from '../../utils/structuralEqual'
 import { finalizeTrailingStreaming } from './transcript'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
 
@@ -229,7 +230,7 @@ export const settleEndedActiveTurn = (
  *  `switchSlot.pending` saved in `slotSwitchOrigin`. A delete can leave the
  *  evicted chat's key, which matches nothing while `activeSlot` is null, and
  *  the next entry here replaces it. */
-export function enterActiveSlot(state: ChatState, target: string | null, automatic = false): void {
+export function enterActiveSlot(state: ChatState, target: string | null, automatic: boolean | 'request' = false): void {
   const outgoing = state.activeSlot
   if (outgoing !== null && outgoing !== target && !isUnsafeKey(outgoing)) {
     const runs = (state.slotRun ??= {})
@@ -240,7 +241,9 @@ export function enterActiveSlot(state: ChatState, target: string | null, automat
       || (state.runEpoch?.[safeKey(outgoing)] ?? 0) !== (state.activeRunEpochAtEntry ?? 0)
     if (observed) setRunState(runs[safeKey(outgoing)] ??= { state: 'idle' }, mirrorState)
   }
-  if (outgoing !== target && automatic) state.activeSlotAutoMoves = (state.activeSlotAutoMoves ?? 0) + 1
+  // `'request'`: a create, fork or resume opening its session as it answers.
+  if (outgoing !== target && automatic === 'request') state.activeSlotRequestMoves = (state.activeSlotRequestMoves ?? 0) + 1
+  else if (outgoing !== target && automatic) state.activeSlotAutoMoves = (state.activeSlotAutoMoves ?? 0) + 1
   else if (outgoing !== target) state.activeSlotMoves = (state.activeSlotMoves ?? 0) + 1
   // A chat entered while a phone or an embedded chat holds Keep side panel
   // open off opens its panel when the hold lifts, because without the hold it
@@ -269,7 +272,11 @@ export const runStateReducers = {
    *  caller pairs it with exactly one `forkOpenSettled`, after its own
    *  switch to the child, so the count stays raised from the click until
    *  the child is active. */
-  forkOpenStarted(state: ChatState) { state.pendingForkOpens = (state.pendingForkOpens ?? 0) + 1 },
+  forkOpenStarted(state: ChatState) {
+    state.pendingForkOpens = (state.pendingForkOpens ?? 0) + 1
+    state.requestSeq = (state.requestSeq ?? 0) + 1
+    state.requestBurst = (state.requestBurst ?? 0) + 1
+  },
   forkOpenSettled(state: ChatState) { state.pendingForkOpens = Math.max(0, (state.pendingForkOpens ?? 0) - 1) },
   clearSlotState(state: ChatState) {
     state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
@@ -429,10 +436,14 @@ export const runStateReducers = {
    *  `toolCallId` it describes so a later refinement of the SAME call can be
    *  merged into it (see the `tool_call` case in useWebSocket) without a
    *  refinement of one call inheriting a sibling's purpose when tools run in
-   *  parallel. */
+   *  parallel. A write equal to the stored entry is skipped, so a repeated
+   *  status or an `is_update` refinement that resolves to the same fields
+   *  keeps the map's identity and every row selecting it stays put. */
   setSlotStatusDetail(state: ChatState, action: PayloadAction<SlotStatusDetail & { slot: string }>) {
     const { slot, ...detail } = action.payload
     if (isUnsafeKey(slot)) return
-    state.slotStatusDetail[safeKey(slot)] = detail
+    const key = safeKey(slot)
+    if (jsonEqual(state.slotStatusDetail[key], detail)) return
+    state.slotStatusDetail[key] = detail
   },
 }

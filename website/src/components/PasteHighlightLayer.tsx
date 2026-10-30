@@ -7,8 +7,11 @@ import { findTokenRanges, type PasteBlock } from '../utils/pasteTokens'
  *  (`mc-message-font-text`, styles/message-font-size.css): what the user types
  *  is sized like what they read. Every composer surface — textarea, this
  *  mirror, the Lexical editor and its placeholder, the Suspense fallback —
- *  shares this one constant, which is what keeps their metrics identical. */
-export const INPUT_TYPO = 'px-4 pt-3 pb-1 mc-message-font-text font-body leading-normal'
+ *  shares this one constant, which is what keeps their metrics identical.
+ *  The vertical padding reads two variables so a host can re-centre every
+ *  surface at once: the one-row composer sets them on the text column
+ *  (ChatInput `ONE_ROW_TEXT_PAD`). Unset, they are 12px over 4px. */
+export const INPUT_TYPO = 'px-4 pt-[var(--composer-pt,0.75rem)] pb-[var(--composer-pb,0.25rem)] mc-message-font-text font-body leading-normal'
 
 interface Props {
   value: string

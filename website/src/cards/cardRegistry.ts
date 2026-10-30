@@ -5,12 +5,13 @@
  */
 import type { ComponentType } from 'react'
 import { AlarmClock,
-  CalendarClock, Cog, FolderCog, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
+  CalendarClock, Cog, FolderCog, Workflow, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
   type LucideIcon,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
 import { NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
+import { ImportFilesBody } from './ImportFilesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
 export interface CardKindSpec {
@@ -19,6 +20,12 @@ export interface CardKindSpec {
   label: () => string
   /** The primary button: the concrete action, never a bare "OK". */
   primary: (card?: Card) => string
+  /** The decline button, when "Decline change" does not say what declining means here. */
+  decline?: () => string
+  /** One line beside the primary button: what the press does and how to take it back. */
+  pressNote?: () => string
+  /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
+  riskNote?: () => string
   Body: ComponentType<KindBodyProps>
 }
 
@@ -45,7 +52,9 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.import': {
     icon: UserPlus, label: () => i18nT('components.changeCards.kind_crewmate_import'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_import'), Body: NoBody,
+    primary: () => i18nT('components.changeCards.primary_crewmate_import'), Body: ImportFilesBody,
+    decline: () => i18nT('components.changeCards.decline_crewmate_import'),
+    pressNote: () => i18nT('components.changeCards.note_crewmate_import'),
   },
   'crewmate.update': {
     icon: UserCog, label: () => i18nT('components.changeCards.kind_crewmate_update'),
@@ -108,6 +117,19 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     icon: FolderCog, label: () => i18nT('components.folderConfigModal.steering_dirs'),
     primary: () => i18nT('components.changeCards.primary_setting_change'), Body: NoBody,
   },
+  'workflow.save': {
+    icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_save'),
+    primary: () => i18nT('components.changeCards.primary_workflow_save'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    decline: () => i18nT('components.changeCards.decline_workflow_save'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_save'), Body: NoBody,
+  },
+  'workflow.update': {
+    icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_update'),
+    primary: () => i18nT('components.changeCards.primary_workflow_update'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_update'), Body: NoBody,
+  },
 }
 
 /** A kind the dashboard does not know renders nothing actionable. */
@@ -158,9 +180,29 @@ function listOp(card: Pick<Card, 'kind' | 'params'>): ListOp | null {
   return { op, item, wording }
 }
 
+/** The one card that lets a crewmate ask the user for its worker's tools
+ *  (`kiro_crew/mate_tool_access.py`): a `crewmate.update` writing only its
+ *  `dynamic_capabilities` flag on. It is a preview opt-in, so it carries the
+ *  Preview badge the Profile card's switch shows. */
+export function isToolAccessCard(card: Pick<Card, 'kind' | 'params'>): boolean {
+  if (card.kind !== 'crewmate.update') return false
+  const fields = card.params.fields
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false
+  const entries = Object.entries(fields as Record<string, unknown>)
+  return entries.length === 1 && entries[0][0] === 'dynamic_capabilities' && entries[0][1] === true
+}
+
 /** The card's title in the reader's language where the dashboard owns the
- *  wording (a list setting's add/remove); otherwise the gateway's title. */
-export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'changes'>): string {
+ *  wording (a list setting's add/remove, the tool-access ask, the import); otherwise
+ *  the gateway's title. */
+export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'changes'> & Partial<Pick<Card, 'scope'>>): string {
+  if (isToolAccessCard(card)) {
+    const name = card.scope?.members?.[0] || String(card.params.name ?? '')
+    return i18nT('components.changeCards.tool_access_title', { name })
+  }
+  // The gateway's title is English; the import's is rebuilt in the reader's language.
+  const name = card.kind === 'crewmate.import' ? card.params?.name : undefined
+  if (typeof name === 'string' && name) return i18nT('components.changeCards.title_crewmate_import', { name })
   const list = listOp(card)
   if (!list) return card.title
   if (list.wording) return list.wording[list.op](list.item)

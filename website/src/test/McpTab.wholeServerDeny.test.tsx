@@ -127,7 +127,7 @@ describe('McpTab: what turning one tool off costs on the harness in use (#11969)
     const row = await openTools()
     const reach = await within(row).findByTestId('mcp-deny-reach', undefined, ROW_WAIT)
     const rule = within(reach).getByText(RULE)
-    expect(rule.textContent).toContain('Goose')
+    expect(rule.textContent).toContain('goose')
     expect(rule).toHaveClass('text-text-strong')
     // A whole-server reach has no exception.
     expect(within(reach).queryByText(EXCEPTION)).toBeNull()

@@ -75,13 +75,11 @@ describe('NewCrewmateDialog', () => {
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith({ name: 'Scout', job: '' }), { timeout: 4000 })
   })
 
-  it('Advanced settings offers the built-in agent first, labelled as the default', async () => {
+  it('Advanced settings offers no template to build from: every mate starts as the built-in worker', async () => {
     renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
-    const select = await screen.findByRole('combobox', { name: 'Built from' })
-    // The label stays short enough to show "(default)" on a phone; what the
-    // default is goes in the field's helper text instead.
-    expect(select.textContent?.trim()).toBe('kirocrew (default)')
-    expect(fieldHint(select)).toHaveTextContent(/kirocrew/)
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(api.agentCatalog).not.toHaveBeenCalled()
   })
 
   it('the Model helper text is a sentence of its own, not a lowercase fragment', async () => {
@@ -124,7 +122,7 @@ describe('NewCrewmateDialog', () => {
       expect(region).not.toHaveTextContent(/kirocrew/i)
     })
 
-    it('unfolding shows Built from = kirocrew and every setting in the same card, under the same heading', async () => {
+    it('unfolding shows every setting in the same card, under the same heading', async () => {
       card()
       const region = await screen.findByRole('dialog')
       fireEvent.click(toggle())
@@ -132,9 +130,8 @@ describe('NewCrewmateDialog', () => {
       const advanced = screen.getByTestId('crewmate-create-advanced')
       expect(toggle()).toHaveAttribute('aria-controls', advanced.id)
       expect(region).toContainElement(advanced)
-      expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew')
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toBeInTheDocument()
-      expect(advanced).toContainElement(screen.getByRole('combobox', { name: 'Built from' }))
+      expect(advanced).toContainElement(await screen.findByRole('textbox', { name: 'Goal' }))
+      expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
       expect(within(advanced).getByLabelText('Workspace')).toBeInTheDocument()
       expect(within(advanced).getByLabelText('Edit default model')).toBeInTheDocument()
       // One disclosure, not a second one nested inside it, and no way "back".
@@ -148,11 +145,11 @@ describe('NewCrewmateDialog', () => {
       await screen.findByTestId('crewmate-create-form')
       typeName('Scout')
       fireEvent.click(toggle())
-      fireEvent.change(screen.getByRole('textbox', { name: 'What it looks after' }), { target: { value: 'Watch PRs' } })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Goal' }), { target: { value: 'Watch PRs' } })
       fireEvent.click(toggle())
       await waitFor(() => expect(screen.queryByTestId('crewmate-create-advanced')).toBeNull())
       fireEvent.click(toggle())
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toHaveValue('Watch PRs')
+      expect(screen.getByRole('textbox', { name: 'Goal' })).toHaveValue('Watch PRs')
       expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Scout')
       // Folded again: still sent.
       fireEvent.click(toggle())
@@ -321,12 +318,12 @@ describe('NewCrewmateDialog', () => {
 
     it('startExpanded opens with Advanced settings already unfolded, on every open', async () => {
       const { rerender } = card({ startExpanded: true })
-      await screen.findByRole('combobox', { name: 'Built from' })
+      await screen.findByRole('textbox', { name: 'Goal' })
       expect(toggle()).toHaveAttribute('aria-expanded', 'true')
       fireEvent.click(toggle())
       rerender(<NewCrewmateDialog open={false} firstGreeting startExpanded {...props} />)
       rerender(<NewCrewmateDialog open firstGreeting startExpanded {...props} />)
-      expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+      expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     })
 
     it('reads top to bottom: look, Name label, name, hint, Create, then the Advanced settings toggle last', async () => {
@@ -452,7 +449,7 @@ describe('NewCrewmateDialog opened from a proposal', () => {
     vi.mocked(api.createKirocrewAgent).mockClear()
   })
   afterEach(() => { vi.restoreAllMocks() })
-  const goalField = () => screen.queryByRole('textbox', { name: 'What it looks after' }) as HTMLTextAreaElement | null
+  const goalField = () => screen.queryByRole('textbox', { name: 'Goal' }) as HTMLTextAreaElement | null
 
   it('fills the name, and the goal with Advanced settings open so the goal is in view', async () => {
     renderWithProviders(<NewCrewmateDialog open initialDraft={{ name: 'Scout', goal: 'Watch CI' }} {...props} />)

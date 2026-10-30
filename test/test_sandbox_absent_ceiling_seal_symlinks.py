@@ -85,8 +85,10 @@ class TestALinkedProtectedLeafRefusesTheSpawn:
     @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_LEAVES))
     def test_a_real_directory_is_accepted(self, crew_home, leaf):
         """The refusal must not reject the ordinary case."""
-        (crew_home / leaf).mkdir(parents=True, exist_ok=True)
+        real = crew_home / leaf
+        real.mkdir(parents=True, exist_ok=True)
         sandbox._materialize_sealable_ceilings()  # does not raise
+        assert real.is_dir() and not real.is_symlink()
 
     def test_the_no_alias_set_covers_both_panel_leaves(self):
         """Derived, so a third protected leaf has to be added here too."""
@@ -231,7 +233,7 @@ class TestEveryMaskedLeafRefusesAnAliasedName:
             else:
                 target.mkdir(parents=True, exist_ok=True)
 
-        sandbox._refuse_aliased_masked_leaves()  # does not raise
+        assert sandbox._refuse_aliased_masked_leaves() == ()
 
 
 @_POSIX_ONLY
@@ -332,7 +334,7 @@ class TestALinkedComponentBelowTheDataHomeRefuses:
         for leaf in ("apps/aws-control/data", "apps/meetings/data/edits"):
             (crew_home / leaf).mkdir(parents=True, exist_ok=True)
 
-        sandbox._refuse_aliased_masked_leaves()  # does not raise
+        assert sandbox._refuse_aliased_masked_leaves() == ()
 
     def test_a_symlinked_data_home_itself_is_not_refused(self, tmp_path, monkeypatch):
         """``config_dir()`` documents that a symlinked data HOME is supported.
@@ -347,7 +349,8 @@ class TestALinkedComponentBelowTheDataHomeRefuses:
         link.symlink_to(real, target_is_directory=True)
         monkeypatch.setattr(sandbox, "config_dir", lambda: link)
 
-        sandbox._refuse_aliased_masked_leaves()  # does not raise
+        assert sandbox._refuse_aliased_masked_leaves() == ()
+        assert link.is_symlink() and (real / "ledger").is_dir()
 
     def test_the_md_notebook_leaves_degrade_instead_of_refusing(self, crew_home, tmp_path, caplog):
         """Matching the sibling control rather than overriding it.

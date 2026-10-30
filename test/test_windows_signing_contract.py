@@ -516,6 +516,19 @@ def test_credential_step_skips_without_the_secret() -> None:
     assert "HAS_WINDOWS_SIGNING" in _step("Configure AWS credentials")["if"]
 
 
+def test_oidc_credentials_survive_the_windows_cli_role_chain() -> None:
+    """A random temporary secret must not break the later AWS CLI profile.
+
+    The OIDC action can authenticate successfully and still return a secret
+    whose special characters the Windows CLI/profile path does not preserve.
+    AWS then rejects the chained AssumeRole signature. The action's documented
+    workaround must stay bounded: an AWS outage cannot consume the whole job.
+    """
+    options = _step("Configure AWS credentials")["with"]
+    assert options["special-characters-workaround"] is True
+    assert options["action-timeout-s"] == 180
+
+
 def test_signing_gate_is_hoisted_into_job_env() -> None:
     # `secrets.*` is not available in a step-level `if`, so the gate has to be a
     # job-level env flag. Same pattern as sign-and-notarize.yml.
@@ -622,9 +635,9 @@ def test_the_hook_refuses_a_partially_configured_environment() -> None:
 
 
 def test_the_hook_preserves_the_pinned_ffmpeg_payload_before_signing() -> None:
-    """Authenticode must not invalidate runtime's pinned upstream digest."""
+    """Authenticode must not invalidate runtime's pinned decoder digest."""
     source = SIGN_HOOK.read_text(encoding="utf-8")
-    decoder_guard = "fileName === 'ffmpeg-win-x86_64-v7.1.exe'"
+    decoder_guard = "fileName === 'ffmpeg-windows-x86_64.exe'"
     assert decoder_guard in source
     assert source.index(decoder_guard) < source.index("const REQUIRED_ENV"), (
         "the exact decoder must return before any configured signing path; "

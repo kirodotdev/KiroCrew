@@ -49,6 +49,10 @@ from kiro_crew.imessage.rpc import JsonRpcPeer, RpcError, RpcTransportError
 
 logger = logging.getLogger(__name__)
 
+#: Lost-peer close tasks, held until done: a bare ``create_task`` result is
+#: only weakly referenced by the loop and can be collected mid-close.
+_PEER_CLOSE_TASKS: set[asyncio.Task[None]] = set()
+
 #: Protocol version this client speaks. The bridge rejects anything else.
 PROTOCOL_VERSION = 1
 
@@ -97,9 +101,10 @@ _PHONE_NOISE = re.compile(r"[\s()\-.]")
 def normalize_handle(handle: str) -> str:
     """Canonicalize a handle for allowlist comparison.
 
-    An email handle folds to lowercase; a phone handle loses formatting so the
-    same number written three ways compares equal. Anything else is lowercased
-    and stripped, which is still stable.
+    Surrounding whitespace is stripped first. A handle containing ``@`` (an
+    email) then folds to lowercase; any other handle is read as a phone number
+    and loses its whitespace, parentheses, dashes and dots, so the same number
+    written three ways compares equal. Nothing else is lowercased.
     """
     value = (handle or "").strip()
     if not value:
@@ -116,8 +121,10 @@ def _echo_key(handle: str, text: str) -> str:
     makes a round trip through Messages and back out of the database, and a
     composed/decomposed mismatch on a single accented character would silently
     stop an echo being recognised as one. Handle and body are joined on a
-    newline, which ``normalize_handle`` can never produce, so no pair of
-    distinct inputs can collide on one key.
+    newline. ``normalize_handle`` removes every newline from a handle without
+    ``@`` and the leading and trailing ones from an email handle, so two pairs
+    that normalize differently can share a key only when one of them carries an
+    email handle with a newline inside it.
     """
     return f"{normalize_handle(handle)}\n{unicodedata.normalize('NFC', text).strip()}"
 
@@ -214,8 +221,11 @@ def parse_inbound(message: dict[str, Any]) -> IMessageInbound | None:
     """Map a bridge Message object onto :class:`IMessageInbound`.
 
     The bridge OMITS inapplicable string fields rather than sending null, so
-    every read is a ``get`` with a typed fallback; a field carrying the wrong
-    type is treated as absent rather than crashing the reader.
+    every read is a ``get`` with a typed fallback: a string or integer field
+    carrying the wrong type reads as ``""`` or ``0`` rather than crashing the
+    reader. The two flags are truth-tested with ``bool()`` instead, so any
+    truthy value, the string ``"false"`` included, reads as ``True``, which the
+    transport's own-message and DM-only gates drop rather than answer.
     """
     if not isinstance(message, dict):
         return None
@@ -335,14 +345,15 @@ class IMessageClient:
         old = self._peer
         self._peer = None
         self._subscription = None
-        self.ready.clear()
-        self.last_error = reason[:120]
         logger.warning("imessage: %s; will try to reconnect", reason)
         self._set_state(False, reason[:120])
         if old is not None:
             # Sync callback, async teardown: schedule it rather than block the
-            # reader's own exit path.
-            asyncio.create_task(self._close_peer(old))
+            # reader's own exit path. The loop holds a task only weakly, so the
+            # set keeps it alive until the close finishes.
+            task = asyncio.create_task(self._close_peer(old))
+            _PEER_CLOSE_TASKS.add(task)
+            task.add_done_callback(_PEER_CLOSE_TASKS.discard)
         self._schedule_resubscribe()
 
     async def _close_peer(self, peer: JsonRpcPeer) -> None:
@@ -397,12 +408,6 @@ class IMessageClient:
         # exercises the SMS-fallback path by accident.
         if self._service != "imessage":
             params["service"] = self._service
-        # Recorded BEFORE the call, not after: the watch can emit the row for
-        # this message while `send` is still awaiting its own result (the bridge
-        # verifies the inserted row before answering, and its watch debounce is
-        # only 500ms), and an echo that arrives before it is remembered is an
-        # echo that gets answered. A send that then fails leaves one stale entry
-        # behind, which costs no more than the TTL already does.
         # Recorded BEFORE the call, and with NO expiry: the watch can emit the row
         # for this message while `send` is still awaiting its own result (the
         # bridge verifies the inserted row before answering, and its watch
@@ -627,23 +632,23 @@ class IMessageClient:
     async def _handle_message(self, message: dict[str, Any]) -> None:
         """Account for a row, then hand it to the handler. Delivery is at-most-once.
 
-        The cursor advances HERE, before dispatch -- deliberately, and matching
-        every other channel in this repo:
+        The cursor advances HERE, before dispatch -- deliberately. The other
+        inbound paths, for comparison:
 
         * Telegram advances its ``getUpdates`` offset at fetch time, before
-          dispatch, and does not persist it at all.
+          dispatch, and its next poll confirms that offset to Telegram whether
+          or not the handler has finished; the low-water mark it persists bounds
+          duplicate replay, not loss.
         * Discord's sequence number is for websocket resume, not delivery.
         * Webex and Teams keep no inbound cursor whatsoever.
-        * ``issue_radar``, the one persisted watermark in the tree, advances
-          BEFORE notifying and says so: at-most-once, chosen so a delivery
-          hiccup cannot re-announce.
+        * ``issue_radar``'s watermark advances BEFORE notifying and says so:
+          at-most-once, chosen so a delivery hiccup cannot re-announce.
 
         Advancing only after the handler returned -- at-least-once -- is the one
         shape nothing here implements, and it does not come for free: it forces
         global serialization (so a failed row is not passed by a later one), a
         buffer to serialize behind, and a rule for retiring the old consumer on
-        reconnect. That machinery was built here once and every piece of it was a
-        defect. The cost of this direction is the honest one: a message arriving
+        reconnect. The cost of this direction is the honest one: a message arriving
         while the gateway is dying is lost, and the user re-sends.
 
         Ordering is likewise not this layer's job. Two messages from the same

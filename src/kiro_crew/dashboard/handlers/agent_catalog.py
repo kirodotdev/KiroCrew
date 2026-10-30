@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state
+from kiro_crew import agent_state, crew_mode
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -23,6 +23,8 @@ from kiro_crew.agent_files import (
     DASHBOARD_MANAGER_AGENT_FILENAME,
     GUEST_AGENT_FILENAME,
     LITE_AGENT_FILENAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
+    MATE_WORKER_AGENT_FILENAME,
 )
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -59,8 +61,22 @@ logger = logging.getLogger(__name__)
 # product being broken rather than as a narrow agent doing its job. It is reached
 # by a crewmate handing it page work, which is what the member base prompt's item
 # 7 routes.
+#
+# The mate conductor is here because it is not a deliberate pick either: it is
+# the default template under its own filename (rfc-mate-owned-agent-config.md,
+# migration step 1), reached only through a crewmate's own ``kiro_agent``
+# binding. Offering it as a "Built from" choice would read as a second,
+# unexplained default beside the primary ``kirocrew`` spec it is byte-identical
+# to today. The mate worker is here for the same reason: it is reached only
+# through a crewmate's own ``session_create``, never picked.
 _BACKGROUND_ONLY_FILES = frozenset(
-    {LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME, DASHBOARD_MANAGER_AGENT_FILENAME}
+    {
+        LITE_AGENT_FILENAME,
+        GUEST_AGENT_FILENAME,
+        DASHBOARD_MANAGER_AGENT_FILENAME,
+        MATE_CONDUCTOR_AGENT_FILENAME,
+        MATE_WORKER_AGENT_FILENAME,
+    }
 )
 
 
@@ -135,8 +151,19 @@ def _session_backend(config: KiroCrewConfig, session_key: str) -> str:
     ``agent.member_acp_backend``, every other chat and a picker with no chat on
     ``agent.acp_backend``. Both fields are already resolved runtime ids after
     ``KiroCrewConfig.load``, so this reads them rather than calling that gate,
-    which logs every member routing. Display-only: no spawn reads this.
+    which logs every member routing. Display-only: no spawn reads this. A
+    crewmate's own harness pin outranks the member route, read as the harness
+    it runs on (a stored ``kiro`` may run on KAS). Known pins that cannot start
+    are shown as stored; unknown text is replaced by a placeholder.
     """
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_stored_pin
+
+    pin = crewmate_stored_pin(config, session_key)
+    if pin is not None:
+        try:
+            return backend_to_stored(pin.resolve())
+        except CrewmateHarnessUnavailable:
+            return pin.display_stored
     if is_member_session_key(session_key):
         return backend_to_stored(config.agent.member_acp_backend)
     return backend_to_stored(config.agent.acp_backend)
@@ -254,5 +281,17 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             "markdown_spec_backends": sorted(
                 backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
             ),
+            # Crew Mode: the conductor a chat switches to when it is turned on
+            # (`agent.crew_mode_agent`), and the whole conductor family, which a
+            # normal chat's agent picker leaves out so Crew Mode is the way in.
+            "crew_mode_agent": (
+                _roster_mask(crew_mode.crew_mode_agent(config))
+                if redact
+                else crew_mode.crew_mode_agent(config)
+            ),
+            "conductor_agents": [
+                _roster_mask(agent) if redact else agent
+                for agent in sorted(crew_mode.conductor_agents(config))
+            ],
         }
     )

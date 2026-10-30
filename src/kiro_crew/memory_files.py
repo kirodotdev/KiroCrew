@@ -359,8 +359,10 @@ class LocalMemoryFiles:
         """
         if is_link_or_junction(lock_path):
             raise OSError(f"refusing lock file (link or junction): {lock_path}")
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(lock_path, flags, 0o600)
+        from kiro_crew.platform_compat import open_create_or_existing
+
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = open_create_or_existing(lock_path, flags, 0o600)
         try:
             st = os.fstat(fd)
             if not _stat.S_ISREG(st.st_mode) or st.st_nlink != 1:

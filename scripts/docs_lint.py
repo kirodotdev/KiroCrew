@@ -75,6 +75,9 @@ answer on a repository this size is "mostly, with a recorded backlog":
   trees. Report-only unless ``--strict-identifiers``, because the class is
   genuinely noisy: a doc may name a wire field, a vendor symbol or a deliberately
   wrong example.
+* ``anchor-exists`` -- a link written under ``docs/`` whose ``#fragment`` names no
+  heading slug and no explicit ``id`` in its markdown target. The file resolves,
+  so check 1 stays green while the reader lands at the top of the page.
 
 Every fact-check finding is a ``(check-id, path, token)`` triple, and the triples
 already present when the family shipped live in ``.github/docs-lint-baseline.txt``.
@@ -1172,6 +1175,7 @@ def run(root: Path, *, strict_identifiers: bool = False) -> Findings:
     check_table_rows(root, everything, findings)
     check_coupling_completeness(root, findings)
     check_dead_identifiers(root, everything, findings)
+    check_anchors(root, everything, findings)
     if strict_identifiers:
         findings.facts.extend(findings.advisories)
         findings.advisories = []
@@ -1270,6 +1274,12 @@ def _report(findings: Findings, doc_count: int, stale_baseline: list[tuple[str, 
         "backticked identifiers that appear in no code tree",
         "rename to the live symbol, or drop the claim",
     )
+    _emit_facts(
+        findings,
+        CHECK_ANCHOR_EXISTS,
+        "section links whose #anchor no heading produces",
+        "point the link at the heading's real slug, or add <a id> where it should land",
+    )
     if findings.advisories:
         print(f"\nreport-only: {len(findings.advisories)} dead identifier(s) outside the baseline")
         for item in findings.advisories[:_MAX_REPORTED_ADVISORIES]:
@@ -1295,7 +1305,7 @@ def _report(findings: Findings, doc_count: int, stale_baseline: list[tuple[str, 
 #
 # Two families live in modules beside this file, each described in its docstring:
 # ``docs_lint_fact_checks.py`` holds the fact checks (their identifiers, shapes and
-# scope, the six checks and the baseline that admits their recorded triples), and
+# scope, the seven checks and the baseline that admits their recorded triples), and
 # ``docs_lint_selftest.py`` holds the planted-defect self-test behind ``--test``.
 # This module keeps what is scanned, the finding shapes, the helpers, the
 # structural checks, the run, the report and the entry point, and re-exports every
@@ -1317,14 +1327,19 @@ if _HERE not in sys.path:
 sys.modules.pop("docs_lint_fact_checks", None)
 sys.modules.pop("docs_lint_selftest", None)
 from docs_lint_fact_checks import (  # noqa: E402,F401
+    _ANCHOR_SCOPE_PREFIX,
+    _ATX_HEADING_RE,
     _BASELINE_HEADER,
     _COORDINATE_SUFFIX,
     _COUPLING_AMBIGUOUS_NAMES,
     _COUPLING_SCAN_ROOT,
     _COUPLING_SUFFIXES,
+    _EMPHASIS_UNDERSCORE_RE,
+    _EXPLICIT_ANCHOR_RE,
     _EXTERNAL_TARGET_COORDINATE_DOCS,
     _FENCED_TASK_SPEC_RE,
     _FORWARD_LOOKING_DOC_PREFIXES,
+    _HTML_TAG_RE,
     _IDENT_CAMEL_RE,
     _IDENT_CODE_SUFFIXES,
     _IDENT_CODE_TREES,
@@ -1335,13 +1350,16 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     _IDENT_TOKEN_RE,
     _INLINE_CODE_SPAN_RE,
     _KIROCREW_RUN_RE,
+    _MD_LINK_TEXT_RE,
     _MD_NAME_RE,
     _PACKAGED_DOCS_DIR,
     _REPO_PATH_CITE_RE,
+    _SETEXT_UNDERLINE_RE,
     _STRING_LITERAL_RE,
     _TABLE_DELIMITER_RE,
     _TABLE_LINK_CELL_RE,
     _TS_COMMENT_LINE_RE,
+    CHECK_ANCHOR_EXISTS,
     CHECK_COUPLING_COMPLETENESS,
     CHECK_DEAD_IDENTIFIER,
     CHECK_FENCED_PATH,
@@ -1349,13 +1367,20 @@ from docs_lint_fact_checks import (  # noqa: E402,F401
     CHECK_PATH_EXISTS,
     CHECK_TABLE_ROW_MERGE,
     DEFAULT_BASELINE,
+    _anchors,
+    _github_slug,
     _identifier_index,
+    _is_anchor_exempt,
     _is_forward_looking,
+    _is_setext_text,
     _iter_code_spans,
     _iter_fenced_lines,
     _read_baseline,
+    _render_prose,
+    _Slugger,
     _write_baseline,
     apply_baseline,
+    check_anchors,
     check_cited_paths,
     check_coupling_completeness,
     check_dead_identifiers,

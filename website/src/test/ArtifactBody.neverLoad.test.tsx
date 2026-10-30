@@ -29,6 +29,7 @@ vi.mock('../hooks/useCommentBridge', () => ({
 }))
 
 vi.mock('../lib/widgetSrcdoc', () => ({
+  AGENT_PAGE_SANDBOX: 'allow-scripts',
   THEME_VAR_NAMES: [] as string[],
   readThemeVars: () => ({}) as Record<string, string>,
   buildSrcdoc: (opts: { html: string }) => opts.html,

@@ -6,6 +6,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('./embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
+const electron = vi.hoisted(() => ({ isElectron: false }))
+vi.mock('./electron', () => ({
+  get isElectron() {
+    return electron.isElectron
+  },
+}))
 import { isEmbeddedPane } from './embedded'
 import {
   NATIVE_NOTIFY_MAX_BODY,
@@ -205,6 +211,90 @@ describe('nativeNotify', () => {
       vi.stubGlobal('Notification', undefined)
       expect(() => postNativeNotification('T', {})).not.toThrow()
       expect(postMessage).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('postNativeNotification service-worker delivery', () => {
+    // An installed iOS PWA (and Android Chrome, #1828) only permits an OS
+    // banner through ServiceWorkerRegistration.showNotification(); the page
+    // constructor throws "Illegal constructor". These cover the SW branch and
+    // its constructor fallback, which the constructor-only tests above (no
+    // navigator.serviceWorker) never exercise.
+    function stubServiceWorker(ready: Promise<{ showNotification: ReturnType<typeof vi.fn> }>) {
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: { ready },
+      })
+    }
+    afterEach(() => {
+      // Restore real timers even when a fake-timer test failed before its end.
+      vi.useRealTimers()
+      // remove the stub so the constructor-path tests keep their env
+      // (deleting a non-configurable prop is a no-op; ours is configurable)
+      try {
+        delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+      } catch {
+        /* jsdom may define it read-only; harmless */
+      }
+    })
+
+    it('top-level: delivers via the service worker registration, not the constructor', async () => {
+      stubNotification('granted')
+      const showNotification = vi.fn().mockResolvedValue(undefined)
+      stubServiceWorker(Promise.resolve({ showNotification }))
+      postNativeNotification('Approval required', { body: 'Bash', tag: 'kirocrew-approval', silent: true })
+      // ready is a microtask; let it resolve
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(showNotification).toHaveBeenCalledWith('Approval required', {
+        body: 'Bash',
+        tag: 'kirocrew-approval',
+        silent: true,
+      })
+      expect(CONSTRUCTED).toHaveLength(0)
+    })
+
+    it('desktop app: uses the constructor even with a service worker registered', async () => {
+      electron.isElectron = true
+      try {
+        stubNotification('granted')
+        const showNotification = vi.fn().mockResolvedValue(undefined)
+        stubServiceWorker(Promise.resolve({ showNotification }))
+        postNativeNotification('Approval required', { body: 'Bash', tag: 'kirocrew-approval', silent: true })
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(showNotification).not.toHaveBeenCalled()
+        expect(CONSTRUCTED).toEqual([
+          { title: 'Approval required', options: { body: 'Bash', tag: 'kirocrew-approval', silent: true } },
+        ])
+      } finally {
+        electron.isElectron = false
+      }
+    })
+
+    it('top-level: falls back to the constructor when the SW registration rejects', async () => {
+      stubNotification('granted')
+      stubServiceWorker(Promise.reject(new Error('no active worker')))
+      postNativeNotification('T', { body: 'b', tag: 't', silent: true })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(CONSTRUCTED).toEqual([
+        { title: 'T', options: { body: 'b', tag: 't', silent: true } },
+      ])
+    })
+
+    it('top-level: falls back to the constructor when ready never settles (timeout)', async () => {
+      vi.useFakeTimers()
+      stubNotification('granted')
+      // ready never resolves, simulating a failed or deregistered SW
+      stubServiceWorker(new Promise(() => {}) as Promise<{ showNotification: ReturnType<typeof vi.fn> }>)
+      postNativeNotification('T', { body: 'b', tag: 't', silent: true })
+      // Advance past the SW_READY_TIMEOUT_MS (2000)
+      await vi.advanceTimersByTimeAsync(2_500)
+      expect(CONSTRUCTED).toEqual([
+        { title: 'T', options: { body: 'b', tag: 't', silent: true } },
+      ])
     })
   })
 

@@ -106,7 +106,6 @@ test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_stder
 test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
-test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals
 test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
 # Needs symlink-creation privilege: plants a FILE symlink at the output path to
 # prove the writer replaces it rather than writing through. atomic_write already
@@ -144,6 +143,8 @@ test/test_slack_config_handlers.py::test_write_env_updates_is_atomic_and_owner_o
 test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_bg_session_prints_dashboard_url
 test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited
 test/test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_failing_url_announcement_does_not_abort_boot
+test/test_slack_gateway_run.py::TestRunFreezesBootHeap::test_api_only_boot_freezes_once_after_the_api_server_binds
+test/test_slack_gateway_run.py::TestRunFreezesBootHeap::test_dashboard_boot_freezes_once_after_the_dashboard_binds
 test/test_slack_gateway_run.py::TestRunMethod::test_run_failed_marker_write_still_clears
 test/test_slack_gateway_run.py::TestRunMethod::test_run_no_dashboard_uses_api_server
 test/test_slack_gateway_run.py::TestRunMethod::test_run_raises_on_shutdown
@@ -152,14 +153,10 @@ test/test_slack_gateway_run.py::TestRunSignalAndBgSession::test_run_with_ollama_
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_allowed_roots
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_cwd
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_computes_available_gb_from_pages
-test/test_subagent_sizing.py::TestMacosMemoryProbe::test_none_page_count_fails_open
+test/test_subagent_sizing.py::TestMacosMemoryProbe::test_missing_page_count_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_nonpositive_page_size_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_sysconf_error_fails_open
-test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_open
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
-test/test_voice_reply.py::TestResolvePiperBinary::test_configured_expanduser
-test/test_voice_reply.py::TestResolvePiperBinary::test_configured_path_not_executable_returns_none
-test/test_voice_reply.py::TestResolvePiperBinary::test_falls_back_to_venv
 test/test_wecom_config_handlers.py::test_save_persists_credentials_and_config
 test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path
 # Added when the CI deselect of this file was removed, so Windows collects it for the

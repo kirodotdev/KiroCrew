@@ -17,12 +17,12 @@ first-class, and neither may add a step to the local path:
   operator consent in :mod:`kiro_crew.aws_consent`.
 
 Compressed input still needs ffmpeg: a Slack voice memo arrives as ogg/Opus and
-the dashboard records webm. Desktop releases carry a pinned imageio-ffmpeg wheel
-with that executable, so desktop users never install a system binary separately --
+the dashboard records webm. Desktop releases carry a pinned audio-only decoder
+executable (:mod:`kiro_crew.stt.decoder`), so desktop users never install a system binary separately --
 except on macOS Intel, whose release ships no decoder and resolves exactly like a
 source install. Source installs use a system FFmpeg from fixed platform paths, or
 the digest-verified store :mod:`kiro_crew.stt.decoder` fetches the same pinned
-upstream bytes into. A 16 kHz mono WAV and live PCM skip the executable entirely.
+bytes into. A 16 kHz mono WAV and live PCM skip the executable entirely.
 
 Two guards here are deliberately provider-independent, because a per-branch copy
 is a copy that will be missing from the next branch someone adds:
@@ -206,6 +206,20 @@ CODE_DISABLED = "stt_disabled"
 #: (every config read here is inside a function, off the event loop).
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
+#: ``config.sections.STT_PROVIDER_LOCAL``, spelled here for the same reason.
+_STT_PROVIDER_LOCAL = "local"
+
+
+def _registered_provider(provider: object) -> Any:
+    """The edition-registered STT provider named *provider* (``PlatformContext.speech``).
+
+    ``None`` for every built-in name, so the built-in branches below keep running
+    exactly as before; a registered name is looked up only when it is not one.
+    """
+    from kiro_crew import speech_providers
+
+    return speech_providers.stt_provider(provider)
+
 
 #: ``stt.enabled`` is on but ``stt.provider`` is ``off``. Its own code, distinct
 #: from :data:`CODE_DISABLED`, because the two name different controls: the
@@ -213,6 +227,12 @@ STT_PROVIDER_OFF = "off"
 #: remedy for a user whose Enabled toggle is already on -- including everyone
 #: whose unknown stored provider the loader degraded onto ``off``.
 CODE_PROVIDER_OFF = "stt_provider_off"
+
+#: The selected provider is one an edition registered, and its ``check()`` says
+#: it cannot run now. Not :data:`CODE_PROVIDER_OFF`: the user chose a provider,
+#: and the dashboard must not say they chose Off. A code the dashboard has no
+#: sentence for, so it shows ``detail`` instead.
+CODE_PROVIDER_UNAVAILABLE = "stt_provider_unavailable"
 
 #: This host cannot run Apple's on-device speech at all (not macOS, or too old a
 #: macOS for the SpeechAnalyzer API). No install fixes it.
@@ -270,8 +290,22 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         return _aws_availability()
     if provider == "apple":
         return _apple_availability()
-    # ``local``: the loader admits only selectable providers, and ``off`` was
-    # answered above, so this is the resident recogniser and nothing else.
+    registered = _registered_provider(provider)
+    if registered is not None:
+        # An edition-registered provider: its own check() answers. BLOCKING, like
+        # every caller of this function already is (each runs it off the loop).
+        from kiro_crew import speech_providers
+
+        status = speech_providers.check_status_sync(registered, stt_config)
+        if status.available:
+            return stt.Availability(True)
+        return stt.Availability(
+            False,
+            CODE_PROVIDER_UNAVAILABLE,
+            status.reason or f"the speech provider {provider!r} cannot run now",
+        )
+    # ``local``: the loader admits only selectable providers, and ``off`` and a
+    # registered name were answered above, so this is the resident recogniser.
     # The first call links the recogniser's native extension, then ``sys.modules``
     # makes it a dictionary lookup. A FAILED import is not cached, so a gateway
     # that booted without the extra picks up a later install with no restart.
@@ -403,10 +437,22 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         result = await _transcribe_aws(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
+    elif (registered := _registered_provider(provider)) is not None:
+        # An edition-registered provider. Same contract as every branch here:
+        # text, "" for silence, or None -- never an exception. Called on this
+        # loop; the provider contract allows no loop-bound state across calls.
+        try:
+            result = await registered.transcribe_file(audio_path, stt_config)
+        except Exception:
+            logger.warning("STT provider %r failed to transcribe", provider, exc_info=True)
+            return None
+        if result is not None and not isinstance(result, str):
+            logger.warning("STT provider %r returned a non-text result", provider)
+            return None
     else:
         # ``local``. The config loader admits only the selectable providers: a
-        # retired name has already become ``local`` and an unknown one ``off``
-        # (refused above), so nothing else reaches this branch.
+        # retired name has already become ``local``, an unknown one ``off``
+        # (refused above), and a registered one was dispatched just above.
         result = await _transcribe_local(audio_path, stt_config)
 
     if result:
@@ -432,7 +478,12 @@ def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-u
     """
     if stt_config is None:
         stt_config = _load_stt_config()
-    if stt_config.provider == "transcribe":
+    # AWS fails loudly, and a provider an edition registered handles its own
+    # length, so neither gets the local decoder's cap (or its duration probe).
+    # Any other name, an unrecognised one included, lands on a built-in decoder
+    # and keeps the ceiling.
+    provider = stt_config.provider
+    if provider == "transcribe" or _registered_provider(provider) is not None:
         return None
     return _MAX_AUDIO_SECS
 
@@ -456,9 +507,13 @@ def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-de
     argument (the one production caller always has it in hand, from the same
     snapshot the readiness/cap/transcribe calls share); it never reads config
     itself, so there is no window for the three answers to describe different
-    providers.
+    providers. An unrecognised name lands on the local decoder, so it splits
+    too; a provider an edition registered handles its own length and does not.
     """
-    return stt_config.provider not in ("transcribe", "apple")
+    provider = stt_config.provider
+    if provider in ("transcribe", "apple"):
+        return False
+    return _registered_provider(provider) is None
 
 
 def _wav_duration_secs(audio_path: str) -> float | None:
@@ -1101,6 +1156,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CustomVocabulary,
         CustomVocabularyListing,
         VocabularyListError,
+        _boto3_importable,
+        _DeferredBoto3,
         _load_aws_transcribe_components,
         _make_temp_ogg,
         _ProfileCredentialResolver,
@@ -1146,6 +1203,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _packaged_ffmpeg_resource,
         _packaged_ffmpeg_version_probe,
         _remove_named_snapshot,
+        _resolve_once,
         _seal_linux_memfd,
         _trusted_site_package_roots,
         _write_all,

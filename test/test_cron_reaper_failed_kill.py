@@ -34,6 +34,7 @@ from kiro_crew import platform_compat
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronService, _RunClaim
 from kiro_crew.cron_history import CronHistoryStore
 from kiro_crew.process_identity import ProcessHandle
+from kiro_crew.testing.wait import async_wait_until
 
 #: Every cron reaper suite pins a healthy free-memory reading (see
 #: ``ample_host_free_memory``): ``test_cron_reaper.py`` fires cron jobs through the
@@ -894,12 +895,13 @@ class TestReaperRecordsAFailedSigkill:
             # teardown runs on into the hang.
             run_teardown = asyncio.create_task(mgr.reset("cron:real1"))
             try:
-                for _ in range(400):
-                    if not mgr.has_session("cron:real1") and provider.shutdown.await_count:
-                        break
-                    # flake-ok: the interval of a bounded poll (400 steps) that re-reads the teardown's state before asserting it
-                    await asyncio.sleep(0.005)
-                assert not mgr.has_session("cron:real1"), "the run's reset did not pop the session"
+                await async_wait_until(
+                    lambda: not mgr.has_session("cron:real1") and provider.shutdown.await_count,
+                    describe=lambda: (
+                        f"session held: {mgr.has_session('cron:real1')}, "
+                        f"shutdowns: {provider.shutdown.await_count}"
+                    ),
+                )
                 assert provider.shutdown.await_count == 1, "the teardown never reached the shutdown"
                 assert mgr.tearing_down("cron:real1") != []
                 # The client's own reset, after a kill it could not confirm,
@@ -988,12 +990,13 @@ class TestReaperRecordsAFailedSigkill:
             provider._client = client
             provider.shutdown = AsyncMock(side_effect=_hung_shutdown)
             teardown = asyncio.create_task(mgr.reset("cron:real2"))
-            for _ in range(400):
-                if not mgr.has_session("cron:real2") and provider.shutdown.await_count:
-                    break
-                # flake-ok: the interval of a bounded poll (400 steps) that re-reads the teardown's state before asserting it
-                await asyncio.sleep(0.005)
-            assert not mgr.has_session("cron:real2"), "the reset did not pop the session"
+            await async_wait_until(
+                lambda: not mgr.has_session("cron:real2") and provider.shutdown.await_count,
+                describe=lambda: (
+                    f"session held: {mgr.has_session('cron:real2')}, "
+                    f"shutdowns: {provider.shutdown.await_count}"
+                ),
+            )
             assert provider.shutdown.await_count == 1, "the teardown never reached the shutdown"
             return provider, teardown
 

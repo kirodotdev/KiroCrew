@@ -492,7 +492,9 @@ def _spool_lock(path: Path) -> Any:
     _refuse_links(path)
     # O_NOFOLLOW on the lock too: a link planted between the check above and
     # this open would otherwise lock (and create) a file somewhere else.
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | _O_NOFOLLOW, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock, os.O_RDWR | _O_NOFOLLOW, 0o600)
     try:
         with file_lock(fd):
             yield

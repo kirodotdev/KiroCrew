@@ -8,14 +8,21 @@ const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./ren
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
+const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
+const { armScrollTouch } = require("./scroll-touch");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
+const {
+  createCloseHandler,
+  getCloseAction,
+  setCloseAction,
+} = require("./close-action");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
   watchFullScreenTransitions,
   repairStalledFullScreenExit,
 } = require("./fullscreen-transition-watch");
-const { createWindowOpenHandler } = require("./external-scheme");
+const { createNavigationGuard, createRedirectGuard, createWindowOpenHandler } = require("./external-scheme");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
@@ -311,6 +318,18 @@ function createWindowLifecycle(options) {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
       log: glog,
     });
+    // Mouse software such as Logitech's Options sends Back/Forward to macOS apps
+    // as swipes; the dashboard, or the browser panel under the cursor, takes each
+    // as a history step.
+    armSwipeHistory(win, view.webContents, {
+      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+      panelUnderCursor: () => browserPanelUnderCursor(win, screen.getCursorScreenPoint()),
+    });
+    // The trackpad's real finger-down / finger-up, so a two-finger drag in the
+    // dashboard releases on the lift-off instead of a guessed gap (macOS only).
+    armScrollTouch(view.webContents, {
+      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+    });
 
     // Teardown order is load-bearing: no embedded view may outlive the page it
     // is composited over. Close the dashboard WebContents only after releasing
@@ -556,8 +575,21 @@ function createWindowLifecycle(options) {
     // An allowed same-origin window.open (the session pop-out) is a child window
     // Electron creates on its own. Give it, and each of its own children, the
     // same handler, or its external links open yet another in-app window.
+    // A pane iframe can top-navigate the dashboard (or a pop-out) to its own
+    // document, which would then hold the dashboard's session grants. Refuse
+    // every renderer-started navigation off this window's own origin.
+    const navigationGuard = createNavigationGuard({
+      getAppOrigin: () => windowBackendUrl,
+      log: glog,
+    });
+    const redirectGuard = createRedirectGuard({
+      getAppOrigin: () => windowBackendUrl,
+      log: glog,
+    });
     const armWindowOpen = (contents) => {
       contents.setWindowOpenHandler(windowOpenHandler);
+      contents.on("will-navigate", navigationGuard);
+      contents.on("will-redirect", redirectGuard);
       contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
     };
     armWindowOpen(view.webContents);
@@ -883,9 +915,15 @@ function createWindowLifecycle(options) {
       rendererRecovery.handleGone(details || {});
     });
 
-    mainWindow.on("close", (event) => {
-      if (!isQuitting()) {
-        event.preventDefault();
+    mainWindow.on("close", createCloseHandler({
+      isQuitting,
+      getAction: () => getCloseAction(store),
+      cancelPendingHide: () => {
+        glog("close: quitting (closeAction=quit)");
+        cancelPendingTrayHide(mainWindow);
+      },
+      requestQuit,
+      hide: () => {
         // macOS must leave its native fullscreen Space before hiding or the Space
         // becomes an orphaned black surface, and the hide that follows is an
         // app-level one: AppKit may have left a full-display overlay on screen
@@ -905,14 +943,15 @@ function createWindowLifecycle(options) {
             fullScreenWatch ? fullScreenWatch.exitSettlingFor() : Infinity
           ),
         });
-        return;
-      }
-      if (saveTimer) {
-        clearTimeout(saveTimer);
-        saveTimer = null;
-      }
-      persist();
-    });
+      },
+      persist: () => {
+        if (saveTimer) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        persist();
+      },
+    }));
 
     return mainWindow;
   }
@@ -987,6 +1026,13 @@ function createWindowLifecycle(options) {
     ]));
     tray.on("click", showFromTray);
     return tray;
+  }
+
+  // Returns the stored value, which the Settings switch renders.
+  function setCloseActionAndLog(value) {
+    const written = setCloseAction(store, value);
+    glog(`closeAction set to ${written}`);
+    return written;
   }
 
   async function promptRemoteHost() {
@@ -1642,6 +1688,10 @@ function createWindowLifecycle(options) {
     setupWindowContents,
     getMainWindow: () => mainWindow,
     getTray: () => tray,
+    closeAction: {
+      get: () => getCloseAction(store),
+      set: setCloseActionAndLog,
+    },
     getSummonWindow,
     focusedDashboardWindow,
     focusedDashboardWebContents,

@@ -1184,7 +1184,9 @@ async def test_import_response_never_carries_a_credential(monkeypatch):
     resp = await _run_import(st, monkeypatch, _valid())
     body = json.loads(resp.body)
 
-    assert set(body) == {"ok", "key", "title", "messages", "resume_mode"}
+    # folder_id names the arrival folder in THIS instance's own sidebar tree so
+    # the client can open it; it is a tree reference, not a credential.
+    assert set(body) == {"ok", "key", "title", "messages", "resume_mode", "folder_id"}
     assert "token" not in json.dumps(body).lower()
 
 

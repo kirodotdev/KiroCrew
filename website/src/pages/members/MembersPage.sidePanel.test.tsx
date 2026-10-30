@@ -6,7 +6,7 @@
  * This file, MembersPage.test.tsx and the other files that import
  * src/test/MembersPageTestUtils.tsx (their shared fixtures) carry the same api
  * mock and module stubs below, word for word: change them together. */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
@@ -31,7 +31,8 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
+    // The side panel opens Files only for a slot confirmed to run locally.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -69,7 +70,7 @@ vi.mock('../../api/client', () => ({
       get: vi.fn(() => Promise.resolve({
         slug: '', member: '', goals: [],
         key_results: [], reports: [], removed_key_result: null, removed_goal: null,
-        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1 },
+        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60 },
         limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
       })),
     },
@@ -218,7 +219,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 // The profile settings write the live slot; the stub shows which slot the page
 // handed it, so a refused thread is proven to get none.
@@ -235,13 +235,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
       <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
         {slotKey}
-        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -288,6 +287,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 import { api } from '../../api/client'
 import { resetDashboardOnLoad } from './dashboardOnLoad'
+import { swipeTiming, SWIPE_GESTURE_IDLE_MS } from '../../hooks/useTrackpadSwipe'
 import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS } from './MembersPage'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
@@ -319,9 +319,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -465,8 +462,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // team creation is hidden for the phase.
     fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
     const addMenu = await screen.findByTestId('member-add-menu')
-    // New crewmate only; no team door.
-    expect(within(addMenu).getAllByRole('menuitem')).toHaveLength(1)
+    // New crewmate and Import from file only; no team door.
+    expect(within(addMenu).getAllByRole('menuitem')).toHaveLength(2)
     expect(screen.queryByTestId('member-add-team')).toBeNull()
     await closeAddMenu()
 
@@ -501,6 +498,32 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await waitFor(() => expect(screen.getByTestId('crewmate-switcher')).toHaveFocus())
   })
 
+  it('the "Show the full roster" pin survives leaving the page and coming back (issue #19464)', async () => {
+    const rows = [
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research' }),
+    ]
+    const classes = () => screen.getByTestId('member-roster').className.split(/\s+/)
+    const first = await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).not.toContain('md:flex')
+    fireEvent.click(screen.getByTestId('crewmate-switcher'))
+    fireEvent.click(await screen.findByTestId('crewmate-switcher-roster'))
+    await waitFor(() => expect(classes()).toContain('md:flex'))
+    // Navigating away unmounts the page; coming back mounts it fresh.
+    first.unmount()
+    const second = await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).toContain('md:flex')
+    // Lifting the pin is remembered the same way.
+    fireEvent.click(screen.getByTestId('member-roster-hide'))
+    await waitFor(() => expect(classes()).not.toContain('md:flex'))
+    second.unmount()
+    await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).not.toContain('md:flex')
+  })
+
   it('a team view keeps the roster column beside it on desktop, pinned or not — it is the only way back', async () => {
     // TeamView's Back is md:hidden and the team header carries no switcher, so
     // a desktop /members?team=<id> with the roster folded had no exit at all.
@@ -521,7 +544,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(classes()).not.toContain('md:flex')
   })
 
-  it('the side panel has Dashboard and Files as its two standing tabs', async () => {
+  it('the side panel has Dashboard and Workspace as its two standing tabs', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-dashboard')
@@ -529,7 +552,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const leading = within(screen.getByTestId('side-panel-leading-tabs')).getAllByRole('tab')
     expect(leading).toHaveLength(1)
     expect(leading[0]).toHaveAccessibleName('Dashboard')
-    expect(screen.getByRole('tab', { name: 'Files' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Workspace' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Notes' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Work log' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Schedules' })).toBeNull()
@@ -558,25 +581,725 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
 
     it('reopens on Dashboard after a reload even when Files was focused', async () => {
       const first = await openOncall()
-      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       first.unmount()
       // The strip keeps its stored focus on Files, as the persisted bucket does
       // across a reload; the reload itself is the module state starting over.
       resetDashboardOnLoad()
       await openOncall()
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
-      expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'false')
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'false')
     })
 
     it('keeps the tab the person picked on an in-app return', async () => {
       const first = await openOncall()
-      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       first.unmount()
       await openOncall()
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       expect(dashTab()).toHaveAttribute('aria-selected', 'false')
+    })
+  })
+
+  describe('a two-finger trackpad swipe moves the side panel on desktop', () => {
+    // These cases look at the screen between two halves of one swipe; a slow
+    // assertion must not read as the fingers lifting (the real gap is 70ms).
+    beforeEach(() => { swipeTiming.idleMs = 400 })
+    afterEach(() => { swipeTiming.idleMs = SWIPE_GESTURE_IDLE_MS })
+    const dashTab = () => screen.getByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)
+    /** A trackpad run: `n` wheel events on `target`, each `dx`/`dy`. Returns
+     *  how many the page cancelled. */
+    const swipe = (target: Element, dx: number, n = 12, init: WheelEventInit = {}, dy = 0) => {
+      let cancelled = 0
+      act(() => {
+        for (let i = 0; i < n; i++) {
+          const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true, ...init })
+          // The test DOM drops modifier keys from a WheelEvent's init.
+          if (init.ctrlKey) Object.defineProperty(ev, 'ctrlKey', { value: true })
+          target.dispatchEvent(ev)
+          if (ev.defaultPrevented) cancelled++
+        }
+      })
+      return cancelled
+    }
+    const openOncall = async () => {
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: '/members?member=oncall' })
+      return screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    }
+
+    /** The sheet's live offset while it slides, px from its resting place. */
+    const slideX = () => {
+      const el = screen.getByTestId('member-side-panel-slide') as HTMLElement
+      const m = /translate(?:X|3d)\((-?[\d.]+)px/.exec(el.style.transform)
+      return m ? Number(m[1]) : 0
+    }
+    const sliding = () => screen.queryByTestId('member-side-panel')?.getAttribute('data-sliding') === 'true'
+
+    it('a leftward run drags a hidden panel in under the fingers, then settles open on Dashboard', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      // Fingers moving left: a trackpad reports a positive deltaX.
+      expect(swipe(chat, 20, 5)).toBe(5)
+      // Mid-drag: the sheet is out, and sits as far in as the fingers took it.
+      expect(sliding()).toBe(true)
+      const travel = window.innerWidth
+      await waitFor(() => expect(slideX()).toBeCloseTo(travel - 100, 0))
+      swipe(chat, 20, 5)
+      await waitFor(() => expect(slideX()).toBeCloseTo(travel - 200, 0))
+      // Past the commit share, then the fingers lift: it settles open, docked.
+      swipe(chat, 20, 20)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    })
+
+    /** The width the chat gives up for the sheet during a desktop drag, px. */
+    const spacerW = () => {
+      const el = screen.queryByTestId('member-side-panel-spacer') as HTMLElement | null
+      return el ? parseFloat(el.style.width || '0') : null
+    }
+
+    it('opening: the chat gives up exactly the visible part of the panel', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      expect(spacerW()).toBeNull()
+      swipe(chat, 20, 5)
+      await waitFor(() => expect(spacerW()).toBeCloseTo(100, 0))
+      swipe(chat, 20, 5)
+      await waitFor(() => expect(spacerW()).toBeCloseTo(200, 0))
+      swipe(chat, 20, 20)
+      // Settled: the docked column takes the spacer's place.
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(spacerW()).toBeNull()
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+    })
+
+    it("closing: the chat takes the panel's width back as the drag goes", async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      expect(spacerW()).toBeNull()
+      // The spacer starts at the whole column and shrinks with the drag.
+      swipe(chat, -20, 5)
+      await waitFor(() => expect(spacerW()).toBeCloseTo(window.innerWidth - 100, 0))
+      swipe(chat, -20, 25)
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(spacerW()).toBeNull()
+    })
+
+    it('a new run grabs an opening settle mid-way: it stops there, follows from that offset, and the rule decides again', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const travel = window.innerWidth
+      // 400px in, then the fingers lift: past the share, so it settles open.
+      swipe(chat, 20, 20)
+      // Catch the settle mid-way, between where the fingers left it and open.
+      let mid = 0
+      await waitFor(() => {
+        mid = slideX()
+        expect(mid).toBeGreaterThan(40)
+        expect(mid).toBeLessThan(travel - 400 - 20)
+      }, { timeout: 3000, interval: 10 })
+      // A rightward run now: 300px back out, followed 1:1 from the live offset.
+      const before = slideX()
+      swipe(chat, -20, 15)
+      // The first painted offset after the run: before the run's own release
+      // can settle anywhere, so it is the drag's, not a later settle passing by.
+      await waitFor(() => expect(slideX()).not.toBe(before))
+      const grabbed = slideX()
+      expect(grabbed).toBeGreaterThanOrEqual(Math.min(travel, mid + 280))
+      expect(grabbed).toBeLessThanOrEqual(Math.min(travel, mid + 340))
+      expect(spacerW()).toBeCloseTo(travel - grabbed, 0)
+      // Past the share toward closed, lifted with no speed: it closes.
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it("closing: the spacer starts at the docked column's own width, so the chat does not collapse", async () => {
+      const chat = await openOncall()
+      const panel = await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      // A real layout: the docked column is 818px wide on a wider window. (This
+      // test DOM has no layout, so the measure is stood in for.)
+      const COLUMN = 818
+      const realRect = panel.getBoundingClientRect.bind(panel)
+      panel.getBoundingClientRect = () => ({ ...realRect().toJSON(), width: COLUMN }) as DOMRect
+      swipe(chat, -20, 5)
+      // The chat gives back exactly what the panel has moved, from the column's
+      // width: never the window's, which collapsed the chat on every close.
+      await waitFor(() => expect(spacerW()).toBeCloseTo(COLUMN - 100, 0))
+      expect(slideX()).toBeCloseTo(100, 0)
+    })
+
+    /** Stand in for the slide's laid-out width (this test DOM has no layout).
+     *  On the prototype, because the drag start mounts the slide afresh. */
+    const slideWidth = (w: number) => {
+      const real = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+        configurable: true,
+        get(this: HTMLElement) { return this.dataset.testid === 'member-side-panel-slide' ? w : real.get!.call(this) },
+      })
+      onTestFinished(() => { Object.defineProperty(HTMLElement.prototype, 'offsetWidth', real) })
+    }
+
+    it("overlay placement: the travel is the panel's own width, not the scrim's, so a 39% drag closes", async () => {
+      // Narrower than a docked column needs: the panel is an overlay, and
+      // #member-side-panel is the full-window scrim around it.
+      setWindowWidth(900)
+      const chat = await openOncall()
+      fireEvent.click(await screen.findByTestId('member-panel-toggle'))
+      const panel = await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      expect(panel).toHaveAttribute('data-placement', 'overlay')
+      // A real layout (this test DOM has none): the scrim spans the window, the
+      // panel inside it is 384px.
+      const PANEL = 384
+      const realRect = panel.getBoundingClientRect.bind(panel)
+      panel.getBoundingClientRect = () => ({ ...realRect().toJSON(), width: 900 }) as DOMRect
+      slideWidth(PANEL)
+      // 150px of 384 is 39%, past the share: it must close, not spring back.
+      swipe(chat, -15, 10)
+      await waitFor(() => expect(slideX()).toBeCloseTo(150, 0))
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+    })
+
+    it('overlay placement: a long drag stops at the panel width', async () => {
+      setWindowWidth(900)
+      const chat = await openOncall()
+      fireEvent.click(await screen.findByTestId('member-panel-toggle'))
+      const panel = await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      const realRect = panel.getBoundingClientRect.bind(panel)
+      panel.getBoundingClientRect = () => ({ ...realRect().toJSON(), width: 900 }) as DOMRect
+      slideWidth(384)
+      swipe(chat, -20, 30)
+      await waitFor(() => expect(slideX()).toBeCloseTo(384, 0))
+    })
+
+    it('a short leftward run lets the panel fall back out', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      swipe(chat, 4, 3)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it('a leftward run brings the Dashboard forward when another tab is showing', async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
+      swipe(chat, 15)
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+      expect(sliding()).toBe(false)
+    })
+
+    it('a rightward run drags the open panel out with the fingers, then settles closed', async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      swipe(chat, -20, 5)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(slideX()).toBeCloseTo(100, 0))
+      swipe(chat, -20, 25)
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it('a short rightward run lets the open panel settle back in', async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      swipe(chat, -4, 3)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).not.toBe('0')
+    })
+
+    it('a short rightward run over Workspace falls back open and stays on Workspace', async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
+      swipe(chat, -4, 3)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
+    })
+
+    it('a run still drags with text selected: a trackpad swipe is never a selection drag', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const text = document.createElement('p')
+      text.textContent = 'some selected words'
+      chat.appendChild(text)
+      onTestFinished(() => { window.getSelection()?.removeAllRanges(); text.remove() })
+      const range = document.createRange()
+      range.selectNodeContents(text)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+      expect(window.getSelection()?.isCollapsed).toBe(false)
+      swipe(chat, 20, 5)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(slideX()).toBeCloseTo(window.innerWidth - 100, 0))
+      swipe(chat, 20, 20)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+    })
+
+    it('a genuine click right after a trackpad drag lets go is not swallowed', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const btn = document.createElement('button')
+      let clicks = 0
+      btn.addEventListener('click', () => { clicks++ })
+      chat.appendChild(btn)
+      onTestFinished(() => btn.remove())
+      // A click during the drag and one the moment it has settled both land.
+      swipe(chat, 20, 20)
+      expect(sliding()).toBe(true)
+      fireEvent.click(btn)
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      fireEvent.click(btn)
+      expect(clicks).toBe(2)
+    })
+
+    /** Wheel events at explicit event times, as a trackpad stamps them. */
+    const wheelSeq = (target: Element, steps: Array<[dx: number, at: number]>) => act(() => {
+      for (const [dx, at] of steps) {
+        const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: at })
+        target.dispatchEvent(ev)
+      }
+    })
+    /** `n` steps of `dx`, `gap` ms apart, from `t0`. */
+    const steps = (dx: number, n: number, t0: number, gap = 16): Array<[number, number]> =>
+      Array.from({ length: n }, (_, i) => [dx, t0 + i * gap])
+    /** A trackpad momentum tail: `n` steps decaying by `ratio`, 16ms apart. */
+    const tailSteps = (dx: number, n: number, t0: number, ratio = 0.85): Array<[number, number]> =>
+      Array.from({ length: n }, (_, i) => [dx * ratio ** (i + 1), t0 + (i + 1) * 16])
+
+    it('a slow 15% drag that lifts off snaps back: the panel follows, then falls back out', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const travel = window.innerWidth
+      const n = Math.round((travel * 0.15) / 3)
+      const t0 = performance.now()
+      wheelSeq(chat, steps(3, n, t0))
+      // It follows the fingers 1:1 and holds there.
+      await waitFor(() => expect(slideX()).toBeCloseTo(travel - 3 * n, 0))
+      expect(spacerW()).toBeCloseTo(3 * n, 0)
+      // Lifted with no momentum: the phone's rule sends 15% back.
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it('a slow drag with a 60ms pause keeps following through the pause', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const travel = window.innerWidth
+      const t0 = performance.now()
+      wheelSeq(chat, steps(3, 20, t0))
+      await waitFor(() => expect(slideX()).toBeCloseTo(travel - 60, 0))
+      wheelSeq(chat, steps(3, 20, t0 + 19 * 16 + 60))
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(slideX()).toBeCloseTo(travel - 120, 0))
+    })
+
+    it('a fast 10% flick with a momentum tail opens the panel', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const travel = window.innerWidth
+      const per = Math.round((travel * 0.1) / 4)
+      const t0 = performance.now()
+      wheelSeq(chat, [...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    })
+
+    /** A trackpad turning back: the fingers go one way, then come back with
+     *  steps that shrink by 0.8, the size pattern of a tail. */
+    const REVERSAL = [20, 20, 20, 20, -16, -12.8, -10.24]
+
+    it('a drag that turns back with shrinking steps follows the turn: 40.96px in, no speed, it falls back out', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const t0 = performance.now()
+      wheelSeq(chat, REVERSAL.map((dx, i) => [dx, t0 + i * 16] as [number, number]))
+      // Read as a tail, the turn was dropped and the drag released on the way
+      // in, at the opening speed: it settled open.
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it('under reduced motion, a turn back counts against the swipe: 60.96px is not a clear swipe', async () => {
+      const real = window.matchMedia
+      window.matchMedia = ((q: string) => ({
+        matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => { window.matchMedia = real })
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      // The run ends on the quiet timer, then one frame: both stepped by hand.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+      onTestFinished(() => { vi.useRealTimers() })
+      const t0 = performance.now()
+      // Read as a tail, the turn was dropped: a 100px swipe, which opened.
+      wheelSeq(chat, [20, ...REVERSAL].map((dx, i) => [dx, t0 + i * 16] as [number, number]))
+      act(() => {
+        vi.advanceTimersByTime(swipeTiming.idleMs)
+        vi.advanceTimersToNextFrame()
+      })
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
+    })
+
+    it("widening mid phone close stops the close: its end never writes the phone's offset onto the docked panel", async () => {
+      // A compositor settle, stood in for (this test DOM has no WAAPI): each
+      // animation is recorded, and finishes only when the test says.
+      type FakeAnim = { cancel: ReturnType<typeof vi.fn>; onfinish: (() => void) | null; oncancel: (() => void) | null; to: string }
+      const anims: FakeAnim[] = []
+      const proto = HTMLElement.prototype as unknown as { animate?: unknown }
+      const realAnimate = proto.animate
+      proto.animate = function (frames: Keyframe[]) {
+        const a: FakeAnim = { cancel: vi.fn(), onfinish: null, oncancel: null, to: String(frames[frames.length - 1]?.transform ?? '') }
+        anims.push(a)
+        return a
+      }
+      const real = window.matchMedia
+      const phone = ((q: string) => ({
+        matches: q.includes('max-width'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => {
+        proto.animate = realAnimate
+        window.matchMedia = real
+        setWindowWidth(WIDE_WINDOW)
+      })
+      setWindowWidth(390)
+      window.matchMedia = phone
+      await openOncall()
+      fireEvent.click(screen.getByTestId('member-panel-toggle'))
+      const overlay = await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      expect(overlay).toHaveAttribute('data-placement', 'overlay')
+      // The scrim closes it: a compositor settle out to the phone's travel.
+      const before = anims.length
+      fireEvent.click(overlay)
+      await waitFor(() => expect(anims.length).toBeGreaterThan(before))
+      const closing = anims[anims.length - 1]
+      expect(closing.to).toContain('390px')
+      // Wider than a docked column needs, before that settle ends.
+      act(() => {
+        setWindowWidth(WIDE_WINDOW)
+        window.matchMedia = real
+        window.dispatchEvent(new Event('resize'))
+      })
+      await waitFor(() => expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked'))
+      expect(closing.cancel).toHaveBeenCalled()
+      // Its end, had it been left running: nothing may land on the panel.
+      act(() => { closing.onfinish?.() })
+      expect(screen.getByTestId('member-side-panel-slide').style.transform).not.toContain('390px')
+    })
+
+    it('crossing to the phone layout mid-drag retires the desktop drag, so widening again redocks the panel', async () => {
+      const chat = await openOncall()
+      await screen.findByTestId('member-side-panel', undefined, PANE_READY)
+      swipe(chat, -20, 5)
+      expect(sliding()).toBe(true)
+      const real = window.matchMedia
+      const phone = ((q: string) => ({
+        matches: q.includes('max-width'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => { window.matchMedia = real; window.dispatchEvent(new Event('resize')) })
+      act(() => { window.matchMedia = phone; window.dispatchEvent(new Event('resize')) })
+      act(() => { window.matchMedia = real; window.dispatchEvent(new Event('resize')) })
+      // Back on desktop: the docked column, not a sheet stranded mid-slide.
+      await waitFor(() => expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked'))
+      expect(sliding()).toBe(false)
+      expect(spacerW()).toBeNull()
+    })
+
+    it('under reduced motion, [20,20,20,15,12] then silence is an 87px swipe and opens', async () => {
+      const real = window.matchMedia
+      window.matchMedia = ((q: string) => ({
+        matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => { window.matchMedia = real })
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const t0 = performance.now()
+      wheelSeq(chat, [[20, t0], [20, t0 + 30], [20, t0 + 60], [15, t0 + 90], [12, t0 + 120]])
+      await screen.findByTestId('member-side-panel', undefined, { timeout: 3000 })
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+    })
+
+    it('arms the Dashboard frame relay only while the desktop swipe listens', async () => {
+      await openOncall()
+      const host = await screen.findByTestId('member-dashboard')
+      const said: Array<{ type: string; on: boolean }> = []
+      const frame = document.createElement('iframe')
+      // Our relaying Dashboard frame carries the mark the host arms by.
+      frame.setAttribute('data-wheel-relay', '')
+      const win = { postMessage: (m: { type: string; on: boolean }) => { said.push(m) } }
+      Object.defineProperty(frame, 'contentWindow', { value: win })
+      host.appendChild(frame)
+      // A foreign iframe under the same root is never told anything, not even
+      // when it sends the hello itself.
+      const heard: unknown[] = []
+      const foreign = document.createElement('iframe')
+      const foreignWin = { postMessage: (m: unknown) => { heard.push(m) } }
+      Object.defineProperty(foreign, 'contentWindow', { value: foreignWin })
+      host.appendChild(foreign)
+      act(() => {
+        const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel-hello' } })
+        Object.defineProperty(ev, 'source', { value: foreignWin })
+        window.dispatchEvent(ev)
+      })
+      // The frame says hello as it starts; a listening host arms it.
+      act(() => {
+        const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel-hello' } })
+        Object.defineProperty(ev, 'source', { value: win })
+        window.dispatchEvent(ev)
+      })
+      expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: true })
+      // Below the desktop width the swipe stops listening: the frame is disarmed,
+      // so it no longer cancels the browser's own swipe over it.
+      const real = window.matchMedia
+      onTestFinished(() => { window.matchMedia = real; window.dispatchEvent(new Event('resize')) })
+      act(() => {
+        window.matchMedia = ((q: string) => ({
+          matches: q.includes('max-width'), media: q, onchange: null,
+          addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+          dispatchEvent: () => false,
+        })) as typeof window.matchMedia
+        window.dispatchEvent(new Event('resize'))
+      })
+      await waitFor(() => expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: false }))
+      expect(heard).toEqual([])
+    })
+
+    it('a run over a horizontal scroller inside a shadow root scrolls it instead of opening', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const host = document.createElement('div')
+      chat.appendChild(host)
+      onTestFinished(() => host.remove())
+      const shadow = host.attachShadow({ mode: 'open' })
+      const scroller = document.createElement('div')
+      scroller.style.overflowX = 'auto'
+      Object.defineProperty(scroller, 'scrollWidth', { value: 900 })
+      Object.defineProperty(scroller, 'clientWidth', { value: 300 })
+      const code = document.createElement('pre')
+      scroller.appendChild(code)
+      shadow.appendChild(scroller)
+      let cancelled = 0
+      let reached = 0
+      const page = screen.getByTestId('members-page')
+      const count = () => { reached++ }
+      page.addEventListener('wheel', count)
+      onTestFinished(() => page.removeEventListener('wheel', count))
+      act(() => {
+        for (let i = 0; i < 12; i++) {
+          const ev = new WheelEvent('wheel', { deltaX: 15, deltaY: 0, bubbles: true, cancelable: true, composed: true })
+          // A browser retargets the event to the shadow HOST for a listener
+          // outside the root; this test DOM does not, so do it here. Only the
+          // composed path still reaches the scroller.
+          Object.defineProperty(ev, 'target', { get: () => host })
+          code.dispatchEvent(ev)
+          if (ev.defaultPrevented) cancelled++
+        }
+      })
+      // The events did cross the shadow boundary to the page, and were left alone.
+      expect(reached).toBe(12)
+      expect(cancelled).toBe(0)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
+
+    it('under reduced motion, a run ended by the next (vertical) event still switches the panel', async () => {
+      const real = window.matchMedia
+      window.matchMedia = ((q: string) => ({
+        matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => { window.matchMedia = real })
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      const at0 = performance.now()
+      const wheelAt = (dx: number, dy: number, t: number) => {
+        const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: t })
+        chat.dispatchEvent(ev)
+      }
+      act(() => {
+        // A clear 120px leftward swipe, then a vertical scroll just past the gap:
+        // the scroll is what ends the swipe, before the quiet timer can.
+        for (let i = 0; i < 6; i++) wheelAt(20, 0, at0 + i * 16)
+        wheelAt(0, 30, at0 + 5 * 16 + swipeTiming.idleMs + 2)
+      })
+      await screen.findByTestId('member-side-panel', undefined, { timeout: 3000 })
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+    })
+
+    it('under reduced motion there is no live drag: a clear swipe switches once at the end', async () => {
+      const real = window.matchMedia
+      window.matchMedia = ((q: string) => ({
+        matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+        addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+      onTestFinished(() => { window.matchMedia = real })
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      swipe(chat, 20, 10)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      await screen.findByTestId('member-side-panel', undefined, { timeout: 3000 })
+      expect(sliding()).toBe(false)
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+    })
+
+    // Each case on its own page: one run that is not ours would otherwise hold
+    // the next run that follows it within the gesture gap.
+    it('leaves a vertical scroll alone, even one drifting sideways', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      expect(swipe(chat, 6, 12, {}, 30)).toBe(0)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
+
+    it('leaves a pinch zoom (ctrlKey wheel) alone', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      expect(swipe(chat, 15, 12, { ctrlKey: true })).toBe(0)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
+
+    it('leaves a run over a sideways scroller that can still move to that scroller', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      const chat = await openOncall()
+      // A wide code block that can still scroll right takes the run itself.
+      const scroller = document.createElement('div')
+      scroller.style.overflowX = 'auto'
+      Object.defineProperty(scroller, 'scrollWidth', { value: 900 })
+      Object.defineProperty(scroller, 'clientWidth', { value: 300 })
+      const code = document.createElement('pre')
+      scroller.appendChild(code)
+      chat.appendChild(scroller)
+      expect(swipe(code, 15)).toBe(0)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      scroller.remove()
+    })
+
+    /** An iframe with its own stand-in window: the test DOM gives every frame a
+     *  null `contentWindow`, which would make any two frames look the same. */
+    const frameIn = (parent: Element) => {
+      const frame = document.createElement('iframe')
+      Object.defineProperty(frame, 'contentWindow', { value: { name: 'frame-window' } })
+      parent.appendChild(frame)
+      return frame
+    }
+    const relayFrom = (frame: HTMLIFrameElement, dx: number, n = 30) => act(() => {
+      for (let i = 0; i < n; i++) {
+        const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx, dy: 0, mode: 0 } })
+        Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+        window.dispatchEvent(ev)
+      }
+    })
+
+    it('a relayed drag that turns back with shrinking steps follows the turn and stays open', async () => {
+      await openOncall()
+      const frame = frameIn(await screen.findByTestId('member-dashboard'))
+      const t0 = performance.now()
+      act(() => {
+        REVERSAL.forEach((dx, i) => {
+          const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx: -dx, dy: 0, mode: 0 } })
+          Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+          Object.defineProperty(ev, 'timeStamp', { value: t0 + i * 16 })
+          window.dispatchEvent(ev)
+        })
+      })
+      expect(sliding()).toBe(true)
+      // Read as a tail, the turn was dropped and the drag released at the
+      // closing speed: it shut. Followed, it is 40.96px out with no speed.
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).not.toBe('0')
+    })
+
+    it('a relayed burst delivered late is read at the wheels\' own times: slow fingers fall back open', async () => {
+      await openOncall()
+      const frame = frameIn(await screen.findByTestId('member-dashboard'))
+      // Five -3px steps 16ms apart (0.19px/ms), then a momentum tail, all
+      // stamped by the frame 300ms ago and delivered in one burst after a stall,
+      // 1ms apart here.
+      const wheelAt = performance.now() - 300
+      const finger = Array.from({ length: 5 }, (_, i) => [-3, wheelAt + i * 16] as const)
+      const tail = Array.from({ length: 4 }, (_, k) => [-3 * 0.85 ** (k + 1), wheelAt + 64 + (k + 1) * 16] as const)
+      const received = performance.now()
+      act(() => {
+        ;[...finger, ...tail].forEach(([dx, at], i) => {
+          const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx, dy: 0, mode: 0, t: performance.timeOrigin + at } })
+          Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+          Object.defineProperty(ev, 'timeStamp', { value: received + i })
+          window.dispatchEvent(ev)
+        })
+      })
+      // Read at the arrival times, the same 12px took 4ms (3px/ms), a flick
+      // that shut the panel.
+      await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+      expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked')
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).not.toBe('0')
+    })
+
+    it('a rightward run relayed from the Dashboard frame drags the panel shut; a stranger frame cannot', async () => {
+      await openOncall()
+      const frame = frameIn(await screen.findByTestId('member-dashboard'))
+      const stranger = frameIn(document.body)
+      onTestFinished(() => stranger.remove())
+      relayFrom(stranger, -20)
+      expect(sliding()).toBe(false)
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).not.toBe('0')
+      relayFrom(frame, -20, 5)
+      expect(sliding()).toBe(true)
+      await waitFor(() => expect(slideX()).toBeCloseTo(100, 0))
+      relayFrom(frame, -20, 25)
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+    })
+
+    /** The Dashboard stays mounted behind Files once visited, frame and all. */
+    const dashboardFrameBehindFiles = async () => {
+      await openOncall()
+      const frame = frameIn(await screen.findByTestId('member-dashboard'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
+      expect(frame.isConnected).toBe(true)
+      return frame
+    }
+
+    // One run per page: a run the page declined holds every event that follows
+    // it within the gesture gap, so a second run here would prove nothing.
+    it('a hidden Dashboard frame cannot pull the panel back to its own tab', async () => {
+      const frame = await dashboardFrameBehindFiles()
+      relayFrom(frame, 20)
+      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
+      expect(sliding()).toBe(false)
+    })
+
+    it('a hidden Dashboard frame cannot drag the panel shut', async () => {
+      const frame = await dashboardFrameBehindFiles()
+      relayFrom(frame, -20)
+      expect(sliding()).toBe(false)
+      expect(screen.getByTestId('member-side-panel')).toBeInTheDocument()
     })
   })
 
@@ -685,6 +1408,28 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
 
     await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('a working icon face flies with its framed root counter-scaled, not its bare inner image', async () => {
+    // A working icon draws its border and round corner on the motion root; the
+    // image it moves has none. The flight must hold THAT border's size.
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({
+      bound: true, slot_key: 'member-oncall', running: true,
+      avatar: { kind: 'icon', pose: 'pose-3', bg: '#25679d' },
+    })])
+    fireEvent.click(await rosterRow('oncall'))
+    const pillFace = await screen.findByTestId('member-pill-face')
+    vi.spyOn(pillFace, 'getBoundingClientRect').mockReturnValue(
+      { x: 640, y: 14, left: 640, top: 14, right: 670, bottom: 44, width: 30, height: 30, toJSON: () => ({}) } as DOMRect,
+    )
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    const flight = await screen.findByTestId('crew-face-flight')
+    const root = flight.querySelector('[data-testid="crew-icon-motion"]') as HTMLElement
+    expect(root).not.toBeNull()
+    expect(root.style.borderWidth).not.toBe('')
+    expect((root.querySelector('img') as HTMLElement).style.borderWidth).toBe('')
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
   })
 
   it('re-docking during the undock exit leaves the card face painted once the flight lands', async () => {
@@ -805,7 +1550,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it("Goals' track row sends a visible message to the mate and closes the floating card", async () => {
+  /** The New goal modal's one button: the opening message into this mate's thread. */
+  const NEW_GOAL_MESSAGE = 'I want to set a goal for you. Ask me what matters, then write it down for me to approve.'
+  async function sendNewGoal() {
+    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
+    fireEvent.click(await screen.findByTestId('crew-goals-add'))
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' })
+    fireEvent.click(within(dialog).getByTestId('crew-goals-new-goal-send'))
+  }
+
+  it("Goals' New goal modal sends a visible message to the mate and closes the floating card", async () => {
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>
     sendMock.mockClear()
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -813,20 +1567,19 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await screen.findByTestId('side-panel-root')
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
     await screen.findByTestId('crew-profile-modal')
-    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
-    fireEvent.click(await screen.findByTestId('crew-goals-track'))
-    fireEvent.change(await screen.findByTestId('crew-goals-track-input'), { target: { value: 'The release date' } })
-    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    await sendNewGoal()
     await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
     const [message, slot, , , meta] = sendMock.mock.calls[0]
-    // The ordinary send path: the user's own words, no hidden nudge.
-    expect(message).toBe('Please track this for me: The release date')
+    // The ordinary send path: the message as the user's own, no hidden nudge.
+    expect(message).toBe(NEW_GOAL_MESSAGE)
     expect(slot).toBe('member-oncall')
     expect(meta).toBeUndefined()
+    // Delivered: the modal closes, and so does the card floating over the thread.
     await waitFor(() => expect(screen.queryByTestId('crew-profile-modal')).toBeNull(), { timeout: 3000 })
+    expect(screen.queryByRole('dialog', { name: 'New goal' })).toBeNull()
   })
 
-  it("Goals' track row leaves the docked card open", async () => {
+  it("Goals' New goal modal leaves the docked card open", async () => {
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>
     sendMock.mockClear()
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -834,11 +1587,13 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await rosterRow('oncall'))
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
     await screen.findByTestId('crew-profile-docked')
-    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
-    fireEvent.click(await screen.findByTestId('crew-goals-track'))
-    fireEvent.change(await screen.findByTestId('crew-goals-track-input'), { target: { value: 'The release date' } })
-    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    await sendNewGoal()
     await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
+    const [message, slot, , , meta] = sendMock.mock.calls[0]
+    expect(message).toBe(NEW_GOAL_MESSAGE)
+    expect(slot).toBe('member-oncall')
+    expect(meta).toBeUndefined()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New goal' })).toBeNull())
     expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
   })
 
@@ -1000,15 +1755,18 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(navigateSpy).not.toHaveBeenCalled()
   })
 
-  it('withholds only the unfed views, Command Center and Artifacts: Dashboard + Files stand, the + menu keeps its dynamic views', async () => {
+  it('withholds the unfed views, Command Center, Artifacts, Subagents, Workflows, Git and diagnostics: Dashboard + Workspace stand', async () => {
     // The set is the contract: every view fed by ChatPage-owned transcript
     // indexes plus the session Summary (MEMBERS_UNFED_VIEWS), the chat page's
-    // Command Center (the Dashboard tab is the one dashboard entrance here) and
+    // Command Center (the Dashboard tab is the one dashboard entrance here),
     // Artifacts — pinned on the chat page, but this page's standing set is
-    // Dashboard + Files. Nothing else: Terminal, Browser, Git, Subagents,
-    // Workflows, the Developer-Mode views and app tabs stay reachable from +.
+    // Dashboard + Files —, Subagents, Workflows, Git and the diagnostics group
+    // (Logs, Context, Crew log). Terminal, Browser, Side Chat and app tabs
+    // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
-    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts'].sort())
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
+      [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'workflows', 'git', 'logs', 'context', 'crewlog'].sort(),
+    )
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('terminal')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('app')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('side')
@@ -1028,17 +1786,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
     })
-    // Standing tabs: Dashboard (leading) + Files (pinned) — no Artifacts, no Changes.
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Files'])
+    // Standing tabs: Dashboard (leading) + Files (pinned, labelled Workspace
+    // here) — no Artifacts, no Changes.
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Workspace'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser', 'Git', 'Subagents', 'Workflows']) {
+    for (const name of ['Side Chat', 'Terminal', 'Browser']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
-    for (const name of ['Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center']) {
+    for (const name of [
+      'Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center',
+      'Subagents', 'Workflows', 'Git', 'Logs', 'Context breakdown', 'Crew log',
+    ]) {
       expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
     }
   })
@@ -1054,7 +1816,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/home/me/repos/oncall-desk' }] as never))
     })
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
     const files = await screen.findByTestId('files-home-stub')
     expect(files).toHaveAttribute('data-project-dir', '/home/me/repos/oncall-desk')
     // The Profile's Workspace tile still names the workspace, as a name. The
@@ -1074,12 +1836,12 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(pill).toHaveAccessibleName(/oncall/)
   })
 
-  it('the "+" menu offers New mate only: no Advanced or guided-flow rows', async () => {
+  it('the "+" menu offers New mate and Import from file only: no Advanced or guided-flow rows', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate', 'Import from file'])
   })
 
   it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
@@ -1095,16 +1857,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // The card is now a Radix-less Modal (role="dialog"), holding the look.
     const dialog = screen.getByRole('dialog')
     expect(dialog).toContainElement(screen.getByTestId('crewmate-create-look'))
-    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
     // Advanced settings unfolds inline, in the same card.
     fireEvent.click(screen.getByTestId('crewmate-create-advanced-toggle'))
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     // The modal's own header X ("Close") is the way out, in place of the old
     // in-place card's Cancel.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     await clickAddAdvanced()
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
     expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')

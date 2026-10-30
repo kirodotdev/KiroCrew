@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import type { NavigateFunction } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 
-import { useAppDispatch, useAppSelector } from '../../store'
-import { createSlot, setPendingInput } from '../../store/chatSlice'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from '../NavigationLeaveGuard'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
+import { setPendingInput } from '../../store/chatSlice'
+import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useMayLeaveForNavigation, useIsCurrentUrl, useAskingNavigate } from '../NavigationLeaveGuard'
 
 /**
  * Shared §2 Enter-matrix engine for the Search Everywhere command palette.
@@ -72,10 +73,9 @@ export function resolveInvokableEnter(
  * Live palette actions wired to the chat store + router. Providers call this in
  * their hook and use it to build their result activations per the §2 matrix.
  *
- * `newSessionWithToken` mirrors the established FE pattern
- * (`dispatch(createSlot(...)).unwrap().then(...)`, see `ChatSidebar` /
- * `ChatPage`): `createSlot` sets the new slot active, so seeding
- * `pendingInput` afterwards lands the token in the *new* session's composer.
+ * `newSessionWithToken` seeds `pendingInput` only after `createChatForView`
+ * reports that the new session took the view, so the token lands in the *new*
+ * session's composer and never in one the user switched to meanwhile.
  */
 export interface PaletteActions {
   /** Whether a chat session is currently active. */
@@ -96,6 +96,7 @@ export interface PaletteActions {
 
 export function usePaletteActions(): PaletteActions {
   const dispatch = useAppDispatch()
+  const store = useAppStore()
   const navigate: NavigateFunction = useNavigate()
   // The palette jumps between whole pages, so it destroys an unsaved draft on
   // the page it leaves exactly as the global sidebar does — and it is a headline
@@ -104,10 +105,12 @@ export function usePaletteActions(): PaletteActions {
   // below rather than calling `navigate` themselves.
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  // The create can take seconds, so its navigate asks when it runs.
+  const askingNavigate = useAskingNavigate()
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
-    mutationFn: () => dispatch(createSlot({ defaultFolder: true })).unwrap(),
+    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true }),
     onError: (err: unknown) => {
       // The palette has already closed by the time this settles, so there is no
       // surface left to render the failure on and no other record of it.
@@ -122,9 +125,14 @@ export function usePaletteActions(): PaletteActions {
 
   const newSessionWithToken = useCallback((token: string) => {
     doCreateSlot(undefined, {
-      onSuccess: () => { dispatch(setPendingInput(token)); navigate('/chat') },
+      // `pendingInput` belongs to whichever composer is mounted. If the user
+      // moved to another session or page during the create, it would land in
+      // that session's composer, so the token is staged only when the new
+      // session is the one on screen, and not when the page the user stayed
+      // on refused to be left.
+      onSuccess: (view) => { if (showCreatedChat(view, askingNavigate)) dispatch(setPendingInput(token)) },
     })
-  }, [doCreateSlot, dispatch, navigate])
+  }, [doCreateSlot, dispatch, askingNavigate])
 
   return useMemo<PaletteActions>(() => ({
     hasActiveChat,

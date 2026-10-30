@@ -406,7 +406,10 @@ class TestLoginModule:
         # The directory is reaped once the login process exits.
         assert 'rm -rf "$(dirname "$0")"' in pinned
         plain = login._device_login_command(replace_existing=False)
-        assert "python3" not in plain and "nohup stdbuf" in plain and "mktemp" not in plain
+        # No driver staging for Builder ID: no python3, no pty directory. (The route
+        # prelude's own one-line `mktemp` for the probe's stderr is not that.)
+        assert "python3" not in plain and "nohup stdbuf" in plain
+        assert "kirocrew-login-pty" not in plain and "mktemp -d" not in plain
 
     def test_driver_staging_failure_is_reported_by_name(self, monkeypatch):
         _ssm_script(

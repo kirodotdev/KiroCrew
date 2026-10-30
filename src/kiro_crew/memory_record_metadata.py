@@ -425,6 +425,10 @@ def limit_v1_accepted_history(db: sqlite3.Connection, record_id: str | None = No
     Callers establish V1 ownership before using this helper. A normal write
     examines only its record; opening a V1 store also bounds existing journals.
     Proposal statuses, current metadata and monotonic IDs are never changed.
+
+    The open-time pass deletes only for records already over the limit. Under
+    implicit transactions any DML begins a write and takes the write lock, even
+    one that matches no row, so a steady-state open must issue none.
     """
     record_ids = (
         [record_id]
@@ -432,7 +436,9 @@ def limit_v1_accepted_history(db: sqlite3.Connection, record_id: str | None = No
         else [
             row[0]
             for row in db.execute(
-                "SELECT DISTINCT record_id FROM memory_revisions WHERE status = 'accepted'"
+                "SELECT record_id FROM memory_revisions WHERE status = 'accepted' "
+                "GROUP BY record_id HAVING count(*) > ?",
+                (V1_ACCEPTED_REVISION_LIMIT,),
             )
         ]
     )

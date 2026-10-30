@@ -859,6 +859,48 @@ class TestTranscribeAwsTempOwnership:
         assert src.exists()
 
     @pytest.mark.asyncio
+    async def test_remux_maps_audio_only(self, tmp_path, monkeypatch):
+        """The webm→ogg remux must drop video: a Slack ``video/webm`` clip has a
+        video track, and the audio-only decoder has no theora encoder for ogg's
+        default video stream, so mapping it fails the remux outright."""
+        from kiro_crew import transcribe as tr
+
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        self._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+        captured: list = []
+
+        class _Proc:
+            returncode = 1
+
+            async def communicate(self):
+                return b"", b"stop here"
+
+            def kill(self):
+                pass
+
+        async def fake_exec(*args, **_kwargs):
+            captured.extend(args)
+            return _Proc()
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
+        with (
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            assert await tr._transcribe_aws(str(src), cfg) is None
+        assert str(owned) in captured
+        assert "-vn" in captured
+        assert captured.index("-vn") < captured.index(str(owned))
+        assert captured[captured.index("-c:a") + 1] == "copy"
+
+    @pytest.mark.asyncio
     async def test_remux_failure_still_unlinks_and_returns_none(self, tmp_path, monkeypatch):
         """The new cancellation path must not eat the established ``Exception``
         contract: a failed remux logs, removes the temp, and returns None."""

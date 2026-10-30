@@ -79,9 +79,10 @@ async def _run_jobs(sessions: object, store: Path, jobs: list[str]) -> list[list
     """Run *jobs* through ``_call_llm``; the live records after each job."""
     seen = []
     for prompt in jobs:
-        # The fake answers in prose, so the JSON parse fails and the job returns
-        # None; the request it sent is what these tests are about.
-        await consolidation_pass._call_llm(_consolidator(sessions), prompt)
+        # The fake answers in prose, so the reply is unusable; the request it
+        # sent is what these tests are about.
+        with contextlib.suppress(history_consolidation._ConsolidationReplyUnusable):
+            await consolidation_pass._call_llm(_consolidator(sessions), prompt)
         seen.append(_records(store))
     return seen
 

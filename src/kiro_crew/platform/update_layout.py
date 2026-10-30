@@ -299,6 +299,22 @@ def detect_install_layout() -> InstallLayout:
     )
 
 
+def policy_release_channel() -> str:
+    """The channel the policy requires, or ``""`` when the local file decides.
+
+    The policy's ``updates.channel`` pin; with none, ``stable`` in an enterprise
+    build. :func:`release_channel` and the channel-switch API both read this, so
+    the channel followed and the channel a switch may pick cannot disagree.
+    """
+    from kiro_crew.edition import is_enterprise
+    from kiro_crew.platform.governance import active_update_pins
+
+    pinned = active_update_pins().channel
+    if pinned in RELEASE_CHANNELS:
+        return pinned
+    return "stable" if is_enterprise() else ""
+
+
 def release_channel() -> str:
     """The release channel this install follows, from ``$KIROCREW_HOME/channel``.
 
@@ -309,7 +325,14 @@ def release_channel() -> str:
     recovery breadcrumb and re-runs the leftover-archive sweep, which can
     ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
     where a directory is is the blocking hazard this avoids.
+
+    A channel the policy pins (``updates.channel``) wins over the file; with no
+    pin an enterprise build follows ``stable`` whatever the file says (RFC
+    enterprise edition D3, appendix row "Update channel").
     """
+    required = policy_release_channel()
+    if required:
+        return required
     try:
         raw = (data_home() / "channel").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -373,9 +396,7 @@ def cdn_bases_are_safe() -> bool:
     unattended path cannot drift apart on what they consider safe.
     """
     feed_base, artifact_base = cdn_bases()
-    return bool(
-        _SAFE_CDN_BASE_RE.match(feed_base) and _SAFE_CDN_BASE_RE.match(artifact_base)
-    )
+    return bool(_SAFE_CDN_BASE_RE.match(feed_base) and _SAFE_CDN_BASE_RE.match(artifact_base))
 
 
 def wheel_update_command(channel: str | None = None) -> str:
@@ -416,7 +437,7 @@ def wheel_update_command(channel: str | None = None) -> str:
         # An empty body would let sh exit 0 on nothing at all, which is the same
         # false success as the piped form.
         'test -n "$_kc_body"; '
-        f'printf \'%s\\n\' "$_kc_body" | sh -s -- --channel {channel}'
+        f"printf '%s\\n' \"$_kc_body\" | sh -s -- --channel {channel}"
     )
 
 

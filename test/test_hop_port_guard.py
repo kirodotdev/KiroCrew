@@ -20,6 +20,7 @@ import pytest
 from kiro_crew.instances import hop_port_guard as hop_port_guard_module
 from kiro_crew.instances.hop_port_guard import HopPortGuard
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.wait import wait_until
 
 # Binds the way the real competitors do: OpenSSH's forward listener and this repo's
 # own availability probe both set SO_REUSEADDR, so a hold that only refuses a plain
@@ -141,11 +142,12 @@ class TestAnotherProcessCannotTakeAHeldPort:
         # Already lapsed: the reaper's own sweep must drop it without anyone asking.
         port = _hold_a_port(guard, time.time() - 1)
 
-        deadline = time.time() + 20
-        while time.time() < deadline and guard.held_ports():
-            time.sleep(0.2)
-
-        assert guard.held_ports() == set(), "a lapsed lease still holds its port"
+        wait_until(
+            lambda: not guard.held_ports(),
+            timeout=20,
+            interval=0.2,
+            describe=lambda: f"a lapsed lease still holds its port: {guard.held_ports()}",
+        )
         assert (
             _bind_from_another_process(port) == "BOUND"
         ), "the port stayed unbindable after its lease lapsed"
@@ -211,11 +213,12 @@ class TestAnotherProcessCannotTakeAHeldPort:
 
         squatter.close()  # the orphan goes
 
-        deadline = time.time() + 20
-        while time.time() < deadline and port not in guard.held_ports():
-            time.sleep(0.2)
-
-        assert port in guard.held_ports(), "the owed port was never retaken"
+        wait_until(
+            lambda: port in guard.held_ports(),
+            timeout=20,
+            interval=0.2,
+            describe=lambda: f"the owed port was never retaken: held {guard.held_ports()}",
+        )
         assert guard.owed_ports() == set(), "still owed after it was taken"
         assert _bind_from_another_process(port).startswith("REFUSED")
 
@@ -227,11 +230,12 @@ class TestAnotherProcessCannotTakeAHeldPort:
             assert guard.hold(port, time.time() + 1.5) is False
             assert guard.owed_ports() == {port}
 
-            deadline = time.time() + 20
-            while time.time() < deadline and guard.owed_ports():
-                time.sleep(0.2)
-
-            assert guard.owed_ports() == set(), "kept owing a port whose lease lapsed"
+            wait_until(
+                lambda: not guard.owed_ports(),
+                timeout=20,
+                interval=0.2,
+                describe=lambda: f"kept owing a port whose lease lapsed: {guard.owed_ports()}",
+            )
             assert guard.held_ports() == set()
         finally:
             squatter.close()

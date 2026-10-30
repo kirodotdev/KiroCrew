@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import Any
 
 from aiohttp import web
 
@@ -137,33 +138,24 @@ def _same_core_spec(a: dict, b: dict) -> bool:
     )
 
 
-async def api_mcp_discover(request: web.Request) -> web.Response:
-    """GET /api/mcp/discover?q=<query>[&provider=<name>][&limit=N]
+async def search_registry(
+    query: str, *, provider: str | None = None, limit: int = 20
+) -> dict[str, Any]:
+    """The registry search behind ``/api/mcp/discover``, as data.
 
-    Multi-provider MCP server search. A query shorter than 2 chars returns
-    ``{"results": [], "providers": [...], "provider_outcomes": []}``
-    WITHOUT calling any provider — the cheap availability probe the frontend
-    gates its UI on. Completed searches add one ``provider_outcomes`` row per
-    attempted provider while preserving the legacy ``providers`` name list.
+    ``{"results", "providers", "provider_outcomes"}``: one row per server the
+    providers found, every provider-sourced field redacted
+    (:func:`redact_external_text`) and badged ``installed`` against the servers
+    this gateway already configures. A query shorter than :data:`_MIN_QUERY_LEN`
+    calls no provider. Also read by a crewmate's capability catalog
+    (``handlers.member_capability_catalog``), so the two answer alike.
     """
-    query = request.query.get("q", "").strip()
-    provider_filter = request.query.get("provider", "").strip() or None
-    try:
-        limit = max(1, min(int(request.query.get("limit", "20")), 50))
-    except ValueError:
-        limit = 20
-
     registry = await asyncio.to_thread(_get_registry)
     provider_names = [p.name for p in registry.available_providers]
-
     if len(query) < _MIN_QUERY_LEN:
-        return web.json_response(
-            {"results": [], "providers": provider_names, "provider_outcomes": []}
-        )
+        return {"results": [], "providers": provider_names, "provider_outcomes": []}
 
-    search_response = await registry.search_with_outcomes(
-        query, provider=provider_filter, limit=limit
-    )
+    search_response = await registry.search_with_outcomes(query, provider=provider, limit=limit)
 
     # Cross-ref against KiroCrew's configured servers so the UI can badge
     # already-installed entries. list_servers() reads config files
@@ -199,6 +191,34 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
         {"name": _redact_external(outcome.name), "status": outcome.status}
         for outcome in search_response.provider_outcomes
     ]
+    return {
+        "results": items,
+        "providers": provider_names,
+        "provider_outcomes": provider_outcomes,
+    }
+
+
+async def api_mcp_discover(request: web.Request) -> web.Response:
+    """GET /api/mcp/discover?q=<query>[&provider=<name>][&limit=N]
+
+    Multi-provider MCP server search. A query shorter than 2 chars returns
+    ``{"results": [], "providers": [...], "provider_outcomes": []}``
+    WITHOUT calling any provider — the cheap availability probe the frontend
+    gates its UI on. Completed searches add one ``provider_outcomes`` row per
+    attempted provider while preserving the legacy ``providers`` name list.
+    """
+    query = request.query.get("q", "").strip()
+    provider_filter = request.query.get("provider", "").strip() or None
+    try:
+        limit = max(1, min(int(request.query.get("limit", "20")), 50))
+    except ValueError:
+        limit = 20
+
+    found = await search_registry(query, provider=provider_filter, limit=limit)
+    items, provider_outcomes = found["results"], found["provider_outcomes"]
+    if len(query) < _MIN_QUERY_LEN:
+        return web.json_response(found)
+
     failed_provider_count = sum(outcome["status"] != "ok" for outcome in provider_outcomes)
     sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
@@ -212,13 +232,7 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
             "failed_provider_count": str(failed_provider_count),
         },
     )
-    return web.json_response(
-        {
-            "results": items,
-            "providers": provider_names,
-            "provider_outcomes": provider_outcomes,
-        }
-    )
+    return web.json_response(found)
 
 
 async def api_mcp_discover_detail(request: web.Request) -> web.Response:
@@ -315,37 +329,59 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
     return web.json_response({"error": f"Unknown provider '{provider_name}'"}, status=400)
 
 
-async def _install_from_official(request: web.Request, server_id: str) -> web.Response:
-    """Fetch the registry entry, translate, and write into KiroCrew scope."""
+class OfficialPlanError(Exception):
+    """An official-registry entry that cannot be turned into a server spec."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+
+
+async def official_install_plan(server_id: str) -> tuple[str, dict[str, Any], str, list[str]]:
+    """``(name, spec, method, required_env)`` an official-registry install would write.
+
+    Fetches the entry and translates it exactly as ``/api/mcp/discover/install``
+    does; the spec is returned verbatim, because it is what the user consents to
+    run. Raises :class:`OfficialPlanError` with the status and code the install
+    route answers. Also read by a crewmate's capability request, which writes the same
+    spec into the crewmate's own file instead of the global config.
+    """
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("official")
     if provider is None or not provider.is_available():
-        return web.json_response({"error": "Provider 'official' is not available"}, status=503)
-
+        raise OfficialPlanError(503, "provider_unavailable", "Provider 'official' is not available")
     try:
         detail = await asyncio.wait_for(
             provider.fetch_detail(server_id), timeout=_DETAIL_TIMEOUT_SECS
         )
     except (ProviderUnavailableError, asyncio.TimeoutError) as exc:
         logger.warning("MCP install fetch failed for %s: %s", server_id, exc)
-        return web.json_response({"error": "Provider 'official' is not available"}, status=503)
+        raise OfficialPlanError(
+            503, "provider_unavailable", "Provider 'official' is not available"
+        ) from None
     if detail is None:
-        return web.json_response({"error": f"Server '{server_id}' not found"}, status=404)
+        raise OfficialPlanError(404, "server_not_found", f"Server '{server_id}' not found")
     if detail.install_plan is None:
-        return web.json_response(
-            {"error": f"Server '{server_id}' has no installable package"}, status=400
+        raise OfficialPlanError(
+            400, "no_installable_package", f"Server '{server_id}' has no installable package"
         )
-
     name = _derive_install_name(server_id)
     if not name or not _is_valid_mcp_name(name):
-        return web.json_response(
-            {"error": f"Cannot derive a valid server name from '{server_id}'"},
-            status=400,
+        raise OfficialPlanError(
+            400, "invalid_server_name", f"Cannot derive a valid server name from '{server_id}'"
         )
-
-    spec = dict(detail.install_plan.spec)
-    method = detail.install_plan.method
     required_env = [e for e in detail.required_env if isinstance(e, str)]
+    return name, dict(detail.install_plan.spec), detail.install_plan.method, required_env
+
+
+async def _install_from_official(request: web.Request, server_id: str) -> web.Response:
+    """Fetch the registry entry, translate, and write it into the Kiro Crew scope."""
+    try:
+        name, spec, method, required_env = await official_install_plan(server_id)
+    except OfficialPlanError as exc:
+        return web.json_response({"error": exc.message, "code": exc.code}, status=exc.status)
     # Consent default: EVERY official-registry install lands disabled.
     # Registry entries are publisher-controlled on an open registry, so the
     # user's explicit enable in the servers table — after reviewing the
@@ -354,7 +390,7 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
     enable_now = False
 
     async with _get_mcp_lock():
-        existing = _find_server_spec_anywhere(name)
+        existing = await asyncio.to_thread(_find_server_spec_anywhere, name)
         if existing is not None and not _same_core_spec(existing, spec):
             # Same name, different invocation — refuse to clobber the
             # user's existing server silently.

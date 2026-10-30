@@ -1557,8 +1557,8 @@ class TestSweepTimeBudget:
 
         ``monkeypatch.undo()`` would also revert the autouse host-isolation floor
         — including the ``KIROCREW_HOME`` pin — and this sweep then stamps its
-        one-shot marker into the operator's REAL data home. Caught in review of
-        this very test. Every knob here is therefore undone through its own
+        one-shot marker into the operator's REAL data home. Every knob here is
+        therefore undone through its own
         context, never the shared fixture.
 
         Budget already spent, checked every SECOND entry: the check runs before

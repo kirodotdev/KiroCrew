@@ -18,6 +18,8 @@ import EarlierMessagesBar from '../EarlierMessagesBar'
 import TranscriptScrollShell from '../TranscriptScrollShell'
 import TurnNavigationMinimap from '../TurnNavigationMinimap'
 import WelcomeView from '../../../components/WelcomeView'
+import { useMarkTranscriptShown } from '../../../hooks/useAckCronNotesInView'
+import CrewModeWelcome from '../../../components/CrewModeWelcome'
 import SessionPulseSurveyCard from '../../../components/SessionPulseSurveyCard'
 import { ChatFooter } from '..'
 import type { ChatConfig } from '../ChatSettings'
@@ -51,12 +53,17 @@ interface ChatTranscriptViewProps {
   slotLoading: boolean
   slotRunning: boolean
   slotState: ReturnType<typeof useActiveSlotState>['slotState']
+  environmentStart: ReturnType<typeof useActiveSlotState>['environmentStart']
   slotStopping: boolean
   slotSwitchTarget: string | null
   turnDisclosure: Record<string, boolean>
   turnRowMayBeLive: (it: TurnItem) => boolean
   setInput: (next: string | ((prev: string) => string)) => void
   isWelcomeState: boolean
+  /** The chat runs on the conductor (crewModeSwitch): the welcome hero is the Crew Mode page. */
+  crewModeOn: boolean
+  /** Opens the side panel task board (crewModeSwitch); unset when this chat has no Overview. */
+  openTaskBoard?: () => void
   chatConfig: ChatConfig
   scrollerRef: RefObject<HTMLDivElement>
   bindScroller: Dispatch<SetStateAction<HTMLDivElement | null>>
@@ -92,10 +99,15 @@ interface ChatTranscriptViewProps {
  */
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
-  slotLoading, slotRunning, slotState, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
+  slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, approve, dismissApproval, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
+  // This pane shows the chat's transcript once it has loaded rows; a bell note
+  // for a cron run is read against that (#23564). Not while the restore gate
+  // hides the rows behind the skeleton: loaded is not yet visible.
+  // The scroller is what the on-screen backstop probes.
+  useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
   return (
     <>
       {isWelcomeState ? (
@@ -132,7 +144,10 @@ export default function ChatTranscriptView({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
         >
-          <WelcomeView setInput={setInput} />
+          {/* Not a persistent element changing form: the user's own click
+              on the Crew Mode chip (which stays put) asks for a different
+              page, and CrewModeWelcome fades and pops in on its own. */}
+          {crewModeOn ? <CrewModeWelcome chatKey={activeSlot ?? undefined} onOpenTaskBoard={openTaskBoard} /> : <WelcomeView setInput={setInput} />}
         </motion.div>
       ) : (
       <>
@@ -203,7 +218,7 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} />
+        <ChatFooter statusLabel={environmentStart} running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} />
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard
@@ -253,8 +268,10 @@ export default function ChatTranscriptView({
           // draws nothing in renderMessage; skip its measured py-1
           // wrapper too, or each quiet cycle leaves an empty spacer row.
           if (item.kind === 'single' && isHiddenInvisibleAssistantRow(item.msg)) return null
+          // `data-image-turn` on both wrappers below: the image viewer pages a
+          // turn's markdown images and file cards as one set (dispatchLightbox).
           if (item.kind === 'turn') {
-            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} browserLiveSessionKey={activeSlot ?? undefined} /></div>
+            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn=""><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} browserLiveSessionKey={activeSlot ?? undefined} /></div>
           }
           // This row's bubble is the one the pinned banner is standing in for
           // (identity rule below): hide the row and mark it for index.css. The
@@ -270,7 +287,7 @@ export default function ChatTranscriptView({
           const pinnedStandin = !!(pinned && (pinned.ts != null
             ? (item.kind === 'single' && item.msg.ts === pinned.ts)
             : pinned.idx === displayIdx))
-          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
+          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn="" className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
             maxWidth: 'var(--mc-content-width, 900px)',
             // The pinned banner is styled as this row's own bubble and sits
             // at the exact position and width the bubble had when its top

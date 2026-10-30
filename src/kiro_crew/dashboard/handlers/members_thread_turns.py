@@ -60,7 +60,11 @@ async def api_member_greet(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     try:
-        outcome = await maybe_start_first_greeting(state, slug)
+        # The tab's rendered language: the welcome's only language signal on
+        # an install that follows the browser (mate_welcome.hidden_turn_language).
+        outcome = await maybe_start_first_greeting(
+            state, slug, request.headers.get("X-UI-Lang", "")
+        )
     except Exception:
         logger.warning("first welcome failed to start for %r", slug, exc_info=True)
         return web.json_response(

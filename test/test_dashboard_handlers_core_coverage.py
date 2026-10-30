@@ -804,6 +804,7 @@ class TestSttConfigEndpoint:
         # Settings UI gates on a CAPABILITY rather than a provider name. `local`
         # streams too, so every advertised provider is in it.
         assert body["streaming_providers"] == ["local", "apple", "transcribe"]
+        assert body["language_identification_providers"] == ["transcribe"]
         # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
         # literal, so a catalog entry added or resized cannot make the picker
         # offer a value this endpoint would reject.
@@ -1295,8 +1296,9 @@ class TestSttConfigCustomModelBoundary:
         """No pair, no decision. This endpoint is fetched by the chat composer's voice
         hook on mount, not only by the settings page, so auditing a branch that
         discloses two empty strings would bury the rows that carry a value."""
-        await core_mod.api_stt_config(self._get())
+        body = json.loads((await core_mod.api_stt_config(self._get())).body)
 
+        assert (body["custom_model_path"], body["custom_model_sha256"]) == ("", "")
         assert [
             call.kwargs
             for call in fake_sel.log_api_access.call_args_list

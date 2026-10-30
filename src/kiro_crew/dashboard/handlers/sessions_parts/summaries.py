@@ -288,7 +288,7 @@ async def api_sessions_summarize(request: web.Request) -> web.Response:
                 )
                 continue
             _audit_app_allow(request_app, "session_summarize", f"session={key}")
-        elif not log.has_log(key):
+        elif not await asyncio.to_thread(log.has_log, key):
             continue
         summary = await _summarize_one(state, key, owner_app=request_app)
         if summary:

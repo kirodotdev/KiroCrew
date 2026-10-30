@@ -777,7 +777,6 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
         p.mkdir(parents=True, exist_ok=True)
         made_owner_dirs.append(p)
 
-    # Simulate Windows: IS_POSIX=False, IS_WINDOWS=True.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
     # The spec read and the source fingerprint both go through the hardened

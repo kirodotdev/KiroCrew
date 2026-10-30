@@ -404,7 +404,21 @@ describe('WidgetFrame openInNewTab', () => {
     expect(p.textContent).toBe('<special> & é')
     // Wrapper iframe is sandboxed (defense-in-depth, even though blob origin
     // is already null).
-    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts allow-popups allow-popups-to-escape-sandbox')
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts')
+  })
+
+  it('gives the popped-out tab its own link bridge, outside the sandboxed frame', () => {
+    const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+    const parsed = new DOMParser().parseFromString(captureWrapperHtml(container), 'text/html')
+    // The wrapper's own script (first-party text) answers the frame's open
+    // message; the frame itself grants no popups.
+    const bridge = Array.from(parsed.body.querySelectorAll(':scope > script'))
+      .map((s) => s.textContent ?? '')
+      .find((t) => t.includes('kirocrew-dashboard:open'))
+    expect(bridge).toBeDefined()
+    expect(bridge).toContain("window.open(href, '_blank', 'noopener,noreferrer')")
+    expect(bridge).not.toContain('confirm(')
+    expect(parsed.querySelector('iframe')!.getAttribute('sandbox')).toBe('allow-scripts')
   })
 })
 

@@ -67,23 +67,21 @@ def test_layer_b_bundle_carries_the_context_when_the_session_has_one(monkeypatch
     assert "Prompt" in got["events"].path.read_text(encoding="utf-8")
 
 
-def test_layer_b_is_absent_when_the_session_has_no_kiro_context(monkeypatch, tmp_path):
-    """A brand-new slot (or a pruned map entry) has no Layer B; the transfer must
-    degrade to transcript-only rather than fail."""
+@pytest.mark.parametrize(
+    "sid",
+    [
+        # A brand-new slot (or a pruned map entry) has no Layer B; the transfer must
+        # degrade to transcript-only rather than fail.
+        pytest.param("", id="layer_b_is_absent_when_the_session_has_no_kiro_context"),
+        # A map entry can outlive its files; a missing pair is not an error.
+        pytest.param("no-such-sid", id="layer_b_absent_when_the_files_were_pruned"),
+    ],
+)
+def test_layer_b_is_absent(monkeypatch, tmp_path, sid):
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-
-    assert st._read_layer_b("") is None
-
-
-def test_layer_b_absent_when_the_files_were_pruned(monkeypatch, tmp_path):
-    """A map entry can outlive its files; a missing pair is not an error."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-
-    assert st._read_layer_b("no-such-sid") is None
+    assert st._read_layer_b(sid) is None
 
 
 def test_events_jsonl_loadable_accepts_valid_and_rejects_truncated():
@@ -473,7 +471,7 @@ def test_write_layer_b_files_returns_none_on_failure(monkeypatch, tmp_path):
 
 
 def test_join_layer_b_goes_through_the_live_manager():
-    """Regression guard for the review finding: constructing ``SessionMap()``
+    """Constructing a fresh ``SessionMap()``
     writes a correct file that the live map then clobbers, because its ``_data``
     is a startup snapshot and every ``set`` rewrites the whole file.
 

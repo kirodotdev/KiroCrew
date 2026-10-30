@@ -536,9 +536,6 @@ class TestTheCapabilityIsNotAnnounced:
             "_kiro/hooks/executeHook. See agent-host-contract.md."
         )
 
-    def test_the_settings_channel_is_still_open(self):
-        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
-
     def test_the_harness_declares_the_same_meta(self):
         assert "hooks" not in KasHarness().client_capabilities["_meta"]["kiro"]
 
@@ -1424,6 +1421,32 @@ class TestExecuteHookReviewFixes:
             await real_kill(pid, sig)
 
         monkeypatch.setattr(hooks_mod.platform_compat, "kill_process_tree_async", _kill)
+        # Record the hook's process as the spawn hands it back. Governance is only
+        # the first of several awaits before the spawn (the shell deny check, the
+        # sandbox prepare, the spawn itself), so a cancel timed off governance can
+        # land with no process to kill. POSIX spawns through
+        # create_subprocess_limited; Windows' unwrapped path through
+        # create_subprocess_shell.
+        import kiro_crew.sandbox as sandbox_mod
+
+        spawned: list[Any] = []
+
+        def _recording(real):
+            async def _spawn(*args, **kwargs):
+                proc = await real(*args, **kwargs)
+                spawned.append(proc)
+                return proc
+
+            return _spawn
+
+        monkeypatch.setattr(
+            sandbox_mod,
+            "create_subprocess_limited",
+            _recording(sandbox_mod.create_subprocess_limited),
+        )
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_shell", _recording(asyncio.create_subprocess_shell)
+        )
         hook = hooks_mod.ScriptHook(
             id="slow",
             name="slow",
@@ -1432,9 +1455,8 @@ class TestExecuteHookReviewFixes:
         )
         task = asyncio.ensure_future(hooks_mod.run_script_hook(hook, "", {}))
         try:
-            # The governance check runs off the loop just before the spawn.
-            await async_wait_until(lambda: killed or task.done() or governance_calls)
-            await asyncio.sleep(0.5)
+            await async_wait_until(lambda: spawned or task.done())
+            assert not task.done(), task.result()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task

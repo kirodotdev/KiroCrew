@@ -772,8 +772,8 @@ def _page_safe(value: Any) -> Any:
 def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
     """Where *package* declares a name a redactor would mask. Positions, never names.
 
-    THE ONE SCAN over the three name sets a dashboard package carries -- its model's
-    field names, its view's block ids and its theme's token keys -- and the one place
+    THE ONE SCAN over the two name sets a dashboard package carries -- its model's
+    field names and its theme's token keys -- and the one place
     the rule lives. ``dashboard_save`` asks it and refuses a save that trips it. Two
     copies of this predicate would be two rules, and the first thing the second one
     would do is drift from this one.
@@ -782,9 +782,8 @@ def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
     refusal it can act on while the name can still be changed.
 
     REFUSED RATHER THAN MASKED, at both ends, because every one of these names is a
-    JOIN KEY: a field name ties the model to the blocks that read it, a block id ties
-    a block to the frame, and a theme token is the CSS variable the style
-    references. A redacted key hides nothing -- a declaration is a name, not a value
+    JOIN KEY: a field name ties the model to the page cells that read it, and a theme
+    token is the CSS variable the style references. A redacted key hides nothing -- a declaration is a name, not a value
     -- and leaves the reference pointing at a key the package does not contain.
 
     The POSITION comes back and the name does not. A name that needs redacting is not
@@ -796,25 +795,17 @@ def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
     package has.
     """
     raw_model = package.get("model")
-    raw_view = package.get("view")
     raw_theme = package.get("theme")
     model: Mapping[str, Any] = raw_model if isinstance(raw_model, Mapping) else {}
-    view: Mapping[str, Any] = raw_view if isinstance(raw_view, Mapping) else {}
     theme: Mapping[str, Any] = raw_theme if isinstance(raw_theme, Mapping) else {}
     raw_types = model.get("types")
-    raw_blocks = view.get("blocks")
     raw_tokens = theme.get("tokens")
     types: Mapping[str, Any] = raw_types if isinstance(raw_types, Mapping) else {}
-    blocks = raw_blocks if isinstance(raw_blocks, list) else []
     tokens: Mapping[str, Any] = raw_tokens if isinstance(raw_tokens, Mapping) else {}
     spots: list[str] = []
     for index, name in enumerate(sorted(types), start=1):
         if isinstance(name, str) and redact_via_context(name) != name:
             spots.append(f"declared field #{index} of {len(types)}")
-    for index, block in enumerate(blocks, start=1):
-        block_id = block.get("id") if isinstance(block, Mapping) else None
-        if isinstance(block_id, str) and redact_via_context(block_id) != block_id:
-            spots.append(f"the id of view block #{index} of {len(blocks)}")
     for index, token in enumerate(sorted(tokens), start=1):
         if isinstance(token, str) and redact_via_context(token) != token:
             spots.append(f"theme token #{index} of {len(tokens)}")
@@ -996,11 +987,22 @@ def _trusted_page(slug: str, record: Any) -> str | None:
     return entry.html
 
 
-def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = None) -> Any:
+def read_fields(
+    slug: str,
+    member: str,
+    manifest: Any,
+    *,
+    slot: str | None = None,
+    prime_wait: float | None = None,
+) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
     The page's own read, shared with ``dashboard_fields`` so the values an agent is
     shown are the values the reader sees. File IO; raises on a failed read.
+
+    *prime_wait* caps the wait for cold slot folds (``DashboardFeed.wait_for_primes``);
+    ``None`` is its default. The turn block passes ``0``, because a prompt build must
+    not wait on a prime: a cold fold then reads as unseen, which the block skips.
     """
     from kiro_crew import agent_panel
     from kiro_crew.crew_log import projection
@@ -1025,6 +1027,12 @@ def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = Non
     feed = DashboardFeed(slot, session, panel_record=record)
     try:
         feed.subscribe(manifest)
+        # One-shot: a cold slot fold arrives from its background prime, not as a
+        # baseline, so wait for it before reading instead of reporting it missing.
+        if prime_wait is None:
+            feed.wait_for_primes()
+        else:
+            feed.wait_for_primes(prime_wait)
         agentic: Any = {}
         if any(spec.agentic for spec in manifest.fields.values()):
             agentic = projection.read_slot_projection(slot, "agentic").value
@@ -1367,16 +1375,17 @@ def _egress_decision(owner_agent: str = "", session_key: str = "") -> _EgressDec
     from kiro_crew.platform.governance import MODE_DENY, ScopedRuleset
 
     try:
-        from kiro_crew.platform.governance import last_composed_ceiling
+        from kiro_crew.platform.governance import last_composed_ceiling, policy_level_control
 
         ceiling = last_composed_ceiling()
-        controls = (ceiling.controls or {}) if ceiling is not None else {}
+        # The policy level as ``resolve`` enforces it: in an enterprise build an
+        # unnamed ``network.egress`` is the built-in baseline (off), not absent.
+        control = policy_level_control(ceiling, "network.egress")
         # NO CEILING, OR NONE GOVERNING EGRESS, IS NOT AN ANSWER -- it only means the
         # outer bound restricts nothing, and the profile below still decides. Returning
         # True here was the hole: the standalone default is every install that
         # configures no policy, and a profile can restrict egress in all of them.
-        if "network.egress" in controls:
-            control = controls["network.egress"]
+        if control is not None:
             if not isinstance(control, ScopedRuleset):
                 return _EgressDecision(False, "policy", "ceiling_egress_control_unreadable")
             # Only one shape leaves the agent unrestricted: deny-mode denying nothing.

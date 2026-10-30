@@ -15,7 +15,7 @@ behind one per-device switch:
 
 **Settings > Developer > Feature Previews** — switch **Webhooks** on. A
 **Webhooks** row appears in the sidebar immediately (and an "Open Webhooks"
-link on the feature's own card). Developer Mode is NOT required.
+link on the feature's own card).
 
 Nothing about the API changes either way — tokens, the kill switch, and delivery
 all behave the same whether the page is visible or not. The one consequence is

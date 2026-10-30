@@ -1,7 +1,7 @@
 """Extension points for the services that run beside a live gateway and its dashboard.
 
 The public-URL tunnel, the phone connection, remote-instance provisioners, telemetry
-export, dashboard contributions and the process jail -- the "runtime-service / frontend"
+export, dashboard contributions, speech providers and the process jail -- the "runtime-service / frontend"
 extension points of the Composed Platform Providers contract.
 
 :mod:`kiro_crew.platform.interfaces` re-exports every name here and stays the one import path
@@ -213,6 +213,54 @@ class RemoteProvisioner:
     #: list. The built-in EC2 lane leaves it empty: nothing in a configuration file chooses
     #: what its credential reaches.
     confirm_before_launch: str = ""
+
+
+@dataclass(frozen=True)
+class CloudInstancePolicy:
+    """What an edition adds to the IAM role of every EC2 crew it launches.
+
+    Some organizations require each EC2 instance to run a host agent (monitoring,
+    inventory, patch compliance) whose permissions come from a managed policy that
+    already exists in every account. The built-in launcher attaches only Session
+    Manager's policy, and its permissions boundary caps the role to that, so such
+    an instance is non-compliant from the moment it boots. This descriptor is how
+    an edition says what those organizations need, without the public build naming
+    any one of them.
+
+    ``managed_policy_arns`` are attached to the instance role beside Session
+    Manager's. Each is a full IAM policy ARN; ``{account}`` stands for the launch
+    account's id, for a policy that exists at the same path in every account.
+
+    ``boundary_statements`` are ``Allow`` statements appended to the instance
+    permissions boundary. A boundary is a ceiling, so without them an attached
+    policy is capped back to Session Manager and grants nothing. They do not grant
+    anything themselves: the role can use a statement here only if an attached
+    policy also allows it.
+
+    Empty by default, and an empty descriptor leaves the launch, the boundary
+    document and the launcher policy byte-identical to a build without this seam.
+    ``cloud/host_policy.py`` validates both lists and refuses a launch whose
+    descriptor fails validation.
+    """
+
+    managed_policy_arns: Tuple[str, ...] = ()
+    boundary_statements: Tuple[Dict[str, Any], ...] = ()
+
+
+class CloudInstancePolicyProvider(Protocol):
+    """The edition's additions to every EC2 crew's instance role.
+
+    Public default = :class:`CloudInstancePolicy` with both lists empty.
+    """
+
+    def instance_policy(self) -> CloudInstancePolicy:
+        """Return the managed policies and boundary statements to add.
+
+        WIRED: ``cloud/host_policy.py::instance_policy`` reads this, and through it
+        ``cloud/iam.py`` (boundary document and the launcher-policy addendum) and
+        ``cloud/ec2.py`` (the template's ``ExtraManagedPolicyArns``).
+        """
+        ...
 
 
 class RemoteProvisionerProvider(Protocol):
@@ -461,6 +509,179 @@ class BrowserCredentialProvider(Protocol):
         ``{"enabled": bool, "domains": [...]}``; either may be omitted. A value the
         owner set always wins. ``{}`` leaves the core default: off, no domains.
         """
+        ...
+
+
+#: The one :class:`ProviderAction` kind: the user must sign in before the
+#: provider can run. The dashboard renders it as a button with ``label``.
+PROVIDER_ACTION_LOGIN = "login"
+
+
+@dataclass(frozen=True)
+class ProviderAction:
+    """A step the user can take to make an unavailable provider available.
+
+    ``kind`` is :data:`PROVIDER_ACTION_LOGIN`; ``label`` is the button text.
+    """
+
+    kind: str
+    label: str
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    """What a provider's ``check()`` answers: can it run now, and if not, why.
+
+    ``reason`` is a short sentence the dashboard shows beside an unavailable
+    provider. ``label`` is the provider's display name; empty means "show the
+    ``name``". ``action`` is set when the user can fix it themselves, for example
+    a hosted provider that needs a sign-in first.
+
+    ``error`` is set by core alone, when the check itself timed out or raised:
+    the dashboard shows an error notice for it rather than a prerequisite. A
+    provider's own ``check()`` cannot set it.
+    """
+
+    available: bool
+    reason: Optional[str] = None
+    label: str = ""
+    action: Optional[ProviderAction] = None
+    error: bool = False
+
+
+@dataclass(frozen=True)
+class AudioChunk:
+    """One piece of synthesized audio from :meth:`TtsProvider.synthesize`.
+
+    ``mime`` is ``audio/mpeg`` or ``audio/wav``, the two the dashboard already
+    plays. ``sentence`` is the text this chunk speaks, when the provider knows it.
+    """
+
+    audio: bytes
+    mime: str
+    sentence: str = ""
+
+
+class SttStreamSession(Protocol):
+    """A live dictation session from :meth:`SttProvider.open_stream`.
+
+    The shape the on-device streaming helper already has, so core drives an
+    edition session with the same loop: ``start()`` answers ``None`` or a reason
+    it could not start; ``feed()`` takes 16 kHz mono Int16 PCM and answers False
+    once the session stops accepting audio; ``events()`` yields
+    ``{"type": "partial"|"final", "text": str}`` or ``{"type": "error",
+    "message": str}``; ``finish()`` ends the input so the trailing finals arrive;
+    ``close()`` releases everything and is idempotent.
+    """
+
+    async def start(self) -> Optional[str]: ...
+
+    async def feed(self, pcm: bytes) -> bool: ...
+
+    def events(self) -> Any: ...
+
+    async def finish(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class SttProvider(Protocol):
+    """One edition-supplied speech-to-text recogniser.
+
+    ``name`` is the value ``stt.provider`` stores to select it. It must not be a
+    built-in name, a retired one or ``off``; boot refuses a context that tries
+    (``speech_providers.validate_speech_registry``).
+
+    WIRED: ``transcribe.transcribe_audio`` calls :meth:`transcribe_file`,
+    ``transcribe.availability_detail`` and the STT capability list call
+    :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
+    ``streaming`` is true. A built-in name never reaches any of them.
+
+    A provider that identifies languages among ``stt.transcribe_languages`` may
+    also set an optional ``identifies_languages = True``. Core then offers the
+    mixed-language picker for it; the provider reads the candidates from
+    ``stt_config.transcribe_language_identification`` itself.
+
+    Core may call any method from any event loop. A provider must not keep a
+    loop-bound client (an aiohttp or httpx session) across calls: it creates one
+    per call or keeps one per loop.
+    """
+
+    name: str
+    #: Whether the provider may join a live ``stt_stream`` session.
+    streaming: bool
+
+    async def check(self, stt_config: Any) -> ProviderStatus:
+        """Whether this provider can run now, and why not when it cannot."""
+        ...
+
+    async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
+        """Recognise one recorded clip; ``None`` on failure, ``""`` for silence."""
+        ...
+
+    def open_stream(self, stt_config: Any) -> SttStreamSession:
+        """Open a streaming session. Called only when ``streaming`` is true."""
+        ...
+
+
+class TtsProvider(Protocol):
+    """One edition-supplied text-to-speech engine.
+
+    ``name`` is the value ``voice_reply.provider`` stores to select it. It must
+    not be a built-in name; boot refuses a context that tries.
+
+    WIRED: ``voice_reply.synthesize_speech`` and the dashboard's
+    ``/api/voice/synthesize`` call :meth:`synthesize`; ``voice_reply.is_available``
+    and the voice capability list call :meth:`check`. Core redacts the text
+    before :meth:`synthesize` sees it.
+
+    The loop rule on :class:`SttProvider` applies here too.
+    """
+
+    name: str
+
+    async def check(self, voice_config: Any) -> ProviderStatus:
+        """Whether this provider can run now, and why not when it cannot."""
+        ...
+
+    def synthesize(self, text: str, voice_config: Any) -> Any:
+        """Speak *text*, yielding :class:`AudioChunk` values (an async iterator)."""
+        ...
+
+
+class SpeechProviderRegistry(Protocol):
+    """The edition's extra speech providers and its default choice.
+
+    ADD-only: a registered provider joins the built-in set and can never shadow
+    a built-in name or ``off``. A colliding or duplicate name, or a default that
+    names no known provider, fails boot with ``PlatformCompositionError``.
+    Providers come only from the composed context, never from config strings, so
+    config can SELECT a registered provider but cannot load code.
+
+    WIRED (through ``kiro_crew.speech_providers``): the ``stt.provider`` valid
+    set and absent-key default in the config loader, and the
+    ``voice_reply.provider`` valid set and absent-key default in
+    ``voice_reply.resolve_configured_provider``. A stored value always wins over
+    ``default_stt()`` / ``default_tts()``; the edition default applies only when
+    the key is absent. An invalid stored value keeps today's fallback (STT fails
+    closed to ``off``, TTS falls back to the built-in default), so an edition
+    default is never reached because a value was mistyped.
+
+    The Default registers nothing and answers ``None`` for both defaults, so a
+    standalone install has the same valid sets, defaults and messages as before
+    the seam existed. v1 addition (no ``CONTRACT_VERSION`` bump).
+    """
+
+    def stt_providers(self) -> Tuple[SttProvider, ...]: ...
+
+    def tts_providers(self) -> Tuple[TtsProvider, ...]: ...
+
+    def default_stt(self) -> Optional[str]:
+        """The ``stt.provider`` an absent key resolves to; ``None`` = core default."""
+        ...
+
+    def default_tts(self) -> Optional[str]:
+        """The ``voice_reply.provider`` an absent key resolves to; ``None`` = core default."""
         ...
 
 

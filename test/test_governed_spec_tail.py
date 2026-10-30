@@ -23,7 +23,9 @@ from typing import Any, Callable
 
 import pytest
 
+import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent, agent_state
+from kiro_crew.agent_files import MATE_SERVICE_AGENT_FILENAMES
 from kiro_crew.agent_materialization import (
     auto_approve,
     conductor_agents,
@@ -42,12 +44,11 @@ _PACKAGE = Path(auto_approve.__file__).resolve().parent
 #: ``_refresh_dynamic_fields`` ``includeMcpJson`` pin) rather than a derived one.
 _PRIMARY_SPEC_WRITER = "default_spec_commit.py"
 
-#: ``(module, function)`` writers outside the tail by design. The shared-template
-#: pass re-filters a user's own template in place: it runs the two grant passes
-#: (``fork_refresh._apply_governance_passes``) and leaves the user's ``mcp.json``
-#: merge and KAS block as written, so the full tail would rewrite fields it does not
-#: own.
-_USER_TEMPLATE_WRITERS = frozenset({("fork_refresh.py", "_govern_json_spec")})
+#: ``(module, function)`` writers outside the tail by design. None: the shared-template
+#: pass never writes a spec Kiro Crew does not own
+#: (``fork_refresh.require_shared_template_within_ceiling`` refuses a kiro-cli start on
+#: one the ceiling would narrow instead).
+_USER_TEMPLATE_WRITERS: frozenset[tuple[str, str]] = frozenset()
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +139,8 @@ _INSTALLERS: dict[str, Callable[[], object]] = {
     "kirocrew-security-conductor.json": conductor_agents._install_security_conductor_agent,
     "kirocrew-worker.json": worker_agent._install_worker_agent,
     "kirocrew-research.json": service_agents._install_research_agent,
+    "kirocrew-mate-conductor.json": service_agents._install_mate_conductor_agent,
+    "kirocrew-mate-worker.json": service_agents._install_mate_worker_agent,
     "kirocrew-dashboard-manager.json": service_agents._install_dashboard_manager_agent,
     "kirocrew-lite.json": service_agents._install_lite_agent_fallback,
     "kirocrew-guest.json": service_agents._install_guest_agent,
@@ -155,7 +158,16 @@ def agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(agent, "build_agent_config", lambda *a, **k: _overridden_template())
     monkeypatch.setattr(agent, "_kirocrew_mcp_invocation", lambda sub: ("/resolved/kc", [sub]))
     monkeypatch.setattr(worker_agent, "_installed_default_spec", lambda: None)
+    monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: tmp_path / "mates" / "agents")
     return tmp_path
+
+
+def _written(agents_dir: Path, filename: str) -> dict[str, Any]:
+    """The spec *filename*'s installer wrote; the two mate specs go to the crewmate folder."""
+    folder = (
+        agents_dir / "mates" / "agents" if filename in MATE_SERVICE_AGENT_FILENAMES else agents_dir
+    )
+    return json.loads((folder / filename).read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("filename", sorted(_INSTALLERS))
@@ -163,7 +175,7 @@ def test_every_installer_pins_the_global_mcp_json_merge_off(
     agents_dir: Path, filename: str
 ) -> None:
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     assert spec["includeMcpJson"] is False
     assert "useLegacyMcpJson" not in spec
 
@@ -185,7 +197,7 @@ def test_every_installer_strips_an_ungoverned_auto_approve(
         lambda servers: strict(servers, honour_owner_written=False),
     )
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     for name, entry in (spec.get("mcpServers") or {}).items():
         assert "session_stop" not in (entry.get("autoApprove") or []), name
 
@@ -197,7 +209,7 @@ def test_every_installer_strips_an_ungoverned_auto_approve(
 def test_every_granting_installer_derives_its_kas_block(agents_dir: Path, filename: str) -> None:
     """An inherited ``allow`` never survives: the allow rules are the derivation's alone."""
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     assert spec["permissions"] != _STALE_PERMISSIONS
     assert spec["permissions"] == _derive(spec, filename)
 
@@ -230,6 +242,21 @@ def test_the_research_spec_keeps_an_inherited_deny_and_ask(
     spec = json.loads((agents_dir / "kirocrew-research.json").read_text(encoding="utf-8"))
     derived = _derive(spec, "kirocrew-research.json")["rules"]
     assert spec["permissions"]["rules"] == [_DENY_FETCH, _ASK_SERVER, *derived]
+
+
+@pytest.mark.parametrize("filename", sorted(MATE_SERVICE_AGENT_FILENAMES))
+def test_the_mate_specs_keep_an_inherited_deny(
+    agents_dir: Path, monkeypatch: pytest.MonkeyPatch, filename: str
+) -> None:
+    """An ``agent.json`` ``web_fetch`` deny reaches the crewmate conductor and worker."""
+
+    def _template() -> dict[str, Any]:
+        return {**_overridden_template(), "permissions": _NARROWING_PERMISSIONS}
+
+    monkeypatch.setattr(agent, "build_agent_config", lambda *a, **k: _template())
+    _INSTALLERS[filename]()
+    rules = _written(agents_dir, filename)["permissions"]["rules"]
+    assert _DENY_FETCH in rules and _ASK_SERVER in rules
 
 
 # -- the tail itself ---------------------------------------------------------------

@@ -32,6 +32,10 @@ from kiro_crew import _facade_mirror, work_ledger
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_work_ledger_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams",)
+
 FACADE = "kiro_crew.work_ledger"
 SRC_DIR = Path(work_ledger.__file__).resolve().parent
 
@@ -111,11 +115,6 @@ def _corpus_patched_names() -> set[str]:
     return names
 
 
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
-
-
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
     """The reach the one module had: a write to ``work_ledger.<name>`` was what every
     reader of the name read. Every member of the family that binds a patched name sees
@@ -146,7 +145,7 @@ def test_the_owners_are_the_work_ledger_siblings_in_layer_order() -> None:
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
     on_disk = {f"kiro_crew.{p.stem}": p for p in SRC_DIR.glob("work_ledger_*.py")}
-    assert len(on_disk) == 5
+    assert len(on_disk) == 6
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

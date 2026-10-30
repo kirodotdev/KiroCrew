@@ -92,7 +92,7 @@ granted to whatever launched it, so a Linux VPS cannot serve it at all
 ([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
 **WhatsApp** runs anywhere, but it is not in the base install: it needs the
 optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
-pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+pairing from **Settings → Messaging Channels → WhatsApp**, so reach the remote dashboard
 first (part 2 below) and scan the rotating code from there
 ([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
 
@@ -245,6 +245,13 @@ a bridge interface; the official Docker image sets it. Both server paths mount
 the token-auth middleware unconditionally, so a wider bind never exposes an
 unauthenticated surface beyond the three token-free liveness probes
 (`/api/health`, `/api/live`, `/api/ready`).
+
+A governance policy can narrow both: the `bind_address` list refuses a
+`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
+and the `dashboard_origins` list drops an extra origin it does not name. An
+enterprise build allows neither until a policy names it. Tailnet access there
+follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
+on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
 
 Everything below therefore works by putting something in front of loopback.
 
@@ -757,15 +764,17 @@ notifications are never served from disk.
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
 
-- **Notifications need the app open.** The dashboard raises them through the
-  foreground `Notification` constructor
-  ([`website/src/hooks/useNativeNotification.ts`](../../website/src/hooks/useNativeNotification.ts))
-  and there is no Web Push subscription, so nothing arrives while the installed
-  app is closed or backgrounded. On iOS that constructor is unavailable inside an
-  installed PWA at all — notifications there require
-  `ServiceWorkerRegistration.showNotification()`. Tracked in
-  [issue #2267](https://github.com/kirodotdev/KiroCrew/issues/2267); the Android
-  symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
+- **A closed app gets notifications only through Web Push.** Turn on
+  Settings → Notifications → Desktop alerts → **Notify me even when Kiro Crew is
+  closed** on each
+  device. The dashboard then registers a Web Push subscription, and every
+  delivered note that is not muted or passive also arrives while the installed
+  app is closed or backgrounded. Web Push needs the dashboard served over HTTPS;
+  on iOS it needs iOS 18.4 or later and the app added to the Home Screen. With
+  the toggle off, notifications need the app open. In page banners go through
+  `ServiceWorkerRegistration.showNotification()`, which an installed iOS PWA
+  and Android Chrome require
+  ([issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828)).
 - **Pinch zoom is off.** The installed app behaves like an application, not a
   web page: two-finger pinch and double-tap no longer scale the shell. **To
   magnify, use the OS display-zoom setting** (iOS: Settings → Display &

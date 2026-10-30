@@ -31,6 +31,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.dashboard.handlers import worktree as wt
 
@@ -178,32 +179,40 @@ class TestRunGit:
 
 
 class TestDirSlugEdges:
-    def test_trailing_slash_is_ignored(self):
-        assert wt._dir_slug("feat/thing/") == "thing"
-
-    def test_bare_name_has_no_segments(self):
-        assert wt._dir_slug("hotfix") == "hotfix"
+    @pytest.mark.parametrize(
+        "branch, slug",
+        [
+            pytest.param("feat/thing/", "thing", id="trailing_slash_is_ignored"),
+            pytest.param("hotfix", "hotfix", id="bare_name_has_no_segments"),
+        ],
+    )
+    def test_dir_slug(self, branch, slug):
+        assert wt._dir_slug(branch) == slug
 
     def test_slug_is_bounded(self):
         assert len(wt._dir_slug("feat/" + "z" * 400)) == wt._MAX_DIR_SLUG
 
 
 class TestGitError:
-    def test_empty_output_is_a_generic_message(self):
-        assert wt._git_error(_proc(["git"], 1, "", "")) == "git failed"
+    @pytest.mark.parametrize(
+        "stdout, stderr, message",
+        [
+            pytest.param("", "", "git failed", id="empty_output_is_a_generic_message"),
+            pytest.param(
+                "from stdout", "", "from stdout", id="stdout_is_used_when_stderr_is_empty"
+            ),
+            pytest.param(None, None, "git failed", id="none_streams_are_tolerated"),
+        ],
+    )
+    def test_git_error(self, stdout, stderr, message):
+        assert wt._git_error(_proc(["git"], 1, stdout, stderr)) == message
 
     def test_blank_leading_lines_are_skipped(self):
         proc = _proc(["git"], 1, "", "\n\n   \nfatal: real reason\nnoise\n")
         assert wt._git_error(proc) == "fatal: real reason"
 
-    def test_stdout_is_used_when_stderr_is_empty(self):
-        assert wt._git_error(_proc(["git"], 1, "from stdout", "")) == "from stdout"
-
     def test_message_is_truncated(self):
         assert len(wt._git_error(_proc(["git"], 1, "", "x" * 900))) == 300
-
-    def test_none_streams_are_tolerated(self):
-        assert wt._git_error(_proc(["git"], 1, None, None)) == "git failed"
 
 
 class TestNormPath:
@@ -253,30 +262,41 @@ class TestResolveBaseRefAndCommit:
         git.table = {("rev-parse", "--verify", "--quiet", "origin/HEAD"): (0, "abc123\n", "")}
         assert wt._resolve_base_ref("/srv/repo") == "origin/HEAD"
 
-    def test_empty_output_falls_back_to_head(self, git):
-        git.table = {("rev-parse",): (0, "  \n", "")}
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            pytest.param((0, "  \n", ""), id="empty_output_falls_back_to_head"),
+            pytest.param((128, "", "fatal"), id="failed_probe_falls_back_to_head"),
+        ],
+    )
+    def test_falls_back_to_head(self, git, reply):
+        git.table = {("rev-parse",): reply}
         assert wt._resolve_base_ref("/srv/repo") == "HEAD"
 
-    def test_failed_probe_falls_back_to_head(self, git):
-        git.table = {("rev-parse",): (128, "", "fatal")}
-        assert wt._resolve_base_ref("/srv/repo") == "HEAD"
-
-    def test_resolve_commit_returns_the_sha(self, git):
-        git.table = {("rev-parse",): (0, "deadbeef\n", "")}
-        assert wt._resolve_commit("/srv/repo", "HEAD") == "deadbeef"
-
-    def test_resolve_commit_is_empty_on_failure(self, git):
-        git.table = {("rev-parse",): (1, "", "")}
-        assert wt._resolve_commit("/srv/repo", "nope") == ""
+    @pytest.mark.parametrize(
+        "reply, ref, sha",
+        [
+            pytest.param(
+                (0, "deadbeef\n", ""), "HEAD", "deadbeef", id="resolve_commit_returns_the_sha"
+            ),
+            pytest.param((1, "", ""), "nope", "", id="resolve_commit_is_empty_on_failure"),
+        ],
+    )
+    def test_resolve_commit(self, git, reply, ref, sha):
+        git.table = {("rev-parse",): reply}
+        assert wt._resolve_commit("/srv/repo", ref) == sha
 
 
 class TestGitToplevel:
-    def test_non_repo_is_none(self, git):
-        git.table = {("rev-parse",): (128, "", "fatal: not a git repository")}
-        assert wt._git_toplevel("/srv/plain") is None
-
-    def test_blank_toplevel_is_none(self, git):
-        git.table = {("rev-parse",): (0, "\n", "")}
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            pytest.param((128, "", "fatal: not a git repository"), id="non_repo_is_none"),
+            pytest.param((0, "\n", ""), id="blank_toplevel_is_none"),
+        ],
+    )
+    def test_is_none(self, git, reply):
+        git.table = {("rev-parse",): reply}
         assert wt._git_toplevel("/srv/plain") is None
 
     def test_toplevel_is_realpathed(self, git, tmp_path):
@@ -318,27 +338,32 @@ class TestWorktreeBranches:
         assert trees[wt._norm_path("/srv/repo-wt-detached")] == ""
         assert trees[wt._norm_path("/srv/repo-wt-odd")] == "refs/tags/v1"
 
-    def test_branch_field_without_a_worktree_is_ignored(self, git):
-        git.table = {("worktree", "list"): (0, "branch refs/heads/orphan\0", "")}
-        assert wt._worktree_branches("/srv/repo") == {}
-
-    def test_empty_listing_is_an_empty_mapping(self, git):
-        git.table = {("worktree", "list"): (0, "", "")}
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            pytest.param(
+                "branch refs/heads/orphan\0", id="branch_field_without_a_worktree_is_ignored"
+            ),
+            pytest.param("", id="empty_listing_is_an_empty_mapping"),
+        ],
+    )
+    def test_no_branches(self, git, listing):
+        git.table = {("worktree", "list"): (0, listing, "")}
         assert wt._worktree_branches("/srv/repo") == {}
 
 
 class TestWorktreeExtensionOn:
-    def test_extension_probe_failure_is_false(self, git):
-        git.table = {("config", "--local", "--includes", "--bool"): (1, "", "")}
-        assert wt._worktree_extension_on("/srv/repo") is False
-
-    def test_extension_disabled_is_false(self, git):
-        git.table = {("config", "--local", "--includes", "--bool"): (0, "false\n", "")}
-        assert wt._worktree_extension_on("/srv/repo") is False
-
-    def test_extension_enabled_is_true(self, git):
-        git.table = {("config", "--local", "--includes", "--bool"): (0, "true\n", "")}
-        assert wt._worktree_extension_on("/srv/repo") is True
+    @pytest.mark.parametrize(
+        "reply, enabled",
+        [
+            pytest.param((1, "", ""), False, id="extension_probe_failure_is_false"),
+            pytest.param((0, "false\n", ""), False, id="extension_disabled_is_false"),
+            pytest.param((0, "true\n", ""), True, id="extension_enabled_is_true"),
+        ],
+    )
+    def test_extension_on(self, git, reply, enabled):
+        git.table = {("config", "--local", "--includes", "--bool"): reply}
+        assert wt._worktree_extension_on("/srv/repo") is enabled
 
 
 class TestWorktreeProbeFailureClassifier:
@@ -983,6 +1008,7 @@ class TestCreateWorktreeSyncRealGit:
                 "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
             }
         )
+        env.update(git_maintenance_off_entries(env))
 
         def plain_git(args, cwd, *, stdout_decoder=None):
             return subprocess.run(
@@ -1079,6 +1105,7 @@ class TestWorktreeInUseIgnoresSubmodules:
                 "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
             }
         )
+        env.update(git_maintenance_off_entries(env))
 
         def plain_git(args, cwd, *, stdout_decoder=None):
             return subprocess.run(
@@ -1590,7 +1617,9 @@ class TestModuleContract:
     def test_filter_regex_only_matches_driver_keys(self):
         assert wt._FILTER_KEY_RE.match("filter.a.process")
         assert wt._FILTER_KEY_RE.match("filter.a.b.clean")
-        assert not wt._FILTER_KEY_RE.match("filter..process")
+        # Git accepts an empty filter name (`[filter ""]`, bound by `filter=`) and
+        # runs its driver, so the empty subsection is a driver key too.
+        assert wt._FILTER_KEY_RE.match("filter..process")
         assert not wt._FILTER_KEY_RE.match("filter.a.required")
 
     def test_probe_failure_sentinel_is_not_a_plausible_key(self):

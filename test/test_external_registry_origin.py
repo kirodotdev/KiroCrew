@@ -3,8 +3,9 @@
 A persisted clone's origin is verified before any pull, the manifest fed to admission
 describes the repo that gets cloned, a mismatched origin is moved aside before the
 fresh clone (logging the mismatch) and restored if that clone fails, an unreadable
-origin never enters the move-aside path, and a stale clone that cannot be moved
-aside aborts the install.
+origin never enters the move-aside path, a stale clone that cannot be moved
+aside aborts the install, and the origin read probes the clone's ``.git`` off the
+event loop thread.
 
 ``test_external_registry.py`` holds the index cache, fetch and lookup tests and names
 every sibling; shared fixtures live in ``external_registry_helpers.py``.
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -1088,3 +1090,79 @@ class TestOriginMismatchLogsBeforeMoveAside:
         assert origin_log, f"expected an origin-mismatch log line, got {log_lines!r}"
         assert existing_origin in origin_log[0]
         assert "moving aside stale clone for re-clone" in origin_log[0]
+
+
+class TestCloneOriginProbeOffLoop:
+    """The ``.git`` probe in ``_clone_origin_url`` runs off the event loop thread.
+
+    The checkout sits in the data home's apps directory, and a stat on a mount that
+    stopped answering blocks for as long as the kernel does: on the loop that stalls
+    every session, so the probe hops to a worker thread before the git spawn.
+    """
+
+    @staticmethod
+    def _track_git_probe(dest: Path, threads: set[int]):
+        real_is_dir = Path.is_dir
+
+        def tracked_is_dir(self, *a, **kw):
+            if self == dest / ".git":
+                threads.add(threading.get_ident())
+            return real_is_dir(self, *a, **kw)
+
+        return patch.object(Path, "is_dir", tracked_is_dir)
+
+    @pytest.mark.asyncio
+    async def test_missing_git_dir_returns_none_without_spawning(self, tmp_path):
+        from kiro_crew.apps import registry as reg
+
+        dest = tmp_path / "app"
+        dest.mkdir()  # a directory, but not a clone
+        loop_thread = threading.get_ident()
+        probe_threads: set[int] = set()
+        spawn = AsyncMock()
+        with (
+            self._track_git_probe(dest, probe_threads),
+            patch("kiro_crew.apps.registry.create_subprocess_limited", new=spawn),
+        ):
+            assert await reg._clone_origin_url(dest) is None
+
+        spawn.assert_not_called()
+        assert probe_threads, "the .git probe never ran"
+        assert loop_thread not in probe_threads, "the .git probe ran on the event loop thread"
+
+    @pytest.mark.asyncio
+    async def test_existing_clone_reads_origin_after_off_loop_probe(self, tmp_path):
+        from kiro_crew.apps import registry as reg
+
+        dest = tmp_path / "app"
+        (dest / ".git").mkdir(parents=True)
+        origin = "ssh://git.example.com/team/MyRegistry"
+        loop_thread = threading.get_ident()
+        probe_threads: set[int] = set()
+        spawned: list[list[str]] = []
+
+        class _OriginProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (origin.encode() + b"\n", None)
+
+        async def _fake_spawn(*argv, **kwargs):
+            spawned.append(list(argv))
+            assert kwargs["cwd"] == str(dest)
+            return _OriginProc()
+
+        with (
+            self._track_git_probe(dest, probe_threads),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard", **_k: (a, None),
+            ),
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch("kiro_crew.apps.registry.create_subprocess_limited", side_effect=_fake_spawn),
+        ):
+            assert await reg._clone_origin_url(dest) == origin
+
+        assert [_real_argv(a) for a in spawned] == [["git", "remote", "get-url", "origin"]]
+        assert probe_threads, "the .git probe never ran"
+        assert loop_thread not in probe_threads, "the .git probe ran on the event loop thread"

@@ -266,7 +266,7 @@ class TestTriageModel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slot.prompts, [])
 
     async def test_a_hand_pick_survives_watchdog_passes_and_wakes(self):
-        """The review finding: a model picked in the crew's session is the person's.
+        """A model picked in the crew's session is the person's.
 
         Neither a watchdog pass nor a wake switches over it, the switch back to the
         work model included, and the hold is put on the record so a restart keeps it.
@@ -979,11 +979,17 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("store busy")
 
         teardown.register_slot_close_hook(cr.APP_NAME, _boom)
-        await teardown.notify_slot_closed(cr.APP_NAME, "crew-c_1")
+        # Reported, not raised: the close path refuses to proceed on False.
+        self.assertFalse(await teardown.notify_slot_closed(cr.APP_NAME, "crew-c_1"))
 
     async def test_an_unknown_slot_key_is_ignored(self):
+        crew = _crew(self.root)
         with self._repos():
             await cr._on_slot_closed("crew-c_deadbeef", root=self.root)
+        after = cs.read_crew(OWNER, REPO, crew["id"], self.root)
+        assert after is not None
+        self.assertTrue(after["enabled"])
+        self.assertEqual(after.get("paused_reason") or "", "")
 
     async def test_a_specific_pause_reason_is_not_overwritten(self):
         crew = _crew(self.root)

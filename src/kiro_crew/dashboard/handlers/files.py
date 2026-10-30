@@ -55,7 +55,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, file_delivery_consent, pinned_fs, platform_compat  # noqa: F401
+from kiro_crew import executors, pinned_fs, platform_compat  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
@@ -81,10 +81,12 @@ from kiro_crew.config.sections import (  # noqa: F401
 )
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
+from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     dashboard_slot_key,
     drained_to_thread,
+    effective_session_key,
     run_config_write,
 )
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
@@ -178,9 +180,8 @@ from kiro_crew.dashboard.file_api.office_preview import (  # noqa: F401
     api_file_office_preview,
 )
 from kiro_crew.dashboard.file_api.outbox import (  # noqa: F401
-    _audit_consented_download,
-    _audit_owner_grant_refusal,
-    _owner_grant_releases_flagged,
+    _caller_is_owner,
+    _list_outbox_entries,
     _read_outbox_file,
     api_outbox_download,
     api_outbox_list,
@@ -212,6 +213,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _open_checked,
     _open_checked_file,
     _open_rb_nofollow,
+    _open_refusal,
     _OpenDenied,
     _OpenedFile,
     _OpenRefusal,
@@ -235,20 +237,25 @@ from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     api_project_git,
 )
 from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
+    _project_tree_add_folder_rows,
     _project_tree_allot,
     _project_tree_body,
     _project_tree_fence,
     _project_tree_file_quotas,
     _project_tree_git_layout,
+    _project_tree_has_gitmodules,
     _project_tree_identity,
+    _project_tree_in_nested_repo,
     _project_tree_is_link,
     _project_tree_listing,
+    _project_tree_nested_repos,
     _project_tree_pin,
     _project_tree_rebase,
     _project_tree_scandir,
     _project_tree_scandir_entries,
     _project_tree_subdir,
     _project_tree_walk,
+    _project_tree_walk_order,
     _project_tree_walk_pinned,
     _ProjectTreeFolderMoved,
     api_project_tree,
@@ -270,7 +277,9 @@ from kiro_crew.dashboard.file_api.sheet import (  # noqa: F401
     api_file_sheet,
 )
 from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
+    _download_read_chunk,
     _parse_range_header,
+    _stream_unscanned_download,
     api_file_download,
     api_file_stream,
     api_file_watch,
@@ -350,6 +359,10 @@ from kiro_crew.platform.context import (  # noqa: F401
     redact_log_via_context,
     redact_owner_view_via_context,
 )
+from kiro_crew.platform.update_governance import (  # noqa: F401 - owner: editor
+    git_command_env,
+    repo_exec_driver_reason,
+)
 from kiro_crew.sandbox import (  # noqa: F401
     cgroup_scope_argv,
     popen_limited,
@@ -372,6 +385,7 @@ from kiro_crew.security import (  # noqa: F401
     redaction_switch,
     sandbox_credential_targets,
 )
+from kiro_crew.session_environment import session_runs_remotely  # noqa: F401
 from kiro_crew.validation import (  # noqa: F401
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
@@ -542,6 +556,13 @@ _UPLOAD_DIR: Path | None = None
 
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
+#: Largest file ``/api/file-download`` reads whole into memory. A larger one is
+#: streamed in bounded chunks. The route is owner-only and does not scan content.
+_DOWNLOAD_SCAN_MAX_BYTES = _MAX_UPLOAD_BYTES
+#: How long one chunk read of an unscanned download may take before the
+#: response is dropped. A healthy disk answers a chunk in milliseconds; a hung
+#: network mount never does, and the read must not hold the response open.
+_DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: Video gets its own, larger ceiling: a 30-second retina screen recording is
 #: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
 #: case and make the feature read as broken. Safe to raise only because video
@@ -652,6 +673,17 @@ _ALLOWED_TEXT_EXT = {
     ".cpp",
     ".h",
     ".hpp",
+    # More source and config text. Stored as uploaded bytes and read back as
+    # text: file-read answers text/plain, file-download is attachment + nosniff,
+    # and none of these is a .html/.htm the viewer would render. A server-side
+    # language extension (.php) is never executed here.
+    ".php",
+    ".sql",
+    ".kt",
+    ".swift",
+    ".cs",
+    ".vue",
+    ".toml",
 }
 _ALLOWED_DOC_EXT = {
     ".pdf",

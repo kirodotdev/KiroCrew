@@ -745,6 +745,23 @@ def test_a_child_run_masks_seals_carves_and_execs(tmp_path: Path) -> None:
     assert run.execs == [["/bin/agent", "/bin/agent", "--flag"]]
 
 
+def test_a_spawn_with_no_launch_directory_stands_in_its_directory_through_the_masks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spawn that names no ``exec_cwd`` and is started inside a masked tree runs its
+    command in the mask, not in the directory the mask was placed over."""
+    home = _Home(tmp_path)
+    monkeypatch.chdir(home.aws)
+    isdir = os.path.isdir
+    monkeypatch.setattr(program.os.path, "isdir", lambda path: path != "/tmp" and isdir(path))
+    run = launch(tmp_path, home.plan(), environ={"HOME": str(home.root)})
+    assert run.exec_cwd == ""
+    program.run_child(run, ["/bin/agent"])
+    assert run.execs == [["/bin/agent", "/bin/agent"]]
+    assert os.stat(".").st_ino == os.stat(home.aws).st_ino
+    assert sorted(os.listdir(".")) == ["config"]
+
+
 def test_seals_land_before_hides_and_carve_outs_after_them(tmp_path: Path) -> None:
     """A non-recursive bind of a parent placed AFTER a hide of its leaf masks that hide,
     and a carve-out bound before its parent's seal vanishes under it."""

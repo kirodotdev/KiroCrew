@@ -169,6 +169,8 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
         assert KAS in registry.selectable_backends()
+        # A Kiro CLI pick made later in this process runs on KAS too.
+        assert registry.kiro_cli_pick_backend() == KAS
 
     def test_unknown_verdict_keeps_kas(self, monkeypatch, pinned_cli, kas_selectable):
         _help(monkeypatch, None)
@@ -217,7 +219,7 @@ class TestGatewayBootDoesNotWaitForTheFloor:
         release = threading.Event()
         seen = []
 
-        def _slow(cfg, *, kas_defaulted=False):
+        def _slow(cfg, **_kwargs):
             seen.append(cfg)
             release.wait(5)
 
@@ -269,7 +271,7 @@ class TestGatewayBootDoesNotWaitForTheFloor:
     def test_a_failing_floor_is_logged_and_contained(self, monkeypatch, caplog):
         from kiro_crew.slack import gateway
 
-        def _boom(_cfg, *, kas_defaulted=False):
+        def _boom(_cfg, **_kwargs):
             raise RuntimeError("probe exploded")
 
         monkeypatch.setattr(gateway, "apply_kas_cli_floor", _boom)
@@ -297,6 +299,69 @@ class TestDefaultNoticeWording:
         notice = bootstrap.apply_kas_cli_floor(_cfg())
         assert notice is not None
         assert notice.startswith("KAS is selected, but ")
+
+    def test_a_kiro_cli_pick_keeps_v2_and_is_told_to_update(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        """A stored Kiro CLI pick on a kiro-cli without v3 keeps v2, and is told to update."""
+        _help(monkeypatch, _OLD_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert not registry.kiro_cli_offers_kas()
+        assert notice is not None
+        assert notice.startswith("Kiro CLI is selected and ")
+        assert "kiro-cli update" in notice
+
+    def test_a_kiro_cli_pick_and_a_kas_member_name_both(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        _help(monkeypatch, _OLD_HELP)
+        cfg = _cfg(acp_backend=KIRO, member_acp_backend=KAS)
+        notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert notice is not None
+        assert notice.startswith("Kiro CLI is selected and ")
+        assert "KAS is selected, but " in notice
+
+    def test_a_v3_kiro_cli_moves_the_pick_onto_kas(self, monkeypatch, pinned_cli, kas_selectable):
+        _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
+        assert cfg.agent.acp_backend == KAS
+        assert registry.kiro_cli_pick_backend() == KAS
+
+    @pytest.mark.parametrize("help_text", [None, _OTHER_ENGINE_HELP])
+    def test_no_positive_verdict_keeps_the_pick_on_kiro_cli(
+        self, monkeypatch, pinned_cli, kas_selectable, help_text
+    ):
+        """An unknown probe, or one that lacks v3, never moves a Kiro CLI pick."""
+        _help(monkeypatch, help_text)
+        cfg = _cfg(acp_backend=KIRO)
+        bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+
+    def test_the_bundle_route_keeps_the_pick_on_kiro_cli(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        calls = _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        cfg.agent.kas_bundle = True
+        assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
+        assert cfg.agent.acp_backend == KIRO
+        assert calls == []
+
+    def test_a_kiro_cli_main_that_is_not_a_pick_is_not_moved(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        """The floor a typo took reads as Kiro CLI in memory but is not a pick."""
+        calls = _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KIRO
+        assert calls == []
 
     @pytest.mark.parametrize("main,member", [(KAS, ""), (KIRO, KAS), (KAS, KAS)])
     @pytest.mark.parametrize(
@@ -354,6 +419,97 @@ class TestDefaultNoticeWording:
         assert any(record.message.startswith(prefix) for record in caplog.records)
 
 
+class TestAKiroCliPickWaitsForTheFloor:
+    """A stored Kiro CLI pick moves to KAS only on the probe's v3 verdict, so it waits."""
+
+    @pytest.mark.parametrize(
+        "main,declared,stored_kiro,waits",
+        [
+            (KAS, False, False, True),
+            (KAS, True, False, False),
+            (KIRO, True, True, True),
+            (KIRO, True, False, False),
+        ],
+    )
+    def test_main_role_gating(self, monkeypatch, main, declared, stored_kiro, waits):
+        from kiro_crew.config import loader, loader_document
+        from kiro_crew.slack import gateway
+
+        monkeypatch.setattr(loader, "acp_backend_declared", lambda: declared)
+        monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader_document, "acp_backend_stored_as_kiro", lambda: stored_kiro)
+        assert gateway._kas_floor_gates_spawns(_cfg(main, KAS)) == (waits, False)
+
+    def test_a_spawn_on_a_kiro_cli_pick_waits_and_lands_on_kas(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+        from kiro_crew.config import loader, loader_document
+        from kiro_crew.members import select_provider_backend
+        from kiro_crew.slack import gateway
+
+        _help(monkeypatch, _NEW_HELP)
+        # The bound must outlast any scheduling delay, so only the verdict releases.
+        monkeypatch.setattr(kas_floor_wait, "KAS_FLOOR_WAIT_SECS", 600.0)
+        release = threading.Event()
+        monkeypatch.setattr(loader, "acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader_document, "acp_backend_stored_as_kiro", lambda: True)
+        monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        cfg = _cfg(acp_backend=KIRO)
+
+        async def _spawn():
+            await await_kas_floor_verdict(member=False)
+            return select_provider_backend("dashboard:chat", "", cfg.agent.acp_backend)
+
+        async def _run():
+            loop = asyncio.get_running_loop()
+            probing = loop.create_future()
+
+            def _floor(cfg, **kwargs):
+                # Signals that the declaration read is done and the probe is held.
+                loop.call_soon_threadsafe(probing.set_result, None)
+                assert release.wait(60), "the test never released the floor"
+                return bootstrap.apply_kas_cli_floor(cfg, **kwargs)
+
+            monkeypatch.setattr(gateway, "apply_kas_cli_floor", _floor)
+            floor = gateway._start_kas_cli_floor(cfg)
+            spawn = asyncio.create_task(_spawn())
+            try:
+                await asyncio.wait_for(probing, timeout=30)
+                await asyncio.sleep(0)
+                assert not spawn.done(), "the spawn went ahead before the floor's verdict"
+            finally:
+                release.set()
+                await asyncio.wait_for(floor, timeout=30)
+            return await asyncio.wait_for(spawn, timeout=30)
+
+        assert asyncio.run(_run()) == KAS
+
+    def test_the_gateway_passes_the_kiro_pick_to_the_floor(self, monkeypatch):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.config import loader, loader_document
+        from kiro_crew.slack import gateway
+
+        seen: list[dict] = []
+        monkeypatch.setattr(loader, "acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: False)
+        monkeypatch.setattr(loader_document, "acp_backend_stored_as_kiro", lambda: True)
+        monkeypatch.setattr(
+            gateway, "apply_kas_cli_floor", lambda cfg, **kwargs: seen.append(kwargs)
+        )
+        monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KIRO)), timeout=30)
+
+        asyncio.run(_run())
+        assert seen == [{"kas_defaulted": False, "kiro_selected": True}]
+
+
 class TestSpawnWaitsForADefaultedFloor:
     """A spawn racing the floor on a defaulted KAS waits for its verdict."""
 
@@ -371,9 +527,9 @@ class TestSpawnWaitsForADefaultedFloor:
 
         release = threading.Event()
 
-        def _floor(cfg, *, kas_defaulted=False):
+        def _floor(cfg, **kwargs):
             assert release.wait(60), "the test never released the floor"
-            return bootstrap.apply_kas_cli_floor(cfg, kas_defaulted=kas_defaulted)
+            return bootstrap.apply_kas_cli_floor(cfg, **kwargs)
 
         monkeypatch.setattr(loader, "acp_backend_declared", lambda: declared)
         monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: declared)
@@ -429,8 +585,10 @@ class TestSpawnWaitsForADefaultedFloor:
                 for _ in range(5):
                     await asyncio.sleep(0)
                 assert not member.done(), "the member DM went ahead before the floor's verdict"
-                # The main role runs kiro-cli, so its spawn is not held by the floor.
-                assert main.done()
+                # The main role runs kiro-cli and is not a stored pick, so the
+                # declaration read releases it while the probe is still held.
+                await asyncio.wait_for(asyncio.shield(main), timeout=30)
+                assert not member.done()
             finally:
                 release.set()
                 await floor
@@ -465,10 +623,10 @@ class TestSpawnWaitsForADefaultedFloor:
                 assert release_read.wait(60), "declaration read was not released"
                 return not explicit_member
 
-            def _floor(cfg, *, kas_defaulted=False):
+            def _floor(cfg, **kwargs):
                 loop.call_soon_threadsafe(probing.set_result, None)
                 assert release_probe.wait(60), "probe was not released"
-                return bootstrap.apply_kas_cli_floor(cfg, kas_defaulted=kas_defaulted)
+                return bootstrap.apply_kas_cli_floor(cfg, **kwargs)
 
             monkeypatch.setattr(loader, "acp_backend_declared", _main_declared)
             monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: explicit_member)
@@ -715,6 +873,59 @@ class TestSharedBackgroundWaitsForTheFloor:
         asyncio.run(_run())
 
 
+class TestAWaitingColdStartUsesTheFactoryInForce:
+    """A factory installed while a cold start waits for the verdict is the one it calls."""
+
+    def test_the_factory_swapped_during_the_wait_builds_the_provider(self, kas_selectable):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        calls: list[str] = []
+
+        class _Stop(Exception):
+            pass
+
+        def _factory(name):
+            def _build(*_args, **_kwargs):
+                calls.append(name)
+                raise _Stop(name)
+
+            return _build
+
+        async def _run():
+            manager = SessionManager(KiroCrewConfig())
+            manager._provider_factory = _factory("pre-verdict")
+            loop = asyncio.get_running_loop()
+            verdict = loop.create_future()
+            kas_floor_wait.arm_kas_floor_wait(verdict, main=True, member=False)
+            entered = asyncio.Event()
+            real_wait = kas_floor_wait.await_kas_floor_verdict
+
+            async def _wait(**kwargs):
+                entered.set()
+                await real_wait(**kwargs)
+
+            from kiro_crew.session_allocation_parts import get_or_create as goc
+
+            goc.await_kas_floor_verdict = _wait
+            try:
+                spawn = asyncio.create_task(manager.get_or_create("dashboard:chat-25288"))
+                await asyncio.wait_for(entered.wait(), timeout=30)
+                # What the verdict's live-config reload does before it lands.
+                manager._provider_factory = _factory("post-verdict")
+                verdict.set_result(None)
+                with pytest.raises(_Stop):
+                    await asyncio.wait_for(spawn, timeout=30)
+            finally:
+                goc.await_kas_floor_verdict = real_wait
+                kas_floor_wait.arm_kas_floor_wait(verdict, main=False, member=False)
+                await asyncio.wait_for(manager.close_all(), timeout=30)
+
+        asyncio.run(_run())
+        assert calls == ["post-verdict"]
+
+
 class TestOffLoopRunnerWaitsForTheFloor:
     """A runner on its own thread and event loop waits for the gateway's floor too."""
 
@@ -811,3 +1022,104 @@ class TestOffLoopRunnerWaitsForTheFloor:
                 verdict.set_result(None)
 
         asyncio.run(_run())
+
+
+class TestAResolvedKiroIdIsNeverMovedAgain:
+    """The Kiro CLI pick moves to KAS at config load only, never at the gate."""
+
+    def test_a_member_floor_stays_kiro_cli_after_v3_is_confirmed(
+        self, tmp_path, monkeypatch, kas_selectable
+    ):
+        import json as _json
+        from unittest.mock import patch
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.members import select_provider_backend
+
+        registry.confirm_kiro_cli_offers_kas()
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(
+            _json.dumps({"agent": {"member_acp_backend": "not-a-backend"}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
+            cfg = KiroCrewConfig.load()
+        assert cfg.agent.member_acp_backend == KIRO
+        # Every re-resolution of that floor keeps it.
+        assert registry.resolve_selected_backend(cfg.agent.member_acp_backend) == KIRO
+        assert (
+            select_provider_backend(
+                "dashboard:member-helper", cfg.agent.member_acp_backend, cfg.agent.acp_backend
+            )
+            == KIRO
+        )
+
+    def test_the_gate_answers_kiro_cli_for_kiro_cli(self, kas_selectable):
+        registry.confirm_kiro_cli_offers_kas()
+        assert registry.resolve_selected_backend(KIRO) == KIRO
+        assert registry.kiro_cli_pick_backend() == KAS
+
+
+class TestTheVerdictReachesTheLiveFactory:
+    """A confirmed v3 verdict reloads the live config before any spawn is released."""
+
+    def _run_floor(self, monkeypatch, *, help_text):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.config import live, loader, loader_document
+        from kiro_crew.slack import gateway
+
+        _help(monkeypatch, help_text)
+        monkeypatch.setattr(loader, "acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader_document, "acp_backend_stored_as_kiro", lambda: True)
+        monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        events: list[str] = []
+
+        class _Watch:
+            started = True
+
+            async def refresh_now(self):
+                # What the live watcher sees at this moment: the stored pick
+                # already loads as KAS, so its diff names agent.acp_backend.
+                events.append(f"refresh:{registry.kiro_cli_pick_backend()}")
+
+        monkeypatch.setattr(live, "watch", lambda: _Watch())
+
+        async def _run():
+            floor = gateway._start_kas_cli_floor(_cfg(acp_backend=KIRO))
+            await asyncio.wait_for(floor, timeout=30)
+            events.append("floor-done")
+
+        asyncio.run(_run())
+        return events
+
+    def test_a_confirmed_verdict_refreshes_before_the_floor_releases(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        assert self._run_floor(monkeypatch, help_text=_NEW_HELP) == [
+            f"refresh:{KAS}",
+            "floor-done",
+        ]
+
+    @pytest.mark.parametrize("help_text", [None, _OLD_HELP])
+    def test_no_confirmation_no_refresh(self, monkeypatch, pinned_cli, kas_selectable, help_text):
+        assert self._run_floor(monkeypatch, help_text=help_text) == ["floor-done"]
+
+    def test_a_reload_after_the_verdict_names_the_backend_change(
+        self, tmp_path, monkeypatch, kas_selectable
+    ):
+        """The watcher's diff is what makes SessionManager rebuild its factory."""
+        import json as _json
+        from unittest.mock import patch
+
+        from kiro_crew.config.live import diff_config_docs
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(_json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
+            before = KiroCrewConfig.load()
+            registry.confirm_kiro_cli_offers_kas()
+            after = KiroCrewConfig.load()
+        assert before.agent.acp_backend == KIRO and after.agent.acp_backend == KAS
+        assert "agent.acp_backend" in diff_config_docs(before.to_dict(), after.to_dict())

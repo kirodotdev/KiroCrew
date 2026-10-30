@@ -32,7 +32,7 @@ import time
 from typing import Any
 
 from kiro_crew import irq, platform_compat
-from kiro_crew.work_vocab import WORK_WAKE_STATUSES
+from kiro_crew.work_vocab import WORK_WAKE_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,9 @@ _MAX_ITEMS_PER_CONDUCTOR = 32
 #: spelling here would let a trigger push for news this gate refuses -- a turn's
 #: worth of latency bought for nothing, and invisible from either side. The import
 #: costs this module nothing it was avoiding: ``work_vocab`` is a leaf with no
-#: imports of its own.
+#: imports of its own. ``reply`` is in it but wakes only under the remote-dispatch
+#: preview: :func:`is_actionable_event` takes that switch from its caller, so this
+#: gate stays pure and reads no config.
 WAKE_STATUSES = frozenset(WORK_WAKE_STATUSES)
 
 #: Event kinds a worker can produce. Only ``report`` is one -- every other kind in
@@ -334,7 +336,7 @@ def revision(newest_event_ids: dict[str, str]) -> str:
     return hashlib.sha256(packed.encode("utf-8")).hexdigest()[:16]
 
 
-def is_actionable_event(kind: str, status: str | None) -> bool:
+def is_actionable_event(kind: str, status: str | None, *, remote_dispatch: bool = False) -> bool:
     """Whether one work-ledger event needs the conductor.
 
     A worker's ``report`` carrying a waking status, and nothing else. The kind is
@@ -344,10 +346,13 @@ def is_actionable_event(kind: str, status: str | None) -> bool:
 
     A worker that stopped to wait reports ``progress``, which is not a waking status,
     so a pause is refused here by the status alone and needs no clause of its own.
+
+    *remote_dispatch* is ``work_ledger.remote_dispatch`` as the caller read it: a
+    ``reply`` wakes only with it on (:func:`~kiro_crew.work_vocab.wake_statuses`).
     """
     if (kind or "").strip() not in WORKER_EVENT_KINDS:
         return False
-    return (status or "").strip() in WAKE_STATUSES
+    return (status or "").strip() in wake_statuses(remote_dispatch)
 
 
 def _rate_path(conductor_key: str):
@@ -623,6 +628,18 @@ def stall_brief(*, item_id: str, status: str | None) -> str:
     Structural only, for the reason :func:`wake_brief` gives.
     """
     return f"[work-ledger wake] item={item_id} reason=stall last_status={status or '(none yet)'}"
+
+
+def undelivered_wake_brief(*, item_id: str, tool: str) -> str:
+    """Text for a worker whose ``work_report`` / ``work_brief`` call never arrived.
+
+    Its own shape for the reason :func:`stall_brief` has one: it says neither "this
+    worker reported" nor "this worker went quiet" but "this worker tried, and the
+    harness did not deliver the call". *tool* is one of the two worker tool names,
+    never anything the worker wrote. Structural only, for the reason
+    :func:`wake_brief` gives.
+    """
+    return f"[work-ledger wake] item={item_id} reason=report_undelivered tool={tool}"
 
 
 #: Chars the briefs may contribute to a delivered wake. ``irq`` already bounds the

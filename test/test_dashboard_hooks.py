@@ -61,7 +61,6 @@ class TestHookHandlerIntegration:
         """Hook CRUD operations work through store."""
         store = ScriptHookStore(tmp_path)
 
-        # Create
         hook = store.create(
             {
                 "name": "test-hook",
@@ -72,16 +71,13 @@ class TestHookHandlerIntegration:
         )
         assert hook.id is not None
 
-        # Retrieve
         retrieved = store.get(hook.id)
         assert retrieved is not None
         assert retrieved.name == "test-hook"
 
-        # Update
         updated = store.update(hook.id, {"name": "updated-name"})
         assert updated.name == "updated-name"
 
-        # Delete
         assert store.delete(hook.id) is True
         assert store.get(hook.id) is None
 

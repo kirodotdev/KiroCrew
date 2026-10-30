@@ -93,30 +93,46 @@ def _model_rejected_reason(
     if backend is not None:
         backends: list[str] = [backend]
     else:
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
         from kiro_crew.members import select_provider_backend
 
+        cfg = None
         try:
-            agent = KiroCrewConfig.load().agent
-            default_backend = agent.acp_backend or ""
-            member_backend = agent.member_acp_backend or ""
+            cfg = KiroCrewConfig.load()
+            default_backend = cfg.agent.acp_backend or ""
+            member_backend = cfg.agent.member_acp_backend or ""
         except Exception:  # pragma: no cover - config load is resilient
             default_backend, member_backend = "", ""
         keys = list(session_keys or ())
-        backends = (
-            [select_provider_backend(k, member_backend, default_backend) for k in keys]
-            if keys
-            else [default_backend]
-        )
+        try:
+            backends = (
+                [
+                    select_provider_backend(
+                        k,
+                        member_backend,
+                        default_backend,
+                        crew_backend=crewmate_backend_pin(cfg, k) if cfg is not None else None,
+                    )
+                    for k in keys
+                ]
+                if keys
+                else [default_backend]
+            )
+        except CrewmateHarnessUnavailable as exc:
+            # A crewmate whose pinned harness cannot start takes no model at all.
+            return str(exc)
     from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.crewmate_harness import harness_label
 
     entry = model_registry.get_entry(model_name) or {}
     for name in dict.fromkeys(backends):
         namespace = capabilities_for(name).model_id_namespace
         if namespace != MODEL_NAMESPACE_ACP and entry.get("providers", {}).get(namespace):
             continue
+        # The harness by the name the dashboard shows it under, never the raw id.
         return (
             f"{model_name!r} is a display-only model identifier the "
-            f"{name or 'kiro'} backend does not accept; "
+            f"{harness_label(name or 'kiro')} harness does not accept; "
             f"select a listed model or 'auto'."
         )
     return None
@@ -219,10 +235,10 @@ async def _try_live_model_switch(
     if provider.has_active_turn():
         # Same hazard api_chat_slot_reasoning_effort documents: awaiting a
         # response mid-turn races the streaming prompt loop on stdout for the
-        # non-multiplexed client. api_chat_slot_model answers 409 before
-        # reaching here (its check and this call share one no-await window),
-        # so this is defense in depth for any future caller — decline the
-        # live switch rather than race the stream.
+        # non-multiplexed client. api_chat_slot_model defers the pick to the
+        # turn boundary before reaching here (its check and this call share
+        # one no-await window), so this is defense in depth for any future
+        # caller — decline the live switch rather than race the stream.
         return False
     wire = _wire_model_id(provider, model_name)
     if not wire:
@@ -293,16 +309,48 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
     whenever it has no real counts to send). With a live provider the payload
     carries the freshly rebased stats from ``set_model``; without one (the
-    session-reset path) it carries no tokens, so the reducer deletes the entry
-    and the UI falls back to its own model-derived window for the slot's new
-    model. Best-effort: a broadcast failure must not fail the switch.
+    cold-reset path) it carries no tokens, so the reducer keeps the stored
+    ``used`` and the UI derives the percentage against the new model's window.
+    Best-effort: a broadcast failure must not fail the switch.
+
+    When the new model's window is unknown, the frame carries ``used_tokens``
+    (if the live rebase knows it) but neither ``pct`` nor ``window_tokens``.
+    ``used`` is roughly model-independent and the transcript is unchanged across
+    a switch, so the meter derives ``used / new-window`` against its own
+    model-derived window — a correct reading, not the old model's percentage
+    pinned beside a window that does not describe it. A rebase that DID
+    resolve the new window ships the full ``pct``/``used``/``window`` triple and
+    is not a reset. When ``used`` is genuinely unknown (a percentage-only
+    backend) nothing is carried, and the reducer clears the reading rather than
+    derive a wrong number.
     """
     try:
         if provider is not None:
             payload = _context_usage_payload(slot_key, provider)
         else:
-            payload = {"slot": slot_key, "pct": 0.0}
+            # No provider on the cold-reset path: no measurement to send, so the
+            # reducer keeps its stored ``used`` and derives against the new
+            # window.
+            payload = {"slot": slot_key}
         payload["reset"] = True
+        if not payload.get("window_tokens"):
+            # New window unknown: a pct computed against the OLD window must not
+            # pair with the NEW model's window downstream, so drop both the pct
+            # and the (zero) window. Keep ``used_tokens`` when the provider has
+            # it — the meter derives the percentage from it against the new
+            # window. ``_context_usage_payload`` only sets ``used_tokens``
+            # alongside ``window_tokens``, so surface it here from the provider.
+            payload.pop("pct", None)
+            payload.pop("window_tokens", None)
+            payload.pop("used_tokens", None)
+            used = 0
+            if provider is not None and hasattr(provider, "context_used_tokens"):
+                try:
+                    used = int(provider.context_used_tokens() or 0)
+                except Exception:
+                    used = 0
+            if used > 0:
+                payload["used_tokens"] = used
         state.broadcast_context_usage(slot_key, payload)
     except Exception:
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
@@ -313,8 +361,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
 
     Prefers an in-place ``session/set_model`` on the running session and only
     resets when that is impossible (no ACP provider, an unrepresentable
-    target, or the live call failing). A turn in flight answers 409 instead:
-    the reset fallback would tear down the streaming turn mid-stream.
+    target, or the live call failing). A turn in flight takes neither path
+    now: the pick is committed and answered ``deferred: true``, and the
+    boundary of that turn applies it (``apply_deferred_model_switch``) — the
+    reset fallback would otherwise tear down the streaming turn mid-stream.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -479,22 +529,88 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             state.push_slots_update()
             return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
-        if _switch_target_busy(state, slot, session_key, provider):
+        _busy = _switch_target_busy(state, slot, session_key, provider)
+        if _busy:
             # Never tear down an in-flight turn: _try_live_model_switch
-            # declines a mid-turn live switch, so falling through would take
-            # the reset fallback and kill the streaming turn for any
-            # programmatic caller (the UI disables the picker mid-turn, but
-            # the API has no such guard). Answer busy instead — same policy
-            # as the effort handler's defer-not-reset branch and the bulk
-            # handler's skip_running default. The refusal applies to EVERY
-            # provider class with an active turn, not only the ACP one that
-            # could have gone live: the reset fallback below tears down the
-            # in-flight turn regardless of provider type, and a 409 is
-            # retryable once the turn completes. The signals it reads, and
-            # the sibling-alias window only the third one covers, are on the
-            # helper.
+            # declines a mid-turn live switch (awaiting the backend's answer
+            # would race the streaming turn's read loop on the same stdout),
+            # so falling through would take the reset fallback and kill the
+            # streaming turn. The pick is committed NOW and applied at the
+            # turn boundary instead — the project chip's contract, and what
+            # every backend's own mid-turn pick does (KAS accepts a mid-turn
+            # model option, keeps the running turn on its model, and runs the
+            # pick from the next turn). The turn in flight finishes on the
+            # model it started on; ``apply_deferred_model_switch`` moves the
+            # session when that turn ends (live where the harness allows, by
+            # the deferred reset otherwise), and the next turn's admission is
+            # its backstop. This holds for EVERY provider class with an active
+            # turn, not only the ACP one that could go live: the boundary
+            # decides the mechanism, so there is nothing a 409 would protect.
+            # A pick that can only land through a session RESET -- the live
+            # switch cannot express it (a non-ACP provider, or an id this
+            # backend has no set_model value for, e.g. Auto on a
+            # provider-namespace backend) -- cannot be deferred while a
+            # sub-agent is attached. The boundary helper will not arm a reset
+            # under attached children (it would tear down the runtime they run
+            # on), so such a pick would never land: the turn would keep running
+            # on the old model while the user was told it applies next. Refuse
+            # it exactly as the idle path does below, committing nothing, rather
+            # than report a deferral that cannot happen. A pick the live switch
+            # CAN express is not blocked -- the boundary lands it live, with no
+            # reset, so attached children do not stand in its way.
+            _reset_only = not isinstance(provider, AcpProvider) or not _wire_model_id(
+                provider, model_name
+            )
+            # A session whose turns a channel (Slack/Discord/Telegram/Teams) can
+            # drive lands a deferred pick at a channel turn's end too, but only
+            # LIVE (``land_model_pick_after_channel_turn``): a channel turn
+            # cold-starts on the default model ladder, not on ``slot.model``, so
+            # the reset fallback cannot land the pick there. A reset-only pick on
+            # such a session keeps the pre-existing 409, the answer the
+            # session_set_model pick gives a busy channel target, rather than
+            # report a deferral the channel could keep serving the old model past.
+            # Which sessions count is ``channel_drives_session``.
+            # circular import: session_control imports dashboard modules at module level.
+            from kiro_crew.dashboard.session_control import channel_drives_session
+
+            if _reset_only and channel_drives_session(state, slot, session_key):
+                return web.json_response(
+                    {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                )
+            if _reset_only:
+                children_409 = await _subagents_attached_response(
+                    state, slot, session_key, "slot_model"
+                )
+                if children_409 is not None:
+                    return children_409
+            # Same commit as the idle transaction below (pin, routing flag,
+            # pick generation), minus the live/reset step; the committed pin
+            # is persisted by the next slot save, so a restart cold-starts on
+            # it. The effort dropdown's defer-not-reset branch is the sibling.
+            slot.model = model_name
+            slot.jev_route = jev_route
+            slot._model_pick_gen += 1
+            # Stamp the shared client's explicit-pick epoch, as the same-value
+            # shortcut and the live-switch success path do: the per-slot
+            # generation above is invisible to a sibling alias, whose
+            # refusal-fallback restore compares this epoch on the shared client.
+            # Without it, before the boundary applies the pick, that restore
+            # could treat the session as un-picked and move it off the pin.
+            try:
+                _host = pick_epoch_host(provider)
+                _host._explicit_pick_epoch = getattr(_host, "_explicit_pick_epoch", 0) + 1
+            except Exception:  # pragma: no cover - a frozen/slotted stub client
+                pass
+            slot._deferred_model_switch_key = session_key
+            logger.info(
+                "Slot %s model pick %r deferred: a turn is in flight on %s",
+                name,
+                model_name or "auto",
+                session_key,
+            )
+            state.push_slots_update()
             return web.json_response(
-                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                {"ok": True, "model": model_name, "jev_route": jev_route, "deferred": True}
             )
         prior_model = slot.model
         prior_pick_gen = slot._model_pick_gen

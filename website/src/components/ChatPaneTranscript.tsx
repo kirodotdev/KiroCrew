@@ -19,14 +19,13 @@ import type { ChatPaneProps } from './ChatPaneProps'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, onOpenSubagents, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
   crewmate?: CrewmateIdentity
   crewmateTranscript: TranscriptRendererOptions['crewmateTranscript']
   onSessionOpen?: (key: string) => void
-  onOpenSubagents?: () => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
   messages: Messages
@@ -74,10 +73,6 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       // page uses; there is no second resolver. Absent from the host = the
       // renderer's own gate leaves them plain.
       onSessionOpen,
-      // The spawn_run card's "Open Subagents panel" lands on the HOST's panel
-      // when the host has one of its own (the Members page); the chat page
-      // leaves it unset and the card drives the chat store.
-      onOpenSubagents,
       sessions,
       activeSession,
       // The newest error row's Resume, with the row set's own per-row remedies
@@ -87,7 +82,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       continuing,
       onContinue,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, onOpenSubagents, sessions, activeSession, continuable, interrupted, continuing, onContinue],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
   )
   const renderers = useMemo(
     () => (foldBefore
@@ -141,9 +136,8 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
           liveness the status line and footer read): its current step
           is on screen, so "hasn't said anything" would sit under a
           line that shows it busy. */}
-      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
-        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
-          {crewmate && paneMessages.length > 0 ? (
+      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && crewmate && paneMessages.length > 0 && (
+        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid="crewmate-quiet-hint">
             <>
               <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
               {/* Where the work went: Profile > Sessions. A link when the host
@@ -162,9 +156,6 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
                 <div className="mt-1" data-testid="crewmate-quiet-where">{i18nT('components.chatPane.crewmate_quiet_where')}</div>
               )}
             </>
-          ) : (
-            i18nT('components.chatPane.session_ready_type_a_message_to_start')
-          )}
         </div>
       )}
       {/* Suppressed on the active slot: that pane renders the store's full

@@ -5,7 +5,7 @@ dashboard turn back to the thread. Unlink must stop that. This drives
 _run_chat through the mirror gate (chat_runner.py:1316-1317) with a real
 SessionMap so the link/unlink semantics are exercised end-to-end:
 
-  link  -> run a turn -> post_message + start_stream ARE called (status quo)
+  link  -> run a turn -> the echo and "Thinking…" placeholder ARE posted (status quo)
   unlink -> run a turn -> NO mirror calls (the fix)
 """
 
@@ -24,8 +24,8 @@ def _make_context_builder():
     """A context_builder whose build_message echoes the user message back.
 
     The mirror gate only captures _user_msg_for_mirror inside the
-    `elif state.context_builder:` branch (chat_runner.py), so a truthy
-    context_builder is required for the turn-start mirror path to run.
+    `elif state.context_builder:` branch (_turn_build_prompt, chat_turn/prompt_assembly.py),
+    so a truthy context_builder is required for the turn-start mirror path to run.
     """
     cb = MagicMock()
     cb.build_message.side_effect = lambda message, *a, **k: (message, None)
@@ -66,6 +66,7 @@ def _make_slack_client():
     client.start_stream = AsyncMock(return_value="stream-ts")
     client.append_stream = AsyncMock()
     client.stop_stream = AsyncMock()
+    client.delete_message = AsyncMock()
     return client
 
 
@@ -126,7 +127,11 @@ class TestMirrorSuppressionAfterUnlink:
         # ── Linked turn: mirror MUST fire ──
         await _run_chat(state, slot, "first message")
         assert state.slack_client.post_message.await_count >= 1, "linked turn should mirror user msg"
-        assert state.slack_client.start_stream.await_count == 1, "linked turn should open a stream"
+        # A tool-free turn opens no task stream (it opens on the first tool call);
+        # its "Thinking…" placeholder is posted, then deleted before the answer.
+        _posted = [c.args[1] for c in state.slack_client.post_message.await_args_list]
+        assert any("Thinking" in text for text in _posted), "linked turn should show it is working"
+        assert state.slack_client.delete_message.await_count == 1, "placeholder should be removed"
 
         # ── Unlink via the real endpoint ──
         from aiohttp import web

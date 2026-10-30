@@ -624,3 +624,38 @@ class TestSubscribeCountsAsAPageThatRefills:
         """``subscribe`` returns early for a bad name or callback, so no subscriber
         exists and nothing on the page would redraw."""
         assert self._flag_after("window.kirocrew.subscribe('boards', 'not a function');") is False
+
+
+def test_a_patch_naming_a_field_missing_dims_the_cell_it_carried_forward() -> None:
+    """A patch merges the fields it did not move, so the old value is still in
+    ``fields``. With no band, ``missing`` is the only thing that can dim it."""
+    calls = _run(
+        dashboard_frame._BOOTSTRAP_JS,
+        _read(),
+        "const cell = { attrs: {}, textContent: '',"
+        "  getAttribute(k) { return k === 'data-dashboard-field' ? 'boards' : this.attrs[k]; },"
+        "  setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };"
+        "nodes.push(cell);"
+        "__push({ patch: true, version: 1, fields: { boards: 5 }, missing: [] });"
+        "__calls.push([cell.textContent, cell.attrs['data-dashboard-missing'] || null]);"
+        "__push({ patch: true, version: 2, fields: {}, missing: ['boards'] });"
+        "__calls.push([cell.textContent, cell.attrs['data-dashboard-missing'] || null,"
+        "  window.kirocrew.fields.boards]);",
+    )
+    assert calls == [["5", None], ["5", "true", 5]], calls
+
+
+def test_a_field_named_constructor_is_not_dimmed_while_it_resolves() -> None:
+    """The missing set is looked up as own keys, so an inherited property such as
+    ``constructor`` never reads as missing."""
+    calls = _run(
+        dashboard_frame._BOOTSTRAP_JS,
+        _read(fields={"constructor": 1}),
+        "const cell = { attrs: {}, textContent: '',"
+        "  getAttribute(k) { return k === 'data-dashboard-field' ? 'constructor' : this.attrs[k]; },"
+        "  setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };"
+        "nodes.push(cell);"
+        "__push({ patch: true, version: 1, fields: { constructor: 7 }, missing: [] });"
+        "__calls.push([cell.textContent, cell.attrs['data-dashboard-missing'] || null]);",
+    )
+    assert calls == [["7", None]], calls

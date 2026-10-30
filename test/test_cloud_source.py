@@ -16,6 +16,15 @@ import pytest
 from kiro_crew.cloud import aws, source
 
 
+@pytest.fixture(autouse=True)
+def _no_git_attributes(_floor_monkeypatch):
+    """These rows build tarballs from plain directories with a stubbed tracked list,
+    so there is no repository to ask about ``export-ignore``/``filter``: no path
+    carries either. The real query is covered in test_host_git_repo_exec_neutralization.
+    """
+    _floor_monkeypatch.setattr(source, "_tracked_attr_values", lambda root, names, attr: {})
+
+
 class TestRepoRoot:
     def test_repo_root_has_install_sh(self):
         root = source.repo_root()
@@ -317,6 +326,9 @@ class TestBuildTarball:
     def test_clean_tree_prefers_git_archive(self, monkeypatch, tmp_path):
         # The fast path (git archive) is still used when the tree is clean.
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
+        # tmp_path is no repository; a driver-free one is what this row is about.
+        monkeypatch.setattr(source, "repo_exec_driver_reason", lambda root, **_k: "")
+        monkeypatch.setattr(source, "_tracked_paths_use_a_filter", lambda root: False)
         sentinel = tmp_path / "archive.tar.gz"
         sentinel.write_bytes(b"x")
         monkeypatch.setattr(source, "_use_git_archive", lambda root, **k: sentinel)
@@ -596,6 +608,9 @@ class TestSourceChecksumPin:
         (tmp_path / "app.py").write_text("x = 1\n")
         monkeypatch.setattr(source, "_git_tracked_files", lambda root: ["app.py"])
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
+        # tmp_path is no repository; the archive attempt must still be reached.
+        monkeypatch.setattr(source, "repo_exec_driver_reason", lambda root, **_k: "")
+        monkeypatch.setattr(source, "_tracked_paths_use_a_filter", lambda root: False)
         handed: list[object] = []
         real_fallback = source._tar_fallback
 
@@ -1053,7 +1068,9 @@ class TestEnsureCrewBoundary:
         monkeypatch.setattr(
             source,
             "_verify_boundary_content",
-            lambda arn, name, expected, profile, region: seen.append((arn, name, expected)),
+            lambda arn, name, expected, profile, region, previous=(), upgrade_step="": seen.append(
+                (arn, name, expected)
+            ),
         )
 
         source.ensure_instance_boundary("dev", "us-east-1")

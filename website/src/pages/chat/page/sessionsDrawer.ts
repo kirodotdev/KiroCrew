@@ -1,7 +1,9 @@
 import type { NavigateFunction, NavigationType, Location } from 'react-router-dom'
+import { openingHidesSessionList } from '../../../lib/crewMode'
 import { useState, useRef, useCallback, useEffect, useMemo, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useMotionValue, useTransform } from 'framer-motion'
-import type { AppDispatch } from '../../../store'
+import { useStore } from 'react-redux'
+import type { AppDispatch, RootState } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
 import { type SourceLinkKind, parseSourceLinkUrl, commitRevealedSource, type RevealedSources } from '../../../utils/pullRequestLinks'
 import { useShellSlot } from '../../../hooks/useShellSlot'
@@ -12,6 +14,7 @@ import { api } from '../../../api/client'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { openPanelView } from '../../../hooks/usePanelTabs'
 import type { ClosedSessionActions, SidebarFolderActions } from '../../../components/markdown/contexts'
+import { useAppSelector } from '../../../store'
 import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
@@ -50,6 +53,7 @@ interface SessionsDrawerOptions {
   hasLiveAppTab: boolean
   jiraSourceHostsRef: MutableRefObject<string[]>
   bitbucketServerSourceHostsRef: MutableRefObject<string[]>
+  gerritSourceHostsRef: MutableRefObject<string[]>
   search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
@@ -71,9 +75,25 @@ interface SessionsDrawerOptions {
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
+/** The window width from which a worker view keeps the sessions list open: the
+ *  left nav, the list, a 560px chat and the side panel all fit. */
+export const CREW_WORKER_ROOMY_PX = 1600
+
+/** On leaving a Crew Mode worker: the sidebar pin to give back, or `null` to
+ *  leave the pin alone. `prior` is the pin saved when the worker hid the list
+ *  (`null` when it hid nothing); `pinnedNow` is the pin as it stands. The hide
+ *  set the pin to `false`, so a pin that is no longer `false` means the person
+ *  opened the list themselves (Show sessions, the toggle, a reveal) while the
+ *  worker was on screen -- an explicit choice, which outranks the restore, as it
+ *  already outranks the preview-expand hide. */
+export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): boolean | null {
+  if (prior === null) return null
+  return pinnedNow === false ? prior : null
+}
+
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -324,7 +344,44 @@ export function useSessionsDrawer({
   }, [location.key, navigationType])
   // Close the drawer when a session is selected. Routed through closeSidebar so
   // it slides out — flipping straight to 'closed' would unmount it on the spot.
-  useEffect(() => { if (isMobile) closeSidebar() }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // A move AWAY from a session that is closing is not a selection. Closing the
+  // active session hands `activeSlot` to a neighbour (or to null for the last
+  // one) so the pane behind has something to show, and the user is still in the
+  // list managing rows; dismissing the drawer there would drop them into a
+  // conversation they never picked. `deleteSlot/pending` arms the close hold
+  // before that hand-off is dispatched, so the hold names the outgoing key on
+  // the very render that sees the new one. Read through the store at effect
+  // time rather than a selector: the hold map churns on every close and list
+  // reply, and nothing here renders off it.
+  //
+  // Nor is a move the page makes on its own. `enterActiveSlot` counts those
+  // in `activeSlotAutoMoves` and a user's in `activeSlotMoves`: the page's
+  // auto-select after it lost the active chat, and the blank session it
+  // creates when a close emptied the list. If only the automatic count moved
+  // since the last change, the list stays up. A move to no session at all is
+  // never a pick either, for example a close's landing switch that failed.
+  //
+  // Nullish is one value here: closing the last session sets `activeSlot` to
+  // null and the slot-state reset that follows leaves it undefined.
+  const reduxStore = useStore<RootState>()
+  const prevActiveSlotRef = useRef(activeSlot ?? null)
+  // A create, fork or resume the user clicked opens in `activeSlotRequestMoves`,
+  // and that is their pick too.
+  const userPicks = (s: RootState) => (s.chat.activeSlotMoves ?? 0) + (s.chat.activeSlotRequestMoves ?? 0)
+  const userMovesRef = useRef(userPicks(reduxStore.getState()))
+  useEffect(() => {
+    const left = prevActiveSlotRef.current
+    const now = activeSlot ?? null
+    const state = reduxStore.getState()
+    const userMoves = userPicks(state)
+    const userMoved = userMoves !== userMovesRef.current
+    prevActiveSlotRef.current = now
+    userMovesRef.current = userMoves
+    if (!isMobile || now === left || now === null || !userMoved) return
+    if (left && state.dashboard.closingSlots?.[left]) return
+    closeSidebar()
+  }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (isMobile && crewWindow) closeSidebar() }, [crewWindow]) // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the mobile viewport: drop the panel with no slide. There is no
   // mobile drawer to animate on the other side of that crossing, and the
@@ -529,6 +586,7 @@ export function useSessionsDrawer({
       jiraSourceHostsRef.current,
       githubSourceHostsRef.current,
       bitbucketServerSourceHostsRef.current,
+      gerritSourceHostsRef.current,
     )
     if (!link) return false
     const view = link.kind === 'issue' ? 'issues' : 'changes'
@@ -602,6 +660,36 @@ export function useSessionsDrawer({
     // so its identity never changes. Naming it rather than relying on that keeps the
     // listener from silently capturing a stale copy if closeSidebar ever gains a dep.
   }, [closeSidebar, setSidebarPinned, sidebarAutoHidden, sidebarPinnedRef])
+  // A Crew Mode worker reads like a normal session: when one opens on a screen too
+  // narrow for the sessions list, the side panel's Workers list and a readable
+  // chat (`CREW_WORKER_ROOMY_PX`), the sessions list steps aside, the way
+  // preview-expand hides it, and comes back when the person leaves the worker.
+  // Its OWN restore ref: the preview's `sidebarAutoHidden` is consumed when the
+  // preview collapses, and sharing it let a preview exit while a worker was open
+  // reopen the list the worker had hidden (and lose the pin to restore on leaving).
+  const workerAutoHidden = useRef<boolean | null>(null)
+  // Only a worker the person's list leaves out hides the list (`openingHidesSessionList`,
+  // inert while the list rule is): a worker picked from the list never closes it.
+  const viewingWorker = useAppSelector(state => openingHidesSessionList(activeSlot ? state.dashboard.slots.find(row => row.key === activeSlot) : undefined, state.dashboard.slots))
+  useEffect(() => {
+    if (viewingWorker) {
+      // Entering a worker hides the list only on a desktop page with the preview
+      // down; with the preview expanded the list is already its hide to restore.
+      if (isMobile || embedded || previewExpanded) return
+      if ((window.innerWidth || 0) >= CREW_WORKER_ROOMY_PX) return
+      if (workerAutoHidden.current === null) workerAutoHidden.current = sidebarPinnedRef.current
+      setSidebarPinned(false)
+      return
+    }
+    // Leaving a worker gives the pin back, preview expanded or not, so the saved
+    // pin is never left stale for the next worker visit -- unless the person
+    // chose otherwise while the worker was open (`workerHideRestore`).
+    const prior = workerAutoHidden.current
+    workerAutoHidden.current = null
+    const restore = workerHideRestore(prior, sidebarPinnedRef.current)
+    if (restore !== null) setSidebarPinned(restore)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on entering or leaving a worker; the refs and setter are stable
+  }, [viewingWorker])
   // The no-sessions force-open yields to expand mode: with an empty list no
   // sessions toggle is rendered, so suppressing it makes nothing inert, and the
   // preview would otherwise stay covered by a list that cannot be dismissed.

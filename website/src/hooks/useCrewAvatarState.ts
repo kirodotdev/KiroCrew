@@ -25,6 +25,7 @@ import { useAppSelector } from '../store'
 import { packSoundUrl } from '../lib/appearancePacks/library'
 import type { AvatarFaceState, AvatarSounds, AvatarState } from '../lib/crewAvatarState'
 import { loadSoundSettings, playPreset, playSoundFile } from './useNotificationSound'
+import { slotRowByKey } from '../store/slotIndex'
 
 /** How long `done` / `error` shows before the face returns to rest. */
 export const AVATAR_FLASH_MS = 4000
@@ -122,12 +123,12 @@ export function useCrewAvatarState({
     return ''
   })
   const liveRunning = useAppSelector((s) =>
-    resolvedKey ? !!s.dashboard.slots.find((x) => x.key === resolvedKey)?.running : false,
+    resolvedKey ? !!slotRowByKey(s.dashboard.slots, resolvedKey)?.running : false,
   )
   // `interrupted` is the backend's own reading of the transcript and is always
   // false while running, so it is only ever consulted on the stopping edge.
   const interrupted = useAppSelector((s) =>
-    resolvedKey ? !!s.dashboard.slots.find((x) => x.key === resolvedKey)?.interrupted : false,
+    resolvedKey ? !!slotRowByKey(s.dashboard.slots, resolvedKey)?.interrupted : false,
   )
 
   const isWorking = running ?? liveRunning

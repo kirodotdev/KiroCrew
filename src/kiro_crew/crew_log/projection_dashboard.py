@@ -5,11 +5,18 @@ dashboard's ``agentic`` values and ``mistakes`` book.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
 
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_ENTRY_TYPE,
+    CUSTOM_RECORD_BYTES,
+    CUSTOM_RECORD_DEPTH,
+    CUSTOM_TYPE_LIMIT,
+    CUSTOM_TYPE_NAME_LIMIT,
+    CUSTOM_WRITER_LIMIT,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_CODE_LIMIT,
     DASHBOARD_FIELD_LIMIT,
@@ -407,10 +414,10 @@ def _mistakes_step(state: dict[str, Any], entry: Entry) -> None:
     # reached wrongly, and the fix is the field the accepted write actually used.
     #
     # Decided on the CODE, which is the one key always present, rather than on the
-    # presence of ``corrects``: an earlier draft branched on the list and gave a
-    # correction no code at all, which the append validator refused outright -- so
-    # every correction was dropped at the door and the book stayed a list of errors
-    # with no answers in it.
+    # presence of ``corrects``: branching on the list would give a correction no
+    # code at all, which the append validator refuses outright -- so every
+    # correction would be dropped at the door and the book would stay a list of
+    # errors with no answers in it.
     if code == MISTAKE_CORRECTED_CODE:
         if not isinstance(corrects, list):
             return
@@ -483,3 +490,146 @@ def _mistakes_render(state: dict[str, Any]) -> dict[str, Any]:
 def _mistakes_rows(state: Mapping[str, Any]) -> int:
     """``mistakes``: one row per group, each a small fixed record."""
     return _rows_in(state.get("groups"))
+
+
+# -------------------------------------------------------------------------- #
+# custom -- the latest record per type a script cron wrote for its crewmate
+# -------------------------------------------------------------------------- #
+
+
+#: A record type name: ONE dashboard path segment. The same characters a Model's
+#: fold path allows between its dots (``dashboard_templates.manifest._PATH``), and
+#: nothing else, because the name becomes a key a page binds as
+#: ``custom.latest.<type>.data``: a dot inside it would be split by the path walk and
+#: never read back, and a hyphen would be refused by the manifest's path pattern, so
+#: either would be a record that lands and a cell that stays empty. Anchored at ``\Z``
+#: for the reason every pattern in ``schema`` is.
+_RECORD_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+\Z")
+
+
+def custom_type_name_ok(name: Any) -> bool:
+    """Whether *name* is a record type a script may name: one path segment, bounded.
+
+    The SAME rule the record route applies at the door, kept here so the fold and the
+    writer cannot disagree about what a type is: a line off disk naming anything else
+    is a planted or damaged one and is skipped, never keyed.
+    """
+    return (
+        isinstance(name, str)
+        and len(name) <= CUSTOM_TYPE_NAME_LIMIT
+        and _RECORD_TYPE_RE.match(name) is not None
+    )
+
+
+def custom_record_depth(value: Any, _depth: int = 0) -> int:
+    """How deep *value* nests: ``0`` for a scalar, ``1`` for a flat object or list.
+
+    BOUNDED BY THE CEILING, not by the input: once the walk is past
+    :data:`CUSTOM_RECORD_DEPTH` the answer is already "too deep", so it stops there and
+    reports one past the ceiling. A record nested a thousand levels deep is parser-valid
+    JSON, and an unbounded walk over it would raise ``RecursionError`` out of the route
+    as a 500 and out of the fold step as a crash, where the right answers are a 400 and a
+    skipped line.
+    """
+    if _depth > CUSTOM_RECORD_DEPTH:
+        return _depth
+    if isinstance(value, Mapping):
+        inner = (custom_record_depth(v, _depth + 1) for v in value.values())
+        return 1 + max(inner, default=0)
+    if isinstance(value, list):
+        inner = (custom_record_depth(v, _depth + 1) for v in value)
+        return 1 + max(inner, default=0)
+    return 0
+
+
+def custom_record_fits(data: Any) -> bool:
+    """Whether one record's ``data`` is an object small and shallow enough to retain.
+
+    RE-APPLIED by the fold for the reason ``_dashboard_value_fits`` is, and shared
+    with the route so the door and the reader measure the same thing: serialized bytes
+    against :data:`CUSTOM_RECORD_BYTES`, nesting against :data:`CUSTOM_RECORD_DEPTH`.
+    An unserializable value fails the same test.
+    """
+    if not isinstance(data, Mapping):
+        return False
+    if custom_record_depth(data) > CUSTOM_RECORD_DEPTH:
+        return False
+    try:
+        # The encode is INSIDE the try: a JSON-escaped lone surrogate parses, serializes,
+        # and then refuses to encode as UTF-8, which is a refusal here and not a crash.
+        size = len(json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
+    return size <= CUSTOM_RECORD_BYTES
+
+
+def _custom_start() -> dict[str, Any]:
+    """One slot's custom records: the latest per TYPE, and what was evicted.
+
+    Keyed by record type rather than holding one document, for the reason the agentic
+    fold keys by field: a script that polls one thing writes that one, and another
+    script bound to the same crewmate must not have to restate it.
+    """
+    return {"latest": {}, "types_omitted": 0, "wrote": 0}
+
+
+def _custom_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type != CUSTOM_ENTRY_TYPE:
+        return
+    data = entry.data
+    name = data.get("type")
+    record = data.get("data")
+    writer = _panel_text(data.get("writer"), CUSTOM_WRITER_LIMIT)
+    # A line naming no type, no writer, or a record the ceilings refuse is a damaged
+    # or planted entry: skipped rather than half-applied, for the reason
+    # ``_agentic_step`` skips one naming no field. The writer is REQUIRED here as it
+    # is on the type, because a record nobody is named as having written is exactly
+    # the unattributed state this fold exists to refuse.
+    if (
+        not custom_type_name_ok(name)
+        or not writer
+        or not isinstance(record, Mapping)
+        or not custom_record_fits(record)
+    ):
+        return
+    name = str(name)
+    latest: dict[str, Any] = state["latest"]
+    if name not in latest and len(latest) >= CUSTOM_TYPE_LIMIT:
+        # Bounded before the insert, least recently WRITTEN goes, ranked on the fold
+        # order counter -- the same posture and the same reason as ``_agentic_step``.
+        oldest = min(latest, key=lambda key: _as_int(latest[key].get("order")))
+        del latest[oldest]
+        state["types_omitted"] = _as_int(state.get("types_omitted")) + 1
+    state["wrote"] = _as_int(state.get("wrote")) + 1
+    latest[name] = {
+        "data": dict(record),
+        "at": _panel_iso(entry.time),
+        "seq": int(entry.seq),
+        "writer": writer,
+        "member": _panel_text(data.get("member"), CUSTOM_WRITER_LIMIT),
+        "crew_key": _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
+        "order": state["wrote"],
+    }
+
+
+def _custom_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The latest record per type, each with who wrote it and when.
+
+    ``order`` is dropped as the agentic fold drops it. ``wrote`` counts ACCEPTED
+    records over the slot's whole life, which tells a reader "a script is writing and
+    this type is still empty" from "nothing has ever written here". ``types_omitted``
+    is the bound speaking: how many types aged out of ``latest``.
+    """
+    latest: dict[str, Any] = state["latest"]
+    return {
+        "latest": {
+            name: {key: row[key] for key in row if key != "order"} for name, row in latest.items()
+        },
+        "types_omitted": _as_int(state.get("types_omitted")),
+        "wrote": _as_int(state.get("wrote")),
+    }
+
+
+def _custom_rows(state: Mapping[str, Any]) -> int:
+    """``custom``: one row per record type, each holding one capped record."""
+    return _rows_in(state.get("latest"))

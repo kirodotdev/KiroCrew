@@ -18,11 +18,11 @@ const at = (iso: string) => iso
 const user = (ts: string, content = 'hi'): ChatMessage => ({ role: 'user', content, cls: 'msg msg-u', ts })
 const said = (ts: string, content = 'Found the cause.'): ChatMessage => ({ role: 'assistant', content, cls: '', ts })
 const tool = (ts: string): ChatMessage => ({ role: 'tool', content: '🔧 gh issue list', cls: '', ts, meta: { tool_call_id: `tc-${ts}` } })
-/** The `spawn_run` launch row as the gateway persists it: a tool row whose
+/** A `spawn_run` launch row as the gateway persists it: a tool row whose
  *  output carries the launch header and one line per accepted worker. */
 const spawn = (ts: string): ChatMessage => ({
   role: 'tool', content: '🔧 spawn_run', cls: '', ts,
-  meta: { tool_call_id: `spawn-${ts}`, tool_name: 'spawn_run', output: 'Spawned 2 subagent(s).\n  3f9c1e2a (default): Bisect #4213 on main\n  b7d04c11 (default): Reproduce #4213 on release-1.4\n' },
+  meta: { tool_call_id: `spawn-${ts}`, tool_name: 'spawn_run', output: 'Spawned 1 subagent(s).\n  3f9c1e2a (default): Bisect on main\n' },
 })
 
 describe('filterCrewmateChat', () => {
@@ -72,6 +72,32 @@ describe('filterCrewmateChat', () => {
     expect(notices).toHaveLength(4)
   })
 
+  it('hides the pending links of the transient-retry ladder; the give-up and any other error stay', () => {
+    // The ladder writes its progress under the `error` role with a wire token
+    // in `meta.notice`. A pending link ("retrying…" / "resuming…", which the
+    // main chat settles to "Connection restored") is the runtime talking about
+    // itself: the turn is already re-queued and the person can do nothing
+    // with it, so it is dropped like a `notice` row. The terminal give-up is
+    // the one shape the person must act on and keeps drawing, as does every
+    // error row that is not the ladder's. Fails if the filter drops errors by
+    // role, or if it keeps the pending links and a patroller stacks one
+    // "Connection restored" card per retried wake again.
+    const retrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:00Z'), meta: { notice: 'transient_retrying' } }
+    const resuming: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — resuming…', cls: '', ts: at('2026-10-20T11:00:01Z'), meta: { notice: 'transient_resuming' } }
+    // Persisted by a gateway that predates the token: classified by content, as
+    // `transientNotice.ts` does.
+    const legacyRetrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', ts: at('2026-10-20T11:00:02Z') }
+    const giveUp: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — please retry.', cls: '', ts: at('2026-10-20T11:00:03Z'), meta: { notice: 'transient_give_up' } }
+    const other: ChatMessage = { role: 'error', content: '❌ Something else entirely', cls: '', ts: at('2026-10-20T11:00:04Z') }
+    expect(isCrewmateChatRow(retrying)).toBe(false)
+    expect(isCrewmateChatRow(resuming)).toBe(false)
+    expect(isCrewmateChatRow(legacyRetrying)).toBe(false)
+    expect(isCrewmateChatRow(giveUp)).toBe(true)
+    expect(isCrewmateChatRow(other)).toBe(true)
+    expect(filterCrewmateChat([retrying, said(at('2026-10-20T11:00:05Z')), resuming, legacyRetrying, giveUp, other]))
+      .toEqual([said(at('2026-10-20T11:00:05Z')), giveUp, other])
+  })
+
   it('an all-machinery transcript filters to nothing (so the empty hint can show)', () => {
     const rows: ChatMessage[] = [
       { role: 'nudge', content: '[auto-nudge cycle 1]', cls: '', ts: at('2026-09-22T04:00:00Z') },
@@ -108,35 +134,16 @@ describe('filterCrewmateChat', () => {
   })
 })
 
-describe('filterCrewmateChat and the spawn_run launch (#21138)', () => {
-  const opener = user(at('2026-10-16T06:40:00Z'), 'Take #4213 first.')
-  const onIt = said(at('2026-10-16T06:40:19Z'), 'On it. I am sending two workers out.')
-  const launch = spawn(at('2026-10-16T06:40:26Z'))
-  const launchDone: ChatMessage = { role: 'tool', content: '✅ done', cls: '', ts: at('2026-10-16T06:40:28Z'), meta: { tool_call_id: launch.meta!.tool_call_id } }
-
-  it('draws the spawn_run launch row and nothing else of the turn\'s machinery', () => {
-    const drawn = filterCrewmateChat([opener, onIt, launch, launchDone, tool(at('2026-10-16T06:40:41Z'))])
-    expect(drawn).toEqual([opener, onIt, launch])
-    expect(isCrewmateChatRow(launch)).toBe(true)
-  })
-
-  it('an ordinary tool row, even one named spawn_run with no launch output, stays hidden', () => {
-    const bare: ChatMessage = { role: 'tool', content: '🔧 spawn_run', cls: '', ts: at('2026-10-16T06:40:26Z'), meta: { tool_call_id: 'x', tool_name: 'spawn_run' } }
-    expect(isCrewmateChatRow(bare)).toBe(false)
-    expect(isCrewmateChatRow(tool(at('2026-10-16T06:40:41Z')))).toBe(false)
-  })
-
-  it('the drawn card is a run boundary: the reply after it opens a new run', () => {
-    const back = said(at('2026-10-16T06:52:10Z'), 'Both workers are back. The cause is PR #4102.')
-    const transcript = [opener, onIt, launch, launchDone, back]
-    const drawn = filterCrewmateChat(transcript)
-    expect(drawn).toEqual([opener, onIt, launch, back])
-    expect(crewmateRunPosition(drawn, drawn.indexOf(onIt), transcript)).toBe('single')
-    expect(crewmateRunPosition(drawn, drawn.indexOf(back), transcript)).toBe('single')
-  })
-
-  it('a launch alone is content: the quiet hint does not show over a live card', () => {
-    expect(filterCrewmateChat([launch, launchDone])).toEqual([launch])
+describe('filterCrewmateChat and a spawn_run launch', () => {
+  // A crewmate's chat hands work to worker sessions and starts no sub-agents
+  // (the 2026-10-17 crewmate-chat decision entry, shipped in PR #22444),
+  // so a launch row, from scrollback written before that, is machinery like any tool row.
+  it('draws no spawn_run launch row', () => {
+    const opener = user(at('2026-10-16T06:40:00Z'), 'Take it first.')
+    const onIt = said(at('2026-10-16T06:40:19Z'), 'On it.')
+    const launch = spawn(at('2026-10-16T06:40:26Z'))
+    expect(isCrewmateChatRow(launch)).toBe(false)
+    expect(filterCrewmateChat([opener, onIt, launch])).toEqual([opener, onIt])
   })
 })
 
@@ -437,6 +444,20 @@ describe('awaitingCrewmateReply', () => {
     const stop: ChatMessage = { role: 'system', content: '', cls: '', kind: 'stop_event', meta: { kind: 'stop_event' } }
     const ask: ChatMessage = { role: 'permission', content: 'allow?', cls: '', meta: { approval_id: 'a1' } }
     for (const row of [quiet, error, stop, ask]) expect(awaitingCrewmateReply([sent(), row], 's1')).toBe(false)
+  })
+
+  it('a pending transient-retry link keeps the wait; the give-up or the retried answer ends it', () => {
+    // The crewmate chat hides the pending "retrying…" / "resuming…" cards
+    // (isCrewmateChatRow), so the typing bubble is the person's only sign the
+    // re-queued turn is still coming. Fails if a pending link ends the wait
+    // like any error row, which leaves the chat blank until the retry answers.
+    const retrying: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — retrying…', cls: '', meta: { kind: 'transient_retry', notice: 'transient_retrying' } }
+    const resuming: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — resuming…', cls: '', meta: { kind: 'transient_retry', notice: 'transient_resuming' } }
+    const giveUp: ChatMessage = { role: 'error', content: '⟳ Backend hiccup — please retry.', cls: '', meta: { notice: 'transient_give_up' } }
+    expect(awaitingCrewmateReply([sent(), retrying], 's1')).toBe(true)
+    expect(awaitingCrewmateReply([sent(), retrying, resuming], 's1')).toBe(true)
+    expect(awaitingCrewmateReply([sent(), retrying, giveUp], 's1')).toBe(false)
+    expect(awaitingCrewmateReply([sent(), retrying, said('2026-10-14T08:00:03Z')], 's1')).toBe(false)
   })
 
   it('waits on nothing for a dropped send, a send in doubt or no send', () => {

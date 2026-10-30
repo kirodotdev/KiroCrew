@@ -35,11 +35,8 @@ def marker(actor: str = "writer", source: int = 1) -> str:
     return f"<!-- ai-review-human-override target=gpt head={HEAD} actor={actor} source={source} -->"
 
 
-def record(cls: str, issue: str = "none", author: str = "false", extra: str = "") -> str:
-    return (
-        f"<!-- ai-review-override-record class={cls} issue={issue} author_is_actor={author}"
-        f"{extra} -->"
-    )
+def record(cls: str, issue: str = "none", author: str = "false") -> str:
+    return f"<!-- ai-review-override-record class={cls} issue={issue} author_is_actor={author} -->"
 
 
 def comment(
@@ -186,15 +183,6 @@ class TestOverrideCounters:
         with pytest.raises(RuntimeError):
             mod.override_metrics("o/r", SINCE)
 
-    def test_a_sensitive_anchor_field_still_parses(self, mod, api) -> None:
-        body = f"{marker()}\n{record('deferred', '3', 'false', ' anchors=residual/security')}\n"
-        api([comment(body)])
-
-        out = mod.override_metrics("o/r", SINCE)
-
-        assert out["overrides_by_class"] == {"deferred": 1}
-        assert out["overrides_deferred_without_issue"] == 0
-
 
 class TestTheRecordShapeMatchesTheHandler:
     def test_the_marker_pattern_is_the_contracts(self, mod) -> None:
@@ -213,7 +201,7 @@ class TestTheRecordShapeMatchesTheHandler:
         line = "<!-- ai-review-override-record class=deferred issue=1234 author_is_actor=false -->"
         body = f"{marker()}\n{line}"
 
-        assert mod.OVERRIDE_CLASS_RE.match(body).groups() == ("deferred", "1234", "false", None)
+        assert mod.OVERRIDE_CLASS_RE.match(body).groups() == ("deferred", "1234", "false")
 
 
 class TestTheWeeklyReportCarriesThem:

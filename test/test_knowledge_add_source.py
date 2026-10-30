@@ -122,7 +122,6 @@ class TestAddSourceLocalFile:
 
     @pytest.mark.asyncio
     async def test_rejects_sensitive_path(self, store, tmp_path):
-        # Create a symlink to a sensitive path
         sensitive = str(Path.home() / ".ssh" / "config")
         async with TestClient(TestServer(_make_app(store))) as client:
             resp = await client.post("/api/knowledge/sources", json={
@@ -198,13 +197,11 @@ class TestAddSourceLocalFile:
                 "name": "link.md", "source_type": "local_file", "uri": str(link)
             })
             assert resp.status == 201
-            # Stored URI should be the resolved path
             source = store.get_source_by_uri(str(real_file.resolve()))
             assert source is not None
 
     @pytest.mark.asyncio
     async def test_symlink_to_sensitive_blocked(self, store, tmp_path):
-        # Create symlink pointing to sensitive location
         link = tmp_path / "innocent.md"
         sensitive_target = Path.home() / ".aws" / "credentials"
         link.symlink_to(sensitive_target)
@@ -245,7 +242,6 @@ class TestAddSourceLocalFile:
             resp = await client.post("/api/knowledge/sources", json={
                 "name": "safe.md", "source_type": "local_file", "uri": traversal
             })
-            # Should succeed but store the resolved canonical path
             assert resp.status == 201
             source = store.get_source_by_uri(str(test_file.resolve()))
             assert source is not None

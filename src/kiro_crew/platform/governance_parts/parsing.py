@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
@@ -25,6 +26,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
     ScopedRuleset,
     _compose_controls,
 )
+from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS, BASELINE_INNER_LISTS
 from kiro_crew.platform.governance_parts.carriers import (
     SIGNATURE_UNCHECKED,
     Bind,
@@ -60,6 +62,129 @@ POLICY_VERSION = 1
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
+#: Rulesets an enterprise policy may only write as an allow list. A deny list of
+#: origins misses every other spelling of the same origin; an allow list fails
+#: closed (RFC D3).
+ALLOW_ONLY_IN_ENTERPRISE = frozenset({"dashboard_origins"})
+
+
+def _refuse_inexact_origin_entries(scope: str, ruleset: ScopedRuleset) -> None:
+    """Enterprise: every entry must be an exact origin, or the policy is refused.
+
+    Literal lower-case ASCII ``scheme://host[:port]``: no glob (``* ? [ ]``), no
+    non-ASCII (write the ``xn--`` form), no path or trailing ``/``, no userinfo, and
+    no written-out default port. Matching is then exact set membership.
+    """
+    from kiro_crew import edition
+    from kiro_crew.platform.governance_parts.matching import ENTERPRISE_ORIGIN_ENTRY_RE
+
+    if not edition.is_enterprise():
+        return
+    for entry in ruleset.allow:
+        default_port = entry.endswith(":80") and entry.startswith("http://")
+        default_port = default_port or (entry.endswith(":443") and entry.startswith("https://"))
+        if default_port or not ENTERPRISE_ORIGIN_ENTRY_RE.match(entry):
+            raise PlatformCompositionError(
+                f"scope {scope!r} entry {entry!r} is not an exact origin: write a "
+                "lower-case ASCII scheme://host[:port] with no wildcard, path, userinfo "
+                "or default port (use the xn-- form for a non-ASCII host)"
+            )
+        canonical = _browser_serialized_origin(entry)
+        if canonical != entry:
+            usable = f"write it as {canonical!r}" if canonical else "it is not a valid origin"
+            raise PlatformCompositionError(
+                f"scope {scope!r} entry {entry!r} is not in the form a browser sends, "
+                f"so it would never match: {usable}"
+            )
+
+
+def _browser_serialized_origin(entry: str) -> str:
+    """*entry* (already ``ENTERPRISE_ORIGIN_ENTRY_RE``-shaped) as a browser serializes
+    it, or ``""`` when a browser would reject it.
+
+    Follows the WHATWG URL host rules for the parts that differ from the text: an
+    IPv6 literal is written in its shortest lower-case hex form (``[2001:db8::1]``,
+    ``[::ffff:c000:201]``), and a host ending in a number is an IPv4 address written
+    as four decimal parts (``10.1`` is ``10.0.0.1``). A DNS name and the port are kept
+    as written; a port above 65535 is invalid.
+    """
+    scheme, _, authority = entry.partition("://")
+    port = ""
+    if authority.startswith("["):
+        host, _, rest = authority[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+        v6 = _ipv6_or_none(host)
+        if v6 is None:
+            return ""
+        host = f"[{v6}]"
+    else:
+        host, _, port = authority.partition(":")
+        last = host.rsplit(".", 1)[-1]
+        # WHATWG "ends in a number": all decimal digits, or ``0x`` then hex digits.
+        hex_tail = last[2:] if last.startswith("0x") else None
+        if last.isdigit() or (
+            hex_tail is not None and all(c in "0123456789abcdef" for c in hex_tail)
+        ):
+            v4 = _whatwg_ipv4(host)
+            if v4 is None:
+                return ""
+            host = v4
+    if port and int(port) > 65535:
+        return ""
+    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
+
+def _ipv6_or_none(text: str) -> "str | None":
+    """WHATWG IPv6 serialization: eight hex pieces, the first longest run of two or
+    more zero pieces compressed to ``::``, no embedded IPv4 form."""
+    import ipaddress
+
+    try:
+        packed = ipaddress.IPv6Address(text).packed
+    except ValueError:
+        return None
+    pieces = [int.from_bytes(packed[i : i + 2], "big") for i in range(0, 16, 2)]
+    best_start, best_len, start = -1, 1, -1
+    for i, piece in enumerate(pieces + [1]):
+        if piece == 0 and start < 0:
+            start = i
+        elif piece != 0 and start >= 0:
+            if i - start > best_len:
+                best_start, best_len = start, i - start
+            start = -1
+    if best_start < 0:
+        return ":".join(f"{p:x}" for p in pieces)
+    head = ":".join(f"{p:x}" for p in pieces[:best_start])
+    tail = ":".join(f"{p:x}" for p in pieces[best_start + best_len :])
+    return f"{head}::{tail}"
+
+
+def _whatwg_ipv4(host: str) -> "str | None":
+    """WHATWG IPv4 parsing (decimal, ``0x`` hex, leading-``0`` octal, 1 to 4 parts)."""
+    parts = host.split(".")
+    if parts and parts[-1] == "":
+        parts.pop()
+    if not 1 <= len(parts) <= 4:
+        return None
+    numbers: list[int] = []
+    for part in parts:
+        try:
+            if part.startswith("0x"):
+                numbers.append(int(part[2:] or "0", 16))
+            elif len(part) > 1 and part.startswith("0"):
+                numbers.append(int(part[1:], 8))
+            else:
+                numbers.append(int(part, 10))
+        except ValueError:
+            return None
+    if any(n > 255 for n in numbers[:-1]) or numbers[-1] >= 256 ** (5 - len(numbers)):
+        return None
+    value = numbers[-1]
+    for i, n in enumerate(numbers[:-1]):
+        value += n * 256 ** (3 - i)
+    return ".".join(str((value >> s) & 255) for s in (24, 16, 8, 0))
+
+
 def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool) -> object:
     """Parse one raw JSON control value into its archetype, per the catalog."""
     if not isinstance(raw, dict):
@@ -68,6 +193,17 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
         raise PlatformCompositionError(f"scope {scope!r} must be an object")
     if spec.kind == RULESET:
         ruleset = ScopedRuleset.from_dict(raw, matcher=spec.matcher, scope=scope)
+        if is_policy and ruleset.mode != "allow" and scope in ALLOW_ONLY_IN_ENTERPRISE:
+            from kiro_crew import edition
+
+            if edition.is_enterprise():
+                raise PlatformCompositionError(
+                    f"scope {scope!r} must use an allow list in the enterprise edition "
+                    '("mode": "allow"); a deny list cannot name every spelling of an '
+                    "origin, so it is refused"
+                )
+        if is_policy and scope in ALLOW_ONLY_IN_ENTERPRISE:
+            _refuse_inexact_origin_entries(scope, ruleset)
         for floor in spec.always_permitted:
             # An ``always_permitted`` identifier is one this scope may not forbid.
             # Two reasons qualify, and the catalog entry says which applies: the
@@ -122,6 +258,7 @@ _STRUCTURAL_KEYS = frozenset(
         "updates",
         "distribution",
         "fallback",
+        "yolo_max_seconds",
     }
 )
 
@@ -357,6 +494,48 @@ def _coerce_boot_flag(
     return closed
 
 
+@lru_cache(maxsize=1)
+def baseline_controls() -> Mapping[str, object]:
+    """The enterprise built-in baseline (``baseline.BASELINE_CONTROLS``), parsed.
+
+    Parsed by :func:`_parse_control`, the per-control parser a remote policy goes
+    through, so the baseline obeys the same catalog floors (``always_permitted``).
+    """
+    return {
+        scope: _parse_control(scope, SCOPE_CATALOG[scope], raw, is_policy=True)
+        for scope, raw in BASELINE_CONTROLS.items()
+    }
+
+
+@lru_cache(maxsize=1)
+def baseline_inner_lists() -> Mapping[str, Mapping[str, ScopedRuleset]]:
+    """``baseline.BASELINE_INNER_LISTS``, parsed with each scope's catalog matcher."""
+    parsed: Dict[str, Mapping[str, ScopedRuleset]] = {}
+    for scope, lists in BASELINE_INNER_LISTS.items():
+        matchers = SCOPE_CATALOG[scope].scope_matchers
+        parsed[scope] = {
+            name: ScopedRuleset.from_dict(raw, matcher=matchers[name])
+            for name, raw in lists.items()
+        }
+    return parsed
+
+
+def with_inner_baseline(scope: str, control: object) -> object:
+    """*control* with each ``BASELINE_INNER_LISTS`` list it does not name filled in.
+
+    For a remote policy's control in an enterprise build: a policy that names a
+    capability but not one of these inner lists gets the list's baseline, not an
+    open list. Any other control, or one naming every list, is returned as is.
+    """
+    lists = baseline_inner_lists().get(scope)
+    if not lists or not isinstance(control, CapabilityGate):
+        return control
+    missing = {name: rs for name, rs in lists.items() if name not in control.scopes}
+    if not missing:
+        return control
+    return CapabilityGate(enabled=control.enabled, scopes={**control.scopes, **missing})
+
+
 def parse_policy(
     data: Mapping[str, object], *, signature_state: str = SIGNATURE_UNCHECKED
 ) -> GovernanceCeiling:
@@ -394,6 +573,7 @@ def parse_policy(
     raw_updates = data.get("updates")
     if raw_updates is not None and not isinstance(raw_updates, dict):
         raise PlatformCompositionError("security policy 'updates' must be an object")
+    yolo_max_seconds = _parse_yolo_max_seconds(data.get("yolo_max_seconds"))
     raw_distribution = data.get("distribution")
     if raw_distribution is not None and not isinstance(raw_distribution, dict):
         raise PlatformCompositionError("security policy 'distribution' must be an object")
@@ -438,7 +618,23 @@ def parse_policy(
         agentcore_identity_posture=composed_posture,
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
+        yolo_max_seconds=yolo_max_seconds,
     )
+
+
+def _parse_yolo_max_seconds(raw: object) -> int:
+    """The policy's ``yolo_max_seconds``: a positive whole number, or absent (0).
+
+    Fails closed on any other value: a ``false``, a string or ``0`` that read as
+    "no cap" would silently lift the bound the policy meant to set.
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise PlatformCompositionError(
+            f"security policy 'yolo_max_seconds' must be a positive integer, got {raw!r}"
+        )
+    return raw
 
 
 def parse_profile(data: Mapping[str, object]) -> Profile:
@@ -485,6 +681,12 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     # narrower "what an unusable profile falls back to", and a profile declaring its
     # own fallback would be nonsensical. Reject it loudly here (the loader turns this
     # into the deny-all fallback via Validation rule 5).
+    # ``yolo_max_seconds`` is POLICY-ONLY for the mechanical reason ``updates`` is:
+    # it is in _STRUCTURAL_KEYS, so a profile's copy would be skipped in silence.
+    if "yolo_max_seconds" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'yolo_max_seconds' — the auto-approve cap is policy-only"
+        )
     if "fallback" in data:
         raise PlatformCompositionError(
             "profiles may not set 'fallback' — the unusable-profile fallback is "

@@ -28,8 +28,8 @@ a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 56 theme CSS variables (dark + light) only |
-| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
+| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
+| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
 Level-1 and Level-2 manifests may also declare `loaderIcons`: 4–8 distinct
@@ -45,7 +45,11 @@ Installed packs may also supply the loader **art**, not just select symbols:
 `loader/*.png` `.webp` `.gif` `.svg` (1–8 images, Level 1) are the pack's own
 loader art: one image renders on its own, 2–8 are cycled by the stock carousel.
 Animated WebP/APNG/GIF and animated SVG self-animate inside the `<img>`, so a
-pack can ship a single fully-authored loop. Each is served through the ordinary
+pack can ship a single fully-authored loop. Under `prefers-reduced-motion:
+reduce` each loader image is instead painted once, at its first frame, onto a
+`<canvas>` (`PackLoaderImage`, `website/src/pages/chat/PackLoaderImage.tsx`):
+nothing on the page can pause an image's own animation, and theme overlays
+already stand down under reduced motion. Each is served through the ordinary
 asset route with a strict Content-Type + `nosniff` under `_THEME_ASSET_CSP`
 (`default-src 'none'; sandbox`) and referenced only as an `<img>` — SVG is safe
 the same way `logo.svg` is (an `<img>`-loaded SVG runs in the browser's secure
@@ -53,6 +57,13 @@ static/animated mode: no scripts, no external loads, animation still plays), so
 it needs no HTML-serving route of its own. The frontend
 `resolveLoader` precedence is: compiled `loader` → pack images (one on its own,
 2–8 cycled) → `loaderIcons` (manifest, then compiled) → the default poses.
+
+The empty chat's welcome screen (`WelcomeView`) has one brand-mark slot, and a
+Level-1 pack fills it with `branding/welcome.svg|png|webp|gif` (256 KB, served
+and rendered like the loader art, so an animated image plays in place).
+Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
+pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
+too, matching the left rail.
 
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
 `_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
@@ -270,8 +281,8 @@ dashboard load into header-only round trips.
   `capabilities.theme_persona` governance capability (`SCOPE_CATALOG`,
   `capability_default=True`): standalone it defaults to allow, but an
   enterprise POLICY can force-disable installed-pack persona injection
-  wholesale (consulted at the `chat_runner.py` injection site; a denying policy
-  skips injection silently). See `governance.md`.
+  wholesale (consulted at the injection site in `_turn_build_prompt`,
+  `chat_turn/prompt_assembly.py`; a denying policy skips injection silently). See `governance.md`.
 
 ## Frontend Integration Points
 

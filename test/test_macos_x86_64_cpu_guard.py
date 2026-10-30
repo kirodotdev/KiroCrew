@@ -46,7 +46,6 @@ def test_load_llama_returns_none_when_macos_x86_64_missing_flags(monkeypatch, tm
     # Clear the lru_cache so prior suite results do not leak into this test.
     emb._load_llama_class.cache_clear()
     try:
-        # Simulate macOS x86_64
         monkeypatch.setattr(emb.sys, "platform", "darwin")
         monkeypatch.setattr(emb.platform, "machine", lambda: "x86_64")
 

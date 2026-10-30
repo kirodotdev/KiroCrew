@@ -38,6 +38,16 @@ from kiro_crew.security import argv_floor
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_argv_floor_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = (
+    "known_seams_by_target",
+    "spelling_cases",
+    "corpus_gate",
+    "test_tree_walk",
+    "reach_problems",
+)
+
 FACADE = "kiro_crew.security.argv_floor"
 PACKAGE = "kiro_crew.security"
 LEAF = "argv_floor"
@@ -110,14 +120,6 @@ def _test_tree_files() -> list[Path]:
         ):
             out.append(path)
     return out
-
-
-def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
-    walked = _test_tree_files()
-    assert _THIS_FILE in walked
-    assert source_corpus.repo_root() / "conftest.py" in walked
-    assert any("/container_tests/" in path.as_posix() for path in walked)
-    assert len(walked) > 1000
 
 
 def _module_aliases(tree: ast.Module) -> dict[str, str]:
@@ -219,66 +221,42 @@ def _corpus_patched_names() -> dict[str, frozenset[str]]:
     return {target: frozenset(names) for target, names in found.items()}
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew.security import argv_floor as af\n"
-            "def test(monkeypatch):\n"
-            "    monkeypatch.setattr(af, '_OWN_HOST_NAMES_CACHE', None)\n",
-            {FACADE: {"_OWN_HOST_NAMES_CACHE"}},
-        ),
-        (
-            "from unittest import mock\n"
-            "def test():\n"
-            "    with mock.patch('kiro_crew.security.argv_floor._hosts_file_paths'):\n"
-            "        pass\n",
-            {FACADE: {"_hosts_file_paths"}},
-        ),
-        (
-            "import kiro_crew.security as security\n"
-            "def test(monkeypatch):\n"
-            "    monkeypatch.setattr(security, '_self_token_frames', None)\n"
-            "    monkeypatch.setattr(security, 'is_denied', None)\n",
-            {PACKAGE: {"_self_token_frames", "is_denied"}},
-        ),
-        (
-            "from kiro_crew.security import argv_floor\n"
-            "def test(monkeypatch):\n"
-            "    for name in ('_HOST_VERDICT_CACHE', '_HOST_VERDICT_PENDING'):\n"
-            "        monkeypatch.setattr(argv_floor, name, {})\n",
-            {FACADE: {"_HOST_VERDICT_CACHE", "_HOST_VERDICT_PENDING"}},
-        ),
-        (
-            "from kiro_crew.security import argv_floor_hosts\n"
-            "def test(monkeypatch):\n"
-            "    monkeypatch.setattr(argv_floor_hosts, '_OWN_HOST_NAMES_CACHE', None)\n",
-            {},
-        ),
-    ],
-    ids=["alias-setattr", "dotted-string", "package", "loop", "owner-not-facade"],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: dict[str, set[str]]
-) -> None:
-    assert patched_names(source) == expected
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach checks over nothing."""
-    found = _corpus_patched_names()
-    missing = {target: sorted(seams - found[target]) for target, seams in _KNOWN_SEAMS.items()}
-    assert missing == {FACADE: [], PACKAGE: []}
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "alias-setattr": (
+        "from kiro_crew.security import argv_floor as af\n"
+        "def test(monkeypatch):\n"
+        "    monkeypatch.setattr(af, '_OWN_HOST_NAMES_CACHE', None)\n",
+        {FACADE: {"_OWN_HOST_NAMES_CACHE"}},
+    ),
+    "dotted-string": (
+        "from unittest import mock\n"
+        "def test():\n"
+        "    with mock.patch('kiro_crew.security.argv_floor._hosts_file_paths'):\n"
+        "        pass\n",
+        {FACADE: {"_hosts_file_paths"}},
+    ),
+    "package": (
+        "import kiro_crew.security as security\n"
+        "def test(monkeypatch):\n"
+        "    monkeypatch.setattr(security, '_self_token_frames', None)\n"
+        "    monkeypatch.setattr(security, 'is_denied', None)\n",
+        {PACKAGE: {"_self_token_frames", "is_denied"}},
+    ),
+    "loop": (
+        "from kiro_crew.security import argv_floor\n"
+        "def test(monkeypatch):\n"
+        "    for name in ('_HOST_VERDICT_CACHE', '_HOST_VERDICT_PENDING'):\n"
+        "        monkeypatch.setattr(argv_floor, name, {})\n",
+        {FACADE: {"_HOST_VERDICT_CACHE", "_HOST_VERDICT_PENDING"}},
+    ),
+    "owner-not-facade": (
+        "from kiro_crew.security import argv_floor_hosts\n"
+        "def test(monkeypatch):\n"
+        "    monkeypatch.setattr(argv_floor_hosts, '_OWN_HOST_NAMES_CACHE', None)\n",
+        {},
+    ),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -334,15 +312,6 @@ def test_the_reach_rule_flags_an_unbound_reader_and_an_unrouted_name() -> None:
         "CLASH: bound by ['pkg.high', 'pkg.low'] but not routed by the mirror",
         "LIMIT: pkg.high reads it without binding it",
     ]
-
-
-def test_every_scanned_name_reaches_every_module_reading_it() -> None:
-    """The structural half of the reach the unsplit module had, for every patched name
-    by either spelling: the mirror routes the name, and nothing reads it unbound."""
-    corpus = _corpus_patched_names()
-    names = corpus[FACADE] | corpus[PACKAGE]
-    namespaces = {module.__name__: vars(module) for module in _family()}
-    assert reach_problems(names, _index(), _family_sources(), namespaces) == []
 
 
 def test_every_package_routed_name_lands_on_this_facade() -> None:

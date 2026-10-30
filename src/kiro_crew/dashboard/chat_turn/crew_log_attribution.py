@@ -1,14 +1,24 @@
 """What a dashboard session's crew log records about it: the predecessor store, the served
 model, lineage, the seeded tree, the inherited parent, the workspace and the memory/app/channel
-class."""
+class, and the close of a turn's crew log and its streak's activity when the turn ends
+(``_turn_close_crew_log``)."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.state import CrewLogPrevious
+from kiro_crew.llm_helpers import _billing_stats
+
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.chat_runner import CrewLogPrevious, crew_log_emit, logger
+    from kiro_crew.dashboard.chat_runner import (
+        crew_log_emit,
+        logger,
+    )
+    from kiro_crew.dashboard.chat_turn.decisions_hooks import _jev_route_turn_ok, _settle_jev_route
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
 #: ACP tool statuses that END a call. `completed` is covered by `tool_final`; the
@@ -360,3 +370,114 @@ def _crew_log_class(state: Any, slot: Any) -> tuple[str, str, bool]:
         str(getattr(slot, "_app", "") or ""),
         channel,
     )
+
+
+def _take_engine_profile(turn: _ChatTurn) -> "dict[str, Any] | None":
+    """This turn's engine measurement (``AcpPromptStats.kas_profile``), taken once.
+
+    ``None`` when the per-turn stats object is still the one the turn started with
+    (``_turn_stats0``): the runtime installs a fresh one only when the prompt is sent,
+    so an unchanged object means this turn never sent one and anything on it belongs
+    to an earlier turn. Cleared after reading, so no later reader takes it again.
+    """
+    stats = _billing_stats(turn.client)
+    if stats is None or stats is turn._turn_stats0:
+        return None
+    profile = getattr(stats, "kas_profile", None)
+    if not isinstance(profile, dict) or not profile:
+        return None
+    stats.kas_profile = None
+    return profile
+
+
+async def _turn_close_crew_log(turn: _ChatTurn) -> None:
+    """Close the turn's crew log, in the one order a reader can trust, and the streak's activity."""
+    _crew_log_terminal: "dict | None"
+    _crew_log_sid = turn._crew_log_sid
+    _crew_log_step = turn._crew_log_step
+    _crew_log_step_t0 = turn._crew_log_step_t0
+    _crew_log_turn_no = turn._crew_log_turn_no
+    _crew_log_turn_open = turn._crew_log_turn_open
+    _escalation = turn._escalation
+    _prompt_depth = turn._prompt_depth
+    _turn_t0 = turn._turn_t0
+    _turn_thought = turn._turn_thought
+    session_key = turn.session_key
+    # The turn's crew log closers, in the one order a reader can trust: every
+    # `message/sent` for this turn has now been flushed, so the tool closer,
+    # the last step's completion and the turn's own completion land after the
+    # text they close over. Emitted HERE rather than at the terminal event
+    # because several recovery paths return before that event is reached, and
+    # a stash that never runs leaves a turn open in the file forever.
+    # Derived-tier escalation hears how a routed turn ended. A no-op for a
+    # session with no routed turn in flight, which is every session while
+    # ``decisions.model_route_derive`` is off.
+    _settle_jev_route(session_key, _jev_route_turn_ok(turn._crew_log_terminal))
+    if turn._crew_log_terminal is not None or _crew_log_turn_open:
+        # Ahead of the turn's closers, so the ``usage`` fold finds this turn's
+        # composition row still at the tail and not yet sealed.
+        crew_log_emit.on_context_measured(
+            _crew_log_sid, _crew_log_turn_no, profile=_take_engine_profile(turn)
+        )
+    if turn._crew_log_terminal is not None:
+        # Any tool still open produced no result frame of its own. Closed
+        # before the turn completes so a turn never completes with an open
+        # call inside it -- the shape the interrupted-turn repair exists to
+        # fix, which a live turn must not produce in the first place.
+        crew_log_emit.close_open_tool_calls(_crew_log_sid, _crew_log_turn_no)
+        # The turn's LAST model call has no tool group after it to close it,
+        # so the turn's end does.
+        crew_log_emit.on_step_completed(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            _crew_log_step,
+            ms=int((time.monotonic() - _crew_log_step_t0) * 1000),
+        )
+        crew_log_emit.on_turn_completed(_crew_log_sid, _crew_log_turn_no, **turn._crew_log_terminal)
+        _crew_log_terminal = None
+        turn._crew_log_terminal = _crew_log_terminal
+        _crew_log_turn_open = False
+        turn._crew_log_turn_open = _crew_log_turn_open
+    elif _crew_log_turn_open:
+        # The turn RAN and ended without its terminal event: the stream raised,
+        # or a recovery path (stale turn, tool stall, pipe death) returned
+        # before it. Closed here rather than left open, because this process
+        # OBSERVED the end -- and an open `turn/started` says the opposite, that
+        # the writer died mid-turn. Nothing in this process would ever correct
+        # it: the interrupted-turn repair is opt-in and only a resume asks for
+        # it, so a later resume would close it as an interruption that never
+        # happened, stamped at the last real entry's time.
+        #
+        # Same closer order as the measured path, for the same reason. Only
+        # locals bound BEFORE the stream are read: `_provider_name` and
+        # `_record_model` are bound only inside `_on_complete`, the terminal-event arm, so
+        # naming them here is a global lookup that raises NameError inside a `finally`
+        # and masks the very exception that brought us here.
+        crew_log_emit.close_open_tool_calls(_crew_log_sid, _crew_log_turn_no)
+        crew_log_emit.on_step_completed(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            _crew_log_step,
+            ms=int((time.monotonic() - _crew_log_step_t0) * 1000),
+        )
+        crew_log_emit.on_turn_failed(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            error=turn._crew_log_error,
+            duration_ms=int((time.monotonic() - _turn_t0) * 1000),
+            model=turn._turn_model,
+            provider=turn.provider_name,
+            depth=_prompt_depth,
+        )
+        _crew_log_turn_open = False
+        turn._crew_log_turn_open = _crew_log_turn_open
+    # Poisoned-conversation streak break — run from _run_chat's FINALLY on purpose:
+    # several recovery paths (stale-turn, tool-stall,
+    # pipe-death) `return` before the main completion block in _turn_persist_and_settle, and a turn
+    # with model activity that exits through them must STILL break the
+    # exhaustion streak — the backend demonstrably served this
+    # conversation. Safe against _on_acp_error_card's streak
+    # increment: incrementing requires ZERO activity, so the two are
+    # mutually exclusive by construction and this can never clobber a
+    # legitimate increment. One-shot re-arm stays landed-turn-only.
+    _escalation.record_activity(emitted=turn._turn_emitted, thought=_turn_thought)

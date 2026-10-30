@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { SecretsPanel } from './SecretsPanel'
+import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
 import { isAuthBannerShown, __resetAuthRecoveryStateForTests } from '../../api/client'
 import en from '../../i18n/locales/en.json'
 // The transport's own recovery copy is hand-authored, so it lives in the manual
@@ -24,7 +25,7 @@ import enManual from '../../i18n/locales/en.manual.json'
  * `{ ok, status, json }` literal does not have.
  */
 type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
-type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token'; host?: string }
+type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token' | 'gerrit_http_credential'; host?: string }
 
 let calls: FetchCall[] = []
 
@@ -220,7 +221,7 @@ describe('SecretsPanel', () => {
     expect(await screen.findByText('MY_API_KEY')).toBeInTheDocument()
     expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
     expect(screen.getByText('Custom secrets')).toBeInTheDocument()
-    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY; the value is never shown in chat/)).toBeInTheDocument()
     // The plaintext is never rendered — only the mask is.
     expect(screen.getAllByText('••••••••')).toHaveLength(2)
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
@@ -424,6 +425,63 @@ describe('SecretsPanel', () => {
 
     expect(await screen.findByText('JIRA_API_TOKEN')).toBeInTheDocument()
     expect(screen.getByText('Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.')).toBeInTheDocument()
+  })
+
+  it('offers an unset Gerrit credential as a host-labelled slot with no hex to type', async () => {
+    listManaged = [{
+      name: 'GERRIT_HTTP_CREDENTIAL',
+      kind: 'gerrit_http_credential',
+      host: 'gerrit.example.com:9080',
+    }]
+    mount()
+
+    expect(await screen.findByText('Gerrit HTTP credential — gerrit.example.com:9080')).toBeInTheDocument()
+    expect(screen.getByText(/username:HTTP password/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Paste secret value')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Secret name')).not.toBeInTheDocument()
+  })
+
+  it('labels configured per-host Gerrit credentials by host and lets them be replaced in place', async () => {
+    const name = 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830'
+    listNames = [name]
+    listManaged = [{ name, kind: 'gerrit_http_credential', host: 'gerrit.example.com:9080' }]
+    mount()
+
+    expect(await screen.findByText('Gerrit HTTP credential — gerrit.example.com:9080')).toBeInTheDocument()
+    expect(screen.getByText(name)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument()
+  })
+
+  it('explains when a stored global Gerrit credential is inactive in multi-host mode', async () => {
+    listNames = ['GERRIT_HTTP_CREDENTIAL']
+    listUnused = [{ name: 'GERRIT_HTTP_CREDENTIAL', reason: 'gerrit_multi_host' }]
+    listManaged = [
+      {
+        name: 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830',
+        kind: 'gerrit_http_credential',
+        host: 'gerrit.example.com:9080',
+      },
+      {
+        name: 'GERRIT_HTTP_CREDENTIAL_676572726974762E6578616D706C652E636F6D3A39303831',
+        kind: 'gerrit_http_credential',
+        host: 'gerritv.example.com:9081',
+      },
+    ]
+    mount()
+
+    expect(await screen.findByText('GERRIT_HTTP_CREDENTIAL')).toBeInTheDocument()
+    expect(screen.getByText('Not used by Gerrit while multiple hosts are configured. Set each host’s credential above, or delete this entry.')).toBeInTheDocument()
+  })
+
+  it('explains when a stored per-host Gerrit credential takes precedence over the global one', async () => {
+    const name = 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830'
+    listNames = ['GERRIT_HTTP_CREDENTIAL', name]
+    listUnused = [{ name: 'GERRIT_HTTP_CREDENTIAL', reason: 'gerrit_host_precedence' }]
+    listManaged = [{ name, kind: 'gerrit_http_credential', host: 'gerrit.example.com:9080' }]
+    mount()
+
+    expect(await screen.findByText('GERRIT_HTTP_CREDENTIAL')).toBeInTheDocument()
+    expect(screen.getByText('Not used because the host-specific Gerrit credential takes precedence. Delete this entry if you no longer need the fallback.')).toBeInTheDocument()
   })
 
   it('sends the session key header on the list request', async () => {
@@ -728,12 +786,23 @@ describe('SecretsPanel custom secrets card', () => {
     expect(await screen.findByText('Custom secrets')).toBeInTheDocument()
     // The disclaimer names BOTH supported consumers — MCP server env AND .env
     // credential settings — so an owner whose entry came from `secrets import`
-    // is not told it is MCP-only.
-    expect(screen.getByText(/stored encrypted for use by MCP servers and \.env credential settings/)).toBeInTheDocument()
-    expect(screen.getByText(/from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    // is not told it is MCP-only — AND the mediated chat route (#8628).
+    expect(screen.getByText(/Encrypted keys for MCP servers and \.env settings/)).toBeInTheDocument()
+    // The authorize step names its prerequisites: a member chat, the opt-in
+    // @kirocrew-secrets grant, and where to run the command.
+    const authorize = screen.getByText(
+      /To let an agent in a member chat call one approved API with a secret, grant the agent @kirocrew-secrets, then run the command below in a shell or on the Terminal page\./,
+    )
+    expect(SECRETS_SERVER_GRANT).toBe('@kirocrew-secrets')
+    // The command is a literal the owner types, so it renders verbatim from
+    // the code constant inside a <code> element, never from a catalog value.
+    const command = screen.getByText(SECRETS_AUTHORIZE_COMMAND)
+    expect(command.tagName).toBe('CODE')
+    expect(command.textContent).toBe('kirocrew secrets authorize NAME https://api.example.com')
+    expect(authorize).toContainElement(command)
     // The token appears in both the disclaimer and the empty-state line.
     expect(screen.getAllByText(/secret:\/\/YOUR_KEY/).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/it is never exposed in chat/)).toBeInTheDocument()
+    expect(screen.getByText(/never shown in chat/)).toBeInTheDocument()
     // Empty state, not a row.
     expect(screen.getByText(/No custom secrets stored yet/)).toBeInTheDocument()
     expect(screen.queryByText('••••••••')).not.toBeInTheDocument()
@@ -744,7 +813,7 @@ describe('SecretsPanel custom secrets card', () => {
     mount()
     expect(await screen.findByText('WEATHER_API_KEY')).toBeInTheDocument()
     // Disclaimer persists alongside populated rows, and the empty line is gone.
-    expect(screen.getByText(/stored encrypted for use by MCP servers/)).toBeInTheDocument()
+    expect(screen.getByText(/Encrypted keys for MCP servers and \.env settings/)).toBeInTheDocument()
     expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
     // Value is masked, never rendered in plaintext.
     expect(screen.getByText('••••••••')).toBeInTheDocument()

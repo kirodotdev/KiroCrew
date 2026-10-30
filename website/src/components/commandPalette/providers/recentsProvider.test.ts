@@ -1,7 +1,8 @@
 import { renderHook } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatSlot } from '../../../types'
+import { resetCrewModeCatalog, setCrewModeCatalog } from '../../../lib/crewMode'
 import { slotRecency } from '../slotRecency'
 import {
   hasPlaceholderTitle,
@@ -40,6 +41,9 @@ vi.mock('../../../store', () => ({
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
 }))
+
+const apiMock = vi.hoisted(() => ({ sessions: vi.fn() }))
+vi.mock('../../../api/client', () => ({ api: apiMock }))
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
@@ -486,5 +490,54 @@ describe('useRecentsProvider — Older dedupe against live slots', () => {
     expect(rows.filter((r) => r.id === 'recents:cur:chat-2-2')).toHaveLength(0)
     // ...and must NOT come back as an Older row.
     expect(rows.filter((r) => r.id === 'recents:old:dashboard_chat-2-2')).toHaveLength(0)
+  })
+
+  it('dedupes against a live Crew Mode worker the person\'s list leaves out', async () => {
+    // `currentKeys` is built from EVERY live row, not the person's list: a worker
+    // is left out of Current (its root's side panel shows it) and must not come
+    // back as an Older row while it is open.
+    mocks.state.dashboard.slots = [
+      slot({ key: 'chat-1-1', title: 'The crew chat', crew_mode_root: true }),
+      slot({ key: 'chat-2-2', title: 'A crew member', crew_root: 'chat-1-1' }),
+    ]
+    withHistory([{ key: 'dashboard_chat-2-2', title: 'A crew member', preview: 'x' }])
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+
+    expect(rows.filter((r) => r.id === 'recents:cur:chat-2-2')).toHaveLength(0)
+    expect(rows.filter((r) => r.id === 'recents:old:dashboard_chat-2-2')).toHaveLength(0)
+    expect(rows.filter((r) => r.id === 'recents:cur:chat-1-1')).toHaveLength(1)
+  })
+})
+
+/**
+ * The Older group reads the full History inventory, Crew Mode or not: closed
+ * channel conversations and subagent transcripts belong there, and `/api/sessions`
+ * has no crew signal, so `user_only` would drop those while keeping a closed crew
+ * worker. A live crew worker is kept out by the live-row dedupe above.
+ */
+describe('useRecentsProvider — Older is the full History inventory', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.state.dashboard.slots = []
+    mocks.state.dashboard.unreadSlots = []
+    mocks.state.chat.slotStatusDetail = {}
+    // Run the history queryFn for real; answer the others empty.
+    mocks.fetchQuery.mockImplementation(({ queryKey, queryFn }: { queryKey: unknown[]; queryFn: () => unknown }) =>
+      queryKey[2] === 'history' ? Promise.resolve(queryFn()) : Promise.resolve([]))
+    apiMock.sessions.mockResolvedValue({ sessions: [] })
+  })
+
+  afterEach(() => resetCrewModeCatalog())
+
+  it('reads the same full inventory on a Crew Mode gateway as on one without', async () => {
+    const { renderHook } = await import('@testing-library/react')
+    const { result } = renderHook(() => useRecentsProvider())
+    await result.current.search('')
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(20, 0, true)
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    await result.current.search('')
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(20, 0, true)
   })
 })

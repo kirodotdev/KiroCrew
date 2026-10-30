@@ -27,7 +27,6 @@ import logging
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -38,14 +37,14 @@ from auto_improvement_member_helpers import MEMBER_BUDGET_SECS
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.apps.builtins.auto_improvement import profiles as profiles_mod
-from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup, crew
+from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup, crew, deps
 from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 from kiro_crew.apps.builtins.auto_improvement.backend import store
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_discovery as discovery_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as agent_runner_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as driver_mod
 from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, wait_until
 
 WAIT_S = 10.0
 
@@ -188,6 +187,12 @@ def _no_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _gate_has_pytest(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the pytest preflight probe, the one spawn every start and calibration makes."""
+    _floor_monkeypatch.setattr(deps, "gate_pytest_problem", lambda: "")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_checkout(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str]]:
     """Stub the one git call both entry points make; records what it was asked to do."""
     seen: list[tuple[Path, str]] = []
@@ -220,14 +225,15 @@ def sup() -> Any:
 
 
 def _await_status(sup: Any, wanted: set[str], timeout: float = WAIT_S) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    snapshot: dict[str, Any] = {}
-    while time.monotonic() < deadline:
+    def reached() -> dict[str, Any] | None:
         snapshot = sup.status()
-        if snapshot.get("status") in wanted:
-            return snapshot
-        time.sleep(0.01)
-    raise AssertionError(f"supervisor never reached {wanted}; last={snapshot}")
+        return snapshot if snapshot.get("status") in wanted else None
+
+    return wait_until(
+        reached,
+        timeout=timeout,
+        describe=lambda: f"supervisor never reached {wanted}; last={sup.status()}",
+    )
 
 
 def _await_log(fragment: str, caplog: Any, timeout: float = WAIT_S) -> None:
@@ -238,12 +244,11 @@ def _await_log(fragment: str, caplog: Any, timeout: float = WAIT_S) -> None:
     record is the same shape as `_await_status`: bounded, and loud if it never
     arrives rather than silently asserting on an empty buffer.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if fragment in caplog.text:
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"log never carried {fragment!r}; got: {caplog.text[-400:]!r}")
+    wait_until(
+        lambda: fragment in caplog.text,
+        timeout=timeout,
+        describe=lambda: f"log never carried {fragment!r}; got: {caplog.text[-400:]!r}",
+    )
 
 
 # ── config coercion ──────────────────────────────────────────────────────────

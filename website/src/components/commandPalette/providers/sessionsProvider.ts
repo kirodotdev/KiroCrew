@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
-import { useAppDispatch, useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { resumeFromHistory } from '../../../store/chatSlice'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
@@ -13,6 +13,7 @@ import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import type { Result, ResourceProvider } from '../types'
+import { normalizeKey } from './recentsProvider'
 
 /**
  * Sessions provider for the Search Everywhere command palette.
@@ -112,6 +113,13 @@ export interface SessionsProviderDeps {
   openSession: (ref: SessionRef) => void
   /** Open a session in a split pane / Session Grid (⌘Enter). Optional. */
   openInSplit?: (ref: SessionRef) => void
+  /**
+   * Whether a LOCAL session is open in the dashboard right now (#21290). Called
+   * with the live slot key: a history key's `dashboard_` prefix is stripped first.
+   * Open hits rank above history; order inside each tier is unchanged.
+   * Optional: without it every row is one tier, as before.
+   */
+  isOpenSession?: (key: string) => boolean
 }
 
 function sessionIcon() {
@@ -123,7 +131,7 @@ function sessionIcon() {
  * Pure (no hooks) so it can be exercised directly in tests.
  */
 export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProvider {
-  const { fetchSessions, fetchFolders, openSession, openInSplit } = deps
+  const { fetchSessions, fetchFolders, openSession, openInSplit, isOpenSession } = deps
 
   return {
     id: PROVIDER_ID,
@@ -170,6 +178,9 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
       // parallel Map rather than on the row itself so the shared `Result` type
       // (../types) is not widened with a field only this provider can populate.
       const backendIndexById = new Map<string, number>()
+      // Ids of hits open in this dashboard, ranked first. Remote rows never
+      // count: their key names a session on another gateway.
+      const openIds = new Set<string>()
 
       const results: Result[] = sessions.map((s, backendIndex) => {
         // `title` is what the open and copy actions carry, as before; `label`
@@ -216,6 +227,8 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
             : undefined
         const id = remote ? `${PROVIDER_ID}:${s.instance_id}:${s.key}` : `${PROVIDER_ID}:${s.key}`
         backendIndexById.set(id, backendIndex)
+        // History keys carry a `dashboard_` prefix the live slot key lacks.
+        if (!remote && isOpenSession?.(normalizeKey(s.key))) openIds.add(id)
         return {
           id,
           providerId: PROVIDER_ID,
@@ -255,9 +268,12 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
       // providers that score locally, wrong here where the server has already
       // ranked. Skip the re-rank on an empty query so the backend's recency
       // ordering is preserved as-is (Sessions tab + All-tab recents rely on it).
+      // Open sessions come first as a tier (#21290): a live tab beats older
+      // history even when the history title matches a little better.
       if (q.length > 0) {
         results.sort(
           (a, b) =>
+            Number(openIds.has(b.id)) - Number(openIds.has(a.id)) ||
             b.score - a.score ||
             (backendIndexById.get(a.id) ?? 0) - (backendIndexById.get(b.id) ?? 0),
         )
@@ -291,12 +307,21 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
 export function useSessionsProvider(opts?: {
   openInSplit?: (ref: SessionRef) => void
   active?: boolean
+  /** Keys of the sessions open in this dashboard; their hits rank first. */
+  openSessionKeys?: ReadonlySet<string>
 }): ResourceProvider {
   const dispatch = useAppDispatch()
+  // Read on the focus frame after a resume: only a resume that took the view
+  // moves the caret.
+  const store = useAppStore()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const openInSplit = opts?.openInSplit
   const active = opts?.active ?? true
+  // Read at search time through a ref, so a slot update does not rebuild the
+  // provider (same pattern as hasWarmRef below).
+  const openKeysRef = useRef(opts?.openSessionKeys)
+  openKeysRef.current = opts?.openSessionKeys
   // True when at least one remote instance holds a live connection; drives the
   // federated-vs-local endpoint choice per keystroke without rebuilding the
   // provider (read via ref inside the memoized fetch). Guarded read: the
@@ -369,14 +394,15 @@ export function useSessionsProvider(opts?: {
           // already active, and declines while this surface's input still holds
           // focus. Unwrapped, so a failed resume focuses nothing; the slice records
           // the failure either way (see resumeFromHistory.rejected).
-          focusComposerForResumedSession(dispatch(resumeFromHistory(ref)).unwrap())
+          focusComposerForResumedSession(dispatch(resumeFromHistory(ref)).unwrap(), store)
           // The palette can be opened from ANY page (artifacts, settings, …);
           // resumeFromHistory only activates the slot in the store, so land
           // the user on the chat surface where that slot renders.
           navigate('/chat')
         },
         openInSplit,
+        isOpenSession: (key) => openKeysRef.current?.has(key) ?? false,
       }),
-    [dispatch, navigate, queryClient, openInSplit, selectInstance],
+    [dispatch, store, navigate, queryClient, openInSplit, selectInstance],
   )
 }

@@ -348,7 +348,7 @@ def _frames_with_offsets(
         # instead of the 3x main pays; bounding by the remainder restores parity.
         # cap + 2 is the FLOOR, not a tidy constant: a legal at-cap record ending
         # CRLF is cap + 2 bytes, so a buffer that could only ever hold cap + 1
-        # could not assemble one and would refuse it -- the round-7 bug exactly.
+        # could not assemble one and would refuse it.
         # The max(2, ...) keeps a read able to see a whole CRLF once the buffer is
         # already full, so a \r there is still resolvable rather than deadlocked.
         chunk = handle.readline(max(2, cap + 2 - len(buf)))
@@ -593,7 +593,9 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     never cost the record; only a failure of the caller's own append may.
     """
     try:
-        lock_fd = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        lock_fd = platform_compat.open_create_or_existing(
+            path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
+        )
         try:
             locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             try:

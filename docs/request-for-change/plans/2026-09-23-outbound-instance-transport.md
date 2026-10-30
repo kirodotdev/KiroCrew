@@ -194,7 +194,7 @@ to refuse, so these are in the same PR (RFC §5).
 `kirocrew doctor` is not the surface a review reads. The dashboard already renders
 a row per security control, so the effective posture is registered as one.
 
-- [ ] Add a control to `_CONTROLS` (`src/kiro_crew/security_posture.py`) whose
+- [ ] Add a control to `_CONTROLS` (`src/kiro_crew/security_posture_controls.py`) whose
       items are the `connection_method` values `allowed_methods` currently
       permits, with the enforcing module as its `source`
 - [ ] Report `count` as unresolved rather than permissive when the effective

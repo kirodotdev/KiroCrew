@@ -1,4 +1,4 @@
-"""``kirocrew bench`` CLI behaviour that a reviewer flagged and a test must pin.
+"""``kirocrew bench`` CLI behaviour a test must pin.
 
 Two of these pin ``kirocrew bench`` CLI behaviour, and the third pins the
 deliberate exception to the ``top-level-imports`` rule so a future

@@ -356,8 +356,11 @@ def _policy(args: argparse.Namespace) -> None:
     elif action == "explain":
         scope = args.scope
         if scope not in SCOPE_CATALOG:
-            print(f"Unknown scope {scope!r}. Known: {', '.join(sorted(SCOPE_CATALOG))}")
-            return
+            print(
+                f"Unknown scope {scope!r}. Known: {', '.join(sorted(SCOPE_CATALOG))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         profile = resolve_active_scope(args.session_key, agent=args.agent, app=args.app)
         decision = resolve(ceiling, profile, scope, args.item)
         verdict = "ALLOWED" if decision.permitted else "DENIED"

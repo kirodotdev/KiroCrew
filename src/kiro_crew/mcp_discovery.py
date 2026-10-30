@@ -774,13 +774,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _managed_tools_in_process,
         _resolved_managed_invocation,
         managed_server_is_session_bound,
+        managed_tool_names_for_policy,
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _MAX_BANNER_LINES,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
         _redact_temp_refusal_text,
+        _served_by_gateway,
         _temp_refusal_records,
+        secret_reference_refusal,
     )
     from kiro_crew.mcp_discovery_probe_state import (  # noqa: F401
         _ISO_DATE,
@@ -813,12 +816,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_remote import (  # noqa: F401
         _CHALLENGE_PARAM_RE,
         _MAX_CHALLENGE_LEN,
+        _MAX_REDIRECT_TARGET_LEN,
         _expand_header_placeholders,
         _header_reference_unresolved,
         _is_bearer_challenge,
         _needs_authorization,
         _probe_remote,
         _read_jsonrpc_response,
+        _redirect_error,
         _runtime_grant_present,
     )
     from kiro_crew.mcp_discovery_server_info import (  # noqa: F401
@@ -853,6 +858,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         mcp_search_path,
         resolved_command_casing,
         sanitize_spec_env,
+        saved_command_casing,
         spec_path_key,
     )
     from kiro_crew.executors import (  # noqa: F401

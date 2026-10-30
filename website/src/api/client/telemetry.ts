@@ -129,6 +129,11 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
     // telemetry main switch: the usage rows it reads are always written.
     telemetryContextTrace: (slot: string) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
+    /** One kept turn's whole panel, read when the Context panel picks a past turn:
+     *  the trace carries only the chart's numbers per turn. 404 once the turn has
+     *  left the 30 kept turns. */
+    telemetryContextTurn: (slot: string, turn: number) =>
+      fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
      *  every row (the endpoint's app-ownership filter applies to app callers).

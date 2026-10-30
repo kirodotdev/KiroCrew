@@ -55,7 +55,13 @@ concurrency:
 jobs:
   fork-internal-content-scan:
     name: Fork Internal Content Scan
-    runs-on: ubuntu-latest
+    # Fork work cannot reach the CodeBuild fleet -- the `workflow_job` webhook
+    # payload carries no fork indicator, so the AWS side cannot admit it -- and
+    # the group is the only other capacity source. It is where the fork review
+    # lanes already run: a GitHub-hosted Ubuntu VM with no fleet credentials,
+    # and the steps below materialize no fork code on either runner.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 15
     # Only a SUCCESSFUL Stage 1 run that was itself a FORK pull request.
     if: >-
@@ -66,7 +72,7 @@ jobs:
       # MUST be first. STS + S3 for the ruleset, GitHub for the diff and the
       # check-run, PyPI for the engine's single dependency. Nothing else.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           disable-telemetry: true
           egress-policy: block

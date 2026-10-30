@@ -8,6 +8,12 @@
 
 const API = '/api/apps/meetings'
 
+/** A stalled image upload must not keep the note's autosave gate closed forever. */
+export const NOTE_IMAGE_UPLOAD_TIMEOUT_MS = 60_000
+
+/** The Fetch spec's cap on a keepalive request body; a larger one is refused. */
+export const NOTE_KEEPALIVE_MAX_BYTES = 64 * 1024
+
 // ── wire types ──────────────────────────────────────────────────────────────
 
 export type MeetingStatus = 'idle' | 'active' | 'paused' | 'reviewing' | 'ended'
@@ -70,6 +76,26 @@ export interface MeetingsConfig {
   poll_interval_idle: number
   /** Target language for live transcript translation; `''` means off (the default). */
   translation_language: string
+}
+
+/** The user's own note for a meeting. `updated_at` is `''` before the first save. */
+export interface MeetingNote {
+  content: string
+  updated_at: string
+  /**
+   * Absolute path of the note file. Used as the markdown renderer's base path so the
+   * note's RELATIVE image links resolve through the dashboard's own file route.
+   */
+  path: string
+}
+
+/** One stored note image. `alt` is the meeting's elapsed time, or `''` if not started. */
+export interface NoteImage {
+  ok: boolean
+  filename: string
+  /** Relative, e.g. `images/ab12….png` — resolved against the note's location. */
+  src: string
+  alt: string
 }
 
 /** One translated transcript line. `text` is `''` when the translation failed. */
@@ -258,10 +284,16 @@ export class MeetingsApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json', ...init?.headers } : init?.headers,
-  })
+  // A `FormData` body must NOT get an explicit Content-Type: the browser sets
+  // `multipart/form-data` together with the boundary it generated, and naming the
+  // type by hand omits the boundary — the server then fails to parse a body that
+  // looks perfectly well formed from the client side.
+  const isMultipart = typeof FormData !== 'undefined' && init?.body instanceof FormData
+  const headers =
+    init?.body && !isMultipart
+      ? { 'Content-Type': 'application/json', ...init?.headers }
+      : init?.headers
+  const res = await fetch(`${API}${path}`, { ...init, headers })
   if (!res.ok) {
     // The backend answers every error as `{"error": "..."}`; fall back to the
     // status text when the body is not JSON (a proxy error page, say).
@@ -371,6 +403,45 @@ export const meetingsApi = {
     request<TranscriptResponse>(
       `/meetings/${encodeURIComponent(id)}/transcript${cursor ? `?cursor=${cursor}` : ''}`,
     ),
+  note: (id: string) =>
+    request<MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`),
+  /**
+   * Store one pasted image and get back the markdown pieces to insert.
+   *
+   * `FormData`, so no `Content-Type` header is set by hand — the browser has to
+   * supply the multipart boundary, and setting the header manually omits it.
+   */
+  uploadNoteImage: async (id: string, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), NOTE_IMAGE_UPLOAD_TIMEOUT_MS)
+    try {
+      return await request<NoteImage>(`/meetings/${encodeURIComponent(id)}/note/images`, {
+        method: 'POST',
+        body,
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timeout)
+    }
+  },
+  /**
+   * `keepalive` lets the tab-close save outlive its page, and only that save asks
+   * for it: a plain fetch dies with the document. The browser caps the bodies of
+   * ALL outstanding keepalive requests together at 64 KiB, so an ordinary autosave
+   * still on the wire with keepalive would use up the room the tab-close save needs
+   * and the browser would refuse it. A body over the cap is sent as a plain fetch,
+   * since a keepalive request that large is refused outright.
+   */
+  saveNote: (id: string, content: string, { keepalive = false } = {}) => {
+    const body = JSON.stringify({ content })
+    return request<{ ok: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
+      method: 'PUT',
+      body,
+      keepalive: keepalive && new TextEncoder().encode(body).byteLength <= NOTE_KEEPALIVE_MAX_BYTES,
+    })
+  },
   /**
    * Translated lines newer than `since`. Cursor-based rather than full-document:
    * the panel polls while it is open and a long meeting accumulates hundreds of

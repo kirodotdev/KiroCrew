@@ -71,15 +71,24 @@ class TestTurnMetric:
         assert "session_source" not in kwargs["attrs"]
 
     def test_recorder_failure_is_swallowed(self):
-        with patch.object(chat_runner, "get_recorder", side_effect=RuntimeError("no recorder")):
+        # The emit reads ``get_recorder`` from ``metrics/turns.py``, so that is
+        # the binding the failure has to come from.
+        with patch.object(
+            turns_mod, "get_recorder", side_effect=RuntimeError("no recorder")
+        ) as get_recorder:
             chat_runner._emit_turn_metric(50, "end_turn", "dashboard:x")
+
+        get_recorder.assert_called_once_with()
 
     def test_zero_duration_skips_the_emit(self):
         recorder = MagicMock()
-        with patch.object(chat_runner, "get_recorder", return_value=recorder):
+        with patch.object(turns_mod, "get_recorder", return_value=recorder):
             chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=0)
+            recorder.histogram.assert_not_called()
+            # The same patch does reach the emit once there is a duration.
+            chat_runner._emit_turn_metric(0, "end_turn", "dashboard:x", elapsed_ms=12)
 
-        recorder.histogram.assert_not_called()
+        assert recorder.histogram.call_args.args[1] == 12
 
 
 # ── snapshot helpers ──────────────────────────────────────────────────────
@@ -247,31 +256,32 @@ class TestAcpRedaction:
 
 
 class TestOauthUrlCredentialGate:
-    def test_empty_url_is_not_a_credential(self):
-        assert oauth_url_contains_credential("") is False
-
-    def test_plain_consent_url_is_allowed(self):
-        assert (
-            oauth_url_contains_credential(
-                "https://github.com/login/oauth/authorize?client_id=abc&state=xyz"
-            )
-            is False
-        )
-
-    def test_unparseable_url_is_refused(self):
-        # An invalid IPv6 authority makes urlparse raise ValueError inside the
-        # shared security gate, which fails closed.
-        assert oauth_url_contains_credential("https://[bad-ipv6/x") is True
-
-    def test_credential_signature_inside_an_oauth_param_is_refused(self):
-        url = "https://example.test/authorize?state=AKIAIOSFODNN7EXAMPLE1"
-
-        assert oauth_url_contains_credential(url) is True
-
-    def test_exfiltration_pattern_in_a_non_oauth_param_is_refused(self):
-        url = "https://example.test/authorize?payload=" + ("A" * 260)
-
-        assert oauth_url_contains_credential(url) is True
+    @pytest.mark.parametrize(
+        "url,refused",
+        [
+            pytest.param("", False, id="test_empty_url_is_not_a_credential"),
+            pytest.param(
+                "https://github.com/login/oauth/authorize?client_id=abc&state=xyz",
+                False,
+                id="test_plain_consent_url_is_allowed",
+            ),
+            # An invalid IPv6 authority makes urlparse raise ValueError inside the
+            # shared security gate, which fails closed.
+            pytest.param("https://[bad-ipv6/x", True, id="test_unparseable_url_is_refused"),
+            pytest.param(
+                "https://example.test/authorize?state=AKIAIOSFODNN7EXAMPLE1",
+                True,
+                id="test_credential_signature_inside_an_oauth_param_is_refused",
+            ),
+            pytest.param(
+                "https://example.test/authorize?payload=" + ("A" * 260),
+                True,
+                id="test_exfiltration_pattern_in_a_non_oauth_param_is_refused",
+            ),
+        ],
+    )
+    def test_oauth_url_credential_gate(self, url, refused):
+        assert oauth_url_contains_credential(url) is refused
 
 
 class TestEmitMcpOauthRequest:
@@ -421,6 +431,11 @@ class TestMarkMcpOauthCompleted:
 
         chat_runner._mark_mcp_oauth_completed(state, slot, "github", True)
 
+        assert slot.messages[-1] == {
+            "role": "mcp_oauth",
+            "content": "legacy",
+            "meta": {"server_name": "github"},
+        }
         assert not any(
             call.args and call.args[0] == "chat_message_update"
             for call in state.broadcast_ws.call_args_list
@@ -491,15 +506,19 @@ class TestChannelTargetLadder:
 
 class TestMarkKiroSignedOut:
     def test_absent_service_is_a_noop(self):
-        state = MagicMock(spec=[])
+        state = MagicMock(spec=["kiro_prerequisite_service"])
+        state.kiro_prerequisite_service = None
 
-        chat_runner._mark_kiro_signed_out(state)
+        assert chat_runner._mark_kiro_signed_out(state) is None
+        assert state.kiro_prerequisite_service is None
 
     def test_latch_failure_never_raises(self):
         state = MagicMock()
         state.kiro_prerequisite_service.mark_signed_out.side_effect = RuntimeError("io")
 
         chat_runner._mark_kiro_signed_out(state)
+
+        state.kiro_prerequisite_service.mark_signed_out.assert_called_once_with()
 
 
 class TestDeliverLinkedSlackMessage:
@@ -512,6 +531,8 @@ class TestDeliverLinkedSlackMessage:
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
+        state.sessions.get_slack_link.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_unlinked_session_is_a_noop(self, tmp_path):
         state = _state(tmp_path)
@@ -521,6 +542,7 @@ class TestDeliverLinkedSlackMessage:
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
+        state.sessions.get_slack_link.assert_called_once_with("dashboard:x")
         state.slack_client.post_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -548,6 +570,9 @@ class TestDeliverLinkedSlackMessage:
             state, slot, state.sessions, "dashboard:x", "signed out"
         )
 
+        state.slack_client.post_message.assert_awaited_once_with("C1", "signed out", "1.2")
+        state.sessions.get_slack_link.assert_not_called()
+
 
 class TestCrossSurfaceReply:
     @pytest.mark.asyncio
@@ -558,6 +583,7 @@ class TestCrossSurfaceReply:
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "")
 
         resolve.assert_not_called()
+        state.sessions.get_mirror_link.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reply_is_chunked_per_transport_limit(self, tmp_path):
@@ -586,6 +612,8 @@ class TestCrossSurfaceReply:
 
         with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "hello")
+
+        transport.send_message.assert_awaited_once_with("123", "hello", thread_id=None)
 
 
 class TestPrepareMirrorMsg:
@@ -778,12 +806,27 @@ class TestFlushSegment:
 
 
 class TestScheduleWidgetRegistration:
-    def test_empty_text_registers_nothing(self, tmp_path):
+    @pytest.mark.parametrize(
+        "text,loop_probed",
+        [
+            pytest.param("", False, id="test_empty_text_registers_nothing"),
+            pytest.param(
+                "<mcwidget>x</mcwidget>", True, id="test_no_running_loop_skips_registration"
+            ),
+        ],
+    )
+    def test_nothing_is_scheduled_without_text_or_loop(self, tmp_path, text, loop_probed):
         state, slot = _state(tmp_path), _slot()
 
-        with patch.object(chat_runner.asyncio, "create_task") as create:
-            chat_runner._schedule_widget_registration(state, slot, "", "1")
+        with (
+            patch.object(
+                chat_runner.asyncio, "get_running_loop", wraps=asyncio.get_running_loop
+            ) as probe,
+            patch.object(chat_runner.asyncio, "create_task") as create,
+        ):
+            chat_runner._schedule_widget_registration(state, slot, text, "1")
 
+        assert probe.called is loop_probed
         create.assert_not_called()
 
     def test_restricted_session_never_registers(self, tmp_path):
@@ -791,14 +834,6 @@ class TestScheduleWidgetRegistration:
         state, slot = _state(tmp_path), _slot()
         slot.memory_mode = "temporary"
         assert slot.is_restricted is True
-
-        with patch.object(chat_runner.asyncio, "create_task") as create:
-            chat_runner._schedule_widget_registration(state, slot, "<mcwidget>x</mcwidget>", "1")
-
-        create.assert_not_called()
-
-    def test_no_running_loop_skips_registration(self, tmp_path):
-        state, slot = _state(tmp_path), _slot()
 
         with patch.object(chat_runner.asyncio, "create_task") as create:
             chat_runner._schedule_widget_registration(state, slot, "<mcwidget>x</mcwidget>", "1")
@@ -825,8 +860,12 @@ class TestScheduleWidgetRegistration:
 
 class TestTtftMetric:
     def test_emission_failure_is_swallowed(self):
-        with patch("kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("down")):
+        with patch(
+            "kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("down")
+        ) as get_recorder:
             chat_runner._emit_ttft_metric(0.0, "dashboard:x", is_new=True, resumed=False)
+
+        get_recorder.assert_called_once_with()
 
     def test_attributes_split_cold_and_resumed_populations(self):
         recorder = MagicMock()
@@ -927,6 +966,8 @@ class TestNativeSubagentCards:
             del state._native_cards
 
         chat_runner._unregister_native_card(state, "native:x")
+
+        assert not hasattr(state, "_native_cards")
 
     def test_terminal_records_are_bounded_by_keep_and_ttl(self):
         now = 1000.0

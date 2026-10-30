@@ -17,9 +17,13 @@ The contract these tests pin:
 * ``"kirocrew"`` stays a perfectly legal explicit CHOICE, because a crew that
   boots the built-in agent against its own workspace/memory store is the common
   case and must keep working;
-* an unknown template is accepted with a WARNING rather than refused, matching
-  the sync path's EXECUTABLE INVARIANT posture — an edition may resolve a row
-  this listing cannot see, and hard-refusing it would itself be a bug.
+* any template other than ``"kirocrew"`` or the crew's own key is REFUSED
+  (400 ``mate_template_unsupported``): the crewmate's own file is the
+  source-free worker and reads no template, so the template's tools and
+  restrictions would never reach it;
+* a ``"kirocrew"`` missing from the listing is accepted with a WARNING rather
+  than refused, matching the sync path's EXECUTABLE INVARIANT posture — an
+  edition may resolve a row this listing cannot see.
 """
 
 from __future__ import annotations
@@ -207,13 +211,16 @@ class TestTemplateNameGrammar:
 
     @pytest.mark.asyncio
     async def test_underscores_and_digits_remain_valid(self):
-        """The guard must not narrow the legitimate name space."""
+        """The guard must not narrow the legitimate name space.
+
+        The name passes the grammar and reaches the start-template rule, which is
+        what answers it.
+        """
         cfg = _fake_config()
-        status, _ = await _post(
+        status, data = await _post(
             {"name": "crew-d", "kiro_agent": "my_agent2"}, cfg, installed=("my_agent2",)
         )
-        assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-d"]["kiro_agent"] == "my_agent2"
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
 
 
 class TestExplicitTemplateStillWorks:
@@ -234,11 +241,38 @@ class TestExplicitTemplateStillWorks:
         assert "workspaces" not in cfg.written["doc"]
 
     @pytest.mark.asyncio
+    async def test_a_template_of_the_crews_own_name_is_refused(self):
+        """Its own file is resolved under its name, so the copy would be skipped."""
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "release-bot"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_user_level_agent_of_the_crews_name_is_refused(self, monkeypatch):
+        """The crewmate would be bound to that agent, which wins over its own copy."""
+        monkeypatch.setattr(
+            "kiro_crew.mate_config.user_agent_named", lambda name: name == "release-bot"
+        )
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
     async def test_listed_template_creates_without_warning(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
             status, _ = await _post(
-                {"name": "crew-a", "kiro_agent": "reviewer"},
+                {"name": "crew-a", "kiro_agent": "kirocrew"},
                 cfg,
                 installed=("kirocrew", "reviewer"),
             )
@@ -251,17 +285,76 @@ class TestMissingTemplateWarnsButCreates:
     async def test_unknown_template_warns_and_still_creates(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
-            status, _ = await _post(
-                {"name": "crew-c", "kiro_agent": "not-installed"},
-                cfg,
-                installed=("kirocrew",),
-            )
+            status, _ = await _post({"name": "crew-c", "kiro_agent": "kirocrew"}, cfg, installed=())
         # Accepted (an edition may resolve it even when unlisted)…
         assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "not-installed"
+        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "kirocrew"
         # …but the substitution risk is on the record rather than silent.
         assert "not in the installed agent listing" in caplog.text
-        assert "not-installed" in caplog.text
+        assert "'kirocrew'" in caplog.text
+
+
+class TestStartTemplateIsTheWorker:
+    """A crewmate starts as the built-in worker; another template is refused.
+
+    ``mate_config.adopt_own_file`` writes the source-free worker file, so a
+    template's ``excludedTools``, ``disabledTools`` and deny rules would be
+    dropped without a trace. The refusal lands before anything is written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_another_template_is_refused_and_nothing_is_written(self):
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "crew-e", "kiro_agent": "locked-down"},
+            cfg,
+            installed=("kirocrew", "locked-down"),
+        )
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
+        assert "built-in worker" in data["error"]
+        assert cfg.agents == {}
+        assert cfg.saved == []
+        assert cfg.written == {}
+
+    @pytest.mark.asyncio
+    async def test_the_key_is_what_the_template_is_judged_against(self):
+        """A free-form name keys an id; the template is compared with that id.
+
+        "Release Bot" keys ``release-bot``, so naming that template is the
+        crew's own key: the start-template rule lets it through to the
+        same-name rule, which answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "Release Bot", "kiro_agent": "release-bot"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_template_named_after_the_crew_is_not_this_refusal(self):
+        """The Templates tab's Enroll sends ``{name: X, kiro_agent: X}``.
+
+        The start-template rule admits it; the same-name rule answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "reviewer", "kiro_agent": "reviewer"},
+            cfg,
+            installed=("kirocrew", "reviewer"),
+        )
+        assert data["code"] != "mate_template_unsupported"
+        assert (status, data["code"]) == (409, "template_name_in_use")
+
+
+def test_start_template_refusal_admits_the_worker_and_the_crews_own_key():
+    from kiro_crew.mate_config import MATE_TEMPLATE_UNSUPPORTED, start_template_refusal
+
+    assert start_template_refusal("kirocrew", "crew-e") == ""
+    assert start_template_refusal("crew-e", "crew-e") == ""
+    assert start_template_refusal("locked-down", "crew-e") == MATE_TEMPLATE_UNSUPPORTED
 
 
 class TestFirstGreetingOwed:
@@ -351,3 +444,72 @@ class TestApprovalModeOnCreate:
         assert data["code"] == "invalid_approval_mode"
         assert cfg.saved == []
         assert cfg.agents == {}
+
+
+class TestImportedCrewmateCreate:
+    """The ``crewmate.import`` card's create step, run through the real route.
+
+    rfc-crewmate-share.md §5.4 step 1 and step 5: the press creates exactly one
+    member, pinned to ``normal`` in the one write (never ``trust`` for any
+    moment), with a fresh identity and the provenance stamp on its crew record.
+    """
+
+    @staticmethod
+    def _import_create_body():
+        from kiro_crew import change_card_catalog as catalog
+        from kiro_crew.crewmate_bundle import crewmate_import_params
+
+        bundle = {
+            "crewmate": {
+                "format": "kirocrew.crewmate",
+                "formatVersion": 1,
+                "name": "Release Captain",
+                "sender": {"label": "Ana"},
+            },
+            "agent": {},
+        }
+        params = crewmate_import_params(bundle)
+        preview = catalog.build_preview("crewmate.import", params, {"exists": False}, {})
+        return preview["apply"][0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_card_create_lands_one_member_in_normal_with_its_stamp(self):
+        cfg = _fake_config()
+        status, data = await _post(self._import_create_body(), cfg, installed=("kirocrew",))
+        assert status == 200, data
+        assert cfg.saved == [True]
+        # Exactly one record: the crew key is the slug of the name.
+        (record,) = cfg.written["doc"]["agents"].values()
+        assert record["approval_mode"] == "normal"
+        assert record["member_id"] and data["member_id"] == record["member_id"]
+        # Its own workspace and memory store, minted by the create.
+        assert record["workspace"] and record["memory_store"]
+        stamp = record["imported"]
+        assert {k: stamp[k] for k in ("format_version", "sender_label", "sha256")} == {
+            "format_version": 1,
+            "sender_label": "Ana",
+            "sha256": "",
+        }
+        assert stamp["imported_at"].endswith("Z")
+        assert not {"allowedTools", "autoApprove"} & set(record)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "x",
+            {"format_version": 1},
+            {"format_version": "1", "sender_label": "", "sha256": ""},
+            {"format_version": 1, "sender_label": "", "sha256": "nothex"},
+            {"format_version": 1, "sender_label": "a" * 65, "sha256": ""},
+            # The instant is the gateway's, never the caller's.
+            {"format_version": 1, "sender_label": "", "sha256": "", "imported_at": "x"},
+        ],
+    )
+    async def test_a_malformed_stamp_is_refused_before_any_write(self, bad):
+        cfg = _fake_config()
+        body = {"name": "scout", "kiro_agent": "kirocrew", "imported": bad}
+        status, data = await _post(body, cfg)
+        assert status == 400
+        assert data["code"] == "invalid_imported"
+        assert cfg.saved == [] and cfg.agents == {}

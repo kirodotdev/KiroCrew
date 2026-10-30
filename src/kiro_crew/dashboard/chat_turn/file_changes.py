@@ -3,6 +3,7 @@ the end-of-turn file-change flush."""
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hashlib
 import os
@@ -10,20 +11,24 @@ import stat as stat_module
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+from kiro_crew.dashboard.state import row_mid
+from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.security import redact
+from kiro_crew.wakatime.heartbeats import line_changes_from_file_changes
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _MAX_SLOT_MESSAGES,
         _MAX_TURN_FULL_CONTENT_CHARS,
         _ChatSlot,
-        line_changes_from_file_changes,
         logger,
-        redact,
-        row_mid,
         safe_read_file,
-        safe_read_file_bytes_nolink,
         validate_file_path,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import note_regenerate_reply
 
 
 class _Snapshot(NamedTuple):
@@ -401,6 +406,78 @@ def _resolve_pending_str_replace(pending: dict[str, Any], after: str) -> _Snapsh
     return None
 
 
+def _content_block_path(diff_path: str) -> str:
+    """The local path a diff content block names, or ``""``.
+
+    kiro-cli's v3 engine names the file as a ``file://`` URI; older shapes use a
+    plain path. A URI for another host, or any other scheme, names no local file.
+    """
+    if not diff_path.startswith("file:"):
+        return diff_path
+    parsed = urlparse(diff_path)
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return ""
+    return url2pathname(parsed.path)
+
+
+def _lf_newlines(text: str) -> str:
+    """Fold CRLF and bare CR to LF, as the disk reads of a snapshot do."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _same_spelling(path: str) -> str:
+    """One spelling of a local path for comparing a call's path with its block's."""
+    return os.path.normpath(os.path.expanduser(path))
+
+
+def _snapshot_commandless_write(
+    raw_params: dict, diff_old_text: str | None, diff_path: str
+) -> dict | None:
+    """Snapshot a kiro-cli v3 write, whose arguments carry no ``command``.
+
+    The v3 write tools send ``fs_write`` / ``fs_append`` as ``{path, text}``
+    and ``str_replace`` as ``{path, oldStr, newStr, replace_all}``. The
+    arguments alone cannot tell a whole-file write from an append, and the
+    first frame lands while the write may already be running, so a disk read
+    here could record the file after the write. The before is taken only from
+    the frame whose diff content block names this same file: its ``oldText``
+    is the whole file as the call found it, for all three tools. Every other
+    frame of the call (no block, or the empty placeholder block a replace
+    sends in between) returns None, and ``_record_turn_snapshot`` keeps the
+    first before per file, so a later write in the turn cannot replace it.
+
+    Any other argument shape (another harness's write tool) returns None, as
+    it did before this shape was read.
+    """
+    path = raw_params.get("path")
+    if not isinstance(path, str) or not path or len(path) > _MAX_SNAPSHOT_PATH_CHARS:
+        return None
+    if not set(raw_params) <= _COMMANDLESS_WRITE_KEYS:
+        return None
+    if not isinstance(diff_old_text, str) or not isinstance(diff_path, str):
+        return None
+    block_path = _content_block_path(diff_path)
+    if not block_path or _same_spelling(block_path) != _same_spelling(path):
+        return None
+    canonical = validate_file_path(path)
+    if canonical is None:
+        return None
+    # The turn-end after is read from disk with newlines folded to LF
+    # (``_safe_read_file_text``), so the before is folded the same way: a CRLF
+    # file would otherwise count every line as changed.
+    old_text = _lf_newlines(diff_old_text)
+    before = _truncate_snapshot(old_text)
+    snapshot: dict[str, Any] = {
+        "path": path,
+        "canonical_path": canonical,
+        "content": before.content,
+        "truncated": before.truncated,
+    }
+    if len(old_text) <= _MAX_RECONSTRUCT_BYTES:
+        snapshot["full_content"] = old_text
+    return snapshot
+
+
 def _snapshot_write_target(
     raw_params: dict | None,
     diff_old_text: str | None = None,
@@ -445,6 +522,8 @@ def _snapshot_write_target(
     """
     if not isinstance(raw_params, dict):
         return None
+    if "command" not in raw_params:
+        return _snapshot_commandless_write(raw_params, diff_old_text, diff_path)
     cmd = raw_params.get("command", "")
     path = raw_params.get("path", "") or diff_path
     if (
@@ -508,6 +587,9 @@ def _snapshot_write_target(
 
     # Prefer authoritative content-block before-text when available.
     if diff_old_text is not None:
+        # Folded to LF like every disk read here, so a CRLF file's card does
+        # not count its unchanged lines as changed.
+        diff_old_text = _lf_newlines(diff_old_text)
         # diff_old_text == "" means "file was created" (no previous content).
         # Apply truncation so content-block-sourced text obeys the same cap as
         # disk-sourced text (security + message-meta size invariant).
@@ -945,6 +1027,9 @@ def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
         if len(mids) >= _MAX_SLOT_MESSAGES:
             del mids[0]
         mids.append(mid)
+    # A Regenerate turn replaces the previous reply with its first reply row at
+    # the turn's end; this is how that step learns which row it is.
+    note_regenerate_reply(slot, row)
 
 
 # ── File-chip snapshots ────────────────────────────────────────────────────
@@ -954,6 +1039,11 @@ def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
 # renders these as file-change chips with click-through to a Monaco diff.
 
 _WRITE_COMMANDS = frozenset({"create", "strReplace", "insert"})
+
+# The argument keys of kiro-cli v3's write tools, which name no ``command``:
+# ``fs_write`` / ``fs_append`` send ``{path, text}`` and ``str_replace`` sends
+# ``{path, oldStr, newStr, replace_all}`` (see _snapshot_commandless_write).
+_COMMANDLESS_WRITE_KEYS = frozenset({"path", "text", "oldStr", "newStr", "replace_all"})
 
 
 _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size
@@ -1015,6 +1105,13 @@ _MAX_SNAPSHOT_PATH_CHARS = 32_767
 # accumulator holds every distinct path once, so a repeated write adds no row.
 _MAX_TURN_SNAPSHOT_ENTRIES = 200
 
+#: Seconds the turn waits for its turn-end file-change read before it goes on
+#: without the chips. The same bound a close gives the same read
+#: (``chat_handlers._FILE_CHANGES_DRAIN_SECS``) and the loop watchdog gave it when
+#: it ran ON the event loop: a read this long is a stuck filesystem or resolver,
+#: and Stop must still release the session permit and hand off the queue.
+_FILE_CHANGES_FLUSH_SECS = 25.0
+
 
 # Bytes the snapshot read pulls before ``_truncate_snapshot`` caps it. A UTF-8
 # code point is at most four bytes, so ``_MAX_SNAPSHOT`` characters never span
@@ -1071,65 +1168,29 @@ def _turn_after_reads(
     return reads
 
 
-def _flush_file_changes(
-    slot: "_ChatSlot",
-    turn_boundary: int = 0,
-    turn_start_mid: str | None = None,
+def _prepare_file_changes(
+    fc_changes: list[dict[str, Any]],
     turn_had_shell: bool = False,
     after_reads: dict[str, tuple[_Snapshot | None, tuple[str, str] | None]] | None = None,
-) -> None:
-    """Attach accumulated file changes to this turn's last assistant message.
+) -> tuple[dict[str, Any], int, int]:
+    """Build this turn's ``file_changes`` meta from its accumulated snapshots.
 
-    ``after_reads`` is ``_turn_after_reads`` run off the event loop by the
-    caller: each path's capped after and, for a change past a large file's
-    per-file cut, its windowed before/after, which replace the top cuts here.
-    Without it each after is the ordinary capped read, inline, and such a change
-    keeps the top cut.
-
-    Dedups by canonical path (first before, last after), reads the AFTER content
-    from disk, and settles a ``pending_str_replace`` snapshot against that
-    turn-end after-content by content ALONE — only the pre-write hypothesis is
-    resolvable, so a settled before is always content captured from disk at
-    snapshot time, never a value synthesised from the turn-end state. A pending
-    snapshot is settled only when the turn-end state is attributable to a single
-    tracked write: ``_record_turn_snapshot`` drops the pending hypothesis when a
-    second (or unknown) WRITE TOOL touches the same canonical path, and
-    ``turn_had_shell`` drops ALL pending resolution for the turn when a shell
-    tool ran — a shell command is opaque, can write any path, and never passes
-    through ``_record_turn_snapshot``, so a post-write snapshot followed by a
-    shell edit could otherwise leave the resolver settling an intermediate state
-    as the before. Both cases fall back to the fragment rather than a wrong
-    before (see ``_resolve_pending_str_replace`` for the resolution rule and
-    ``_record_turn_snapshot`` for the write-tool gate). Writes the list
-    to message meta as ``file_changes``. Files the turn budget dropped are
-    counted in ``file_changes_omitted_files``, a plain int present only when it
-    is non-zero. Called on every exit path (success / cancel / error) so users
-    always see what was modified, even on aborted turns.
-
-    Only rows appended by this turn are scanned (see ``_turn_rows`` for the
-    two ways the turn's start is identified), so a turn that changed files but
-    ended without an assistant row gets its own synthetic anchor instead of
-    writing its chips onto the previous turn's answer. Within those rows the
-    anchor must also be a reply THIS runner appended (``slot._turn_reply_mids``,
-    filled by ``_note_reply_row``): the live window is shared, and an assistant
-    row another writer injected mid-turn (a workflow or sub-agent completion
-    envelope) is not this turn's reply even when it is the newest assistant row
-    in the turn. A slot that tracks no identities (a test double without the
-    list) keeps the position rule.
+    The half of the flush that touches disk and scans text: dedup by canonical
+    path, read every after-content, settle pending strReplace befores, redact,
+    and spend the turn budget. It reads only the list it is given and no slot
+    state, so ``_flush_file_changes_off_loop`` runs it on a worker thread: the
+    after-read reaches ``validate_file_path``'s subprocess-pool round trip and
+    ``redact`` scans up to the whole turn budget, and either on the event loop
+    is a stall every other session's turn pays for -- seconds long when a
+    CPU-bound thread holds the GIL. Returns ``(meta, demoted, dropped)``; the
+    counts are for the attach log, the meta is what ``_attach_file_changes``
+    writes. The rules for each step are documented on ``_flush_file_changes``.
     """
-    # Defensive: only proceed when a real, non-empty list is present. Tests
-    # using MagicMock slots leave _file_changes as a MagicMock attribute
-    # (always truthy), so an isinstance check is needed in addition to the
-    # length check to avoid a synthetic message getting fabricated when no
-    # writes actually happened.
-    fc_changes = getattr(slot, "_file_changes", None)
-    if not isinstance(fc_changes, list) or not fc_changes:
-        return
     # Dedup: keep first before for each path (truest "before") since a file
     # may be modified multiple times in one turn.
     deduped: dict[str, dict[str, Any]] = {}
     pending_by_path: dict[str, dict[str, Any]] = {}
-    for write_order, fc in enumerate(slot._file_changes):
+    for write_order, fc in enumerate(fc_changes):
         p = fc["path"]
         # ``/tmp/f`` and ``/tmp/./f`` share one bucket: the key is the canonical
         # path ``_snapshot_write_target`` computes off the event loop at snapshot
@@ -1246,6 +1307,25 @@ def _flush_file_changes(
     file_meta: dict[str, Any] = {"file_changes": fc_list}
     if _dropped:
         file_meta["file_changes_omitted_files"] = _dropped
+    return file_meta, _demoted, _dropped
+
+
+def _attach_file_changes(
+    slot: "_ChatSlot",
+    file_meta: dict[str, Any],
+    demoted: int,
+    dropped: int,
+    turn_boundary: int = 0,
+    turn_start_mid: str | None = None,
+) -> None:
+    """Write prepared ``file_changes`` meta onto this turn's reply row.
+
+    The on-loop half of the flush: anchors the meta (see ``_flush_file_changes``
+    for the anchor rule), marks the slot dirty and clears the accumulator. It
+    performs no IO, so a turn exit that awaited the prepare half resumes here
+    and finishes in one loop step, which keeps "attach, then persist" the
+    order the durable save relies on.
+    """
     # Attach to the most recent reply row this runner appended this turn; if
     # none exists (turn aborted before any text, or every assistant row in the
     # turn was injected by another writer), create a synthetic message so the
@@ -1260,7 +1340,7 @@ def _flush_file_changes(
         meta.update(file_meta)
         # The count describes the file_changes written beside it, so a
         # flush that drops nothing leaves no earlier count behind.
-        if not _dropped:
+        if not dropped:
             meta.pop("file_changes_omitted_files", None)
         break
     else:
@@ -1290,10 +1370,10 @@ def _flush_file_changes(
     logger.info(
         "Attached %d file_changes to slot %s "
         "(%d path-only, %d dropped, over the %d-char turn budget)",
-        len(fc_list),
+        len(file_meta["file_changes"]),
         slot.key,
-        _demoted,
-        _dropped,
+        demoted,
+        dropped,
         _MAX_TURN_SNAPSHOT_CHARS,
     )
     # Honour the in-place-mutation contract (see _mark_permission_resolved in
@@ -1310,3 +1390,188 @@ def _flush_file_changes(
     slot._file_changes = []
     if isinstance(reply_mids, list):
         reply_mids.clear()
+
+
+def _flush_file_changes(
+    slot: "_ChatSlot",
+    turn_boundary: int = 0,
+    turn_start_mid: str | None = None,
+    turn_had_shell: bool = False,
+    after_reads: dict[str, tuple[_Snapshot | None, tuple[str, str] | None]] | None = None,
+) -> None:
+    """Attach accumulated file changes to this turn's last assistant message.
+
+    ``after_reads`` is ``_turn_after_reads`` run off the event loop by the
+    caller: each path's capped after and, for a change past a large file's
+    per-file cut, its windowed before/after, which replace the top cuts here.
+    Without it each after is the ordinary capped read, inline, and such a change
+    keeps the top cut.
+
+    Dedups by canonical path (first before, last after), reads the AFTER content
+    from disk, and settles a ``pending_str_replace`` snapshot against that
+    turn-end after-content by content ALONE — only the pre-write hypothesis is
+    resolvable, so a settled before is always content captured from disk at
+    snapshot time, never a value synthesised from the turn-end state. A pending
+    snapshot is settled only when the turn-end state is attributable to a single
+    tracked write: ``_record_turn_snapshot`` drops the pending hypothesis when a
+    second (or unknown) WRITE TOOL touches the same canonical path, and
+    ``turn_had_shell`` drops ALL pending resolution for the turn when a shell
+    tool ran — a shell command is opaque, can write any path, and never passes
+    through ``_record_turn_snapshot``, so a post-write snapshot followed by a
+    shell edit could otherwise leave the resolver settling an intermediate state
+    as the before. Both cases fall back to the fragment rather than a wrong
+    before (see ``_resolve_pending_str_replace`` for the resolution rule and
+    ``_record_turn_snapshot`` for the write-tool gate). Writes the list
+    to message meta as ``file_changes``. Files the turn budget dropped are
+    counted in ``file_changes_omitted_files``, a plain int present only when it
+    is non-zero. Called on every exit path (success / cancel / error) so users
+    always see what was modified, even on aborted turns.
+
+    This is the in-process composition of the two halves,
+    ``_prepare_file_changes`` (disk reads, resolution, redaction, budget) and
+    ``_attach_file_changes`` (the window write); the turn itself awaits
+    ``_flush_file_changes_off_loop``, which runs ``_turn_after_reads`` and the
+    first half on a worker thread. Both compositions attach exactly what the
+    other would for the same ``after_reads``.
+
+    Only rows appended by this turn are scanned (see ``_turn_rows`` for the
+    two ways the turn's start is identified), so a turn that changed files but
+    ended without an assistant row gets its own synthetic anchor instead of
+    writing its chips onto the previous turn's answer. Within those rows the
+    anchor must also be a reply THIS runner appended (``slot._turn_reply_mids``,
+    filled by ``_note_reply_row``): the live window is shared, and an assistant
+    row another writer injected mid-turn (a workflow or sub-agent completion
+    envelope) is not this turn's reply even when it is the newest assistant row
+    in the turn. A slot that tracks no identities (a test double without the
+    list) keeps the position rule.
+    """
+    changes = _pending_file_changes(slot)
+    if changes is None:
+        return
+    file_meta, demoted, dropped = _prepare_file_changes(changes, turn_had_shell, after_reads)
+    _attach_file_changes(slot, file_meta, demoted, dropped, turn_boundary, turn_start_mid)
+
+
+def _pending_file_changes(slot: "_ChatSlot") -> list[dict[str, Any]] | None:
+    """A copy of the turn's accumulated snapshots, or None when there is nothing to flush.
+
+    The one gate both flush compositions pass. Only a real, non-empty list
+    counts: tests using MagicMock slots leave ``_file_changes`` as a MagicMock
+    attribute (always truthy), so the isinstance check is needed beside the
+    length check, or a synthetic message would be fabricated when no write
+    happened. The copy is what a worker thread may read while the turn goes on.
+    """
+    fc_changes = getattr(slot, "_file_changes", None)
+    if not isinstance(fc_changes, list) or not fc_changes:
+        return None
+    return list(fc_changes)
+
+
+def _read_and_prepare_file_changes(
+    changes: list[dict[str, Any]], turn_had_shell: bool
+) -> tuple[dict[str, Any], int, int]:
+    """The worker-thread body of ``_flush_file_changes_off_loop``.
+
+    ``_turn_after_reads`` (whole reads, windows) and ``_prepare_file_changes``
+    (resolution, redaction, budget) in one thread hop, over the copy the loop
+    handed over.
+    """
+    after_reads = _turn_after_reads(changes, turn_had_shell)
+    return _prepare_file_changes(changes, turn_had_shell, after_reads)
+
+
+async def _flush_file_changes_off_loop(
+    slot: "_ChatSlot",
+    turn_boundary: int = 0,
+    turn_start_mid: str | None = None,
+    turn_had_shell: bool = False,
+) -> None:
+    """``_flush_file_changes`` with its disk reads and redaction off the event loop.
+
+    Runs ``_read_and_prepare_file_changes`` in a worker thread over a copy of
+    the accumulator, then ``_attach_file_changes`` on the loop, as ONE shielded
+    task. The turn awaits this on every exit path, so
+    the row carries its chips before the durable save that follows on the
+    landed path, and before the ``finally`` continues on a cancel or error --
+    the same order the synchronous composition gave.
+
+    A cancelled turn must still flush. The ``finally`` that calls this may be
+    unwinding a cancellation already, and another one (a Stop, the turn
+    ceiling, a tab close, a shutdown) can land at this await. The worker cannot
+    be cancelled, so the wait goes on (up to the bound below), the attach runs
+    with the finished result, and only then is the cancellation re-raised: deferred,
+    never swallowed. The landed path lets it propagate into the turn's own
+    ``CancelledError`` arm; the ``finally`` catches it and re-raises after the
+    session permit release and the queue hand-off, since a raise inside the
+    ``finally`` would pass every ``except Exception`` there.
+
+    While it runs, the task is published as ``slot._file_changes_flush`` so a
+    close that cancelled this turn and gave up waiting for it can still drain the
+    flush before the archival save: without that the attach lands after the
+    archive, on a slot that is out of ``state._slots``, where no later save
+    reaches disk and the chips are lost. An empty accumulator
+    (``_pending_file_changes``) publishes nothing and schedules no thread.
+
+    The wait is bounded by ``_FILE_CHANGES_FLUSH_SECS``, counted across any
+    cancellation it defers. A read still running past it is a stuck filesystem
+    or resolver: the chips are dropped KNOWINGLY, with a warning naming the slot,
+    the worker's late result is discarded rather than attached to a turn that
+    has moved on, and the turn's tail runs -- otherwise Stop could not end the
+    turn, since the permit release and queue hand-off wait behind this await.
+    """
+    changes = _pending_file_changes(slot)
+    if changes is None:
+        return
+    abandoned = False
+
+    async def _prepare_and_attach() -> None:
+        file_meta, demoted, dropped = await asyncio.to_thread(
+            _read_and_prepare_file_changes, changes, turn_had_shell
+        )
+        if abandoned:
+            return
+        _attach_file_changes(slot, file_meta, demoted, dropped, turn_boundary, turn_start_mid)
+
+    flush = asyncio.ensure_future(_prepare_and_attach())
+    slot._file_changes_flush = flush
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FILE_CHANGES_FLUSH_SECS
+    cancelled: asyncio.CancelledError | None = None
+    try:
+        while not flush.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                abandoned = True
+                # Drop the chips exactly once, as the attach would: a full
+                # accumulator would send the turn's next flush (the finally
+                # after the landed path, or a queued successor's) back to the
+                # same stuck paths, and could attach these chips to a later reply.
+                slot._file_changes = []
+                reply_mids = getattr(slot, "_turn_reply_mids", None)
+                if isinstance(reply_mids, list):
+                    reply_mids.clear()
+                logger.warning(
+                    "Slot %s: the turn-end file-change read was still running after "
+                    "%.0fs; ending the turn without its file-change chips",
+                    getattr(slot, "key", "?"),
+                    _FILE_CHANGES_FLUSH_SECS,
+                )
+                break
+            try:
+                await asyncio.wait_for(asyncio.shield(flush), timeout=remaining)
+            except asyncio.CancelledError as exc:
+                if flush.cancelled():
+                    raise
+                # OUR await was cancelled, not the flush: defer it, keep waiting.
+                cancelled = exc
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                break  # the flush's own failure, re-raised below
+        if flush.done() and not flush.cancelled():
+            flush.result()
+    finally:
+        if getattr(slot, "_file_changes_flush", None) is flush:
+            slot._file_changes_flush = None
+    if cancelled is not None:
+        raise cancelled

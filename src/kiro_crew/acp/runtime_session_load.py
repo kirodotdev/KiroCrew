@@ -6,11 +6,14 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``.
+Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_inits_in_flight``,
+``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_wire_mode_id``, ``_work_dir``.
+``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_remote_session_servers``, ``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
-from kiro_crew.acp.kas_agents import hoist_managed_servers
+from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
     required_managed_servers,
@@ -39,8 +42,16 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
-from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD, JsonRpcMessage
+from kiro_crew.acp.session_mcp import (
+    session_mcp_server_is_disabled,
+    settings_server_names,
+)
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    METHOD_SESSION_LOAD,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -62,6 +73,7 @@ async def load_session(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    require_replay: bool = False,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -88,12 +100,25 @@ async def load_session(
     does: session/load re-initializes this session's MCP servers, so a resume
     that dropped it would take the channel identity away from a conversation
     that already had it.
+
+    ``require_replay`` makes the load fail when the engine replayed no earlier
+    turn before answering. KAS answers ``session/load`` for an id whose stored
+    record is gone by creating a new, empty record under that id, and the
+    response looks like a real resume (it carries ``modes``). Taken as one, the
+    conversation is lost while the turn is told its history was restored. The
+    replayed frames are the evidence that history came back: KAS marks each
+    ``_meta.kiro.replay: true``. A load with none is evicted (the stored record
+    is kept) and raised, so the caller starts a fresh session and replays Kiro
+    Crew's own transcript.
     """
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
     if not self._can_load_session:
         raise AcpRuntimeError("Backend does not advertise session/load support")
     agent = await self._source_agent(agent)
+    # The effective agent, checked before anything is acquired, as create_session()
+    # does: a resume that names no agent inherits the spawn agent.
+    await self._refuse_over_ceiling_start(agent or self._agent)
 
     # Re-declare the pooled broker stubs so a resumed session keeps talking
     # to the broker — same injection as create_session() and the AcpClient
@@ -211,8 +236,9 @@ async def load_session(
     # rejected array does not just fail to add tools -- it takes them away from
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
-    wire_servers = self._harness.session_mcp_servers(
-        mcp_servers, agent_capabilities=self._agent_capabilities
+    await self._write_remote_token()
+    wire_servers = self._remote_session_servers(
+        self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
     load_params: dict[str, Any] = {
         "sessionId": resume_sid,
@@ -251,6 +277,7 @@ async def load_session(
     # compares against it rather than re-reading the file.
     kas_agents = None
     payload_snapshot = None
+    request_identity = ""
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -261,24 +288,55 @@ async def load_session(
         )
         kas_agents = kas_extras.custom_agents
         payload_snapshot = kas_extras.derived_spec_snapshot
+        # Mirrors create_session: the vault identity the request goes out under,
+        # for the KAS catalog recorder (a load echoes the select too).
+        request_identity = kas_extras.vault_identity
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
-        # on load exactly as they did on new.
-        kas_agents, mcp_servers = hoist_managed_servers(
-            kas_agents, active_agent, mcp_servers, session_token=stub_token
+        # on load exactly as they did on new.  ``include_user_servers=True``
+        # additionally hoists user-declared (non-managed) servers: on session/load
+        # kiro-cli re-initialises servers from the session-level array only --
+        # agent-block declarations are re-registered but not re-launched -- so spec
+        # edits adding new MCP servers would be silently ignored without this.
+        # session/new (create_session) is unchanged: kiro-cli reads agent-block
+        # servers on its own there, and hoist_servers_for_session's default
+        # (include_user_servers=False) does not widen that path.
+        #
+        # A user-declared name that a settings file kiro-cli reads (the global
+        # ~/.kiro/settings/mcp.json or the checkout's .kiro/settings/mcp.json)
+        # also declares is NOT hoisted: left in the agent block, the resumed
+        # session resolves it by kiro-cli's own precedence, the same way
+        # session/new did. The checkout is the session's own cwd, the same one
+        # native_settings_sources reads beside: kiro-cli reads the workspace
+        # settings file from cwd whatever level its agent spec resolves at.
+        # Read off the loop thread like the other settings reads here.
+        reserved = await asyncio.to_thread(settings_server_names, session_work_dir)
+        kas_agents, mcp_servers = hoist_servers_for_session(
+            kas_agents,
+            active_agent,
+            mcp_servers,
+            session_token=stub_token,
+            include_user_servers=True,
+            reserved_names=reserved,
+            managed_entries=kas_extras.managed_entries,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.
         # Setting only load_params would leave both describing the pre-hoist roster
         # -- naming servers this resume did not send.
-        wire_servers = self._harness.session_mcp_servers(
-            mcp_servers, agent_capabilities=self._agent_capabilities
+        wire_servers = self._remote_session_servers(
+            self._harness.session_mcp_servers(
+                mcp_servers, agent_capabilities=self._agent_capabilities
+            )
         )
         load_params["mcpServers"] = wire_servers
+        kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
         attach_kas_custom_agents(load_params, kas_agents)
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1
     loaded_session_id = ""
+    if require_replay:
+        self._load_replay_frames[resume_sid] = 0
     try:
         # session/load is gated by the SAME MCP (re-)initialization as
         # session/new — kiro-cli re-initializes the session's servers on
@@ -303,6 +361,17 @@ async def load_session(
         raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
     finally:
         buffered_init = self._finish_session_init(loaded_session_id)
+        replayed_turn_frames = self._load_replay_frames.pop(resume_sid, 0)
+
+    if require_replay and not replayed_turn_frames:
+        # Free the resident session but keep its stored record: on KAS the
+        # teardown verb deletes the record, and a refusal that was wrong would
+        # then lose a real conversation. The caller starts a fresh session.
+        await self.evict_session(resume_sid)
+        raise AcpRuntimeError(
+            f"session/load of {resume_sid} replayed no earlier turn: "
+            "the stored conversation was not restored"
+        )
 
     # Register the queue AFTER _send_and_await returns. During session/load
     # kiro-cli replays the full prior transcript on stdout; without a
@@ -346,7 +415,14 @@ async def load_session(
     self._harness.record_session_projection(handle, kas_agents, active_agent)
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
+    handle.request_vault_identity = request_identity
     handle.store_session_config(resp)
+    # Feed and persist the advertised-model cache from the resumed session's
+    # capture, same as the create path, and gated the same way so the kiro
+    # path gains no call (harness-parity H13).
+    if self.acp_backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        handle._feed_advertised_model_cache()
+        await handle._persist_advertised_models_if_changed()
     # session/load echoes ``currentModelId`` exactly like session/new, and a
     # session persisted before the account's served list changed can come
     # back on a default the account does not serve — so the resumed session gets

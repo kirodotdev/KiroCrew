@@ -459,7 +459,7 @@ class TestDeliverCrossSurfaceUserMessage:
         # Truncating first can cut a credential at the 500-char boundary into
         # fragments no redaction regex matches, so the raw remainder would leak
         # into the mirrored echo (the slice-before-redact class).
-        assert sent == "💬 " + redact_via_context(raw)[:500]
+        assert sent == "💬 " + redact_via_context(raw)[:499] + "…"
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):

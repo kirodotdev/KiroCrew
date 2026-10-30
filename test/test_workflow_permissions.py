@@ -250,6 +250,16 @@ class TestReusableWorkflowPermissions:
         assert _workflow_permissions("build-wheel.yml") == {"contents": "read"}
         assert _workflow_permissions("build-desktop.yml") == {"contents": "read"}
 
+    def test_ffmpeg_decoder_only_publish_can_write(self) -> None:
+        """The decoder build legs stay read-only; only `publish` writes, and
+        only release contents -- never OIDC."""
+        name = "build-ffmpeg-decoder.yml"
+        lines = _lines(name)
+        assert _workflow_permissions(name) == {"contents": "read"}
+        assert _permission_block(lines, "  build:") is None
+        assert _permission_block(lines, "  verify-windows:") is None
+        assert _permission_block(lines, "  publish:") == {"contents": "write"}
+
     def test_build_desktop_has_no_windows_leg(self) -> None:
         """The credential-free build workflow must not build Windows.
 
@@ -375,11 +385,19 @@ class TestAiReviewOverridePermissions:
     def test_override_handler_has_only_review_control_permissions(self) -> None:
         """The trusted comment handler can re-run reviews and update their
         checks/comments, but must never inherit model credentials or repository
-        contents write access."""
+        contents write access.
+
+        ``issues: read`` is the one read-only addition: class ``deferred`` reads
+        the follow-up issue it names with the workflow token, and a scope the
+        block does not list is ``none``, so without it every deferred override
+        fails closed. It is read, never write; ``test_workflow_token_scopes.py``
+        derives the scopes the handler's calls need and requires this block to
+        hold them."""
         assert _workflow_permissions("ai-review-human-override.yml") == {
             "actions": "write",
             "checks": "write",
             "contents": "read",
+            "issues": "read",
             "pull-requests": "write",
         }
 

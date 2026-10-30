@@ -57,8 +57,8 @@ _SIBLING_DIR_NAME = "KiroCrewWebsite"
 # sync run at ``runtime._RUN_DEADLINE_S`` (1800s), counted from fetch -- before
 # preflight, merge, pip and `npm ci` have even reached the build. A build budget
 # at or near 1800s therefore never expires there; the watchdog kills the tree
-# first and the warning below is never emitted, which is the silent-stale-bundle
-# outage this change exists to end. So the build claims at most HALF that
+# first and the warning below is never emitted, leaving a silently stale bundle.
+# So the build claims at most HALF that
 # deadline, leaving the other half for everything the sync does before it.
 #
 # Residual, deliberately not closed here: if the steps before the build consume
@@ -660,12 +660,28 @@ def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str
     path that could build a dirty tree.
     """
     static_dist = root / "src" / "kiro_crew" / "static" / "dist"
+    # `git status` EXECS what the checkout's own config names: `core.fsmonitor`
+    # and hooks (pinned off by `git_command_env`) and a repo-named
+    # `filter.<name>.clean` (no key to pin, so such a tree is not fingerprinted
+    # -- the rebuild direction, same as a dirty tree). Imported here so the
+    # out-of-process build entry does not pay for the update seam up front.
+    from kiro_crew.platform.update_governance import git_command_env, repo_exec_driver_reason
+
+    refused = repo_exec_driver_reason(str(root), git=git_bin)  # the git spawned below
+    if refused:
+        log(
+            f"  ⚠️  {refused}; not fingerprinting the bundle, so the next "
+            "backend-only sync will rebuild"
+        )
+        return
+    git_env = git_command_env()
     try:
         dirty = subprocess.run(  # nosec B603 - argv list, no shell
             [git_bin, "-C", str(root), "status", "--porcelain", "--", "website"],
             capture_output=True,
             timeout=30,
             check=False,
+            env=git_env,
         )
         if dirty.returncode != 0 or (dirty.stdout or b"").strip():
             # Non-zero: cannot establish cleanliness. Non-empty: website/ has
@@ -681,6 +697,7 @@ def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str
             capture_output=True,
             timeout=30,
             check=False,
+            env=git_env,
         )
         if proc.returncode != 0:
             log(

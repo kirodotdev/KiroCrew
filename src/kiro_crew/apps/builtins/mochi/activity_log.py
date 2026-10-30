@@ -41,6 +41,16 @@ YESTERDAY_LOG_FILE = "mochi-activity-yesterday.json"
 #: Hard cap on retained entries per day file. See the DEVIATION note above.
 _MAX_ENTRIES = 500
 
+#: Higher ceiling used only while a rollover archive keeps failing. The normal
+#: cap would evict unarchived prior-day entries one per failed write (silent data
+#: loss), so the failed-archive path holds entries up to THIS bound instead —
+#: finite, so a persistent archive failure cannot grow the file without limit
+#: (``a-bound-bounds-every-field-it-retains``). Larger than ``_MAX_ENTRIES`` so an
+#: ordinary transient failure window never reaches it; once an archive lands the
+#: normal cap applies again. At this extreme the oldest entries are dropped: the
+#: failure has long outlasted any transient, and bounding the file wins.
+_MAX_ENTRIES_UNARCHIVED = _MAX_ENTRIES * 4
+
 
 class ActivityEntry(TypedDict):
     ts: str
@@ -85,8 +95,8 @@ def _read_store(path: Path) -> ActivityStore:
     return {"date": str(raw.get("date") or _today()), "entries": entries}
 
 
-def _write_store(path: Path, store: ActivityStore) -> None:
-    """Atomically replace a day file.
+def _write_store(path: Path, store: ActivityStore) -> bool:
+    """Atomically replace a day file, returning whether the write landed.
 
     Same temp-then-rename shape as ``queue_file.write_queue_atomic``: a reader
     (the dashboard polls this) must never observe a half-written file.
@@ -95,6 +105,11 @@ def _write_store(path: Path, store: ActivityStore) -> None:
     pet did and when — and it was landing at the umask default because it writes
     its own temp file instead of using ``atomic_write`` (whose mkstemp is already
     owner-only).
+
+    Returns ``True`` on success and ``False`` when the write failed (swallowed so
+    a reader-facing write never crashes the caller). The rollover branch of
+    ``log_activity`` relies on this signal to avoid destroying the previous day
+    when its archive write did not land.
     """
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     try:
@@ -102,12 +117,14 @@ def _write_store(path: Path, store: ActivityStore) -> None:
         tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
         chmod_safe(tmp, 0o600)
         os.replace(tmp, path)
+        return True
     except OSError:
         logger.debug("[mochi] activity log write failed", exc_info=True)
         try:
             tmp.unlink()
         except OSError:
             pass
+        return False
 
 
 @contextmanager
@@ -157,17 +174,45 @@ def log_activity(data_dir: str | Path, kind: str, content: str) -> None:
     with activity_mutation(base):
         store = _read_store(path)
         today = _today()
+        archive_failed = False
         if store["date"] != today:
-            # Archive before clearing so the previous day survives one more day
-            # — the dashboard shows today + yesterday, the plan skill reads both.
-            if store["entries"]:
-                _write_store(base / YESTERDAY_LOG_FILE, store)
-            store = {"date": today, "entries": []}
+            # Partition retained entries by UTC day. Normally the whole store is
+            # the prior day, but a FAILED archive on an earlier rollover leaves a
+            # mixed store — today's entries appended onto a buffer still dated
+            # yesterday (see the no-reset path below). Only prior-day entries get
+            # archived; today's stay in the current file, so an entry recorded
+            # after a failed archive is not archived into yesterday (and expired a
+            # rollover early) once a later archive succeeds.
+            prior = [e for e in store["entries"] if str(e.get("ts") or "")[:10] != today]
+            todays = [e for e in store["entries"] if str(e.get("ts") or "")[:10] == today]
+            # Reset only once the archive has actually landed: _write_store
+            # swallows OSError, so a failed archive (full disk, read-only home,
+            # Windows sharing violation) would otherwise reset the buffer and let
+            # the write below overwrite mochi-activity.json — the sole remaining
+            # copy of the previous day — with prior-day data lost, silently. When
+            # the archive does not land we keep every entry in place under the old
+            # date and append today's onto them, so nothing is lost until an
+            # archive succeeds on a later write.
+            if not prior or _write_store(
+                base / YESTERDAY_LOG_FILE, {"date": store["date"], "entries": prior}
+            ):
+                store = {"date": today, "entries": todays}
+            else:
+                # Archive failed and the buffer still holds unarchived prior-day
+                # entries. Trimming at the normal cap here would silently evict
+                # exactly those unarchived entries (the whole day erodes one entry
+                # per failed write when the buffer is already at the cap), so the
+                # cap below rises to _MAX_ENTRIES_UNARCHIVED for this write. That
+                # bound is still finite — a persistent archive failure cannot grow
+                # the file without limit — and a later write whose archive lands
+                # re-applies the normal cap to what remains.
+                archive_failed = True
         store["entries"].append(
             {"ts": datetime.now(timezone.utc).isoformat(), "type": kind, "content": content}
         )
-        if len(store["entries"]) > _MAX_ENTRIES:
-            del store["entries"][: len(store["entries"]) - _MAX_ENTRIES]
+        cap = _MAX_ENTRIES_UNARCHIVED if archive_failed else _MAX_ENTRIES
+        if len(store["entries"]) > cap:
+            del store["entries"][: len(store["entries"]) - cap]
         _write_store(path, store)
 
 

@@ -158,6 +158,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_libproc_fd_bound _darwin_libproc_fd_handle _darwin_peer_is_loopback
         darwin_established_tcp_count _darwin_libc_sysctl _darwin_libc_sysctl_loaded
         _darwin_libc_sysctl_lock _darwin_sysctl_handle darwin_process_argv
+        _darwin_tb_frequency
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
         darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
@@ -192,13 +193,14 @@ _MOVED: dict[str, tuple[str, ...]] = {
         pinned_dir_flags PINNED_TREE_MAX_DEPTH PinnedDirectory pinned_directory
         _win_open_without_following open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
         _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
-        win_open_no_reparse open_create_no_reparse
+        win_open_no_reparse open_create_no_reparse names_a_verbatim_only_file
         """.split()),
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
         TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe chmod_safe
+        claude_code_managed_settings_dir
         _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES is_executable_file is_readonly_filesystem
@@ -262,7 +264,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _open_process_termination_handle open_process_termination_handle
         duplicate_asyncio_process_handle _windows_lineage_matches_lifetimes
         _windows_process_query_diagnostic _windows_descendant_failure_details
-        _windows_process_query_creation _windows_foreign_descendant_pids
+        _windows_process_query_creation _windows_foreign_descendant_pids _windows_is_older_orphan
         descendant_termination_handles close_process_handle descendant_termination_handles_async
         _JOB_OBJECT_LIMIT_ACTIVE_PROCESS _JOB_OBJECT_LIMIT_JOB_MEMORY
         _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS apply_job_limits _TH32CS_SNAPTHREAD
@@ -306,6 +308,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
+        POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE
+        _WIN_AC_ONLINE _linux_supply_attr _linux_power_source _SystemPowerStatus
+        _windows_ac_line_status _windows_power_source power_source
         """.split()),
 }
 

@@ -362,12 +362,13 @@ def test_core_counts_per_harness_are_pinned() -> None:
     assert counts == {
         "claude": 7,
         "codex": 6,
+        "copilot": 2,
         "deepseek": 5,
         "goose": 7,
         "kas": 7,
         "kiro": 6,
         "opencode": 6,
-        "pi": 5,
+        "pi": 6,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 
@@ -460,16 +461,17 @@ def test_every_known_harness_is_offered_and_carries_its_routing() -> None:
 def test_security_notes_are_stated_only_when_they_hold() -> None:
     """A caveat is raised or absent, never raised-and-negated.
 
-    Crew's seatbelt stands down for kiro-cli and for nothing else, so exactly one
-    card carries that note. A note on every card, negated, would be a line nobody
-    reads.
+    Crew's seatbelt stands down for the kiro-cli process and for nothing else:
+    kiro-cli itself, and KAS, whose default relay route is that process. So
+    exactly those two cards carry the note. A note on every card, negated, would
+    be a line nobody reads.
     """
     carrying = [
         card.backend
         for card in _every_card()
         if cards_mod.NOTE_CREW_SANDBOX_STANDS_DOWN in card.security_notes
     ]
-    assert carrying == [ACP_BACKEND_KIRO]
+    assert sorted(carrying) == sorted([ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
     kas = cards_mod.card_for(ACP_BACKEND_KAS)
     assert cards_mod.NOTE_HOST_CREDENTIAL_TO_CHILD in kas.security_notes
     assert cards_mod.NOTE_OWN_CREDENTIAL_STORE not in kas.operator_notes

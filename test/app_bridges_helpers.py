@@ -30,10 +30,8 @@ def _make_app_source(tmp_path, name="test-app", **extras):
         **extras,
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
-    # Create agent file
     (src / "agents").mkdir()
     (src / "agents" / "my-agent.json").write_text(json.dumps({"name": "my-agent", "model": "auto"}))
-    # Create skill directory
     (src / "skills" / "my-skill").mkdir(parents=True)
     (src / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\nDoes things.")
     return src

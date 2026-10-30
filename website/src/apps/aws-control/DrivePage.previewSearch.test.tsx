@@ -533,6 +533,58 @@ describe('DrivePage sections: preview, rename, search', () => {
     expect(notice).toHaveTextContent('photo.png')
   })
 
+  it('a delete that fails in the same tick as the swap to search is still reported page-level', async () => {
+    // The search request is sent from the same effect pass that closes the
+    // strip, so failing the delete from inside it lands the rejection before
+    // React has committed the closed strip. The routing must not depend on
+    // that commit having happened.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let failDelete: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.driveDelete).mockImplementation(
+      () => new Promise((_resolve, reject) => { failDelete = reject }),
+    )
+    vi.mocked(awsControlApi.driveSearch).mockImplementation(async () => {
+      failDelete(new Error('AccessDenied'))
+      return { results: [], capped: false, limit: 200 }
+    })
+    await renderDrive('drive')
+
+    await chooseFromMenu((await screen.findAllByTestId('drive-more'))[0], 'drive-delete')
+    fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'zzz' } })
+    await screen.findByTestId('drive-search-empty')
+    const notice = await screen.findByTestId('drive-page-error')
+    expect(notice).toHaveTextContent('photo.png')
+  })
+
+  it('a rename that fails in the same tick as the swap to search is still reported page-level', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let failRename: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.driveMove).mockImplementation(
+      () => new Promise((_resolve, reject) => { failRename = reject }),
+    )
+    vi.mocked(awsControlApi.driveSearch).mockImplementation(async () => {
+      failRename(new AwsControlError('destination_exists', 409))
+      return { results: [], capped: false, limit: 200 }
+    })
+    await renderDrive('drive')
+
+    await chooseFromMenu((await screen.findAllByTestId('drive-more'))[0], 'drive-rename')
+    fireEvent.change(await screen.findByTestId('drive-rename-input'), { target: { value: 'photo2.png' } })
+    fireEvent.click(screen.getByTestId('drive-rename-save'))
+    await waitFor(() => expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'zzz' } })
+    await screen.findByTestId('drive-search-empty')
+    const notice = await screen.findByTestId('drive-page-error')
+    expect(notice).toHaveTextContent('photo.png')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.rename_conflict'))
+  })
+
   it('a rename that fails after the view swapped to search is reported page-level', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)

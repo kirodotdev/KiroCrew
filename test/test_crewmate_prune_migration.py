@@ -37,6 +37,7 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_path
 from kiro_crew.memory_stores import provision_member_memory
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -925,19 +926,31 @@ class TestCandidates:
         assert "kirocrew-conductor" in KiroCrewConfig.load().agents
         assert mig.marker_path().exists()
 
-    def test_a_spec_that_became_runtime_owned_under_the_lock_refuses_the_delete(
-        self, old_style_config, bindings_dir, log
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            # The bound file is now one of ``OWNED_KIRO_AGENT_FILES``: discovery
+            # still derives ``builtin`` from it (the stem is not ``<pkg>-scout``),
+            # so only the ``kirocrew_owned`` re-check can refuse.
+            pytest.param(
+                "kirocrew-conductor.json",
+                id="test_a_spec_that_became_runtime_owned_under_the_lock_refuses_the_delete",
+            ),
+            pytest.param(
+                "kirocrew.json", id="test_a_spec_replaced_by_a_kirocrew_source_refuses_the_delete"
+            ),
+        ],
+    )
+    def test_a_spec_replaced_by_a_runtime_file_refuses_the_delete(
+        self, old_style_config, bindings_dir, log, filename
     ):
-        # The bound file is now one of ``OWNED_KIRO_AGENT_FILES``: discovery
-        # still derives ``builtin`` from it (the stem is not ``<pkg>-scout``),
-        # so only the ``kirocrew_owned`` re-check can refuse.
         specs = dict(old_style_config)
-        specs["scout"] = _spec("scout", filename="kirocrew-conductor.json")
+        specs["scout"] = _spec("scout", filename=filename)
         original = mig.remove_never_chatted
 
         def _replace_spec_then_remove(cfg_, cands, **kw):
-            (Path(kiro_agents_dir_path()) / "kirocrew-conductor.json").write_text(
-                json.dumps({"name": "scout", "description": "now the conductor"})
+            (Path(kiro_agents_dir_path()) / filename).write_text(
+                json.dumps({"name": "scout", "description": "runtime replacement"})
             )
             return original(cfg_, cands, **kw)
 
@@ -995,25 +1008,6 @@ class TestCandidates:
 
         with patch.object(mig, "remove_never_chatted", _make_spec_private_then_remove):
             report = _run(old_style_config, log)
-        assert report.refused == ["scout"]
-        assert "scout" in KiroCrewConfig.load().agents
-        assert not mig.marker_path().exists()
-
-    def test_a_spec_replaced_by_a_kirocrew_source_refuses_the_delete(
-        self, old_style_config, bindings_dir, log
-    ):
-        specs = dict(old_style_config)
-        specs["scout"] = _spec("scout", filename="kirocrew.json")
-        original = mig.remove_never_chatted
-
-        def _replace_spec_then_remove(cfg_, cands, **kw):
-            (Path(kiro_agents_dir_path()) / "kirocrew.json").write_text(
-                json.dumps({"name": "scout", "description": "runtime replacement"})
-            )
-            return original(cfg_, cands, **kw)
-
-        with patch.object(mig, "remove_never_chatted", _replace_spec_then_remove):
-            report = _run(specs, log)
         assert report.refused == ["scout"]
         assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
@@ -1505,7 +1499,7 @@ class TestAwaitSettled:
         assert state.crewmate_prune_abandon.is_set()
         assert not waiter.done()  # the writer does not start beside the pass
         state.crewmate_prune_settled.set()
-        await asyncio.wait_for(waiter, timeout=1)
+        await await_until(waiter, what="the prune gate's waiter finishing")
 
     @pytest.mark.asyncio
     async def test_deferred_transcript_removal_runs_only_after_the_pass_returns(self, monkeypatch):
@@ -1531,16 +1525,12 @@ class TestAwaitSettled:
         await asyncio.sleep(0.05)
         assert calls == []  # nothing removed beside a pass that can still delete
         state.crewmate_prune_settled.set()
-        for _ in range(50):
-            if calls:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: calls, describe=lambda: "the deferred removal never ran")
         assert calls == [{"dashboard_slots": claimed, "remove": True}]
-        for _ in range(50):
-            if not state._background_tasks:
-                break
-            await asyncio.sleep(0.01)
-        assert not state._background_tasks
+        await async_wait_until(
+            lambda: not state._background_tasks,
+            describe=lambda: f"background tasks still live: {state._background_tasks}",
+        )
 
 
 class TestOneProcess:
@@ -1664,7 +1654,8 @@ class TestOneProcess:
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
         log.dm("radar")
-        _run(old_style_config, log)
+        report = _run(old_style_config, log)
+        assert report.removed == ["scout"]
         # A second opener can take it at once: the pass did not leak its hold.
         with open_lock_file(mig.lock_path()) as fd:
             with file_lock(fd, exclusive=True, wait=False):

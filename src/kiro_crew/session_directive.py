@@ -96,11 +96,14 @@ _SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
 # another module would make that dependency invisible here.
 SENTINEL = _SENTINEL
 
-# The ACP tool-result parser truncates each output part at 4000 chars
-# (``acp/_dispatch_parts/tool_result_events.py`` ``str(text)[:4000]``). The marker is the TAIL of the
-# result, so an oversized payload loses the marker entirely — the effect would be
-# silently dropped after the model was told the request was made. Encode refuses
-# above this bound instead, leaving headroom under the transport cap.
+# The ACP layer cuts a joined tool result to :data:`MAX_TOOL_RESULT_CHARS` after
+# redaction (``acp/_dispatch_parts/tool_result_events.py``). The marker is the TAIL
+# of the result, so an oversized payload loses the marker entirely — the effect
+# would be silently dropped after the model was told the request was made. Encode
+# refuses above this bound instead, leaving headroom under the transport cap.
+# The bound covers the WHOLE result: the confirmation text, the marker and the
+# JSON payload, in which a non-ASCII character is escaped to six characters or
+# more. A tool that states a size for one argument states what is left after the rest.
 MAX_DIRECTIVE_CHARS = 3800
 
 # The ACP layer truncates a joined tool result to this many characters before the
@@ -171,11 +174,71 @@ def encode(kind: str, args: dict[str, Any], human: str) -> str:
     if len(out) > MAX_DIRECTIVE_CHARS:
         return tag_refusal(
             f"Error: {kind} arguments are too large to deliver "
-            f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). Shorten them "
-            "(e.g. a briefer message / fewer items) and call the tool again — "
+            f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). "
+            f"{_shorten_hint(args, len(out) - MAX_DIRECTIVE_CHARS)} — "
             "nothing was applied."
         )
     return out
+
+
+def _shorten_hint(args: dict[str, Any], over: int) -> str:
+    """Name the argument that costs the most and how much to cut from it.
+
+    The encoded total alone does not tell a caller how long an argument may be,
+    because the confirmation text, the marker and JSON escaping share the bound.
+    A request wrapped in one object (``monitor_update`` sends ``{"patch": {...}}``)
+    is described by that object's fields, which carry the caller's own names. A
+    text argument's cut is counted from its end at each character's encoded size
+    (:func:`_tail_cut`), so the figure is one the caller can make. A tool whose
+    confirmation text depends on the argument can need a little more:
+    ``monitor_start`` names the subject it infers from the message, so a cut that
+    changes it changes the confirmation too.
+    """
+    if len(args) == 1:
+        (inner,) = args.values()
+        if isinstance(inner, dict) and inner:
+            args = inner
+    sizes = {
+        name: len(json.dumps(value, separators=(",", ":"), default=str))
+        for name, value in args.items()
+    }
+    if not sizes:
+        return "Shorten them (e.g. a briefer message / fewer items) and call the tool again"
+    name = max(sizes, key=sizes.__getitem__)
+    value = args[name]
+    advice = (
+        "or move long text into a file and pass a short pointer to it, " "then call the tool again"
+    )
+    if not isinstance(value, str):
+        return (
+            f"The largest argument is `{name}`, and the request is {over} encoded "
+            f"characters over: shorten it, {advice}"
+        )
+    cut = _tail_cut(value, over)
+    if cut is None:
+        return (
+            f"The largest argument is `{name}` ({len(value)} chars), but removing all of "
+            f"it still leaves the request over: shorten the other arguments too, {advice}"
+        )
+    return (
+        f"The largest argument is `{name}` ({len(value)} chars): shorten it from the "
+        f"end by at least {cut} characters, {advice}"
+    )
+
+
+def _tail_cut(text: str, over: int) -> int | None:
+    """How many characters to drop from the end of *text* to remove *over* encoded ones.
+
+    Each character costs what :func:`encode`'s JSON makes of it: one for plain ASCII,
+    two for a quote, backslash or newline, six or more for a non-ASCII character.
+    ``None`` when dropping all of *text* removes too little.
+    """
+    removed = 0
+    for count, char in enumerate(reversed(text), start=1):
+        removed += len(json.dumps(char)) - 2
+        if removed >= over:
+            return count
+    return None
 
 
 def neutralize_markers(text: str) -> str:

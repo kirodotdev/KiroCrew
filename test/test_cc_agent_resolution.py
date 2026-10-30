@@ -157,7 +157,6 @@ class TestListAllAgentNames:
 
     def test_empty_dir(self, tmp_path: Path) -> None:
         """Empty cc-plugins directory returns '(none found)' when no kiro agents exist either."""
-        # Create empty cc-plugins dir
         cc_dir = tmp_path / "cc-plugins"
         cc_dir.mkdir()
         # Point kiro dir somewhere empty too

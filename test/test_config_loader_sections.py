@@ -691,6 +691,23 @@ class TestOrchestratorWatchdogThemeAreParsed:
         assert cfg.dashboard.crewmates_onboarded is True
         assert cfg.to_dict()["dashboard"]["crewmates_onboarded"] is True
 
+    def test_translucent_panels_defaults_to_never_chosen(self) -> None:
+        # '' means the browser's own stored choice holds, which is what every
+        # install did before the key existed.
+        assert DashboardConfig().translucent_panels == ""
+        assert _load_from_dict({}).dashboard.translucent_panels == ""
+
+    @pytest.mark.parametrize("stored", ["on", "off", ""])
+    def test_translucent_panels_round_trips(self, stored: str) -> None:
+        cfg = _load_from_dict({"dashboard": {"translucent_panels": stored}})
+        assert cfg.dashboard.translucent_panels == stored
+        assert cfg.to_dict()["dashboard"]["translucent_panels"] == stored
+
+    @pytest.mark.parametrize("stored", [True, False, "yes", 1, None])
+    def test_translucent_panels_unknown_reads_as_never_chosen(self, stored: object) -> None:
+        cfg = _load_from_dict({"dashboard": {"translucent_panels": stored}})
+        assert cfg.dashboard.translucent_panels == ""
+
     def test_import_onboarded_string_false_falls_back_without_jsonschema(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

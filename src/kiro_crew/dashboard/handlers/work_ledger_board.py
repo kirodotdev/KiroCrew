@@ -141,12 +141,19 @@ def _parse_ts(raw: Any) -> datetime | None:
         return None
 
 
+#: Event kinds that answer a worker's question: the conductor's decision, and the
+#: person's own steer into that worker.
+_ANSWER_KINDS = frozenset({"decision", "steer"})
+
+
 def _is_outstanding(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
     """Whether this item is a question the conductor has not yet answered.
 
     A bare "has a decision" test is wrong: an item can be decided, sent back, and
     then ask something new, and the old decision must not silence the new question.
-    So the newest ``decision`` must be NEWER than the report that asked.
+    So the newest ``decision`` must be NEWER than the report that asked. A person's
+    ``steer`` newer than the ask answers it too: the person outranks the conductor,
+    and the worker already has the answer.
 
     Falls back to ``last_report_at`` when the asking report has aged off the event
     tail, and treats an unparseable or missing ask as outstanding — a question the
@@ -164,7 +171,7 @@ def _is_outstanding(item: work_ledger.WorkItem, events: list[dict[str, Any]]) ->
         if kind == "report" and event.get("status") == _ASKING_STATUS:
             if asked is None or stamp > asked:
                 asked = stamp
-        elif kind == "decision":
+        elif kind in _ANSWER_KINDS:
             if answered is None or stamp > answered:
                 answered = stamp
     if asked is None:
@@ -363,6 +370,11 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
 
     state: DashboardState = request.app["state"]
     conductor_alive = _slot_open(state, key)
+    # The worker's transport, not the ledger: a report the harness never delivered.
+    # Read outside the board hold because it is not part of the ledger snapshot.
+    undelivered = await asyncio.to_thread(
+        lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in items}
+    )
 
     rows: list[dict[str, Any]] = []
     for item in items:
@@ -375,6 +387,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             worker_looping=_slot_looping(item.worker_session_key or ""),
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+        row["report_undelivered"] = undelivered.get(item.item_id)
         row["events"] = _mask_events([event.to_dict() for event in event_tails[item.item_id]])
         rows.append(
             _project_item(

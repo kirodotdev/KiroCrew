@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -1500,6 +1501,45 @@ def test_download_allows_and_audits_valid_zip(tmp_path, monkeypatch):
     resp = asyncio.run(dh.api_diagnostics_download(_DownloadReq("b.zip")))
     assert resp.status == 200
     assert sel.log_tool_invocation.call_args.kwargs["outcome"] == "allowed"
+
+
+@pytest.mark.parametrize("filename", ["b.zip", "../../etc/passwd"])
+def test_download_path_checks_run_off_the_event_loop_thread(tmp_path, monkeypatch, filename):
+    # ``resolve()`` and ``is_file()`` stat the data home, and a stat on a mount
+    # that stopped answering blocks for as long as the kernel does: on the loop
+    # that stalls every session, so the checks must run on a worker thread for
+    # both a served and a refused name.
+    diag = tmp_path / "diagnostics"
+    diag.mkdir()
+    (diag / "b.zip").write_bytes(b"PK\x03\x04zip")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.diagnostics.config_dir", lambda: tmp_path)
+    sel = _stub_sel(monkeypatch)
+    loop_thread = threading.get_ident()
+    check_threads: set[int] = set()
+    real_resolve = Path.resolve
+    real_is_file = Path.is_file
+
+    def tracked_resolve(self, *a, **kw):
+        if diag in (self, *self.parents):
+            check_threads.add(threading.get_ident())
+        return real_resolve(self, *a, **kw)
+
+    def tracked_is_file(self, *a, **kw):
+        if diag in self.parents:
+            check_threads.add(threading.get_ident())
+        return real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "resolve", tracked_resolve)
+    monkeypatch.setattr(Path, "is_file", tracked_is_file)
+    resp = asyncio.run(dh.api_diagnostics_download(_DownloadReq(filename)))
+
+    served = filename == "b.zip"
+    assert resp.status == (200 if served else 403)
+    assert sel.log_tool_invocation.call_args.kwargs["outcome"] == (
+        "allowed" if served else "denied"
+    )
+    assert check_threads, "the download never checked the bundle path"
+    assert loop_thread not in check_threads
 
 
 def test_collect_handler_returns_download_url(tmp_path, monkeypatch):

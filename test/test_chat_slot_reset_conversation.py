@@ -213,9 +213,10 @@ class TestItClearsTheRightThing:
         """
         state = _state(_slot("chat-1-foo"))
 
-        await _post(_make_app(state), "chat-1-foo")
+        status, body = await _post(_make_app(state), "chat-1-foo")
 
         state.sessions.destroy.assert_not_awaited()
+        assert (status, body.get("reset")) == (200, True)
 
 
 class TestItRefusesWhenItCannotBeSafe:

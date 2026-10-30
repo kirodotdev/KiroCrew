@@ -95,7 +95,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "flush": ("function", False, "a9c45e0c08a5", "sel"),
     "log": ("function", False, "105f9e23f712", "sel"),
     "log_api_access": ("function", False, "205f9b11a348", "sel"),
-    "log_governance_decision": ("function", False, "416a40eec8a0", "sel"),
+    # `redact` added for the context-less MCP gateway daemon (OTLP host audit).
+    "log_governance_decision": ("function", False, "f3c3785395e6", "sel"),
     "log_governance_degraded": ("function", False, "9b129b9270d1", "sel"),
     "log_tool_invocation": ("function", False, "28f3ece4bc30", "sel"),
     "prune": ("function", False, "254f3f4fcb91", "sel_rotation"),

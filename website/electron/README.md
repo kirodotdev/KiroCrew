@@ -48,6 +48,14 @@ fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
 not skipped in favor of a later candidate. Remote tunnel sessions check the
 remote gateway host.
 
+A user who will only use crews on other machines can connect to one instead of
+that setup: the screen's "Connect to a crew on another machine" link opens the
+remote-crew form, and saving it stops the gateway this app started, saves the
+crew for the launch port, turns "Run a local gateway" off and reconnects the
+main window to the crew (`runtime/gateway/remote-switch.js`). The link appears only in the main window,
+and only while the gateway on the port is one this app spawned and still runs.
+Undo it with the failure dialog's Start Local Gateway or Settings → Developer.
+
 ## Main-process owners
 
 `main.js` is the composition root. Between them, `main.js` and `ipc-registrar.js`
@@ -56,9 +64,9 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 
 | Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
 |---|---|---|
-| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
+| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) · `remote-switch.js` (first-run setup's switch to a crew on another machine: stop the gateway this app spawned, save the crew, turn the local gateway off, reconnect) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
 | `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
-| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle — claim, settle, abandon — and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
 
 Three rules keep this layout safe to change:
@@ -91,7 +99,8 @@ probe goes to `runtime/gateway/port-holders.js`, a launch precondition to
 `holder-decision.js`, a new kind of stop to `shutdown.js`, a failure-dialog
 control to `failure-dialog.js`, native window chrome to
 `runtime/window/chrome.js`, an
-update lane's step to `feed-lane.js` or `managed-lane.js`, and a crash-artifact
+update lane's step to `feed-lane.js` or `managed-lane.js` (a check-lifecycle or
+pre-install-verdict rule to `freshness-gate.js`), and a crash-artifact
 rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
 in the facade" column, and a responsibility no owner names gets a new file under
 `runtime/<area>/` that its facade composes.
@@ -339,7 +348,17 @@ Open via **Connection → Open Config File** or the tray menu.
   dashboard window and creates a blank session. It shares the running local
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
-- Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
+- Closing the window hides it and keeps the app running, reachable from the tray
+  icon, the Dock on macOS, or a relaunch. Right-click the tray icon and choose
+  Quit, or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
+  turn off **Keep running in the background after closing the window** in Settings → Display → View →
+  Desktop app. The row appears in the main window only, local or remote
+  gateway alike, because it controls that window's close button (connection
+  windows always just close).
+  The choice is the `closeAction` key (`"background"` or `"quit"`) in this
+  app's config file, read on every close (`close-action.js`). Quitting this way
+  takes the same path as the Quit menu item: a gateway the app started stops,
+  and a gateway it connected to keeps running.
 - **GPU rendering.** Hardware acceleration is on by default.
   `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
   (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard

@@ -27,7 +27,10 @@ from typing import IO, TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, replace_with_retry
+
+# ``replace_with_retry`` is facade surface with no reader here: its inventory,
+# test/campaign_facade_inventories/kiro_crew.history_projection.json, pins it.
+from kiro_crew.atomic_write import atomic_write, replace_with_retry  # noqa: F401
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
     restore_staged_attachments,
@@ -51,12 +54,56 @@ from kiro_crew.jsonl_util import (
     raise_if_splitlines_boundary,
     strict_raw_records_with_offsets,
 )
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.preview_text import speech_preview
 from kiro_crew.transcript_count import count_messages, message_row
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+
+
+def _stat_or_none(path: Path) -> "os.stat_result | None":
+    """``path``'s stat, or ``None`` when it cannot be taken (the carry is then skipped)."""
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _split_transcript_head(data: bytes) -> tuple[list[str], bool]:
+    """``(lines, head_undecodable)``: :func:`_split_transcript_bytes` plus a flag.
+
+    The flag is True when the first line was not UTF-8 and ``lines[0]`` is the
+    blank placeholder, so a caller that keys on that line's content (the full
+    save's frozen-prefix read) can still treat it as the metadata line by position.
+    """
+    if not data:
+        return [], False
+    head, newline, rest = data.partition(b"\n")
+    try:
+        first: str | None = (head + newline).decode("utf-8")
+    except UnicodeDecodeError:
+        first = None
+    text = (first or "") + rest.decode("utf-8")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines(keepends=True)
+    if first is None:
+        # A placeholder the caller's JSON parse rejects, so it takes the
+        # corrupt-line rewrite and replaces it with a real metadata line.
+        return ["\n", *lines], True
+    return lines, False
+
+
+def _split_transcript_bytes(data: bytes) -> list[str]:
+    """``read_text().splitlines(keepends=True)``, except for a damaged FIRST line.
+
+    The first line is cut at its byte newline and decoded on its own. When it
+    is not UTF-8 it comes back as a blank placeholder instead of raising, so the
+    metadata rewrite -- which replaces exactly that line -- can run; before, the
+    whole read raised and the line could never be rewritten. The rows after it
+    decode strictly, as ``read_text`` always did, so a damaged ROW still raises.
+    """
+    return _split_transcript_head(data)[0]
 
 
 class SessionMetadataProjection:
@@ -437,10 +484,17 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        before = _stat_or_none(path)
+        lines = _split_transcript_bytes(path.read_bytes()) if path.exists() else []
+        # For an undecodable first line this is the one-byte placeholder, shorter
+        # than the real bytes, so the index carry's size proof fails and the next
+        # page read rebuilds the index instead of shifting it by a wrong delta.
+        old_head = lines[0] if lines else ""
         healing_corrupt_line = False
         if lines:
             try:
+                # An undecodable first line arrives as a blank placeholder, so
+                # it fails here and is rewritten like any line that is not JSON.
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
                 _HISTORY_LOGGER.warning(
@@ -476,29 +530,18 @@ class SessionMetadataProjection:
 
         # This hot one-line edit remains crash-atomic without paying for an
         # fsync while every other writer of the session is excluded.
-        import tempfile
-
-        data = "".join(lines).encode("utf-8")
-        descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            try:
-                os.write(descriptor, data)
-            finally:
-                os.close(descriptor)
-            # The shared retrying rename, not a bare ``os.replace``: on Windows the
-            # rename fails with ``PermissionError`` while any other handle -- a
-            # concurrent transcript READER -- is open on the destination, and this
-            # path is hit right after a session writes, when readers are busiest.
-            # Three unrelated test files flaked on exactly this line in five full
-            # runs; the retry is what every other tmp-plus-rename writer here has.
-            replace_with_retry(temporary, path)
-        except Exception:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
+        # ``atomic_write`` writes every byte (a short write cannot publish a
+        # prefix of the transcript) and renames through the retrying replace
+        # that a concurrent Windows reader needs. The mode is owner-only on
+        # every root, as the transcript's first write sets it: a transcript can
+        # live outside the data home (an eval workspace), where the default
+        # would follow the umask and widen the rewritten file.
+        atomic_write(path, "".join(lines).encode("utf-8"), mode=OWNER_ONLY_FILE_MODE)
         _history_facade()._restore_mtime(path, previous_mtime)
+        if before is not None:
+            self._log._read_projection.carry_index_over_head_rewrite(
+                key, before, old_head, lines[0]
+            )
         self._log._invalidate_cache(key)
         return True
 
@@ -521,9 +564,11 @@ class SessionMetadataProjection:
             if not path.exists():
                 return
             previous_mtime = _history_facade()._safe_mtime(path)
+            before = _stat_or_none(path)
             lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
             if not lines:
                 return
+            old_head = lines[0]
             try:
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
@@ -545,8 +590,12 @@ class SessionMetadataProjection:
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
             lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False)
+            atomic_write(path, "".join(lines), fsync=False, newline="")
             _history_facade()._restore_mtime(path, previous_mtime)
+            if before is not None:
+                self._log._read_projection.carry_index_over_head_rewrite(
+                    key, before, old_head, lines[0]
+                )
             # Invalidate before releasing the lock so no preserved-mtime fill
             # can publish the pre-clear metadata under the current generation.
             self._log._invalidate_cache(key)

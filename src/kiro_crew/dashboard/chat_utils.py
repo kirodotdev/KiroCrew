@@ -253,8 +253,23 @@ _KIRO_ONLY_BLOCKED_SLASH_COMMANDS = frozenset({"/todos"})
 # once — advertising a command that only yields a warning teaches a gesture
 # that does not work.
 _BLOCKED_SLASH_COMMANDS = (
-    frozenset({"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/tangent"})
+    # These kiro-cli TUI commands have no dashboard transport. /issue is
+    # documented by the interactive CLI, but the ACP TuiCommand schema in the
+    # bundled harness rejects it before it can produce a result.
+    frozenset(
+        {"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/issue", "/tangent"}
+    )
     | _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+)
+
+# Commands the dashboard serves without the harness: the composer opens /side
+# itself, and the slash gate answers /agent <name>, /clear, /goal, /prompts and
+# /workflow before any session work. On a harness in
+# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command only gets a
+# notice, so GET /api/slash-commands lists these (plus /compact, which has a gate
+# of its own) and nothing else there.
+_DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
+    {"/agent", "/clear", "/goal", "/prompts", "/side", "/workflow"}
 )
 
 # Slash-command descriptions surfaced by the dashboard API
@@ -597,6 +612,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SYNTHESIS_UNKNOWN,
         _attached_verdict,
         _queued_depth_off_loop,
+        _slot_holds_delivery,
+        background_wake_absent,
+        background_wake_pending,
         chat_done_payload,
         chunk_generation,
         subagents_attached,
@@ -613,6 +631,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DISPLAY_REDACTION_SALT,
         _DISPLAY_REDACTION_STRINGS_PER_ROW,
         _NO_BASE,
+        BLOCKED_LINKS_ORDERED_KEY,
         REDACTION_RECORD_FIELDS,
         SLOT_DETAIL_MAX_LIMIT,
         UNKNOWN_ROW_FIELDS_KEY,
@@ -676,9 +695,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,
+        SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
         STEER_INTENT_META,
@@ -705,6 +726,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         releases_past_subagent_hold,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
+        _forget_slack_options_message,
         _persisted_thread_owner,
         expire_slack_options,
         forget_slack_options,
@@ -783,6 +805,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_utils_turn_text import (  # noqa: F401
         _APPROVAL_GATED_RE,
         _CODE_DELIM_RE,
+        _DEFERRED_FOLLOWUP_RE,
+        _DEFERRED_FOLLOWUP_TAIL_SENTENCES,
+        _FOLLOWUP_USER_GATED_RE,
         _LEAKED_INVOKE_BODY_RE,
         _LEAKED_INVOKE_OPEN_RE,
         _NEGATED_PROMISE_RE,
@@ -790,9 +815,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROMISE_HAS_FOLLOWING_CONTENT_RE,
         _PROMISE_NOW_RE,
         _SENTENCE_BOUNDARY_RE,
+        _TOOL_NAME_SEPARATOR_RE,
         _UNFINISHED_PROGRESS_RE,
+        DEFERRED_FOLLOWUP_NOTICE,
+        WAKE_ARMING_TOOLS,
+        _bare_tool_name,
         _strip_quoted_code,
         _terminal_sentence,
+        has_deferred_followup_promise,
         has_leaked_tool_call,
         has_unfinished_progress_claim,
         is_promise_only_terminal,
@@ -800,6 +830,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         should_notice_compaction_dropped_leak,
         should_notice_leaked_tool_call,
         should_notice_mixed_turn_leak,
+        turn_armed_a_wake,
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
@@ -886,6 +917,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         encode_options_token,
         expire_options,
         mark_options_terminal,
+        options_answer_settled,
         options_edit_lock,
     )
     from kiro_crew.validation import (  # noqa: F401

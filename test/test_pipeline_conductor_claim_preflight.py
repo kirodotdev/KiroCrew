@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 from pipeline_conductor_claim_preflight_helpers import mod_fixture  # noqa: F401
 from pipeline_conductor_claim_preflight_helpers import (
     ITEM,
@@ -1135,14 +1136,30 @@ class TestClosureNeedsAnIssueAsItsObject:
     @pytest.mark.parametrize(
         "body",
         [
-            "this is resolved",
-            "this is resolved, closing",
-            "this was fixed in the 0.7 release",
-            "this is resolved -- closing now",
-            "this is already fixed on main",
+            *named_cases(
+                "test_a_state_statement_still_closes",
+                "body",
+                [
+                    "this is resolved",
+                    "this is resolved, closing",
+                    "this was fixed in the 0.7 release",
+                    "this is resolved -- closing now",
+                    "this is already fixed on main",
+                ],
+            ),
+            *named_cases(
+                "test_the_item_scoped_forms_still_close",
+                "body",
+                [
+                    "this can be closed",
+                    "this is no longer needed",
+                    "no longer an issue",
+                    "no longer reproducible",
+                ],
+            ),
         ],
     )
-    def test_a_state_statement_still_closes(self, mod, body):
+    def test_an_item_scoped_state_statement_closes(self, mod, body):
         got = mod.scan_prose(an_issue(body=body), None, "us")
         assert got["closure_requested"] is True
 

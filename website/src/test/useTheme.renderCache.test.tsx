@@ -855,12 +855,13 @@ describe('themeRenderCache helpers', () => {
     expect(isValidCachedThemeData({ ...detail, assets: { fonts: [{ family: 'F', src: 's', weight: '400' }] } }, SLUG)).toBe(false)
     expect(isValidCachedThemeData({ ...detail, assets: { loaderImages: ['a', 2] } }, SLUG)).toBe(false)
     expect(isValidCachedThemeData({ ...detail, assets: { branding: { botName: 1 } } }, SLUG)).toBe(false)
+    expect(isValidCachedThemeData({ ...detail, assets: { branding: { welcome: 1 } } }, SLUG)).toBe(false)
     expect(isValidCachedThemeData({ ...detail, assets: { unknownField: true } }, SLUG)).toBe(true)
     expect(isValidCachedThemeData({ ...detail, toString: 'x' }, SLUG)).toBe(true)
     expect(isValidCachedThemeData(JSON.parse(`{"__proto__":{}, ${JSON.stringify(detail).slice(1)}`), SLUG)).toBe(true)
     // A complete, compile-time typed Level 2 descriptor is accepted.
     const fullAssets: ThemeAssets = {
-      branding: { botName: 'B', logo: 'branding/logo.svg', favicon: 'branding/f.png', wordmark: 'w.svg' },
+      branding: { botName: 'B', logo: 'branding/logo.svg', favicon: 'branding/f.png', wordmark: 'w.svg', welcome: 'branding/welcome.webp' },
       fonts: [{ family: 'F', src: 'styles/fonts/f.woff2', weight: 400, style: 'normal', role: 'sans' }],
       hasOverrides: true,
       loaderIcons: ['spinner'],

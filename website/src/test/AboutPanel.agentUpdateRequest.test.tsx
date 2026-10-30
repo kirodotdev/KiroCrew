@@ -13,9 +13,9 @@
 // - Decline reaches the gateway and never touches the desktop bridge
 // - a managed-venv arm does NOT summon the card (that lane prints a command)
 // - a shell with no desktop bridge renders nothing
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { store } from '../store'
@@ -138,11 +138,22 @@ describe('AgentUpdateRequestCard', () => {
 })
 
 describe('AboutPanel with a pending agent request', () => {
+  // React Query hands a cache change to React on a zero-delay timer, which an act()
+  // does not wait for. As microtasks, a push wrapped in act() renders, and every
+  // effect it sets off (a latch reset, an install dispatch) runs, before act()
+  // resolves: what makes "install did NOT fire" a reading of a settled render.
+  beforeEach(() => { notifyManager.setScheduler(queueMicrotask) })
   afterEach(() => {
     cleanup()
     delete (window as { updateAPI?: unknown }).updateAPI
     vi.restoreAllMocks()
+    notifyManager.setScheduler(defaultScheduler)
   })
+
+  /** Push an updater state the way useUpdateSubscription does, and settle it. */
+  async function pushUpdateState(client: QueryClient, next: object) {
+    await act(async () => { client.setQueryData(['update-state'], next) })
+  }
 
   function setup(status: object, updateState: object | null = null) {
     const bridge = desktopBridge()
@@ -198,6 +209,24 @@ describe('AboutPanel with a pending agent request', () => {
     expect(spy).toHaveBeenCalledWith('r1')
   })
 
+  it('an install the main process refused does not re-fire on a later download', async () => {
+    // The freshness gate refuses a superseded stage and fetches the newer build.
+    // The dispatch latch resets for that refusal, so the request card's click
+    // must not still be armed when the newer build lands: that would install and
+    // quit the app with no click.
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST, { state: 'downloaded', version: '0.6.0' })
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.install).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloaded', version: '0.7.0' })
+    // The newer build rendered, and its Install is the user's to click: a click
+    // still armed would hold it disabled, then dispatch and keep it so.
+    const install = screen.getByTestId('agent-update-request-install')
+    expect(install.textContent).toContain('0.7.0')
+    expect(install).not.toBeDisabled()
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+  })
+
   it('a refused download releases the click and shows the failure', async () => {
     const bridgeApi = desktopBridge()
     bridgeApi.download = vi.fn(async () => { throw new Error('ipc gone') })
@@ -212,6 +241,80 @@ describe('AboutPanel with a pending agent request', () => {
     await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled())
     expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
   })
+
+  for (const [label, dropped] of [
+    ['a retraction', { state: 'not-available' }],
+    ['a channel switch', { state: 'checking' }],
+  ] as const) {
+    it(`a download the main process dropped for ${label} releases the click`, async () => {
+      // The download re-checks the feed before it starts and ends without an
+      // error when the offer is gone. A click left armed keeps both actions
+      // disabled and installs the next build that downloads with nobody clicking.
+      vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+      const { bridge, client } = setup(REQUEST, { state: 'found', version: '0.6.0' })
+      fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+      await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+      await pushUpdateState(client, { state: 'downloading', version: '0.6.0' })
+      expect(screen.getByTestId('agent-update-request-install')).toBeDisabled()
+      await pushUpdateState(client, dropped)
+      expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
+      expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
+      // A later download is not this click's to install: it renders with its
+      // own Install live, and nothing was dispatched.
+      await pushUpdateState(client, { state: 'downloaded', version: '0.7.0' })
+      const install = screen.getByTestId('agent-update-request-install')
+      expect(install.textContent).toContain('0.7.0')
+      expect(install).not.toBeDisabled()
+      expect(bridge.install).not.toHaveBeenCalled()
+    })
+  }
+
+  it('releases the click when download start and retraction share one render', async () => {
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST, { state: 'found', version: '0.6.0' })
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+
+    // Both cache writes happen before React renders. The event boundary must
+    // retain the start so the retraction releases this click.
+    await act(async () => {
+      client.setQueryData(['update-state'], { state: 'downloading', version: '0.6.0' })
+      client.setQueryData(['update-state'], { state: 'not-available' })
+    })
+    expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
+    expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
+
+    await pushUpdateState(client, { state: 'downloaded', version: '0.7.0' })
+    expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
+    expect(bridge.install).not.toHaveBeenCalled()
+  })
+
+  for (const start of [{ state: 'not-available' }, { state: 'checking' }] as const) {
+    it(`a click made while the state is ${start.state} still installs the download it starts`, async () => {
+      // The card stays enabled through both states, and from either the main
+      // process discovers (or joins the running check) and then downloads. The
+      // state the click was made FROM is not a dropped download.
+      vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+      const { bridge, client } = setup(REQUEST, start)
+      fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+      await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+      // The download IPC has answered and its render settled, still on the
+      // state the click was made from: the click is still armed.
+      await act(async () => { await bridge.download.mock.results[0].value })
+      expect(screen.getByTestId('agent-update-request-install')).toBeDisabled()
+      for (const next of [
+        { state: 'checking' },
+        { state: 'found', version: '0.6.0' },
+        { state: 'downloading', version: '0.6.0' },
+      ]) {
+        // Each state renders on its own, and none of them releases the click.
+        await pushUpdateState(client, next)
+        expect(screen.getByTestId('agent-update-request-install')).toBeDisabled()
+      }
+      await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+      expect(bridge.install).toHaveBeenCalledTimes(1)
+    })
+  }
 
   it('a poll that keeps failing is surfaced, and the card stays up', async () => {
     const bridgeApi = desktopBridge()
@@ -261,12 +364,15 @@ describe('AboutPanel with a pending agent request', () => {
     fireEvent.click(await screen.findByTestId('agent-update-request-install'))
     await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
     // The updater pushes `downloaded`; the card's click completes.
-    client.setQueryData(['update-state'], { state: 'downloaded', version: '0.6.0' })
-    await waitFor(() => expect(bridge.install).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).toHaveBeenCalledTimes(1)
     // A second `downloaded` push (a later, unrelated download) must not ride
-    // the same click.
-    client.setQueryData(['update-state'], { state: 'downloaded', version: '0.7.0' })
-    await new Promise(r => setTimeout(r, 50))
+    // the same click: it renders with its own Install live, and nothing more
+    // was dispatched.
+    await pushUpdateState(client, { state: 'downloaded', version: '0.7.0' })
+    const install = screen.getByTestId('agent-update-request-install')
+    expect(install.textContent).toContain('0.7.0')
+    expect(install).not.toBeDisabled()
     expect(bridge.install).toHaveBeenCalledTimes(1)
   })
 })

@@ -7,14 +7,16 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import STEER_NOTICE_BOUND_SECS
-from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
+from kiro_crew.dashboard.state import (
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_INVALID_NAME,
+    DENY_CAUSE_POLICY,
+    REFUSAL_INBAND_RECOVERY_PREFIX,
+    build_refusal_steer_notice,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        DENY_CAUSE_HOOK_ERROR,
-        DENY_CAUSE_INVALID_NAME,
-        REFUSAL_INBAND_RECOVERY_PREFIX,
-        build_refusal_steer_notice,
         logger,
         redact_credentials,
         redact_exfiltration_urls,
@@ -152,8 +154,7 @@ async def _steer_policy_notice(
             # always-visible summary has to name the right cause. Rendering one
             # "safety policy blocked the call" line for every cause would tell the
             # person to go audit a security rule that does not exist — the same
-            # cause-blind wording this change removes for the model, left in place
-            # for the human.
+            # cause-blind wording the model is spared, left in place for the human.
             slot.append(
                 "inject",
                 f"{REFUSAL_INBAND_RECOVERY_PREFIX} {cause}\n{notice}",

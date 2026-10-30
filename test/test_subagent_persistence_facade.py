@@ -19,12 +19,11 @@ and the frozen import inventory that stands in for the F401 check
 from __future__ import annotations
 
 import ast
-import dataclasses
 import functools
 import importlib
-import logging
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
@@ -36,6 +35,21 @@ import test_campaign_facades_base_public_names as base_names
 from kiro_crew import _facade_mirror, subagent_persistence
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_subagent_persistence_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = (
+    "known_seams",
+    "spelling_cases",
+    "corpus_gate",
+    "reach_routing",
+    "reach_scan_can_fail",
+    "owner_layering",
+    "one_home_per_name",
+    "home_manifest",
+    "owners_log_under_facade_name",
+    "logger_scan_can_fail",
+)
 
 FACADE = "kiro_crew.subagent_persistence"
 OWNERS = (
@@ -120,54 +134,40 @@ def patched_names(source: str) -> set[str]:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        (
-            "from kiro_crew import subagent_persistence\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(subagent_persistence, 'A', 1)\n",
-            {"A"},
-        ),
-        (
-            "import kiro_crew.subagent_persistence as facade\n"
-            "from unittest import mock\n"
-            "def t():\n    with mock.patch.object(facade, 'B'):\n        pass\n",
-            {"B"},
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.subagent_persistence.C'):\n        pass\n",
-            {"C"},
-        ),
-        (
-            "def t(monkeypatch):\n    monkeypatch.setattr('kiro_crew.subagent_persistence.D', 1)\n",
-            {"D"},
-        ),
-        # An owner is not the facade, even bound under the facade's name.
-        (
-            "from kiro_crew import subagent_persistence_layout as subagent_persistence\n"
-            "def t(monkeypatch):\n    monkeypatch.setattr(subagent_persistence, 'X', 1)\n",
-            set(),
-        ),
-        (
-            "from unittest.mock import patch\n"
-            "def t():\n    with patch('kiro_crew.subagent_persistence_tombstones.Y'):\n        pass\n",
-            set(),
-        ),
-    ],
-    ids=[
-        "monkeypatch-from-import",
-        "patch-object-import-as",
-        "mock-patch-string",
-        "dotted-setattr",
-        "owner-named-like-the-facade",
-        "owner-string",
-    ],
-)
-def test_the_patch_scan_reads_every_spelling_and_nothing_else(
-    source: str, expected: set[str]
-) -> None:
-    assert patched_names(source) == expected
+#: Each spelling the patch scan must read, and each it must skip, keyed by case id.
+_SPELLING_CASES = {
+    "monkeypatch-from-import": (
+        "from kiro_crew import subagent_persistence\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(subagent_persistence, 'A', 1)\n",
+        {"A"},
+    ),
+    "patch-object-import-as": (
+        "import kiro_crew.subagent_persistence as facade\n"
+        "from unittest import mock\n"
+        "def t():\n    with mock.patch.object(facade, 'B'):\n        pass\n",
+        {"B"},
+    ),
+    "mock-patch-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.subagent_persistence.C'):\n        pass\n",
+        {"C"},
+    ),
+    "dotted-setattr": (
+        "def t(monkeypatch):\n    monkeypatch.setattr('kiro_crew.subagent_persistence.D', 1)\n",
+        {"D"},
+    ),
+    # An owner is not the facade, even bound under the facade's name.
+    "owner-named-like-the-facade": (
+        "from kiro_crew import subagent_persistence_layout as subagent_persistence\n"
+        "def t(monkeypatch):\n    monkeypatch.setattr(subagent_persistence, 'X', 1)\n",
+        set(),
+    ),
+    "owner-string": (
+        "from unittest.mock import patch\n"
+        "def t():\n    with patch('kiro_crew.subagent_persistence_tombstones.Y'):\n        pass\n",
+        set(),
+    ),
+}
 
 
 def _test_tree_files() -> list[Path]:
@@ -181,17 +181,6 @@ def _test_tree_files() -> list[Path]:
     return out
 
 
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
-
-
 @functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> frozenset[str]:
     """Every name the test trees patch through the facade, scanned once per worker."""
@@ -201,11 +190,6 @@ def _corpus_patched_names() -> frozenset[str]:
         if _SPELLS_THE_FACADE.search(text):
             found |= patched_names(text)
     return frozenset(found)
-
-
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that found nothing would pass the reach tests over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -221,18 +205,6 @@ def _reach_gaps(names: set[str], index: _facade_mirror.MirrorIndex) -> list[str]
         for module in _family()[1:]
         if name in vars(module) and module.__name__ not in index.holders.get(name, ())
     ]
-
-
-def test_every_scanned_name_is_routed_to_every_owner_holding_it() -> None:
-    assert _reach_gaps(set(_corpus_patched_names()), _index()) == []
-
-
-def test_the_reach_scan_can_fail() -> None:
-    """The routing check reads the index: blind one name and the gap shows."""
-    index = _index()
-    name, holders = next((n, h) for n, h in sorted(index.holders.items()) if h)
-    blind = dataclasses.replace(index, holders={**index.holders, name: ()})
-    assert _reach_gaps({name}, blind) == [f"{owner}.{name}" for owner in holders]
 
 
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
@@ -331,11 +303,6 @@ def _layering_gaps(trees: dict[str, ast.Module]) -> dict[str, list[str]]:
     return gaps
 
 
-def test_each_owner_imports_only_owners_listed_before_it_and_never_the_facade() -> None:
-    trees = {name: _tree(sys.modules[name]) for name in OWNERS}
-    assert _layering_gaps(trees) == {}
-
-
 def test_the_layering_check_can_fail() -> None:
     trees = {name: _tree(sys.modules[name]) for name in OWNERS}
     trees[OWNERS[0]] = ast.parse("from kiro_crew.subagent_persistence_tombstones import x\n")
@@ -343,6 +310,69 @@ def test_the_layering_check_can_fail() -> None:
     assert _layering_gaps(trees) == {
         OWNERS[0]: [OWNERS[-1]],
         OWNERS[1]: [FACADE],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Who imports an owner
+# --------------------------------------------------------------------------- #
+
+
+def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
+    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    base = node.module or ""
+    if node.level:
+        package = module.split(".")[: -node.level]
+        base = ".".join([*package, *([node.module] if node.module else [])])
+    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
+
+
+def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
+    """The files among *sources* (relative to *root*) whose code imports a family owner."""
+    found = set()
+    for path, text in sources:
+        rel = path.relative_to(root)
+        module = ".".join([root.name, *rel.with_suffix("").parts])
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                name in OWNERS for name in _imported_modules(node, module)
+            ):
+                found.add(rel.as_posix())
+    return found
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    root = Path(subagent_persistence.__file__).resolve().parent
+    family = {f"{name.rpartition('.')[2]}.py" for name in (FACADE, *OWNERS)}
+    sources = source_corpus.iter_candidate_sources(require_all=("subagent_persistence_",))
+    importers = _owner_importers(
+        ((path, text) for path, text in sources if path.is_relative_to(root)), root
+    )
+    assert importers & (family - {"subagent_persistence.py"})  # owners import the owners below them
+    assert importers - family == set()
+
+
+def test_the_owner_import_scan_finds_an_outside_importer(tmp_path: Path) -> None:
+    root = tmp_path / "kiro_crew"
+    owner = OWNERS[0].rpartition(".")[2]
+    sources = {
+        root / "pkg" / "caller.py": f"from kiro_crew.{owner} import x\n",
+        root / "other.py": f"from kiro_crew import {owner} as low\n",
+        root / "plain.py": f"import kiro_crew.{owner}\n",
+        root / "relative.py": f"from .{owner} import x\n",
+        root / "deep" / "up.py": f"from .. import {owner}\n",
+        root / "facade_user.py": "from kiro_crew.subagent_persistence import x\n",
+    }
+    assert _owner_importers(sources.items(), root) == {
+        "pkg/caller.py",
+        "other.py",
+        "plain.py",
+        "relative.py",
+        "deep/up.py",
     }
 
 
@@ -358,20 +388,6 @@ def test_the_facade_binds_every_public_name_its_owners_define() -> None:
     assert public, "the owners define no public name -- the scan went blind"
     assert sorted(public - set(vars(subagent_persistence))) == []
     assert not any(name in _index().exports for name in public)
-
-
-def test_no_two_members_of_the_family_define_the_same_name() -> None:
-    """Each moved definition has one home: the facade keeps what it kept, an owner the rest."""
-    seen: dict[str, str] = {}
-    clashes = []
-    for module in _family():
-        for name in sorted(_facade_mirror._defined_names(_tree(module))):
-            if name in {"__all__"}:
-                continue
-            if name in seen:
-                clashes.append(f"{name}: {seen[name]} and {module.__name__}")
-            seen[name] = module.__name__
-    assert clashes == []
 
 
 # --------------------------------------------------------------------------- #
@@ -406,15 +422,6 @@ def _home_manifest() -> dict[str, tuple[str, str]]:
     return out
 
 
-def test_every_name_served_from_outside_the_family_is_visible_to_type_checkers() -> None:
-    """A name an owner imports from a project module and the facade serves without
-    binding is named from its home under ``TYPE_CHECKING`` (none today: the facade
-    keeps binding every project import it had)."""
-    assert _home_imports(), "the owners import nothing from the project -- the scan went blind"
-    served = set(_index().exports)
-    assert _home_manifest() == {n: h for n, h in _home_imports().items() if n in served}
-
-
 def _statically_bound(tree: ast.Module) -> set[str]:
     """Names a type checker sees on the module: every module-level binding, the
     ``TYPE_CHECKING`` imports included."""
@@ -447,21 +454,6 @@ def _logger_names(tree: ast.Module) -> list[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and ast.unparse(node.func) == "logging.getLogger"
     ]
-
-
-def test_the_owners_log_under_the_facade_name() -> None:
-    """The moved code logs as the one module did: an owner's ``__name__`` would be a
-    logger no filter, level or capture names (``caplog.at_level(logger=...)``)."""
-    names = [n for owner in OWNERS for n in _logger_names(_tree(sys.modules[owner]))]
-    assert names == [repr(FACADE)], names
-    holders = [m for m in _family() if "logger" in vars(m)]
-    assert len(holders) > 2, "too few modules hold the logger -- the scan went blind"
-    assert all(vars(m)["logger"] is logging.getLogger(FACADE) for m in holders)
-
-
-def test_the_logger_scan_can_fail() -> None:
-    tree = ast.parse("import logging\nlogging.getLogger(__name__).warning('x')\n")
-    assert _logger_names(tree) == ["__name__"]
 
 
 @pytest.mark.parametrize("name", ["RetentionPromotionResult"])

@@ -27,11 +27,26 @@ from kiro_crew.platform.context import redact_log_via_context
 from . import pr_description as D
 from .contracts import Proposal
 from .driver_git import _full_head_id, _git
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 from .push_policy import normalize_branch
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .contracts import BugGateResult
     from .driver import Driver
+
+
+def _apply_argv(clone: Path, extra: list[str]) -> list[str]:
+    """``git apply`` argv for the shared clone, with the host-side exec pins.
+
+    ``git apply`` runs on the HOST in the clone the agent edits: it reads the index
+    (spawning ``core.fsmonitor``) and passes file content through
+    ``filter.<name>.clean``/``smudge`` (both measured on git 2.47). It takes stdin, so it
+    cannot go through ``_git``; it carries the same pins as ``_git`` instead.
+    """
+    require_pinned(clone)
+    return ["git", "-C", str(clone), *GIT_SAFE_CONFIG, *hook_off_args(clone), "apply", *extra]
 
 
 def _publishing_is_halted(self: Driver) -> bool:
@@ -76,16 +91,14 @@ def _redact_commit_message(msg: str) -> str:
     are unavailable, the message passes through (the commit still happens)."""
     try:
         # Kiro Crew's core redactor: one call, string return, both the
-        # credential and exfiltration-URL passes. (The port originally
-        # referenced a vendored module that does not exist here, so this
-        # silently no-op'd on every commit — a real leak risk, now fixed.)
+        # credential and exfiltration-URL passes.
         from kiro_crew.security import redact
 
         msg = redact(msg)
     except Exception:  # noqa: BLE001 — a commit message is permanent, pushed git history
         # FAIL CLOSED (same as backend/commit.py): a message that cannot be scanned must
         # not be committed verbatim, since it becomes unwipeable once pushed. Fall back
-        # to a fixed, prose-free subject. Raised by the GPT review of this branch.
+        # to a fixed, prose-free subject.
         logging.getLogger("auto_improvement.driver").warning(
             "commit-message redaction failed; using a fixed subject"
         )
@@ -149,7 +162,7 @@ def _stage_winner(self: Driver, winner: Proposal) -> bool:
     if not winner.diff.strip():
         return True
     ap = subprocess.run(
-        ["git", "-C", str(self.clone), "apply"],
+        _apply_argv(self.clone, []),
         input=winner.diff,
         capture_output=True,
         # surrogateescape re-encodes the captured payload back to the exact
@@ -184,8 +197,7 @@ def _commit_winner_provisional(self: Driver, winner: Proposal) -> bool:
     # CHECK the commit return code. `_git` does not raise, so a failed commit (a
     # rejecting hook, gpg failure, or an empty index) would otherwise leave HEAD on the
     # PREVIOUS commit while this returns True — the pipeline then drafts/pushes a commit
-    # that does not contain the fix (or a prior cycle's). Fail closed instead. Raised by
-    # the GPT review of this branch.
+    # that does not contain the fix (or a prior cycle's). Fail closed instead.
     commit = _git(
         # FIXED message — never `winner.cand_id`. `cand_id` embeds the model-chosen
         # `candidate.target`, and `_short` only restricts to alnum/`_`/`-`, which is
@@ -195,7 +207,7 @@ def _commit_winner_provisional(self: Driver, winner: Proposal) -> bool:
         # DRAFT PUSH publishes — the redacted amend happens AFTER the push (871 ->
         # 887 -> 903) — so an unscanned cand_id lands in GitHub history, which cannot
         # be edited without rewriting it. The cand_id is still in the run archive and
-        # the ledger, where it belongs. Raised by the GPT review of this branch.
+        # the ledger, where it belongs.
         ["commit", "-q", "-m", "wip(auto-improvement): staging a verified candidate"],
         self.clone,
     )
@@ -419,7 +431,7 @@ def _stage_bug_winner(self: Driver, winner: Proposal) -> bool:
     # when the base matches.
     def _apply(extra: list[str]):
         return subprocess.run(
-            ["git", "-C", str(self.clone), "apply", *extra],
+            _apply_argv(self.clone, extra),
             input=winner.diff,
             capture_output=True,
             # Same byte-exact payload round-trip as the plain apply above.
@@ -453,7 +465,7 @@ def _commit_bug_winner_provisional(self: Driver, winner: Proposal) -> bool:
     if not winner.diff.strip():
         return True
     # Same as the perf twin: a failed commit must not report success, or the draft/push
-    # publishes a HEAD that lacks the fix. Raised by the GPT review of this branch.
+    # publishes a HEAD that lacks the fix.
     commit = _git(
         # FIXED message — never `winner.cand_id`. `cand_id` embeds the model-chosen
         # `candidate.target`, and `_short` only restricts to alnum/`_`/`-`, which is
@@ -463,7 +475,7 @@ def _commit_bug_winner_provisional(self: Driver, winner: Proposal) -> bool:
         # DRAFT PUSH publishes — the redacted amend happens AFTER the push (871 ->
         # 887 -> 903) — so an unscanned cand_id lands in GitHub history, which cannot
         # be edited without rewriting it. The cand_id is still in the run archive and
-        # the ledger, where it belongs. Raised by the GPT review of this branch.
+        # the ledger, where it belongs.
         ["commit", "-q", "-m", "wip(auto-improvement): staging a verified candidate"],
         self.clone,
     )

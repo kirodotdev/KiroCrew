@@ -100,13 +100,13 @@ export function useArtifactDetailPageComments({
       ? (resolveSourcePos(range, root, sourceContent) ?? findCoords(sourceContent, raw) ?? findCoords(sourceContent, anchor))
       : (findCoords(sourceContent, raw) ?? findCoords(sourceContent, anchor))
     // Rendered-text offset of the selection start, in the same space the
-    // highlighter's indexTextNodes/rangeForAnchor use — pins the highlight to
+    // highlighter's indexTextNodes/rangesForAnchor use — pins the highlight to
     // THIS occurrence when the quote repeats (line/col drive the agent prompt;
     // the offset drives the visual anchor).
     // The box is about to take focus and collapse the selection: paint the
     // passage so the reader can still see what the open box is attached to.
     paintAnnotationHighlight(highlightOwner, range)
-    // prefix/suffix ride along: `rangeForAnchor` scores a repeated quote by its
+    // prefix/suffix ride along: `rangesForAnchor` scores a repeated quote by its
     // neighbours, so a comment on the second "beta" re-anchors to the second.
     return { anchor, line: coords?.line, column: coords?.column, prefix: derived.prefix, suffix: derived.suffix, startOffset: derived.startOffset, endOffset: derived.endOffset }
   }, [isMarkdown, sourceContent, previewRef])

@@ -864,7 +864,7 @@ class TestMutatorContract:
             async def ticker() -> None:
                 nonlocal ticks
                 while True:
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.02)  # flake-ok: measures free-loop time per tick to prove the loop is not parked, not a wait for a signal
                     ticks += 1
 
             tick_task = asyncio.create_task(ticker())
@@ -971,7 +971,7 @@ class TestMergeResultOffLoop:
         async def ticker() -> None:
             nonlocal ticks
             while True:
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.02)  # flake-ok: measures free-loop time per tick to prove the loop is not parked, not a wait for a signal
                 ticks += 1
 
         tick_task = asyncio.create_task(ticker())
@@ -1305,7 +1305,7 @@ class TestTerminalStateMergeLocked:
         async def ticker() -> None:
             nonlocal ticks
             while True:
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.02)  # flake-ok: measures free-loop time per tick to prove the loop is not parked, not a wait for a signal
                 ticks += 1
 
         tick_task = asyncio.create_task(ticker())

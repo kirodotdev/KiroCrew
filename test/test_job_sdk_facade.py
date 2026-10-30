@@ -30,6 +30,10 @@ from kiro_crew.apps import job_sdk
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_job_sdk_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
+
 FACADE = "kiro_crew.apps.job_sdk"
 OWNERS = ("kiro_crew.apps.job_sdk_records", "kiro_crew.apps.job_sdk_returns")
 APPS_DIR = Path(job_sdk.__file__).resolve().parent
@@ -133,11 +137,6 @@ def _corpus_patched_names() -> frozenset[str]:
     return frozenset(found)
 
 
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
-
-
 def test_every_name_patched_through_the_facade_is_read_there_and_by_no_owner() -> None:
     """The reach the unsplit module had. A write to ``job_sdk.<name>`` was what every
     reader of that name read; with plain re-exports that holds only while every reader is
@@ -230,13 +229,3 @@ def test_the_test_tree_walk_reaches_this_file() -> None:
     walked = {path.resolve() for path in _test_tree_files()}
     assert _THIS_FILE in walked
     assert source_corpus.repo_root() / "test" / "test_job_sdk.py" in walked
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

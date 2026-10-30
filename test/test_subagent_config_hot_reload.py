@@ -147,6 +147,11 @@ class TestReconfigureDerivesEveryField:
         mgr.reconfigure = AsyncMock()  # type: ignore[method-assign]
         await _dispatch(KiroCrewConfig(), "agent.model")
         mgr.reconfigure.assert_not_awaited()
+        # A watched path through the same dispatcher does reach the stub, so
+        # the absence above is the prefix filter and not a detached mock.
+        watched = KiroCrewConfig()
+        await _dispatch(watched, "agent.max_subagents")
+        mgr.reconfigure.assert_awaited_once_with(watched)
 
     @pytest.mark.asyncio
     async def test_pool_size_change_recomputes_the_cap(self) -> None:
@@ -233,6 +238,14 @@ class TestCapChangesAndTheQueue:
         fresh.agent.max_subagents = 3
         mgr.apply_limits(fresh)
         mgr._drain_queue.assert_not_called()
+        assert mgr.max_concurrent == 3
+        assert mgr._queue == [{"task": "queued"}]
+        mgr.apply_limits(fresh)  # unchanged cap
+        mgr._drain_queue.assert_not_called()
+        # Raising past the old cap is what pumps the queue.
+        fresh.agent.max_subagents = 9
+        mgr.apply_limits(fresh)
+        mgr._drain_queue.assert_called_once_with()
 
     def test_lowered_cap_cancels_nothing_in_flight(self) -> None:
         mgr = _mgr(max_concurrent=8)
@@ -300,8 +313,11 @@ class TestCapChangeVersusAdaptiveClamp:
         mgr.spawn = MagicMock(return_value=None)  # type: ignore[method-assign]
         mgr._emit_queue_depth = MagicMock()  # type: ignore[method-assign]
         mgr._queue.append({"task": "queued work", "parent_session_key": "p", "batch_id": ""})
-        mgr.set_effective_cap(4)
+        assert mgr.set_effective_cap(4) == 4
+        assert mgr._queue == []
         mgr.spawn.assert_called_once()
+        assert mgr.spawn.call_args.kwargs["task"] == "queued work"
+        assert mgr.spawn.call_args.kwargs["_from_queue"] is True
 
     def test_adaptive_pause_admits_nothing_and_cancels_nothing(self) -> None:
         mgr = _mgr(max_concurrent=8)

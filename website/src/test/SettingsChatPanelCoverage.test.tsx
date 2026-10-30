@@ -106,6 +106,7 @@ import { ApiError } from '../api/apiError'
 import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelListHealth'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
+import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -117,13 +118,17 @@ import { createTestStore } from './helpers'
 
 const LS_KEY = 'mc-chat-config'
 
-function wrap(sub = 'transcript') {
+function wrap(sub = 'transcript', opts: { onCommit?: () => void } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const view = render(
     <MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}>
     <Provider store={createTestStore()}>
     <QueryClientProvider client={qc}>
-      <ChatPanel />
+      {/* `onRender` runs in the commit phase, after the DOM is written and before
+          passive effects, so a probe there sees exactly what one commit shows. */}
+      <React.Profiler id="chat" onRender={() => opts.onCommit?.()}>
+        <ChatPanel />
+      </React.Profiler>
     </QueryClientProvider>
     </Provider>
     </MemoryRouter>
@@ -344,6 +349,22 @@ describe('ChatPanel — Composer', () => {
     )
   })
 
+  it('shows the stored soft-stop budget in the first commit that enables the input', async () => {
+    // The row is seeded from the served config in the render that first has it,
+    // not latched by a later effect: a commit with the input enabled and empty
+    // is a frame a user can see and a test can land on.
+    const commits: { enabled: boolean; value: string }[] = []
+    wrap('composer', {
+      onCommit: () => {
+        const input = screen.queryByLabelText('Soft-stop budget (seconds)') as HTMLInputElement | null
+        if (input) commits.push({ enabled: !input.disabled, value: input.value })
+      },
+    })
+    await settledInput('Soft-stop budget (seconds)')
+    const first = commits.find(c => c.enabled)
+    expect(first).toEqual({ enabled: true, value: '10' })
+  })
+
   it('PATCHes the soft-stop budget on blur with an in-range value', async () => {
     wrap('composer')
     const input = await settledInput('Soft-stop budget (seconds)')
@@ -424,6 +445,21 @@ describe('ChatPanel — Messages', () => {
     wrap()
     fireEvent.click(await screen.findByRole('switch', { name: label }))
     await waitFor(() => expect(storedChat()[key]).toBe(expected))
+  })
+
+  it('stores Copy on select under its own device-only key, not the synced chat config', async () => {
+    wrap()
+    const sw = await screen.findByRole('switch', { name: 'Copy on select' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-chat-copy-on-select')).toBe('1'))
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}')).not.toHaveProperty('copyOnSelect')
+    // Not backed up to the host, so another browser of the same owner never
+    // inherits a clipboard-overwriting setting.
+    expect(DURABLE_PREF_KEYS).not.toContain('mc-chat-copy-on-select')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-chat-copy-on-select')).toBe('0'))
   })
 
   it('inverts the stored collapse flag behind Show Thinking Inline', async () => {
@@ -840,6 +876,21 @@ describe('ChatPanel — Subagents', () => {
     wrap('advanced')
     await pickOption('Completion Event Truncation', 2)
     expect(await screen.findByText(/Failed to save completion-keep mode/)).toBeInTheDocument()
+  })
+
+  it('shows the stored completion-keep characters in the first commit that enables the input', async () => {
+    // Same render-phase seed as the soft-stop budget: the first enabled commit
+    // already carries the served number, never an empty frame.
+    const commits: { enabled: boolean; value: string }[] = []
+    wrap('advanced', {
+      onCommit: () => {
+        const input = screen.queryByLabelText('Completion event characters') as HTMLInputElement | null
+        if (input) commits.push({ enabled: !input.disabled, value: input.value })
+      },
+    })
+    await settledInput('Completion event characters')
+    const first = commits.find(c => c.enabled)
+    expect(first).toEqual({ enabled: true, value: '3000' })
   })
 
   it('reverts the completion-keep characters when the write fails', async () => {

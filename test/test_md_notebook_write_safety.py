@@ -648,7 +648,18 @@ async def test_a_sync_during_the_retry_window_never_commits_the_staged_temp(
                     {"path": "One.md", "content": "mine", "baseMtime": read["mtime"]},
                 )
             )
-            await real_asyncio.wait_for(parked.wait(), timeout=5)
+            # Generous, named fail-safes rather than tight bounds, here and at
+            # the resumed save's wait below: reaching the first backoff includes
+            # the save's worker-thread staging and first publish attempt, which
+            # queue behind whatever else holds the shared `to_thread` executor
+            # on a loaded host (flake class 2, see testing-conventions.md).
+            try:
+                await real_asyncio.wait_for(parked.wait(), timeout=_BARRIER_LOST_RUN_SEC)
+            except TimeoutError:
+                raise AssertionError(
+                    "the save never reached its first backoff; a starved shared "
+                    "to_thread executor holds its staging (flake class 2)"
+                ) from None
 
             # The exposure is real and present RIGHT NOW: the temp is on disk and
             # git reports it as untracked. Asserting it keeps the rest of this
@@ -666,7 +677,15 @@ async def test_a_sync_during_the_retry_window_never_commits_the_staged_temp(
             committed = [c["path"] for c in sync_body["result"]["committed"]]
 
             resume.set()
-            save_status, save_body = await real_asyncio.wait_for(save, timeout=5)
+            try:
+                save_status, save_body = await real_asyncio.wait_for(
+                    save, timeout=_BARRIER_LOST_RUN_SEC
+                )
+            except TimeoutError:
+                raise AssertionError(
+                    "the resumed save never completed; a starved shared "
+                    "to_thread executor holds its publish (flake class 2)"
+                ) from None
 
     assert committed == [
         "attachment.png"
@@ -782,6 +801,8 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
 
             save_status = 0
             save_body: dict[str, Any] = {}
+            sync_status = 0
+            sync_body: dict[str, Any] = {}
             sync: Optional[asyncio.Task[tuple[int, Any]]] = None
             try:
                 # flake-ok: pre-existing 10 s thread-pool wait for the staging write the test gates, failing by name; moved verbatim
@@ -803,9 +824,15 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                 assert not sync.done(), "the Sync ran while a note was still staging"
             finally:
                 release_stage.set()
+                # After staging releases the vault lock, the sync that was
+                # parked behind it acquires the lock first and runs all git
+                # operations; save cannot re-acquire the lock to publish
+                # until sync releases it.  Drain sync before awaiting save
+                # so the save-await is not racing git work on a slow runner.
+                if sync is not None:
+                    sync_status, sync_body = await real_asyncio.wait_for(sync, timeout=30)
                 save_status, save_body = await real_asyncio.wait_for(save, timeout=10)
             assert sync is not None
-            sync_status, sync_body = await real_asyncio.wait_for(sync, timeout=30)
             assert sync_status == 200, sync_body
             committed = [c["path"] for c in sync_body["result"]["committed"]]
 
@@ -982,7 +1009,18 @@ async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
             task_a = real_asyncio.create_task(
                 client.put("/api/note", {"path": "One.md", "content": "A"})
             )
-            await real_asyncio.wait_for(a_parked.wait(), timeout=5)
+            # Generous, named fail-safes rather than tight bounds, here and at
+            # the released saves' waits below: each save's staging, publish and
+            # backlink recompute run on worker threads that queue behind
+            # whatever else holds the shared `to_thread` executor on a loaded
+            # host (flake class 2, see testing-conventions.md).
+            try:
+                await real_asyncio.wait_for(a_parked.wait(), timeout=_BARRIER_LOST_RUN_SEC)
+            except TimeoutError:
+                raise AssertionError(
+                    "the earlier save never reached its retry backoff; a starved "
+                    "shared to_thread executor holds its staging (flake class 2)"
+                ) from None
 
             # A is mid-retry with no freshness token. The note's lock must still
             # be held, so a second save cannot slip in behind it.
@@ -1001,8 +1039,15 @@ async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
                 assert not task_b.done(), "a later save interleaved into the retry gap"
             finally:
                 release_a.set()
-            status_a, body_a = await real_asyncio.wait_for(task_a, timeout=5)
-            status_b, body_b = await real_asyncio.wait_for(task_b, timeout=5)
+            try:
+                (status_a, body_a), (status_b, body_b) = await real_asyncio.wait_for(
+                    real_asyncio.gather(task_a, task_b), timeout=_BARRIER_LOST_RUN_SEC
+                )
+            except TimeoutError:
+                raise AssertionError(
+                    "a released save never completed; a starved shared "
+                    "to_thread executor holds its publish (flake class 2)"
+                ) from None
 
         assert status_a == 200, f"the earlier save failed: {body_a}"
         assert status_b == 200, f"the later save failed: {body_b} renames={renames}"
@@ -1053,7 +1098,12 @@ async def test_a_tokenless_save_stages_inside_the_note_lock(fixtures) -> None:
             staged.append(content)
             if len(staged) == 1:
                 a_staging.set()
-                release_a.wait(timeout=10)
+                # A fail-safe against a genuine deadlock, not a wait the test
+                # should run out on: proceeding silently on expiry un-parks A
+                # mid-test, lets B take the note lock and complete, and turns
+                # host load into a fake ordering violation (flake class 2).
+                if not release_a.wait(timeout=_BARRIER_LOST_RUN_SEC):
+                    raise AssertionError("test never released the staging worker")
             return real_stage(tmp, content)
 
         with pytest.MonkeyPatch.context() as mp:
@@ -1087,8 +1137,19 @@ async def test_a_tokenless_save_stages_inside_the_note_lock(fixtures) -> None:
                 assert not task_b.done(), "a later save completed while the earlier one was staging"
             finally:
                 release_a.set()
-            status_a, body_a = await real_asyncio.wait_for(task_a, timeout=10)
-            status_b, body_b = await real_asyncio.wait_for(task_b, timeout=10)
+            # Generous, named fail-safes rather than tight bounds: the released
+            # saves' staging and publish run on worker threads that queue behind
+            # whatever else holds the shared `to_thread` executor on a loaded
+            # host (flake class 2, see testing-conventions.md).
+            try:
+                (status_a, body_a), (status_b, body_b) = await real_asyncio.wait_for(
+                    real_asyncio.gather(task_a, task_b), timeout=_BARRIER_LOST_RUN_SEC
+                )
+            except TimeoutError:
+                raise AssertionError(
+                    "a released save never completed; a starved shared "
+                    "to_thread executor holds its publish (flake class 2)"
+                ) from None
 
     assert status_a == 200, f"the earlier save failed: {body_a}"
     assert status_b == 200, f"the later save failed: {body_b}"

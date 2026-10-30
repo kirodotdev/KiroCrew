@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import kiro_crew.session as session_mod
+import kiro_crew.session_lifecycle as lifecycle_mod
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import (
     SessionClosingError,
@@ -24,6 +25,7 @@ from kiro_crew.session import (
     _provider_has_unfinished_turn,
     _Session,
 )
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture
@@ -59,6 +61,8 @@ class _FakeProvider:
         self.wait_turn_done_calls: list[float] = []
         self.shutdown_called = False
         self.cancel_finished = False
+        # Set when a blocked cancel is torn down by cancellation from outside.
+        self.cancel_torn_down = False
         self.cancel_started_at: float | None = None
         self.shutdown_at: float | None = None
 
@@ -94,7 +98,11 @@ class _FakeProvider:
         if self._cancel_mode == "block":
             # Never acks on its own — only the drain's bounded wait_for should
             # tear this down. sleep long enough to outlast any test budget.
-            await asyncio.sleep(3600)
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                self.cancel_torn_down = True
+                raise
         # Graceful ack: the native turn reached a safe boundary.
         self._active = False
         self._unfinished = False
@@ -185,26 +193,54 @@ async def test_drain_disabled_when_timeout_nonpositive(cfg):
     assert p.cancel_calls == []
 
 
+@pytest.fixture
+def fleet_deadlines(monkeypatch) -> list[float]:
+    """Every deadline the session lifecycle hands ``asyncio.wait_for``, in order.
+
+    The bound tests read the cap off these deadlines instead of a wall-clock
+    ceiling: a loaded runner can overrun any fixed ceiling with no change in
+    behaviour, while the deadline is the same on every host.
+    """
+    deadlines: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def _recording_wait_for(aw, timeout):
+        deadlines.append(timeout)
+        return await real_wait_for(aw, timeout)
+
+    # Several lifecycle owners bind ``asyncio``, so swap it through their mirrored
+    # facade, which writes every owner and undoes them together. The stdlib
+    # module itself stays untouched.
+    monkeypatch.setattr(
+        lifecycle_mod,
+        "asyncio",
+        SimpleNamespace(**{**vars(asyncio), "wait_for": _recording_wait_for}),
+    )
+    return deadlines
+
+
 @pytest.mark.asyncio
-async def test_drain_times_out_but_stays_bounded(cfg):
-    """A turn that never reaches a safe boundary must not hang the drain —
-    it returns within ~timeout+buffer and reports the stuck turn."""
+async def test_drain_times_out_but_stays_bounded(cfg, fleet_deadlines):
+    """A turn that never reaches a safe boundary must not hang the drain: the
+    drain caps the whole wait at timeout + 1.0s, tears the stuck cancel down
+    and reports the turn."""
     mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
     p = _FakeProvider(active=True, cancel_mode="block")
     _inject(mgr, "s1", p)
 
-    t0 = time.monotonic()
     n = await mgr.drain_active_turns(timeout=0.3)
-    elapsed = time.monotonic() - t0
 
     assert n == 1
-    # Bounded: outer cap is timeout + 1.0s; must be well under the 3600s block.
-    assert elapsed < 2.5
+    assert p.cancel_calls == [0.3]
+    # One outer deadline, timeout + 1.0s: far under the cancel's 3600s block.
+    assert fleet_deadlines == [pytest.approx(1.3)]
+    # The drain returned because its deadline tore the stuck cancel down.
+    assert p.cancel_torn_down is True
     assert p.cancel_finished is False  # never acked — timed out
 
 
 @pytest.mark.asyncio
-async def test_close_all_drains_then_kills_on_timeout(cfg, monkeypatch):
+async def test_close_all_drains_then_kills_on_timeout(cfg, monkeypatch, fleet_deadlines):
     """close_all must drain first, then STILL kill even when the drain times out."""
     # Shrink the default drain budget so close_all's internal drain is fast.
     monkeypatch.setattr(session_mod, "_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS", 0.2)
@@ -213,16 +249,16 @@ async def test_close_all_drains_then_kills_on_timeout(cfg, monkeypatch):
     p = _FakeProvider(active=True, cancel_mode="block")
     _inject(mgr, "s1", p)
 
-    t0 = time.monotonic()
     await mgr.close_all()
-    elapsed = time.monotonic() - t0
 
     # Drain was attempted (cancel called) and then the kill path was reached.
-    assert p.cancel_calls  # graceful cancel attempted
+    assert p.cancel_calls == [0.2]  # graceful cancel attempted on the shrunk budget
+    assert p.cancel_torn_down is True  # the drain's deadline ended the stuck cancel
     assert p.shutdown_called is True  # fell through to kill/shutdown
     assert mgr.count == 0
-    # Bounded by the shrunken drain budget (0.2 + 1.0) + fast shutdown, not 3600s.
-    assert elapsed < 3.0
+    # Bounded by the shrunken drain budget (0.2 + 1.0), then the 5s close cap,
+    # not the cancel's 3600s block.
+    assert fleet_deadlines == [pytest.approx(1.2), pytest.approx(5.0)]
 
 
 @pytest.mark.asyncio
@@ -319,7 +355,9 @@ async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
     _inject(mgr, "s1", p)
 
     t0 = time.monotonic()
-    await asyncio.wait_for(mgr.close_all(drain_timeout=0.2), timeout=1.0)
+    await await_until(
+        asyncio.ensure_future(mgr.close_all(drain_timeout=0.2)), what="close_all completed"
+    )
     elapsed = time.monotonic() - t0
 
     assert p.cancel_calls == [0.2]  # drain used the passed budget
@@ -355,7 +393,7 @@ async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg, mo
     try:
         # Establish mid-drain cancellation explicitly: an absolute deadline
         # can otherwise expire before the provider gets scheduled on a busy host.
-        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        await await_until(entered, what="cancel entered")
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(task, timeout=0)
 
@@ -425,7 +463,7 @@ async def test_update_pause_is_refused_once_a_stop_is_signalled(cfg, monkeypatch
         await asyncio.sleep(0)
         stopping["set"] = True
 
-    assert await asyncio.wait_for(pause, timeout=5) is False
+    assert await await_until(pause, what="pause completed") is False
     assert mgr.admission_closed is False
 
 
@@ -445,7 +483,7 @@ async def test_update_pause_is_kept_once_a_stop_is_signalled(cfg, monkeypatch):
         resume = asyncio.create_task(mgr.resume_turn_admission_after_update())
         await asyncio.sleep(0)
         stopping["set"] = True
-    assert await asyncio.wait_for(resume, timeout=5) is False
+    assert await await_until(resume, what="resume completed") is False
 
     assert mgr.admission_closed is True
     with pytest.raises(SessionClosingError):
@@ -516,11 +554,11 @@ async def test_registration_refused_when_closing_began_during_startup(cfg):
     mgr = SessionManager(cfg, provider_factory=lambda *a, **k: provider)
 
     task = asyncio.create_task(mgr.get_or_create("s-late"))
-    await asyncio.wait_for(started.wait(), timeout=2)
+    await await_until(started, what="provider started")
     mgr._closing = True  # close_all()'s first act, mid-handshake
     resume.set()
     with pytest.raises(SessionClosingError):
-        await asyncio.wait_for(task, timeout=2)
+        await await_until(task, what="get_or_create completed")
     # Nothing registered behind the snapshot.
     assert "s-late" not in mgr._sessions
 

@@ -4,12 +4,13 @@ import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { AlarmClock, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, FileText, Flag, Goal, HeartPulse, MessageSquare, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
+import { AlarmClock, CalendarDays, CalendarRange, Check, ChevronLeft, ChevronRight, Clock, FileText, Flag, Goal, MessageCircle, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api, type GoalKeyResult, type GoalSchedules, type MemberGoal, type MemberGoals } from '../../api/client'
 import { Btn, Input, Toggle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
+import Modal from '../../components/Modal'
 import { MEMBER_GOALS_QUERY_PREFIX } from '../../api/membersQuery'
 import { fmtRelative, fmtUnit, fmtWeekday } from '../../i18n/format'
 import { cn } from '../../lib/utils'
@@ -19,8 +20,6 @@ import { ProfilePagePushContext } from './CrewProfilePanel'
  *  inside a block wrapper, so a width on the control left its chevron at the
  *  row's far edge, and a fixed height clipped the 16px touch text. */
 const PICKER_STYLE = { width: '11rem' } as const
-/** The heartbeat's options carry their daily bound, so the picker fits the longest one. */
-const HEARTBEAT_PICKER_STYLE = { width: '19rem', maxWidth: '100%' } as const
 
 /** The query key every view of one crewmate's goal record shares. */
 export const memberGoalsKey = (slug: string, member: string) => [...MEMBER_GOALS_QUERY_PREFIX, slug, member] as const
@@ -57,25 +56,28 @@ const TONE_TILE: Record<Tone, string> = {
   quiet: 'bg-bg-hover text-muted',
 }
 
-/** A card's small caps label, led by its icon on a tinted tile centred on
- *  the label (the tile's box, not the glyph's weight, sets the alignment). */
-function SectionLabel({ title, icon: Icon, tone, trailing }: { title: string; icon: LucideIcon; tone: Tone; trailing?: ReactNode }) {
+/** A section's header row, the first row of its card: the icon on a tinted
+ *  tile at the Profile tab's `Tile` size, the title in sentence case, and
+ *  whatever rides at the right (a count, an action). The same 14px on every
+ *  side, so the tile sits as far from the top as from the left. */
+function SectionHeader({ title, icon: Icon, tone, trailing }: { title: string; icon: LucideIcon; tone: Tone; trailing?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className={cn('w-5 h-5 rounded-md grid place-items-center shrink-0', TONE_TILE[tone])} aria-hidden="true" data-testid="goal-section-icon">
-        <Icon size={12} />
+    <div className="flex items-center gap-3 p-3.5">
+      <span className={cn('w-9 h-9 rounded-[10px] grid place-items-center shrink-0', TONE_TILE[tone])} aria-hidden="true" data-testid="goal-section-icon">
+        <Icon size={18} />
       </span>
-      <span className="text-[11px] leading-none font-semibold tracking-wide uppercase text-muted">{title}</span>
+      <h3 className="m-0 text-[14px] leading-tight font-semibold text-text">{title}</h3>
       <span className="flex-1" />
-      {trailing && <span className="-my-2 flex items-center">{trailing}</span>}
+      {trailing && <span className="flex items-center">{trailing}</span>}
     </div>
   )
 }
 
-/** One card of the first page, in the Profile tab's language: a hairline
- *  rounded card that SHOWS state. A card with `onOpen` is a door: the whole
- *  card highlights on hover and opens its page, where the editing lives. */
-function Section({ title, icon, tone, children, testId, trailing, flush, onOpen, openLabel, openTestId }: {
+/** One section of the first page: a hairline rounded card that SHOWS state
+ *  (the Profile tab's language), its header the first row inside it, a
+ *  hairline under the header. A card with `flush` holds its rows edge to edge
+ *  below that; otherwise it pads its content. */
+function Section({ title, icon, tone, children, testId, trailing, flush }: {
   title: string
   icon: LucideIcon
   tone: Tone
@@ -83,25 +85,13 @@ function Section({ title, icon, tone, children, testId, trailing, flush, onOpen,
   testId: string
   trailing?: ReactNode
   flush?: boolean
-  onOpen?: () => void
-  openLabel?: string
-  openTestId?: string
 }) {
-  const label = <SectionLabel title={title} icon={icon} tone={tone} trailing={trailing} />
-  if (onOpen) {
-    return (
-      <section className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid={testId}>
-        <button type="button" onClick={onOpen} aria-label={openLabel} className="block w-full text-left px-3.5 pt-3.5 pb-3 hover:bg-bg-hover transition-colors cursor-pointer focus-ring" data-testid={openTestId}>
-          <div className="mb-2.5">{label}</div>
-          {children}
-        </button>
-      </section>
-    )
-  }
   return (
-    <section className={cn('rounded-2xl border border-border bg-bg', flush ? 'overflow-hidden' : 'px-3.5 pt-3.5 pb-3')} data-testid={testId}>
-      <div className={flush ? 'mx-3.5 mt-3.5 mb-2.5' : 'mb-2.5'}>{label}</div>
-      {children}
+    <section className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid={testId}>
+      <SectionHeader title={title} icon={icon} tone={tone} trailing={trailing} />
+      <div className={cn('border-t border-border', !flush && 'px-3.5 py-3')}>
+        {children}
+      </div>
     </section>
   )
 }
@@ -160,7 +150,7 @@ function AimLine({ kr, className }: { kr: GoalKeyResult; className: string }) {
  *  crewmate's own words, what it is aiming for. A door to its page. */
 function KeyResultRow({ kr, goals, onOpen }: { kr: GoalKeyResult; goals: MemberGoal[]; onOpen: () => void }) {
   return (
-    <li className="border-t border-border" data-testid="goal-key-result">
+    <li className="border-t border-border first:border-t-0" data-testid="goal-key-result">
       <button type="button" onClick={onOpen} className="block w-full px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer focus-ring" data-testid="goal-key-result-open">
         <span className="block text-[13px] font-semibold text-text leading-snug">{kr.text}<LinkedGoals kr={kr} goals={goals} /></span>
         {kr.current ? <span className="block mt-0.5 text-[13px] text-text leading-snug whitespace-pre-wrap">{kr.current}</span> : null}
@@ -202,9 +192,12 @@ function KeyResultPage({ kr, goals, actions }: { kr: GoalKeyResult; goals: Membe
 }
 
 /** One check-in on the first page: on or off, and when it runs. */
+/** One check-in as its own card: on or off and when it runs. The three tiles
+ *  sit inside ONE button (the door to the Check-ins page, where the switches and
+ *  pickers live), so the row carries one control, not three. */
 function CheckInTile({ icon: Icon, tone, label, status, on, testId }: { icon: LucideIcon; tone: Tone; label: string; status: string; on: boolean; testId: string }) {
   return (
-    <span className="flex flex-col items-start gap-1.5 rounded-xl border border-border p-2.5 min-w-0" data-testid={testId} data-on={on ? 'true' : 'false'}>
+    <span className="flex flex-col items-start gap-1.5 rounded-2xl border border-border bg-bg p-3 min-w-0 text-left" data-testid={testId} data-on={on ? 'true' : 'false'}>
       <RowTile tone={on ? tone : 'quiet'} size="sm"><Icon size={15} /></RowTile>
       <span className={cn('text-[12.5px] font-semibold leading-tight line-clamp-2', on ? 'text-text' : 'text-muted')}>{label}</span>
       <span className="text-[11.5px] text-muted truncate w-full">{status}</span>
@@ -214,11 +207,11 @@ function CheckInTile({ icon: Icon, tone, label, status, on, testId }: { icon: Lu
 
 function Reports({ goals, limit }: { goals: MemberGoals; limit: number }) {
   const { t } = useTranslation()
-  if (!goals.reports.length) return <p className="px-3.5 pb-3 text-[13px] text-muted">{t('pages.membersPage.goals_reports_none')}</p>
+  if (!goals.reports.length) return <p className="px-3.5 py-3 text-[13px] text-muted">{t('pages.membersPage.goals_reports_none')}</p>
   return (
     <ul data-testid="goal-reports">
       {goals.reports.slice(0, limit).map(r => (
-        <li key={r.slug} className="border-t border-border">
+        <li key={r.slug} className="border-t border-border first:border-t-0">
           <Link to={'/artifacts/' + encodeURIComponent(r.slug)} className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-bg-hover transition-colors focus-ring">
             <span className="flex-1 min-w-0 leading-tight">
               <span className="block text-[13px] font-semibold text-text truncate">{r.title}</span>
@@ -239,51 +232,37 @@ const MONTH_DAYS = Array.from({ length: 28 }, (_, i) => i + 1)
 /** The heartbeat's intervals in minutes (`member_goals.HEARTBEAT_INTERVALS`). */
 export const HEARTBEAT_INTERVALS = [30, 60, 120, 240] as const
 
-/** "30 min" / "1 hr", in the active locale. */
 /** The most wakes a heartbeat at *minutes* makes in a day, the bound the user consents
  *  to (`member_goals.wakes_per_day`). */
 export const wakesPerDay = (minutes: number) => Math.floor((24 * 60) / minutes)
 
+/** "30 min" / "1 hr", in the active locale. */
 export const fmtInterval = (minutes: number) =>
   minutes < 60 ? fmtUnit(minutes, 'minute', { unitDisplay: 'short' }) : fmtUnit(minutes / 60, 'hour', { unitDisplay: 'short' })
 
-/** The heartbeat on the first page: a full-width row under the three tiles,
- *  because it does the work where they report on it. One line says what it
- *  does, so the user needs no word learnt first. */
-function HeartbeatRow({ on, interval }: { on: boolean; interval: number }) {
-  const { t } = useTranslation()
-  return (
-    <span className="mt-2 flex items-center gap-3 rounded-xl border border-border p-2.5 min-w-0" data-testid="crew-goals-checkin-heartbeat" data-on={on ? 'true' : 'false'}>
-      <RowTile tone={on ? 'ok' : 'quiet'} size="sm"><HeartPulse size={15} /></RowTile>
-      <span className="flex-1 min-w-0 leading-tight">
-        <span className={cn('block text-[12.5px] font-semibold', on ? 'text-text' : 'text-muted')}>{t('pages.membersPage.goals_heartbeat')}</span>
-        <span className="block text-[11.5px] text-muted truncate">{t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(interval) })}</span>
-        {/* Where the Heartbeat shows as on, it also says what it costs. */}
-        {on && <span className="block text-[11.5px] text-muted">{t('pages.membersPage.goals_heartbeat_credits')} · {t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(interval) })}</span>}
-      </span>
-      <span className="text-[11.5px] text-muted shrink-0">{on ? t('pages.membersPage.goals_heartbeat_on') : t('pages.membersPage.goals_checkin_off')}</span>
-    </span>
-  )
-}
-
-/** The page pushed over the first page: one goal (`id: null` is a new one),
- *  one milestone, or the check-in settings. */
-type GoalsPage = { kind: 'goal'; id: string | null } | { kind: 'kr'; id: string } | { kind: 'checkins' } | { kind: 'track' }
+/** The page pushed over the first page: one goal, one milestone, or the
+ *  check-in settings. A NEW goal (`id: null`) is a page only for a crewmate
+ *  WITHOUT the mate tools; otherwise it starts in the crewmate's chat (the New
+ *  goal modal below). */
+type GoalsPage = { kind: 'goal'; id: string | null } | { kind: 'kr'; id: string } | { kind: 'checkins' }
 
 /** The crewmate's Goals tab. The first page only SHOWS state: the goals, the
  *  milestones and which goals each serves, which check-ins are on, the saved
  *  reports. Every edit and every detail is a page pushed over it (the Profile
- *  tab's About and Notes move the same way). What the crewmate is doing right
- *  now is its task list, not part of the goals: "Add something {name} should track" asks
- *  the crewmate to track an item there, and nothing tracked shows on this tab.
- *  `onTrackInChat` sends that ask as the user's own message in the crewmate's
- *  thread and returns the transport's delivery verdict. */
-export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTracked, onDraftStateChange, onRequestLeave }: {
+ *  tab's About and Notes move the same way). A new goal is set by TALKING to
+ *  the crewmate: the Create a goal row opens a modal that says, in plain
+ *  words, what a goal is and how the crewmate uses one, and its one button
+ *  sends an opening message as the user into the crewmate's thread
+ *  (`onSendToChat`, the transport's delivery verdict), after which the
+ *  crewmate asks back and proposes the goal on its card as it does today. The
+ *  Heartbeat is not a goal check-in and is not on this tab: it is the
+ *  Schedules tab's row (`CrewHeartbeat.tsx`). */
+export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent, onDraftStateChange, onRequestLeave }: {
   slug: string
   member: string
   name: string
-  onTrackInChat?: (message: string) => Promise<SendReceiptStatus>
-  onTracked?: () => void
+  onSendToChat?: (message: string) => Promise<SendReceiptStatus>
+  onSent?: () => void
   onDraftStateChange?: (dirty: boolean, busy: boolean) => void
   onRequestLeave?: (proceed: () => void) => void
 }) {
@@ -308,8 +287,8 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
     base: { id: string; text: string; target: string }[]
   } | null>(null)
   const timeId = useId()
-  const [tracking, setTracking] = useState<'idle' | 'sending' | 'failed' | 'unconfirmed'>('idle')
-  const [trackText, setTrackText] = useState('')
+  // The New goal modal: closed, open, or the state of the message its button sent.
+  const [newGoal, setNewGoal] = useState<'closed' | 'open' | 'sending' | 'failed' | 'unconfirmed'>('closed')
   // Synchronous latch: a second click or an exit in the same tick cannot abandon
   // a request before React has committed its pending state.
   const busyRef = useRef(false)
@@ -323,8 +302,7 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
   const krBase = krEdit?.base.find(k => k.id === krEdit.id)
   const dirty = !!(editing && editing.text !== editing.expected)
     || !!(krEdit && (krEdit.text !== krBase?.text || krEdit.target !== krBase?.target))
-    || !!trackText
-  const busy = save.isPending || tracking === 'sending'
+  const busy = save.isPending || newGoal === 'sending'
   useLayoutEffect(() => { onDraftStateChange?.(dirty, busy) }, [dirty, busy, onDraftStateChange])
   useLayoutEffect(() => () => { onDraftStateChange?.(false, false) }, [onDraftStateChange])
   const requestLeave = (proceed: () => void) => {
@@ -332,28 +310,29 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
     if (onRequestLeave) onRequestLeave(proceed)
     else proceed()
   }
-  const trackInChat = async () => {
-    const text = trackText.trim()
-    if (!onTrackInChat || busyRef.current || !text) return
+  // The New goal modal's one button: the opening message, as the user's own,
+  // into the crewmate's thread. Only a `dispatched` or `queued` receipt closes
+  // the modal (and, through `onSent`, a floating profile card, so the reply is
+  // in view); a refusal or an unconfirmed delivery keeps it open with a notice.
+  const tellInChat = async () => {
+    if (!onSendToChat || busyRef.current) return
     busyRef.current = true
     onDraftStateChange?.(dirty, true)
-    setTracking('sending')
+    setNewGoal('sending')
     let status: SendReceiptStatus
     try {
-      status = await onTrackInChat(t('pages.membersPage.goals_track_message', { text }))
+      status = await onSendToChat(t('pages.membersPage.goals_new_goal_message'))
     } catch {
       // A rejected callback cannot prove the request never reached the gateway.
       status = 'transport-error'
     }
     busyRef.current = false
+    onDraftStateChange?.(dirty, false)
     if (status === 'dispatched' || status === 'queued') {
-      setTracking('idle')
-      closePage()
-      onDraftStateChange?.(false, false)
-      onTracked?.()
+      setNewGoal('closed')
+      onSent?.()
     } else {
-      setTracking(status === 'refused' ? 'failed' : 'unconfirmed')
-      onDraftStateChange?.(dirty, false)
+      setNewGoal(status === 'refused' ? 'failed' : 'unconfirmed')
     }
   }
   // A successful write alone clears its draft. Serialize the writes so one
@@ -370,12 +349,11 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
   const pageTitle = !page ? ''
     : page.kind === 'goal' ? (pageGoal ? t('pages.membersPage.goals_goal_number', { number: pageGoal.number }) : t('pages.membersPage.goals_new_goal'))
       : page.kind === 'checkins' ? t('pages.membersPage.goals_checkins')
-        : page.kind === 'track' ? t('pages.membersPage.goals_track_title')
         : pageKr?.text ?? ''
 
   // The page's goal or milestone is gone (removed here or elsewhere): go back to
   // the first page, where the Undo row is. Retitling instead would re-push the
-  // page as "New goal" in the same moment the removal closes it.
+  // page in the same moment the removal closes it.
   const pageGone = (page?.kind === 'goal' && !!page.id && !!goals && !pageGoal)
     || (page?.kind === 'kr' && !!goals && !pageKr)
 
@@ -383,8 +361,6 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
     setPage(null)
     setEditing(null)
     setKrEdit(null)
-    setTrackText('')
-    setTracking('idle')
   }
   // The Profile host asks its leave guard before invoking this pop callback.
   useEffect(() => {
@@ -425,6 +401,12 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
     setEditing({ text: goal?.text ?? '', expected: goal?.text ?? '' })
     openPage({ kind: 'goal', id: goal?.id ?? null })
   }
+  // Every crewmate's chat can write a goal down (`set_goal`), so a new goal
+  // always starts there.
+  const createGoal = () => {
+    if (busyRef.current) return
+    setNewGoal('open')
+  }
 
   // No hand-off: an open goal or milestone draft holds unsaved text that
   // navigation would lose. Check-in, Undo and draft-free removal failures can hand off.
@@ -451,12 +433,6 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
     return (
       <div className="flex flex-col gap-3" data-testid="crew-goals-goal-page">
         {saveError}
-        {!goal && (
-          <section className="rounded-2xl border border-dashed border-border px-4 py-5 flex flex-col items-center gap-2.5 text-center" data-testid="crew-goals-new-goal-intro">
-            <RowTile tone="accent"><Goal size={17} /></RowTile>
-            <p className="text-[13px] text-muted max-w-[30ch]">{t('pages.membersPage.goals_intro', { name })}</p>
-          </section>
-        )}
         <section className="rounded-2xl border border-border bg-bg px-3.5 py-3.5 flex flex-col gap-2" data-testid="crew-goals-long-term-editor">
           {goal && <div className="flex items-center gap-2"><GoalNumber goal={goal} /><span className="text-[12px] text-muted">{t('pages.membersPage.goals_goal_number', { number: goal.number })}</span></div>}
           <textarea
@@ -482,23 +458,20 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
             </Btn>
           </div>
         </section>
-        {goal && (
-          <section className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-goals-goal-milestones">
-            <div className="mx-3.5 mt-3.5 mb-2.5"><SectionLabel title={t('pages.membersPage.goals_linked_milestones')} icon={Flag} tone="ok" /></div>
-            {linked.length === 0 ? (
-              <p className="px-3.5 pb-3 text-[13px] text-muted">{t('pages.membersPage.goals_linked_none')}</p>
-            ) : (
-              <ul>
-                {linked.map(kr => (
-                  <li key={kr.id} className="border-t border-border px-3.5 py-2.5" data-testid="crew-goals-goal-milestone">
-                    <span className="block text-[13px] font-semibold text-text leading-snug">{kr.text}</span>
-                    <AimLine kr={kr} className="block mt-0.5 text-[12px] text-muted leading-snug" />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
+        {goal && <Section flush title={t('pages.membersPage.goals_linked_milestones')} icon={Flag} tone="ok" testId="crew-goals-goal-milestones">
+          {linked.length === 0 ? (
+            <p className="px-3.5 py-3 text-[13px] text-muted">{t('pages.membersPage.goals_linked_none')}</p>
+          ) : (
+            <ul>
+              {linked.map(kr => (
+                <li key={kr.id} className="border-t border-border first:border-t-0 px-3.5 py-2.5" data-testid="crew-goals-goal-milestone">
+                  <span className="block text-[13px] font-semibold text-text leading-snug">{kr.text}</span>
+                  <AimLine kr={kr} className="block mt-0.5 text-[12px] text-muted leading-snug" />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>}
       </div>
     )
   }
@@ -600,65 +573,50 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
           </label>
         )}
       </section>
-      <section className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-goals-heartbeat-settings">
-        {checkRow({
-          label: t('pages.membersPage.goals_heartbeat'),
-          checked: sched.heartbeat, onChange: v => setSchedule({ heartbeat: v }),
-          hint: (
-            <>
-              {t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(sched.interval) })}
-              {' · '}
-              {t('pages.membersPage.goals_heartbeat_credits')}
-              {' · '}
-              {t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(sched.interval) })}
-            </>
-          ),
-          extra: (
-            <SimpleSelect
-              options={HEARTBEAT_INTERVALS.map(String)}
-              optionLabels={HEARTBEAT_INTERVALS.map(m => `${t('pages.membersPage.goals_heartbeat_every', { interval: fmtInterval(m) })} · ${t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(m) })}`)}
-              value={String(sched.interval)}
-              onChange={v => setSchedule({ interval: Number(v) })}
-              disabled={!hasGoal || !sched.heartbeat}
-              aria-label={t('pages.membersPage.goals_heartbeat_interval')}
-              style={HEARTBEAT_PICKER_STYLE}
-            />
-          ),
-        })}
-      </section>
     </div>
   )
 
-  const trackPage = (
-    <div className="flex flex-col gap-3" data-testid="crew-goals-track-page">
-      {/* No hand-off: the text the user wants tracked is still unsent in the box
-          below; a hand-off would open a chat and leave that draft behind. */}
-      {tracking === 'failed' && <ErrorNotice message={t('pages.membersPage.goals_track_failed')} testId="crew-goals-track-error" />}
-      {tracking === 'unconfirmed' && <ErrorNotice message={deliveryUnconfirmedCopy(true)} testId="crew-goals-track-unconfirmed" />}
-      <section className="rounded-2xl border border-border bg-bg px-3.5 py-3.5 flex flex-col gap-2">
-        <textarea
-          value={trackText}
-          disabled={busy}
-          onChange={e => setTrackText(e.target.value)}
-          rows={4}
-          aria-label={t('pages.membersPage.goals_track_in_chat', { name })}
-          className="w-full rounded-lg border border-border bg-bg px-2.5 py-2 text-[13px] text-text focus-ring"
-          data-testid="crew-goals-track-input"
-        />
-        <div className="flex gap-2 justify-end">
-          <Btn type="button" onClick={() => requestLeave(closePage)}>{t('pages.membersPage.create_cancel')}</Btn>
-          <Btn
-            type="button"
-            primary
-            disabled={!trackText.trim() || tracking === 'sending'}
-            onClick={() => { void trackInChat() }}
-            data-testid="crew-goals-track-send"
-          >
-            {t('pages.membersPage.goals_track_send')}
-          </Btn>
-        </div>
-      </section>
-    </div>
+  // The New goal modal: what a goal is and how the crewmate uses one, in the
+  // words a first-time user has, then one button that opens the conversation.
+  // No text box here: the goal is written down by the crewmate, on its card.
+  const newGoalSteps: { icon: LucideIcon; tone: Tone; lead: string; rest: string }[] = [
+    { icon: MessageCircle, tone: 'accent', lead: t('pages.membersPage.goals_new_goal_step1_lead'), rest: t('pages.membersPage.goals_new_goal_step1_rest') },
+    { icon: Check, tone: 'ok', lead: t('pages.membersPage.goals_new_goal_step2_lead', { name }), rest: t('pages.membersPage.goals_new_goal_step2_rest') },
+    { icon: Clock, tone: 'info', lead: t('pages.membersPage.goals_new_goal_step3_lead', { name }), rest: t('pages.membersPage.goals_new_goal_step3_rest') },
+  ]
+  const newGoalModal = (
+    <Modal
+      open={newGoal !== 'closed'}
+      onClose={() => { if (newGoal !== 'sending') setNewGoal('closed') }}
+      title={t('pages.membersPage.goals_new_goal')}
+      maxWidth={360}
+    >
+      <div className="flex flex-col gap-4" data-testid="crew-goals-new-goal">
+        {/* Nothing typed here can be lost, so the hand-off is on. */}
+        {newGoal === 'failed' && <ErrorNotice message={t('pages.membersPage.goals_new_goal_failed')} askAgent testId="crew-goals-new-goal-error" />}
+        {newGoal === 'unconfirmed' && <ErrorNotice message={deliveryUnconfirmedCopy(true)} askAgent testId="crew-goals-new-goal-unconfirmed" />}
+        <p className="m-0 text-[15px] leading-snug font-semibold text-text">{t('pages.membersPage.goals_new_goal_lead', { name })}</p>
+        <ol className="m-0 p-0 list-none flex flex-col gap-3 text-[13.5px] leading-snug text-text">
+          {newGoalSteps.map(step => (
+            <li key={step.lead} className="flex items-center gap-3">
+              <RowTile tone={step.tone}><step.icon size={15} /></RowTile>
+              <span className="min-w-0"><span className="font-semibold">{step.lead}</span> {step.rest}</span>
+            </li>
+          ))}
+        </ol>
+        <Btn
+          type="button"
+          primary
+          disabled={!onSendToChat || newGoal === 'sending'}
+          onClick={() => { void tellInChat() }}
+          className="w-full h-11 justify-center gap-2 text-[14px] rounded-2xl"
+          data-testid="crew-goals-new-goal-send"
+        >
+          <MessageCircle size={16} aria-hidden="true" />
+          {t('pages.membersPage.goals_new_goal_send', { name })}
+        </Btn>
+      </div>
+    </Modal>
   )
 
   // The record this page edits was removed elsewhere while a draft was open.
@@ -688,7 +646,6 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
       return pg.id && !goal ? (dirty ? gonePage : null) : goalPage(goal)
     }
     if (pg.kind === 'checkins') return checkinsPage
-    if (pg.kind === 'track') return trackPage
     const kr = goals.key_results.find(k => k.id === pg.id)
     return kr ? krPage(kr) : (dirty ? gonePage : null)
   }
@@ -699,64 +656,52 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
           retries there; the first page has nothing to retry. */}
       {!page && saveError}
 
-      {!hasGoal && !removedGoal ? (
-        <section className="rounded-2xl border border-dashed border-border px-4 py-5 flex flex-col items-center gap-2.5 text-center" data-testid="crew-goals-long-term">
-          <RowTile tone="accent"><Goal size={17} /></RowTile>
-          <p className="text-[13px] text-muted max-w-[30ch]">{t('pages.membersPage.goals_none', { name })}</p>
-          <Btn type="button" primary onClick={() => openGoal()} className="gap-1 h-8" data-testid="crew-goals-edit">
-            <Pencil size={13} aria-hidden="true" />{t('pages.membersPage.goals_write_goal')}
-          </Btn>
-        </section>
-      ) : (
-        <Section
-          flush
-          title={t('pages.membersPage.goals_long_term')}
-          icon={Goal}
-          tone="accent"
-          testId="crew-goals-long-term"
-          trailing={(
+      <Section flush title={t('pages.membersPage.goals_long_term')} icon={Goal} tone="accent" testId="crew-goals-long-term">
+        {removedGoal && (
+          <div className="flex items-center gap-2 mx-3.5 my-2.5 rounded-lg bg-bg-hover px-2.5 py-1.5 text-[12px] text-muted" data-testid="crew-goals-goal-undo-row">
+            <span className="flex-1 min-w-0 truncate" title={removedGoal.text}>{t('pages.membersPage.goals_removed')}</span>
+            <Btn type="button" onClick={() => run(() => api.memberGoals.restoreGoal(slug, member, removedGoal.id))} className="gap-1 h-7 px-2" data-testid="crew-goals-goal-undo">
+              <Undo2 size={12} aria-hidden="true" />{t('pages.membersPage.goals_undo')}
+            </Btn>
+          </div>
+        )}
+        {!hasGoal && !removedGoal && (
+          <p className="px-3.5 py-3 text-[13px] text-muted">{t('pages.membersPage.goals_none', { name })}</p>
+        )}
+        <ul data-testid="crew-goals-goal-list">
+          {goals.goals.map(g => (
+            <li key={g.id} className="border-t border-border first:border-t-0">
+              <button
+                type="button"
+                onClick={() => openGoal(g)}
+                aria-label={`${t('pages.membersPage.goals_goal_number', { number: g.number })}: ${g.text}`}
+                className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left hover:bg-bg-hover transition-colors cursor-pointer focus-ring"
+                data-testid="crew-goals-goal"
+              >
+                <span className="h-[22.75px] flex items-center shrink-0"><GoalNumber goal={g} /></span>
+                <span className="flex-1 min-w-0 text-[14px] leading-relaxed text-text-strong font-medium whitespace-pre-wrap" data-testid="crew-goals-long-term-text">{g.text}</span>
+              </button>
+            </li>
+          ))}
+          {/* The last row of the list, not a header action: creating a goal is
+              where a reader of the list ends up, and it opens a conversation
+              with the crewmate, not an editor. */}
+          <li className="border-t border-border first:border-t-0">
             <button
               type="button"
-              onClick={() => openGoal()}
-              aria-label={t('pages.membersPage.goals_add')}
-              title={t('pages.membersPage.goals_add')}
-              className="w-7 h-7 rounded-lg grid place-items-center text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer focus-ring"
+              onClick={createGoal}
+              className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-accent hover:bg-bg-hover transition-colors cursor-pointer focus-ring"
               data-testid="crew-goals-add"
             >
-              <Plus size={15} aria-hidden="true" />
+              {/* 18px ring, 1px border, 12px glyph: whole pixels on every side,
+                  so the plus lands on the ring's centre rather than a half pixel off. */}
+              <span className="w-[18px] h-[18px] rounded-full border border-dashed border-accent grid place-items-center shrink-0" aria-hidden="true"><Plus size={12} strokeWidth={2.5} className="block" /></span>
+              <span className="text-[13.5px] font-medium">{t('pages.membersPage.goals_add')}</span>
             </button>
-          )}
-        >
-          {removedGoal && (
-            <div className="flex items-center gap-2 mx-3.5 mb-2 rounded-lg bg-bg-hover px-2.5 py-1.5 text-[12px] text-muted" data-testid="crew-goals-goal-undo-row">
-              <span className="flex-1 min-w-0 truncate" title={removedGoal.text}>{t('pages.membersPage.goals_removed')}</span>
-              <Btn type="button" onClick={() => run(() => api.memberGoals.restoreGoal(slug, member, removedGoal.id))} className="gap-1 h-7 px-2" data-testid="crew-goals-goal-undo">
-                <Undo2 size={12} aria-hidden="true" />{t('pages.membersPage.goals_undo')}
-              </Btn>
-            </div>
-          )}
-          {hasGoal ? (
-            <ul data-testid="crew-goals-goal-list">
-              {goals.goals.map(g => (
-                <li key={g.id} className="border-t border-border">
-                  <button
-                    type="button"
-                    onClick={() => openGoal(g)}
-                    aria-label={`${t('pages.membersPage.goals_goal_number', { number: g.number })}: ${g.text}`}
-                    className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left hover:bg-bg-hover transition-colors cursor-pointer focus-ring"
-                    data-testid="crew-goals-goal"
-                  >
-                    <span className="h-[22.75px] flex items-center shrink-0"><GoalNumber goal={g} /></span>
-                    <span className="flex-1 min-w-0 text-[14px] leading-relaxed text-text-strong font-medium whitespace-pre-wrap" data-testid="crew-goals-long-term-text">{g.text}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="px-3.5 pb-3 text-[13px] text-muted">{t('pages.membersPage.goals_none', { name })}</p>
-          )}
-        </Section>
-      )}
+          </li>
+        </ul>
+      </Section>
+      {newGoalModal}
 
       <Section
         flush
@@ -767,7 +712,7 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
         trailing={goals.key_results.length > 0 ? <span className="text-[12px] text-muted tabular-nums">{goals.key_results.length}</span> : null}
       >
         {removedKr && (
-          <div className="flex items-center gap-2 mx-3.5 mb-2 rounded-lg bg-bg-hover px-2.5 py-1.5 text-[12px] text-muted" data-testid="crew-goals-kr-undo-row">
+          <div className="flex items-center gap-2 mx-3.5 my-2.5 rounded-lg bg-bg-hover px-2.5 py-1.5 text-[12px] text-muted" data-testid="crew-goals-kr-undo-row">
             <span className="flex-1 min-w-0 truncate" title={removedKr.text}>{t('pages.membersPage.goals_kr_removed')}</span>
             <Btn type="button" onClick={() => run(() => api.memberGoals.restoreKeyResult(slug, member, removedKr.id))} className="gap-1 h-7 px-2" data-testid="crew-goals-kr-undo">
               <Undo2 size={12} aria-hidden="true" />{t('pages.membersPage.goals_undo')}
@@ -775,7 +720,7 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
           </div>
         )}
         {goals.key_results.length === 0 ? (
-          <p className="px-3.5 pb-3 text-[13px] text-muted">{t('pages.membersPage.goals_kr_empty', { name })}</p>
+          <p className="px-3.5 py-3 text-[13px] text-muted">{t('pages.membersPage.goals_kr_empty', { name })}</p>
         ) : (
           <ul>
             {goals.key_results.map(kr => <KeyResultRow key={kr.id} kr={kr} goals={goals.goals} onOpen={() => openPage({ kind: 'kr', id: kr.id })} />)}
@@ -783,37 +728,23 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
         )}
       </Section>
 
-      <Section
-        title={t('pages.membersPage.goals_checkins')}
-        icon={AlarmClock}
-        tone="info"
-        testId="crew-goals-checkins"
-        onOpen={() => openPage({ kind: 'checkins' })}
-        openTestId="crew-goals-checkins-open"
-      >
-        {!hasGoal && <span className="block mb-2 text-[12px] text-muted">{t('pages.membersPage.goals_checkins_need_goal')}</span>}
-        <span className="grid grid-cols-3 gap-2">
-          <CheckInTile icon={Sun} tone="warn" label={t('pages.membersPage.goals_daily')} on={sched.daily} status={sched.daily ? sched.time : off} testId="crew-goals-checkin-daily" />
-          <CheckInTile icon={CalendarDays} tone="info" label={t('pages.membersPage.goals_weekly')} on={sched.weekly} status={sched.weekly ? `${fmtWeekday(sched.weekday === 0 ? 7 : sched.weekday, 'short')} · ${sched.time}` : off} testId="crew-goals-checkin-weekly" />
-          <CheckInTile icon={CalendarRange} tone="accent" label={t('pages.membersPage.goals_monthly')} on={sched.monthly} status={sched.monthly ? `${t('pages.membersPage.goals_month_day_option', { day: sched.month_day })} · ${sched.time}` : off} testId="crew-goals-checkin-monthly" />
-        </span>
-        <HeartbeatRow on={sched.heartbeat} interval={sched.interval} />
-      </Section>
-
-      {onTrackInChat && (
-        <div className="flex flex-col gap-1.5">
+      {/* Check-ins: the three tiles in a row inside ONE button, the door to the
+          Check-ins page, in a card like its neighbours. */}
+      <Section title={t('pages.membersPage.goals_checkins')} icon={AlarmClock} tone="info" testId="crew-goals-checkins">
+        <div className="flex flex-col gap-2">
+          {!hasGoal && <span className="block text-[12px] text-muted">{t('pages.membersPage.goals_checkins_need_goal')}</span>}
           <button
             type="button"
-            onClick={() => { setTrackText(''); setTracking('idle'); openPage({ kind: 'track' }) }}
-            className="flex w-full items-center gap-3 rounded-2xl border border-border bg-bg px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer focus-ring disabled:opacity-60 disabled:cursor-default"
-            data-testid="crew-goals-track"
+            onClick={() => openPage({ kind: 'checkins' })}
+            className="grid grid-cols-3 gap-2 w-full text-left rounded-2xl cursor-pointer focus-ring [&:hover>span]:bg-bg-hover"
+            data-testid="crew-goals-checkins-open"
           >
-            <RowTile tone="info" size="sm"><MessageSquare size={15} /></RowTile>
-            <span className="flex-1 min-w-0 text-[13px] font-semibold text-text">{t('pages.membersPage.goals_track_in_chat', { name })}</span>
-            <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
+            <CheckInTile icon={Sun} tone="warn" label={t('pages.membersPage.goals_daily')} on={sched.daily} status={sched.daily ? sched.time : off} testId="crew-goals-checkin-daily" />
+            <CheckInTile icon={CalendarDays} tone="info" label={t('pages.membersPage.goals_weekly')} on={sched.weekly} status={sched.weekly ? `${fmtWeekday(sched.weekday === 0 ? 7 : sched.weekday, 'short')} · ${sched.time}` : off} testId="crew-goals-checkin-weekly" />
+            <CheckInTile icon={CalendarRange} tone="accent" label={t('pages.membersPage.goals_monthly')} on={sched.monthly} status={sched.monthly ? `${t('pages.membersPage.goals_month_day_option', { day: sched.month_day })} · ${sched.time}` : off} testId="crew-goals-checkin-monthly" />
           </button>
         </div>
-      )}
+      </Section>
 
       <Section flush title={t('pages.membersPage.goals_reports')} icon={FileText} tone="warn" testId="crew-goals-reports">
         <Reports goals={goals} limit={6} />

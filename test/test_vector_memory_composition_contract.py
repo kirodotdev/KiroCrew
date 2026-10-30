@@ -17,7 +17,7 @@ the store observe independently of where each rule lives:
   it through the owner module, so one patch of the owner reaches every caller;
 * the read-only source guards that scan ``vector_memory.py`` by name
   (``test_memory_lineage_drift``, ``test_memory_v2_schema``,
-  ``test_core_path_redact_before_bound``, ``test_cse_2026_08_05_fixes`` and the
+  ``test_core_path_redact_before_bound``, ``test_security_source_scan_invariants`` and the
   redaction-sink registry) are re-applied to the runtime modules with their own
   helpers, each with a planted violation proving the re-applied check can fail;
 * the optional FAISS accelerator's lifecycle and search tier, driven through a
@@ -77,6 +77,7 @@ RUNTIME_MODULES = frozenset(
         "retirement",
         "semantic",
         "store_bookkeeping",
+        "term_index",
         "text_scoring",
         "write_outcomes",
     }
@@ -299,7 +300,7 @@ _STORE_SIGNATURES = {
     "_invalidate_episodic_scoring": "(self) -> 'None'",
     "_invalidate_semantic_scoring": "(self) -> 'None'",
     "_lesson_keywords": "(text: 'str') -> 'set[str]'",
-    "_log_event": "(self, event_type: 'str', memory_type: 'str', key: 'str', old_value: 'str | None', new_value: 'str | None', source: 'str') -> 'None'",
+    "_log_event": "(self, event_type: 'str', memory_type: 'str', key: 'str', old_value: 'str | None', new_value: 'str | None', source: 'str') -> 'int | None'",
     "_matches_allowlist": "(self, key: 'str') -> 'bool'",
     "_matches_tags": "(mem: 'dict', tag_filter: 'list[str]') -> 'bool'",
     "_parse_preference": "(text: 'str') -> 'tuple[str, str] | None'",
@@ -337,7 +338,7 @@ _STORE_SIGNATURES = {
     "_write_semantic": "(self, key: 'str', value_json: 'str', confidence: 'float', source: 'str', *, metadata: 'dict | None' = None, expected_revision: 'int | None' = None, correction: 'record_meta.CorrectionEvidence | None' = None, _consolidation: 'bool' = False, defer_embedding: 'bool' = False, embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, retirement_embedding: 'list[float] | None' = None, retirement_embedding_resolved: 'bool' = False, retirement_value_json: 'str | None' = None) -> 'str | None'",
     "algorithm_version": "(self) -> 'str'",
     "append_history": "(self, entry: 'str') -> 'None'",
-    "apply_consolidation": "(self, *, source_id: 'str', session_key: 'str', source_total: 'int', result: 'dict', snapshot: 'dict', messages: 'list[dict]', facets: 'memory_schema.MemoryFacets | None' = None) -> 'dict'",
+    "apply_consolidation": "(self, *, source_id: 'str', session_key: 'str', source_total: 'int', result: 'dict', snapshot: 'dict', messages: 'list[dict]', facets: 'memory_schema.MemoryFacets | None' = None, kind_routing: 'KindRouting | None' = None) -> 'dict'",
     "backfill_missing_embeddings": "(self, progress: \"'Callable[[int, int], None] | None'\" = None, *, pace: 'bool' = True, max_rows_per_kind: 'int | None' = None, should_stop: \"'Callable[[], bool] | None'\" = None) -> 'int'",
     "begin_space_change": "(self) -> 'None'",
     "build_faiss_index": "(self) -> 'int'",
@@ -347,7 +348,7 @@ _STORE_SIGNATURES = {
     "count_lessons": "(self) -> 'int'",
     "db": "(self) -> 'sqlite3.Connection'",
     "delete_episodic": "(self, mem_id: 'str', source: 'str' = 'user_explicit') -> 'bool'",
-    "delete_lesson": "(self, rule_substring: 'str', repo_scope: 'str | None' = None, *, exact: 'bool' = False) -> 'bool'",
+    "delete_lesson": "(self, rule_substring: 'str', repo_scope: 'str | None' = None, *, exact: 'bool' = False, keep_one: 'bool' = False) -> 'bool'",
     "delete_semantic": "(self, key: 'str', source: 'str', *, expect_value_json: 'str | None' = None, superseded_by: 'str | None' = None, supersede_reason: 'str | None' = None) -> 'bool'",
     "embed_episodic": "(self, text: 'str') -> 'list[float] | None'",
     "embed_lesson": "(self, rule: 'str') -> 'list[float] | None'",
@@ -355,7 +356,7 @@ _STORE_SIGNATURES = {
     "embed_semantic_retirement": "(self, key: 'str', value_json: 'str') -> 'list[float] | None'",
     "embedding_repair_state": "(self, generation: 'str') -> 'tuple[bool, int]'",
     "find_contradiction_candidates": "(self, rule: 'str', threshold_low: 'float' = 0.4, threshold_high: 'float' = 0.85, rule_emb: 'list[float] | None' = None, repo_scope: 'str | None' = None) -> 'list[dict]'",
-    "get_all_semantic": "(self, limit: 'int | None' = None, offset: 'int' = 0, *, q: 'str' = '') -> 'list[dict]'",
+    "get_all_semantic": "(self, limit: 'int | None' = None, offset: 'int' = 0, *, q: 'str' = '', after_key: 'str | None' = None, exclude_lessons: 'bool' = False) -> 'list[dict]'",
     "get_context_preview": "(self, query_text: 'str' = '') -> 'dict'",
     "get_episodic_context": "(self, query_embedding: 'list[float] | None' = None, query_text: 'str' = '', cap: 'int' = 3000) -> 'str'",
     "get_episodic_list": "(self, limit: 'int' = 50, offset: 'int' = 0, tag_filter: 'list[str] | None' = None, *, q: 'str' = '') -> 'list[dict]'",

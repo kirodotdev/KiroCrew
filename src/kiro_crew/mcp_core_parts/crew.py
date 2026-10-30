@@ -175,17 +175,11 @@ def _do_select_crew(crew: str) -> str:
             {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
             ensure_ascii=False,
         )
-    # Routing-decision pointer. This is the one place a member's identity is
-    # unambiguous on the delegation path: `spawn_run`'s `agent` is validated
-    # against the installed TEMPLATES, so by the time a sub-agent starts the
-    # member it came from cannot be recovered (two members may share one
-    # template). Recording at bind time sidesteps that.
-    #
-    # It records the DECISION, not an execution — binding a crew does not oblige
-    # the model to delegate to it. That is the signal trigger generation wants
-    # (what the router believes belongs to whom), but it means these entries are
-    # intent. A `via="spawn"` execution entry is deliberately left for when the
-    # spawn path carries member identity.
+    # Routing-decision pointer. It records the DECISION, not an execution —
+    # binding a crew does not oblige the model to delegate to it. That is the
+    # signal trigger generation wants (what the router believes belongs to
+    # whom), but it means these entries are intent. The run itself is recorded
+    # as `via="spawn"` by the sub-agent run turn.
     #
     # The caller's memory mode is resolved HERE rather than defaulted: this log
     # outlives session pruning, so recording a no-trace session's key would

@@ -381,6 +381,33 @@ def _safe_sounds(value: object) -> dict:
     return out
 
 
+def safe_imported(value: object) -> dict:
+    """A crew's provenance stamp from a ``.crewmate`` import, or ``{}`` on junk.
+
+    ``{"format_version": int, "sender_label": str, "sha256": str, "imported_at": str}``
+    (rfc-crewmate-share.md §5.4 step 5). A stamp, not a parent: nothing reads it to
+    reach the sender. The label is self-declared and capped like the card's.
+    """
+    if not isinstance(value, dict) or set(value) != {
+        "format_version",
+        "sender_label",
+        "sha256",
+        "imported_at",
+    }:
+        return {}
+    version, label = value["format_version"], value["sender_label"]
+    sha, at = value["sha256"], value["imported_at"]
+    if type(version) is not int or not 1 <= version <= 1000:
+        return {}
+    if not isinstance(label, str) or len(label) > 64:
+        return {}
+    if not isinstance(sha, str) or not _re.fullmatch(r"(?:[0-9a-f]{64})?", sha):
+        return {}
+    if not isinstance(at, str) or not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", at):
+        return {}
+    return {"format_version": version, "sender_label": label, "sha256": sha, "imported_at": at}
+
+
 def _safe_avatar(value: object) -> dict:
     """Return a validated per-crew avatar override, or ``{}`` on junk.
 

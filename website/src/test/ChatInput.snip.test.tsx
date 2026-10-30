@@ -55,15 +55,25 @@ describe('ChatInput screenshot action', () => {
 
   it('uses the accessible direct file picker on mobile instead of Screenshot', () => {
     h.mobile = true
-    const { container } = renderWithProviders(<ChatInput {...base} onScreenshot={vi.fn()} isMac={true} />)
+    const { container } = renderWithProviders(<ChatInput {...base} collapsible onScreenshot={vi.fn()} isMac={true} />)
     expectDirectFilePicker(container)
     expect(snipItem()).toBeNull()
   })
 
   it('uses the accessible direct file picker on touch devices', () => {
     h.touch = true
-    const { container } = renderWithProviders(<ChatInput {...base} onScreenshot={vi.fn()} isMac={true} />)
+    const { container } = renderWithProviders(<ChatInput {...base} collapsible onScreenshot={vi.fn()} isMac={true} />)
     expectDirectFilePicker(container)
+    expect(snipItem()).toBeNull()
+  })
+
+  // A host without the collapse keeps the "+" menu on touch (Sketch is a row
+  // in it), and the menu still offers no Screenshot there.
+  it.each([['mobile'], ['touch']] as const)('keeps the + menu without Screenshot on %s for a non-collapsible host', (kind) => {
+    h[kind] = true
+    renderWithProviders(<ChatInput {...base} onScreenshot={vi.fn()} isMac={true} />)
+    openPlusMenu()
+    expect(screen.getByText('Upload file')).toBeInTheDocument()
     expect(snipItem()).toBeNull()
   })
 })

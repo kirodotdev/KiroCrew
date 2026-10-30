@@ -83,6 +83,19 @@ class RefreshRejected(RefreshError):
     """
 
 
+class RefreshBlocked(RefreshError):
+    """The refresh could not even be ATTEMPTED: a local precondition is missing.
+
+    Raised from :meth:`KasToken.refresh_blocker` -- a refresh token with no
+    stored client credentials, an external IdP entry with no token endpoint.
+    Like :class:`RefreshRejected` it is permanent: nothing on this machine will
+    change between polls, so a retry cannot help and only a new sign-in writes
+    the missing input. Unlike it, no issuer was asked, so no marker is recorded
+    on the store. Readers that choose between "sign in again" and "try later"
+    treat both subclasses as the former.
+    """
+
+
 # The issuer statuses that mean "this grant is refused" rather than "try later".
 _REJECTED_STATUSES = frozenset({400, 401, 403})
 
@@ -141,7 +154,9 @@ async def ensure_fresh(
             # whole lock-file setup stays off the event loop.
             lock_path = store.lock_path(token.identity)
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            return os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            return open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
 
         fd = await asyncio.to_thread(_open_refresh_lock)
         try:
@@ -187,7 +202,7 @@ async def _refresh(token: KasToken, *, session: aiohttp.ClientSession) -> KasTok
     # tokens are renewable.
     blocker = token.refresh_blocker()
     if blocker:
-        raise RefreshError(blocker)
+        raise RefreshBlocked(blocker)
     if token.identity == "social":
         return await _refresh_social(token, session=session)
     if token.identity == "external_idp":
@@ -215,6 +230,7 @@ async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) ->
         refresh_token=data.get("refreshToken") or token.refresh_token,
         profile_arn=profile_arn,
         region=token.region,
+        extra=dict(token.extra),
     )
 
 
@@ -242,6 +258,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         region=region,
         client_id=token.client_id,
         client_secret=token.client_secret,
+        extra=dict(token.extra),
     )
 
 
@@ -272,6 +289,7 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
         auth_method="external_idp",
         client_id=token.client_id,
         token_endpoint=token.token_endpoint,
+        extra=dict(token.extra),
     )
 
 

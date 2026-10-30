@@ -776,18 +776,26 @@ def test_a_flag_turned_off_mid_turn_still_releases_what_it_allocated(monkeypatch
     assert emit.live_turn(SESSION) == 0
 
 
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on", "", "  "])
-def test_the_flag_is_on_when_empty_or_truthy(monkeypatch, value):
-    monkeypatch.setenv(emit.CREW_LOG_ENV, value)
-    assert emit.enabled() is True
-
-
 @pytest.mark.parametrize(
-    "value", ["0", "false", "FALSE", " no ", "off", "Off", "2", "disable", "fasle"]
+    ("value", "expected"),
+    [
+        *(
+            pytest.param(value, True, id=f"test_the_flag_is_on_when_empty_or_truthy-{value}")
+            for value in ["1", "true", "TRUE", " yes ", "on", "", "  "]
+        ),
+        *(
+            pytest.param(
+                value,
+                False,
+                id=f"test_the_flag_is_off_for_a_falsy_or_unrecognised_spelling-{value}",
+            )
+            for value in ["0", "false", "FALSE", " no ", "off", "Off", "2", "disable", "fasle"]
+        ),
+    ],
 )
-def test_the_flag_is_off_for_a_falsy_or_unrecognised_spelling(monkeypatch, value):
+def test_the_flag_follows_the_spelling(monkeypatch, value, expected):
     monkeypatch.setenv(emit.CREW_LOG_ENV, value)
-    assert emit.enabled() is False
+    assert emit.enabled() is expected
 
 
 def test_the_flag_is_read_per_call_not_at_import(monkeypatch):

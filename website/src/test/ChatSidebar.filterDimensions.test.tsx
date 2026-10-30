@@ -203,3 +203,46 @@ describe('a pinned session is exempt from the property filters', () => {
     expect(utils.queryByText('beta session')).not.toBeNull()
   })
 })
+
+describe('pinned band caption while a filter narrows the list', () => {
+  it('a status chip that narrows the list shows the pinned band caption next to the divider', async () => {
+    localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    // alpha is pinned so it is exempt and stays on screen.
+    // The caption labels the band so the viewer knows why.
+    expect(utils.queryByText('Pinned · always shown')).not.toBeNull()
+  })
+
+  it('a tag filter the pinned row does not carry shows the pinned band caption', async () => {
+    localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t2']))
+    const utils = renderSidebar(PINNED_SLOTS)
+    // The caption waits for the tag vocabulary: only a resolved id narrows.
+    await waitFor(() => expect(utils.queryByText('gamma session')).toBeNull())
+    expect(utils.queryByText('alpha session')).not.toBeNull()
+    await waitFor(() => expect(utils.queryByText('Pinned · always shown')).not.toBeNull())
+  })
+
+  it('a stored tag id the vocabulary cannot resolve narrows nothing, so no caption', async () => {
+    localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['ghost-deleted-tag']))
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('gamma session')).not.toBeNull())
+    expect(utils.queryByText('Pinned · always shown')).toBeNull()
+  })
+
+  it('no active filter means no pinned band caption', async () => {
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    expect(utils.queryByText('Pinned · always shown')).toBeNull()
+  })
+
+  it('the pinned band caption is absent while searching', async () => {
+    localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+    const utils = renderSidebar(PINNED_SLOTS)
+    await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+    // The caption is visible before the search box has any text.
+    expect(utils.queryByText('Pinned · always shown')).not.toBeNull()
+    fireEvent.change(utils.getByPlaceholderText('Search sessions…'), { target: { value: 'alpha' } })
+    await waitFor(() => expect(utils.queryByText('Pinned · always shown')).toBeNull())
+  })
+})

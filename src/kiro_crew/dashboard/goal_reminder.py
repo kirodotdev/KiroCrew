@@ -63,7 +63,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from kiro_crew import member_goals
+from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 
@@ -204,11 +204,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         )
 
 
-_PREAMBLE = (
-    "Kiro Crew sends this; the user did not type it and sees only your reply, so "
-    "keep this note itself out of what you write. Write in the language of the "
-    "dashboard's [UI LANGUAGE] when it is shown, else English.\n\n"
-)
+_PREAMBLE = crewmate_prompts.text("wake.preamble")
 
 
 def _movement_lines(rec: dict[str, Any], cadence: str) -> str:
@@ -267,10 +263,7 @@ def _finished_lines(tasks: list[dict[str, str]]) -> str:
         if task["summary"]:
             line += f": {task['summary']}"
         lines.append(line)
-    return "\n".join(lines) or (
-        "(none on your task list in this period; summarise what you finished from "
-        "your own work log, and say in the report that you did)"
-    )
+    return "\n".join(lines) or crewmate_prompts.text("reminder.no_finished_tasks")
 
 
 #: Added to a crewmate's daily reminder and goal-setup wakes while it has no Dashboard
@@ -281,7 +274,7 @@ DASHBOARD_BUILD_LINE: str = (
     "progress belongs on it rather than in chat. Build one with "
     "the dashboard skill: dashboard_save stores your HTML page (view.html), and "
     "dashboard_apply puts it live. Read dashboard_types for paths and row keys: "
-    "work and workstreams for progress, hourly history and "
+    "workers for sessions, work and workstreams for progress, hourly history and "
     "project spend, goal for relevant milestones, waiting for things needing the "
     "person, timeline for recent events, tools and usage for the live session's "
     "activity. Bind values through the model. A verified project snapshot can be "
@@ -515,13 +508,15 @@ def reminder_prompt(
 
 
 #: How a heartbeat hands off long work, with the ``session_*`` tools and without.
-_HEARTBEAT_WORKERS = (
-    "Long or heavy work belongs in a worker session rather than this thread or "
-    "a sub-agent: open one with session_create and give it a self-contained "
-    "brief with session_send, so this thread stays free and the user can see "
-    "the work in the sidebar and take it over. On your next wake, read how the "
-    "worker is doing with session_read_message rather than starting the same "
-    "work again. "
+#: The hand-off is the crewmate's own worker, and its report wakes this thread on its own
+#: (``dashboard/mate_thread_wakes.py``), so the wake ends instead of polling.
+_HEARTBEAT_WORKERS_V2 = (
+    "Long or heavy work belongs to your worker, not this thread: open it with "
+    "session_create and give it a self-contained brief with session_send, so "
+    "this thread stays free and the user can see the work in the sidebar and "
+    "take it over. Then end this wake: the worker's report comes back to this "
+    "thread on its own as a [Worker report] turn, and that turn or a later wake "
+    "picks the work up from there rather than starting it again. "
 )
 _HEARTBEAT_SMALL_STEPS = (
     "Long or heavy work goes in small steps, one piece per wake, so this thread "
@@ -546,6 +541,11 @@ _HEARTBEAT_MILESTONES_WAITING = (
     "A milestones card you proposed already waits on the user, so this wake "
     "proposes no new milestones. "
 )
+
+
+def _heartbeat_handoff() -> str:
+    """The hand-off line for a thread with the ``session_*`` tools."""
+    return _HEARTBEAT_WORKERS_V2
 
 
 def heartbeat_prompt(
@@ -581,7 +581,7 @@ def heartbeat_prompt(
         "cannot be undone or that reaches outside (a push, a merge, a release, a "
         "message to someone else) waits for the user, recorded on your Dashboard "
         "tab. "
-        + (_HEARTBEAT_WORKERS if has_session_tools else _HEARTBEAT_SMALL_STEPS)
+        + (_heartbeat_handoff() if has_session_tools else _HEARTBEAT_SMALL_STEPS)
         + _HEARTBEAT_PATROL
         + "Record what you did where the user looks: a tracked item's progress "
         "in your work ledger, the fields your Dashboard tab asks you to fill with "
@@ -626,7 +626,7 @@ def member_has_session_tools(member: str) -> bool:
         from kiro_crew.members import MEMBER_DISPATCH_SERVER
 
         cfg = KiroCrewConfig.load()
-        if not _member_dispatch_held(None, cfg):
+        if not _member_dispatch_held(None, cfg, member):
             return False
         binding = cfg.agents.get(member)
         agent = getattr(binding, "kiro_agent", "") or None
@@ -653,7 +653,11 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
 
 async def fire(state: Any, job: Any) -> str:
     """Run one check-in for *job*'s crewmate; returns a one-line outcome for the run log."""
-    from kiro_crew.dashboard.mate_welcome import dispatch_hidden_turn
+    from kiro_crew.dashboard.mate_welcome import (
+        dispatch_hidden_turn,
+        hidden_turn_language,
+        with_language,
+    )
 
     cadence = cadence_of(job)
     if cadence is None:
@@ -726,7 +730,19 @@ async def fire(state: Any, job: Any) -> str:
         prompt = reminder_prompt(
             rec, cadence, finished=finished, dashboard=dashboard, page_tools=page_tools
         )
-    dispatch_hidden_turn(state, slot, prompt, human_seen=False)
+    # No tab opened this turn, so only the configured language is known; it
+    # replaces the preamble's language sentence (mate_welcome.with_language).
+    language = await asyncio.to_thread(hidden_turn_language)
+    if gateway_stopping():
+        return STOPPING_SKIP
+    again, skip = _idle_thread(state, slot_key, member)
+    if skip:
+        return skip
+    if again is not slot:
+        return "skipped: the mate's thread is not open"
+    dispatch_hidden_turn(
+        state, slot, with_language(prompt, language, in_thread=True), human_seen=False
+    )
     return "started"
 
 

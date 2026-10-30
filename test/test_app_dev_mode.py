@@ -26,6 +26,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.routes import register_app_routes
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -461,13 +462,8 @@ async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
     monkeypatch.setattr(dev_mode, "_scan_ui_mtimes", _counting_scan)
 
     async def _wait_until(predicate, what: str) -> None:
-        """Poll *predicate* on the loop, generous enough for a loaded host."""
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError(f"timed out waiting for {what}")
+        """Wait for *predicate* on the loop; a hang fails naming *what*."""
+        await async_wait_until(predicate, describe=lambda: f"waiting for {what}")
 
     task = asyncio.get_running_loop().create_task(dev_mode._watch_loop(_capture))
     try:
@@ -608,11 +604,10 @@ async def test_watch_loop_picks_up_out_of_process_toggle(tmp_path, monkeypatch):
         # not, the seed then contains the edit below, prev is None, and the loop
         # seeds instead of broadcasting. Two walks mean the seeding tick ran to
         # its broadcast decision, so the assertion below is not vacuous.
-        for _ in range(500):
-            await asyncio.sleep(0.02)
-            if len(scans) >= 2:
-                break
-        assert len(scans) >= 2, "watcher never seeded state for the newly-dev app"
+        await async_wait_until(
+            lambda: len(scans) >= 2,
+            describe=lambda: "watcher never seeded state for the newly-dev app",
+        )
         assert events == [], "seeding a newly-dev app must not broadcast"
 
         ui_file = dev_mode.app_dir("dev-mode-app") / "ui" / "index.mjs"
@@ -620,10 +615,9 @@ async def test_watch_loop_picks_up_out_of_process_toggle(tmp_path, monkeypatch):
         import os
         os.utime(ui_file, (time.time() + 5, time.time() + 5))
 
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if events:
-                break
+        await async_wait_until(
+            lambda: bool(events), describe=lambda: "no app_reload broadcast after the edit"
+        )
     finally:
         task.cancel()
         try:

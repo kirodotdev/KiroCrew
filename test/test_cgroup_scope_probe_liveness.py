@@ -120,7 +120,7 @@ def fake_manager(tmp_path, monkeypatch):
     monkeypatch.setattr(sb.platform_compat, "trusted_system_bin_quiet", _trusted)
     # The slice-level reconcile shells out to systemctl; it is not under test.
     monkeypatch.setattr(sb, "_reconcile_slice_memory_high_off_thread", lambda: None)
-    monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda: (8192, 8192, 50, 0))
+    monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda _rl=None: (8192, 8192, 50, 0))
     # The gateway's environment as a login shell leaves it: the locators stay SET
     # after logind removes the directory they name.
     monkeypatch.setenv("XDG_RUNTIME_DIR", mgr.runtime_dir)

@@ -844,8 +844,10 @@ class IngestionPipeline:
             uri = src_row["uri"] if src_row else display_name
             props = json.loads(src_row["properties"] or "{}") if src_row else {}
         else:
-            # Local file path: find or create source by URI
-            uri = str(p.resolve())
+            # Local file path: find or create source by URI. Reuse the path
+            # resolved off the loop for the sensitive-path check above: a second
+            # resolve() here would stat the disk on the event loop.
+            uri = resolved
             existing = await asyncio.to_thread(self.store.get_source_by_uri, uri)
             if existing:
                 props = json.loads(existing.get('properties', '{}')) if isinstance(existing.get('properties'), str) else existing.get('properties', {})

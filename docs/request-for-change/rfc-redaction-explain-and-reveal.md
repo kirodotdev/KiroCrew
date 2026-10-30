@@ -360,6 +360,52 @@ tapping outside the card or pressing Esc closes it, then restores the user's
 previous focus and scroll position. Every control must provide a touch target
 of at least 44×44 points.
 
+### 4a · A preview before the card
+
+A reader who wants to know why something was removed should not have to open
+a card to find out. Resting the mouse on a lock tag or a Link blocked chip
+shows a small preview after a short delay; focusing the tag or the chip's
+*Inspect* button from the keyboard shows it at once. The preview says what
+was removed and the rule in plain words (the card's *Matched* or *Reason*
+sentence). The preview is read-only. It holds no control, focus never moves
+into it, and the marker itself still opens the card, so every action stays
+where its confirmation is:
+
+- **Credential.** In place of a reveal, the preview states the floor: the
+  value was never saved, so nothing on the page can show it.
+- **Blocked link, address kept.** The reason only. The preview never shows
+  the full address: as in §3, that appears only inside the card, after the
+  reader asks for it, and *Open once* stays on the card behind its own
+  confirmation.
+- **Blocked link, address withheld.** Only the card's withheld sentence (it
+  looked like a secret, or it was too long to keep), which already gives the
+  reason.
+- **Several links to one host.** A sentence telling the reader to select
+  *Inspect* to see each one and its reason.
+
+A press never opens the preview, so on a touch screen, where there is no
+hover, a tap keeps opening the card exactly as before. The preview opens only
+on a pointer whose type is mouse, and a focus that follows a press within the
+same touch-replay window the shared tooltip uses counts as part of the press.
+No key on the marker is taken: Tab moves on as it always did, so a reply with
+many markers costs a keyboard reader no extra stops, and the arrow keys,
+Alt+Arrow turn stepping included, reach the page unchanged. A preview that
+keyboard focus opened stays while the mouse passes over the marker and
+leaves; blur closes it. A preview the mouse opened keeps a short close delay
+so the pointer can cross into it to read. Either closes once its marker
+scrolls out of the window or the transcript scroller, so it never floats
+over unrelated text. Escape closes the preview; it is stopped only while
+focus is on the marker, so a drawer holding the transcript stays open, and a
+preview opened by hover alone closes and lets the Escape reach the focused
+composer or dialog. While the marker's card is open the preview stays
+hidden, because the card already says everything the preview would.
+
+The preview is not the shared tooltip primitive: that bubble closes on mouse
+leave, so the pointer cannot cross into it, and a focus-opened tip would
+close under a passing mouse. Real-device Safari and touch testing is not part
+of this step; the touch rule is covered by jsdom tests and a Chromium
+touch-emulation run.
+
 ### 5 · Three renderer rules, independent of any UI
 
 1. Do not load an image from agent-written markdown automatically; wait until

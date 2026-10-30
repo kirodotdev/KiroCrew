@@ -283,13 +283,21 @@ describe('sourceProviderMeta', () => {
     expect([github.displayName, github.refLabel(12), github.numberLabel(12), github.logo])
       .toEqual(['GitHub', 'PR #12', '#12', 'github'])
     expect(github.capabilities)
-      .toEqual({ checks: true, mergeState: true, resolveThreads: true, comment: true })
+      .toEqual({ checks: true, mergeState: true, mergeActions: true, resolveThreads: true, comment: true })
 
     const gitlab = sourceProviderMeta('gitlab')
     expect([gitlab.displayName, gitlab.refLabel(5), gitlab.numberLabel(5), gitlab.logo])
       .toEqual(['GitLab', 'MR !5', '!5', 'gitlab'])
     expect(gitlab.capabilities)
-      .toEqual({ checks: true, mergeState: true, resolveThreads: true, comment: true })
+      .toEqual({ checks: true, mergeState: true, mergeActions: true, resolveThreads: true, comment: true })
+  })
+
+  it('shows Gerrit the merge-state banner but no merge actions', () => {
+    // Gerrit has no auto-merge: the conflict / rebase-required banner is real,
+    // the "Enable auto-merge" and "Mark ready" buttons would only ever fail.
+    const gerrit = sourceProviderMeta('gerrit')
+    expect(gerrit.capabilities.mergeState).toBe(true)
+    expect(gerrit.capabilities.mergeActions).toBe(false)
   })
 
   it('takes a registered provider label, name and capabilities', () => {
@@ -299,6 +307,8 @@ describe('sourceProviderMeta', () => {
       .toEqual(['Acme Review', 'CR-123', 'CR-123', null])
     expect(meta.capabilities.checks).toBe(false)
     expect(meta.capabilities.resolveThreads).toBe(true)
+    // A descriptor written before `mergeActions` existed meant it by `mergeState`.
+    expect(meta.capabilities.mergeActions).toBe(meta.capabilities.mergeState)
   })
 
   it('fails closed for a provider nothing described', () => {
@@ -306,7 +316,7 @@ describe('sourceProviderMeta', () => {
     expect(meta.refLabel(7)).toBe('#7')
     expect(meta.logo).toBeNull()
     expect(meta.capabilities)
-      .toEqual({ checks: false, mergeState: false, resolveThreads: false, comment: false })
+      .toEqual({ checks: false, mergeState: false, mergeActions: false, resolveThreads: false, comment: false })
   })
 
   it('carries a descriptor icon component through to meta, and drops a non-function one', () => {

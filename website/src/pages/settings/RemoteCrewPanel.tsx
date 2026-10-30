@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCrewPicker'
 import {
   Server,
   Rocket,
@@ -74,13 +75,14 @@ import { reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
-import { AddInstanceForm } from './InstancesPanel'
+import { AddInstanceForm, RestartToActivateText } from './InstancesPanel'
 import { CrewVersionsReadError } from './CrewVersionStatus'
 import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
@@ -94,7 +96,7 @@ import {
 import {
   SizeCard, ProvisionerCard, SettingUpRow, PrereqRow, LaunchProgressCard,
 } from './RemoteCrewPanelLaunch'
-import { CREW_SWITCH_HINT_ID, CrewRow } from './RemoteCrewPanelCrewRow'
+import { CREW_SWITCH_HINT_ID, CREW_NEEDS_RESTART_BANNER_ID, CrewRow } from './RemoteCrewPanelCrewRow'
 export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 
 export function RemoteCrewPanel() {
@@ -153,8 +155,12 @@ export function RemoteCrewPanel() {
   const [launchDraft] = useState(heldLaunchDraft)
   const identityDraft = launchDraft?.identity ?? null
   const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>(identityDraft?.mode ?? 'builder_id')
-  const [identityStartUrl, setIdentityStartUrl] = useState(identityDraft?.start_url ?? '')
-  const [identityRegion, setIdentityRegion] = useState(identityDraft?.region ?? '')
+  // With no held draft, the fields start from the last company sign-in submitted
+  // on this browser (here or in the Kiro sign-in form), so a reload or gateway
+  // restart does not empty them. This fills the fields only; it does not pick the
+  // Identity Center option or count as the reader's choice.
+  const [identityStartUrl, setIdentityStartUrl] = useState(() => identityDraft?.start_url ?? readCompanySignIn().startUrl)
+  const [identityRegion, setIdentityRegion] = useState(() => identityDraft?.region ?? readCompanySignIn().region)
   const [subnetId, setSubnetId] = useState(launchDraft?.subnet_id ?? '')
   const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
@@ -186,6 +192,10 @@ export function RemoteCrewPanel() {
     if (suggested?.start_url) {
       setIdentityMode('identity_center')
       setIdentityStartUrl(suggested.start_url)
+      // A remembered region belongs to the remembered portal. When this
+      // computer names a different portal, that region would be a guess, so
+      // the field goes back to empty and Launch waits for the right one.
+      if (!sameCompanyPortal(suggested.start_url, readCompanySignIn().startUrl)) setIdentityRegion('')
     }
   }, [identityQuery.data])
   // Mirrors normalize_start_url on the backend, which is the authority: the
@@ -233,6 +243,8 @@ export function RemoteCrewPanel() {
     : {}
   /** A failed copy, pinned to the checklist row whose button was pressed. */
   const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
+  // The gateway's note that a second launcher policy is needed; status, not an error.
+  const [policyNotice, setPolicyNotice] = useState('')
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
   const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
@@ -821,14 +833,25 @@ export function RemoteCrewPanel() {
   }, [])
   const copyPolicy = useCallback(async () => {
     setCopyErr(null)
+    setPolicyNotice('')
     try {
-      const { policy } = await api.cloudIamPolicy()
+      const {
+        policy,
+        host_policies_notice: hostPoliciesNotice,
+        host_policies_error: hostPoliciesError,
+      } = await api.cloudIamPolicy()
       if (!(await copyToClipboard(policy))) {
         setCopyErr({ target: 'policy', message: i18nT('pages.settings.remoteCrewPanel.copy_policy_failed') })
         return
       }
       setCopied('policy')
       setTimeout(() => setCopied(null), 1500)
+      // An edition that attaches host policies needs a second launcher policy the
+      // main one has no room for. The gateway's line saying how to get it is
+      // status text beside the button; a second policy it could not build is an
+      // error.
+      if (hostPoliciesError) setCopyErr({ target: 'policy', message: hostPoliciesError })
+      setPolicyNotice(hostPoliciesNotice ?? '')
     } catch (e) {
       setCopyErr({ target: 'policy', message: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })
     }
@@ -1032,9 +1055,9 @@ export function RemoteCrewPanel() {
               {i18nT('pages.settings.remoteCrewPanel.crew_switch_hint')}
             </p>
             {needsRestart && (
-              <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
+              <div id={CREW_NEEDS_RESTART_BANNER_ID} role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-                <span>{i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_start_the_ssh_tunnel_manager_and_activate_ins')}</span>
+                <RestartToActivateText />
               </div>
             )}
             {listLoading ? (
@@ -1066,6 +1089,7 @@ export function RemoteCrewPanel() {
                   <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
                 ))}
                 <CrewVersionsReadError anyConnected={instances.some(i => !i.disabled && i.status.state === 'connected')} />
+                <DefaultDestinationCrewPicker instances={instances} value={instancesQuery.data?.default_destination ?? ''} />
                 {instances.map(inst => (
                   <CrewRow
                     key={inst.id}
@@ -1082,6 +1106,7 @@ export function RemoteCrewPanel() {
                     fetchingSignin={signinMutation.isPending && signinMutation.variables === signinJobIdFor(inst)}
                     signinNotice={signinNotice && signinNotice.jobId === signinJobIdFor(inst) ? signinNotice : null}
                     busy={busy}
+                    connectBlocked={needsRestart}
                     deleting={inst.ssm_target ? deletingTags.has(cloudTagByInstanceId.get(inst.ssm_target) ?? '') : false}
                     confirmDelete={confirmDeleteTag !== null && confirmDeleteTag === (inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) : null)}
                     confirmRemove={confirmRemoveId === inst.id}
@@ -1318,7 +1343,7 @@ export function RemoteCrewPanel() {
                   rechecking={preflightQuery.isFetching}
                 />
                 <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
+                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
                 <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
@@ -1530,7 +1555,7 @@ export function RemoteCrewPanel() {
                   behind a different engine; omitting the id would let the server
                   default to the built-in and provision on the wrong lane. Only
                   an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion); launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
               <span className="text-[12px] text-muted">

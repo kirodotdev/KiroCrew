@@ -327,6 +327,30 @@ class TestConfigProjection:
 
 
 class TestMcpSpecSanitizer:
+    @pytest.mark.parametrize("switch", [{}, {"disabled": False}, {"enabled": True}])
+    def test_a_server_the_source_leaves_on_is_imported_off_by_default(
+        self, tmp_path: Path, switch: dict[str, Any]
+    ) -> None:
+        spec = {"command": "x", **switch}
+
+        assert onboarding_plan._sanitize_mcp_spec(spec, _scan(tmp_path)) == {
+            "command": "x",
+            "disabled": True,
+        }
+        assert onboarding_plan._sanitize_mcp_spec(
+            spec, _scan(tmp_path), keep_enabled_state=True
+        ) == {"command": "x"}
+
+    @pytest.mark.parametrize(
+        "switch", [{"disabled": True}, {"enabled": False}, {"disabled": "false"}]
+    )
+    def test_a_kept_switch_that_is_not_clearly_on_imports_the_server_off(
+        self, tmp_path: Path, switch: dict[str, Any]
+    ) -> None:
+        assert onboarding_plan._sanitize_mcp_spec(
+            {"command": "x", **switch}, _scan(tmp_path), keep_enabled_state=True
+        ) == {"command": "x", "disabled": True}
+
     def test_a_spec_that_is_neither_stdio_nor_remote_is_unsupported(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path)
 
@@ -491,6 +515,30 @@ class TestDbDirectiveProjection:
 
         assert len(scan.items["instructions"]) == 1
         assert "instruction_count_limit" in _reasons(scan)
+
+
+class TestInstructionTextProjection:
+    def test_a_directive_already_offered_does_not_count_against_the_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(onboarding_plan, "_MAX_IMPORTED_LESSONS", 3)
+        scan = _scan(tmp_path, "predecessor")
+        first = "Always squash before pushing.\n\nNever rewrite shared history."
+
+        assert onboarding_plan._add_instruction_text(scan, first, "AGENTS.md") is True
+        assert (
+            onboarding_plan._add_instruction_text(
+                scan, first + "\n\nRun the linter before every push.", "AGENTS.md"
+            )
+            is True
+        )
+
+        assert [item.payload["rule"] for item in scan.items["instructions"]] == [
+            "Always squash before pushing.",
+            "Never rewrite shared history.",
+            "Run the linter before every push.",
+        ]
+        assert "instruction_count_limit" not in _reasons(scan)
 
 
 class TestScheduleRecordProjection:

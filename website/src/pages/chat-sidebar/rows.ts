@@ -195,6 +195,8 @@ export interface RowShell {
   boost: PaletteBoost
   boostFor: (hex: string) => PaletteBoost
   recentTintCount: number
+  /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
+  showUnreadDot?: boolean
   /** A dnd-kit drag is in flight, the raw LOCAL key of a dragged session (only local
    *  rows can be dragged), and that session's pinned rank and drawn position. */
   dragInFlight: boolean
@@ -215,6 +217,9 @@ export interface RowScene {
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
    *  null. While one is open it is the active row, and no local row is. */
   crewWindow: { instanceId: string; key: string } | null
+  /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
+   *  are not listed, so the root's row is marked as the shown worker's parent. */
+  crewParent: string | null
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -258,6 +263,25 @@ export interface SessionRowView {
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
   isActive: boolean
+  /** Whether this row's own slot IS the sidebar's active slot — the raw
+   *  `key === activeSlot` test, independent of the crew-window logic `isActive`
+   *  folds in (a crew window over the pane makes `isActive` false while the
+   *  session is still the active one). The row menu's "Reference in chat" reads
+   *  it to refuse a self-reference, matching what the drop handler refuses. A
+   *  per-row view field so a chat switch re-renders only the two rows whose
+   *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
+   *  would cause). */
+  isSidebarActiveSlot: boolean
+  /** This row is the Crew Mode root whose worker the chat pane shows: not the
+   *  active row, but the way the person found the worker, so it stays marked. */
+  isCrewParent: boolean
+  /** Whether a crew window is open over the chat pane. While it is, the active
+   *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
+   *  staged reference would land on a composer the user cannot see — the same
+   *  "no visible composer to land in" case `canStageSessionRef` guards. "Reference
+   *  in chat" is withheld on EVERY row while it is true, not just the active one.
+   *  Scene-global, carried per-row so the menu's availability tracks it. */
+  crewWindowCovers: boolean
   isOut: boolean
   isPinned: boolean
   isUnread: boolean
@@ -311,6 +335,10 @@ export interface SidebarRows {
   filteredSlots: Slot[]
   /** Is any dimension narrowing the list right now? */
   listNarrowed: boolean
+  /** Is a dimension that lets pinned rows through (tags, status chips) narrowing
+   *  the list right now? Then a visible pinned row may be there only because it is
+   *  pinned, which the pinned-band caption says. */
+  pinnedExemptNarrowing: boolean
   /** One entry per dimension, in declaration order: does it hide THIS row, and how to
    *  drop it. The reveal effect walks this instead of naming the dimensions. */
   revealBlockingFilters: RevealBlockingFilter[]
@@ -505,6 +533,7 @@ function makeStatusMatches(
     unread: slot => { const key = localKeyOf(slot); return key !== null && unread.has(key) },
     running: isRunning,
     pinned: slot => localKeyOf(slot) !== null && !!slot.pinned,
+    crew: slot => !!slot.crew_mode_root,
     recent: slot => {
       const key = localKeyOf(slot)
       return key === null
@@ -563,6 +592,7 @@ function makeDimensions(
       // is a session property, so it behaves like the Unread/Pinned status chips.
       filtersRow: slot => tags.resolved.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => tags.resolved.has(id)),
       narrows: () => tags.resolved.size > 0,
+      exemptsPinned: true,
       // The pinned exemption is restated here because this predicate does not go
       // through `excluded`: a reveal of a pinned row must not clear a tag filter that
       // was never hiding it.
@@ -595,6 +625,7 @@ function makeDimensions(
           || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
       },
       narrows: () => Boolean(search.text),
+      exemptsPinned: false,
       hides: (slot, excluded) => Boolean(search.text) && excluded(slot),
       clear: () => clears.search(),
     },
@@ -606,6 +637,7 @@ function makeDimensions(
       // hidden by the chips and a reveal would clear them.
       filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
       narrows: () => activeStatus.length > 0,
+      exemptsPinned: true,
       hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
       clear: () => clears.status(),
     },
@@ -614,6 +646,7 @@ function makeDimensions(
       // un-hides the row's own ancestor chain rather than clearing globally.
       filtersRow: null,
       narrows: null,
+      exemptsPinned: false,
       hides: slot => {
         const folderId = folderOf(slot)
         return !!folderId && folderFilter.hiddenSubtree.has(folderId)
@@ -628,6 +661,7 @@ function makeDimensions(
       // a hidden row clears only the hide, not the include chips set alongside it.
       filtersRow: slot => !isRowStatusHidden(slot),
       narrows: () => status.hidden.size > 0,
+      exemptsPinned: false,
       // Unlike search and the include chips, a hide CAN answer for one row on its
       // own: it hides exactly the rows its predicates match. Asking list membership
       // instead would let a row the search dropped clear every hide on reveal, even
@@ -644,6 +678,7 @@ function makeDimensions(
       // asked to leave the list.
       filtersRow: models.passes,
       narrows: () => models.active,
+      exemptsPinned: false,
       hides: slot => !models.passes(slot),
       clear: () => clears.models(),
     },
@@ -822,6 +857,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const filteredSlots = reuse(prev?.filteredSlots, [rows, dimensions.value, laneOrder.value, frozen], () =>
     frozenList ?? filterRows(rows, dimensions.value, laneOrder.value))
   const listNarrowed = dimensions.value.some(d => d.narrows !== null && d.narrows())
+  const pinnedExemptNarrowing = dimensions.value.some(d => d.exemptsPinned && d.narrows !== null && d.narrows())
   const revealBlockingFilters = reuse(prev?.revealBlockingFilters, [dimensions.value, filteredSlots.value], () =>
     makeRevealRegistry(dimensions.value, filteredSlots.value))
 
@@ -853,6 +889,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const result: SidebarRows = {
     filteredSlots: filteredSlots.value,
     listNarrowed,
+    pinnedExemptNarrowing,
     revealBlockingFilters: revealBlockingFilters.value,
     statusCounts: statusCounts.value,
     laneOrder: laneOrder.value,
@@ -907,6 +944,15 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
     isActive: isActiveIn(scene, slot),
+    // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
+    // when a crew window covers the pane (where isActiveIn is false but the
+    // session is still active). Matches the key the drop handler refuses against.
+    isSidebarActiveSlot: local !== null && scene.activeSlot === local,
+    isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
+    // A crew window covers the chat pane, so no composer is visible to stage a
+    // reference into — withhold "Reference in chat" on every row, same reason as
+    // the no-active-slot case.
+    crewWindowCovers: scene.crewWindow !== null,
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
     isUnread: local !== null && model.unread.has(local),
@@ -948,7 +994,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true,
-  isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

@@ -425,7 +425,9 @@ async def keep_decision(
     if still_watched is not None and not still_watched():
         logger.debug("memory.recall: the surface went away before the call")
         return None
-    answers = await core.decide(POINT, state, questions, session_key=session_key, extra=extra)
+    answers = await core.decide(
+        POINT, state, questions, session_key=session_key, extra=extra, unclipped=text
+    )
     keys = read_answer(answers, rows)
     if keys is None:
         return None

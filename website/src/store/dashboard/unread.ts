@@ -43,19 +43,97 @@ export const readCovers = (read: string | undefined, since: string): boolean => 
  *  sentinels persist to per-tab sessionStorage via persistManualSentinels.
  *  'mc-unread-slots' is kept as a write-only PROJECTION of the record's
  *  keys — the pre-existing hub relay (safeSet) and tabs still running
- *  older code read it; nothing in this file does. */
+ *  older code read it; nothing in this file does.
+ *
+ *  Synchronous. Message arrivals go through queueSharedUnread instead; this
+ *  call writes any queued arrivals first, so a read or drain that follows an
+ *  arrival in this window still lands after it. */
 export const persistSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
+  flushSharedUnread()
+  writeSharedUnread(add, remove)
+}
+
+/** Arrivals waiting for the next flush: slot -> watermark, merged with the
+ *  record's own rule (newest parseable instant wins, '' never demotes). */
+let pendingShared: Record<string, string> = {}
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+let flushOnHideInstalled = false
+/** How long arrivals coalesce before one write. A sibling window sees a new
+ *  badge up to this much later; reads and drains in this window flush first,
+ *  so they never race a queued arrival. */
+export const SHARED_UNREAD_FLUSH_MS = 250
+
+/** Queue a message arrival for the shared record. Called from the
+ *  markSlotUnread reducer: background slots re-mark on every arriving row, and
+ *  a synchronous read, parse and two writes per row ran on the websocket
+ *  dispatch path. One flush per SHARED_UNREAD_FLUSH_MS writes them all. */
+export const queueSharedUnread = (slot: string, ts: string): void => {
+  if (ts === MANUAL_UNREAD) return  // sentinels never publish
+  const prev = pendingShared[slot]
+  if (prev === undefined) pendingShared[slot] = ts
+  else if (ts !== '') pendingShared[slot] = prev === '' ? ts : (newerTs(prev, ts) ?? prev)
+  if (pendingTimer !== null) return
+  pendingTimer = setTimeout(flushSharedUnread, SHARED_UNREAD_FLUSH_MS)
+  if (!flushOnHideInstalled && typeof window !== 'undefined') {
+    // A tab closed inside the coalescing window would otherwise drop the
+    // badge for its last arrivals from the record the next boot restores.
+    flushOnHideInstalled = true
+    window.addEventListener('pagehide', flushSharedUnread)
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSharedUnread() })
+  }
+}
+
+/** Drop a slot's queued arrival when a read relayed from another window covers
+ *  it. That window already cleared the record for what it read, so writing the
+ *  arrival now would bring the badge back for every window. A queued '' (no
+ *  watermark) is covered by any read, as it is in the record; a newer queued
+ *  watermark survives. */
+export const dropQueuedSharedUnreadCoveredBy = (slot: string, readTs: string | undefined): void => {
+  const queued = pendingShared[slot]
+  if (queued === undefined) return
+  if (queued === '' || readCovers(readTs, queued)) delete pendingShared[slot]
+}
+
+/** Write queued arrivals now. Exported for tests and for callers that must
+ *  observe the record (persistSharedUnread and clearSharedUnreadIfCovered
+ *  call it first). */
+export const flushSharedUnread = (): void => {
+  if (pendingTimer !== null) { clearTimeout(pendingTimer); pendingTimer = null }
+  const add = pendingShared
+  if (Object.keys(add).length === 0) return
+  pendingShared = {}
+  writeSharedUnread(add, [])
+}
+
+/** Drop queued arrivals without writing them. Test setup calls it before each
+ *  test, so one test's queue never lands in the next test's storage. */
+export const __resetSharedUnreadQueueForTests = (): void => {
+  if (pendingTimer !== null) clearTimeout(pendingTimer)
+  pendingTimer = null
+  pendingShared = {}
+}
+
+const writeSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
   try {
     let stored: Record<string, string>
     try { stored = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string> } catch { stored = {} }
-    for (const k of remove) delete stored[k]
+    let changed = false
+    for (const k of remove) {
+      if (Object.prototype.hasOwnProperty.call(stored, k)) { delete stored[k]; changed = true }
+    }
     for (const [k, v] of Object.entries(add)) {
       if (v === MANUAL_UNREAD) continue  // sentinels never publish
       const prev = stored[k]
-      if (prev === undefined) { stored[k] = v; continue }
+      if (prev === undefined) { stored[k] = v; changed = true; continue }
       if (v === '') continue  // presence already recorded; never demote a watermark
-      stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
+      const next = prev === '' ? v : (newerTs(prev, v) ?? prev)
+      if (next !== prev) { stored[k] = next; changed = true }
     }
+    // An arrival the live record already covers (the badge is present and its
+    // watermark is at least as new) writes nothing. The read above is of the
+    // live record, so a sibling's clear is still seen and the slot's next
+    // arrival re-publishes it.
+    if (!changed) return
     // safeSetItem, not a raw setItem: this write runs on the websocket
     // onmessage -> dispatch -> re-render path, so a QuotaExceededError here
     // would escape a React ErrorBoundary and white-screen the app. The helper
@@ -88,6 +166,9 @@ export const persistSharedUnread = (add: Record<string, string>, remove: readonl
  *  keeps the badge and adopts that watermark instead of erasing a newer
  *  window's state. */
 export const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefined): string | undefined => {
+  // A queued arrival this window has not written yet must be in the record
+  // the read below judges.
+  flushSharedUnread()
   let sharedW: string | undefined
   try {
     sharedW = (JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)[slot]
@@ -160,6 +241,14 @@ export const _relayUnreadToParent = (slotsJson: string): void => {
   } catch { /* never let the relay break a state update */ }
 }
 
+/** Relay this window's unread count to the Instances hub, computing it only
+ *  when embedded. The count walks every slot row, and inside a reducer each
+ *  row read creates an Immer draft, so a standalone window skips the work. */
+export const relayUnreadCount = (state: DashboardState): void => {
+  try { if (typeof window === 'undefined' || window.parent === window) return } catch { return }
+  _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
+}
+
 export const drainUnreadKeys = (state: DashboardState, keys: Set<string>): void => {
   const unread = state.unreadSlots ?? []
   const dropped = unread.filter(key => keys.has(key))
@@ -200,10 +289,21 @@ const statusHeldOrphanTest = (state: DashboardState): ((key: string) => boolean)
   state.slotsListPartial === true,
 )
 
+/** The keys of the Crew Mode crew members among *slots* that the person's lists
+ *  leave out (`crewModeView`): those whose root is a row too, since that root's
+ *  Crew panel lists them. Counts shown to the person skip them; their unread
+ *  entries stay for that panel. A crew member whose root is closed is a row
+ *  again, so it counts. */
+export const crewMemberKeys = (slots: readonly { key: string; crew_root?: string }[]): ReadonlySet<string> => {
+  const keys = new Set(slots.map(s => s.key))
+  return new Set(slots.filter(s => !!s.crew_root && keys.has(s.crew_root)).map(s => s.key))
+}
+
 /** The unread keys an embedded instance reports to the Instances hub. */
 export const relayedUnreadKeys = (state: DashboardState): string[] => {
   const isHeldOrphan = statusHeldOrphanTest(state)
-  return (state.unreadSlots ?? []).filter(key => !isHeldOrphan(key))
+  const crewMembers = crewMemberKeys(state.slots ?? [])
+  return (state.unreadSlots ?? []).filter(key => !isHeldOrphan(key) && !crewMembers.has(key))
 }
 
 /** True while slot-list state can hide absent unread sessions from the hub count. */

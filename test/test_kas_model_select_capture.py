@@ -100,14 +100,20 @@ def test_select_never_becomes_the_advertised_list() -> None:
 
 def test_concrete_default_is_never_judged_against_the_select() -> None:
     handle = _stored(_make_handle(), _kas_session_new(["claude-sonnet-4.5"], "other-model"))
+    assert handle._kas_auto_fallback == ""
+    # No switch was recorded: the session still runs whatever the backend chose.
+    assert handle._resolved_model_id == ""
     handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 def test_kiro_ignores_the_raw_select() -> None:
     handle = _make_handle(ACP_BACKEND_KIRO)
     handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "auto"))
+    assert handle.available_models == []
+    resolved_before = handle._resolved_model_id
     handle._runtime.send_request.reset_mock()  # type: ignore[attr-defined]
     asyncio.run(handle.ensure_served_default())
+    assert handle._resolved_model_id == resolved_before
     handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
     handle._runtime.send_request.assert_not_awaited()  # type: ignore[attr-defined]
 
@@ -128,8 +134,13 @@ def test_refused_switch_does_not_fail_the_session_start() -> None:
         side_effect=AcpError("refused")
     )
     handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "auto"))
+    intent = handle._model
     asyncio.run(handle.ensure_served_default())  # must not raise
     handle.set_config_option.assert_awaited_once()  # type: ignore[attr-defined]
+    # The refused switch leaves the session on its backend default and its intent intact.
+    assert handle._resolved_model_id == ""
+    assert handle.model_pin_refused == ""
+    assert handle._model == intent
 
 
 def test_auto_listed_late_in_a_long_select_is_still_seen() -> None:

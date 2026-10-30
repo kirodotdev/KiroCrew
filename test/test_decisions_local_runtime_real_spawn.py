@@ -17,7 +17,6 @@ import socket
 import subprocess
 import sys
 import textwrap
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,6 +25,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.decisions import local_models
 from kiro_crew.decisions import local_runtime as lr
+from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -123,15 +123,16 @@ def make_runtime(tmp_path: Path, setattr) -> lr.LocalModelRuntime:
 
 def server_pid(rt: lr.LocalModelRuntime) -> int:
     """The stand-in's own pid, which it logs; the Popen pid may be a sandbox wrapper."""
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
+
+    def logged_pid() -> int | None:
         log = rt.log_path(_model())
         text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
         for line in text.splitlines():
             if line.startswith("pid="):
                 return int(line[4:])
-        time.sleep(0.05)
-    raise AssertionError("the stand-in never logged its pid")
+        return None
+
+    return wait_until(logged_pid, describe=lambda: "the stand-in never logged its pid")
 
 
 @pytest.fixture
@@ -141,25 +142,26 @@ def runtime(tmp_path, monkeypatch):
     rt.deactivate(wait=True)
 
 
-def _wait(rt, *states, timeout=30.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _wait(rt, *states) -> dict:
+    def reached() -> dict | None:
         s = rt.status()
-        if s["state"] in states:
-            return s
-        time.sleep(0.05)
-    # Say which half stalled: a server that never listened reads as a free port,
-    # one that listens but does not attest reads as a taken port with a failed
-    # probe. The log tail alone cannot tell the two apart.
-    status = rt.status()
-    port = int(status.get("port") or 0)
-    run = getattr(rt, "_run", None)
-    nonce = getattr(run, "nonce", "") if run is not None else ""
-    raise AssertionError(
-        f"runtime stayed {status}; port free={lr._port_free(port) if port else 'n/a'} "
-        f"attest ok={lr._health_ok(port, nonce) if port else 'n/a'}; "
-        f"log: {rt._log_tail(_model())}"
-    )
+        return s if s["state"] in states else None
+
+    def stalled() -> str:
+        # Say which half stalled: a server that never listened reads as a free port,
+        # one that listens but does not attest reads as a taken port with a failed
+        # probe. The log tail alone cannot tell the two apart.
+        status = rt.status()
+        port = int(status.get("port") or 0)
+        run = getattr(rt, "_run", None)
+        nonce = getattr(run, "nonce", "") if run is not None else ""
+        return (
+            f"runtime stayed {status}; port free={lr._port_free(port) if port else 'n/a'} "
+            f"attest ok={lr._health_ok(port, nonce) if port else 'n/a'}; "
+            f"log: {rt._log_tail(_model())}"
+        )
+
+    return wait_until(reached, describe=stalled)
 
 
 def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
@@ -170,15 +172,12 @@ def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
     assert not lr._port_free(port), "the server holds its port"
     pid = server_pid(runtime)
     runtime.deactivate(wait=True)
-    deadline = time.monotonic() + 10
-    while platform_compat.pid_exists(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert not platform_compat.pid_exists(pid), "deactivate ended the server"
+    wait_until(
+        lambda: not platform_compat.pid_exists(pid),
+        describe=lambda: f"deactivate did not end the server (pid {pid})",
+    )
     assert runtime.status()["state"] == lr.STATE_IDLE
-    deadline = time.monotonic() + 10
-    while not lr._port_free(port) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert lr._port_free(port), "the port is free again"
+    wait_until(lambda: lr._port_free(port), describe=lambda: f"port {port} is not free again")
 
 
 def test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime):
@@ -229,10 +228,10 @@ def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
         child = int(line)
         parent.kill()  # no cleanup runs: the gateway is gone, not stopped
         parent.wait(timeout=30)
-        deadline = time.monotonic() + 30
-        while platform_compat.pid_exists(child) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert not platform_compat.pid_exists(child), "the server outlived its gateway"
+        wait_until(
+            lambda: not platform_compat.pid_exists(child),
+            describe=lambda: f"the server (pid {child}) outlived its gateway",
+        )
     finally:
         # Every exit path reaps both trees: the parent's group, and the server, which
         # the runtime starts in a session of its own.

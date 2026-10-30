@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderHook } from '@testing-library/react'
-import { OPEN_MESSAGE_TYPE, openUrlOf, useFrameOpenLink } from './useFrameOpenLink'
+import { OPEN_MESSAGE_TYPE, useFrameOpenLink } from './useFrameOpenLink'
 
-const PR = 'https://github.com/kirodotdev/KiroCrew/pull/18518'
+const URL_A = 'https://github.com/kirodotdev/KiroCrew/pull/18518'
+
+/** The URL rule is the caller's (`webUrlOf`, tested with the bridge); this one
+ *  takes any URL on the open type, so these tests pin only frame and gesture. */
+const accept = (data: unknown) => {
+  const msg = data as { type?: unknown; url?: unknown }
+  return msg?.type === OPEN_MESSAGE_TYPE && typeof msg.url === 'string' ? msg.url : null
+}
 
 /** A frame stand-in whose window is a unique object: the hook compares identity only. */
 function mountFrame() {
@@ -20,39 +27,20 @@ afterEach(() => {
 })
 
 describe('useFrameOpenLink', () => {
-  it('opens a pull request its own frame asks for, exactly once', () => {
+  it('opens what its own frame asks for, exactly once', () => {
     const frame = mountFrame()
     const open = vi.fn()
-    renderHook(() => useFrameOpenLink([{ current: frame }], open, () => true))
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    renderHook(() => useFrameOpenLink([{ current: frame }], accept, open, () => true))
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).toHaveBeenCalledTimes(1)
-    expect(open).toHaveBeenCalledWith(PR)
+    expect(open).toHaveBeenCalledWith(URL_A, frame)
   })
 
-  it('drops a URL on another host', () => {
+  it('opens nothing the accept rule refuses', () => {
     const frame = mountFrame()
     const open = vi.fn()
-    renderHook(() => useFrameOpenLink([{ current: frame }], open, () => true))
-    post({ type: OPEN_MESSAGE_TYPE, url: 'https://evil.example/kirodotdev/KiroCrew/pull/1' }, frame.contentWindow)
-    post({ type: OPEN_MESSAGE_TYPE, url: 'https://github.com.evil.example/a/b/pull/1' }, frame.contentWindow)
-    expect(open).not.toHaveBeenCalled()
-  })
-
-  it('drops a github.com URL that is not a pull request page', () => {
-    const frame = mountFrame()
-    const open = vi.fn()
-    renderHook(() => useFrameOpenLink([{ current: frame }], open, () => true))
-    for (const url of [
-      'https://github.com/kirodotdev/KiroCrew',
-      'https://github.com/kirodotdev/KiroCrew/issues/1',
-      'https://github.com/kirodotdev/KiroCrew/pull/1/files',
-      `${PR}?x=1`,
-      `${PR}#top`,
-      'http://github.com/kirodotdev/KiroCrew/pull/1',
-      'javascript:alert(1)//https://github.com/a/b/pull/1',
-    ]) {
-      post({ type: OPEN_MESSAGE_TYPE, url }, frame.contentWindow)
-    }
+    renderHook(() => useFrameOpenLink([{ current: frame }], () => null, open, () => true))
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).not.toHaveBeenCalled()
   })
 
@@ -60,28 +48,28 @@ describe('useFrameOpenLink', () => {
     const mine = mountFrame()
     const other = mountFrame()
     const open = vi.fn()
-    renderHook(() => useFrameOpenLink([{ current: mine }], open, () => true))
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, other.contentWindow)
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, window)
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, null)
+    renderHook(() => useFrameOpenLink([{ current: mine }], accept, open, () => true))
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, other.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, window)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, null)
     expect(open).not.toHaveBeenCalled()
   })
 
   it('opens through window.open with noopener and noreferrer by default', () => {
     const frame = mountFrame()
     const spy = vi.spyOn(window, 'open').mockImplementation(() => null)
-    renderHook(() => useFrameOpenLink([{ current: frame }], undefined, () => true))
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    renderHook(() => useFrameOpenLink([{ current: frame }], accept, undefined, () => true))
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy).toHaveBeenCalledWith(PR, '_blank', 'noopener,noreferrer')
+    expect(spy).toHaveBeenCalledWith(URL_A, '_blank', 'noopener,noreferrer')
     spy.mockRestore()
   })
 
   it('opens nothing when the frame posts without a user gesture', () => {
     const frame = mountFrame()
     const open = vi.fn()
-    renderHook(() => useFrameOpenLink([{ current: frame }], open, () => false))
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    renderHook(() => useFrameOpenLink([{ current: frame }], accept, open, () => false))
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).not.toHaveBeenCalled()
   })
 
@@ -95,28 +83,22 @@ describe('useFrameOpenLink', () => {
     const focus = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => focused)
     const activate = (isActive: boolean) =>
       Object.defineProperty(nav, 'userActivation', { configurable: true, value: { isActive } })
-    renderHook(() => useFrameOpenLink([{ current: frame }], open))
+    renderHook(() => useFrameOpenLink([{ current: frame }], accept, open))
     // No activation, focus on the frame: nothing.
     focused = frame
     activate(false)
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     // Typing in the composer: an activation, but the focus is not the frame.
     focused = box
     activate(true)
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).not.toHaveBeenCalled()
     // A click in the frame: activation, and the frame holds the host's focus.
     focused = frame
-    post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).toHaveBeenCalledTimes(1)
     focus.mockRestore()
     if (hadActivation) Object.defineProperty(nav, 'userActivation', hadActivation)
     else delete (nav as { userActivation?: unknown }).userActivation
-  })
-
-  it('reads only the open type, never the act reply', () => {
-    expect(openUrlOf({ type: 'kirocrew-dashboard:act', url: PR })).toBeNull()
-    expect(openUrlOf({ type: OPEN_MESSAGE_TYPE, url: PR })).toBe(PR)
-    expect(openUrlOf({ type: OPEN_MESSAGE_TYPE, url: `${PR}/` })).toBe(`${PR}/`)
   })
 })

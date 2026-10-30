@@ -469,3 +469,71 @@ class TestManualClaimRequiresAFiringSignal(unittest.IsolatedAsyncioTestCase):
         )
         response = await self._claim(live)
         self.assertEqual(response.status, 200)
+
+
+class TestManualClaimResolvesTheModeOffTheLoop(unittest.IsolatedAsyncioTestCase):
+    """`POST /incident/claim` must read the autonomy policy on a worker thread.
+
+    `rotation.resolve_mode` reads the app mode and the act-rules from the policy file on
+    disk. The claim that follows it already runs through `asyncio.to_thread`; a read on the
+    gateway's event loop stalls every session for as long as the disk takes.
+    """
+
+    def setUp(self):
+        import os
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        home = mock.patch.dict(os.environ, {"KIROCREW_HOME": str(self.tmp)})
+        home.start()
+        self.addCleanup(home.stop)
+
+    async def test_every_policy_read_runs_on_a_worker_thread(self):
+        import threading
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import models, policy_store
+
+        live = models.Signal.create(
+            source="cloudwatch",
+            native_id="alarm/dlq",
+            title="DLQ deep",
+            state=models.STATE_FIRING,
+        )
+        request = mock.MagicMock(spec=web.Request)
+        request.app = {"state": object()}
+        request.json = mock.AsyncMock(return_value={"signal": {"id": live.id}})
+
+        async def _poll_all():
+            return [live], {}
+
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+        real_read_mode = policy_store.read_mode
+        real_read_rules_raw = policy_store.read_rules_raw
+
+        def _recording_read_mode(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_read_mode(*args, **kwargs)
+
+        def _recording_read_rules_raw(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_read_rules_raw(*args, **kwargs)
+
+        # `resolve_mode` itself is NOT patched: the point is where its real reads land.
+        with mock.patch.object(routes, "get_registry") as get_registry:
+            get_registry.return_value = mock.MagicMock(poll_all=_poll_all)
+            with mock.patch.object(policy_store, "read_mode", _recording_read_mode):
+                with mock.patch.object(policy_store, "read_rules_raw", _recording_read_rules_raw):
+                    with mock.patch.object(routes.slack_out, "publish", mock.AsyncMock()):
+                        with mock.patch.object(
+                            routes.dispatch,
+                            "gather_evidence_safely",
+                            mock.AsyncMock(return_value=[]),
+                        ):
+                            with mock.patch.object(routes, "is_app_enabled", return_value=True):
+                                response = await routes._handle_claim(request)
+
+        self.assertEqual(response.status, 200)
+        # The app mode and the act-rules: both policy reads happened.
+        self.assertEqual(len(threads), 2)
+        self.assertNotIn(loop_thread, threads, "the claim read the policy file on the loop")

@@ -102,9 +102,15 @@ def test_a_new_dispatch_retires_the_oracle_rather_than_clearing_it():
     so clearing in place would let its late write become the new baseline."""
     info = _info()
     old = _oracle(VERDICT_WORKING)
+    replacement = MagicMock()
+    old.fresh.return_value = replacement
     info._stall_oracle = old
+    gen = info._stall_gen
     SubagentManager._note_tool_dispatch(info, _event())
-    old.fresh.assert_called_once()
+    old.fresh.assert_called_once_with()
+    old.reset.assert_not_called()
+    assert info._stall_oracle is replacement
+    assert info._stall_gen == gen + 1
 
 
 # ── _stall_verdict attribution gates ─────────────────────────────────

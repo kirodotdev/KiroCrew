@@ -48,7 +48,7 @@ from aiohttp import web
 
 from kiro_crew import hooks, model_registry
 from kiro_crew.apps.manager import is_app_enabled
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
 

@@ -12,13 +12,6 @@
       overflow-wrap: break-word; }
     .wkb-ttl i { font-style: normal; color: var(--muted, #7f7f88);
       font-weight: 400; padding: 0 2px; }
-    .wkb-fresh { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
-      font-size: 10.5px; font-weight: 600; padding: 3px 9px 3px 7px; border-radius: 999px;
-      background: var(--ok-subtle, rgba(34,197,94,.12)); color: var(--ok, #22c55e);
-      white-space: nowrap; }
-    .wkb-fresh b { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .wkb-fresh.is-stale { background: var(--warn-subtle, rgba(234,179,8,.12));
-      color: var(--warn, #eab308); }
 
     .wkb-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px;
       font-size: 11px; color: var(--muted, #7f7f88); margin-top: 7px; }
@@ -112,7 +105,6 @@
 
   <div class="wkb-top">
     <h2 class="wkb-ttl"><span data-i18n="title">Work board</span> <i>&middot;</i> <span data-dashboard-field="goal">&mdash;</span></h2>
-    <span class="wkb-fresh" id="wkb-fresh"><b></b><span>&mdash;</span></span>
   </div>
 
   <div class="wkb-meta">
@@ -175,8 +167,7 @@
         board_no_item: 'This board carries no item yet.',
         hl_of: ' of ', hl_accepted: ' items accepted. ',
         hl_waits_one: ' waits on your verdict, ', hl_waits_many: ' wait on your verdict, ',
-        hl_worker: ' still with a worker.',
-        stale: 'Stale', fresh: 'Fresh'
+        hl_worker: ' still with a worker.'
       },
       'zh-CN': {
         title: '\u5de5\u4f5c\u770b\u677f',
@@ -199,8 +190,7 @@
         board_no_item: '\u6b64\u770b\u677f\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002',
         hl_of: ' / ', hl_accepted: ' \u9879\u5df2\u63a5\u53d7\u3002',
         hl_waits_one: ' \u9879\u5f85\u4f60\u88c1\u5b9a\uff0c', hl_waits_many: ' \u9879\u5f85\u4f60\u88c1\u5b9a\uff0c',
-        hl_worker: ' \u9879\u4ecd\u5728\u6267\u884c\u4e2d\u3002',
-        stale: '\u5df2\u8fc7\u671f', fresh: '\u6700\u65b0'
+        hl_worker: ' \u9879\u4ecd\u5728\u6267\u884c\u4e2d\u3002'
       }
     };
     function locale() {
@@ -537,16 +527,6 @@
       out.appendChild(document.createTextNode(i18n('hl_worker')));
     }
 
-    function drawFreshness() {
-      var api = window.kirocrew || {};
-      var node = document.getElementById('wkb-fresh');
-      if (!node) return;
-      node.className = 'wkb-fresh' + (api.stale ? ' is-stale' : '');
-      var seq = num(api.seq);
-      node.lastChild.textContent = i18n(api.stale ? 'stale' : 'fresh') +
-        ' \u00b7 seq ' + (seq === null ? DASH : seq);
-    }
-
     function render() {
       var f = fields();
       applyStatic();
@@ -567,7 +547,6 @@
       var total = boardTotal(list);
       put('items', i18n(total === 1 ? 'item_one' : 'item_many', { n: total }));
 
-      drawFreshness();
       drawHeadline(list);
       drawStrip(list);
       drawRounds(list);

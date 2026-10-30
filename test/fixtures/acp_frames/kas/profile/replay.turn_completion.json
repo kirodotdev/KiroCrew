@@ -1,0 +1,212 @@
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "sess_4f063ee6-e4b0-4937-99fa-32b71e613e33",
+    "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+        "kiro": {
+          "promptTurnSummaries": [
+            {
+              "usedTools": [
+                "read_file"
+              ],
+              "unit": "credit",
+              "unitPlural": "credits",
+              "usage": 0.1365298233830846
+            }
+          ],
+          "elapsedTime": 3049,
+          "status": "success",
+          "kind": "turn_completion",
+          "messageId": "527097a1-5222-4dbc-ac4d-1ee0875c3288-usage",
+          "timestamp": "2026-10-24T02:20:11.455Z",
+          "executionId": "527097a1-5222-4dbc-ac4d-1ee0875c3288",
+          "turnId": "527097a1-5222-4dbc-ac4d-1ee0875c3288",
+          "requestIds": [
+            "10eff2ff-a35d-450d-a158-b3c2d2f684f7",
+            "9500ac19-bebd-40d8-a8dc-3f73fc9a2663"
+          ],
+          "contextBreakdown": {
+            "schema": 1,
+            "modelCalls": 2,
+            "totalChars": 54978,
+            "window": {
+              "usagePercentage": 2.6899002,
+              "sizeTokens": 1000000
+            },
+            "categories": {
+              "kiroInstructions": {
+                "chars": 4290,
+                "percent": 7.8
+              },
+              "toolSpecs": {
+                "chars": 2865,
+                "percent": 5.2
+              },
+              "mcpTools": {
+                "chars": 6246,
+                "percent": 11.4,
+                "items": [
+                  {
+                    "name": "example-mcp",
+                    "chars": 6246,
+                    "percent": 11.4,
+                    "count": 2
+                  }
+                ]
+              },
+              "agentsIndex": {
+                "chars": 0,
+                "percent": 0,
+                "count": 0
+              },
+              "skillsIndex": {
+                "chars": 14563,
+                "percent": 26.5,
+                "count": 28
+              },
+              "powersIndex": {
+                "chars": 0,
+                "percent": 0,
+                "count": 0
+              },
+              "steering": {
+                "chars": 18077,
+                "percent": 32.9,
+                "items": [
+                  {
+                    "name": "global/example-steering-1",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-1.md",
+                    "chars": 5901,
+                    "percent": 10.7,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-2",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-2.md",
+                    "chars": 3249,
+                    "percent": 5.9,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "/work/user/project/.kiro/agent-resources/probe-resource.md",
+                    "uri": "file:///work/user/project/.kiro/agent-resources/probe-resource.md",
+                    "chars": 3000,
+                    "percent": 5.5,
+                    "inclusion": "agentResource"
+                  },
+                  {
+                    "name": "global/example-steering-3",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-3.md",
+                    "chars": 2482,
+                    "percent": 4.5,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-4",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-4.md",
+                    "chars": 953,
+                    "percent": 1.7,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-5",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-5.md",
+                    "chars": 692,
+                    "percent": 1.3,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-6",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-6.md",
+                    "chars": 567,
+                    "percent": 1,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-7",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-7.md",
+                    "chars": 403,
+                    "percent": 0.7,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-8",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-8.md",
+                    "chars": 380,
+                    "percent": 0.7,
+                    "inclusion": "always"
+                  },
+                  {
+                    "name": "global/example-steering-9",
+                    "uri": "file:///work/user/.kiro/steering/global/example-steering-9.md",
+                    "chars": 261,
+                    "percent": 0.5,
+                    "inclusion": "always"
+                  }
+                ]
+              },
+              "skills": {
+                "chars": 0,
+                "percent": 0
+              },
+              "toolIO": {
+                "chars": 102,
+                "percent": 0.2,
+                "items": [
+                  {
+                    "name": "read_file",
+                    "chars": 102,
+                    "percent": 0.2,
+                    "count": 1
+                  }
+                ],
+                "inputChars": 20,
+                "outputChars": 82
+              },
+              "history": {
+                "chars": 8152,
+                "percent": 14.8,
+                "userChars": 8142,
+                "assistantChars": 4,
+                "thinkingChars": 6,
+                "compactionSummaryChars": 0
+              },
+              "workspace": {
+                "chars": 626,
+                "percent": 1.1,
+                "fileTreeChars": 0,
+                "openFilesChars": 0,
+                "environmentChars": 626,
+                "repositoriesChars": 0
+              },
+              "memory": {
+                "chars": 0,
+                "percent": 0,
+                "learningsChars": 0,
+                "knowledgeChars": 0
+              },
+              "attachedFiles": {
+                "chars": 0,
+                "percent": 0
+              },
+              "other": {
+                "chars": 57,
+                "percent": 0.1
+              }
+            },
+            "media": {
+              "images": 0,
+              "imageBytes": 0,
+              "documents": 0,
+              "documentBytes": 0
+            }
+          },
+          "replay": true
+        }
+      }
+    }
+  }
+}

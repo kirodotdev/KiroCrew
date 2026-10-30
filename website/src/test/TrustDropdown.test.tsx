@@ -71,15 +71,32 @@ describe('TrustDropdown', () => {
     expect(onAction).toHaveBeenCalledWith('trust_command', cmd)
   })
 
+  // A command ending in a straight quote must appear ONCE, with no catalog
+  // delimiter doubling it — the same character the catalog used to open/close
+  // the operand (issue #12371).
+  it('renders a command ending in a quote with no catalog-quote doubling', () => {
+    const cmd = 'grep -r "two  spaces" /path --include="*.tsx"'
+    render(<TrustDropdown fullCommand={cmd} baseCommand="grep" isShell className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const commandItem = screen.getAllByRole('menuitem')[0]
+    // The command appears verbatim exactly once in the label text.
+    const text = commandItem.textContent ?? ''
+    const occurrences = text.split(cmd).length - 1
+    expect(occurrences).toBe(1)
+    // The text ends with the command verbatim — no catalog delimiter was
+    // appended after the command's own closing quote.
+    expect(text.endsWith(cmd)).toBe(true)
+  })
+
   // Each locale orders the sentence around the operand differently — Japanese
   // puts it first, German suffixes the base with a hyphen. A fragment pair can
   // only express the English order, so what these pin is that the operand is
   // interpolated INTO the sentence and still renders monospaced.
   it.each([
-    ['ja', '「ls /tmp」を信頼', 'ls コマンドをすべて信頼'],
-    ['ko', '‘ls /tmp’ 신뢰', 'ls 명령 모두 신뢰'],
-    ['de', '„ls /tmp“ vertrauen', 'Allen ls-Befehlen vertrauen'],
-    ['zh-CN', '信任“ls /tmp”', '信任所有 ls 命令'],
+    ['ja', 'ls /tmpを信頼', 'ls コマンドをすべて信頼'],
+    ['ko', 'ls /tmp 신뢰', 'ls 명령 모두 신뢰'],
+    ['de', 'ls /tmp vertrauen', 'Allen ls-Befehlen vertrauen'],
+    ['zh-CN', '信任ls /tmp', '信任所有 ls 命令'],
   ])('places the command inside a whole translated message in %s', async (lng, cmdText, baseText) => {
     await i18next.changeLanguage(lng)
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
@@ -232,7 +249,8 @@ describe('TrustDropdown', () => {
     // The row's accessible name is its own text content, so the full command
     // reaches a screen reader with no `aria-label` duplicating the visible
     // label -- a duplicate is what drifts out of sync and breaks "label in
-    // name" (WCAG 2.5.3).
+    // name" (WCAG 2.5.3). The chip's background boundary is visual-only;
+    // the accessible boundary is the verbatim command text inside the name.
     it('carries the whole command in the row accessible name', () => {
       const [exact] = openWith(overBudget)
       // Matched with a predicate, not an exact string: the accessible-name
@@ -280,19 +298,6 @@ describe('TrustDropdown', () => {
       // The pointer user keeps the tooltip: one unwrapped line, same string.
       expect(label?.getAttribute('title')).toBe(overBudget)
     })
-  })
-
-  it.skip('closes on outside click — handled by Radix DropdownMenu', () => {
-    render(
-      <div>
-        <div data-testid="outside">outside</div>
-        <TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />
-      </div>,
-    )
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
-    fireEvent.mouseDown(screen.getByTestId('outside'))
-    expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
   })
 
   it('closes dropdown after selecting an option', () => {
@@ -414,12 +419,14 @@ describe('TrustDropdown accessibility', () => {
 })
 
 describe('TrustDropdown positioning', () => {
-  it.skip('renders menu positioned above — handled by Radix Portal', () => {
+  it('asks Radix to open the menu above the trigger, aligned to its end edge', () => {
+    // Radix places the menu (and flips it when the room runs out); the side
+    // and alignment it starts from are this component's choice.
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    const menu = screen.getByText('Trust all tools for this session').closest('div[class*="absolute"]')
-    expect(menu).toBeInTheDocument()
-    expect(menu?.className).toContain('bottom-full')
+    const menu = screen.getByRole('menu')
+    expect(menu).toHaveAttribute('side', 'top')
+    expect(menu).toHaveAttribute('align', 'end')
   })
 })
 
@@ -441,9 +448,9 @@ describe('TrustDropdown timed grants', () => {
     fireEvent.click(screen.getByText('Trust'))
     // Each timed row names the clock time its grant ends.
     expect(rowTexts()).toEqual([
-      'Trust “ls /tmp” for this session',
-      expect.stringMatching(/^Trust “ls \/tmp” for an hour \(until \d.*\)$/),
-      expect.stringMatching(/^Trust “ls \/tmp” until midnight \(\d.*\)$/),
+      'Trust ls /tmp for this session',
+      expect.stringMatching(/^Trust ls \/tmp for an hour \(until \d.*\)$/),
+      expect.stringMatching(/^Trust ls \/tmp until midnight \(\d.*\)$/),
       'Trust any ls command for this session',
       expect.stringMatching(/^Trust any ls command for an hour \(until \d.*\)$/),
       expect.stringMatching(/^Trust any ls command until midnight \(\d.*\)$/),
@@ -462,14 +469,14 @@ describe('TrustDropdown timed grants', () => {
   it('keeps the unqualified labels where the surface offers no timed rows', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(rowTexts().slice(0, 2)).toEqual(['Trust “ls /tmp”', 'Trust all ls commands'])
+    expect(rowTexts().slice(0, 2)).toEqual(['Trust ls /tmp', 'Trust all ls commands'])
   })
 
   it('sends an hour as ttlSeconds on the timed command row', () => {
     const onAction = vi.fn()
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={onAction} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust “ls /tmp” for an hour'))!)
+    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust ls /tmp for an hour'))!)
     expect(onAction).toHaveBeenCalledWith('trust_command', 'ls /tmp', 3600)
   })
 
@@ -480,7 +487,7 @@ describe('TrustDropdown timed grants', () => {
     fireEvent.click(screen.getByText('Trust'))
     const hour = fmtTime(new Date(2026, 0, 15, 23, 30, 0))
     const midnight = fmtTime(new Date(2026, 0, 16, 0, 0, 0))
-    expect(rowTexts()).toContain(`Trust “ls /tmp” for an hour (until ${hour})`)
+    expect(rowTexts()).toContain(`Trust ls /tmp for an hour (until ${hour})`)
     expect(rowTexts()).toContain(`Trust any ls command until midnight (${midnight})`)
   })
 
@@ -499,7 +506,7 @@ describe('TrustDropdown timed grants', () => {
     const onAction = vi.fn()
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={onAction} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent === 'Trust “ls /tmp” for this session')!)
+    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent === 'Trust ls /tmp for this session')!)
     expect(onAction).toHaveBeenCalledWith('trust_command', 'ls /tmp')
   })
 

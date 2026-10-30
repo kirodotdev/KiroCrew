@@ -200,6 +200,8 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
         add_trusted_session(linked_entry.session_key, sessions, strict=True)
         for slot in slots:
             slot._trust = True
+            # A person chose this slot's mode: its creator's changes stop reaching it.
+            slot._posture_inherited = False
     except Exception:
         logger.warning(
             "Failed to grant linked session trust (session=%s)",

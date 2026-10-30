@@ -208,7 +208,7 @@ def _state_digest(state: dict[str, Any]) -> str:
 #: number retires savepoints written under the shape before it and the shape changed once.
 _FOLD_STATE_PINS: dict[str, tuple[str, int]] = {
     "status": ("929af8634f6d6a5f", 4),
-    "usage": ("502f1d8eda19fb9f", 15),
+    "usage": ("e3a396c492999e74", 22),
     "timeline": ("4f461179faff39a3", 5),
     "tools": ("008b36fed498d32b", 4),
     "approvals": ("c9db629215cc2620", 4),
@@ -668,12 +668,40 @@ def _spy_on_prefix_digests(monkeypatch) -> list[int]:
     return calls
 
 
-def test_a_savepoint_past_the_end_of_the_log_is_ignored():
-    """The short-store fallback: a log that does not reach the savepoint."""
+@pytest.mark.parametrize(
+    ("field", "planted"),
+    [
+        # The short-store fallback: a log that does not reach the savepoint.
+        pytest.param(
+            "seq",
+            lambda handle: handle.last_seq + 500,
+            id="test_a_savepoint_past_the_end_of_the_log_is_ignored",
+        ),
+        # Retention drops segments off the front, so the two folds would differ.
+        pytest.param(
+            "first_seq", lambda handle: 2, id="test_a_savepoint_whose_front_moved_is_ignored"
+        ),
+        # A renamed or copied file says what it is, and it is checked.
+        pytest.param(
+            "fold", lambda handle: "usage", id="test_a_savepoint_naming_another_fold_is_ignored"
+        ),
+        pytest.param(
+            "unit",
+            lambda handle: "s-somebody-else",
+            id="test_a_savepoint_naming_another_unit_is_ignored",
+        ),
+        pytest.param(
+            "v",
+            lambda handle: crew_log.fold_state_version("status") + 1,
+            id="test_a_savepoint_from_a_future_build_is_ignored",
+        ),
+    ],
+)
+def test_a_savepoint_that_does_not_match_its_log_is_ignored(field, planted):
     handle = _long_log()
     crew_log.fold_session(SESSION)
     payload = _payload("status")
-    payload["seq"] = handle.last_seq + 500
+    payload[field] = planted(handle)
     payload["state"]["turns_completed"] = 99999
     _write_payload("status", payload)
 
@@ -809,21 +837,6 @@ def test_a_savepoint_from_before_the_kernel_is_discarded_rather_than_migrated():
     assert _payload("status")["state"]["turns_completed"] == _LONG_TURNS
 
 
-def test_a_savepoint_whose_front_moved_is_ignored():
-    """Retention drops segments off the front, so the two folds would differ."""
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["first_seq"] = 2
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    cold = _cold_bundle()
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value == cold.projection("status").value
-
-
 def test_a_savepoint_from_a_recreated_log_is_ignored():
     """Same id, different file: its seqs start again and mean something else.
 
@@ -846,47 +859,6 @@ def test_a_savepoint_from_a_recreated_log_is_ignored():
 
     assert resumed.projection("status").value == cold.projection("status").value
     assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS + 8
-
-
-def test_a_savepoint_naming_another_fold_is_ignored():
-    """A renamed or copied file says what it is, and it is checked."""
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["fold"] = "usage"
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    cold = _cold_bundle()
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value == cold.projection("status").value
-
-
-def test_a_savepoint_naming_another_unit_is_ignored():
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["unit"] = "s-somebody-else"
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
-
-
-def test_a_savepoint_from_a_future_build_is_ignored():
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["v"] = crew_log.fold_state_version("status") + 1
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
 
 
 def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():
@@ -1131,22 +1103,60 @@ def test_a_savepoint_records_the_digest_it_was_handed_rather_than_re_reading():
     assert savepoints.load(handle, ("status",)) is None
 
 
-def test_a_read_that_reused_a_cached_bundle_writes_no_savepoint():
-    """A pass standing on an earlier call's state has no evidence about its prefix.
+def test_a_cached_bundle_with_custody_writes_its_savepoint_without_refolding():
+    """A cached bundle that carries the unit's cut count writes from the state it holds.
 
-    A savepoint may only be written from a digest of the bytes its state was folded
-    from. A pass that resumed from DISK has one -- the savepoint records the digest
-    its own writer read, and :func:`savepoints.resumed_prefix_still_verifies` checks
-    it again -- so the custody holds across the two calls. A cached bundle records no
-    digest at all, and the bytes below its seq were consumed by an earlier call, so
-    nothing this pass can read is evidence about them. It therefore takes no witness,
-    and :func:`savepoints.save` writes nothing without one.
-
-    What that costs is a savepoint that lags a hot cached reader until a read folds
-    the prefix itself, which the module already allows for: resuming from an older
-    savepoint replays the tail and reaches the same value.
+    The bundle records the settled cut count it was folded under
+    (``SessionProjections.cuts``) and the extent of the files it read. A later pass
+    reading the same count, over files that only grew, has the same evidence a pass that
+    folded the prefix itself would have -- a cut is the only thing that changes a
+    committed record -- so it may write a savepoint, and the advance costs the new
+    entries alone instead of a re-fold from disk. The resumed value is still the cold
+    one.
     """
     handle = _long_log()
+    first = crew_log.fold_session(SESSION, ("status",))
+    assert first.cuts is not None, "the fixture's unit states a cut count"
+    on_disk = savepoints.load(handle, ("status",))
+    assert on_disk is not None
+    _grow(handle, _LONG_TURNS, first=_LONG_TURNS + 1)
+    parsed = {"entries": 0}
+    real = CrewLog.iter_from
+
+    def counted(self, *args, **kwargs):
+        for entry in real(self, *args, **kwargs):
+            parsed["entries"] += 1
+            yield entry
+
+    CrewLog.iter_from = counted  # type: ignore[method-assign]
+    try:
+        warm = crew_log.fold_session(SESSION, ("status",), since=first)
+    finally:
+        CrewLog.iter_from = real  # type: ignore[method-assign]
+
+    assert warm.saved_seq == warm.last_seq > first.saved_seq
+    assert parsed["entries"] == warm.last_seq - first.last_seq, "only the new entries"
+    after = savepoints.load(handle, ("status",))
+    assert after is not None and after.saved_seq == warm.last_seq
+    assert _rendered(crew_log.fold_session(SESSION, ("status",))) == _rendered(
+        _cold_bundle(("status",))
+    )
+
+
+def test_a_read_that_reused_a_cached_bundle_writes_no_savepoint():
+    """A cached bundle WITHOUT custody of its prefix still writes nothing.
+
+    A unit with no cut counter (every log created before the counter existed) gives a
+    bundle nothing to vouch for its prefix with: the bytes below its seq were consumed by
+    an earlier call, so nothing this pass can read is evidence about them. It therefore
+    takes no witness, and :func:`savepoints.save` writes nothing without one.
+
+    What that costs is a savepoint that lags a hot cached reader until a read folds the
+    prefix itself, which the module already allows for: resuming from an older savepoint
+    replays the tail and reaches the same value.
+    """
+    handle = _long_log()
+    _drop_cut_counter()
     first = crew_log.fold_session(SESSION, ("status",))
     on_disk = savepoints.load(handle, ("status",))
     assert on_disk is not None, "the first fold wrote nothing, so there is no baseline"
@@ -1212,6 +1222,11 @@ def _insert_blank_interior_line(unit_id: str = SESSION) -> None:
     assert len(lines) > interior + 1, "fixture is too short to have an interior line"
     lines.insert(interior, b"")
     path.write_bytes(b"\n".join(lines))
+
+
+def _drop_cut_counter(unit_id: str = SESSION) -> None:
+    """Make *unit_id* look like a log created before the cut counter existed."""
+    (store.crew_log_dir(lg.KIND_SESSION, unit_id) / ".cuts").unlink()
 
 
 def _alter_the_last_consumed_value(unit_id: str = SESSION) -> None:
@@ -1320,7 +1335,10 @@ def test_a_savepoint_without_a_prefix_digest_is_ignored():
     _long_log()
     crew_log.fold_session(SESSION)
     payload = _payload("status")
-    del payload["prefix_sha"]
+    # Every piece of evidence a witness can carry -- the digest, or the cut count a unit
+    # with a counter is written with -- so what is left claims nothing about its prefix.
+    for key in ("prefix_sha", "prefix_records", "prefix_cuts", "prefix_extent"):
+        payload.pop(key, None)
     payload["state"]["turns_completed"] = 99999
     _write_payload("status", payload)
 

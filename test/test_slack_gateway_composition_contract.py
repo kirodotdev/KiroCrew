@@ -140,6 +140,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, channel_type: 'str', client: 'object') -> 'None'",
         ),
+        ("_publish_teams_webhook", "method", "(self, handles: 'dict') -> 'None'"),
         ("_close_channel_locked", "async method", "(self, channel_type: 'str') -> 'None'"),
         ("_on_slack_config_change", "async method", "(self, change: 'ConfigChange') -> 'None'"),
         ("_on_default_agent_config_change", "method", "(self, change: 'ConfigChange') -> 'None'"),
@@ -269,6 +270,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_refresh_mcp_resolutions", "async method", "(self) -> 'dict'"),
         ("_stop_mcp_broker", "async method", "(self) -> 'None'"),
+        (
+            "_refresh_mcp_overlays",
+            "async method",
+            "(self, register: 'Callable[[], Awaitable[bool]] | None' = None) -> 'dict'",
+        ),
         ("_apply_mcp_gateway_enabled", "async method", "(self, enabled: 'bool') -> 'dict'"),
         ("_apply_mcp_stub", "async method", "(self) -> 'dict'"),
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),
@@ -337,7 +343,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, update_task: \"'asyncio.Task[None] | None'\") -> 'None'",
         ),
         ("_run_update_checks", "async method", "(self) -> 'None'"),
-        ("_retry_pending_update_restart", "async method", "(self) -> 'None'"),
+        ("_retry_pending_update_restart", "async method", "(self) -> 'bool'"),
         ("_check_for_updates", "async method", "(self) -> 'None'"),
         (
             "_auto_update_effect",
@@ -412,6 +418,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_fire_slack_nudge",
             "async method",
             "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
+        ),
+        (
+            "_bookkeeping_section",
+            "method",
+            "(self) -> 'contextlib.AbstractContextManager[None]'",
+        ),
+        (
+            "_fire_slack_inner_nudge",
+            "async method",
+            "(self, loop: 'NudgeLoop', wake_message: 'str | None', bookkeeping: 'contextlib.ExitStack') -> 'bool | MonitorDispatchResult'",
         ),
         (
             "_fire_dm_nudge",
@@ -501,6 +517,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "exit_path": (
         ("_shutdown", "async method", "(self) -> 'None'"),
+        (
+            "_stop_services_and_sessions",
+            "async method",
+            "(self, *, eager_spawns: 'list[asyncio.Task[None]] | None' = None) -> 'None'",
+        ),
         ("_write_marker_worker", "method", "(self, run_marker: 'Any', port: 'int') -> 'None'"),
         ("_install_shutdown_signal_handlers", "method", "(self) -> 'None'"),
         (
@@ -741,6 +762,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_hoist_teams",
             "method",
             "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_on_session_environment_config_change",
+            "method",
+            "(self, change: 'ConfigChange') -> 'None'",
         ),
         ("_register_config_appliers", "method", "(self) -> 'None'"),
         (
@@ -1204,7 +1230,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
             "nudge_dashboard_fire",
             "result_egress",
             "subagent_injection",
-            "subagent_wiring",
         }
     ),
     "spawn_guarded_turn": frozenset({"gateway", "nudge_dashboard_fire"}),
@@ -1260,6 +1285,27 @@ def test_no_owner_reads_a_hoisted_channel_attribute() -> None:
         if name not in read_by_the_parity_test
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and any(node.attr.startswith(f"_{c}_") for c in channels)
+    ]
+    assert offenders == []
+
+
+def test_the_facade_and_its_owners_reach_autonudge_only_through_its_service() -> None:
+    """AutoNudge keeps its shutdown-drain invariant: a Slack nudge's post-reply
+    bookkeeping opens its drained section with ``AutoNudgeService.drain_section``, and
+    neither the facade nor an owner imports an ``autonudge_service`` module."""
+
+    def _names(node: ast.AST) -> list[str]:
+        if isinstance(node, ast.ImportFrom):
+            return [node.module or ""]
+        if isinstance(node, ast.Import):
+            return [alias.name for alias in node.names]
+        return []
+
+    offenders = [
+        f"{stem}:{node.lineno}"
+        for stem, source in _holder_sources().items()
+        for node in ast.walk(ast.parse(source))
+        if any(name.startswith("kiro_crew.autonudge_service") for name in _names(node))
     ]
     assert offenders == []
 

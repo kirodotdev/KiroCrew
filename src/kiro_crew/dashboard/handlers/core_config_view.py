@@ -24,7 +24,10 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     KiroCrewConfig,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    body_not_object_error,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
 
@@ -68,6 +71,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "memory_store",
     "model",
     "worker_model",
+    # A crewmate's harness pin is kept as written so the selection gate can
+    # refuse it with its reason, so any string a hand edit left can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )
@@ -137,7 +143,6 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     credential-shaped, and therefore already meaningless as a reference.
     """
     from kiro_crew.config.schema import JSON_SCHEMA
-    from kiro_crew.config.validation import _is_sensitive_path
 
     masked = copy.deepcopy(cfg.to_dict())
 
@@ -162,20 +167,41 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     # browser is not.
     _resolution.drop_extra_section_keys(masked, getattr(cfg, "_extra_keys", {}))
 
-    def _walk(node: object, prefix: str) -> None:
+    # Walks the document alongside the schema, so a secret field inside a
+    # map-shaped section (``additionalProperties``, e.g.
+    # ``telegram.accounts.<name>.bot_token``) is found as well as one under
+    # fixed ``properties`` or list ``items``.
+    def _walk(node: object, schema: dict) -> None:
         if isinstance(node, dict):
+            props = schema.get("properties", {})
+            entries = schema.get("additionalProperties")
             for key, val in list(node.items()):
-                path = f"{prefix}.{key}" if prefix else key
-                if isinstance(val, dict):
-                    _walk(val, path)
-                elif isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, dict):
-                            _walk(item, path)
-                elif isinstance(val, str) and val and _is_sensitive_path(JSON_SCHEMA, path):
+                sub = props.get(key)
+                if sub is None and isinstance(entries, dict):
+                    sub = entries
+                if not isinstance(sub, dict):
+                    continue
+                if isinstance(val, (dict, list)):
+                    _walk(val, sub)
+                elif isinstance(val, str) and val and sub.get("x-meta", {}).get("sensitive", False):
                     node[key] = _SENSITIVE_MASK
+        elif isinstance(node, list):
+            items = schema.get("items")
+            if isinstance(items, dict):
+                for item in node:
+                    _walk(item, items)
 
-    _walk(masked, "")
+    _walk(masked, JSON_SCHEMA)
+
+    # ``hooks`` is a free-form dict outside the schema, so the walk above cannot
+    # see the legacy bearer token kept there. Masked the same way. No write path
+    # of this endpoint can echo the mask back: the PATCH allowlist names no
+    # ``hooks.*`` path and the PUT branch reads only the ``agent`` section.
+    hooks = masked.get("hooks")
+    if isinstance(hooks, dict):
+        legacy_token = hooks.get("webhook_token")
+        if isinstance(legacy_token, str) and legacy_token:
+            hooks["webhook_token"] = _SENSITIVE_MASK
 
     # Second pass: agent-record free text. These fields are absent from the
     # schema's sensitive set by design (they are not owner secrets), so the walk
@@ -293,6 +319,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return _deny("invalid JSON")
+        if body_not_object_error(body) is not None:
+            # The same answer, through ``_deny`` so it is audited like every refusal.
+            return _deny("body must be a JSON object", code="body_not_object")
         agent_settings = body.get("agent")
         if not isinstance(agent_settings, dict):
             return _deny("agent must be an object")

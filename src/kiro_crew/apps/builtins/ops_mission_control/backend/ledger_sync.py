@@ -355,7 +355,7 @@ def set_settings(
     if branch_name is not None:
         # `set_top_level`, not an open-coded read/write: it holds `_ConfigLock` across the
         # read-modify-write, so a concurrent settings PUT cannot drop this key (or have its own
-        # dropped). The bare sequence here bypassed that lock. Found in review.
+        # dropped). The bare sequence here bypassed that lock.
         set_top_level(_BRANCH_KEY, branch_name.strip())
 
 
@@ -551,7 +551,7 @@ async def _ensure_repo() -> tuple[bool, str]:
 
     await asyncio.to_thread(_sync_gitignore)
 
-    if not (root / ".git").is_dir():
+    if not await asyncio.to_thread((root / ".git").is_dir):
         rc, _, err = await _git("init", "-q")
         if rc != 0:
             return False, f"git init failed: {err.strip()[:200]}"
@@ -753,7 +753,8 @@ async def pull() -> tuple[bool, str]:
     fingerprint lookup. Returns ``(ok, detail)`` and never raises: sync is a
     convenience, and a dispatch cycle must not fail because a remote was unreachable.
     """
-    if not configured():
+    # Off the loop: each policy_store.get re-reads the keystone policy file.
+    if not await asyncio.to_thread(configured):
         return False, "ledger sync is not configured"
     ok, err = await _ensure_repo()
     if not ok:
@@ -828,9 +829,9 @@ async def pull() -> tuple[bool, str]:
         # Off the loop: `has_conflict` reads the whole ledger and `resolve_conflict` re-parses
         # and REWRITES it, and a team ledger is the one file in this app that grows without
         # bound. `pull` is awaited from the heartbeat and from hygiene, so on a conflicted
-        # ledger this stalled the gateway — every chat token, every other app — for the length
-        # of a full parse-and-rewrite. Found in review; the async functions in this module are
-        # otherwise careful to keep file work in a thread, which is what made it stand out.
+        # ledger an inline run would stall the gateway — every chat token, every other app —
+        # for the length of a full parse-and-rewrite. The async functions in this module
+        # keep file work in a thread for the same reason.
         if await asyncio.to_thread(has_conflict):
             kept = await asyncio.to_thread(resolve_conflict)
             await _stage_and_commit("merge team ledger", allow_empty_message_only=True)
@@ -852,6 +853,12 @@ async def pull() -> tuple[bool, str]:
 TRACKED_FILES: tuple[str, ...] = ("ledger.jsonl", "rotation.yaml", ".gitignore")
 
 
+def _present_tracked_files() -> list[str]:
+    """The tracked files that exist on disk, in ``TRACKED_FILES`` order. Blocking."""
+    root = _repo_root()
+    return [name for name in TRACKED_FILES if (root / name).exists()]
+
+
 async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = False) -> bool:
     """Stage every tracked file and commit if anything changed.
 
@@ -860,9 +867,10 @@ async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = Fa
     push that only ever ran ``git add ledger.jsonl`` would leave the schedule committed
     nowhere and silently never reach teammates.
     """
-    for name in TRACKED_FILES:
-        if (_repo_root() / name).exists():
-            await _git("add", "--", name)
+    # Off the loop, like the rest of this module's file work: `push` and `pull` await this
+    # directly on the event loop. One worker hop for the whole set, not one per file.
+    for name in await asyncio.to_thread(_present_tracked_files):
+        await _git("add", "--", name)
     rc, out, _ = await _git("status", "--porcelain")
     if rc == 0 and not out.strip() and not allow_empty_message_only:
         return False
@@ -880,7 +888,8 @@ async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = Fa
 
 async def push(*, message: str = "update ops ledger") -> tuple[bool, str]:
     """Commit and push the local ledger. Call AFTER recording a lesson."""
-    if not configured():
+    # Off the loop for the reason given in `pull`.
+    if not await asyncio.to_thread(configured):
         return False, "ledger sync is not configured"
     ok, err = await _ensure_repo()
     if not ok:
@@ -933,7 +942,7 @@ async def push(*, message: str = "update ops ledger") -> tuple[bool, str]:
     # `push` is a coroutine reached from the hygiene route. Same class as the store/ledger
     # parses already moved, but through a module-LOCAL helper, which is why the AST guard did
     # not see it — that guard matched `store.*`/`ledger.*` attribute calls only. It now also
-    # covers the local file-scanning helpers in this package. Found in review.
+    # covers the local file-scanning helpers in this package.
     leaky = await asyncio.to_thread(_credential_bearing_lines)
     if leaky:
         logger.error(
@@ -1022,7 +1031,9 @@ async def sync_safely(*, direction: str = "pull") -> str:
     that resolves in milliseconds. The retry is bounded at one and only re-runs an
     idempotent git step, so it cannot mask a genuine fault.
     """
-    if not configured():
+    # Off the loop: `run_cycle` awaits this on every heartbeat, and the check re-reads the
+    # keystone policy file each time.
+    if not await asyncio.to_thread(configured):
         return ""
     last = ""
     for attempt in (1, 2):

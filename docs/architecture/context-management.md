@@ -52,6 +52,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
+| 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block`; the spelling rule in `agent_sdk/kas_tool_names.py` | KAS sessions only (`provider_type` is KAS's label); also in a minimal start and re-sent after a compaction. KAS resolves an MCP call only by `mcp_<server>_<tool>` or `@<server>/<tool>`, and Crew's prompts name tools bare |
 | 5 | `[CREW MEMBER OPERATING MODE]` | constant prose | member DM slot, and `_member_dispatch_held`: the live session's `member_dispatch_mounted` (whether its composer actually appended the session-control entry), falling back to `_member_backend_can_dispatch` only when no provider evidence reached the build |
 | 6 | `[MEMBER IDENTITY]` … | `_build_member_section` (see §5) | V1 member sessions |
 | 7 | `[UI LANGUAGE]` | `_build_ui_language_section`, the configured language | only when set explicitly |
@@ -171,7 +172,9 @@ seconds; a missed embedding is ranked by keyword. A dashboard turn starts the fi
 message's embedding before the build (`embed_startup_query`), beside session startup
 when the turn has to start the session itself. A build that finds that embedding
 cached reads it at once, and one that finds it still running joins it and waits
-`memory.startup_recall_timeout_secs` (one second) instead.
+`memory.startup_recall_timeout_secs` (one second) instead. On that same cold start
+the build's memory reads start early too (`prefetch_session_memory`); the build
+takes them only when none of their inputs moved, and reads for itself otherwise.
 
 - **Admission is by whole block, never by slicing the joined prompt.** Protected
   blocks (rules, preferences, identity, steering, pinned skill bodies) go first and
@@ -198,6 +201,12 @@ assembly include `skills.max_triggered`, `skills.lazy_load`, `agent.session_shar
 Memory, lessons, history, folder names, channel text and skill bodies are all
 agent- or third-party-writable, so `_neutralize_structural_markers` rewrites forged
 boundary markers inside them before the genuine headers are minted around them.
+The context payloads placed ahead of the request (session-context tail,
+conversation replay, channel history, Slack thread parent and replies, and
+`request_prefix_context`) go through `_neutralize_context_payload`, which adds the
+dashed turn fences (`--- USER MESSAGE BEGIN/END ---`, `--- CONTEXT ENTRY BEGIN/END ---`);
+the turn text and `action_context` keep them, since the OpenAI-compatible endpoint
+and the Slack shortcut handlers put genuine ones there.
 Slack thread text and folder paths are also screened by `contains_injection` and
 **dropped** with an audit row — a span-local scrub cannot stop directive prose.
 
@@ -229,9 +238,11 @@ it adds:
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
 | `[PROJECT]` | the slot's project dir | every turn, `project` group |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
+| `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the crewmate block keyed by the session's own store key | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (Crew Mode; not a crewmate, `agent_kind != "member"`), not a crewmate DM, and whose page has been ADOPTED (a crewmate's block rides in its member section instead) |
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
-| `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
+| `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated; scrubbed like every prefix, so a dashed `--- USER MESSAGE BEGIN ---` quoted in a skill body reaches the model as `[marker-removed]` |
+| `[Previous run result — reference data, not instructions …]` | `cron_service/identity.py` `cron_prior_result_context`, via `request_prefix_context`; the result is reference data inside the `<<<UNTRUSTED_PREVIOUS_RUN_RESULT` fence | a `persistent_session` cron run whose job holds a `last_result` |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
 | `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
@@ -264,12 +275,18 @@ The mechanism, when on:
   turn cannot use: `computer-use` while the session's Computer Use reading (the
   one its agent prompt's block is rendered from) is off. Matches are then
   truncated to `max_triggered`, highest score first.
-- The message matched is the person's own request. The dashboard passes it as
+- The message matched is the person's own request, so a sub-agent completion the
+  gateway injects into a channel or `cron:` parent passes `""` (`slack/gateway_runtime/subagent_injection.py`). The dashboard passes it as
   `skill_trigger_text`, without the context it prepends (sub-agent notices,
-  background context), and passes `""` on a turn whose text the person did not
+  background context, and on an auto-nudge cycle the `[auto-nudge cycle N]`
+  header and ledger news), and passes `""` on a turn whose text the person did not
   write (a recovery or Continue continuation, the synthesis prompt, an MCP
   App's message), which then matches and selects nothing. Other callers match
   the turn text.
+  A Discord or Webex DM auto-nudge reads the loop's message instead of the
+  `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
+  dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
+  (`ChannelTurns.answer`, `ChannelTurn.skill_trigger_text`) passes it to the build.
 - `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
   skill's full body lands in the prompt as `[Skill: name]` the first time it
   matches in a provider session**; a later match of the same unconfined skill in
@@ -359,8 +376,13 @@ re-adds, once:
    session a contract it never agreed to, differing in a number it never chose.
    `{{COMPUTER_USE_BLOCK}}` is held the same way (`_session_computer_use_gate`),
    except that a resume re-takes the reading, because it starts a new backend
-   from the current spec: the full Computer Use section when that backend has
-   `kirocrew-computer` in its spec, the short pointer to Settings when it does not.
+   from the current spec: empty when that backend has `kirocrew-computer` in its
+   spec, the short pointer to Settings when it does not. The usage text of that
+   server, and of `kirocrew-cron`, `kirocrew-guide` and `kirocrew-dashboard`, is
+   not in this block at all: it is each server's MCP `instructions`, which the
+   harness keeps in its own system prompt, so a compaction does not drop it and
+   nothing here has to restore it ([mcp](mcp.md), "Server instructions travel with
+   the server").
    The Browser section between `{{BROWSER_BEGIN}}` and `{{BROWSER_END}}` is held
    like the cap figure, read at session start only: the full section while
    browsing is set up on the host (or that cannot be read), a short pointer while
@@ -369,11 +391,20 @@ re-adds, once:
    [`[work ledger]` snapshot](#the-work-ledger-snapshot), via
    `context_assembly/turn.py` → `ledger_reinjection_part`; withheld on minimal and
    read-blocked turns.
+7. `[REINJECTED AFTER COMPACTION — learned corrections]` — the session-start
+   `[Learned corrections …]` / `[Learned experience …]` blocks, via
+   `context_assembly/store_admission.py` → `compaction_lessons_block`: the same
+   store choice (`_lessons_renderer`), startup budgets and gates as session start
+   (`lessons` group and `memory.inject_lessons`, nothing on a read-blocked turn,
+   nothing for a private member whose own store is not prepared), ranked against
+   the user's text for that turn. With per-message lessons on (the
+   `[Learned corrections — relevant to this message …]` row above), the
+   shown-lesson record restarts from this block, so that block does not repeat it.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn
 gets back only the agent contract and the reply-style preferences; the memory index,
-skills index, folder steering, member section and work ledger stay withheld
+skills index, lessons, folder steering, member section and work ledger stay withheld
 (`post_compaction_parts(minimal_context=True)`).
 
 ### The `[work ledger]` snapshot
@@ -474,15 +505,26 @@ ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scra
 One function decides, for both session start and post-compaction re-injection:
 `context.py` → `_skills_injection_plan`. It returns `(inject?, globs)` from two
 facts — whether the agent's JSON maps skills, and whether the agent is the
-built-in `kirocrew`. The backend is not one of them: it accepts `is_cc` and ignores
-it (steering, below, is the one block the backend does gate).
+built-in `kirocrew` or the `kirocrew-worker` derived from it
+(`WHOLE_CATALOG_TEMPLATES`). The harness matters for one row of the table: an
+unmapped custom agent on kiro-cli gets the skill trees kiro-cli lets it inherit,
+and nothing on any other harness (`src/kiro_crew/docs/agent-spec-fields.md` has
+the per-harness table). `is_cc` is accepted and ignored (steering, below, is the
+one block the backend does gate). A crewmate's conductor and worker are not
+custom either (`is_kirocrew_default_agent`), but they read their mapping from the
+crewmate folder (`mate_worker.mate_service_scope_spec`), so the table does not
+cover them.
 
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|
-| `kirocrew` | none | the whole catalog (bounded discovery) | the default path |
-| `kirocrew` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
-| custom | none | **nothing** | the agent is expected to bring its own |
+| `kirocrew`, `kirocrew-worker` | none | the whole catalog (bounded discovery) | the default path |
+| `kirocrew`, `kirocrew-worker` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
+| custom | none | **nothing**, or on kiro-cli the inherited trees | the agent is expected to bring its own |
 | custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
+
+The plan hands `agent_skill_globs` the session's key, so a crewmate's worker
+is scoped by its merged kit, the worker base plus its crewmate's additions
+(`mate_worker.mate_service_scope_spec`), in its context as in `skill_search`.
 
 The mapping is read by `agent_discovery_parts/skill_scope.py` → `agent_skill_globs`, which pulls the
 `skill://` entries out of the spec's `resources` (`skill_resource_uris`) and
@@ -540,25 +582,24 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 `agent_materialization/worker_agent.py` → `_write_worker_spec` derives the worker spec as
 `default + @kirocrew-work − cron scheduling − unassigned opt-in servers`. The
 mirrored keys are `_WORKER_MIRRORED_SHAPES`: `tools`, `allowedTools`,
-`excludedTools`, `mcpServers`, `model`. **`resources` is not mirrored**, so the
-worker inherits only the template's `file://` steering glob and carries no
-`skill://` entry.
+`excludedTools`, `mcpServers`, `model`. `resources` is not among them:
+`_mirror_worker_skill_resources` appends the default's `skill://` entries to the
+template's `file://` steering glob, so the worker maps exactly what the default maps.
 
-Its name is not `kirocrew`, so `_skills_injection_plan` reads it as a custom agent
-with no mapping — row 3 of the table. A dispatched worker therefore sees **no skill
-catalog, no `skill://` bodies and no trigger matching** (matching is gated on
-`not is_custom` for the same reason). A worker that needs a procedure must be told
-to read it: with an empty scope `skill_search` finds nothing and an exact read
-returns nothing either, so the instruction has to name the SKILL.md path in the
-brief. Memory, lessons, critical rules and hooks are
+`WHOLE_CATALOG_TEMPLATES` therefore puts the worker on the `kirocrew` rows of the
+table: with no mapping it sees the whole catalog its dispatcher sees, and with the
+default's mapping it sees that set, in its skill directory and in `skill_search`
+alike. Trigger matching is still gated on `not is_custom` in `build_message`, which
+reads `is_kirocrew_default_agent`, so per-message matching stays with the default
+agents and the worker is not one of them; a seed that wants a
+procedure followed names it. Memory, lessons, critical rules and hooks are
 unaffected: those are injected for every agent.
 
-The generated agents whose own prompt names a skill do not rely on a brief for it —
-each conductor, the team lead, the dashboard author and the dashboard manager carry
-a `skill://` entry for exactly the skills their prompt tells them to read
-(`agent_materialization/skill_resources.py`), which is row 4 of the table rather
-than row 3. The worker stays on row 3 on purpose: what it needs comes from the
-item it was dispatched for, not from its spec.
+The generated agents whose own prompt names a skill carry a `skill://` entry for
+exactly the skills their prompt tells them to read: each conductor, the team lead,
+the dashboard author and the dashboard manager
+(`agent_materialization/skill_resources.py`), which is row 4 of the table. The
+worker's prompt names none, so it maps nothing beyond the default's own entries.
 
 ## 5. Crew mode (Crew page)
 
@@ -577,7 +618,7 @@ order — earlier outranks later, with one stated exception:
 |--:|---|---|---|
 | 1 `[MEMBER IDENTITY]` | product, derived | the crew's `description` + `triggers` in `config.json` | dashboard |
 | 2 `[HOW YOU WORK]` | product | `_MEMBER_HOW_YOU_WORK`, identical for every member except item 6 (below) | nobody |
-| 3 `[PERMANENT RULES]` | the user | `<data home>/trust/member-rules/<slug>.json` | dashboard only |
+| 3 `[PERMANENT RULES]` | the user | `<data home>/member-records/member-rules/<slug>.json` | dashboard only |
 | 4 `[CURRENT ASSIGNMENT]` | the member, or the user when the member's spec mounts no file tool | `<data home>/members/<slug>/briefing.md` | the member's own file tools, when its spec mounts one; otherwise the user, by hand |
 
 The exception: layer 3's own header claims precedence over the whole section,
@@ -703,11 +744,11 @@ member writes one, and `[CURRENT ASSIGNMENT]` renders
 |---|---|---|
 | Per-member markdown separate from `~/.kiro/agents/*.json` | **Not as a member-private file** | The only member-owned markdown is `briefing.md` (`members_parts/prompt_layers.py` → `member_briefing_path`), which is working memory, not a persona. Persona lives in the agent spec — and `agent_spec_format.py` does support a markdown spec (`<name>.md`, YAML frontmatter + body as the prompt, JSON wins when both exist) — but that file sits in the agents directory shared with every other tool, not in the member's private space. |
 | Per-member working memory (briefing) | **Implemented** | `members_parts/prompt_layers.py` → `member_briefing_path`, `read_member_briefing`, `member_briefing_supported`; injected as layer 4 by `context_assembly/member.py` → `build_member_section`. Agent-writable by design, with no dashboard endpoint — the member edits it with its own file tools, and a member whose spec mounts none is told it cannot, so its briefing is the user's to edit or delete by hand. Capped at `MEMBER_BRIEFING_MAX_CHARS` on read. |
-| Per-member permanent rules | **Implemented** | `members_parts/prompt_layers.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `trust/member-rules/` so the member's file tools cannot rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
+| Per-member permanent rules | **Implemented** | `members_parts/prompt_layers.py` → `member_rules_path`, `read_member_rules`, `write_member_rules`; stored under `member-records/member-rules/`, a directory the OS sandbox masks and the file tools refuse, so nothing the member runs can rewrite its own boundary. `MEMBER_RULES_MAX_CHARS` cap enforced on write (a human dashboard action), never truncated on read. |
 | Private per-member memory | **Implemented for explicitly created members** | Memory V2: one SQLite database per immutable `member_id`, resolved by `config/loader_agents.py` → `resolve_agent_bindings` and `execution_context.py` → `member_config_for_id`; bounded essentials from `member_essential_context.py`, recall through `memory_recall`. **Gap:** legacy and auto-discovered members remain on Global V1 and are not migrated, and a member cannot choose or rebind a shared store. |
 | Per-member activity log | **Implemented** | `members_parts/member_activity.py` → `record_activity`, `read_activity`, backed by the per-member event log (`eventlog/log.py`, a `member`-kind crew log); each record is one `activity/record` event under the caps that module applies per append. There is NO rotation, because a sequence-ordered reader cannot survive a file renamed out from under it or a dropped oldest row; the log is bounded per row and per value and accumulates over a member's lifetime. A legacy `activity.jsonl` is folded in once and retired to `activity.jsonl.migrated`. |
 | Per-member permission control | **Partial** | Real and enforced, but keyed on the **template**, not the member: `agent_capabilities.py` resolves owner-reviewed intent over `agent_state.CAPABILITY_SECTIONS` (`mcpServers`, `tools`, `allowedTools`, `autoApprove`, `skills`, `prompt`, `model`, `resources`). A member gets its own permissions only through a **private copy** of its template (`private_to` lineage; `dashboard/agent_admin/template_lineage.py` → `_foreign_private_copy_owner`, `dashboard/agent_admin/crew_removal.py` → `_prune_private_copy_of_deleted_crew`), which is refused to a second crew. **Gaps:** two members sharing one template share its permissions; `[PERMANENT RULES]` is prompt-level guidance, not an enforced gate; and `agent.member_dispatch` is one global ceiling rather than a per-member one. |
-| Per-member DM binding | **Implemented** | `members_parts/dm_bindings.py` → `dm_binding_path`, `read_dm_binding`, `write_dm_binding`; under `trust/member-bindings/`, because the binding is the thread's identity authority. |
+| Per-member DM binding | **Implemented** | `members_parts/dm_bindings.py` → `dm_binding_path`, `read_dm_binding`, `write_dm_binding`; under `member-records/member-bindings/`, because the binding is the thread's identity authority. |
 
 The stated purpose of the private-file direction is per-member private memory plus
 per-member permission control; both exist today, in the forms above.

@@ -32,6 +32,16 @@
 #     process, run from the installed prefix rather than found on PATH.
 #   * that the tree carries NO bundled kiro-cli: the shipped app detects the
 #     user's own install (BUNDLE_KIRO_CLI=1 opts a build in and flips this check).
+#   * the bundled KAS engine's hand-off against the INSTALLED tree. The staged
+#     root sits where the Electron shell looks for it (gateway-env.js
+#     `bundledKasEnvironment`: `resources\backend-dist\kas\`, the single-arch
+#     layout), carries the `BUNDLED-VERSION` file and install record the shell
+#     reads before exporting `KIROCREW_BUNDLED_KAS_DIR`, and the installed
+#     `kirocrew kas status`, run from the installed interpreter with that
+#     variable naming the root, reports the engine as `(built into the app)`
+#     from inside it. This smoke boots the gateway directly rather than through
+#     the Electron shell, so the variable is set here the way the shell sets it
+#     and the macOS smoke is where the shell's own export is read back.
 #   * that the installed tree can actually BOOT. The packaged interpreter ships
 #     checked-hash bytecode for the gateway import closure, so a prune that drops
 #     a module produces an artifact that installs green and refuses to start.
@@ -428,6 +438,36 @@ if ($env:BUNDLE_KIRO_CLI -ne "1") {
   }
 }
 
+# The KAS engine root the build stages beside the backend, in the INSTALLED tree:
+# the directory the Electron shell exports as KIROCREW_BUNDLED_KAS_DIR when it
+# spawns the gateway, read here exactly as the shell reads it (BUNDLED-VERSION,
+# then <version>\install.json). Nothing is run from it: the shell runs nothing at
+# boot either, and whether the record's Node runs from here is what `kirocrew kas
+# status` answers after the gateway boot. `BUNDLE_KAS=0` is the build's documented
+# opt-out (it stages no root), honoured the same way BUNDLE_KIRO_CLI=0 is.
+$bundledKasDir = Join-Path $installLocation "resources\backend-dist\kas"
+$bundledKasVersion = ""
+if ($env:BUNDLE_KAS -eq "0") {
+  Write-Host "> Bundled KAS engine: skipped (BUNDLE_KAS=0)"
+} else {
+  if (-not (Test-Path -LiteralPath $bundledKasDir -PathType Container)) {
+    throw "The installed tree carries no bundled KAS engine root at $bundledKasDir."
+  }
+  $kasVersionFile = Join-Path $bundledKasDir "BUNDLED-VERSION"
+  if (-not (Test-Path -LiteralPath $kasVersionFile -PathType Leaf)) {
+    throw "The bundled KAS engine root $bundledKasDir has no BUNDLED-VERSION file."
+  }
+  $bundledKasVersion = (Get-Content -LiteralPath $kasVersionFile -Raw).Trim()
+  if (-not $bundledKasVersion) {
+    throw "$kasVersionFile is empty."
+  }
+  $kasRecord = Join-Path (Join-Path $bundledKasDir $bundledKasVersion) "install.json"
+  if (-not (Test-Path -LiteralPath $kasRecord -PathType Leaf)) {
+    throw "The bundled KAS engine $bundledKasVersion at $bundledKasDir has no install record ($kasRecord)."
+  }
+  Write-Host "> Installed bundled KAS engine root: $bundledKasDir (BUNDLED-VERSION $bundledKasVersion)"
+}
+
 # Boot the gateway from the INSTALLED prefix, using the installed interpreter,
 # against the fake ACP backend that ships inside the same payload. The point is
 # that these bytes start: the packaged interpreter carries checked-hash bytecode
@@ -576,6 +616,69 @@ Write-Host "> Installed gateway answered /api/health in $healthSeconds seconds"
     }
   }
 
+# The installed product must READ the bundled KAS engine the way the desktop
+# shell hands it over: KIROCREW_BUNDLED_KAS_DIR naming the staged root found
+# above. `kirocrew kas status` runs the same reader a session spawn uses
+# (acp.kas_bundle.installed_bundle: the data home's engines\kas first, then this
+# root) and its `installed:` row says which one answered; `(built into the app)`
+# is the staged root, and the `engine:` row must sit inside it. The data home is
+# the smoke's own scratch one, so nothing an operator installed can answer
+# instead. Text is asserted, not the exit code, for the same reason as doctor.
+$kasStatusRow = ""
+if ($env:BUNDLE_KAS -ne "0") {
+  $kasStatusOut = Join-Path $requestedRoot "kas-status.out"
+  $kasStatusErr = Join-Path $requestedRoot "kas-status.err"
+  $kasEnv = @{
+    KIROCREW_HOME = $gatewayHome
+    KIROCREW_BUNDLED_KAS_DIR = $bundledKasDir
+    KIROCREW_SKIP_MODEL_DOWNLOAD = "1"
+    # Bytecode this run compiles stays OUTSIDE the installed tree, for the same
+    # uninstall-residue reason the gateway boot above gives.
+    PYTHONPYCACHEPREFIX = (Join-Path $gatewayHome "pycache")
+    PYTHONPATH = $null
+    PYTHONNOUSERSITE = "1"
+  }
+  $savedKasEnv = @{}
+  try {
+    foreach ($name in $kasEnv.Keys) {
+      $savedKasEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+      if ($null -eq $kasEnv[$name]) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+      } else {
+        Set-Item -Path "Env:$name" -Value $kasEnv[$name]
+      }
+    }
+    $kasStatusExit = Wait-BoundedExit -FilePath $bundledPython -Arguments @(
+      "-s", "-P", "-m", "kiro_crew", "kas", "status"
+    ) -TimeoutSeconds $MaxCliSeconds -What "Installed kirocrew kas status" `
+      -StdoutFile $kasStatusOut -StderrFile $kasStatusErr
+  } finally {
+    foreach ($name in $savedKasEnv.Keys) {
+      if ($null -eq $savedKasEnv[$name]) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+      } else {
+        Set-Item -Path "Env:$name" -Value $savedKasEnv[$name]
+      }
+    }
+  }
+  $kasStatusText = (Get-Content -LiteralPath $kasStatusOut -Raw -ErrorAction SilentlyContinue)
+  if (-not $kasStatusText) { $kasStatusText = "" }
+  $kasStatusLines = $kasStatusText -split "`r?`n"
+  $kasStatusRow = ($kasStatusLines | Where-Object { $_ -match '^installed:' } | Select-Object -First 1)
+  $kasEngineRow = ($kasStatusLines | Where-Object { $_ -match '^\s*engine:' } | Select-Object -First 1)
+  Write-Host "> Installed kas status installed row (exit $kasStatusExit): $kasStatusRow"
+  Write-Host "> Installed kas status engine row: $kasEngineRow"
+  if (-not $kasStatusRow -or ($kasStatusRow -notmatch [Regex]::Escape("(built into the app)"))) {
+    Write-Host "kas status stdout tail:"; Get-Content -LiteralPath $kasStatusOut -Tail 40 -ErrorAction SilentlyContinue
+    Write-Host "kas status stderr tail:"; Get-Content -LiteralPath $kasStatusErr -Tail 20 -ErrorAction SilentlyContinue
+    throw "The installed kirocrew kas status did not report the bundled KAS engine as built into the app (KIROCREW_BUNDLED_KAS_DIR=$bundledKasDir)."
+  }
+  if (-not $kasEngineRow -or ($kasEngineRow -notmatch [Regex]::Escape($bundledKasDir + "\"))) {
+    Write-Host "kas status stdout tail:"; Get-Content -LiteralPath $kasStatusOut -Tail 40 -ErrorAction SilentlyContinue
+    throw "The installed kirocrew kas status resolved an engine outside the bundled root $bundledKasDir."
+  }
+}
+
 # Silent uninstall, driven by the string the registration itself carries.
 # QuietUninstallString when present (it already implies silence); otherwise
 # UninstallString plus /S. Never a path composed here: only the registration
@@ -657,6 +760,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     "| Silent install | $installSeconds s (ceiling $MaxInstallSeconds s) |",
     "| Installed gateway /api/health | $healthSeconds s (ceiling $MaxHealthSeconds s) |",
     "| Bundled kiro-cli | $(if ($kiroText) { $kiroText.Trim() } else { 'none (the app detects the user''s own kiro-cli)' }) |",
+    "| Bundled KAS engine | $(if ($kasStatusRow) { $kasStatusRow.Trim() } else { 'skipped (BUNDLE_KAS=0)' }) |",
     "| Start Menu shortcut target | matches this install |",
     "| Silent uninstall | registration and tree removed |"
   )

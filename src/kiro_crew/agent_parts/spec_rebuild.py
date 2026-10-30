@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         project_agent_names,
         repair_agent_configs,
         resolved_command_casing,
+        saved_command_casing,
         service_agents,
         spec_path_key,
         worker_agent,
@@ -701,7 +702,7 @@ def rebuild_agent_config(
         if not cmd:
             return None, ""
         if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
-            return cmd, ""
+            return saved_command_casing(cmd), ""
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # resolving against a DIFFERENT path than the emitted spec carries would
         # reopen the probe/session split from the other side.
@@ -799,7 +800,7 @@ def rebuild_agent_config(
     # ``finally``, not a plain reset after the block: several of these calls can
     # raise past their own arms, and a leaked flag would exempt every later
     # write in the process -- a worker dispatch, a dashboard edit -- from the
-    # guard this change exists to add.
+    # spec-install guard.
     global _conductor_spec_held, _conductor_installers_held
     _rebuild_admitted_token = _rebuild_spec_install_admitted.set(True)
     try:
@@ -820,9 +821,8 @@ def rebuild_agent_config(
         # would let ``reproject_for_ceiling_change`` advance its generation memo so the
         # next poll would NOT retry, and the stale grants would persist for the process
         # lifetime. Mark the hold instead, exactly like team-lead and the conductor specs
-        # (GPT 6.1 F1 / First Principles Item 4: a ceiling-filtered installer must not be
-        # recorded as synced over an unrewritten grant list). Folded into ``conductor_held``
-        # beside ``team_lead_held`` below.
+        # (a ceiling-filtered installer must not be recorded as synced over an unrewritten
+        # grant list). Folded into ``conductor_held`` beside ``team_lead_held`` below.
         research_held = False
 
         # Install kirocrew-research agent (used by the Research Lab campaign loop)
@@ -833,6 +833,27 @@ def rebuild_agent_config(
             logger.warning(
                 "kirocrew-research agent install failed; marking the ceiling held so a "
                 "tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
+        # Tracks a failed mate-conductor rewrite the way ``research_held`` and
+        # ``team_lead_held`` do: ``_install_mate_conductor_agent`` also derives
+        # from ``build_agent_config()``, so a failed rewrite under a tightening
+        # ceiling must hold the memo rather than let it advance over a stale
+        # grant list on disk. Folded into ``conductor_held`` below.
+        mate_conductor_held = False
+
+        # Install kirocrew-mate-conductor agent (the agent a crewmate's own chat
+        # runs on) and kirocrew-mate-worker (what its worker sessions run on).
+        try:
+            service_agents._install_mate_conductor_agent()
+            service_agents._install_mate_worker_agent()
+        except Exception:
+            mate_conductor_held = True
+            logger.warning(
+                "kirocrew-mate-conductor agent install failed; marking the ceiling held so "
+                "a tightened ceiling is retried rather than recorded as synced over the "
                 "stale grant list left on disk",
                 exc_info=True,
             )
@@ -853,7 +874,7 @@ def rebuild_agent_config(
         # list -- with the now-revoked grants -- on disk. Swallowing that at debug
         # would let ``reproject_for_ceiling_change`` advance its generation memo and
         # the next poll would NOT retry, so the stale grants would persist for the
-        # process lifetime (GPT 6.1 F1). Mark the hold instead, like the conductor
+        # process lifetime. Mark the hold instead, like the conductor
         # specs and the dashboard-author below: ``prime_ceiling_projection`` then does
         # not seed the ceiling as projected, and ``retry_held_conductor_specs`` retries
         # the rewrite on the next maintenance poll. With the spec simply absent the
@@ -941,9 +962,10 @@ def rebuild_agent_config(
         # down must still leave the installers' verdict behind, not the previous one.
         # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
         # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
-        # ``research_held`` folds in for the same reason: both derive from
-        # ``build_agent_config`` and must not be recorded synced over a stale grant list.
-        conductor_held = conductor_held or team_lead_held or research_held
+        # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
+        # all three derive from ``build_agent_config`` and must not be recorded
+        # synced over a stale grant list.
+        conductor_held = conductor_held or team_lead_held or research_held or mate_conductor_held
         _conductor_spec_held = conductor_held
         _conductor_installers_held = conductor_held
 
@@ -981,8 +1003,8 @@ def rebuild_agent_config(
             # A tightened ceiling whose author-spec rewrite failed leaves revoked auto-
             # approvals live. Mark the hold so ``prime_ceiling_projection`` does not seed
             # the ceiling as projected, and ``retry_held_conductor_specs`` retries the
-            # rewrite on the next maintenance poll (GPT 6.1 F1: boot-time author install
-            # failures lose the governance retry).
+            # rewrite on the next maintenance poll; without the hold a boot-time author
+            # install failure loses the governance retry.
             _conductor_spec_held = True
             _conductor_installers_held = True
             logger.warning(

@@ -115,6 +115,34 @@ def test_context_store_is_scoped_per_account(tmp_path):
     assert store.get("acct2", "sameuser") == "two"
 
 
+@pytest.mark.parametrize("payload", ["[]", '["userA", "ctx-A"]', '"ctx-A"', "7", "null"])
+def test_context_store_ignores_a_reply_context_file_that_is_not_an_object(
+    tmp_path, caplog, payload
+):
+    # restore() runs in connect(); a well-formed but non-object file must take
+    # the same "warn and continue" path as an undecodable one, not raise out
+    # of connect and keep the channel from starting.
+    store = ContextTokenStore(str(tmp_path))
+    store.set("acct1", "userA", "ctx-A")
+    (path,) = tmp_path.rglob("acct1.context-tokens.json")
+    path.write_text(payload, encoding="utf-8")
+
+    revived = ContextTokenStore(str(tmp_path))
+    with caplog.at_level("WARNING", logger="kiro_crew.weixin.client"):
+        try:
+            revived.restore("acct1")
+        except Exception as exc:  # noqa: BLE001 - any escape stops the channel
+            pytest.fail(f"restore() raised out of connect on a {payload} file: {exc!r}")
+
+    assert revived.get("acct1", "userA") is None
+    assert "failed to restore reply context" in caplog.text
+    # The next inbound message still persists a fresh, restorable object.
+    revived.set("acct1", "userB", "ctx-B")
+    again = ContextTokenStore(str(tmp_path))
+    again.restore("acct1")
+    assert again.get("acct1", "userB") == "ctx-B"
+
+
 def test_typing_ticket_cache_expires_entries():
     cache = TypingTicketCache(ttl_seconds=0.0)
     cache.set("u1", "ticket")

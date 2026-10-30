@@ -24,7 +24,7 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import {
   type MessageRenderer,
@@ -36,6 +36,8 @@ import {
 } from './messageRenderers'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
+import { durableMessageId, type UnreadRun } from '../chat-core/transcript/caughtUpMarker'
+import NewMessagesDivider from './NewMessagesDivider'
 
 // ── Types ──
 
@@ -71,6 +73,10 @@ export interface ChatMessageListProps {
    *  navigation would drop (ChatEmbed's composer draft) passes `false`.
    *  Default `true`. Renderers read it as `ctx.handOff`. */
   handOff?: boolean
+  /** Whether a tool row opens its input/output panel on click. Default
+   *  `true`; `false` leaves each tool row a status pill with no panel.
+   *  Renderers read it as `ctx.toolDetails`; a `renderTool` row ignores it. */
+  toolDetails?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
@@ -130,6 +136,12 @@ export interface ChatMessageListProps {
    *  marker otherwise — once the strip has slid under the card or behind the
    *  header it must not be visible (nor focusable) there. */
   hiddenRow?: { ts?: string | null; index: number; stripUncovered?: boolean }
+  /** The run of messages the reader has not seen yet (`findUnreadRun`): a
+   *  "N new messages" divider is drawn above the message whose
+   *  `durableMessageId` is `startId`, inside that message's own row so the
+   *  virtualizer measures the two together. The host decides when a run exists
+   *  and lands on the divider (`data-unread-divider`); the list only draws it. */
+  unreadRun?: UnreadRun | null
   /** Mount the rows inside the list's own virtualized scroller. Supplying it
    *  is what makes this component the scroll container: the host drops its
    *  `overflow-y-auto` div and its follow hook, and reaches the scroller
@@ -199,6 +211,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onApproveBatch,
   canTrust,
   handOff = true,
+  toolDetails = true,
   onFileOpen,
   onArtifactOpen,
   onQuote,
@@ -210,6 +223,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   renderers,
   onDisplayItems,
   hiddenRow,
+  unreadRun,
   transcript,
 }: ChatMessageListProps, ref) {
   // Row indexing is inferred from the props that consume it, not a separate
@@ -337,6 +351,17 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const entry = resolveRenderer(m, activeRenderers)
     if (!entry) return null
 
+    // The unread divider rides inside the first unseen message's own output,
+    // ahead of it, so a turn row that holds both seen and unseen messages is
+    // still split at the right message and the row's measured height carries
+    // the divider.
+    const leadsUnread = unreadRun != null && durableMessageId(m) === unreadRun.startId
+    const withDivider = (node: React.ReactNode) => (
+      leadsUnread && node != null
+        ? <React.Fragment key={key}><NewMessagesDivider count={unreadRun.count} contentWidth={contentWidth} />{node}</React.Fragment>
+        : node
+    )
+
     const ctx: MessageRenderContext = {
       index: i,
       messages: versioned.messages,
@@ -350,13 +375,14 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       threads,
       hideCardOwnedOAuth,
       handOff,
+      toolDetails,
       autoDeniedIds,
       renderTool,
       wrapper,
       row,
     }
-    return entry.render(m, ctx)
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, activeRenderers])
+    return withDivider(entry.render(m, ctx))
+  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)
@@ -410,6 +436,9 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         <CollapsibleToolGroup
           count={nonPerm.length}
+          // This host groups only reasoning rows and permissions, so the rows it
+          // counts are reasoning steps, not tool calls; the pill says so.
+          reasoningOnly={nonPerm.length > 0 && nonPerm.every(m => (REASONING_ROLES as readonly string[]).includes(m.role))}
           autoExpand={(running && item.startIdx >= versioned.messages.length - 5) || !!handleApproveBatch}
           hasPermission={unresolvedPerms.length > 0}
           isRunning={running}
@@ -446,7 +475,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     // the message's action strip beneath the card standing in for its bubble —
     // only while the value is `folding`, i.e. while that strip is still uncovered.
     return (
-      <div key={'row-' + i} data-display-index={i} data-pinned-standin={hidden ? (hiddenRow?.stripUncovered ? 'folding' : '') : undefined} style={hidden ? { visibility: 'hidden' } : undefined}>
+      <div key={'row-' + i} data-display-index={i} data-image-turn="" data-pinned-standin={hidden ? (hiddenRow?.stripUncovered ? 'folding' : '') : undefined} style={hidden ? { visibility: 'hidden' } : undefined}>
         {node}
       </div>
     )

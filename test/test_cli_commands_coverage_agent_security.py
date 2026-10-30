@@ -96,13 +96,14 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
             )
         doc = _read_doc(cfg_path)
-        assert doc["agents"]["new"]["kiro_agent"] == "ka"
+        # Created from the built-in worker, then bound to its own file.
+        assert doc["agents"]["new"]["kiro_agent"] == "new"
         assert doc["agents"]["new"]["workspace"] == "ws"
         store = doc["agents"]["new"]["memory_store"]
         assert store != "default"
@@ -275,7 +276,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
@@ -307,7 +308,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
@@ -994,6 +995,7 @@ class TestPolicyCli:
                 "kiro_crew.platform.governance.SCOPE_CATALOG",
                 {"capabilities.telemetry": object()},
             ),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._policy(
                 _ns(
@@ -1005,8 +1007,10 @@ class TestPolicyCli:
                     app=None,
                 )
             )
-        out = capsys.readouterr().out
-        assert "Unknown scope" in out and "capabilities.telemetry" in out
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "Unknown scope" in err and "capabilities.telemetry" in err
+        assert out == ""
 
     def test_explain_known_scope_prints_verdicts(self, capsys: pytest.CaptureFixture[str]) -> None:
         decision = SimpleNamespace(

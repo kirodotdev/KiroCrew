@@ -199,7 +199,7 @@ coerce_runtime_ceiling computer_use_state_path config_dir config_local_path conf
 config_path consume_managed_service_launch_environment contextlib copy credential_redaction_path
 data_home dataclass datetime decisions_consent_path default_overlay_dir default_project_dir
 default_socket_path degraded_config_files denied_commands_path drift_summary drop_drifted_keys
-ensure_data_home env_path field file_delivery_consent_path inject_kiro_cli_api_key
+ensure_data_home env_path field inject_kiro_cli_api_key
 is_valid_effort iter_agent_spec_files jira_global_token_applicable jira_host_token_name json
 kiro_agents_dir load_loop_stall_exit_after logger logging materialize_workspace_dir math
 memory_store_name_defect model_registry model_scope model_supports_effort
@@ -477,7 +477,7 @@ class TestLoaderSeamsReachTheOwners:
 
     def test_moved_builders_are_the_loader_names(self) -> None:
         moved = sorted(n for n in vars(section_builders) if n.startswith("_build_"))
-        assert len(moved) == 27
+        assert len(moved) == 29
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n

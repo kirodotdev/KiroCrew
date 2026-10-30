@@ -61,6 +61,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.state import SlotOrigin, row_mid
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import await_until, finished
 
 # ── app permission: explicit grant, live slot scope ──
 
@@ -308,7 +309,8 @@ def test_every_api_chat_body_key_is_classified() -> None:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    read = _body_keys_read(functions["api_chat"], "body", functions)
+    # The body is read by ``_api_chat_send``; ``api_chat`` wraps it (Crew Mode steer).
+    read = _body_keys_read(functions["_api_chat_send"], "body", functions)
     assert not _TURN_ONLY_BODY_KEYS & _SETTINGS_BODY_KEYS.keys()
     assert read == _TURN_ONLY_BODY_KEYS | _SETTINGS_BODY_KEYS.keys()
 
@@ -511,7 +513,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
     slot.title, slot._titled, slot._title_origin = "Old", True, "auto"
     slot._title_low_signal = True  # due at the first user turn
     slot.append("user", "x", "msg msg-u", meta={TURN_ACTOR_META_KEY: actor} if actor else None)
-    generate = AsyncMock(return_value="")
+    generate = AsyncMock(return_value="Fresh title")
 
     with (
         patch("kiro_crew.dashboard.chat_title._generate_refreshed_title", new=generate),
@@ -521,6 +523,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
         await maybe_refresh_title(state, slot)
 
     assert generate.called is refreshed
+    assert slot.title == ("Fresh title" if refreshed else "Old")
 
 
 def _app_then_user_turns(slot) -> None:
@@ -870,7 +873,7 @@ async def _run_app_turn_and_successors(state, slot) -> list[tuple[str, str]]:
         successor = slot.task
         if successor is None or successor.done():
             break
-        await asyncio.wait_for(successor, timeout=10)
+        await await_until(successor, what="the successor turn finishing")
     assert slot.task is None or slot.task.done()
     return [(m["role"], m["content"]) for m in slot.drain()]
 
@@ -986,7 +989,7 @@ async def test_a_synthesis_successor_is_a_new_turn(state) -> None:
 
     with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
         await chat_runner._finish_queue_cycle(state, slot)
-        await asyncio.wait_for(slot.task, timeout=10)
+        await await_until(slot.task, what="the queue cycle's task finishing")
 
     assert [m["cls"] for m in slot.drain()] == [TURN_END_WIRE_CLS]
 
@@ -1193,7 +1196,7 @@ async def test_app_sse_backstop_rejects_a_foreign_user_row_without_turn_end(
     ):
         async with _app_client(state) as client:
             resp = await client.post("/api/chat", json={"slot": "s1", "message": "own request"})
-            stream = await asyncio.wait_for(resp.text(), timeout=5)
+            stream = await finished(resp.text(), "the chat stream body")
 
     assert resp.status == 200
     assert "own request" in stream and "own reply" in stream

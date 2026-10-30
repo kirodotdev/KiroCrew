@@ -131,9 +131,12 @@ class TestGatedCandidateLifecycle:
         cand = emb.LlamaCppEmbedder(
             model_path=_write_model(tmp_path / "m.gguf"), dim=0, serving=False
         )
-        cand._load_model()
-        assert cand.dim == 768
-        assert cand.is_ready() is True
+        try:
+            cand._load_model()
+            assert cand.dim == 768
+            assert cand.is_ready() is True
+        finally:
+            cand.close()  # the published model's idle evictor ends with the test
 
     def test_boot_mismatch_refusal_is_unchanged_by_adopt_mode(
         self, tmp_path, monkeypatch
@@ -428,19 +431,23 @@ class TestNonObjectJsonBody:
         the two properties that made the inline version
         correct: the handler consults the guard BEFORE its first ``.get()``,
         and the guard is a general ``isinstance(body, dict)`` test rather than a
-        list-only special case. The parametrized cases above prove the
-        generality behaviorally; this catches a refactor that reorders or drops
-        the call while the parametrized cases still pass for another reason.
+        list-only special case. ``read_bounded_json`` applies that test through
+        ``body_not_object_error``, so the shape check is pinned there and the
+        call to it inside ``read_bounded_json``. The parametrized cases above
+        prove the generality behaviorally; this catches a refactor that reorders
+        or drops the call while the parametrized cases still pass for another
+        reason.
         """
         import inspect
 
-        from kiro_crew.dashboard.handlers._shared import read_bounded_json
+        from kiro_crew.dashboard.handlers._shared import body_not_object_error, read_bounded_json
         from kiro_crew.dashboard.handlers.memory import api_memory_embedding_model
 
         src = inspect.getsource(api_memory_embedding_model)
         assert "read_bounded_json(" in src
         assert src.index("read_bounded_json(") < src.index('body.get("path"')
-        assert "isinstance(body, dict)" in inspect.getsource(read_bounded_json)
+        assert "body_not_object_error(body)" in inspect.getsource(read_bounded_json)
+        assert "isinstance(body, dict)" in inspect.getsource(body_not_object_error)
 
 
 class TestApplyIsAudited:

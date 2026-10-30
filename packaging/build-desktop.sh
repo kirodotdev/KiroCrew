@@ -183,29 +183,37 @@ is_macos_intel_backend() {
   }
 }
 
-# The audio decoder wheel a backend installs, or nothing.
+# Install the pinned audio decoder into a backend's site-packages, or nothing.
+#
+# The bytes come from kiro_crew.stt.decoder's own pin table (`python -m
+# kiro_crew.stt.decoder --install-into`), downloaded from that module's release
+# and verified by size and SHA-256, so this build cannot ship a decoder the
+# runtime would refuse. It lands in site-packages/kirocrew_ffmpeg/bin
+# (stt.decoder.PACKAGED_DIR), which is where the runtime looks for it.
 #
 # The macOS Intel backend installs NONE and resolves a system FFmpeg the way a
 # source install does (kiro_crew.stt.decoder.bundle_carries_decoder). Do not add
-# the wheel back for it: the runtime carries no pin for that platform, so a
-# bundled copy would never be authenticated or used.
-#   $1 = target arch, as build_backend receives it
-desktop_decoder_requirement() {
-  if is_macos_intel_backend "$1"; then
+# one back for it: the runtime carries no pin for that platform, so a bundled
+# copy would never be authenticated or used.
+#   $1 = bundled interpreter, $2 = its site-packages, $3 = target arch
+install_desktop_decoder() {
+  if is_macos_intel_backend "$3"; then
     return 0
   fi
-  printf '%s\n' "imageio-ffmpeg==0.6.0"
+  log "Installing the pinned audio decoder…"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= "$1" -s -m kiro_crew.stt.decoder \
+    --install-into "$2/kirocrew_ffmpeg/bin"
 }
 
 # NOTE ON THE APPLE-SILICON DECODER -- do NOT re-introduce a compressed payload.
 #
-# The arm64 imageio-ffmpeg executable ships as a PLAIN Mach-O under
+# The arm64 decoder executable ships as a PLAIN Mach-O under
 # Contents/Resources, so the app signer signs it with Developer ID + hardened
 # runtime + secure timestamp along with every other nested binary
 # (packaging/signing/generate-manifest.py enumerates it).
 #
 # #6746 instead stored it as inert gzip data, to keep the bytes byte-identical to
-# the pinned upstream wheel across signing. The Apple notary service DECOMPRESSES
+# the pinned upstream bytes across signing. The Apple notary service DECOMPRESSES
 # archive members and scans what is inside them, so that made notarization fail
 # closed on the whole release (submission 3dbd3c7d, three `error` issues on
 # .../binaries/ffmpeg-macos-aarch64-v7.1.gz/ffmpeg-macos-aarch64-v7.1: not signed
@@ -214,7 +222,7 @@ desktop_decoder_requirement() {
 # is the working shape.
 #
 # The runtime consequence is handled in kiro_crew.transcribe: the packaged decoder
-# is accepted either at the pinned upstream digest (local builds and the build gate
+# is accepted either at the pinned digest (local builds and the build gate
 # below, which run BEFORE signing) or on a valid Developer ID signature from our
 # team (the released app, whose bytes signing necessarily rewrote).
 
@@ -507,12 +515,10 @@ build_backend() {
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
   # recogniser wheels fail every supported desktop build: local dictation is the
   # default and must be usable immediately. macOS Intel is the sole legacy exception.
-  local decoder_req
-  decoder_req="$(desktop_decoder_requirement "$want_arch")"
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
-    "$ROOT[voice-aws]" ${decoder_req:+"$decoder_req"}
+    "$ROOT[voice-aws]"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -528,6 +534,7 @@ build_backend() {
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
+  install_desktop_decoder "$out/bin/python3.12" "$sp" "$want_arch"
   log "Staging dashboard dist into kiro_crew/static/dist…"
   mkdir -p "$sp/kiro_crew/static"
   ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
@@ -730,7 +737,7 @@ build_backend_windows() {
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
-    "kirocrew[voice-aws] @ $root_uri" "imageio-ffmpeg==0.6.0"
+    "kirocrew[voice-aws] @ $root_uri"
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
     --only-binary pywhispercpp \
@@ -738,6 +745,7 @@ build_backend_windows() {
     "kirocrew[voice] @ $root_uri"
 
   sp="$out/Lib/site-packages"
+  install_desktop_decoder "$out/python.exe" "$sp" ""
   log "Staging dashboard dist into kiro_crew/static/dist…"
   mkdir -p "$sp/kiro_crew/static"
   ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
@@ -763,6 +771,13 @@ build_backend_windows() {
   # interactive cmd window keeps their own PYTHONPATH afterwards.
   mkdir -p "$out/bin"
   printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+  # pip also dropped Scripts\kirocrew.exe, whose embedded shebang is THIS build
+  # machine's absolute python.exe path, so it dies with "Fatal error in
+  # launcher" once the bundle is installed anywhere else. Replace it
+  # with the same relocatable shim: Scripts\ is one level below the bundle
+  # root like bin\, so "%~dp0..\python.exe" resolves the same interpreter.
+  rm -f "$out/Scripts/kirocrew.exe" "$out/Scripts/kirocrew-script.py"
+  printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/Scripts/kirocrew.cmd"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \
@@ -777,6 +792,7 @@ build_backend_windows() {
     rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 \
            include libs tcl \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64_dotprod \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_arm64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
@@ -935,7 +951,7 @@ fi
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
 # stale declaration behind for a hand-run electron-builder to pack. The baked
 # auth allowlist (step 3b2) is cleared the same way.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
+rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
@@ -1020,10 +1036,31 @@ if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
     process.stdout.write(v);
   ' "$ELECTRON_DIR/auth-allowlist.js" "$KIROCREW_AUTH_SERVER_ALLOWLIST")" \
     || { echo "❌ KIROCREW_AUTH_SERVER_ALLOWLIST rejected: $KIROCREW_AUTH_SERVER_ALLOWLIST" >&2; exit 1; }
-  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
   printf '%s\n' "$AUTH_ALLOWLIST" > "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
   log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
+
+# --- 3b3. Baked EDITION (enterprise only) ------------------------------------
+# The same stamp the backend's kiro_crew/edition.py gets from setup.py:
+# KIROCREW_BUILD_EDITION (`make desktop EDITION=enterprise`). An enterprise build
+# stages $ELECTRON_DIR/EDITION, packed into app.asar by package.json's `files`
+# list and read by website/electron/edition.js, so the app gives its local
+# gateway time for the login and policy checks it runs before binding. An oss
+# build stages nothing, so its app is unchanged. Any other value fails the
+# build, as setup.py refuses it. Removed on exit with the other baked inputs.
+case "${KIROCREW_BUILD_EDITION:-oss}" in
+  oss) ;;
+  enterprise)
+    trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
+    printf 'enterprise\n' > "$ELECTRON_DIR/EDITION"
+    log "Baking EDITION=enterprise into the app"
+    ;;
+  *)
+    echo "❌ KIROCREW_BUILD_EDITION must be oss or enterprise, not: ${KIROCREW_BUILD_EDITION}" >&2
+    exit 1
+    ;;
+esac
 
 # --- 3c. Bundle kiro-cli into the app resources (opt-in) ----------------------
 # OFF by default. The shipped app detects the kiro-cli the user installed, and
@@ -1254,33 +1291,44 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
     # Stage the four beside the executable, where the loader looks first. This
     # is the deployment the bundle already relies on elsewhere: the Python
     # runtime it ships carries vcruntime140.dll next to its own interpreter,
-    # for the same reason.
+    # for the same reason. They come from Microsoft's redistributable, pinned
+    # in packaging/vc-runtime-pin.json (installer and each DLL sha256-verified,
+    # fail closed), never from this build host's System32: the application
+    # directory wins over System32, so a stale host copy would shadow a user's
+    # newer runtime. vc_runtime.py also records the version in
+    # VC-RUNTIME-VERSION beside BUNDLED-VERSION.
     #
     # The runtime is one of two things the executable needs and the MSI does not
     # bring. The other is DirectML: it imports DMLCreateDevice1 from
     # directml.dll as a static import, so the loader resolves it before main.
-    # That one is left to the host because it is an OS component on desktop
-    # Windows, which is where the app runs and what an unbundled kiro-cli
-    # install already relies on -- but a build host without it (a Windows Server
-    # Core image carries none) needs it supplied, and the probe below is where
-    # that shows up.
-    local crt_dir crt
-    local -a crt_missing=()
-    crt_dir="$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:\\Windows}}")/System32"
-    for crt in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
-      if [ -f "$crt_dir/$crt" ]; then
-        cp -a "$crt_dir/$crt" "$dest/$crt"
-      else
-        crt_missing+=("$crt")
-      fi
-    done
-    if [ "${#crt_missing[@]}" -ne 0 ]; then
-      echo "ERROR: this build host has no Visual C++ runtime to stage beside kiro-cli" >&2
-      echo "       $crt_dir lacks: ${crt_missing[*]}" >&2
-      echo "       kiro-cli.exe imports them and cannot start without them." >&2
-      echo "       Install the Visual C++ 2015-2022 x64 redistributable." >&2
-      exit 1
+    # DirectML is deliberately NOT bundled: it is an OS component on desktop
+    # Windows, which is where the app runs and what upstream's own standalone
+    # kiro-cli installer relies on too. A build host without it (a Windows
+    # Server Core image carries none) needs it supplied, and the probe below is
+    # where that shows up.
+    #
+    # Fetched exactly like the kiro-cli archive above: a sha-verified cache
+    # entry, else a fresh download into a cache-local temp file renamed into
+    # place only once it verifies.
+    local vcrt_cache vcrt_source vcrt_sha vcrt_url vcrt_bundle vcrt_fresh
+    vcrt_cache="$HOME/.cache/kirocrew-build/vc-runtime"
+    mkdir -p "$vcrt_cache"
+    vcrt_source="$(python3 "$ROOT/packaging/vc_runtime.py" source)"
+    # Native Windows Python prints CRLF; command substitution removes only LF.
+    vcrt_source="${vcrt_source%$'\r'}"
+    vcrt_sha="${vcrt_source%% *}"
+    vcrt_url="${vcrt_source#* }"
+    vcrt_bundle="$vcrt_cache/$vcrt_sha-VC_redist.x64.exe"
+    if [ ! -f "$vcrt_bundle" ] || ! kiro_cli_sha_ok "$vcrt_sha" "$vcrt_bundle"; then
+      vcrt_fresh="$(mktemp "$vcrt_cache/.download.XXXXXX")"
+      curl --proto '=https' --tlsv1.2 -fsSL "$vcrt_url" -o "$vcrt_fresh"
+      kiro_cli_sha_ok "$vcrt_sha" "$vcrt_fresh" \
+        || { rm -f "$vcrt_fresh"; echo "ERROR: VC++ redistributable sha256 mismatch: refusing to bundle" >&2; exit 1; }
+      rm -f "$vcrt_bundle"
+      mv -f "$vcrt_fresh" "$vcrt_bundle"
     fi
+    python3 "$ROOT/packaging/vc_runtime.py" stage "$(cygpath -w "$dest")" \
+      --bundle "$(cygpath -w "$vcrt_bundle")"
   else
     local tmp
     tmp="$(mktemp -d)"

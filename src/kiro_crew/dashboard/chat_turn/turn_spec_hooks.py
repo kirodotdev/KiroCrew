@@ -9,51 +9,56 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.spec_hooks import (
+    crew_fired_spec_hooks,
+    session_agent,
+    spec_hook_events,
+    spec_hooks_run_nowhere,
+    spec_project_dir,
+    withheld_project_spec_hooks,
+)
+from kiro_crew.dashboard.chat_utils import (
+    SPEC_HOOKS_NOTICE_KIND,
+    RecoveryPayload,
+    is_synthetic_recovery_item,
+    mint_options_token,
+    remember_slack_options,
+)
+from kiro_crew.dashboard.state import (
+    DENY_CAUSE_POLICY,
+    HOOK_CONTINUATION_RECOVERY_PREFIX,
+    HOOK_HALTED_RECOVERY_PREFIX,
+    REFUSAL_RECOVERY_PREFIX,
+    build_refusal_recovery_prompt,
+    parse_hook_continuations,
+    should_queue_hook_continuation,
+    should_queue_refusal_recovery,
+)
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.slack.outbound import PostedOptions
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         ACP_BACKEND_KAS,
-        DENY_CAUSE_POLICY,
-        HOOK_CONTINUATION_RECOVERY_PREFIX,
-        HOOK_EVENT_PRE_TOOL_USE,
-        HOOK_EVENT_STOP,
-        HOOK_HALTED_RECOVERY_PREFIX,
-        REFUSAL_RECOVERY_PREFIX,
-        SPEC_HOOKS_NOTICE_KIND,
+        SEED_DECLINED_NOTICE_KIND,
         STOP_REASON_CANCELLED,
         SYNTHETIC_RECOVERY_KIND,
         DashboardState,
         KiroCrewConfig,
-        PostedOptions,
-        RecoveryPayload,
         _ChatSlot,
-        _turn_full_reply_text,
-        _turn_reply_segments,
         agent_welcome_message,
         append_and_surface,
-        build_refusal_recovery_prompt,
         capabilities_of,
-        crew_fired_spec_hooks,
         expire_slack_options,
-        is_synthetic_recovery_item,
         logger,
-        mint_options_token,
-        parse_hook_continuations,
-        pre_tool_match_names,
         redact_credentials,
         redact_exfiltration_urls,
-        remember_slack_options,
-        session_agent,
-        should_queue_hook_continuation,
-        should_queue_refusal_recovery,
-        spec_hook_events,
-        spec_hooks_run_nowhere,
-        spec_project_dir,
-        withheld_project_spec_hooks,
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
     from kiro_crew.dashboard.chat_turn.recipient import (
         _cross_surface_reply_text,
         _deliver_cross_surface_reply,
+        _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
     )
@@ -68,6 +73,10 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
+        _turn_full_reply_text,
+        _turn_reply_segments,
+    )
 
 
 async def _surface_agent_welcome(
@@ -234,11 +243,56 @@ async def _notice_spec_hooks_run_nowhere(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message: the chat runs, the message waits for the turn, and the row names the
-    installed version, the minimum and the upgrade command."""
-    notice = getattr(client, "steer_upgrade_notice", "")
-    if isinstance(notice, str) and notice:
-        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+    message, and one whose KAS drops its agent's prompt: the chat runs, and each row
+    names the installed version, the minimum and the upgrade command."""
+    for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice"):
+        notice = getattr(client, name, "")
+        if isinstance(notice, str) and notice:
+            append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+
+
+#: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
+_SEED_DECLINED_NOTICES = {
+    "session": (
+        "ℹ Crew's tools are off in this session. Another open Crew session in this "
+        "folder uses a different model or permission mode, and its "
+        ".claude/settings.local.json is in use here. To get the tools back, close "
+        "that session, then start a new session here."
+    ),
+    "project": (
+        "ℹ Crew's tools are off in this session. This folder's own "
+        ".claude/settings.local.json controls tool approvals here, and Crew could "
+        "not safely set it aside. The gateway log names the reason."
+    ),
+}
+
+
+async def _notice_seed_declined(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
+    """One notice row on a new session whose MCP tools are withheld by a settings file.
+
+    Reads the live governed state off the client, the same predicate that
+    withholds the array, so the row shows exactly when the tools are off and
+    names whose file holds the path. Best-effort: a client without the read, or
+    a read that fails, renders no row rather than failing the turn.
+    """
+    read = getattr(client, "settings_withheld_cause", None)
+    if not callable(read):
+        return
+    try:
+        cause = await asyncio.to_thread(read)
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("settings-withheld cause could not be read for the notice", exc_info=True)
+        return
+    notice = _SEED_DECLINED_NOTICES.get(cause) if isinstance(cause, str) else None
+    if notice:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            notice,
+            "msg msg-info",
+            meta={"kind": SEED_DECLINED_NOTICE_KIND},
+        )
 
 
 async def _surface_withheld_project_hooks(
@@ -322,6 +376,10 @@ async def _fire(
         )
         if not turn._spec_hooks:
             _spec_tool_names = None
+        # The ACP session id the agent's own shell sees as KIRO_SESSION_ID, read
+        # at fire time: a reset gives the session a new one. Empty before
+        # session/new, and then the spec hooks get none.
+        _acp_sid = getattr(turn.client, "session_id", "") if turn._spec_hooks else ""
         results = await state._hook_store.fire(
             event,
             context,
@@ -338,6 +396,7 @@ async def _fire(
             extra_hooks_cwd=turn._spec_hooks_cwd,
             extra_hooks_tool_names=_spec_tool_names,
             tool_match_names=_match_names,
+            acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the
@@ -636,6 +695,14 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # too, so an answer fully flushed before the last tool (empty
     # `assistant_text`) still publishes.
     _mirror_reply_text, _mirror_final_segment = _turn_full_reply_text(turn)
+    if not _mirror_reply_text.strip() and turn._terminal_directive_applied:
+        # A quiet end (``nothing_to_do``) is the turn's answer. The dashboard
+        # shows it on the tool card, but the thread's only trace would be a task
+        # step folded inside the collapsed stream, so a quiet patrol cycle reads
+        # there as one that never ran. Post the outcome line as the reply. It
+        # asks nothing, so no options control is minted from it.
+        _mirror_reply_text = turn._terminal_directive_text
+        _mirror_final_segment = ""
     if (
         _mirror_reply_text
         and state.slack_client
@@ -677,6 +744,11 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 if not _these_options:
                     break
 
+            # The answer starts here, so the "Thinking…" placeholder (still
+            # up on a turn that ran no tool) goes before the answer lands.
+            turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+            )
             for _part in render_for_slack(_mirror_body):
                 await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
             if _mirror_options:
@@ -752,4 +824,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # segment after the last tool call.
     if not is_slash:
         _xs_reply = _cross_surface_reply_text(_turn_reply_segments(turn), turn.assistant_text)
+        if not _xs_reply.strip() and turn._terminal_directive_applied:
+            # Same quiet end as the Slack leg above: the outcome line is the reply.
+            _xs_reply = turn._terminal_directive_text
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)

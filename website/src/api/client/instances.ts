@@ -156,7 +156,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     // gateway's own `instances_disabled` code, not to the status, so this
     // endpoint's other 403s (a non-owner caller, a Slack-origin request) still
     // journal — they are real authorization failures and a reader needs them.
-    listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
+    listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,
@@ -258,6 +258,9 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
         title: string
         messages: number
         resume_mode: string
+        // The folder the import was filed in; '' when unfiled, absent from an
+        // older gateway.
+        folder_id?: string
       }
     },
     sendSessionToInstance: (id: string, slot: string) =>

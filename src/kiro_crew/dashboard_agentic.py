@@ -1058,7 +1058,116 @@ def _crew_panel_on() -> bool:
         return False
 
 
-def turn_block(slug: str) -> str:
+#: How many unresolved field names the turn block spells out before it counts the rest.
+UNRESOLVED_NAMES_SHOWN: Final[int] = 3
+
+
+def _unresolved_reason(reason: str, fold: str, path: str) -> str:
+    """One reason, in the crewmate prompt file's words."""
+    from kiro_crew import crewmate_prompts
+    from kiro_crew.dashboard_feed import OLDER_VALUE
+
+    if reason == OLDER_VALUE:
+        return crewmate_prompts.text("dashboard.reason_older_value")
+    return crewmate_prompts.fill("dashboard.reason_path_missing", fold=fold, path=path)
+
+
+def _unresolved_fold_fields(slug: str, member: str, manifest: TemplateManifest) -> dict[str, str]:
+    """The fold fields of *manifest* that do not resolve for this crewmate, with why.
+
+    The page's own read (``member_dashboard.read_fields``), so the crewmate is told
+    about the fields its reader's cells are dimmed for. A TREE-keyed fold has no bus
+    scope, so the feed always reports its fields unresolved; they are read cold here
+    the way the live page reads them, and dropped when they resolve. TOTAL: a read
+    that fails reports nothing, because a turn must not claim a field is broken on
+    the strength of a read that never happened. Blocking IO.
+    """
+    if all(spec.agentic for spec in manifest.fields.values()):
+        return {}
+    try:
+        from kiro_crew.crew_log.projection import TREE_PROJECTION_NAMES, read_tree_projection
+        from kiro_crew.dashboard.handlers.member_dashboard import _dashboard_slot, read_fields
+        from kiro_crew.dashboard_feed import (
+            FOLD_UNSEEN,
+            MISSING,
+            OLDER_VALUE,
+            PATH_MISSING,
+            remember_resolved,
+            resolve_path,
+            resolved_before,
+        )
+
+        # NO WAIT for a cold fold's prime: this runs on every prompt build, and a
+        # fold still priming reads as unseen, which `unresolved_line` leaves out.
+        read = read_fields(slug, member, manifest, prime_wait=0)
+        unresolved = dict(read.unresolved)
+        tree_names = [
+            name
+            for name in unresolved
+            if (manifest.fields[name].fold or "") in TREE_PROJECTION_NAMES
+        ]
+        if tree_names:
+            slot = _dashboard_slot(member, slug)
+            trees: dict[str, Any] = {}
+            for name in tree_names:
+                fold = manifest.fields[name].fold or ""
+                if fold not in trees:
+                    try:
+                        trees[fold] = read_tree_projection(slot, fold).value
+                    except Exception:
+                        trees[fold] = MISSING
+                if trees[fold] is MISSING:
+                    continue
+                if resolve_path(trees[fold], manifest.fields[name].path or "") is MISSING:
+                    # The tree HAS a value, so a miss is the path, not an unseen fold.
+                    if unresolved[name] == FOLD_UNSEEN:
+                        unresolved[name] = (
+                            OLDER_VALUE if name in resolved_before(slot) else PATH_MISSING
+                        )
+                    continue
+                unresolved.pop(name)
+                remember_resolved(slot, [name])
+        return unresolved
+    except Exception:
+        logger.debug("dashboard: %r's fields could not be read for its turn", slug, exc_info=True)
+        return {}
+
+
+def unresolved_line(manifest: TemplateManifest, unresolved: Mapping[str, str]) -> str:
+    """The turn block's line naming each fold field that did not resolve, or ``""``.
+
+    Only the causes the crewmate can fix are named: a path not found in a fold that
+    HAS a value, and a field that resolved before and stopped. A fold that has produced
+    no value yet (``fold_unseen``, which includes a panel never published) is no broken
+    binding -- a fresh crewmate on its shipped page is in exactly that state -- so it
+    is left out, and once the fold has a value a wrong path shows as ``path_missing``.
+
+    Capped at :data:`UNRESOLVED_NAMES_SHOWN` names with the rest counted, so a page
+    whose every binding broke still costs the turn one line.
+    """
+    from kiro_crew import crewmate_prompts
+    from kiro_crew.dashboard_feed import FOLD_UNSEEN
+
+    names = sorted(
+        name
+        for name, reason in unresolved.items()
+        if name in manifest.fields and reason != FOLD_UNSEEN
+    )
+    if not names:
+        return ""
+    shown = []
+    for name in names[:UNRESOLVED_NAMES_SHOWN]:
+        spec = manifest.fields[name]
+        why = _unresolved_reason(unresolved[name], spec.fold or "", spec.path or "")
+        shown.append(f"{name} ({why})")
+    listed = ", ".join(shown)
+    rest = len(names) - UNRESOLVED_NAMES_SHOWN
+    if rest > 0:
+        listed += " " + crewmate_prompts.fill("dashboard.unresolved_more", n=str(rest))
+    return crewmate_prompts.fill("dashboard.unresolved", fields=listed)
+
+
+def turn_block(slug: str, member: str = "") -> str:
     """The ``[DASHBOARD]`` lines for a crewmate's turn, or ``""`` when it has none.
 
     A few lines on purpose: which page is in force, which fields are the crewmate's
@@ -1068,6 +1177,14 @@ def turn_block(slug: str) -> str:
     because a block on every turn is paid for on every turn. Building the block also
     syncs the page's helper scripts, so a crewmate on the page named for it, which
     never commits, still has them.
+
+    With *member* (the crewmate's crew name) the block also reads the page and adds
+    one line naming each FOLD field the crewmate can fix and why
+    (:func:`unresolved_line`). The person's page draws no warning about such a field,
+    so this line is the only place it is reported, and it leaves the block once the
+    field resolves. No read is made without *member* (the apply reply), on a locked
+    page, or with the crew panel off, because the fix is a tool call none of those
+    can make.
     TOTAL: a dashboard that cannot be read costs the turn this block, nothing else.
     """
     record, manifest, locked_line = _read_page(slug)
@@ -1110,8 +1227,225 @@ def turn_block(slug: str) -> str:
         + f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
         "current values before dashboard_write."
     )
+    if member and not locked_line and _crew_panel_on():
+        # Only when the crewmate can act: a locked page refuses dashboard_apply, and
+        # with the crew panel off there is no dashboard_save to call.
+        unresolved = unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest))
+        if unresolved:
+            block += "\n" + unresolved
     dashboard_upkeep.sync(slug, page=(record, manifest))
     return block + ("\n" + dashboard_upkeep.pointer() if names else "")
+
+
+def unresolved_notice(slug: str, member: str) -> str:
+    """The ``[DASHBOARD]`` unresolved-field line alone, for a WARM turn, or ``""``.
+
+    A V2 crewmate's essentials rebuild its member section, and so :func:`turn_block`,
+    on every turn. A V1 crewmate (no ``member_id``) gets that section only when a
+    session starts, resumes or is re-injected, so a binding that breaks between warm
+    turns would go unreported. This is the same line under the same gates -- the page
+    in force, not locked, the crew panel on -- without the rest of the block, which
+    the section already carried. No upkeep sync: that is the section's job. TOTAL.
+    """
+    if not member:
+        return ""
+    try:
+        record, manifest, locked_line = _read_page(slug)
+        if locked_line or record is None or not _crew_panel_on():
+            return ""
+        if manifest is None:
+            if not package_on_screen(slug):
+                return ""
+            manifest = _package_manifest(slug)
+            if manifest is None:
+                return ""
+        line = unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest))
+    except Exception:
+        logger.debug("dashboard: %r's warm-turn notice is unreadable", slug, exc_info=True)
+        return ""
+    return f"[DASHBOARD]\n{line}" if line else ""
+
+
+def session_turn_block(slot_key: str) -> str:
+    """The ``[DASHBOARD]`` lines for a ROOT session's turn, or ``""`` when it has none.
+
+    :func:`turn_block`, keyed by the session's own store key
+    (``instance.session_instance_key``), so a session that has ADOPTED a page is told
+    which page its side panel Overview shows and which fields are its to write, the
+    same lines a crewmate gets for its Dashboard tab.
+
+    Only an adopted page counts. A session that never adopted one reads the default
+    page in force (``project-report``) and gets no block: that page is drawn without
+    the session doing anything, and a block on every turn of every root chat would be
+    paid for by sessions that never write a dashboard. The caller owns the root test
+    (``card_lifecycle.is_root_session``); a non-root session has no page, and the
+    gateway refuses to serve one.
+    TOTAL: a page that cannot be read costs the turn this block, nothing else.
+    """
+    try:
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        key = instance_store.session_instance_key(slot_key)
+        if instance_store.read(key).state == instance_store.STATE_EMPTY:
+            return ""
+    except Exception:
+        logger.debug("no session dashboard block for %r", slot_key, exc_info=True)
+        return ""
+    block = turn_block(key)
+    if block and _shows_board(key):
+        # Said beside the page name, every turn: the prompt's rule alone was not
+        # kept (a conductor still wrote its "Task board" into the reply).
+        block += "\n" + BOARD_IN_PANEL_LINE
+    return block
+
+
+#: The pages that draw every task from the work ledger and keep themselves current.
+BOARD_TEMPLATES: Final[frozenset[str]] = frozenset({"goal-board", "work-kanban"})
+
+#: The [DASHBOARD] line a root session on one of :data:`BOARD_TEMPLATES` gets.
+BOARD_IN_PANEL_LINE: Final[str] = (
+    "That page IS the task board, in the side panel. Do not write a task board, "
+    "a task table or a task-dashboard artifact in your reply: give only what needs "
+    "the person, then one line on what changed and what is next."
+)
+
+
+def _shows_board(key: str) -> bool:
+    """Whether the page in force for store key *key* is one of :data:`BOARD_TEMPLATES`."""
+    try:
+        _record, manifest, _locked = _read_page(key)
+    except Exception:
+        return False
+    return manifest is not None and manifest.id in BOARD_TEMPLATES
+
+
+async def root_session_dashboard_block(slot: Any) -> str:
+    """:func:`session_turn_block` for a Crew Mode chat *slot*, or ``""`` for any other.
+
+    Crew Mode is a ROOT session running a conductor TEMPLATE (``crew_mode``), so only such a slot
+    gets the block: one on another agent (Crew Mode turned off lands on the default
+    template) or on a crewmate (``agent_kind == "member"``, even one carrying the
+    conductor's name) gets none, and its page is left as it is. The root test is the
+    gateway's own (``card_lifecycle.is_root_session``), the one the page's read and
+    write routes apply, asked on the loop as that function requires; the page read
+    runs off it. A crewmate's DM slot is skipped: its block rides in its member
+    section, keyed by the crewmate. TOTAL.
+    """
+    import asyncio
+
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    try:
+        if not crew_mode.runs_crew_mode(
+            getattr(slot, "agent", ""),
+            getattr(slot, "agent_kind", ""),
+            stamp=getattr(slot, crew_mode.STAMP_FIELD, ""),
+        ):
+            return ""
+        if getattr(slot, "agent_kind", "") == "member" or getattr(slot, "mode", "") == "member":
+            return ""
+        if not is_root_session(slot):
+            return ""
+        return await asyncio.to_thread(session_turn_block, str(slot.key))
+    except Exception:
+        logger.debug("no session dashboard block for this slot", exc_info=True)
+        return ""
+
+
+#: The page a root session's side panel Overview shows once Crew Mode is on: the
+#: shipped work-ledger board, which the Conductor prompt names as one that keeps
+#: itself current.
+CREW_MODE_BOARD_TEMPLATE: Final[str] = "goal-board"
+
+
+async def adopt_crew_mode_board_on_switch(slot: Any, agent_name: str, state: Any = None) -> None:
+    """After a committed agent switch, adopt the Crew Mode board if this is Crew Mode on.
+
+    Crew Mode is a chat on a conductor TEMPLATE (``crew_mode``), so a switch to one in the
+    template namespace on a ROOT session is Crew Mode turning on. A crewmate that
+    happens to carry the conductor's name is that crewmate, not Crew Mode. The root
+    test is the gateway's own (``is_root_session``), asked on the loop; the page write
+    runs off it. An adoption is told to the open side panel with the frame an agent's
+    ``dashboard_apply`` sends for a session page (``dashboard_instance_changed``,
+    ``{slot}``, owner sockets only), so an Overview opened before the page changed
+    re-reads it. Only a Persistent chat (an unset mode counts as one) adopts: an
+    Incognito or Temporary session may not open sessions, so it cannot conduct. TOTAL.
+    """
+    import asyncio
+
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    try:
+        if not crew_mode.runs_crew_mode(
+            agent_name,
+            getattr(slot, "agent_kind", ""),
+            stamp=getattr(slot, crew_mode.STAMP_FIELD, ""),
+        ):
+            return
+        if (getattr(slot, "memory_mode", "") or "persistent") != "persistent":
+            return
+        if getattr(slot, "agent_kind", "") == "member":
+            return
+        # The root test answers "not root yet" while the session tree is still seeding
+        # (boot, before the first slots frame) and asks for the seed. This adoption is
+        # taken once, so it waits for that seed, bounded, instead of reading the
+        # provisional answer as a refusal; a seed that does not land keeps the
+        # fail-closed answer.
+        if not is_root_session(slot):
+            deadline = asyncio.get_running_loop().time() + _BOARD_ADOPTION_SEED_WAIT_SECS
+            while not _lineage_seeded() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.1)
+            if not is_root_session(slot):
+                return
+        if await asyncio.to_thread(adopt_crew_mode_board, str(slot.key)) and state is not None:
+            state.broadcast_ws_owners("dashboard_instance_changed", {"slot": str(slot.key)})
+    except Exception:
+        logger.warning("Crew Mode board not adopted after the switch", exc_info=True)
+
+
+#: How long :func:`adopt_crew_mode_board_on_switch` waits for the session tree's seed
+#: when the root test could not answer yet. The seed is one fold of the crew log on the
+#: maintenance pool, normally well under a second.
+_BOARD_ADOPTION_SEED_WAIT_SECS: Final[float] = 5.0
+
+
+def _lineage_seeded() -> bool:
+    """Whether there is no seed left to wait for: the session tree's projection is seeded
+    for the current store, or the crew log is off and no seed will ever land. Never raises."""
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return True
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        return bool(projection().seeded_for_current_store)
+    except Exception:
+        return True
+
+
+def adopt_crew_mode_board(slot_key: str) -> bool:
+    """Put :data:`CREW_MODE_BOARD_TEMPLATE` on a root session's page; whether it did.
+
+    The ordinary adopt (``instance_adopt.adopt_if_empty``), the call an agent's
+    ``dashboard_apply`` of a template makes. Only on a page nothing has been adopted on
+    yet, checked under the instance's own write lock: a page the session or the person
+    chose, even one committed while the switch was still running, is kept, so turning
+    Crew Mode on never replaces it. The caller owns the root test.
+    TOTAL: a page that cannot be read or written leaves the session on its default
+    page, which the side panel still draws.
+    """
+    try:
+        from kiro_crew.dashboard_templates import instance as instance_store
+        from kiro_crew.dashboard_templates.instance_adopt import adopt_if_empty
+
+        key = instance_store.session_instance_key(slot_key)
+        return adopt_if_empty(key, CREW_MODE_BOARD_TEMPLATE) is not None
+    except Exception:
+        logger.warning("Crew Mode board not adopted for %r", slot_key, exc_info=True)
+        return False
 
 
 def _recent_history(history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:

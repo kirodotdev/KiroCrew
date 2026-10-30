@@ -392,6 +392,11 @@ _FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
     (LIB_CG, "CGEventSetIntegerValueField", _VOID, [c_void_p, c_uint32, c_int64]),
     (LIB_CG, "CGEventSetFlags", _VOID, [c_void_p, c_uint64]),
     (LIB_CG, "CGEventPostToPid", _VOID, [c_int32, c_void_p]),
+    # Where a posted wheel event lands. A new wheel event carries the operator's
+    # pointer position, so without this a scroll aimed at a background window goes
+    # to whatever the pointer is over and the target app drops it. ``CGPoint``
+    # by value, for the same AArch64 reason as CGEventCreateMouseEvent below.
+    (LIB_CG, "CGEventSetLocation", _VOID, [c_void_p, CGPoint]),
     # ── CoreGraphics: mouse-event synthesis ──
     # ``CGPoint`` BY VALUE. Declaring the location as two bare doubles
     # mis-marshals the whole call under the AArch64 calling convention — the

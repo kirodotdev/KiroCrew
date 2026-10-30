@@ -61,8 +61,13 @@ describe('InstancesPanel', () => {
   it('shows a restart-required banner + Disable toggle when enabled but not active', async () => {
     ;vi.mocked(api.listInstances).mockResolvedValue({ active: false, instances: [], warm_set_cap: 5 })
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/not active yet/i)).toBeInTheDocument()
-    expect(screen.getByText(/kirocrew restart/i)).toBeInTheDocument()
+    const banner = (await screen.findByText(/not active yet/i)).closest('[role="status"]') as HTMLElement
+    // #22104: one sentence that says where the command runs and what works after,
+    // with no internal "tunnel manager" wording.
+    expect(banner.textContent).toBe(
+      'Remote crew management is on, but not active yet. Run kirocrew restart in a terminal on the computer this dashboard runs on, not on a remote crew. Then you can connect to your remote crews.',
+    )
+    expect(banner.querySelector('code')?.textContent).toBe('kirocrew restart')
     expect(screen.getByRole('button', { name: /Disable remote crew management/i })).toBeInTheDocument()
   })
 

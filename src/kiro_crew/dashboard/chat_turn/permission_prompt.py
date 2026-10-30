@@ -7,39 +7,46 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
+from kiro_crew.dashboard.state import (
+    DENY_CAUSE_APPROVAL_NO_BUDGET,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+    DENY_CAUSE_BATCH_CASCADE,
+    _mark_permission_resolved,
+)
+from kiro_crew.dashboard.turn_dispatch import (
+    APPROVAL_EXPIRED_NOTE_TITLE,
+    format_approval_expired_note,
+    format_approval_no_budget_card,
+    format_approval_timeout_card,
+)
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.readonly_bash import (
+    command_invokes_git,
+    is_read_only_bash,
+    unsafe_bash_reason,
+)
+from kiro_crew.slack.handler import resolve_linked_approval
+from kiro_crew.trust_patterns import approval_command, approval_display_command
+from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _MAX_TOOL_PURPOSE,
-        DENY_CAUSE_APPROVAL_NO_BUDGET,
-        DENY_CAUSE_APPROVAL_TIMEOUT,
-        DENY_CAUSE_APPROVAL_UNDELIVERABLE,
-        DENY_CAUSE_BATCH_CASCADE,
-        HOOK_EVENT_PRE_TOOL_USE,
-        OUTCOME_REJECTED_TRANSPORT_FLOOR,
         _extract_base_command,
-        _extract_bash_command,
         _extract_full_command,
-        _mark_permission_resolved,
         _redact_tool_field,
-        _tool_identity_fields,
         _validate_tool_name,
-        approval_command,
-        approval_display_command,
-        command_invokes_git,
         crew_log_emit,
-        format_approval_no_budget_card,
-        format_approval_timeout_card,
-        is_read_only_bash,
         logger,
         pin_human_approval,
         post_linked_approval,
         redact_credentials,
         redact_exfiltration_urls,
-        resolve_linked_approval,
         sel,
-        slack_mirror_is_paused,
         tool_approval_timeout_secs,
-        unsafe_bash_reason,
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import (
         _redact_display_text,
@@ -363,8 +370,8 @@ async def _on_permission_prompt(
             # Any failure before the future is resolved (ImportError,
             # post_linked_approval raising, slot.append/push raising in
             # the delivery-failure branch) would otherwise fall through
-            # to the approval wait_for with an unresolved future — the exact
-            # wedge this fix prevents. Auto-reject so the turn unblocks,
+            # to the approval wait_for with an unresolved future and wedge
+            # the turn. Auto-reject so the turn unblocks,
             # mirroring the _slack_approval_ts is None branch.
             logger.warning("Error mirroring approval prompt to Slack", exc_info=True)
             if not fut.done():
@@ -513,6 +520,22 @@ async def _on_permission_prompt(
                 _autonudge.notify_approval_stalled(slot.key)
         except Exception:
             logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
+        # The card above reaches only someone looking at this session.
+        # The bell note reaches the rest of the dashboard. It carries no
+        # publisher session, so muting this session does not hide it:
+        # it is a gateway report about the session, not the session's
+        # own note.
+        try:
+            state.notify(
+                "agent",
+                APPROVAL_EXPIRED_NOTE_TITLE,
+                format_approval_expired_note(
+                    event.tool_name or "", slot.display_title, _approval_window
+                ),
+                meta={"slot": slot.key},
+            )
+        except Exception:
+            logger.warning("approval-expiry notification failed", exc_info=True)
     except asyncio.CancelledError:
         # The task itself was cancelled (slot deletion, shutdown) while
         # the prompt was still open. The decision is host-driven, not a
@@ -643,6 +666,8 @@ async def _on_permission_prompt(
                 )
     if outcome == "approved_trust_reads":
         slot._trust_reads = True
+        # A person chose this slot's mode: its creator's changes stop reaching it.
+        slot._posture_inherited = False
         outcome = "approved"
     if outcome == "approved":
         try:

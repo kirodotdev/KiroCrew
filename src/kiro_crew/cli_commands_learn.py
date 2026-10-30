@@ -52,7 +52,7 @@ _LEARN_EMBED_NOTE = (
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over
 # ``[] if matched else lesson_rows``), so the substring/topic-overlap claim is
 # true only for an insert — printing it on ENRICHED would report checks that
-# never ran, the same defect this change fixes.
+# never ran.
 _LEARN_DEDUP_NOTE = (
     "  (Semantic dedup did not run at write time; substring/topic-overlap dedup\n" "  still did.)"
 )
@@ -121,9 +121,9 @@ def _learn(args: argparse.Namespace) -> None:
             #
             # The one return that really does mean "nothing was stored" is a REFUSAL,
             # and routing that into the JSONL store would be worse than redundant:
-            # that store validates no content at all, so a value this store rejected
-            # (an injection-pattern clause) would land there anyway, and the context
-            # builder reads lessons.jsonl whenever the vector store holds no lessons.
+            # that store runs only the volatile-text and blocked-pattern screens, not
+            # the vector store's full validation, and the context builder reads
+            # lessons.jsonl whenever the vector store holds no lessons.
             #
             # So there is no fallback here, not a narrowed one. There is no "vector
             # store unavailable" state to fall back from: ``vs`` is constructed and
@@ -186,9 +186,8 @@ def _learn(args: argparse.Namespace) -> None:
             # vector_memory_runtime/lessons.py, builds an enrichment with the STORED
             # category, falling back to the submitted one only when the row has none),
             # so an insert is the single outcome where what was typed is what is held.
-            # Anything else printing it would show a value the store may not have --
-            # the same defect this PR fixes on the reporting side. `learn list` is
-            # where stored values belong.
+            # Anything else printing it would show a value the store may not have.
+            # `learn list` is where stored values belong.
             if result.outcome is LessonWriteOutcome.INSERTED:
                 print(
                     f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n"
@@ -298,7 +297,8 @@ def _learn(args: argparse.Namespace) -> None:
             elif jsonl_store.remove(args.query, repo_scope):
                 print(f"Removed lessons matching: {args.query}")
             else:
-                print(f"No lessons match: {args.query}")
+                print(f"No lessons match: {args.query}", file=sys.stderr)
+                sys.exit(1)
 
         else:
             print("Usage: kirocrew learn {add|list|remove}")

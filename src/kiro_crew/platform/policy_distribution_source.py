@@ -55,6 +55,22 @@ POLICY_UNAVAILABLE_ENV = "KIROCREW_POLICY_ON_UNAVAILABLE"
 #: handed the means to fetch it — see :func:`cache_only`.
 POLICY_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
+#: The scheme of the enterprise build's policy source: the Kiro control plane's
+#: enterprise-management read for the signed-in profile
+#: (:mod:`kiro_crew.platform.enterprise_policy_fetch`). Not a URL scheme anyone types:
+#: the host is not in the URL at all, it comes from the build's control-plane region
+#: table (``kiro_crew.auth.login.control_plane``).
+ENTERPRISE_POLICY_SCHEME = "kirocps"
+
+#: The enterprise build's policy source (RFC rfc-crew-enterprise-edition, D2). In an
+#: enterprise build this is the ONLY source: :data:`POLICY_URL_ENV`, the other
+#: ``KIROCREW_POLICY_*`` settings and any ``distribution.source`` in a local or fetched
+#: document are ignored. The host part names WHAT is read, not where: the address is the
+#: control-plane host for the signed-in profile's region, from a table fixed in the
+#: build. It is a word no message uses, because the core redacts the source's host
+#: from every message. An oss build never reads it.
+ENTERPRISE_POLICY_URL = f"{ENTERPRISE_POLICY_SCHEME}://enterprise-management"
+
 #: Every environment variable this tier reads, owned in one place.
 #:
 #: The set exists so the AGENT-DENY list cannot drift from it: every name here must be
@@ -419,6 +435,54 @@ register_policy_fetcher("http", _fetch_http)
 register_policy_fetcher("file", _fetch_file)
 
 
+def _fetch_enterprise(request: FetchRequest) -> FetchedPolicy:
+    """The enterprise build's transport, imported on first use.
+
+    Lazy so this module binds no new project module and an oss process never imports
+    the control-plane client. The fetcher itself refuses in an oss build.
+    """
+    from kiro_crew.platform.enterprise_policy_fetch import fetch
+
+    return fetch(request)
+
+
+register_policy_fetcher(ENTERPRISE_POLICY_SCHEME, _fetch_enterprise)
+
+
+def _source_identity(source: str, body: Optional[bytes] = None) -> str:
+    """WHICH copy of *source* a document is: what the cache records it against.
+
+    Every source but the enterprise one answers *source* unchanged. The enterprise source
+    is shared by every profile, so its identity adds the profile: the one *body* was read
+    for (its ``identity.issuer``) when *body* is given, else the one this process is
+    PINNED to (``enterprise_policy_fetch.pinned_scope``; a cache-only child's pin comes
+    from its gateway). The repoint rule then refuses another profile's copy at every
+    cache read. A body with no profile and a process with no pin get two different
+    markers, so neither ever matches anything.
+    """
+    if _split_url(source).scheme.lower() != ENTERPRISE_POLICY_SCHEME:
+        return source
+    from kiro_crew.platform import enterprise_policy_fetch as epf
+
+    if body is not None:
+        scope = epf.document_scope(body) or "unscoped-document"
+    else:
+        scope = epf.pinned_scope() or "signed-out"
+    return f"{source}?profile={scope}"
+
+
+def _assert_signed_in_unchanged(source: str, body: Optional[bytes] = None) -> None:
+    """Before an install: refuse when the sign-in (or *body*'s profile) is not the pinned one.
+
+    A no-op for every source but the enterprise one.
+    """
+    if _split_url(source).scheme.lower() != ENTERPRISE_POLICY_SCHEME:
+        return
+    from kiro_crew.platform.enterprise_policy_fetch import assert_signed_in_unchanged
+
+    assert_signed_in_unchanged(body)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Source resolution — the env channel overlaid on the policy declaration
 # ──────────────────────────────────────────────────────────────────────────
@@ -443,8 +507,19 @@ def cache_only() -> bool:
     The recorded-source check is skipped in this mode, and that is sound rather than a
     relaxation: there is one cache, the parent wrote it, and the parent applied the
     repoint rule when it did. The child is inheriting a decision, not making one.
+
+    **An enterprise build puts every sandboxed process in this mode too**, with no flag:
+    a Kiro Crew MCP server kiro-cli starts inside the agent sandbox enters the central
+    tier (RFC D2) but can reach neither the sign-in nor the control plane, and the
+    sandbox shows it the cache read-only (``sandbox_tiers.enterprise_policy_cache_view``).
+    "Sandboxed" is the launcher's marker, which the entry points note before they drop it
+    (``sandbox_launch_mark``).
     """
-    return os.environ.get(POLICY_CACHE_ONLY_ENV, "").strip().lower() in ENV_TRUTHY
+    if os.environ.get(POLICY_CACHE_ONLY_ENV, "").strip().lower() in ENV_TRUTHY:
+        return True
+    from kiro_crew import sandbox_launch_mark
+
+    return _is_enterprise() and sandbox_launch_mark.launched_in_sandbox()
 
 
 def _env_number(name: str, *, whole: bool) -> Optional[float]:
@@ -511,8 +586,18 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     Per-setting rather than all-or-nothing, so a fleet can retune one value —
     redirect a host to a canary endpoint, lengthen an interval during an incident —
     without editing (and re-signing) the published document.
+
+    **Enterprise build (RFC D2): no local channel.** The source is
+    :data:`ENTERPRISE_POLICY_URL`, every ``KIROCREW_POLICY_*`` setting is ignored, and
+    ``on_unavailable`` is ``fail_closed`` whatever *declared* says. The cadence, timeout
+    and staleness bound come from *declared* alone, and every caller hands an
+    enterprise build only the FETCHED document's block: ``load_security_policy`` passes
+    no local declaration, and ``compose_tier_ladder`` keeps the central block.
     """
     base = declared or PolicyDistribution()
+
+    if _is_enterprise():
+        return replace(base, source=ENTERPRISE_POLICY_URL, on_unavailable=UNAVAILABLE_FAIL_CLOSED)
 
     source = os.environ.get(POLICY_URL_ENV, "").strip() or base.source
     refresh = _env_number(POLICY_REFRESH_ENV, whole=True)
@@ -536,6 +621,18 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     )
 
 
+def host_pinned_source() -> str:
+    """The source this host names outside any document, or ``""``.
+
+    The build-time :data:`ENTERPRISE_POLICY_URL` in an enterprise build, otherwise
+    :data:`POLICY_URL_ENV`. A non-empty answer means a document's own
+    ``distribution.source`` is not followed.
+    """
+    if _is_enterprise():
+        return ENTERPRISE_POLICY_URL
+    return os.environ.get(POLICY_URL_ENV, "").strip()
+
+
 def _body_digest(body: bytes) -> str:
     """A stable digest of a policy document's bytes.
 
@@ -544,3 +641,14 @@ def _body_digest(body: bytes) -> str:
     signing. That is what ``identity.signature`` is for.
     """
     return hashlib.sha256(body).hexdigest()
+
+
+def _is_enterprise() -> bool:
+    """``kiro_crew.edition.is_enterprise()``, read at call time.
+
+    Imported here rather than at module scope so the facade family binds no new project
+    module name (``test_policy_distribution_facade`` keeps that set closed).
+    """
+    from kiro_crew.edition import is_enterprise
+
+    return is_enterprise()

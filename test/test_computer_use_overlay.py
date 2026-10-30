@@ -628,7 +628,7 @@ class TestSharedSingleton:
 
 
 class TestShowPointerMotion:
-    """The SYNC seam the blocking dispatcher calls (reviewer finding).
+    """The SYNC seam the blocking dispatcher calls.
 
     The dispatcher runs on a worker thread, so it cannot await the animation. This
     schedules it onto the gateway loop and returns immediately, and must never

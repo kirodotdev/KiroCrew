@@ -34,6 +34,7 @@ run, so non-ASCII would UnicodeEncodeError on Windows cp1252 pipes.
 
 from __future__ import annotations
 
+import gc
 import importlib
 import subprocess
 import sys
@@ -135,6 +136,12 @@ def main() -> None:
     if server is not None:
         server()
         return
+    if sys.argv[1:2] == ["gateway"]:
+        # The gateway's import graph is ~150k objects, and the cyclic collector
+        # spends ~0.2 s of it in gen-2 passes over objects that all survive.
+        # Boot turns GC back on, after freezing that heap, once its socket is
+        # bound (slack/gateway_runtime/service_boot.py, run()).
+        gc.disable()
     cli_main = _load_healing(_import_cli)
     cli_main()
 

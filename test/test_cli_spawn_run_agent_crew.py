@@ -1,10 +1,11 @@
-"""``kirocrew spawn run`` pins its run with ``--agent`` and ``--crew``.
+"""``kirocrew spawn run`` pins its run with ``--agent``, ``--crew`` and ``--model``.
 
 The flags reach the same ``POST /api/spawn`` fields the native ``spawn_run``
 tool sends, so the gateway applies one policy to both: ``crew`` selects that
-member's memory store and template, ``agent`` names the template, and an
-unknown name of either kind is refused there. The CLI relays that refusal and
-never retries without the name, so a typo cannot quietly run as the default.
+member's memory store and template, ``agent`` names the template, ``model``
+pins the model. An unknown agent or crew name is refused there; ``model`` is
+judged on shape only. The CLI relays the refusal and never retries without
+the value, so a mistyped agent or crew cannot quietly run as the default.
 """
 
 from __future__ import annotations
@@ -53,13 +54,17 @@ class TestSpawnRunParser:
         args = _parse(["spawn", "run", "t"])
         assert args.agent is None and args.crew is None
 
+    def test_model_parses_and_defaults_to_unset(self) -> None:
+        assert _parse(["spawn", "run", "--model", "m1", "t"]).model == "m1"
+        assert _parse(["spawn", "run", "t"]).model is None
+
 
 class TestSpawnRunBody:
     def _run(self, **kw: Any) -> Any:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
             patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
+                "kiro_crew.cli_commands._gateway_send",
                 return_value=_FakeResponse({"id": "ag1", "task": "t"}),
             ) as uo,
         ):
@@ -74,18 +79,26 @@ class TestSpawnRunBody:
         uo = self._run(agent=None, crew="ops")
         assert _posted_body(uo) == {"task": "t", "crew": "ops"}
 
+    def test_model_is_sent_beside_the_crew(self) -> None:
+        uo = self._run(agent=None, crew="ops", model="m1")
+        assert _posted_body(uo) == {"task": "t", "crew": "ops", "model": "m1"}
+
     def test_no_flags_send_only_the_task(self) -> None:
         uo = self._run(agent=None, crew=None)
         assert _posted_body(uo) == {"task": "t"}
 
-    @pytest.mark.parametrize("flag", ["agent", "crew"])
-    @pytest.mark.parametrize("blank", ["", "   "])
-    def test_blank_name_is_refused_before_any_request(
+    def test_model_with_hidden_characters_is_posted_unsanitized(self) -> None:
+        uo = self._run(agent=None, crew=None, model="op\u200bus")
+        assert _posted_body(uo) == {"task": "t", "model": "op\u200bus"}
+
+    @pytest.mark.parametrize("flag", ["agent", "crew", "model"])
+    @pytest.mark.parametrize("blank", ["", "   ", "\u200b", "\ufeff"])
+    def test_blank_value_is_refused_before_any_request(
         self, flag: str, blank: str, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen") as uo,
+            patch("kiro_crew.cli_commands._gateway_send") as uo,
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(
@@ -93,7 +106,7 @@ class TestSpawnRunBody:
             )
         assert exc.value.code == 1
         assert uo.call_count == 0
-        assert f"--{flag}" in capsys.readouterr().out
+        assert f"Error: --{flag} needs a value" in capsys.readouterr().out
 
 
 class TestSpawnRunRefusals:
@@ -122,7 +135,7 @@ class TestSpawnRunRefusals:
         err = _http_error(status, json.dumps(payload).encode())
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=err) as uo,
+            patch("kiro_crew.cli_commands._gateway_send", side_effect=err) as uo,
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False, **kw))
@@ -152,7 +165,7 @@ class TestCliBodyThroughTheGateway:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
             patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
+                "kiro_crew.cli_commands._gateway_send",
                 return_value=_FakeResponse({"id": "ag1", "task": "t"}),
             ) as uo,
         ):
@@ -199,4 +212,21 @@ class TestCliBodyThroughTheGateway:
         resp, mgr = self._gateway(self._cli_body(crew="ghost"), tmp_path, monkeypatch)
         assert resp.status == 404
         assert json.loads(resp.text)["code"] == "unknown_member"
+        mgr.spawn.assert_not_called()
+
+    def test_model_flag_reaches_the_manager_beside_the_crew(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        body = self._cli_body(crew="coding", model="m1")
+        resp, mgr = self._gateway(body, tmp_path, monkeypatch)
+        assert resp.status == 200, resp
+        kwargs = mgr.spawn.call_args.kwargs
+        assert (kwargs["model"], kwargs["crew"]) == ("m1", "coding")
+
+    def test_malformed_model_flag_is_refused_and_never_spawns(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        resp, mgr = self._gateway(self._cli_body(model="a;b"), tmp_path, monkeypatch)
+        assert resp.status == 400
+        assert "model" in json.loads(resp.text)["error"]
         mgr.spawn.assert_not_called()

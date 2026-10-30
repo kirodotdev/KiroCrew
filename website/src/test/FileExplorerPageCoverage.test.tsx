@@ -63,6 +63,7 @@ vi.mock('../hooks/useBranding', () => ({
 
 import { fileExplorerApi } from '../apps/file-explorer/api'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { copyToClipboard } from '../utils/clipboard'
 import { i18nT } from '../i18n/t'
 import { STORAGE_KEY } from '../apps/file-explorer/constants'
@@ -901,6 +902,32 @@ describe('FileExplorerPage backend banner', () => {
     // Cached data keeps the page initialized, so the banner is reachable.
     await waitFor(() => expect(screen.getByText(/Backend not reachable/)).toBeInTheDocument())
     expect(screen.getByText(/connection refused/)).toBeInTheDocument()
+  })
+
+  it('shows the banner, not an endless skeleton, when the first health call is refused (app disabled)', async () => {
+    vi.mocked(fileExplorerApi.health).mockRejectedValue(
+      new ApiError(
+        403,
+        "app 'file-explorer' is not enabled",
+        '{"code":"app_not_enabled","error":"app \'file-explorer\' is not enabled"}',
+      ),
+    )
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.health).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/This app is disabled/)).toBeInTheDocument())
+    expect(screen.queryByText(/Backend not reachable/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Apps$/ })).toBeInTheDocument()
+    expect(document.querySelector('[data-slot="skeleton"]')).not.toBeInTheDocument()
+  })
+
+  it('keeps "Backend not reachable", not a skeleton, when the first health call fails to connect', async () => {
+    vi.mocked(fileExplorerApi.health).mockRejectedValue(new Error('connection refused'))
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.health).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Backend not reachable/)).toBeInTheDocument())
+    expect(screen.getByText(/connection refused/)).toBeInTheDocument()
+    expect(screen.queryByText(/This app is disabled/)).not.toBeInTheDocument()
+    expect(document.querySelector('[data-slot="skeleton"]')).not.toBeInTheDocument()
   })
 
   it('surfaces a folder-open (tree) failure instead of a silent blank pane', async () => {

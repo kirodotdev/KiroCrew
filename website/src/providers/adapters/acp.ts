@@ -165,6 +165,10 @@ interface RawPlugin {
 /** Raw model entry from /api/models. */
 interface RawModel {
   model_name: string
+  /** The backend's own human label for the model (advertised by the harness for
+   *  an advertised-selection backend). Optional: a gateway predating the field
+   *  omits it, and the render site falls back to `model_name`. */
+  display_name?: string
   description?: string
   /** Backend-resolved context window. Two spellings because the endpoint has two
    *  branches: the kiro path returns `kiro-cli --list-models` rows verbatim
@@ -421,6 +425,14 @@ export class AcpAdapter implements ProviderAdapter {
         learnWindow(m.model_name, reported)
         return {
           name: m.model_name,
+          // The backend's native label, kept only when it is a REAL name (not
+          // the id-fallback the gateway fills in when a harness advertised no
+          // name). The auto row keeps its catalog label. The render site falls
+          // back to `name` when this is absent.
+          displayName:
+            m.model_name !== 'auto' && m.display_name && m.display_name !== m.model_name
+              ? m.display_name
+              : undefined,
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),

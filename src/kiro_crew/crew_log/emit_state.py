@@ -167,7 +167,14 @@ def session_id_of(client: Any) -> str:
 _WORK_TYPE: Final[str] = "work/recorded"
 
 
-def _note_eager(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]) -> None:
+def _note_eager(
+    entry: Any,
+    entry_type: str,
+    session_id: str,
+    data: Mapping[str, Any],
+    *,
+    board: "str | None" = None,
+) -> None:
     """Tell the eager folder one entry of *entry_type* committed. Never raises.
 
     Called from inside the append job, immediately after the append returned -- the same
@@ -200,7 +207,8 @@ def _note_eager(entry: Any, entry_type: str, session_id: str, data: Mapping[str,
         # is paid by the first process that actually commits an eager entry.
         from kiro_crew.crew_log import eager
 
-        board = str(data.get("slot") or "") if entry_type == _WORK_TYPE else ""
+        if board is None:
+            board = str(data.get("slot") or "") if entry_type == _WORK_TYPE else ""
         eager.note_commit(session_id, entry_type, seq, board)
     except Exception:  # pragma: no cover - a cache must not cost a committed entry
         # Rendered text, never ``exc_info``: this runs inside the append job, whose frame
@@ -216,3 +224,11 @@ def _note_eager(entry: Any, entry_type: str, session_id: str, data: Mapping[str,
                 entry_type,
                 traceback.format_exc().rstrip(),
             )
+    # The board above this unit hears about the same commit here, for the same reason
+    # the eager wake does: the entry is on disk and nothing has read it yet. A charge or
+    # a sub-board record is copied into the parent board's own log, which is the only
+    # log that board's folds read (``work_relay``). Its own membership test returns at
+    # once for every other type.
+    from kiro_crew.crew_log import work_relay
+
+    work_relay.relay(entry, entry_type, session_id, data)

@@ -281,6 +281,7 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
             wait_taskq_ready=AsyncMock(side_effect=taskq_ready),
             dependency_coordinator_async=AsyncMock(side_effect=build_coordinator),
             release_queue_dispatch=MagicMock(side_effect=release_dispatch),
+            release_orphan_notices=MagicMock(),
         ),
         raising=False,
     )

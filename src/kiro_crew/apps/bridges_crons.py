@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -25,7 +26,7 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.cron import (
     CronPendingMismatch,
     CronStoreBusy,
@@ -79,6 +80,7 @@ def _cron_defs_from_manifest(
                 "folder": cron.folder,
                 "timeout": cron.timeout,
                 "timeout_secs": cron.timeout_secs,
+                "strict_schedule": cron.strict_schedule,
             }
         )
         registered.append(namespaced)
@@ -143,7 +145,7 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         # A manifest that exists but cannot be read (for example one left torn by
         # an interrupted write) is logged at WARNING and treated as no crons, so
@@ -229,7 +231,17 @@ _MANIFEST_OWNED_CRON_KEYS: tuple[str, ...] = (
     "folder",
     "timeout",
     "timeout_secs",
+    "strict_schedule",
 )
+
+
+#: Manifest-owned keys added after jobs already carried stamps without them,
+#: with the value an entry that does not name the key means. A stamp lacking
+#: one was written by a build that never sent the key, so whatever the job
+#: holds for it is a person's choice; only a manifest value other than this
+#: default is the author's change. Without it, the first pass after an upgrade
+#: would reset a hand-set value on every app job to the default.
+_LATE_KEY_DEFAULTS: dict[str, Any] = {"strict_schedule": False}
 
 
 #: Hex characters kept of each per-key sha256. 12 (48 bits) tells "the author
@@ -261,7 +273,18 @@ def app_cron_manifest_digest(cron_def: dict[str, Any]) -> str:
 
 
 def _stamp_digests(cron_def: dict[str, Any]) -> dict[str, str]:
-    return {key: _field_digest(cron_def.get(key)) for key in _MANIFEST_OWNED_CRON_KEYS}
+    return {
+        key: _field_digest(cron_def.get(key, _LATE_KEY_DEFAULTS.get(key)))
+        for key in _MANIFEST_OWNED_CRON_KEYS
+    }
+
+
+def _stored_digest(stored: dict[str, str], key: str) -> str | None:
+    """*key*'s digest in a readable stamp, reading a late key the stamp lacks as
+    its default (see ``_LATE_KEY_DEFAULTS``)."""
+    if key not in stored and key in _LATE_KEY_DEFAULTS:
+        return _field_digest(_LATE_KEY_DEFAULTS[key])
+    return stored.get(key)
 
 
 def _join_stamp(digests: dict[str, str]) -> str:
@@ -321,6 +344,7 @@ def _manifest_job_fields(
         # default; CronService validates the pair.
         timeout=cron_def.get("timeout") or 0,
         timeout_secs=cron_def.get("timeout_secs") or 0,
+        strict_schedule=bool(cron_def.get("strict_schedule", False)),
         folder_id=folder_id,
         app_manifest_digest=digest,
     )
@@ -329,8 +353,9 @@ def _manifest_job_fields(
 #: The definition keys ``CronService.update_job`` has no branch for. They are the
 #: fields the fire-time vet and a secret grant's pin bind to, so the scheduler
 #: accepts them at creation only; a manifest change to one of them reaches the
-#: job the way the app-kit manifest reference says it does, through a disable
-#: and enable of the app (which deletes and recreates its jobs).
+#: job the way the app-kit manifest reference says it does, when the job is
+#: recreated: a disable and enable of the app, or a code reload of a hook app
+#: (``retire_app_crons_for_reload``).
 _CREATE_ONLY_CRON_KEYS: tuple[str, ...] = ("command", "script", "agent_sequence", "env")
 
 
@@ -349,7 +374,36 @@ _UPDATE_KWARGS_FOR_KEY: dict[str, tuple[str, ...]] = {
     "folder": ("folder_id",),
     "timeout": ("timeout",),
     "timeout_secs": ("timeout_secs",),
+    "strict_schedule": ("strict_schedule",),
 }
+
+
+def _changed_manifest_keys(job: Any, current: dict[str, str]) -> list[str]:
+    """The manifest-owned keys whose entry digest differs from *job*'s stamp.
+
+    A job whose stamp this build cannot read has no per-field history, so every
+    key counts as changed.
+    """
+    stored = _stamp_fields(job.app_manifest_digest)
+    if stored is None:
+        return list(_MANIFEST_OWNED_CRON_KEYS)
+    return [key for key in _MANIFEST_OWNED_CRON_KEYS if _stored_digest(stored, key) != current[key]]
+
+
+def _unapplicable_in_place(job: Any, cron_def: dict[str, Any], changed: list[str]) -> list[str]:
+    """The *changed* keys the update gate cannot apply to *job*.
+
+    A create-only key (``_CREATE_ONLY_CRON_KEYS``), and a ``message`` the entry
+    cleared while the job still holds one (the gate keeps the stored prompt on
+    an empty value). Registration reports these as pending a re-enable; a code
+    reload recreates the job instead (:func:`retire_app_crons_for_reload`).
+    """
+    return [
+        key
+        for key in changed
+        if key in _CREATE_ONLY_CRON_KEYS
+        or (key == "message" and not cron_def.get("message") and job.message)
+    ]
 
 
 async def _resync_app_cron(
@@ -401,7 +455,6 @@ async def _resync_app_cron(
     fields = _manifest_job_fields(
         cron_def, command=command, script=script, folder_id=folder_id, digest=digest
     )
-    wanted = {key: cron_def.get(key) for key in _MANIFEST_OWNED_CRON_KEYS}
     # The create-only keys as the JOB carries them, in manifest spelling where
     # the two coincide. ``script`` is the exception: the job holds the resolved
     # path, which no manifest spelling equals, so once it drifts it stays
@@ -419,22 +472,20 @@ async def _resync_app_cron(
         "env": dict(cron_def.get("env") or {}),
     }
 
-    stored = _stamp_fields(job.app_manifest_digest)
     current = _stamp_digests(cron_def)
-    if stored is None:
-        changed = list(_MANIFEST_OWNED_CRON_KEYS)
-    else:
-        changed = [key for key in _MANIFEST_OWNED_CRON_KEYS if stored.get(key) != current[key]]
+    changed = _changed_manifest_keys(job, current)
 
     pending: list[str] = []
     applied = dict(current)
-    for key in changed:
-        if key in _CREATE_ONLY_CRON_KEYS and carried[key] != vetted[key]:
-            pending.append(key)
+    for key in _unapplicable_in_place(job, cron_def, changed):
+        if key in _CREATE_ONLY_CRON_KEYS:
+            if carried[key] == vetted[key]:
+                # The entry moved but what the job runs already matches it.
+                continue
             applied[key] = _field_digest(carried[key])
-        elif key == "message" and not wanted["message"] and job.message:
-            pending.append(key)
+        else:
             applied[key] = _field_digest(job.message)
+        pending.append(key)
     applied_stamp = _join_stamp(applied)
     if pending and job.app_manifest_digest == applied_stamp:
         _report_pending_reenable(sdk.app_name, job.name, pending)
@@ -471,7 +522,7 @@ async def _resync_app_cron(
     overwritten = _overwritten_fields(job, update_kwargs)
     # Read BEFORE the write: ``job`` is the store's own object, and the locked
     # update mutates it in place, so afterwards it carries the new stamp.
-    had_stamp = stored is not None
+    had_stamp = _stamp_fields(job.app_manifest_digest) is not None
     stamp_read = job.app_manifest_digest
     try:
         # Compare-and-swap on the stamp this pass computed its fields from: the
@@ -544,6 +595,7 @@ def _overwritten_fields(job: Any, update_kwargs: dict[str, Any]) -> list[tuple[s
         "skip_dates": list(job.skip_dates or []),
         "timeout": int(job.timeout or 0),
         "timeout_secs": int(job.timeout_secs),
+        "strict_schedule": bool(job.strict_schedule),
         "folder_id": job.folder_id or "",
     }
     changed: list[tuple[str, Any, Any]] = []
@@ -758,12 +810,13 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 continue
         try:
             # Resolve the manifest's folder NAME against existing Schedule-page
-            # folders (read-only: cron_folders.json is dashboard-owned and
-            # rewritten wholesale by its state, so creating from here could be
-            # silently clobbered). An unresolved folder degrades to ungrouped
-            # with a logged warning rather than failing the app's enable — the
-            # job matters more than its grouping, and the next enable re-files
-            # it once the folder exists.
+            # folders. cron_folders.json is dashboard-owned and rewritten
+            # wholesale by its state, so this never writes it: a MISSING name is
+            # created only through the dashboard's own folder service
+            # (``cron_service.folder_creator``, set by the gateway's dashboard).
+            # Without one (the CLI), or on any other error, the job degrades to
+            # ungrouped with a logged warning rather than failing the app's
+            # enable — the job matters more than its grouping.
             folder_id = ""
             folder_ref = d.get("folder") or ""
             if folder_ref:
@@ -773,6 +826,10 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 # every request and the heartbeat with it.
                 found = await asyncio.to_thread(lookup_cron_folder_id, folder_ref)
                 folder_id = found.folder_id
+                creator = getattr(cron_service, "folder_creator", None)
+                if found.missing and inspect.iscoroutinefunction(creator):
+                    folder_id, made_err = await creator(folder_ref)
+                    found = found._replace(error=made_err)
                 if found.error:
                     logger.warning(
                         "App %s: cron %r registered ungrouped: %s", app_name, name, found.error
@@ -853,6 +910,15 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
     return newly_registered
 
 
+#: Apps whose post-reload cron rollback has not succeeded yet. The hook
+#: reconciler adds an app when that removal fails (its next tick finishes it
+#: before any enable runs). It lives here, beside the removal itself, so that
+#: EVERY completed full removal clears it: the reconciler's own retry, a
+#: dashboard disable and an uninstall all go through
+#: :func:`deregister_app_crons_reporting_failures`.
+pending_reload_cron_rollback: set[str] = set()
+
+
 async def deregister_app_crons_reporting_failures(app_name: str, cron_service: Any) -> int:
     """Remove app-owned cron jobs, reporting EVERY failure to the caller.
 
@@ -877,7 +943,13 @@ async def deregister_app_crons_reporting_failures(app_name: str, cron_service: A
         return 0
     sdk = CronSDK(app_name, cron_service)
     try:
-        return await sdk.remove_all_async()
+        removed = await sdk.remove_all_async()
+        # Any completed full removal settles a rollback the hook reconciler still
+        # owes this app. Without this, a dashboard disable that removed the jobs,
+        # then a re-enable that registered fresh ones, would leave the marker set
+        # and the reconciler's next tick would delete the new jobs.
+        pending_reload_cron_rollback.discard(app_name)
+        return removed
     except (CronStoreBusy, CronStoreUnreadable) as exc:
         logger.warning(
             "App %s: cron cleanup could not complete (%s): %s",
@@ -948,6 +1020,72 @@ async def deregister_app_crons_from_service(app_name: str, cron_service: Any) ->
         # Logged and audited by the call above; this frame only chooses the
         # disposition its own callers are written against.
         return 0
+
+
+async def retire_app_crons_for_reload(app_name: str, cron_service: Any) -> int:
+    """Remove the app's jobs that a code reload must not carry over, keep the rest.
+
+    A reload swaps an enabled app's code in place (a Sync, or an out-of-process
+    reinstall the hook reconciler picks up), and :func:`register_app_crons_with_service`
+    runs right after it. A job the current manifest still declares is KEPT: its
+    id, run history and enabled state survive, and registration brings its
+    fields up to the manifest in place. Removing it here instead would hand the
+    app a fresh job with no last run, which an app that catches up a missed run
+    reads as "never ran".
+
+    Removed, as a disable would remove them: jobs absent from the current manifest,
+    and jobs the app created at runtime through ``ctx.cron`` (its new
+    ``on_startup`` is what recreates those, so keeping them could duplicate them).
+    A declared job with a change :func:`_unapplicable_in_place` names is removed
+    too, so registration recreates it from the manifest and the reload applies
+    a changed ``command``/``script``/``env``/``agent_sequence`` (or a cleared
+    ``message``) at once. A job with no readable stamp counts every key as
+    changed, so it is recreated as well. A runtime job carries no stamp, so one
+    sharing a declared job's name is removed rather than kept.
+
+    Same failure contract as :func:`deregister_app_crons_reporting_failures`:
+    ``CronStoreBusy`` and ``CronStoreUnreadable`` propagate. Returns the number
+    of jobs removed.
+    """
+    if cron_service is None:
+        return 0
+    defs, _ = await asyncio.to_thread(_admitted_app_cron_defs, app_name)
+    declared = {str(d.get("name")): d for d in defs if d.get("name")}
+
+    def keep(job: Any) -> bool:
+        cron_def = declared.get(job.name)
+        if cron_def is None:
+            return False
+        changed = _changed_manifest_keys(job, _stamp_digests(cron_def))
+        return not _unapplicable_in_place(job, cron_def, changed)
+
+    # ``keep`` runs inside the removal's store lock, on the reloaded jobs, so a
+    # job another process wrote since this process last read the store is
+    # judged by what is on disk.
+    try:
+        removed = await cron_service.remove_jobs_by_owner(f"app:{app_name}", keep=keep)
+    except (CronStoreBusy, CronStoreUnreadable) as exc:
+        logger.warning(
+            "App %s: cron reload cleanup could not complete (%s): %s",
+            app_name,
+            type(exc).__name__,
+            exc,
+        )
+        sel().log_api_access(
+            caller="app_bridge",
+            operation="app_crons_reload_retire",
+            outcome="failed",
+            resources=app_name,
+            error=str(exc),
+        )
+        raise
+    sel().log_api_access(
+        caller="app_bridge",
+        operation="app_crons_reload_retire",
+        outcome="completed",
+        resources=f"app={app_name} removed={len(removed)}",
+    )
+    return len(removed)
 
 
 async def disarm_app_crons_for_execution(

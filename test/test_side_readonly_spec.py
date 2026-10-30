@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -226,6 +227,65 @@ def test_object_grant_containers_are_still_emptied():
     assert out["toolsSettings"]["shell"] == {"deniedCommands": ["rm"]}
 
 
+def test_denied_read_paths_land_on_every_read_tool_and_keep_the_base_denies():
+    """kiro-cli reads inside the cwd without asking; ``deniedPaths`` makes it refuse."""
+    out = _derive_with(
+        {"toolsSettings": {"fs_read": {"deniedPaths": ["/mine"], "allowedPaths": ["/x"]}}},
+    )
+    # Nothing is added by default.
+    assert out["toolsSettings"] == {"fs_read": {"deniedPaths": ["/mine"]}}
+    base = {"name": "probe", "tools": ["fs_read"]}
+    base["toolsSettings"] = {"fs_read": {"deniedPaths": ["/mine", "/c"]}, "grep": None}
+    out = srs.derive_readonly_spec(base, base_name="probe", denied_read_paths=("/c", "/c/**"))
+    assert out["toolsSettings"] == {
+        "fs_read": {"deniedPaths": ["/mine", "/c", "/c/**"]},
+        "read": {"deniedPaths": ["/c", "/c/**"]},
+        "grep": {"deniedPaths": ["/c", "/c/**"]},
+        "glob": {"deniedPaths": ["/c", "/c/**"]},
+    }
+    with pytest.raises(srs.ReadOnlySpecError) as exc:
+        srs.derive_readonly_spec(
+            {"toolsSettings": {"grep": {"deniedPaths": "/c"}}},
+            base_name="probe",
+            denied_read_paths=("/c",),
+        )
+    assert exc.value.code == "base_spec_malformed"
+
+
+def test_credential_denied_paths_come_from_the_claude_side_source(monkeypatch):
+    """One list for both side chats: the claude deny rules' own targets."""
+    monkeypatch.setattr(
+        "kiro_crew.security.sandbox_credential_targets", lambda: ("/h/.ssh", "/h/.aws")
+    )
+    assert srs.credential_denied_paths() == ("/h/.ssh", "/h/.ssh/**", "/h/.aws", "/h/.aws/**")
+
+
+def test_publish_denies_every_credential_target_to_kiro_read_tools(agents_dir):
+    from kiro_crew.security import sandbox_credential_targets
+
+    (agents_dir / "kirocrew.json").write_text(json.dumps(_BASE), encoding="utf-8")
+    srs.publish_readonly_spec("kirocrew")
+    on_disk = json.loads((agents_dir / "kirocrew--readonly.json").read_text(encoding="utf-8"))
+    targets = sandbox_credential_targets()
+    assert any(os.path.basename(t) == ".ssh" for t in targets), "fixture premise"
+    for tool in ("fs_read", "read", "grep", "glob"):
+        denied = on_disk["toolsSettings"][tool]["deniedPaths"]
+        for target in targets:
+            assert target in denied and f"{target}/**" in denied, (tool, target)
+
+
+def test_publish_refuses_when_the_credential_paths_cannot_be_resolved(agents_dir, monkeypatch):
+    def stalled():
+        raise RuntimeError("stalled")
+
+    monkeypatch.setattr(srs, "credential_denied_paths", stalled)
+    (agents_dir / "kirocrew.json").write_text(json.dumps(_BASE), encoding="utf-8")
+    with pytest.raises(srs.ReadOnlySpecError) as exc:
+        srs.publish_readonly_spec("kirocrew")
+    assert exc.value.code == "credential_paths_unresolved"
+    assert not (agents_dir / "kirocrew--readonly.json").exists()
+
+
 @pytest.fixture
 def agents_dir(tmp_path, monkeypatch):
     """A temporary kiro agent registry, isolated from the live home."""
@@ -245,7 +305,9 @@ def test_publish_writes_the_derived_spec_beside_the_base_and_only_when_it_change
     assert published.name == "kirocrew--readonly"
     assert target.is_file() and not target.is_symlink()
     on_disk = json.loads(target.read_text(encoding="utf-8"))
-    expected = srs.derive_readonly_spec(_BASE, base_name="kirocrew")
+    expected = srs.derive_readonly_spec(
+        _BASE, base_name="kirocrew", denied_read_paths=srs.credential_denied_paths()
+    )
     assert on_disk == expected
     assert published.digest == srs.spec_digest(expected)
     # The base file is untouched.

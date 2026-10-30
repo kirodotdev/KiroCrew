@@ -25,30 +25,30 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "fake/fake-model",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "fake/fake-model",
-            "value": "fake/fake-model"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
         "options": [
           {
             "description": null,
-            "name": "Thinking: off",
-            "value": "off"
+            "name": "Thinking: medium",
+            "value": "medium"
           }
         ],
         "type": "select"
@@ -58,27 +58,17 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "off",
+      "current": "medium",
       "ids": [
-        "off"
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "session_id": "pi-session-1"
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "\n"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "\n",
-      "thinking": false
-    }
   },
   {
     "action": "update",
@@ -87,7 +77,7 @@
     "session_update": "usage_update",
     "usage": [
       0,
-      200000
+      128000
     ],
     "usage_cost": null
   },
@@ -100,7 +90,7 @@
           "text": "ping"
         },
         "title": "mcp__probe_server__echo",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__probe_server__echo_2",
         "tool_input": "{\n  \"text\": \"ping\"\n}",
         "tool_kind": "other",
         "wire_title": "mcp__probe_server__echo"
@@ -117,7 +107,7 @@
         "raw_tool_params": {
           "text": "ping"
         },
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__probe_server__echo_2",
         "tool_input": "{\n  \"text\": \"ping\"\n}"
       }
     ],
@@ -146,7 +136,7 @@
         },
         "shell_classified": true,
         "title": "mcp__probe_server__echo",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__probe_server__echo_2",
         "tool_input": "{\n  \"text\": \"ping\"\n}",
         "tool_kind": "other"
       }
@@ -163,7 +153,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__probe_server__echo_2",
         "tool_final": true,
         "tool_output": "ECHO:ping",
         "tool_output_bytes": 9,
@@ -179,13 +169,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "ok done"
+        "text": "The probe server answered."
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "ok done",
+      "text": "The probe server answered.",
       "thinking": false
     }
   },
@@ -195,8 +185,8 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      766,
-      200000
+      1642,
+      128000
     ],
     "usage_cost": null
   },

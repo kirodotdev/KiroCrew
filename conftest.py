@@ -14,8 +14,18 @@ testpath, because what they protect is the developer's machine rather than the
 correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
-The floor has eight parts, and each one exists because the "remember to isolate
+The floor has nine parts, and each one exists because the "remember to isolate
 this" contract failed at least once:
+
+* **Git auto maintenance.** ``GIT_CONFIG_GLOBAL`` points at a session-owned file
+  that turns ``maintenance.auto`` and ``gc.auto`` off, and the same keys are
+  appended through ``GIT_CONFIG_COUNT``. A fixture commit otherwise leaves a
+  detached ``git maintenance run --auto`` adding and removing lock files under
+  ``.git``, and a test that copied or walked that repo right after saw a file
+  vanish (issue #20310). See ``test/git_maintenance_helpers.py``. The git
+  location variables (``GIT_DIR``, ``GIT_INDEX_FILE``, ``GIT_WORK_TREE``, ...)
+  are removed as well: a suite started from a git hook inherits them, and a
+  fixture repo's ``git add`` would then stage into the operator's real index.
 
 * **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
   refuse a ``systemctl``/``launchctl`` invocation carrying a mutating verb, so no
@@ -221,6 +231,7 @@ _FLOOR_PARTS = (
     "conftest_floor_restores",
     "conftest_floor_determinism",
     "conftest_floor_reporting",
+    "conftest_floor_git",
 )
 
 
@@ -285,6 +296,17 @@ from conftest_floor_determinism import (  # noqa: E402,F401 -- bound for pytest 
     seeded_rng,
 )
 
+# Git auto maintenance off and git's location variables removed for every test.
+from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _GIT_MAINTENANCE,
+    _git_global_config,
+    _git_location_unset,
+    _git_maintenance_off,
+    _git_maintenance_off_entries,
+    _git_vars_to_strip,
+    _load_git_maintenance_helpers,
+)
+
 # Data home: the import-time floor and the per-test home, SEL and ~/.kiro pins.
 from conftest_floor_home import (  # noqa: E402,F401 -- bound for pytest and for tests
     _AGENT_SPEC_HOOKS,
@@ -330,12 +352,16 @@ from conftest_floor_reporting import (  # noqa: E402,F401 -- bound for pytest an
 
 # Teardown joins and the globals put back after every test.
 from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _EMBED_EVICTOR_THREAD,
     _EXECUTOR_JOIN_SECS,
     _TELEMETRY_CONSENT_THREAD,
+    _cancel_session_tree_checkpoints,
     _drain_windows_proactor_finalizers,
     _join_install_receipt_workers,
     _join_test_loop_executor,
+    _live_embed_evictors,
     _live_telemetry_consent_workers,
+    _no_leaked_embed_evictor,
     _no_leaked_telemetry_exporter,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
@@ -371,6 +397,8 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _HOST_SERVICE_EXEC_ALLOWED_MODULES,
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
+    _fail_on_refused_real_reclaim_write,
+    _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,
     real_user_session,
@@ -905,6 +933,9 @@ def pytest_runtest_teardown(item, nextitem):
     # fresh daemon nothing holds a handle to. Stopping the worker once its producers are
     # quiescent is what makes the stop final.
     wedged_eager_fold = _retire_crew_log_eager_fold()
+    # After the fold worker is stopped: it is the fold that arms these, so a write armed
+    # by its last entries is cancelled here rather than re-armed after the cancel.
+    _cancel_session_tree_checkpoints()
     # After every step above: a cancelled task's ``finally`` or a drained writer can
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.

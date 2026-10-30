@@ -51,11 +51,6 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
-    // Read by the rail on every mount to summarise the flagged-file-delivery
-    // section, for the same reason as `tailnetStatus` above. The section's own
-    // behaviour is covered in SecurityPanel.fileDelivery.test.tsx.
-    fileDeliveryConsent: vi.fn(),
-    revokeFileDeliveryConsent: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
@@ -69,7 +64,7 @@ vi.mock('../../api/client', () => ({
 
 import { api } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
-import { TAILNET_OFF, CONSENT_NONE, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
+import { TAILNET_OFF, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
 
 describe('SecurityPanel — inspector rail', () => {
   beforeEach(() => {
@@ -79,7 +74,6 @@ describe('SecurityPanel — inspector rail', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   /** Every rail row, in DOM order. */
@@ -105,7 +99,6 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Third-party apps'),
       expect.stringContaining('Registry trust'),
       expect.stringContaining('Redaction'),
-      expect.stringContaining('Flagged-file delivery'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),
       expect.stringContaining('Documentation'),
@@ -251,7 +244,6 @@ describe('SecurityPanel — review-round regressions', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   const SEARCH = 'Search rules, patterns, categories…'

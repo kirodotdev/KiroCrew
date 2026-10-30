@@ -2,7 +2,8 @@
 
 ``run_gateway`` with its boot preflight (the token signing key) and the background
 sweeps it starts (KAS kiro-cli floor, predecessor work directories, orphaned
-read-only specs).
+read-only specs), and the remote session environments' retention sweeper with its
+shutdown stop.
 
 Orchestrator fields read: none.
 Orchestrator fields written: none.
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     _AGENTS_JANITOR_TASK: asyncio.Task[None] | None
     _AGENT_SCRATCH_SWEEP_TASK: asyncio.Task[None] | None
     _KIRO_CLI_LOG_CAP_TASK: asyncio.Task[None] | None
+    _CODER_RETENTION_TASK: asyncio.Task[None] | None
 
 
 def _live_session_work_dirs(sessions: Any) -> list[str]:
@@ -223,7 +225,7 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
     never waits for either the declaration read or the probe.
     """
     global _KAS_CLI_FLOOR_TASK
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk import kas_floor_wait
 
     async def _run() -> None:
@@ -233,9 +235,18 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
                 task, main=not main_default, member=not member_default
             )
             kas_defaulted = (
-                (main or member) and (not main or main_default) and (not member or member_default)
+                (kas_main or member)
+                and (not kas_main or main_default)
+                and (not member or member_default)
             )
-            await asyncio.to_thread(apply_kas_cli_floor, cfg, kas_defaulted=kas_defaulted)
+            kiro_selected = kiro_main and await asyncio.to_thread(_main_stored_as_kiro)
+            await asyncio.to_thread(
+                apply_kas_cli_floor,
+                cfg,
+                kas_defaulted=kas_defaulted,
+                kiro_selected=kiro_selected,
+            )
+            await _reconcile_live_config_with_kiro_verdict()
         except Exception:
             logging.getLogger(__name__).warning(
                 "KAS kiro-cli floor check failed; continuing", exc_info=True
@@ -243,11 +254,14 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
     agent = getattr(cfg, "agent", None)
     bundle = getattr(agent, "kas_bundle", False)
-    main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    kas_main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    # A Kiro CLI main backend may be a stored pick the probe moves onto KAS, so it
+    # is armed too; the declaration read releases it at once when it is not one.
+    kiro_main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KIRO
     member = not bundle and getattr(agent, "member_acp_backend", None) == ACP_BACKEND_KAS
     task = asyncio.create_task(_run(), name="kas-cli-floor")
     _KAS_CLI_FLOOR_TASK = task
-    kas_floor_wait.arm_kas_floor_wait(task, main=main, member=member)
+    kas_floor_wait.arm_kas_floor_wait(task, main=kas_main or kiro_main, member=member)
     return _KAS_CLI_FLOOR_TASK
 
 
@@ -258,25 +272,149 @@ def _kas_floor_gates_spawns(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     the floor never probes, gates neither. A config that cannot be read releases
     both roles, leaving the spawn's configured backend unchanged.
     """
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
     agent = getattr(cfg, "agent", None)
     if getattr(agent, "kas_bundle", False):
         return False, False
     kas_main = getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    kiro_main = getattr(agent, "acp_backend", None) == ACP_BACKEND_KIRO
     kas_member = getattr(agent, "member_acp_backend", None) == ACP_BACKEND_KAS
-    if not (kas_main or kas_member):
+    if not (kas_main or kiro_main or kas_member):
         return False, False
     try:
         from kiro_crew.config.loader import acp_backend_declared, member_acp_backend_declared
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
 
+        # A stored Kiro CLI pick moves to KAS only on the probe's positive verdict,
+        # so it waits for that verdict: a spawn before it would start the v2 launch
+        # on a kiro-cli whose bare ``acp`` already runs v3.
         return (
-            kas_main and not acp_backend_declared(),
+            (kas_main and not acp_backend_declared())
+            or (kiro_main and acp_backend_stored_as_kiro()),
             kas_member and not member_acp_backend_declared(),
         )
     except Exception:
         logging.getLogger(__name__).debug("backend declared-check failed", exc_info=True)
         return False, False
+
+
+async def _reconcile_live_config_with_kiro_verdict() -> None:
+    """Hand a confirmed v3 verdict to the LIVE config, before any spawn waiter is released.
+
+    The verdict changes what a stored Kiro CLI pick loads as, but the provider
+    factory in force was built from whatever config the watcher last adopted --
+    the boot copy, or a later reload taken while the probe was pending. One forced
+    watcher cycle reloads ``config.json``: the stored pick now loads as KAS, the
+    diff names ``agent.acp_backend``, and ``SessionManager`` rebuilds its factory
+    from that fresh load, so a settings change made meanwhile is kept. Runs on the
+    floor task, so a waiting spawn proceeds only after it. A no-op without a
+    confirmation or a started watcher.
+    """
+    from kiro_crew.agent_sdk.backends import kiro_cli_offers_kas
+    from kiro_crew.config import live
+
+    if not kiro_cli_offers_kas():
+        return
+    watcher = live.watch()
+    if not watcher.started:
+        return
+    await watcher.refresh_now()
+
+
+def _main_stored_as_kiro() -> bool:
+    """Whether ``agent.acp_backend`` is stored as the Kiro CLI pick. Blocking; never raises."""
+    try:
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
+
+        return acp_backend_stored_as_kiro()
+    except Exception:
+        logging.getLogger(__name__).debug("stored backend read failed", exc_info=True)
+        return False
+
+
+def _start_coder_retention(cfg: KiroCrewConfig) -> None:
+    """Maintain configured environments and persisted VMs after readiness.
+
+    A gateway with neither configuration nor a VM registry never imports the
+    subsystem. Profile removal leaves archived-row sweeps and shutdown active.
+    """
+    global _CODER_RETENTION_TASK
+    from kiro_crew.session_environment import session_environments_enabled
+
+    if not session_environments_enabled():
+        # Developer flag off: no provider's retention runs.
+        return
+    if _CODER_RETENTION_TASK is not None and not _CODER_RETENTION_TASK.done():
+        return
+
+    def configured(section: Any) -> bool:
+        return bool(
+            section.coder_url
+            or getattr(section, "sprites_profiles", None)
+            or getattr(section, "boxd_profiles", None)
+        )
+
+    def has_vm_registry() -> bool:
+        from kiro_crew.config.paths import data_home
+        from kiro_crew.config.session_environments import VM_REGISTRY_FILES
+
+        try:
+            home = data_home()
+            # Every VM provider's registry, without importing a provider.
+            for name in VM_REGISTRY_FILES.values():
+                try:
+                    (home / name).stat()
+                except FileNotFoundError:
+                    continue
+                return True
+        except OSError:
+            # Let the sweeper report an unreadable registry, not abandon it.
+            return True
+        return False
+
+    async def run() -> None:
+        global _CODER_RETENTION_TASK
+        from kiro_crew.config import live
+
+        if not configured(cfg.session_environments):
+            persisted = await asyncio.to_thread(has_vm_registry)
+            # A configuration save can arrive while the registry probe runs.
+            if not (persisted or configured((live.snapshot() or cfg).session_environments)):
+                _CODER_RETENTION_TASK = None
+                return
+        from kiro_crew.coder.retention import run_sweeper
+
+        await run_sweeper()
+
+    _CODER_RETENTION_TASK = asyncio.create_task(run(), name="coder-retention")
+
+
+async def _stop_session_environments() -> None:
+    """Stop the remote session environments on shutdown; bounded, never raises."""
+    sweeper = _CODER_RETENTION_TASK
+    if sweeper is None:
+        return
+    if not sweeper.done():
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
+    try:
+        from kiro_crew.coder.retention import (
+            SHUTDOWN_STOP_SECS,
+            stop_for_shutdown,
+            stop_on_shutdown_enabled,
+        )
+
+        if not await stop_on_shutdown_enabled():
+            # Fast restarts chosen: each guest still stops on its own once no gateway
+            # reaches it (the worker's orphan timeout).
+            return
+        await asyncio.wait_for(stop_for_shutdown(), timeout=SHUTDOWN_STOP_SECS)
+    except asyncio.TimeoutError:
+        logger.warning("Session environments did not all stop in time; they stop when idle")
+    except Exception:  # noqa: BLE001 -- the gateway exits regardless
+        logger.warning("Session environments shutdown stop failed", exc_info=True)
 
 
 async def run_gateway(
@@ -318,7 +456,22 @@ async def run_gateway(
     # Idempotent: a no-op when ``cli.main`` already booted in this process.
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
-    boot_platform(cfg)
+    try:
+        boot_platform(cfg)
+    except Exception as exc:
+        # Enterprise build: failed governance rules exit with the fix named.
+        from kiro_crew.enterprise_boot import refuse_policy_boot
+
+        refuse_policy_boot(exc)
+        raise
+
+    # ── Plaintext credential notice ──
+    # One WARNING naming config keys that hold a plaintext token (key paths only,
+    # never values). Log-only, scheduled in the background and never awaited, so
+    # it cannot delay dashboard binding; a failure is logged at debug.
+    from kiro_crew.config.plaintext_credentials import start_plaintext_credentials_notice
+
+    start_plaintext_credentials_notice()
 
     # ── KAS kiro-cli floor ──
     # A configured KAS on a kiro-cli that cannot select the KAS engine falls back

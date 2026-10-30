@@ -501,20 +501,16 @@ class TestMCPProperties:
         # Backend live → HTTP url servers register (dead-port skip only with no backend).
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9000)
 
-        # Register both apps
         _register_mcp_servers(app_a, AppManifest(name=app_a, mcpServers=servers_a))
         _register_mcp_servers(app_b, AppManifest(name=app_b, mcpServers=servers_b))
 
-        # Deregister app_a
         _deregister_mcp_servers(app_a)
 
         data = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
         remaining = data.get("mcpServers", {})
 
-        # app_a entries gone
         for name in servers_a:
             assert f"{app_a}:{name}" not in remaining
-        # app_b entries preserved
         for name in servers_b:
             assert f"{app_b}:{name}" in remaining
 
@@ -575,11 +571,11 @@ class TestBootReconcile:
         assert "other:keep" in remaining  # unrelated entry untouched
 
     def test_enabled_app_never_healthy_mcp_entry_scrubbed(self, tmp_path, app_env, monkeypatch):
-        # Review scenario: an ENABLED port:"auto" app registered with an optimistic
-        # pre-health port whose backend never passes /health must NOT leave a dead HTTP MCP
-        # url behind — that's the exact shape that broke every kiro-cli session. The
-        # health-gated path calls _gate_mcp_registration(healthy=False) on health failure,
-        # which scrubs the entry. (Closes the disabled-only asymmetry the reviewer flagged.)
+        # An ENABLED port:"auto" app registered with an optimistic pre-health port whose
+        # backend never passes /health must NOT leave a dead HTTP MCP url behind: that
+        # shape breaks every kiro-cli session. The health-gated path calls
+        # _gate_mcp_registration(healthy=False) on health failure, which scrubs the entry
+        # the same way the disabled path does.
         import kiro_crew.apps.backend as backend_mod
         import kiro_crew.apps.bridges as bmod
 

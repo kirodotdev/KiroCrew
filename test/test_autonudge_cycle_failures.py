@@ -256,11 +256,11 @@ async def test_the_hook_ignores_an_inactive_loop(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_the_hook_is_silent_for_an_unknown_slot(svc, _nosleep):
-    await _armed(svc)
+    loop = await _armed(svc)
 
-    # Unknown loop id -> no match, must not raise.
     await svc.notify_cycle_failed("chat-9-nobody", loop_id="nope", expected_generation=0)
 
+    assert svc._loops[loop.id].consecutive_failed_cycles == 0
     await _stop_and_drain(svc)
 
 
@@ -580,7 +580,6 @@ async def test_the_gate_is_silent_when_no_service_is_published(monkeypatch):
 
     monkeypatch.setattr(_an, "_INSTANCE", None, raising=False)
 
-    # Must not raise.
     await chat_runner._note_cycle_failure(
         SLOT, RuntimeError("boom"), self_wake=True, loop_id=LOOP_ID, expected_generation=1
     )
@@ -631,7 +630,7 @@ async def test_a_failed_durable_write_rolls_the_increment_back(svc, _nosleep):
     class _WriteBoom(RuntimeError):
         pass
 
-    async def _boom(payload=None):
+    async def _boom(payload=None, **_kwargs):
         raise _WriteBoom
 
     svc._write_monitor_snapshot_locked = _boom  # type: ignore[method-assign]
@@ -661,7 +660,7 @@ async def test_a_cancel_during_the_committed_write_keeps_the_increment(svc, _nos
     await _fail(svc, loop)
     assert svc._loops[loop.id].consecutive_failed_cycles == 1
 
-    async def _write_then_cancel(payload=None):
+    async def _write_then_cancel(payload=None, **_kwargs):
         # Mirror the real writer's post-settle re-raise: the write is observed
         # as complete, THEN the cancellation surfaces.
         raise asyncio.CancelledError

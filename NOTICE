@@ -42,3 +42,8 @@ and operation/target decision design of browser-use/jev-ultrafast (MIT,
 Copyright (c) 2026 Browser Use) and reimplements the pipelined decision clock of
 hosseintoussi/jev-flappy-bird (MIT, Copyright (c) 2026 Hossein Toussi). Neither project is a dependency; their MIT
 notices are reproduced under "Ported rule sets" in THIRD-PARTY-NOTICES.
+
+Desktop releases bundle an audio-only build of FFmpeg 7.1.1, licensed under
+the GNU Lesser General Public License v2.1 or later, as a separate executable.
+Its license text and the location of its corresponding source are under
+"Bundled Programs" in THIRD-PARTY-NOTICES.

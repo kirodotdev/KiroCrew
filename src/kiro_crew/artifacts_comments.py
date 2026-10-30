@@ -189,13 +189,17 @@ def record_comment_event(
 
 
 def _load_comments(self: ArtifactStore, slug: str) -> _List["ArtifactComment"]:
-    """Load comments.json sidecar (tolerant — missing file = empty)."""
+    """Load comments.json sidecar (tolerant — missing file = empty).
+
+    ``ValueError`` covers both ``JSONDecodeError`` and ``UnicodeDecodeError``, so a
+    sidecar that is not valid JSON or not valid UTF-8 also reads as empty.
+    """
     path = self._artifact_dir(slug) / "comments.json"
     if not path.exists():
         return []
     try:
         raw_list = json.loads(self._read_text(path))
-    except (json.JSONDecodeError, ArtifactError):
+    except (ValueError, ArtifactError):
         return []
     return _records.decode_comments(raw_list)
 

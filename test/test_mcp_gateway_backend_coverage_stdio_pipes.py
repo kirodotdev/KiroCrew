@@ -433,6 +433,8 @@ class TestPumpStderr:
         reader = MagicMock()
         reader.readline = AsyncMock(side_effect=RuntimeError("closed"))
         await _pump_stderr(cast(Any, reader), "label")
+        # One read, then return: a pump that retried a closed reader would spin.
+        assert reader.readline.await_count == 1
 
 
 # --- One stray stdout line costs that line, never the shared pump ------------
@@ -836,3 +838,30 @@ class TestStrayStdoutLines:
         )
         assert await send_initialize(backend, timeout=5) == {"capabilities": {}}
         assert backend.supports_caller_identity is False
+
+    @pytest.mark.asyncio
+    async def test_send_initialize_offers_the_newest_version_and_steps_down_once(self) -> None:
+        refusal = {"code": -32602, "message": "Unsupported", "data": {"supported": ["2024-11-05"]}}
+        result: dict[str, Any] = {"protocolVersion": "2024-11-05", "capabilities": {}}
+        backend = _make_backend()
+        backend.stdout = cast(
+            Any,
+            _reader(
+                _line({"id": backend_mod._GATEWAY_INIT_ID, "error": refusal}),
+                _line({"id": backend_mod._GATEWAY_INIT_ID, "result": result}),
+            ),
+        )
+        assert await send_initialize(backend, timeout=5) == result
+        offered = [f["params"]["protocolVersion"] for f in _frames(backend)]
+        assert offered == ["2025-06-18", "2024-11-05"]
+
+    @pytest.mark.asyncio
+    async def test_send_initialize_does_not_retry_an_unknown_error(self) -> None:
+        backend = _make_backend()
+        backend.stdout = cast(
+            Any,
+            _reader(_line({"id": backend_mod._GATEWAY_INIT_ID, "error": {"code": -32000}})),
+        )
+        with pytest.raises(ValueError, match="initialize error"):
+            await send_initialize(backend, timeout=5)
+        assert [f["params"]["protocolVersion"] for f in _frames(backend)] == ["2025-06-18"]

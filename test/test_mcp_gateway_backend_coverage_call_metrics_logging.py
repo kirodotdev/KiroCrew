@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from mcp_gateway_backend_coverage_helpers import _no_real_metrics_file  # noqa: F401 -- autouse
@@ -346,13 +347,19 @@ class TestCallMetrics:
     ) -> None:
         # A directory can never be opened for append -> OSError -> swallowed.
         monkeypatch.setattr(backend_mod, "_METRICS_PATH", str(tmp_path))
-        backend_mod._write_metric_line({"method": "tools/call"})
+        assert backend_mod._write_metric_line({"method": "tools/call"}) is None
+        assert list(tmp_path.iterdir()) == []
 
     def test_write_metric_line_returns_early_when_unset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from kiro_crew.mcp_gateway import backend_routing
+
+        opened = MagicMock(side_effect=AssertionError("no path configured, nothing to open"))
         monkeypatch.setattr(backend_mod, "_METRICS_PATH", None)
+        monkeypatch.setattr(backend_routing, "open", opened, raising=False)
         backend_mod._write_metric_line({"method": "tools/call"})
+        opened.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_spawn_metric_task_is_tracked_then_discarded(

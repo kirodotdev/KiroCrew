@@ -1,6 +1,9 @@
 """A dashboard turn's opening phase and entry state: ``_turn_open`` (the turn's identity,
 provenance, consume veto, allowances and clocks), the Stop signal it reads live, the session's
-Stop count and the directive provenance a channel steer can narrow."""
+Stop count, the directive provenance a channel steer can narrow and the start priority of its
+cold start (``_turn_start_priority``); and the hand-back of what the turn held on its slot
+when it ends (``_turn_release_handles``: the live handles and the batch latch;
+``_turn_flush_file_changes``: the file changes)."""
 
 from __future__ import annotations
 
@@ -9,19 +12,27 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
+from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
+from kiro_crew.llm_helpers import _NO_PRIOR_STATS
+from kiro_crew.security import StreamRedactor
+from kiro_crew.start_priority import person_priority
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        _NO_PRIOR_STATS,
-        SUBAGENT_SYNTHESIS_PROMPT,
-        PoisonedConversationEscalation,
         ReplayFamily,
-        StreamRedactor,
-        _turn_start_priority,
+        StartPriority,
         effective_session_key,
         logger,
-        row_mid,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _discard_stale_decision
+    from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
+    from kiro_crew.dashboard.chat_turn.native_cards import (
+        NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _native_flush_cut_short,
+        _native_subagent_close_all,
+        _retain_terminal_native,
+    )
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
     from kiro_crew.dashboard.chat_turn.recovery import (
         _rearm_turn_episode,
@@ -109,10 +120,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     state = turn.state
     turn_exit = turn.turn_exit
     turn_exit.depth = _prompt_depth
-    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard import responsive_chat, steer_retract
 
     if _prompt_depth == 0:
         responsive_chat.begin_turn(slot, protected=_responsive_protected)
+        # Before this turn can be steered: a take-back still offered on a row now
+        # belongs to a turn that ended without settling it (a hard Stop, a restart).
+        steer_retract.withdraw_stale_offers(state, slot)
     _responsive_turn = responsive_chat.turn_state(slot)
     turn._responsive_turn = _responsive_turn
     _responsive_owner = asyncio.current_task()
@@ -144,9 +158,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # assignment -- a slot close or runtime disconnect during pre-prompt memory
     # and hook work -- unwinds into those arms with the names still unbound, so
     # the seam's keyword list would raise NameError OUT of the recovery handler
-    # and strand the error card / session reset it owes. Initialised here, where
-    # the body's single entry cannot miss them, and overwritten with their real
-    # values in _turn_dispatch_gates and _run_chat; the seam then always reads a bound name.
+    # and strand the error card / session reset it owes. Initialised here, where the body's single
+    # entry cannot miss them, and overwritten with their real values in _turn_dispatch_gates,
+    # _turn_build_prompt and _on_cancelled; the seam then always reads a bound name.
     _turn_t0 = time.monotonic()
     turn._turn_t0 = _turn_t0
     _stop_reason = ""
@@ -157,6 +171,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn.slot_ctx_phase = slot_ctx_phase
     slot_ctx_omitted: dict[str, dict[str, Any]] = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
+    slot_ctx_receipts: dict[str, dict[str, Any]] = {}
+    turn.slot_ctx_receipts = slot_ctx_receipts
     # The per-turn billing stats observed BEFORE this turn's cancellable work, so
     # the abnormal seam can tell a turn that installed fresh stats from one that
     # died before doing so and still carries the PREVIOUS turn's object. Snapshot
@@ -313,8 +329,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _crew_log_step_t0 = time.monotonic()
     turn._crew_log_step_t0 = _crew_log_step_t0
     # The turn's terminal crew log payload, captured at the terminal event and
-    # emitted in _run_chat's finally: the closers must follow the turn's last flushed
-    # assistant message, which happens after _run_chat's stream loop breaks.
+    # emitted in _turn_close_crew_log (chat_turn/crew_log_attribution.py): the closers
+    # must follow the turn's last flushed assistant message, which happens after
+    # _run_chat's stream loop breaks.
     _crew_log_terminal: "dict | None" = None
     turn._crew_log_terminal = _crew_log_terminal
     #: True from ``turn/started`` until this turn's closers are written. What tells
@@ -443,8 +460,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
     # Did this turn stream text the user has ALREADY READ, which a later tool
-    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes (_run_chat's
-    # post-tool-group text, _on_tool_call in tool_rows, _on_permission_request in tool_approval)
+    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
+    # (_on_text_chunk's post-tool-group text in stream_chunks, _on_tool_call in tool_rows,
+    # _on_permission_request in tool_approval)
     # persist the segment and reset the buffer, so a turn that answered and THEN
     # hit a blocked tool call reaches end-of-turn with an empty `assistant_text`
     # even though its answer is on screen. Kept separate from
@@ -457,11 +475,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # Booleans only, by contract. _turn_settle_answer's empty-response branch reaches its
     # verdict from these, and a WARNING names the cause it derived; every field
     # is safe to log because none of them can carry a prompt, a response, a tool
-    # argument, a path, an identity, a token count or a cost. What the incident
-    # they exist for needed was exactly this: whether a terminal event arrived at
-    # all, whether the provider or the backend closed the turn, and whether the
-    # turn had done work — none of which the single "Empty model response"
-    # warning could say.
+    # argument, a path, an identity, a token count or a cost. They answer
+    # whether a terminal event arrived at all, whether the provider or the
+    # backend closed the turn, and whether the turn had done work.
     #
     # `_turn_flushed_visible_text` above and `_turn_tool_calls` / `_turn_thought`
     # below already carry three of the observations, so only what nothing else
@@ -551,6 +567,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
     _pending_tools: dict[str, str] = {}
     turn._pending_tools = _pending_tools
+    # tool_call_id -> what the call's PostToolUse SPEC hooks match on
+    # (``spec_hooks.PostToolIdentity``), only where Crew fires them.
+    turn._pending_tool_ids = {}
     # The `ts` of every row ALREADY in this slot when the turn began, so a row
     # this turn appended can be told from one that predates it.
     #
@@ -635,6 +654,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # A worker-tool call the harness never delivered (undelivered_call_watch):
+    # built lazily on the first tool call, once the turn's provider is known.
+    turn._undelivered_watch = None
     # tool_call_id -> the output we already produced for a CONSUMED directive
     # (applied confirmation, or the native-sub-agent not-applied note). A tool
     # call can surface more than one result frame; once the mapping above is
@@ -651,6 +673,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # match on the outcome prose.
     turn._terminal_directive_applied = False
     turn._terminal_directive_kind = ""
+    # The applied quiet end's outcome line (``Nothing new to report.`` plus the
+    # model's note). A linked Slack thread has no tool card to read it from, so
+    # the reply leg posts it there as the turn's answer.
+    turn._terminal_directive_text = ""
     # The tool_call_ids whose directive ENDED the turn. The matching tool rows
     # get ``meta.ends_turn = True`` (persisted and patched live), which is what
     # the interrupted-turn scan reads to tell an applied quiet end from a
@@ -666,8 +692,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``chat_delivery.steer_into_running_turn``, which registers it in
     # ``slot._pending_steers``). Any text after that may be the model's answer
     # to that person — including text after a quiet end the model reached once
-    # it had read the steer — so _run_chat's post-terminal text drop is off for
-    # the rest of the turn: a stray bubble is recoverable, a dropped answer is
+    # it had read the steer — so the post-terminal text drop in _on_text_chunk (stream_chunks)
+    # is off for the rest of the turn: a stray bubble is recoverable, a dropped answer is
     # not. The runner's own in-band notices never register in
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
@@ -692,6 +718,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # sub-agent's tool calls stream onto its own card.
     _native_tc_card: dict[str, str] = {}
     turn._native_tc_card = _native_tc_card
+    # Every tool_call_id an activity event names as a native sub-agent's, carded
+    # or not: the session-directive refusal reads this, so a child with no card
+    # (past a bound, or not listed yet) cannot act on this turn's own session.
+    _native_child_tc: set[str] = set()
+    turn._native_child_tc = _native_child_tc
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.
@@ -712,8 +743,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # conversation), discard_conversation CLEARS the sid so the next turn
     # cold-starts a fresh conversation — while keeping the session-map entry,
     # whose Slack thread/channel linkage must survive the recovery. Set only
-    # by the poisoned-conversation canary, the typed unsupported-history-image
-    # recovery or the thinking-binding rebuild in _run_chat's AcpError handler;
+    # by the poisoned-conversation canary in _on_acp_error_card, the typed
+    # unsupported-history-image recovery or the thinking-binding rebuild in acp_recovery.py;
     # their cross-cycle streak and one-shot live in ``_escalation``.
     needs_conversation_discard = False
     turn.needs_conversation_discard = needs_conversation_discard
@@ -846,32 +877,33 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._l1_interrupted = _l1_interrupted
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside
-    # _run_chat's context-builder leg, and the probe/base legs skip it entirely —
-    # reading an unbound local at its finally's restore would raise UnboundLocalError.
+    # _turn_build_prompt's context-builder leg, and the probe/base legs skip it entirely —
+    # reading an unbound local at the restore in _turn_settle_debts
+    # (chat_turn/prompt_assembly.py) would raise UnboundLocalError.
     _needs_reinjection = False
     turn._needs_reinjection = _needs_reinjection
-    # Set ONLY where the turn is recorded as successful. _run_chat's `finally` restores
+    # Set ONLY where the turn is recorded as successful. _turn_settle_debts restores
     # the re-injection flag when this is still False, which covers every
     # non-landing exit — the early `return`s (stale-recover, tool-stall, error
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
     turn._turn_landed = _turn_landed
-    # Turn-scoped so _run_chat's ``finally`` first-turn-history settle (which keys on the
+    # Turn-scoped so the first-turn-history settle in _turn_settle_debts (which keys on the
     # TERMINAL itself: ``_stop_reason == STOP_REASON_END_TURN``) never raises
     # UnboundLocalError. ``_on_complete`` (turn_stats) assigns ``_stop_reason`` only on
     # EVENT_COMPLETE, but config / memory-prep / stop-before-stream paths exit to
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
     turn._stop_reason = _stop_reason
-    # Replay settlement also lives in _run_chat's ``finally``. Bind at turn scope because
+    # Replay settlement also lives in _turn_settle_debts. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block in _turn_admit determines whether replay is pending.
     _replay_accepted_this_turn = False
     turn._replay_accepted_this_turn = _replay_accepted_this_turn
     # True once a non-slash context-bearing turn ASSEMBLED its history replay
-    # (the build arm of ``_context_is_new and not _provider_has_history``). _run_chat's
-    # finally settles the FRESH first-turn history debt only on
+    # (the build arm of ``_context_is_new and not _provider_has_history``).
+    # _turn_settle_debts settles the FRESH first-turn history debt only on
     # ``_first_turn_history_assembled`` AND a durably-kept turn (``_turn_landed``
     # on a non-synthetic ``STOP_REASON_END_TURN`` with no empty-response verdict,
     # OR a COMPLETED mid-turn compaction ``_recovering_compaction and
@@ -910,3 +942,119 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _refusal_notices_settled = 0
     turn._refusal_notices_settled = _refusal_notices_settled
     return None
+
+
+async def _turn_release_handles(turn: _ChatTurn) -> None:
+    """Hand back the turn's hold on its slot: the live handles and the batch latch."""
+    _native_card_output = turn._native_card_output
+    _native_tracker = turn._native_tracker
+    slot = turn.slot
+    state = turn.state
+    # Completion can be bypassed by cancellation, provider errors, or timeouts.
+    # Close cards idempotently and retain only bounded terminal records for
+    # reconnect replay until the next turn installs a fresh tracker.
+    # Snapshot which children were still unfinished FIRST — close_all
+    # force-marks every card done, and terminal entries linger in the
+    # tracker for replay, so reading the tracker afterwards would blame
+    # long-completed children for a later ceiling timeout.
+    _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
+    # A turn cut short gets no roster that flushes a Claude child's held text,
+    # so it goes onto the card here, before the card closes.
+    try:
+        _native_flush_cut_short(turn)
+    except Exception:
+        logger.debug("native child text flush at release failed", exc_info=True)
+    # Every normal landing already closed its cards in _on_complete, so a
+    # card still open here belongs to a turn that was stopped, timed out or
+    # crashed before its terminal event.
+    try:
+        _native_subagent_close_all(
+            state,
+            slot,
+            _native_tracker,
+            _native_card_output,
+            error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        )
+    finally:
+        slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
+        slot._native_subagent_output = {}
+    slot._batch_rejected = False
+    slot._batch_rejected_cause = ""
+    # Stash the hang-attribution snapshot BEFORE dropping the client ref:
+    # if this turn was cut by the dashboard ceiling (_bounded_turn), the
+    # done-callback (finish_turn_task) runs AFTER _run_chat's finally, when
+    # _acp_client is already None — it reads these two fields to emit
+    # kirocrew.turn.timeout.cause for the ceiling path.
+    _lc = slot._acp_client
+    slot._last_turn_awaiting_permission = bool(
+        getattr(_lc, "_awaiting_permission", False)
+        or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
+    )
+    slot._last_turn_children_announced = _children_unfinished_final
+    # Steer handle: turn is over, drop the live client ref so a late steer
+    # can't target a dead session (the route also re-checks running state).
+    slot._acp_client = None
+    # Same lifecycle for the segment-cut handle: a late steer must not
+    # flush into a finished turn's (already-flushed) locals.
+    slot._steer_segment_cut = None
+    # Same lifecycle for the child-fidelity opt-in latched at turn start:
+    # it is THIS consumer's promise to render the low-fidelity downgrade
+    # card. Leaving it set would let a later, fidelity-UNAWARE consumer of
+    # the same provider/handle inherit the opt-in and silently disable the
+    # handle-level fail-close choke point.
+    try:
+        setattr(turn.client, "child_fidelity_aware", False)
+    except Exception:
+        pass
+    # The elicitation opt-in is the same promise (to render the card) and
+    # ends with the turn for the same reason -- on the client the turn
+    # ENDS with, which a recovery phase may have replaced.
+    try:
+        setattr(turn.client, "accepts_elicitation", False)
+    except Exception:
+        pass
+
+
+async def _turn_flush_file_changes(turn: _ChatTurn) -> asyncio.CancelledError | None:
+    """Surface the turn's file changes on every exit, cancel and error included.
+
+    The one phase of the ``finally`` before ``_turn_release_session`` that
+    suspends: the after-content reads run off the loop. A cancellation landing
+    on this await comes back up only after the attach, and is HELD and
+    returned rather than let through -- raised here it would pass every
+    ``except Exception`` in the turn's finally, skip the session permit release
+    and the queue hand-off, and leave the session busy until a restart. The
+    caller re-raises it after ``_end_turn_tail`` (which holds its own the same
+    way). Any other failure is logged so it cannot skip the re-arm in
+    ``_turn_settle_debts`` (chat_turn/prompt_assembly.py) and re-introduce the
+    orphan bug this flush prevents.
+    """
+    slot = turn.slot
+    _held_flush_cancel: asyncio.CancelledError | None = None
+    try:
+        await _flush_file_changes_off_loop(
+            slot,
+            turn_boundary=turn._turn_msg_boundary,
+            turn_start_mid=turn._turn_start_mid,
+            turn_had_shell=bool(turn._shell_tool_calls),
+        )
+    except asyncio.CancelledError as exc:
+        _held_flush_cancel = exc
+    except Exception:
+        logger.debug("_flush_file_changes failed", exc_info=True)
+    return _held_flush_cancel
+
+
+def _turn_start_priority(
+    *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
+) -> StartPriority:
+    """The start priority of a turn's cold start (rule: ``kiro_crew.start_priority``).
+
+    FOREGROUND only for a turn a person sent: authenticated-human provenance this
+    process observed, owned by the user -- the same predicate the crew-log gates
+    use (``_crew_log_actor == "user" and not _turn_provenance_restored``). That
+    covers a typed turn, a person's Resume/Continue press and the runner's requeue
+    of a person's failed turn; a self-wake, a dispatch-named actor (cron, sub-agent,
+    gateway, app, crew) or a restored queue entry starts BACKGROUND.
+    """
+    return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)

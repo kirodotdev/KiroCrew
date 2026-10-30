@@ -48,7 +48,7 @@ from .hosts_file import (
 # _resolve_own_host_names_into_cache.  They are imported here at module scope to
 # satisfy the top-level-imports rule; both are stdlib on Linux, and fcntl is
 # absent on Windows, so the import is guarded and the sweep is gated on
-# sys.platform == "linux" regardless (round-8).
+# sys.platform == "linux" regardless.
 try:
     import fcntl as _fcntl
     import struct as _struct
@@ -98,8 +98,8 @@ _GLOB_CHARS: frozenset[str] = frozenset("*?[")
 # and a dotless word on an ssh command line is ordinarily the remote
 # command, not a destination.
 # Hostname shape eligible for the DNS-alias verdict layer.  The dotted-part
-# is OPTIONAL (round-18): a dotless name in a confirmed HOST position may be
-# an /etc/hosts loopback alias, and since round-17 the layer only runs in
+# is OPTIONAL: a dotless name in a confirmed HOST position may be
+# an /etc/hosts loopback alias, and the layer only runs in
 # host position, so position -- not punctuation -- keeps junk words out.
 _DNS_CANDIDATE_RE = re.compile(r"(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+)*\Z")
 
@@ -118,7 +118,7 @@ _HOST_VERDICT_LOCK = threading.Lock()
 _HOST_VERDICT_CACHE_CAP = 4096
 
 
-# round-18: an ALLOW verdict is not reused unbounded -- DNS rebinding could
+# An ALLOW verdict is not reused unbounded -- DNS rebinding could
 # repoint a once-public name at loopback after the first check.  A negative
 # entry older than this is served stale ONCE while a single-flight worker
 # revalidates it (no recurring first-contact refusal), so the rebinding
@@ -538,7 +538,7 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
     with _HOST_VERDICT_LOCK:
         if host in _HOST_VERDICT_CACHE:
             verdict = _HOST_VERDICT_CACHE[host]
-            # round-18: an aged ALLOW is served stale exactly while ONE
+            # An aged ALLOW is served stale exactly while ONE
             # revalidation worker runs -- rebinding to loopback is caught at
             # the next publish, without a recurring first-contact refusal.
             if (
@@ -717,7 +717,7 @@ def _own_interface_addresses() -> "set[str]":
     return out
 
 
-# Whether the netlink RTM_GETADDR layer has published (round-33).  The dump
+# Whether the netlink RTM_GETADDR layer has published.  The dump
 # is a blocking socket read, so it runs in the enrichment WORKER, never the
 # synchronous seed -- and until its addresses land, a non-own IP literal in
 # host position could be an unlisted secondary of this very machine, so
@@ -822,7 +822,7 @@ def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     for name in sorted(names):
         try:
             for info in socket.getaddrinfo(name, None):
-                # Drop an IPv6 zone id (round-8): ``getaddrinfo`` can return a
+                # Drop an IPv6 zone id: ``getaddrinfo`` can return a
                 # scoped spelling (``fe80::1%eth0``) for a link-local address,
                 # which would never equal the bare ``fe80::1`` a command names,
                 # so strip it before caching -- the same normalization the
@@ -929,7 +929,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     if not host:
         return False
     # Strip an IPv6 zone id (``fe80::1%eth0`` -> ``fe80::1``) before any
-    # address compare (round-8): the scope suffix never changes which address
+    # address compare: the scope suffix never changes which address
     # this is, and Python hands back both spellings, so the token and the
     # cached own-address must reduce to the same bare form.  Scoped to
     # IPv6-ish tokens (a ``:`` is present) so an ordinary hostname carrying a
@@ -963,7 +963,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
             return True
         if dns_fallback and not published:
             # Same unread-table window as the ``inet_aton`` branch below --
-            # this branch is the one IPv6 literals take (round-33).
+            # this branch is the one IPv6 literals take.
             return True
     except ValueError:
         pass
@@ -978,7 +978,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         if dns_fallback and not published:
             # The kernel address table is unread; this literal could be an
             # unlisted secondary of this machine.  Deny until the worker
-            # publishes (round-33) -- host position only.
+            # publishes -- host position only.
             return True
     except OSError:
         pass
@@ -987,11 +987,11 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     # A hostname that survives every textual layer may still be a DNS alias
     # for a loopback/local address; the off-loop verdict layer classifies
     # it and the decision fails closed until the verdict is published.
-    # Consulted only in host position (round-17, ``dns_fallback``).
+    # Consulted only in host position (``dns_fallback``).
     if dns_fallback and _DNS_CANDIDATE_RE.fullmatch(host) is not None:
         if "." not in host:
-            # round-21: a DOTLESS name is the hosts-file alias class the
-            # round-18 finding named -- and the hosts table answers that
+            # A DOTLESS name is the hosts-file alias class (a
+            # loopback alias in /etc/hosts) -- and the hosts table answers that
             # vector SAME-CALL (a file over one read chunk is pending, i.e.
             # refused, until a background parse for the current key lands).  Absent an entry, answer
             # OPEN while one async worker revalidates through DNS: the

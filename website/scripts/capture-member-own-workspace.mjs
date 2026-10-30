@@ -116,7 +116,7 @@ for (const theme of ['dark', 'light']) {
     const page = await newPage(theme, 'empty')
     const dlg = await openDialog(page)
     await dlg.getByLabel('Name').fill('Radar')
-    await dlg.getByLabel('What it looks after').fill('Triage new GitHub issues every morning')
+    await dlg.getByLabel('Goal', { exact: true }).fill('Triage new GitHub issues every morning')
     await dlg.getByTestId('crewmate-create-advanced-toggle').click()
     const adv = dlg.getByTestId('crewmate-create-advanced')
     await adv.waitFor()

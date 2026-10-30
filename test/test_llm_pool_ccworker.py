@@ -25,6 +25,7 @@ from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.knowledge import llm_pool
 from kiro_crew.knowledge.llm_pool import CCWorker
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # Tests: CCWorker (mocked subprocess)
@@ -240,7 +241,7 @@ class TestCCWorkerStreamJson:
 
         monkeypatch.setattr(worker._event_queue, "get", _get)
         send = asyncio.create_task(worker.send_message("p1", timeout=10))
-        await asyncio.wait_for(taken.wait(), timeout=10)
+        await await_until(taken, what="the reply being taken from the queue")
         send.cancel()
         with pytest.raises(asyncio.CancelledError):
             await send
@@ -262,7 +263,7 @@ class TestCCWorkerStreamJson:
         assert worker._proc is not None
         cast(Any, worker._proc.stdin).drain = _drain
         send = asyncio.create_task(worker.send_message("p1", timeout=10))
-        await asyncio.wait_for(draining.wait(), timeout=10)
+        await await_until(draining, what="the fake drain being entered")
         send.cancel()
         with pytest.raises(asyncio.CancelledError):
             await send
@@ -304,7 +305,7 @@ class TestCCWorkerStreamJson:
     async def test_a_worker_whose_reader_ended_is_not_alive(self, monkeypatch):
         worker = await _fed_worker(monkeypatch, [])
         assert worker._reader_task is not None
-        await asyncio.wait_for(worker._reader_task, timeout=10)
+        await await_until(worker._reader_task, what="the reader task ending")
         assert worker._proc is not None and worker._proc.returncode is None
         assert not worker.is_alive()
 

@@ -191,6 +191,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       browserRail={railUsable ? (
         <FileBrowserRail
           projectDir={projectDir}
+          active={active}
           onAddToContext={onAddToContext}
           onOpenFolder={onFolderOpen}
           selectedPath={tab.path || null}
@@ -329,7 +330,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
-  if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
+  if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   // The Preview tab: the local dev-server preview, or the agent's browser big.
   if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />

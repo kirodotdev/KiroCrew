@@ -18,6 +18,7 @@ the store and embedder builders both modules use are in
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
 import time
@@ -784,6 +785,153 @@ class TestImportMemory:
     def test_an_empty_payload_is_a_noop(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.import_memory({}) == {"semantic": 0, "episodic": 0, "skipped": 0}
+
+
+_MODEL = {"model_id": "test-model", "dim": _DIM}
+_VECTOR = [0.125 * (i + 1) for i in range(_DIM)]
+_VECTOR_B64 = base64.b64encode(struct.pack(f"{_DIM}f", *_VECTOR)).decode("ascii")
+
+
+@pytest.fixture
+def _signed_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> VectorMemoryStore:
+    """A store with no embedder whose recorded space is the active backend's."""
+    from kiro_crew import embeddings
+
+    signature = embeddings.embedding_space_signature(_MODEL["model_id"], _DIM)
+    monkeypatch.setattr(embeddings, "active_embedding_space_signature", lambda: signature)
+    monkeypatch.setattr(embeddings, "embedding_rebuild_generation", lambda *a: "")
+    store = _store(tmp_path)
+    store.reconcile_embedding_space(signature)
+    return store
+
+
+def _vector_payload(**overrides: object) -> dict:
+    from kiro_crew import embeddings
+
+    payload: dict = {
+        "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": _VECTOR_B64}],
+        "embedding_space_sig": embeddings.embedding_space_signature(_MODEL["model_id"], _DIM),
+        "embedding_model": dict(_MODEL),
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestImportCarriesExportedVectors:
+    """A store with no embedder keeps a semantic row's exported vector."""
+
+    def test_vector_from_the_same_model_is_persisted(
+        self, _signed_store: VectorMemoryStore
+    ) -> None:
+        counts = _signed_store.import_memory(_vector_payload())
+        assert counts == {"semantic": 1, "episodic": 0, "skipped": 0}
+        stored = _raw_semantic_embedding(_signed_store, "pref.editor")
+        assert stored is not None
+        assert list(struct.unpack(f"{_DIM}f", stored)) == _VECTOR
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"embedding_model": None},
+            {"embedding_model": {"model_id": "other-model", "dim": _DIM}},
+            {"embedding_model": {"model_id": "test-model", "dim": True}},
+            {"embedding_space_sig": "0000000000000000"},
+            {"semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": "b'\\x00'"}]},
+            {"semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": "AAAA"}]},
+            {
+                "semantic": [
+                    {
+                        "key": "pref.editor",
+                        "value_json": '"vim"',
+                        "embedding": base64.b64encode(
+                            struct.pack(f"{_DIM}f", *([float("nan")] * _DIM))
+                        ).decode("ascii"),
+                    }
+                ]
+            },
+        ],
+        ids=[
+            "no-model",
+            "model-not-matching-signature",
+            "bool-dim",
+            "foreign-space",
+            "legacy-repr",
+            "wrong-width",
+            "non-finite",
+        ],
+    )
+    def test_unusable_vector_imports_the_row_without_it(
+        self, _signed_store: VectorMemoryStore, overrides: dict
+    ) -> None:
+        counts = _signed_store.import_memory(_vector_payload(**overrides))
+        assert counts == {"semantic": 1, "episodic": 0, "skipped": 0}
+        assert _signed_store.get_semantic("pref.editor") is not None
+        assert _raw_semantic_embedding(_signed_store, "pref.editor") is None
+
+    def test_model_swap_during_the_space_check_drops_the_vector(
+        self, _signed_store: VectorMemoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reconcile that lands while the space is judged must not relabel the vector."""
+        from kiro_crew import embeddings
+
+        signature = _signed_store.recorded_embedding_space()
+
+        def _swap_then_answer() -> str | None:
+            _signed_store.reconcile_embedding_space("1111111111111111")
+            return signature
+
+        monkeypatch.setattr(embeddings, "active_embedding_space_signature", _swap_then_answer)
+        counts = _signed_store.import_memory(_vector_payload())
+        assert counts["semantic"] == 1
+        assert _raw_semantic_embedding(_signed_store, "pref.editor") is None
+
+    def test_store_in_another_space_does_not_take_the_vector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        signature = embeddings.embedding_space_signature(_MODEL["model_id"], _DIM)
+        monkeypatch.setattr(embeddings, "active_embedding_space_signature", lambda: signature)
+        monkeypatch.setattr(embeddings, "embedding_rebuild_generation", lambda *a: "")
+        store = _store(tmp_path)  # nothing recorded: the bundled model's space
+        store.import_memory(_vector_payload())
+        assert _raw_semantic_embedding(store, "pref.editor") is None
+
+    def test_store_with_an_embedder_embeds_the_row_itself(
+        self, _signed_store: VectorMemoryStore
+    ) -> None:
+        _signed_store.embed_fn = _fixed_embed(0.5)
+        _signed_store.import_memory(_vector_payload())
+        stored = _raw_semantic_embedding(_signed_store, "pref.editor")
+        assert stored is not None
+        assert list(struct.unpack(f"{_DIM}f", stored)) == [0.5] * _DIM
+
+    def test_export_names_the_model_of_its_vectors(
+        self, _signed_store: VectorMemoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+        from kiro_crew.vector_memory_runtime import bulk_ingest
+
+        backend = type("Backend", (), {"model_id": _MODEL["model_id"], "dim": _DIM})()
+        monkeypatch.setattr(embeddings, "get_shared_embedder", lambda: backend)
+        signature, model = bulk_ingest.export_embedding_space(
+            _signed_store.recorded_embedding_space()
+        )
+        assert signature == _signed_store.recorded_embedding_space()
+        assert model == _MODEL
+        blob = struct.pack(f"{_DIM}f", *_VECTOR)
+        assert bulk_ingest.encode_embedding_blob(blob) == _VECTOR_B64
+        assert bulk_ingest.encode_embedding_blob(None) is None
+
+    def test_unrecorded_store_exports_the_bundled_model(self, tmp_path: Path) -> None:
+        from kiro_crew import embeddings
+        from kiro_crew.vector_memory_runtime import bulk_ingest
+
+        signature, model = bulk_ingest.export_embedding_space(
+            _store(tmp_path).recorded_embedding_space()
+        )
+        assert signature == embeddings.default_embedding_space_signature()
+        assert model == {"model_id": embeddings._MODEL_ID, "dim": embeddings._DEFAULT_DIM}
 
 
 class TestMigrateFromMarkdown:

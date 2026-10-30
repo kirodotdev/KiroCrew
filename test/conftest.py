@@ -270,19 +270,24 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
 # Per-test resets of process-global kiro_crew state, and the network fences.
 from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importers
     _approve_every_mcp_launch,
+    _crewmate_dynamic_capabilities_on,
     _disable_dev_fleet_background_tasks,
     _disarm_agent_slice_memory_high,
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_enterprise_profile_pin,
+    _forget_sandbox_launch_mark,
     _fresh_reexec_environment,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
+    _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,
@@ -293,13 +298,17 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
+    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
+    _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
+    _reset_materialized_agents_snapshot,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
+    _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
 )
@@ -522,6 +531,24 @@ def _fresh_update_ownership(_floor_monkeypatch):
     assert not open_steps, f"the test left update steps open: {open_steps}"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_host_unservable_backends(_floor_monkeypatch):
+    """Give every test its own copy of the host's KAS-floor verdicts.
+
+    The gateway's KAS floor records what it learned about this host's kiro-cli as
+    process state: ``mark_backend_unservable`` drops KAS, and
+    ``confirm_kiro_cli_offers_kas`` moves a Kiro CLI pick onto KAS. A test that
+    drives the floor would otherwise leave either verdict to every later test in
+    the worker. Rebound per test, so a verdict made in one test is gone in the next.
+    """
+    from kiro_crew.agent_sdk import backends
+
+    _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+
+
 @pytest.fixture
 def fresh_darwin_libc_handles(_floor_monkeypatch):
     """Start the test with both macOS libc handle caches unbuilt, and put them back after.
@@ -660,6 +687,56 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
     from kiro_crew.platform.defaults import DefaultMcpToolingProvider
 
     _floor_monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
+
+
+#: The per-test timeout of every test in a ``tree_scan_*`` xdist group that carries no
+#: ``pytest.mark.timeout`` of its own. Those groups hold the gates that parse or walk a
+#: whole tree. Most take 10-37 s of CPU alone on a fast host, and a hosted runner is
+#: about three times slower, which is past the suite-wide ``--timeout=120``. 300 s is
+#: eight times 37.5 s. A scan measured above 37.5 s carries its own larger timeout.
+#: ``test/test_tree_scan_budget.py`` pins this hook.
+TREE_SCAN_TIMEOUT_SECS = 300
+
+
+def in_tree_scan_group(item: pytest.Item) -> bool:
+    """Whether *item*'s closest ``xdist_group`` mark names a ``tree_scan`` group."""
+    marker = item.get_closest_marker("xdist_group")
+    if marker is None:
+        return False
+    name = marker.kwargs.get("name", marker.args[0] if marker.args else "")
+    return isinstance(name, str) and name.startswith("tree_scan")
+
+
+def timeout_mark_value(marker: pytest.Mark) -> object:
+    """The seconds a ``pytest.mark.timeout`` names, positional or ``timeout=``; None if none."""
+    return marker.args[0] if marker.args else marker.kwargs.get("timeout")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Give each ``tree_scan`` test with no timeout of its own the group default.
+
+    pytest-timeout reads only the closest ``timeout`` mark. An explicit value is left
+    alone, so a scan that needs more than the default keeps its own budget. A closest
+    mark with no value (``timeout(method="thread")``) would fall back to the suite-wide
+    ``--timeout``, so it takes the closest explicit value at any level (a module's
+    ``timeout(600)``), or the default when there is none. That value is put in front
+    of it and its ``method`` is kept.
+    """
+    for item in items:
+        closest = item.get_closest_marker("timeout")
+        if closest is not None and timeout_mark_value(closest) is not None:
+            continue
+        if not in_tree_scan_group(item):
+            continue
+        kwargs: dict[str, object] = {}
+        seconds: object = TREE_SCAN_TIMEOUT_SECS
+        if closest is not None:
+            kwargs = {k: v for k, v in closest.kwargs.items() if k != "timeout"}
+            if len(closest.args) >= 2:
+                kwargs["method"] = closest.args[1]
+            valued = (timeout_mark_value(m) for m in item.iter_markers("timeout"))
+            seconds = next((v for v in valued if v is not None), TREE_SCAN_TIMEOUT_SECS)
+        item.add_marker(pytest.mark.timeout(seconds, **kwargs), append=False)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -817,6 +894,19 @@ def _reset_reasoning_effort_globals():
         _cp._reasoning_effort_ordered = saved_ordered
 
 
+@pytest.fixture(autouse=True)
+def _reset_overlay_refresher():
+    """Clear the MCP broker's overlay-refresh hook after each test.
+
+    A test that starts a broker registers its orchestrator's refresh in a module
+    global; left set, a later test's app registration would call into it.
+    """
+    yield
+    from kiro_crew.mcp_gateway import overlay_refresh
+
+    overlay_refresh.set_overlay_refresher(None)
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under
@@ -893,7 +983,7 @@ def _knowledge_store_cross_thread_close():
 
 
 @pytest.fixture(autouse=True)
-def _git_identity(_floor_monkeypatch) -> None:
+def _git_identity(_floor_monkeypatch, _git_global_config) -> None:
     """Make git tests hermetic: pin identity AND neutralize host global/system config.
 
     Two independent host-environment bleeds must be closed for git-backed tests
@@ -905,17 +995,17 @@ def _git_identity(_floor_monkeypatch) -> None:
     2. Global/system config — the host's ``~/.gitconfig`` (via
        ``core.excludesFile`` → e.g. ``~/.gitignore_global`` containing ``*.png``)
        silently makes ``git add -A`` skip files, so a "commit a binary file"
-       test sees an empty tree and gets an empty sha. Point
-       ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` at ``/dev/null`` so no
-       host-level config (excludes, aliases, hooks, signing) leaks into tests.
+       test sees an empty tree and gets an empty sha. Point ``GIT_CONFIG_SYSTEM``
+       at ``/dev/null`` and ``GIT_CONFIG_GLOBAL`` at the root conftest's hermetic
+       file, which holds only the keys that turn git's auto maintenance off, so
+       no host-level config (excludes, aliases, hooks, signing) leaks into tests.
     """
     _floor_monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
     _floor_monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
     _floor_monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
     _floor_monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
-    # Isolate from the host's global/system git config (Git >= 2.32). An empty
-    # file (/dev/null) means git reads no global or system settings.
-    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    # Isolate from the host's global/system git config (Git >= 2.32).
+    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(_git_global_config))
     _floor_monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 

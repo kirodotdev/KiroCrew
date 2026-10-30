@@ -1,66 +1,69 @@
 """Tests for where ``kiro_crew.transcribe`` finds its ffmpeg decoder.
 
-Covers the pinned imageio-ffmpeg wheel and how its image is authenticated
-before it runs, the fixed system directories on Windows and elsewhere, and
-never the ambient PATH. The release pin-completeness test here imports
-``imageio_ffmpeg`` at module scope on purpose: a dev install without it is a
-collection error, never a silent skip.
+Covers the pinned decoder a desktop release carries in
+``site-packages/kirocrew_ffmpeg/bin`` and how its image is authenticated before
+it runs, the fixed system directories on Windows and elsewhere, and never the
+ambient PATH.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import re
 import subprocess
 import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import imageio_ffmpeg
 import pytest
-
-# The authoritative upstream map of platform key -> shipped ffmpeg filename, plus
-# the resolver for which key THIS host is. The pin-completeness test derives the
-# expected filename set from the map rather than hand-copying names, so a
-# one-character drift fails at test time. imageio-ffmpeg is a dev dependency
-# precisely so this import (and the tests) run for real; a `pytest.importorskip`
-# here would silently pass and reproduce the very "green while checking nothing"
-# shape these tests replace.
-from imageio_ffmpeg._definitions import FNAME_PER_PLATFORM, get_platform
+from named_cases_helpers import named_cases
 
 from kiro_crew import platform_compat as _pc
 from kiro_crew import transcribe
+from kiro_crew.stt import decoder
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # ---------------------------------------------------------------------------
 # ffmpeg discovery: bundled with desktop releases, with system fallback for source
 # ---------------------------------------------------------------------------
 
-# Floor for a plausible pinned ffmpeg payload. The real upstream executables are
-# 49-88 MB, so this is an order of magnitude below the smallest of them: it is here
+# Floor for a plausible pinned ffmpeg payload. The minimal audio-only release
+# executables are 2-4 MB, so this sits well below the smallest of them: it is here
 # to catch a size transcribed with digits dropped, not to track a version, and it
-# must stay far enough below the true sizes that an upstream bump never trips it.
-_MIN_PLAUSIBLE_FFMPEG_BYTES = 8 * 1024 * 1024
+# must stay far enough below the true sizes that a rebuild never trips it.
+_MIN_PLAUSIBLE_FFMPEG_BYTES = 512 * 1024
 
-# GitHub Actions sets CI=true on every runner. Used only to decide whether a test
-# that cannot obtain its inputs is allowed to skip: a developer machine may lack
-# them, a runner may not.
-_RUNNING_UNDER_CI = os.environ.get("CI", "").strip().lower() in {"1", "true", "yes"}
+# The ``SHA256SUMS`` asset of ``decoder.DECODER_RELEASE``, verbatim. The release's
+# own manifest is the independent record each pin is checked against; copied here
+# because a unit test may not fetch it (loopback only). A new release tag means a
+# new manifest pasted here alongside the new pins.
+_RELEASE_SHA256SUMS = """\
+f10acc9ea1c51becc8ffc03433d39b4863f925ed2881f46d6923f9d02796821f  ffmpeg-linux-aarch64
+688cc450b016f38d31e63bff6b2d0ec62ca0973fda6a0b5cf6242869f764f712  ffmpeg-linux-x86_64
+7cb3900ae27620526eebcdd49fcdc366afc8b1a3f08cdec0c205cadee1944300  ffmpeg-macos-aarch64
+919851587d7d303680fdf575c8aaaf2f701759f6f360235a030989eb476eefb6  ffmpeg-macos-x86_64
+733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1  ffmpeg-source.tar.xz
+ebf1982bec7cb0693c4c1547210244747a5e3d12535b8873fa4ae52215ad3f68  ffmpeg-windows-x86_64.exe
+60be959d5e9874f477926d53e955ccf371756b8c46dbcfbf5be4c7a9999d0c54  build-ffmpeg.sh
+"""
+_RELEASE_SHA256SUMS_TAG = "ffmpeg-decoder-7.1.1-r1"
+
+
+def _packaged_binaries_dir(site_packages):
+    """``<site_packages>/kirocrew_ffmpeg/bin``, the directory a release carries."""
+    return site_packages.joinpath(*decoder.PACKAGED_DIR)
 
 
 class TestBundledFfmpeg:
-    """Resolve only the executable inside the pinned imageio-ffmpeg wheel."""
+    """Resolve only the pinned executable a desktop release carries."""
 
     @staticmethod
     def _fake_package(
         monkeypatch, tmp_path, *, create_binary: bool = True, signer_rewritten: bool = False
     ):
-        package_dir = tmp_path / "imageio_ffmpeg"
-        binaries = package_dir / "binaries"
+        binaries = _packaged_binaries_dir(tmp_path)
         binaries.mkdir(parents=True)
         filename = "ffmpeg-test.exe" if _pc.IS_WINDOWS else "ffmpeg-test"
         binary = binaries / filename
@@ -90,7 +93,14 @@ class TestBundledFfmpeg:
         )
         return binary
 
-    def test_resolves_the_exact_wheel_resource(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_resolves_the_exact_packaged_resource"),
+            *named_cases("test_packaged_cli_without_electron_parent_uses_release_decoder"),
+        ],
+    )
+    def test_the_packaged_resource_is_resolved(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         assert transcribe._bundled_ffmpeg() == str(binary)
 
@@ -112,9 +122,14 @@ class TestBundledFfmpeg:
         assert transcribe._find_ffmpeg() == str(binary)
         assert transcribe.ffmpeg_source() == transcribe.FFMPEG_SOURCE_BUNDLED
 
-    def test_missing_wheel_resource_is_not_replaced_by_path(self, monkeypatch, tmp_path):
+    def test_missing_packaged_resource_is_not_replaced_by_path(self, monkeypatch, tmp_path):
         self._fake_package(monkeypatch, tmp_path, create_binary=False)
-        monkeypatch.setenv("IMAGEIO_FFMPEG_EXE", str(tmp_path / "attacker-controlled"))
+        on_path = tmp_path / "on-path"
+        on_path.mkdir()
+        stranger = on_path / ("ffmpeg.exe" if _pc.IS_WINDOWS else "ffmpeg")
+        stranger.write_bytes(b"attacker-controlled")
+        stranger.chmod(0o755)
+        monkeypatch.setenv("PATH", str(on_path))
         assert transcribe._bundled_ffmpeg() is None
 
     def test_missing_bundle_never_falls_back_to_system_for_status(self, monkeypatch, tmp_path):
@@ -163,7 +178,7 @@ class TestBundledFfmpeg:
     def test_a_release_with_no_decoder_executes_the_system_one(self, monkeypatch):
         """Nothing was shipped to be damaged, so failing closed would only break voice.
 
-        The Intel half of the universal app carries no imageio-ffmpeg. It resolves
+        The Intel half of the universal app carries no decoder. It resolves
         exactly like a source install: a system FFmpeg from the fixed directories
         first.
         """
@@ -183,11 +198,6 @@ class TestBundledFfmpeg:
         assert transcribe._find_ffmpeg() is None
         assert transcribe.ffmpeg_source() is None
 
-    def test_packaged_cli_without_electron_parent_uses_release_decoder(self, monkeypatch, tmp_path):
-        binary = self._fake_package(monkeypatch, tmp_path)
-
-        assert transcribe._bundled_ffmpeg() == str(binary)
-
     def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         binary.write_bytes(b"changed decoder")
@@ -206,8 +216,7 @@ class TestBundledFfmpeg:
         The decoder is EXECUTED rather than stubbed, because the split this covers
         is about what a real spawn reports back.
         """
-        package_dir = tmp_path / "imageio_ffmpeg"
-        binaries = package_dir / "binaries"
+        binaries = _packaged_binaries_dir(tmp_path)
         binaries.mkdir(parents=True)
         filename = "ffmpeg-test.exe" if _pc.IS_WINDOWS else "ffmpeg-test"
         binary = binaries / filename
@@ -638,93 +647,51 @@ class TestBundledFfmpeg:
     def test_release_artifact_pins_cover_every_supported_desktop(self):
         """The pin list must cover EXACTLY the shipped desktop platforms.
 
-        No more, no less. The expected filenames are DERIVED from upstream
-        imageio_ffmpeg._definitions.FNAME_PER_PLATFORM through the maintainer-owned
-        source of truth transcribe._SHIPPED_FFMPEG_PLATFORMS, rather than
-        hand-copied into this test. So an omitted platform, a one-character name
-        typo, or a stale version suffix fails loudly HERE instead of silently at
-        runtime, where _open_packaged_ffmpeg_resource() would treat the missed
-        filename as an absent binary and report a generic "missing or damaged"
-        decoder.
+        No more, no less. ``transcribe._SHIPPED_FFMPEG_PLATFORMS`` is the
+        maintainer-owned set of platforms the desktop matrix ships, and the
+        pinned artifacts in ``stt.decoder`` are keyed by the same build-script
+        target names. An omitted platform fails HERE instead of at runtime, where
+        _open_packaged_ffmpeg_resource() would treat the missed filename as an
+        absent binary and report a generic "missing or damaged" decoder.
         """
-        # A stale or renamed platform key would silently drop that platform's
-        # binary from expected_filenames below, so check membership first.
-        missing_keys = transcribe._SHIPPED_FFMPEG_PLATFORMS - set(FNAME_PER_PLATFORM)
-        assert not missing_keys, (
-            f"_SHIPPED_FFMPEG_PLATFORMS keys absent from upstream "
-            f"FNAME_PER_PLATFORM (renamed or removed upstream?): {sorted(missing_keys)}"
-        )
+        assert {a.platform_key for a in decoder.ARTIFACTS} == (transcribe._SHIPPED_FFMPEG_PLATFORMS)
+        assert set(transcribe._PACKAGED_FFMPEG_ARTIFACTS) == {a.filename for a in decoder.ARTIFACTS}
 
-        expected_filenames = {
-            FNAME_PER_PLATFORM[key] for key in transcribe._SHIPPED_FFMPEG_PLATFORMS
-        }
-        assert set(transcribe._PACKAGED_FFMPEG_ARTIFACTS) == expected_filenames
+    def test_every_pin_matches_the_release_sha256sums(self):
+        """Each pinned digest is the one the release's own manifest records.
 
-    def test_host_platform_pin_matches_the_real_installed_bytes(self):
-        """The pin for THIS host's platform is checked against the actual bytes.
-
-        Deriving the KEY set from upstream says nothing about the (size, sha256)
-        VALUES, and the digest is what the module calls its trust anchor: a
-        fat-fingered or truncated one ships a decoder that no platform can
-        authenticate. imageio-ffmpeg is a real dev dependency, so its wheel puts
-        this platform's executable in site-packages -- the same upstream bytes the
-        desktop build stages -- which turns one transcribed literal per host into a
-        checked claim. The Linux, Windows and macOS-arm64 legs cover every pin but
-        linux-aarch64, which no runner can supply and is shape-guarded below.
-
-        CI may not skip this. Every CI leg runs on a platform the desktop matrix
-        ships, and pip resolves that platform's imageio-ffmpeg wheel, which carries
-        the executable -- so under CI both of those are requirements rather than
-        luck, and a resolver that produced the pure-Python wheel instead has
-        silently removed the only byte-level check on the pinned values. A skip
-        scores as a pass, which is the exact "green while checking nothing" shape
-        this whole class of test exists to end, so it becomes a red instead. A
-        contributor on an unshipped platform, or one whose environment genuinely
-        cannot supply the bytes, still skips -- fetching them over the network is
-        not something a unit test may do.
+        The digest is the trust anchor, so a fat-fingered one ships a decoder no
+        host can authenticate. ``SHA256SUMS`` is written by the publish job from
+        the bytes it uploads, which makes it an independent record of the same
+        values; a pin that disagrees with it is a transcription slip.
         """
-        host_key = get_platform()
-        filename = FNAME_PER_PLATFORM.get(host_key)
-        binary = (
-            Path(imageio_ffmpeg.__file__).parent / "binaries" / filename
-            if filename is not None
-            else None
+        assert decoder.DECODER_RELEASE == _RELEASE_SHA256SUMS_TAG, (
+            "the pinned release changed: paste that release's SHA256SUMS into "
+            "_RELEASE_SHA256SUMS"
         )
+        published: dict[str, str] = {}
+        for line in _RELEASE_SHA256SUMS.splitlines():
+            digest, name = line.split(maxsplit=1)
+            published[name.lstrip("*")] = digest
 
-        unavailable = ""
-        if host_key not in transcribe._SHIPPED_FFMPEG_PLATFORMS:
-            unavailable = f"host platform {host_key!r} is not a shipped desktop target"
-        elif binary is None or not binary.is_file():
-            unavailable = f"imageio-ffmpeg installed no upstream executable at {binary}"
-
-        if unavailable:
-            assert not _RUNNING_UNDER_CI, (
-                "CI must check this host's pin against the real installed bytes, "
-                f"and cannot: {unavailable}"
+        for artifact in decoder.ARTIFACTS:
+            assert (
+                artifact.filename in published
+            ), f"{artifact.filename} is not an asset of {decoder.DECODER_RELEASE}"
+            assert artifact.sha256 == published[artifact.filename], (
+                f"the pin for {artifact.filename} disagrees with "
+                f"{decoder.DECODER_RELEASE}'s SHA256SUMS"
             )
-            pytest.skip(unavailable)
-
-        assert binary is not None  # narrowed by the guard above
-
-        payload = binary.read_bytes()
-        assert (
-            len(payload),
-            hashlib.sha256(payload).hexdigest(),
-        ) == transcribe._PACKAGED_FFMPEG_ARTIFACTS[filename], (
-            f"the pin for {filename} disagrees with the bytes imageio-ffmpeg "
-            "actually installs -- one of the two is wrong"
-        )
+            assert artifact.url.endswith(f"/{decoder.DECODER_RELEASE}/{artifact.filename}")
 
     def test_every_pin_is_a_well_formed_size_and_sha256(self):
-        """Shape guard for the pinned values no CI leg can hash.
+        """Shape guard for the pinned sizes, which ``SHA256SUMS`` does not record.
 
-        linux-aarch64 has no runner that installs its upstream executable, so for
-        that entry a truncated digest or a zero-length size would otherwise reach a
-        desktop user as a generic "missing or damaged decoder" remedy with CI fully
-        green. The bounds are
-        deliberately loose -- an ffmpeg build is tens of megabytes and a signed one
-        stays under _MAX_SIGNED_FFMPEG_BYTES -- so a legitimate version bump passes
-        while a transcription slip does not.
+        A truncated size or digest would otherwise reach a desktop user as a
+        generic "missing or damaged decoder" remedy with CI fully green. The
+        bounds are deliberately loose -- the audio-only build is a few megabytes
+        and a signed one stays under _MAX_SIGNED_FFMPEG_BYTES -- so a legitimate
+        rebuild passes while a transcription slip does not.
         """
         assert transcribe._PACKAGED_FFMPEG_ARTIFACTS, "the pin table must not be empty"
 
@@ -749,18 +716,14 @@ class TestBundledFfmpeg:
 
         The macOS app signer rewrites every nested Mach-O on its way into a
         release, so exactly the macOS slices -- and only those -- are the ones
-        whose pinned upstream digest cannot match the released bytes and which
+        whose pinned release digest cannot match the released bytes and which
         therefore need the signature anchor instead. Deriving the set means adding
         a macOS slice cannot forget it: an omitted name makes every SIGNED release
         on that platform refuse its own decoder, because the digest cannot match
         post-signing and the signature anchor is never consulted for a name that is
         not listed.
         """
-        expected = {
-            FNAME_PER_PLATFORM[key]
-            for key in transcribe._SHIPPED_FFMPEG_PLATFORMS
-            if key.startswith("macos-")
-        }
+        expected = {a.filename for a in decoder.ARTIFACTS if a.platform_key.startswith("macos-")}
         assert transcribe._SIGNER_REWRITTEN_FFMPEG_ARTIFACTS == expected
         # Authenticating-by-signature a name the module never pins would be a claim
         # about nothing.
@@ -1006,7 +969,7 @@ class TestBundledFfmpeg:
 
     def test_cwd_package_shadow_cannot_supply_the_decoder(self, monkeypatch, tmp_path):
         repo = tmp_path / "repo"
-        shadow = repo / "imageio_ffmpeg"
+        shadow = repo / decoder.PACKAGED_DIR[0]
         shadow.mkdir(parents=True)
         (shadow / "__init__.py").write_text(
             "raise AssertionError('cwd package imported')\n",

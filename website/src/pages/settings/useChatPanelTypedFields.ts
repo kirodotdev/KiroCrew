@@ -29,13 +29,17 @@ export function useChatPanelTypedFields({
   mcCfg: KirocrewConfigShape | undefined
 }) {
   const [localKeepChars, setLocalKeepChars] = useState('')
-  const keepCharsInitRef = useRef(false)
-  useEffect(() => {
-    if (mcQ.data && !keepCharsInitRef.current) {
-      keepCharsInitRef.current = true
-      setLocalKeepChars(String(mcQ.data.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT))
-    }
-  }, [mcQ.data])
+  // Seeded ONCE, in the render that first has the served config: setting state
+  // during render re-renders before anything commits, so the commit that enables
+  // the input is the one that shows the stored number. An effect would commit one
+  // frame with the input enabled and empty, which a user can see and a test can
+  // land on. One-shot (unlike the follow-the-server fields below) because this
+  // row's draft is its own: a refetch must not overwrite what is being typed.
+  const [keepCharsSeeded, setKeepCharsSeeded] = useState(false)
+  if (mcQ.data && !keepCharsSeeded) {
+    setKeepCharsSeeded(true)
+    setLocalKeepChars(String(mcQ.data.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT))
+  }
 
   const keepCharsMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.completion_keep_chars', n),

@@ -15,12 +15,16 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import tempfile
+import uuid
 from pathlib import Path
 
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _pipeline,
@@ -29,14 +33,53 @@ from kiro_crew.dashboard.handlers.knowledge_access import (
     _store,
     _task_registry,
 )
-from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI
 from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI, ArtifactKnowledgeSync
-from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, _redact, handoff_gate_context
-from kiro_crew.knowledge.llm_pool import LLMPool
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, handoff_gate_context
+from kiro_crew.knowledge.url_fetch import UrlFetchRefused, fetch_page, url_fetch_refusal
+from kiro_crew.security import is_sensitive_path, redact
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
+
+
+class DocIngestHostsUnavailable(RuntimeError):
+    """The host list could not be read, so it is not known what may be fetched."""
+
+
+def _doc_ingest_hosts() -> list[str]:
+    """The hosts Kiro Crew may fetch a URL source from, read fresh each call.
+
+    Blocking (it reads config from disk), so callers run it off the loop. Read
+    at each use rather than cached, so removing a host stops the next fetch.
+
+    Raises :class:`DocIngestHostsUnavailable` when the load could not read a
+    config file whole or the knowledge section: the loader then substitutes
+    defaults, and a default list is not the user's list. A broken overlay could
+    otherwise widen it back to the base file's hosts, and a broken base file
+    would read as "nothing listed" and be reported to the user as such.
+    """
+    cfg = KiroCrewConfig.load()
+    if cfg._base_unreadable or cfg._overlay_unreadable or "knowledge" in cfg.degraded_sections:
+        raise DocIngestHostsUnavailable("knowledge.doc_ingest_hosts could not be read")
+    return list(cfg.knowledge.doc_ingest_hosts)
+
+
+def _url_refusal_response(code: str, message: str) -> web.Response:
+    """The JSON answer to a URL :func:`url_fetch_refusal` refused."""
+    status = 403 if code == "url_host_not_allowed" else 400
+    return web.json_response({"error": message, "code": code}, status=status)
+
+
+def _hosts_unavailable_response() -> web.Response:
+    """The JSON answer when the host list cannot be read: fail closed, and say why."""
+    return web.json_response(
+        {
+            "error": "The list of sites Kiro Crew may fetch could not be read. "
+            "Check config.json and config.local.json.",
+            "code": "doc_ingest_hosts_unavailable",
+        },
+        status=503,
+    )
 
 
 def _source_row(store, source_id: str):
@@ -400,7 +443,7 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         _sel_log("source.sync.local_file", source_id=source_id)
         return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
-    # Agent-assisted sync: fetch in background, no chat session needed
+    # A web-page source: the gateway fetches it in the background (url_fetch).
     uri = source["uri"] or ""
     props = (
         json.loads(source["properties"] or "{}")
@@ -415,27 +458,25 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "sync already in progress", "source_id": source_id}, status=409
         )
+    # Refused here so the row keeps its status; the task checks again at
+    # fetch time, against the list as it is then.
+    try:
+        allowed_hosts = await asyncio.to_thread(_doc_ingest_hosts)
+    except DocIngestHostsUnavailable:
+        return _hosts_unavailable_response()
+    refusal = url_fetch_refusal(url, allowed_hosts)
+    if refusal is not None:
+        _sel_log("source.sync_denied", source_id=source_id, reason=refusal[0], outcome="denied")
+        return _url_refusal_response(*refusal)
 
     pipeline = _pipeline(request)
     if not pipeline:
         return web.json_response({"error": "pipeline not configured"}, status=503)
-    pool = request.app.get("knowledge_fetch_pool")
-    if pool is None:
-        # Every production construction site sets knowledge_fetch_pool; a
-        # minimal/hand-built app missing it fails loudly rather than silently
-        # running URL sync through the extraction pool.
-        return web.json_response(
-            {
-                "error": "knowledge_fetch_pool is not configured on this application",
-                "code": "knowledge_fetch_pool_unavailable",
-            },
-            status=503,
-        )
     await _hand_off_under_gate(
         request,
         pipeline,
-        lambda settled: _background_agent_sync(
-            source_id, url, source["name"], store, pipeline, pool, claim_settled=settled
+        lambda settled: _background_url_sync(
+            source_id, url, source["name"], store, pipeline, claim_settled=settled
         ),
     )
     _sel_log("source.sync.agent", source_id=source_id, url=url)
@@ -521,43 +562,65 @@ async def _reconcile_artifact_source_task(  # type: ignore[no-untyped-def]
             raise
 
 
-async def _background_agent_sync(  # type: ignore[no-untyped-def]
+async def _background_url_sync(  # type: ignore[no-untyped-def]
     source_id: str,
     url: str,
     name: str,
     store,
     pipeline,
-    pool: LLMPool,
     *,
     claim_settled: asyncio.Event | None = None,
 ) -> None:
-    """Background task: fetch content via agent, then ingest.
+    """Background task: fetch a web-page source through the gateway, then ingest it.
 
     Claims 'syncing' first, for the reason ``_ingest_local_file_task`` documents:
     the claim is atomic and the task owns both ends of the row's lifecycle.
     *claim_settled* is set once the claim is decided (see that task).
+
+    The host list is read again here, at fetch time, so a host removed after the
+    request was accepted is not fetched; that refusal is audited like the one the
+    request path writes.
     """
     if not await _claim_sync_for_task(store, source_id, claim_settled):
         return
     try:
-        content = await fetch_url_content(url, pool)
-        redacted = _redact(content)
-        content = redacted if redacted is not None else content
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
+        allowed_hosts = await asyncio.to_thread(_doc_ingest_hosts)
         try:
-            tmp.write(content.encode())
-            tmp.close()
-            await pipeline.ingest_file(tmp.name, original_name=name, source_id=source_id)
+            page = await fetch_page(url, allowed_hosts=allowed_hosts)
+        except UrlFetchRefused as exc:
+            _sel_log("source.sync_denied", source_id=source_id, reason=exc.code, outcome="denied")
+            raise
+        # The page is outside text, so it is scrubbed of credential and
+        # exfiltration shapes before chunking, extraction and storage see it
+        # (ingest_file scrubs only an agent-added document itself). Staged as
+        # UTF-8 under the suffix of its content type, so the file reader parses
+        # HTML as HTML and plain text as text.
+        body = (redact(page.text) or "").encode("utf-8")
+        tempdir = await asyncio.to_thread(tempfile.gettempdir)
+        staged = Path(tempdir) / f"url_sync_{uuid.uuid4().hex}{page.suffix}"
+
+        def _write_tmp() -> None:
+            # O_EXCL refuses a path that already exists, link or not; 0o600
+            # keeps the page as private as NamedTemporaryFile made it.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            with os.fdopen(os.open(staged, flags, 0o600), "wb") as fh:
+                fh.write(body)
+
+        try:
+            # Drained, so a cancel mid-write cannot reach the unlink before
+            # the worker has created the file.
+            await drained_to_thread(_write_tmp)
+            await pipeline.ingest_file(str(staged), original_name=name, source_id=source_id)
         finally:
-            Path(tmp.name).unlink(missing_ok=True)
+            await asyncio.to_thread(staged.unlink, missing_ok=True)
         await asyncio.to_thread(_set_sync_status, store, source_id, "synced")
-        logger.info("Agent sync complete: source=%s url=%s", source_id, url)
+        logger.info("URL sync complete: source=%s url=%s", source_id, url)
     except ImportChunkBudgetError as exc:
         # Transient, so not 'error': sync_all skips an errored source, which would
-        # quiesce this agent-url source permanently over a window that clears in a
+        # quiesce this web-page source permanently over a window that clears in a
         # minute. The URL is re-fetchable, so a retry has content to act on.
         logger.warning(
-            "Agent sync deferred by import budget: source=%s url=%s: %s", source_id, url, exc
+            "URL sync deferred by import budget: source=%s url=%s: %s", source_id, url, exc
         )
         await _write_status_cancel_safe(store, source_id, "pending")
     except BaseException as exc:
@@ -565,9 +628,9 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
         # documents: a cancel must not strand the row at 'syncing'.
         is_cancel = isinstance(exc, asyncio.CancelledError)
         if is_cancel:
-            logger.debug("Agent sync cancelled: source=%s url=%s", source_id, url)
+            logger.debug("URL sync cancelled: source=%s url=%s", source_id, url)
         else:
-            logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
+            logger.exception("URL sync failed: source=%s url=%s", source_id, url)
         await _finalize_sync_status(store, source_id, "error")
         if is_cancel:
             raise

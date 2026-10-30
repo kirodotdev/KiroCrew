@@ -42,6 +42,10 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_wheel_engine_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate", "owners_in_layer_order")
+
 FACADE = "kiro_crew.platform.wheel_engine"
 #: The owners, lowest layer first: each imports only the ones listed before it.
 OWNERS = (
@@ -176,11 +180,6 @@ def _corpus_patched_names() -> frozenset[str]:
     return frozenset(found)
 
 
-def test_the_patch_scan_finds_every_known_seam() -> None:
-    """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
-    assert sorted(_KNOWN_SEAMS - _corpus_patched_names()) == []
-
-
 def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() -> None:
     """The reach the unsplit module had: a write to ``wheel_engine.<name>`` was what every
     reader of that name read. Each module of the family that binds a patched name must see
@@ -203,25 +202,6 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
             missed[name] = stale
     assert missed == {}
     assert _index().divergent() == ()
-
-
-def test_the_owners_are_the_four_siblings_in_layer_order() -> None:
-    """``_OWNERS`` lists exactly the sibling owners, and each imports only owners listed
-    before it -- the order the facade loads them and a read resolves in."""
-    owners = list(_index().owners)
-    assert owners == list(OWNERS)
-    late: dict[str, list[str]] = {}
-    for position, owner in enumerate(owners):
-        tree = ast.parse(_owner_path(owner).read_text(encoding="utf-8"))
-        imported = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module
-        }
-        later = sorted(m for m in imported if m in owners and owners.index(m) >= position)
-        if later:
-            late[owner] = later
-    assert late == {}
 
 
 def test_the_facade_keeps_the_default_read_path_and_forwards_no_table() -> None:
@@ -339,13 +319,3 @@ def test_the_test_tree_walk_reaches_this_file() -> None:
     walked = {path.resolve() for path in _test_tree_files()}
     assert _THIS_FILE in walked
     assert source_corpus.repo_root() / "test" / "test_wheel_engine_facade.py" in walked
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

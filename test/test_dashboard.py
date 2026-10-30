@@ -6,6 +6,8 @@ import asyncio
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from kiro_crew.dashboard.state import (
     DashboardState,
     _fmt_duration,
@@ -17,14 +19,16 @@ from kiro_crew.notifications.bus import payload_from_legacy
 
 
 class TestDashboard:
-    def test_fmt_duration_minutes(self) -> None:
-        assert _fmt_duration(125) == "2m 5s"
-
-    def test_fmt_duration_hours(self) -> None:
-        assert _fmt_duration(3661) == "1h 1m"
-
-    def test_fmt_duration_zero(self) -> None:
-        assert _fmt_duration(0) == "0m 0s"
+    @pytest.mark.parametrize(
+        "seconds, text",
+        [
+            pytest.param(125, "2m 5s", id="fmt_duration_minutes"),
+            pytest.param(3661, "1h 1m", id="fmt_duration_hours"),
+            pytest.param(0, "0m 0s", id="fmt_duration_zero"),
+        ],
+    )
+    def test_fmt_duration(self, seconds: int, text: str) -> None:
+        assert _fmt_duration(seconds) == text
 
     def test_state_init(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -152,11 +156,9 @@ class TestNotificationPersistence:
         )
         state.notify("cron", "Test Job", "Result text")
 
-        # Check in-memory
         assert len(state._notification_log) == 1
         assert state._notification_log[0]["title"] == "Test Job"
 
-        # Check on disk
         loaded = _load_notifications()
         assert len(loaded) == 1
         assert loaded[0]["title"] == "Test Job"

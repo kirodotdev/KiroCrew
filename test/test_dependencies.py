@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 import pytest
 from hypothesis import given, settings
@@ -381,6 +382,55 @@ class TestCleanDependenciesFailurePaths:
         mgr = fake_manager()
         assert await clean_dependencies("test-app", [{"id": "", "type": "capability.mcp"}]) == []
         assert mgr.calls == []
+
+
+@pytest.mark.asyncio
+class TestLedgerWritesOffLoop:
+    """The ledger write takes a blocking file lock and rewrites the file, so it
+    must not run on the event loop thread, the same as the uninstall preview's
+    ledger read in ``routes_uninstall.py``."""
+
+    @staticmethod
+    def _record_thread(monkeypatch, name: str) -> list[int]:
+        """Wrap the real ledger writer so the call still lands in the ledger."""
+        from kiro_crew.apps import dependencies as deps_mod
+
+        real = getattr(deps_mod, name)
+        threads: list[int] = []
+
+        def _spy(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(deps_mod, name, _spy)
+        return threads
+
+    async def test_install_records_ledger_off_loop(self, fake_manager, monkeypatch):
+        from kiro_crew.apps.dependency_ledger import get_entry
+
+        fake_manager()
+        threads = self._record_thread(monkeypatch, "record_install")
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["m"]))
+        result = await resolve_dependencies("test-app", deps)
+        assert result.installed == ["capability/mcp/m"]
+        assert get_entry("capability/mcp/m") is not None
+        assert len(threads) == 1
+        assert threads[0] != threading.get_ident()
+
+    async def test_uninstall_records_ledger_off_loop(self, fake_manager, monkeypatch):
+        from kiro_crew.apps.dependency_ledger import get_entry
+
+        fake_manager()
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["m"]))
+        await resolve_dependencies("test-app", deps)
+        threads = self._record_thread(monkeypatch, "record_uninstall")
+        cleaned = await clean_dependencies(
+            "test-app", [{"id": "capability/mcp/m", "type": "capability.mcp"}],
+        )
+        assert cleaned == ["capability/mcp/m"]
+        assert get_entry("capability/mcp/m") is None
+        assert len(threads) == 1
+        assert threads[0] != threading.get_ident()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
+import { chatSlotParam } from '../../utils/fileReadUrl'
 import type { ClientTransport } from './transport'
 
 /** Response of POST /api/reveal. When the backend cannot drive a file manager
@@ -130,7 +131,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
+      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[]; nestedRepoDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>
@@ -155,7 +156,8 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
 
   const fileOps = {
     pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,
-    fileDiff: (path: string) => fetch('/api/file-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
+    /** `slot` names the chat asking; the gateway refuses one that runs remotely. */
+    fileDiff: (path: string, slot?: string | null) => fetch('/api/file-diff?path=' + encodeURIComponent(path) + chatSlotParam(slot)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
     /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files.
      *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
      *  Filtering server-side rather than dropping unwanted hits here matters because the

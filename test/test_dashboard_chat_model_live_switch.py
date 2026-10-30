@@ -14,6 +14,51 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
 
 
+class TestCrewmatePicksOnItsHarness:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,field,pick",
+        [
+            ("model", "model", "gpt-5.6-sol"),
+            ("reasoning-effort", "reasoning_effort", "max"),
+        ],
+    )
+    async def test_same_harness_still_applies_live(self, tmp_path, monkeypatch, route, field, pick):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(
+            "member-atlas-0123456789ab", mode="member", model="claude-opus-4.8"
+        )
+        provider = TestSlotModelLiveSwitch._provider(supports_effort=True)
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.accepts_effort_level.return_value = True
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.sessions.reset = AsyncMock()
+        cfg = KiroCrewConfig.load()
+        cfg.agents["atlas"] = KiroCrewAgentConfig(
+            member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend="kas"
+        )
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+        app = TestSlotModelLiveSwitch._app(state)
+        app.router.add_post(
+            "/api/chat/slots/{slot}/reasoning-effort", chat_handlers.api_chat_slot_reasoning_effort
+        )
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            resp = await client.post(f"/api/chat/slots/{slot.key}/{route}", json={field: pick})
+            data = await resp.json()
+
+        assert resp.status == 200, data
+        assert getattr(slot, field) == pick
+        if field == "model":
+            provider.client.set_model.assert_awaited_once_with(pick)
+        else:
+            provider.change_effort.assert_awaited_once_with(pick)
+        state.sessions.reset.assert_not_awaited()
+
+
 class TestSlotModelLiveSwitch:
     """POST /api/chat/slots/{slot}/model — prefer an in-place session/set_model
     over tearing the session down.
@@ -101,28 +146,117 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_active_turn_answers_409_without_reset(self, tmp_path):
+    async def test_active_turn_defers_the_pick_to_the_turn_boundary(self, tmp_path):
         # Awaiting a response mid-turn would race the streaming prompt loop on
         # stdout for the non-multiplexed client (same hazard the effort handler
-        # documents), and the old reset fallback tore down the in-flight turn
-        # mid-stream for any programmatic caller. A turn in flight now answers
-        # busy: no live switch, no reset, slot model untouched.
+        # documents), and a reset would tear down the in-flight turn mid-stream.
+        # So a turn in flight takes NEITHER: the pick is committed on the slot,
+        # the live session is left alone, and the answer says the pick is
+        # deferred -- the boundary of that turn lands it. This is the contract
+        # every backend's own mid-turn pick has (KAS accepts the model option
+        # mid-turn, keeps the running turn on its model, runs the pick next turn).
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider(active_turn=True)
         state.sessions.get_provider = MagicMock(return_value=provider)
         state.get_or_create_slot("a", model="claude-opus-4.8")
         state.push_slots_update = MagicMock()
+        slot = state._slots["a"]
+        gen = slot._model_pick_gen
 
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post("/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"})
             data = await resp.json()
 
-        assert resp.status == 409
-        assert data["code"] == "turn_in_flight"
+        assert resp.status == 200
+        assert data == {"ok": True, "model": "gpt-5.6-sol", "jev_route": False, "deferred": True}
         provider.client.set_model.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
-        assert state._slots["a"].model == "claude-opus-4.8"
+        # Committed now: the chip shows it, a restart cold-starts on it, and
+        # the explicit-pick generation protects it from the fallback restore.
+        assert slot.model == "gpt-5.6-sol"
+        assert slot._model_pick_gen == gen + 1
+        # ...and marked for the boundary, naming the session the turn runs on.
+        assert slot._deferred_model_switch_key
+        assert slot._pending_reset_history_key is None
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_only_mid_turn_pick_is_refused_while_subagents_attached(self, tmp_path):
+        # A pick that can only land via a session reset (Auto on a Claude
+        # backend: _wire_model_id has no value for it) cannot be deferred while
+        # a sub-agent is attached -- the boundary never arms a reset under
+        # attached children, so the pick would never land and the turn would
+        # keep running on the old model despite the "applies next" notice. The
+        # busy branch refuses it exactly as the idle path does, committing
+        # nothing, instead of reporting a deferral that cannot happen.
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(claude=True, active_turn=True, models=("auto", "claude-opus-4.8"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+        slot = state._slots["a"]
+
+        async def _children(*_a, **_kw):
+            return chat_handlers.web.json_response(
+                {"error": "sub-agents are running", "code": "slot_subagents_running"},
+                status=409,
+            )
+
+        with patch.object(chat_handlers, "_subagents_attached_response", _children):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+                data = await resp.json()
+
+        assert resp.status == 409
+        assert data["code"] == "slot_subagents_running"
+        # Nothing committed: the selection is unchanged, no deferral marked.
+        assert slot.model == "claude-opus-4.8"
+        assert not slot._deferred_model_switch_key
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reset_only_mid_turn_pick_defers_when_no_subagents(self, tmp_path):
+        # The same reset-only Auto pick WITHOUT attached children still defers
+        # (200): the boundary arms the reset once the turn ends. The refusal is
+        # scoped to the attached-child case alone, never a blanket block.
+        state = _make_state(tmp_path)
+        provider = self._provider(claude=True, active_turn=True, models=("auto", "claude-opus-4.8"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+        slot = state._slots["a"]
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["deferred"] is True
+        assert slot._deferred_model_switch_key
+
+    @pytest.mark.asyncio
+    async def test_same_value_pick_mid_turn_is_not_deferred(self, tmp_path):
+        # Re-picking what the slot already runs changes nothing at the
+        # boundary, so it takes the same-value shortcut even mid-turn.
+        state = _make_state(tmp_path)
+        provider = self._provider(active_turn=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert "deferred" not in data
+        assert not state._slots["a"]._deferred_model_switch_key
 
     @pytest.mark.asyncio
     async def test_live_switch_failure_falls_back_to_reset(self, tmp_path):
@@ -387,7 +521,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rolls_back_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): a refused pick changed nothing, so the
+        """A refused pick changed nothing, so the
         explicit-pick generation must roll back with the model. Leaving the
         bump in place would make the model-fallback restore probe read the
         FAILED attempt as an explicit choice and silently abandon restoring
@@ -416,7 +550,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rollback_spares_a_newer_concurrent_pick(self, tmp_path):
-        """REGRESSION (review finding on eb3cf067): two picks arriving together
+        """Two picks arriving together
         must not roll back each other's state. The pick transaction is
         serialised per slot (_model_pick_lock), so the refused pick unwinds
         cleanly before the next pick's snapshot is taken — the surviving state
@@ -553,7 +687,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_still_bumps_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): picking the model the slot already
+        """Picking the model the slot already
         reports takes the equality early-return, but it is still an EXPLICIT
         affirmation — without the bump, a user who deliberately re-picks the
         very model the session fell back to would have that choice silently
@@ -576,7 +710,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_during_fallback_takes_the_live_switch_path(self, tmp_path):
-        """REGRESSION (review finding on 1a61ddcf): with a fallback actively
+        """With a fallback actively
         serving the session, a pick of the DISPLAYED primary equals slot.model
         but the wire model is the fallback — the equality early-return would
         record the pick and switch nothing, stranding the session on the
@@ -698,6 +832,9 @@ class TestSlotModelSwitchContextBroadcast:
     async def test_reset_fallback_broadcasts_token_clearing_event(self, tmp_path):
         # No live provider -> the reset path: no token counts, so the frontend
         # deletes its stored entry and falls back to the model-derived window.
+        # The reset recreates the session but RESUMES THE SAME CONVERSATION, so
+        # the frame omits `pct` — the last known percentage still describes the
+        # session and the meter must keep it rather than drop to 0%.
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         state.broadcast_ws = MagicMock()
@@ -711,7 +848,7 @@ class TestSlotModelSwitchContextBroadcast:
         assert resp.status == 200
         state.sessions.reset.assert_awaited_once()
         events = self._find_context_events(state.broadcast_ws)
-        assert events == [{"slot": state._slots["a"].key, "pct": 0.0, "reset": True}]
+        assert events == [{"slot": state._slots["a"].key, "reset": True}]
 
     @pytest.mark.asyncio
     async def test_broadcast_failure_does_not_fail_the_switch(self, tmp_path):
@@ -727,3 +864,297 @@ class TestSlotModelSwitchContextBroadcast:
 
         assert resp.status == 200
         assert state._slots["a"].model == "gpt-5.6-sol"
+
+
+class TestDeferredModelSwitchAtTheBoundary:
+    """``apply_deferred_model_switch``: what the turn boundary does with a pick
+    the picker took mid-turn.
+
+    Called at the end of the turn the pick arrived in and at the next turn's
+    admission. It moves the session exactly as an idle pick would -- the
+    harness's live switch first, the deferred reset when that is not available --
+    so each backend takes the path it already takes for the picker, and it
+    leaves the pick deferred while the session is still busy.
+    """
+
+    @staticmethod
+    def _slot_with_deferred_pick(state, provider, model="gpt-5.6-sol"):
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model=model)
+        slot = state._slots["a"]
+        slot._deferred_model_switch_key = effective_session_key(slot)
+        return slot
+
+    @pytest.mark.asyncio
+    async def test_nothing_deferred_is_a_no_op(self, tmp_path):
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        provider = TestSlotModelLiveSwitch._provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+
+        assert await sc.apply_deferred_model_switch(state, state._slots["a"]) is False
+        provider.client.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_idle_session_is_moved_live_and_no_reset_is_armed(self, tmp_path):
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._provider()
+        slot = self._slot_with_deferred_pick(state, provider)
+
+        armed = await sc.apply_deferred_model_switch(state, slot)
+
+        assert armed is False
+        provider.client.set_model.assert_awaited_once_with("gpt-5.6-sol")
+        assert slot._deferred_model_switch_key == ""
+        assert slot._pending_reset_history_key is None
+        # The chip's served-model refresh reaches the dashboard.
+        assert state.push_slots_update.called
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_during_the_rpc_keeps_the_pick_deferred(self, tmp_path):
+        # The tab can relink to a live runtime WHILE the set_model RPC awaits: a
+        # cron tab's ensure_cron_slot -> _bind_cron_slot sets linked_session_key
+        # under none of the locks held here. The switch then reached the old
+        # session, so the current binding must KEEP the pick rather than publish
+        # the old provider's served model and clear the marker, which would
+        # strand the new runtime on the old model with nothing armed to retry.
+        from unittest.mock import patch
+
+        import kiro_crew.dashboard.chat_handlers as ch
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._provider()
+        slot = self._slot_with_deferred_pick(state, provider)
+        original_key = effective_session_key(slot)
+
+        async def _rebind_mid_rpc(*_a, **_k):
+            slot.linked_session_key = "cron:rebound"
+
+        provider.client.set_model = AsyncMock(side_effect=_rebind_mid_rpc)
+
+        with patch.object(ch, "_sync_served_model") as sync_mock:
+            armed = await sc.apply_deferred_model_switch(state, slot)
+
+        new_key = effective_session_key(slot)
+        assert new_key != original_key
+        # The old session was switched, but the pick is kept for the new binding
+        # and no reset is armed; the old provider's served model is NOT published.
+        assert armed is False
+        provider.client.set_model.assert_awaited_once()
+        assert slot._deferred_model_switch_key == new_key
+        assert slot._pending_reset_history_key is None
+        sync_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_mid_switch_keeps_the_pick_retryable(self, tmp_path):
+        # The turn deadline can cancel admission while the live switch awaits,
+        # before the switch lands or a reset is armed. The pick must survive so
+        # a later boundary retries it; a marker cleared before the await would
+        # leave the slot on the old model with nothing to recover the pick.
+        import asyncio
+
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._provider()
+        slot = self._slot_with_deferred_pick(state, provider)
+        key = slot._deferred_model_switch_key
+        provider.client.set_model = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with pytest.raises(asyncio.CancelledError):
+            await sc.apply_deferred_model_switch(state, slot)
+
+        # The pick is intact and retryable, and no dead reset was armed.
+        assert slot._deferred_model_switch_key == key
+        assert slot._pending_reset_history_key is None
+
+    @pytest.mark.asyncio
+    async def test_a_newer_pick_during_the_rpc_keeps_the_pick_deferred(self, tmp_path):
+        # A newer /model pick can change slot.model WHILE the set_model RPC for
+        # the earlier pick awaits. The switch reached the OLD model, so the
+        # helper must keep the pick deferred for the newer model rather than
+        # clear the marker and strand the session on the model it just applied.
+        from unittest.mock import patch
+
+        import kiro_crew.dashboard.chat_handlers as ch
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._provider()
+        slot = self._slot_with_deferred_pick(state, provider)  # slot.model == gpt-5.6-sol
+        key = slot._deferred_model_switch_key
+
+        async def _newer_pick_mid_rpc(*_a, **_k):
+            slot.model = "claude-opus-4.8"
+
+        provider.client.set_model = AsyncMock(side_effect=_newer_pick_mid_rpc)
+
+        with patch.object(ch, "_sync_served_model") as sync_mock:
+            armed = await sc.apply_deferred_model_switch(state, slot)
+
+        # The applied (old) model is not published; the pick stays deferred so a
+        # later boundary lands the newer model. No reset was armed.
+        assert armed is False
+        assert slot._deferred_model_switch_key == key
+        assert slot._pending_reset_history_key is None
+        sync_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_reacquire_the_session_lock_admission_holds(self, tmp_path):
+        # turn_admission calls this backstop WHILE holding
+        # slot_switch_session_lock(session_key) for its cold start. That lock is
+        # not reentrant, so the helper must take only _model_pick_lock; taking
+        # the session lock too would hang the turn at session creation.
+        import asyncio
+
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.llm_helpers import slot_switch_session_lock
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._provider()
+        slot = self._slot_with_deferred_pick(state, provider)
+        key = slot._deferred_model_switch_key
+
+        async with slot_switch_session_lock(key):
+            # session_lock_held=True is the admission contract: the caller holds
+            # the lock, so the helper must NOT re-take it. Would hang otherwise.
+            # A ceiling, not a race: if the helper wrongly re-took the session
+            # lock it holds, this await never completes, so the bound turns a
+            # deadlock into a clean failure instead of a lost worker. 30 s is
+            # the discipline floor for a wait_for that must stay (rule D1).
+            armed = await asyncio.wait_for(
+                sc.apply_deferred_model_switch(state, slot, session_lock_held=True), timeout=30
+            )
+
+        assert armed is False
+        provider.client.set_model.assert_awaited_once_with("gpt-5.6-sol")
+        assert slot._deferred_model_switch_key == ""
+
+    @pytest.mark.asyncio
+    async def test_a_still_busy_session_keeps_the_pick_deferred(self, tmp_path):
+        # Another alias's turn (or the same session still streaming) is the
+        # one case that waits: nothing is sent, nothing armed, the mark stays
+        # for a later boundary.
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        provider = TestSlotModelLiveSwitch._provider(active_turn=True)
+        slot = self._slot_with_deferred_pick(state, provider)
+        key = slot._deferred_model_switch_key
+
+        assert await sc.apply_deferred_model_switch(state, slot) is False
+        provider.client.set_model.assert_not_awaited()
+        assert slot._deferred_model_switch_key == key
+        assert slot._pending_reset_history_key is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_live_switch_arms_the_deferred_reset(self, tmp_path):
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard import chat_handlers
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        provider = TestSlotModelLiveSwitch._provider()
+        provider.client.set_model = AsyncMock(side_effect=RuntimeError("boom"))
+        slot = self._slot_with_deferred_pick(state, provider)
+
+        with patch.object(chat_handlers, "_broadcast_context_reset") as bcr:
+            assert await sc.apply_deferred_model_switch(state, slot) is True
+        assert slot._deferred_model_switch_key == ""
+        # The reset the caller's consume spends: the next turn cold-starts on
+        # the committed slot.model.
+        assert slot._pending_reset_history_key
+        # The composer's cached context window is cleared with a None provider,
+        # the same event the idle reset path emits, so the readout does not keep
+        # the old model's token limit until the next turn's telemetry arrives.
+        bcr.assert_called_once_with(state, slot.key, None)
+
+    @pytest.mark.asyncio
+    async def test_a_model_the_account_cannot_run_falls_to_the_reset(self, tmp_path):
+        # The cold start withholds a pin the account cannot run and the slot's
+        # withheld-pin card says so; the helper does not raise into the turn.
+        from kiro_crew.acp.client import AcpModelUnavailable
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        provider = TestSlotModelLiveSwitch._provider()
+        provider.client.set_model = AsyncMock(
+            side_effect=AcpModelUnavailable("gpt-5.6-sol", ["auto"], backend=ACP_BACKEND_KIRO)
+        )
+        slot = self._slot_with_deferred_pick(state, provider)
+
+        assert await sc.apply_deferred_model_switch(state, slot) is True
+        assert slot._pending_reset_history_key
+        assert slot.model == "gpt-5.6-sol"
+
+    @pytest.mark.asyncio
+    async def test_a_non_acp_provider_takes_the_reset(self, tmp_path):
+        # No live switch to try: the boundary arms the reset, the same answer
+        # the idle picker gives such a provider.
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.providers.base import LLMProvider
+
+        state = _make_state(tmp_path)
+        provider = MagicMock(spec=LLMProvider)
+        provider.has_active_turn.return_value = False
+        slot = self._slot_with_deferred_pick(state, provider)
+
+        assert await sc.apply_deferred_model_switch(state, slot) is True
+        assert slot._pending_reset_history_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [False, True])
+async def test_stored_harness_secret_never_reaches_model_response_or_log(
+    tmp_path, monkeypatch, caplog, live
+):
+    from kiro_crew import model_registry
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.dashboard import chat_handlers
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(model_registry, "is_canonical_key", lambda model: True)
+    monkeypatch.setattr(model_registry, "get_entry", lambda model: {})
+    monkeypatch.setattr(model_registry, "acp_id_correction", lambda model: None)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("member-atlas-0123456789ab", mode="member", model="auto")
+    provider = TestSlotModelLiveSwitch._provider() if live else None
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.reset = AsyncMock()
+    async with TestClient(
+        TestServer(TestSlotModelLiveSwitch._app(state), host="127.0.0.1")
+    ) as client:
+        response = await client.post(
+            f"/api/chat/slots/{slot.key}/model",
+            json={"model": "test-display-only"},
+        )
+        assert response.status == 400
+        text = await response.text()
+        data = await response.json()
+    assert secret not in text + caplog.text
+    assert "unknown" in data["error"]
+    assert "model rejected" in caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.model == "auto"
+    state.sessions.reset.assert_not_awaited()
+    if provider is not None:
+        provider.client.set_model.assert_not_awaited()

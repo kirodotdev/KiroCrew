@@ -18,8 +18,7 @@ Where the consent lives, and why not ``config.json``
 ----------------------------------------------------
 ``ssh_auth_sock_consent.json`` sits on the KEYSTONE floor
 (``security._CREW_SECRET_LEAVES``), the same placement as ``computer_use.json``,
-``aws_service_consent.json``, ``oauth_endpoints.json`` and
-``file_delivery_consent.json``, and for the same reason: this is an
+``aws_service_consent.json`` and ``oauth_endpoints.json``, and for the same reason: this is an
 authorization, not a preference. ``config.json`` is writable by any auto-approved
 agent shell, so consent stored there could be minted by a prompt-injected agent
 -- it would flip its own ``SSH_AUTH_SOCK`` forwarding on, and a subagent it spawns

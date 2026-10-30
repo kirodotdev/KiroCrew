@@ -105,6 +105,32 @@ def _doctor_unresolved_mcp_refs() -> None:
         )
 
 
+def _doctor_template_mcp_additions() -> None:
+    """One row per template that carries MCP servers the user approved on a card.
+
+    Lists each template's additions (``template_mcp_additions``) by server name with
+    the card and date that approved them, so a user can see what was added and
+    where to take it away. Silent when there are none, which is the stock state.
+    Reports only and appends no issue: an addition is a choice the user made, not a
+    fault. The values come off a user-writable file, so every one is printed through
+    ``_safe_display``.
+    """
+    from kiro_crew import template_mcp_additions
+
+    try:
+        additions = template_mcp_additions.list_additions()
+    except Exception:
+        # Triage must survive an unreadable record; the rows are advisory.
+        return
+    for template, servers in additions.items():
+        listed = ", ".join(
+            f"{render._safe_display(name)} (card {render._safe_display(add.card_id)}, "
+            f"{render._safe_display(add.approved_at)})"
+            for name, add in servers.items()
+        )
+        print(f"  mcp additions: {render._safe_display(template)} \u2014 {listed}")
+
+
 def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     """One row for the SELECTED backend when its declaration says ``no-channel``.
 
@@ -401,6 +427,79 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
         "replacement spawns its own."
     )
     issues.append("MCP gateway daemon runs a different code revision than this install")
+
+
+#: What each launch-refusal reason means to the operator, keyed by the reason
+#: :mod:`kiro_crew.mcp_gateway.launch_approval` records. A reason missing here is
+#: still reported, under its raw name, so a new reason is never dropped silently.
+_SHARE_REFUSAL_LABELS = {
+    "added_outside_dashboard": "not approved yet",
+    "changed_needs_reapproval": "command changed since it was approved",
+}
+
+
+def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
+    """Name every server config asks to share whose launch approval is refused.
+
+    A server listed for sharing (``mcp_gateway.stub_servers``, which already folds
+    in ``stub_overrides``) runs through the shared gateway only once its launch is
+    approved on the dashboard. Until then the gateway records a refusal and every
+    session starts its own copy, so config says "shared" while the host runs one
+    per chat. Nothing else on the command line says so.
+
+    Reports, never approves: the approval stays a dashboard action, because the
+    approval write is what pins the exact launch the gateway resolved. A refusal
+    IS an issue -- config and the running host disagree, and only the operator's
+    approval (or removing the server from the share list) reconciles them.
+    """
+    try:
+        gw = cfg.mcp_gateway
+        if not gw.enabled:
+            return
+        asked = set(gw.stub_servers)
+    except Exception:
+        return
+    if not asked:
+        return
+    try:
+        from kiro_crew.mcp_gateway.launch_approval import (
+            approvals_path,
+            approvals_store_problem,
+            refused_servers,
+            refused_shares,
+        )
+
+        # The launch path reads an unreadable store as "nothing refused", so
+        # check readability first: this row must never call that healthy.
+        problem = approvals_store_problem()
+        if problem is not None:
+            print(f"  mcp sharing: ⚠ cannot read launch approvals: {problem}")
+            render._print_wrapped(
+                f"{approvals_path()} could not be read, so whether the servers set to "
+                "share are approved is unknown. Every launch it would approve is "
+                "treated as not approved, so those servers run one copy per chat."
+            )
+            issues.append("MCP launch approvals cannot be read: sharing state unknown")
+            return
+        shares = refused_shares(asked, refused_servers())
+    except Exception as exc:
+        print(f"  mcp sharing: ⚠ could not read launch approvals ({type(exc).__name__})")
+        return
+    hits = sorted(shares)
+    if not hits:
+        print(f"  mcp sharing: ✅ {len(asked)} server(s) set to share, none waiting for approval")
+        return
+    rows = ", ".join(
+        f"{name} ({_SHARE_REFUSAL_LABELS.get(shares[name], shares[name])})" for name in hits
+    )
+    print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
+    render._print_wrapped(
+        "Config asks to share these servers, but the gateway refused their launch "
+        "until it is approved on the dashboard. Open the dashboard's Settings > "
+        "Developer > MCP Management (/settings/developer/mcp-pool) and approve each "
+        "one, then run `kirocrew restart` so new chats use the shared copy."
+    )
+    issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")
 
 
 def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:

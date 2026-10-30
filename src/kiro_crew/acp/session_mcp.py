@@ -86,6 +86,21 @@ from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
+from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
+    _NATIVE_NAMED_PATH_CHARS,
+    _UNREADABLE_CHURN,
+    _UNREADABLE_NOT_OBJECT,
+    _UNREADABLE_NOT_UTF8,
+    _UNREADABLE_REFUSED_PATH,
+    _UNREADABLE_TOO_DEEP,
+    _UNREADABLE_TOO_LARGE,
+    _UNREADABLE_UNOPENABLE,
+    _WIDE_BOMS,
+    NativeSettingsUnreadable,
+    SettingsReadRefusal,
+    _named_path,
+    _unreadable_reason,
+)
 from kiro_crew.agent import (
     _mcp_registry_mode,
     agent_spec_path,
@@ -101,6 +116,7 @@ from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
 )
+from kiro_crew.template_mcp_additions import merge_at_spawn
 from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger(__name__)
@@ -291,7 +307,9 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
     or without a single leading UTF-8 byte-order mark, reads as ``{}``, like an
     absent one: it declares nothing, so there is no restriction to fail closed on.
     The same single leading BOM ahead of a document is dropped and the document
-    is parsed normally. Any other byte leaves it to the parser, which fails closed.
+    is parsed normally. A UTF-16 or UTF-32 mark, or bytes that are not UTF-8, are
+    refused before parsing; anything else goes to the parser, which fails closed.
+    Every refusal is a :class:`SettingsReadRefusal` carrying a fixed reason.
 
     Off the event loop, a gated read that fails transiently is retried (see
     :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
@@ -318,7 +336,7 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
     """
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, validate_file_path
 
-    refusal = "MCP settings could not be safely read"
+    refusal = ("MCP settings could not be safely read", _UNREADABLE_UNOPENABLE)
     if _on_loop_thread():
         # One attempt, never a re-check or a pause: see the docstring.
         schedule: tuple[float, ...] = (0.0,)
@@ -329,7 +347,7 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
             _sleep(pause)
         # Screen before even probing existence: a Windows link can name an untrusted share.
         if validate_file_path(str(path)) is None:
-            refusal = "MCP settings path was refused"
+            refusal = ("MCP settings path was refused", _UNREADABLE_REFUSED_PATH)
             continue
         try:
             path.lstat()
@@ -338,12 +356,22 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         try:
             raw = safe_read_file_bytes(str(path))
         except FileTooLargeError as exc:
-            raise ValueError("MCP settings exceed the safe read limit") from exc
+            raise SettingsReadRefusal(
+                "MCP settings exceed the safe read limit", _UNREADABLE_TOO_LARGE
+            ) from exc
         if raw is not None:
             break
-        refusal = "MCP settings could not be safely read"
+        refusal = ("MCP settings could not be safely read", _UNREADABLE_UNOPENABLE)
     else:
-        raise ValueError(refusal)
+        raise SettingsReadRefusal(*refusal)
+    # A UTF-16 or UTF-32 mark (Windows PowerShell 5.1's ``>`` and ``Out-File``
+    # default) is refused, not decoded, but with the one repair that fixes it.
+    for bom, family in _WIDE_BOMS:
+        if raw.startswith(bom):
+            raise SettingsReadRefusal(
+                f"MCP settings are saved as {family}",
+                f"it is saved as {family}; re-save it as UTF-8",
+            )
     # Windows editors commonly save UTF-8 with a byte-order mark. Drop it before
     # the emptiness test so a BOM-only file reads as the empty file it is.
     raw = raw.removeprefix(codecs.BOM_UTF8)
@@ -354,13 +382,26 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         # and refuse every search agent's session over a file with nothing in it.
         return {}
     try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SettingsReadRefusal("MCP settings are not UTF-8", _UNREADABLE_NOT_UTF8) from exc
+    try:
         # JSONC-tolerant, like discovery: a commented file's restrictions
         # (``disabledTools``, muted servers) must still be enforced.
-        settings = loads_user_jsonc(raw.decode("utf-8"))
+        settings = loads_user_jsonc(text)
     except RecursionError as exc:
-        raise ValueError("MCP settings exceed the JSON nesting limit") from exc
+        raise SettingsReadRefusal(
+            "MCP settings exceed the JSON nesting limit", _UNREADABLE_TOO_DEEP
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise SettingsReadRefusal(
+            "MCP settings are not valid JSON",
+            f"it is not valid JSON (line {exc.lineno}, column {exc.colno})",
+        ) from exc
     if not isinstance(settings, dict) or not isinstance(settings.get("mcpServers", {}), dict):
-        raise ValueError("MCP settings must contain an object of servers")
+        raise SettingsReadRefusal(
+            "MCP settings must contain an object of servers", _UNREADABLE_NOT_OBJECT
+        )
     return settings
 
 
@@ -387,6 +428,37 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
             raise
         logger.debug("session MCP: global settings unreadable")
         return {}
+
+
+def settings_server_names(work_dir: str | Path | None) -> frozenset[str]:
+    """Names of MCP servers declared in the settings files kiro-cli reads.
+
+    The user's global ``~/.kiro/settings/mcp.json`` and, when *work_dir* is
+    given, the checkout's ``.kiro/settings/mcp.json`` -- the same two sources
+    :func:`native_settings_sources` enumerates, read once each with no bracketing
+    because a name set is advisory here, not a restriction to fail closed on.
+
+    Used by :func:`~kiro_crew.acp.kas_agents.hoist_servers_for_session` as
+    ``reserved_names`` on the ``session/load`` path: a user-declared server whose
+    name a settings file also declares stays in the agent block, so the resumed
+    session resolves that name exactly as ``session/new`` did -- by kiro-cli's own
+    precedence between its settings files and the agent block -- instead of by a
+    session-level injection that would outrank both. Covering the workspace file
+    as well as the global one is what keeps new and resumed sessions agreeing
+    whichever file the colliding entry lives in. A file that is absent or
+    unreadable contributes no names.
+    """
+    names: set[str] = set(_global_settings().get("mcpServers", {}))
+    if work_dir:
+        try:
+            project = _read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json")
+        except (OSError, ValueError):
+            logger.debug("session MCP: project settings unreadable")
+            project = {}
+        declared = project.get("mcpServers", {}) if isinstance(project, dict) else {}
+        if isinstance(declared, dict):
+            names.update(declared)
+    return frozenset(names)
 
 
 class ToolsAllowlist(NamedTuple):
@@ -628,6 +700,39 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
 
 
+def _crewmate_worker_spec(
+    agent: str | None,
+    spec: dict[str, Any] | None,
+    session_key: str,
+    *,
+    tool_limits_honoured: bool = False,
+) -> dict[str, Any] | None:
+    """*spec*, or for a crewmate's worker session the worker spec it runs on.
+
+    The on-disk ``kirocrew-mate-worker`` is the base every crewmate's worker shares;
+    the session's own worker is that base plus its crewmate's file
+    (``mate_worker.worker_session_spec``, read from the session's execution record,
+    the seam KAS's projection reads too). Every later read below is of THIS spec, so
+    the array, the withhold set and the per-tool restrictions are the worker's own.
+    Any other agent, or no session key, keeps *spec*. A worker session whose base
+    is absent or unreadable raises :class:`~kiro_crew.mate_worker.WorkerKitUnreadable`
+    (fail closed, as KAS's projection does) rather than run without its kit. On a
+    host that does not honour single-tool limits (*tool_limits_honoured* False, the
+    default), a crewmate file that sets any refuses with
+    ``capability_tool_limits_unsupported``, judged on the read this spec is built from.
+    """
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
+
+    if agent != MATE_WORKER_AGENT or not session_key:
+        return spec
+    if not isinstance(spec, dict):
+        raise WorkerKitUnreadable(
+            f"worker session {session_key}: the worker base spec {MATE_WORKER_AGENT!r} is "
+            f"missing or unreadable, so the worker would run without its kit"
+        )
+    return worker_session_spec(dict(spec), session_key, refuse_tool_limits=not tool_limits_honoured)
+
+
 def _session_spec_and_snapshot_for(
     agent: str, work_dir: str | Path | None = None
 ) -> tuple[dict[str, Any] | None, Any]:
@@ -638,7 +743,12 @@ def _session_spec_and_snapshot_for(
     apply the same verdict through :func:`trusted_project_agent_spec`; the
     unresolved-ref diagnostic on every host keeps the plain resolution.
     """
-    return _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
+    spec, snapshot = _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
+    # The one read every array host's servers come from, so a template Crew does
+    # not own gets its approved additions merged here, at spawn, and never in its
+    # file (``template_mcp_additions.merge_at_spawn``). A derived or Crew-owned spec
+    # comes back unchanged, so the snapshot still vouches for exactly those bytes.
+    return merge_at_spawn(agent, spec), snapshot
 
 
 def _agent_spec_and_snapshot_for(
@@ -1023,6 +1133,8 @@ def session_mcp_projection(
     *,
     stub_server_names: Collection[str] = (),
     work_dir: str | Path | None = None,
+    session_key: str = "",
+    worker_tool_limits_honoured: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1046,6 +1158,9 @@ def session_mcp_projection(
     run it off the event loop.
     """
     spec, snapshot = _session_spec_and_snapshot_for(agent, work_dir) if agent else (None, None)
+    spec = _crewmate_worker_spec(
+        agent, spec, session_key, tool_limits_honoured=worker_tool_limits_honoured
+    )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
@@ -1370,13 +1485,6 @@ _NATIVE_NAMED_TOOLS = 8
 # long is not one, and the message says so by cutting it.
 _NATIVE_NAMED_CHARS = 64
 
-# How many characters of a settings file's PATH a refusal repeats. The path is
-# the remedy -- it names the file the user opens -- so it is cut from the FRONT,
-# keeping the tail that locates the file under its project. A project path is
-# admitted, not typed, but its length is the filesystem's ceiling and not ours,
-# and the string is retained per agent for the life of the runtime.
-_NATIVE_NAMED_PATH_CHARS = 256
-
 # How many characters of ONE value the cleaner READS before the message repeats
 # its bounded head. The value comes out of a settings file -- the project's is
 # checked out with the repository -- and the message reaches the gateway's log,
@@ -1389,20 +1497,6 @@ _NATIVE_NAMED_PATH_CHARS = 256
 # redactors are regular expressions whose time grows faster than the text on
 # some shapes (measured: 100,000 digits, 10.8 s) and the reader admits 50 MB.
 _NATIVE_NAMED_WINDOW = 16 * _NATIVE_NAMED_CHARS
-
-
-def _named_path(path: Path) -> str:
-    """*path* as a message repeats it: its tail, within :data:`_NATIVE_NAMED_PATH_CHARS`.
-
-    Cleaned like every other value the message carries: the path is the session's
-    working directory as admitted, and a control character in it would reach the
-    same log line.
-    """
-    text = str(path)
-    text = sanitize_sink_text(text, len(text))
-    if len(text) <= _NATIVE_NAMED_PATH_CHARS:
-        return text
-    return "..." + text[-(_NATIVE_NAMED_PATH_CHARS - 3) :]
 
 
 class NativeSettingsSource(NamedTuple):
@@ -1421,29 +1515,6 @@ class NativeSettingsSource(NamedTuple):
     def named(self) -> str:
         """The source as a refusal names it: the label and the file, bounded."""
         return f"{self.label} ({_named_path(self.path)})"
-
-
-class NativeSettingsUnreadable(ValueError):
-    """A settings file exists but could not be read safely.
-
-    Raised by :func:`native_settings_sources` in place of the reader's own
-    ``OSError``/``ValueError`` (kept as ``__cause__``) so a caller can name the
-    file it could not read. It IS a ``ValueError``, so a caller that catches the
-    reader's exceptions still catches this one.
-    """
-
-    def __init__(self, label: str, path: Path) -> None:
-        super().__init__(f"{label} ({_named_path(path)}) could not be read safely")
-        self.label = label
-        self.path = path
-
-    def explain(self, outcome: str) -> str:
-        """One sentence for a user: why every native element is withheld."""
-        return (
-            f"{self.label} ({_named_path(self.path)}) could not be read safely, so no Kiro Crew"
-            f" server can be mounted with this session's identity; repair or remove"
-            f" that file to restore {outcome}"
-        )
 
 
 def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsSource]:
@@ -1482,13 +1553,19 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     # not content, is compared, so a file swapped away and back to equal content
     # still voids the pass.
     paths = [path for _label, path, _read in reads]
-    changed: tuple[str, Path] = (reads[0][0], reads[0][1])
+    changed: tuple[str, Path, str] = (reads[0][0], reads[0][1], _UNREADABLE_CHURN)
     for _ in range(_NATIVE_SOURCES_BRACKETED_PASSES):
         before = [_settings_file_identity(path) for path in paths]
         sources = _read_native_sources_once(reads)
         after = [_settings_file_identity(path) for path in paths]
         moved = [
-            (label, path)
+            (
+                label,
+                path,
+                # An identity that could not be taken is the gated open failing,
+                # not a rewrite: say so, or the user hunts for a writer.
+                _UNREADABLE_UNOPENABLE if _IDENTITY_UNKNOWN in (was, now) else _UNREADABLE_CHURN,
+            )
             for (label, path, _read), was, now in zip(reads, before, after)
             if was != now or was is _IDENTITY_UNKNOWN
         ]
@@ -1541,7 +1618,7 @@ def _read_native_sources_once(
         try:
             settings = read(path)
         except (OSError, ValueError) as exc:
-            raise NativeSettingsUnreadable(label, path) from exc
+            raise NativeSettingsUnreadable(label, path, _unreadable_reason(exc)) from exc
         declared = settings.get("mcpServers", {}) if isinstance(settings, dict) else {}
         sources.append(
             NativeSettingsSource(label, path, declared if isinstance(declared, dict) else {})
@@ -1829,10 +1906,11 @@ def kiro_control_plane_servers(
         # from the spec lose their session identity element, so their calls are
         # refused ``identity_unattested``. Pooled broker stubs keep their token.
         logger.warning(
-            "session MCP: MCP settings unreadable (%s); agent %r gets no identity"
+            "session MCP: MCP settings unreadable (%s%s); agent %r gets no identity"
             " elements for unpooled Kiro Crew servers mounted from its spec, so their"
             " calls will refuse identity_unattested",
             exc,
+            f" because {exc.reason}" if exc.reason else "",
             agent,
         )
         # The verdict covers the whole population this function mounts, the

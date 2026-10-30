@@ -227,7 +227,7 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> None:
             except OSError as exc:
                 # The dup'd fd is unusable (client pipe closed). Fall back to
                 # sys.stdout ONLY if nothing was written, so a genuinely broken
-                # pipe surfaces the way it did before this indirection. After a
+                # pipe surfaces the way a direct sys.stdout write would. After a
                 # PARTIAL write, re-emitting the whole frame would duplicate the
                 # prefix and desync the stream for every later message -- drop
                 # it instead and let the client's own timeout handle the turn.

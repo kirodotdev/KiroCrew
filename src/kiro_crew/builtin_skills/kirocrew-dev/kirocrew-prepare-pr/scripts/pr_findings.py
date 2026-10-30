@@ -36,6 +36,17 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
 
 RETRO_EVERY = 3
 EXIT_RETRO_DUE = 30
+# A span (path + lane) FIXED in this many distinct earlier heads makes the next
+# fix its 3rd (SEAM_REPEAT_FIXES) or its 5th (SEAM_LIMIT_FIXES). The 3rd forces
+# a change of approach, the 5th leaves only "narrow" or "defer with an issue".
+# Both exit 30 and neither asks a person: the loop decides and continues in the
+# same turn. The count is of heads.
+SEAM_REPEAT_FIXES = 2
+SEAM_LIMIT_FIXES = 4
+SWEEP_FILE = "prepare-pr-sweep.md"
+# The outcome of a disposition is read by `_review_contract.declared_outcome` from the
+# forms writers actually use (code-quality/impl/D5-FORMAT-SURVEY.md); a record that
+# declares none is printed as `undeclared`.
 # Two optional plain lines an author may put in a disposition, outside the
 # `> ` block (so the reviewer's ledger never sees them - they are for THIS
 # view):  `self-added: yes|no`  says the finding landed in code an earlier
@@ -82,42 +93,40 @@ def head_diff_files(repo, base, sha):
         return None
 
 
-def rounds_view(repo, number, head_sha, pr_json):
-    """The loop's cross-round memory, read from the PR itself.
+def _collect_rounds(repo, number):
+    """(by_head, order, first_full, skipped) from the writer dispositions, or None on a read error.
 
     A round is one judged head: every writer-authored disposition record names
     the head it ruled on, so grouping the records by `head=` in the order those
     heads were first disposed reconstructs the rounds without any local file.
-    Per round: the spans disposed, how many landed in self-added code, and any
-    mechanism the round declared. Across rounds: which spans recurred and how
-    often, and the PR's growth. Exit 30 when the loop's own rules call for a
-    retrospective - a span disposed in RETRO_EVERY rounds, or the next round
-    being a multiple of RETRO_EVERY - so the trigger is an exit code like every
-    other decision in this loop.
+    The outcome, resolution and fix bookkeeping comes from
+    `_review_contract.disposition_rounds` (the reader the push check shares); the
+    rest of a round (lanes, spans, self-added, mechanisms) is
+    added here. `skipped` lists the comment ids of records whose marker names no
+    target and head, which no round can hold.
     """
     comments = fetch_disposition_comments(repo, number)
     if comments is None:
         err("ERROR: could not read the PR's comments for the rounds view.")
-        return 2
+        return None
     records = writer_disposition_records(repo, comments)
     if records is None:
         err("ERROR: could not establish which disposition authors are writers.")
-        return 2
+        return None
     bodies = {c.get("id"): (c.get("body") or "") for c in comments}
-    by_head: dict = {}
-    order: list = []
-    first_full = ""
+    order, rounds = _review_contract.disposition_rounds(records, bodies)
+    by_head = {
+        key: dict(rounds[key], target={}, spans=[], self_added=0, mechanisms=[], n=0)
+        for key in order
+    }
+    skipped = []
     for rec in records:
         if rec.get("malformed") or not rec.get("head"):
+            skipped.append(rec.get("comment_id"))
             continue
-        comment = {"body": bodies.get(rec.get("comment_id"), "")}
-        h = rec["head"][:12]
-        if h not in by_head:
-            by_head[h] = {"target": {}, "spans": [], "self_added": 0, "mechanisms": [], "n": 0}
-            first_full = first_full or rec["head"]
-            order.append(h)
-        body = comment.get("body") or ""
+        h = next(k for k in order if _review_contract.same_head(by_head[k]["head"], rec["head"]))
         r = by_head[h]
+        body = bodies.get(rec.get("comment_id"), "")
         r["n"] += 1
         r["target"][rec["target"]] = r["target"].get(rec["target"], 0) + 1
         for span in rec["spans"]:
@@ -127,17 +136,94 @@ def rounds_view(repo, number, head_sha, pr_json):
         if m and m.group(1).lower() == "yes":
             r["self_added"] += 1
         r["mechanisms"].extend(x.strip() for x in MECHANISM_RE.findall(body))
+    first_full = by_head[order[0]]["head"] if order else ""
+    return by_head, order, first_full, skipped
+
+
+def current_head_spans(repo, number, head_sha):
+    """The spans the lanes raised on the current head, or None when they cannot be read."""
+    if not head_sha:
+        return None
+    bot_comments = fetch_bot_comments(repo, number, resolve_marker_authors(os.environ))
+    if bot_comments is None:
+        return None
+    bindings = resolve_marker_bindings(os.environ)
+    spans = {f["span"] for f in extract_findings(bot_comments, head_sha, bindings)}
+    spans |= {i["span"] for i in extract_design_items(bot_comments, head_sha, bindings)}
+    return spans
+
+
+def sweep_prompt(spans):
+    """Print one CLASS SWEEP line per finding span: the class, its sites, written before the edit.
+
+    The sweep file is checked at push time, not read here, so this view stays
+    free of file reads.
+    """
+    if not spans:
+        return
+    print("-- CLASS SWEEP (every fix round, before you edit)")
+    for span in spans:
+        print(
+            "CLASS SWEEP span={}: name the class, grep for it, list every site in "
+            "<git-dir>/{} (format: references/seam-protocol.md)".format(span, SWEEP_FILE)
+        )
+
+
+def rounds_view(repo, number, head_sha, pr_json):
+    """The loop's cross-round memory, read from the PR itself.
+
+    Per round: the spans disposed, how many landed in self-added code, and any
+    mechanism the round declared. Across rounds: which spans recurred and how
+    often, and the PR's growth. Exit 30 when the loop's own rules call for a
+    retrospective - a span FIXED in SEAM_REPEAT_FIXES earlier rounds (printed
+    SEAM REPEAT, SEAM LIMIT from SEAM_LIMIT_FIXES earlier fixes) that is on the
+    current head or whose latest round just made its fix count reach a threshold,
+    or the next round being a multiple of RETRO_EVERY - so the trigger is an exit
+    code like every other decision in this loop. A seam whose span is gone from
+    the current head, and was not just reached, is listed as history and does not
+    trigger again. A recorded `resolution:` restarts the span's count. A record
+    whose outcome is not recognised prints as `undeclared`; a record the marker
+    cannot place in a round is counted as skipped. Re-answering a rebuttal or a
+    deferral never counts as a fix. The `recurring spans` line lists every span
+    answered in RETRO_EVERY rounds or more, whatever the answers were; it informs
+    and does not trigger. When no span is a seam, the pushes that followed a blocked
+    head (BLOCKED_PUSH_REPEAT, BLOCKED_PUSH_LIMIT) print SEAM REPEAT / SEAM LIMIT
+    (pr-level) and exit 30 the same way; an unreadable timeline prints nothing.
+    """
+    got = _collect_rounds(repo, number)
+    if got is None:
+        return 2
+    by_head, order, first_full, skipped = got
 
     span_rounds: dict = {}
     for idx, h in enumerate(order):
         for span in by_head[h]["spans"]:
             span_rounds.setdefault(span, []).append(idx)
+    fixed_rounds = _review_contract.fix_rounds(order, by_head)
+    on_head = current_head_spans(repo, number, head_sha)
+    last = len(order) - 1
+    seams: list = []
+    history: list = []
+    for sp, rs in sorted(fixed_rounds.items()):
+        if len(rs) < SEAM_REPEAT_FIXES:
+            continue
+        crossed = any(
+            len(rs) >= t and rs[t - 1] == last for t in (SEAM_REPEAT_FIXES, SEAM_LIMIT_FIXES)
+        )
+        (seams if on_head is None or sp in on_head or crossed else history).append((sp, rs))
     recurring = sorted(
         ((sp, len(rs)) for sp, rs in span_rounds.items() if len(rs) >= RETRO_EVERY),
         key=lambda x: -x[1],
     )
     next_round = len(order)
-    retro_due = bool(recurring) or (next_round > 0 and (next_round + 1) % RETRO_EVERY == 0)
+    pushes = None
+    if not seams:
+        # No marker-counted seam: count the pushes that followed a blocked head, which
+        # needs no disposition. A recorded `resolution:` restarts it from that round's head.
+        since = next((by_head[h]["head"] for h in reversed(order) if by_head[h]["resolution"]), "")
+        pushes = pr_blocked_pushes(repo, number, since)
+    pr_level = pushes is not None and pushes >= BLOCKED_PUSH_REPEAT
+    retro_due = bool(seams) or pr_level or (next_round > 0 and (next_round + 1) % RETRO_EVERY == 0)
 
     print(
         "=== Rounds for PR #{} (from writer dispositions; head {}) ===".format(
@@ -160,8 +246,27 @@ def rounds_view(repo, number, head_sha, pr_json):
                 idx, h, r["n"], lanes, ", ".join(r["spans"]) or "-", r["self_added"]
             )
         )
+        print(
+            "    outcomes: {}".format(
+                ", ".join("{}×{}".format(k, v) for k, v in sorted(r["outcomes"].items())) or "-"
+            )
+        )
+        for comment_id, spans in r["undeclared"]:
+            print(
+                "    undeclared outcome: comment {} spans {}".format(
+                    comment_id, ", ".join(spans) or "-"
+                )
+            )
+        for span, word in sorted(r["resolved"].items()):
+            print("    resolution: span {} {}".format(span, word))
         for mech in r["mechanisms"]:
             print("    mechanism: {}".format(sanitize(mech)))
+    if skipped:
+        print(
+            "skipped {} disposition record(s) whose marker is not "
+            "`<!-- ai-review-disposition target=<lane> head=<sha> -->` (comment {}); "
+            "no round can hold them".format(len(skipped), ", ".join(str(c) for c in skipped))
+        )
     adds = pr_json.get("additions")
     dels = pr_json.get("deletions")
     if adds is not None:
@@ -180,12 +285,84 @@ def rounds_view(repo, number, head_sha, pr_json):
         print("recurring spans (≥{} rounds):".format(RETRO_EVERY))
         for sp, n in recurring:
             print("  {} ×{}".format(sp, n))
+        print("  (rounds that answered the span; only fixes make a retrospective due)")
     else:
         print("recurring spans (≥{} rounds): none".format(RETRO_EVERY))
+    if on_head is None and fixed_rounds:
+        print("(the current head's findings could not be read: every seam is treated as present)")
+    for sp, rounds in seams:
+        _print_seam(sp, rounds)
+    if pushes is not None:
+        print("blocked pushes (pr-level): {}".format(pushes))
+    if pr_level:
+        _print_pr_seam(pushes)
+    for sp, rounds in history:
+        print(
+            "seam history: span={} fixed in rounds {} (gone from the current head, not just "
+            "reached: no new trigger)".format(sp, ", ".join(str(i) for i in rounds))
+        )
     if retro_due:
         print("RETROSPECTIVE DUE this round (exit {})".format(EXIT_RETRO_DUE))
         return EXIT_RETRO_DUE
     return 0
+
+
+def _nth(n):
+    return "{}{}".format(n, {1: "st", 2: "nd", 3: "rd"}.get(n if n < 20 else n % 10, "th"))
+
+
+def _print_seam(span, rounds):
+    """SEAM REPEAT from SEAM_REPEAT_FIXES earlier fixes, SEAM LIMIT from SEAM_LIMIT_FIXES: no stop.
+
+    The ordinal printed is computed from the rounds listed, never a literal.
+    """
+    where = ", ".join(str(i) for i in rounds)
+    nxt = _nth(len(rounds) + 1)
+    if len(rounds) >= SEAM_LIMIT_FIXES:
+        print(
+            "SEAM LIMIT span={} fixed in rounds {}. The next fix would be its {}.".format(
+                span, where, nxt
+            )
+        )
+        print("  Only two options remain: narrow the scope, or defer with an issue and a pinning")
+        print("  test (never for a security, data-loss or corruption class: narrow it).")
+    else:
+        print(
+            "SEAM REPEAT span={} fixed in rounds {}. The next fix would be its {}: "
+            "change the approach.".format(span, where, nxt)
+        )
+        print("  Take the first that holds: remove the second writer or hazard (this PR added")
+        print("  the mechanism); narrow the scope (redo it smaller); defer with an issue and a")
+        print("  pinning test (never security, data loss or corruption). If none holds, one")
+        print("  patch with the full branches: table.")
+    print(
+        "  Record it as `resolution:` in <git-dir>/{} and as a plain `resolution:` line in the "
+        "disposition (read by --rounds).".format(SWEEP_FILE)
+    )
+    print("  No one needs to approve; continue.")
+
+
+def _print_pr_seam(pushes):
+    """SEAM REPEAT / SEAM LIMIT (pr-level): the PR's blocked pushes, whatever the spans say."""
+    nxt = _nth(pushes + 1)
+    if pushes >= BLOCKED_PUSH_LIMIT:
+        print(
+            "SEAM LIMIT (pr-level) {} pushes followed a blocked head. The next push would "
+            "be its {}.".format(pushes, nxt)
+        )
+        print("  Only two options remain: narrow the scope, or defer with an issue and a pinning")
+        print("  test (never for a security, data-loss or corruption class: narrow it).")
+    else:
+        print(
+            "SEAM REPEAT (pr-level) {} pushes followed a blocked head. The next push would "
+            "be its {}: change the approach.".format(pushes, nxt)
+        )
+        print("  Take the first that holds: remove the second writer or hazard (this PR added")
+        print("  the mechanism); narrow the scope (redo it smaller); defer with an issue and a")
+        print("  pinning test (never security, data loss or corruption).")
+    print("  The count is of pushes, so it needs no disposition marker. Record the choice as a")
+    print("  plain `resolution:` line in the disposition (read by --rounds) to restart it.")
+    print("  No one needs to approve; continue.")
 
 
 def _load_sibling(filename):
@@ -231,6 +408,10 @@ design_lane_punchlines = _review_contract.design_lane_punchlines
 redact = _review_contract.redact
 CLEARS_WHEN_RE = _review_contract.CLEARS_WHEN_RE
 parse_disposition_record = _review_contract.parse_disposition_record
+declared_outcome = _review_contract.declared_outcome
+declared_resolution = _review_contract.declared_resolution
+BLOCKED_PUSH_REPEAT = _review_contract.BLOCKED_PUSH_REPEAT
+BLOCKED_PUSH_LIMIT = _review_contract.BLOCKED_PUSH_LIMIT
 
 
 FAIL_RE = re.compile(r"FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE|STALE|ERROR")
@@ -452,6 +633,11 @@ def fetch_bot_comments(repo, number, trusted_authors):
 
 def fetch_disposition_comments(repo, number):
     return _review_contract.fetch_disposition_comments(repo, number, run)
+
+
+def pr_blocked_pushes(repo, number, since=""):
+    """Pushes that followed a BLOCKED head (`_review_contract.blocked_push_count`), or None."""
+    return _review_contract.blocked_push_count(repo, number, run, since=since)
 
 
 def author_write_verdict(repo, login):
@@ -755,8 +941,12 @@ def main(argv):
     print("=== Reviewer findings on current head ({}) ===".format(head_sha[:12] or "?"))
     print("(span=<id> is the stable per-finding span identity -- path +")
     print(" reviewer/kind, line-number independent. The same span id")
-    print(" recurring across >=3 rounds is the kirocrew-prepare-pr same-span stall trigger:")
-    print(" stop patching instances and open a restructure round.)")
+    print(
+        " FIXED in {} earlier rounds makes the next fix its {}: --rounds prints SEAM REPEAT".format(
+            SEAM_REPEAT_FIXES, _nth(SEAM_REPEAT_FIXES + 1)
+        )
+    )
+    print(" and you change the approach instead of patching it again.)")
     findings: list = []
     bot_comments = None
     if not head_sha:
@@ -818,6 +1008,7 @@ def main(argv):
                 print("  " + sanitize(redact(f["text"]))[:280])
             if not findings:
                 print("(no BLOCKING lines in comments stamped for the current head)")
+            sweep_prompt(list(dict.fromkeys(x["span"] for x in design_items + findings)))
 
     print()
     print("=== Disposition-rule check (one lane / one rationale per finding) ===")

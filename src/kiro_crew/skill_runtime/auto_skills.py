@@ -557,12 +557,13 @@ def _auto_slug_claim_lock(loader: SkillsLoader) -> Iterator[bool]:
     entries.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.platform_compat import open_create_or_existing
 
     lock_path = loader._dir / sk.AUTO_SLUG_CLAIM_LOCK_NAME
     fd: int | None = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     except OSError:
         fd = None
     if fd is None:

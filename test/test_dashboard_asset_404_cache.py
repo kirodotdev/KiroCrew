@@ -21,12 +21,16 @@ These tests drive the real dist routes through the real middleware and a real
 
 from __future__ import annotations
 
+import errno
+import logging
+import os
 from pathlib import Path
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard import dist_file_response
 from kiro_crew.dashboard import server as srv
 
 
@@ -180,3 +184,96 @@ async def test_without_finalizer_the_404_is_immutable(
         resp = await client.get("/assets/check-BiXj6uGO.js")
         assert resp.status == 404
         assert "immutable" in resp.headers["Cache-Control"]
+
+
+def _fail_open_for(monkeypatch: pytest.MonkeyPatch, target: Path, err: int) -> None:
+    """Make the build response's open of ``target`` fail with ``err``, as a
+    process denied file opens sees it while ``stat`` still works."""
+    real_open = open
+
+    def _open(file: object, *args: object, **kwargs: object) -> object:
+        if Path(str(file)) == target:
+            if err in (errno.EACCES, errno.EPERM):
+                raise PermissionError(err, os.strerror(err), str(file))
+            raise OSError(err, os.strerror(err), str(file))
+        return real_open(file, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(dist_file_response, "open", _open, raising=False)
+
+
+def _unopenable_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == dist_file_response.logger.name
+        and r.levelno == logging.WARNING
+        and "cannot be read" in r.getMessage()
+    ]
+
+
+@pytest.fixture
+def _fresh_open_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(dist_file_response, "_UNOPENABLE_LAST_LOGGED", {})
+    caplog.set_level(logging.WARNING, logger=dist_file_response.logger.name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+@pytest.mark.parametrize(
+    ("err", "status"), [(errno.ENOSYS, 404), (errno.EIO, 404), (errno.EACCES, 403)]
+)
+async def test_an_asset_that_cannot_be_opened_logs_once_and_keeps_its_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    err: int,
+    status: int,
+) -> None:
+    dist = _dist(tmp_path)
+    target = (dist / "assets" / "main-krfrL6rl.js").resolve()
+    _fail_open_for(monkeypatch, target, err)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        first = await client.get("/assets/main-krfrL6rl.js")
+        second = await client.get("/assets/main-krfrL6rl.js")
+        assert first.status == second.status == status
+        assert "no-store" in first.headers["Cache-Control"]
+    warnings = _unopenable_warnings(caplog)
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    message = warnings[0].getMessage()
+    assert repr(str(target)) in message
+    assert f"[Errno {err}]" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+async def test_an_unopenable_precompressed_sibling_falls_back_without_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The response falls back to the plain file, so nothing failed to serve."""
+    dist = _dist(tmp_path)
+    sibling = (dist / "assets" / "main-krfrL6rl.js.gz").resolve()
+    sibling.write_bytes(b"gz")
+    _fail_open_for(monkeypatch, sibling, errno.ENOSYS)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        resp = await client.get("/assets/main-krfrL6rl.js", headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 200
+        assert "Content-Encoding" not in resp.headers
+    assert _unopenable_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
+async def test_a_served_or_missing_asset_logs_no_open_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dist = _dist(tmp_path)
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        served = await client.get("/assets/main-krfrL6rl.js")
+        never_built = await client.get("/fonts/absent.woff2")
+        assert served.status == 200
+        assert never_built.status == 404
+    monkeypatch.setattr(srv, "_resolve_dist_file", lambda *_a: tmp_path / "swept.js")
+    async with TestClient(TestServer(_make_app(dist))) as client:
+        swept = await client.get("/assets/check-BiXj6uGO.js")
+        assert swept.status == 404
+    assert _unopenable_warnings(caplog) == []

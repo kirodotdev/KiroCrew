@@ -166,6 +166,9 @@ class ContextTokenStore:
         except Exception as exc:
             logger.warning("weixin: failed to restore reply context for %s: %s", _safe_id(account_id), exc)
             return
+        if not isinstance(data, dict):
+            logger.warning("weixin: failed to restore reply context for %s: not a JSON object", _safe_id(account_id))
+            return
         for user_id, tok in data.items():
             if isinstance(tok, str) and tok:
                 self._cache[self._key(account_id, user_id)] = tok

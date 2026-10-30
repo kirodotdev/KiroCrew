@@ -22,7 +22,7 @@ name: macOS Tests (on demand)
 # merges, and it arrives hours rather than up to a day later.
 #
 # WHY THE WHOLE SUITE AND NOT A SUBSET. Calling platform-tests.yml means the PR
-# path and the nightly run byte-identical steps: the five shards, the darwin gap
+# path and the nightly run byte-identical steps: the six shards, the darwin gap
 # lists, and the three admission-gating contracts asserted by name in shard 1
 # (peer identity, the compiled Seatbelt private-memory boundary, the terminal
 # handler suite that test/macos-collect-ignore.txt keeps out of every shard). A
@@ -112,10 +112,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # dorny/paths-filter with `token: ''` diffs locally against the PR base
-          # commit, so that commit must be present.
-          fetch-depth: 0
+          # fetch-depth: 2 gives the merge commit (HEAD) and its first parent
+          # (the base tip, HEAD^1). paths-filter with token: '' diffs HEAD^1
+          # vs HEAD locally, and the content switch uses HEAD^1 HEAD -- no
+          # extra fetch needed.
+          fetch-depth: 2
           persist-credentials: false
+
+      - name: Fetch PR base commit (for paths-filter local diff)
+        # With token: '', dorny/paths-filter diffs pull_request.base.sha
+        # against HEAD with local git. fetch-depth: 2 gives HEAD and its merge
+        # parent but may not carry base.sha when main has moved since the merge
+        # ref was built; this fetch ensures it is present.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -205,10 +216,8 @@ jobs:
               - "src/kiro_crew/dashboard/handlers/terminal_transport.py"
               - "src/kiro_crew/dashboard/terminal_commands.py"
               - "src/kiro_crew/subagent_manager/terminal.py"
-              # The contracts themselves, and the two darwin gap lists a change
-              # here can silently widen.
+              # The contracts themselves.
               - "test/test_socketsec.py"
-              - "test/test_member_memory_filesystem.py"
               - "test/test_terminal_handler.py"
               - "test/test_terminal_handler_child_process.py"
               - "test/test_terminal_handler_completion.py"
@@ -232,6 +241,7 @@ jobs:
               - "src/kiro_crew/session_cleanup.py"
               - "src/kiro_crew/session_pool.py"
               - "test/test_darwin_native_provider_reap.py"
+              # The two darwin gap lists a change here can silently widen.
               - "test/macos-expected-failures.txt"
               - "test/macos-collect-ignore.txt"
               # This lane and the workflow it calls.
@@ -262,7 +272,7 @@ jobs:
           # platform-tests.yml, since shards past the matrix cap queue behind the
           # first wave inside the same run. So this number has to move whenever
           # either of those does, or the real ceiling drifts while this value
-          # looks untouched: 4 runs of min(5 shards, max-parallel 4) is 16 jobs,
+          # looks untouched: 4 runs of min(6 shards, max-parallel 4) is 16 jobs,
           # inside the 18 the pool was calibrated at
           # (test_macos_platform_tests_gate.py asserts the product).
           # Measured 2026-09-24: this lane
@@ -273,10 +283,10 @@ jobs:
           # macOS work; it WAS the pool, and `build.yml` and `release.yml` (the
           # signing paths, which cannot run anywhere else) queued behind it.
           # A capped run is skipped outright rather than queued, so the ceiling
-          # bounds demand and not just occupancy: 5 shards at max-parallel 4 run
-          # in two shard-waves, about 52 minutes of wall clock a suite against
-          # about 27 for one wave (platform-tests.yml carries the per-shard
-          # measurement), so 4 live runs settle at about four or five verdicts
+          # bounds demand and not just occupancy: 6 shards at max-parallel 4 run
+          # in two shard-waves (4 then 2) of about 25 minutes each, about 50
+          # minutes of wall clock a suite (platform-tests.yml carries the
+          # per-shard measurement), so 4 live runs settle at about four or five verdicts
           # an hour. That is a deliberate
           # trade -- a timely verdict for a few pull requests instead of a
           # 14-hour verdict for all of them, with the nightly still covering
@@ -304,17 +314,16 @@ jobs:
           if [ "$bucket" -eq 0 ]; then reason="${reason:+$reason,}sample"; fi
           # Added lines only (`-U0`, `^+` minus the `+++` header). No `grep -q`
           # at the end of the pipe: under pipefail its early exit can SIGPIPE
-          # the grep before it and turn a match into a miss. A diff that cannot
-          # be read leaves the switch off with a warning rather than failing
-          # `decide` -- this lane is advisory, and the other switches still apply.
-          if [ -n "${BASE_SHA:-}" ] \
-              && added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}" -- '*.py' '*.sh')"; then
+          # the grep before it and turn a match into a miss. HEAD^1 is the
+          # base-branch tip, so this diff is exactly the set of lines this PR
+          # adds -- no history beyond depth-2 is needed.
+          if added="$(git diff -U0 --no-color HEAD^1 HEAD -- '*.py' '*.sh')"; then
             hits="$(printf '%s\n' "$added" | grep -P '^\+(?!\+\+)' | grep -cP "$LINUX_ONLY_PRIMITIVES" || true)"
             if [ "${hits:-0}" -gt 0 ]; then
               reason="${reason:+$reason,}content"
             fi
           else
-            echo "::warning::could not read ${BASE_SHA:-<no base>}...${HEAD_SHA}; the content switch is off for this run"
+            echo "::warning::could not compute diff HEAD^1..HEAD; the content switch is off for this run"
           fi
 
           # A fork head keeps only the label switch (see the job comment). Unset
@@ -421,7 +430,7 @@ jobs:
           fi
 
   # The nightly's own workflow, called against this pull request's head. Same
-  # five shards, same 40-minute cap per shard, same contracts -- and the same
+  # six shards, same 40-minute cap per shard, same contracts -- and the same
   # runner queue, which is why it is behind `decide` and outside readiness.
   platform-tests:
     name: macOS Tests

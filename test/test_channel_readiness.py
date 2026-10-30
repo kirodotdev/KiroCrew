@@ -36,6 +36,12 @@ class TestDescriptorData:
             "MICROSOFT_APP_ID",
             "MICROSOFT_APP_PASSWORD",
         }
+        # The Teams tenant is restart-relevant but NOT a readiness credential:
+        # an unset tenant is the supported multi-tenant mode, so it must not
+        # read as missing. It lives in restart_credentials, which the live-reload
+        # matcher unions in but readiness ignores.
+        assert by_name["teams"].restart_credentials == ("MICROSOFT_APP_TENANT_ID",)
+        assert "MICROSOFT_APP_TENANT_ID" not in by_name["teams"].credentials
         assert set(by_name["slack"].credentials) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"}
 
     def test_imessage_declares_no_credential_because_it_has_none(self) -> None:
@@ -65,6 +71,20 @@ class TestReadiness:
             )
         }
         assert rows["telegram"].ready is True
+
+    def test_teams_is_ready_without_a_tenant_multi_tenant_mode(self) -> None:
+        # Tenant unset is the supported multi-tenant mode, so Teams with its app
+        # id and password is READY even though no tenant is set -- the tenant is
+        # a restart_credentials entry, not a readiness credential.
+        rows = {
+            r.channel_type: r
+            for r in channel_readiness(
+                _cfg(teams=SimpleNamespace(enabled=True, app_id="")),
+                {"MICROSOFT_APP_ID": "app", "MICROSOFT_APP_PASSWORD": "pw"},
+            )
+        }
+        assert rows["teams"].ready is True
+        assert "MICROSOFT_APP_TENANT_ID" not in rows["teams"].missing_credentials
 
     def test_a_two_credential_channel_reports_only_what_is_missing(self) -> None:
         rows = {

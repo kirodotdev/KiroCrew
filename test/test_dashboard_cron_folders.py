@@ -310,7 +310,6 @@ class TestCronFolderDeleteStateMethod:
             {"id": "f2", "name": "Keep", "order": 1},
         ]
 
-        # Mock crons service
         job_in_folder = MagicMock()
         job_in_folder.id = "job1"
         job_in_folder.folder_id = "f1"

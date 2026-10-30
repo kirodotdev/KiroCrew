@@ -17,7 +17,9 @@ the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
 cron firings, task-runner steps) while posture is CRITICAL, so the scheduler
 stops piling work onto a host that is about to freeze. Subagent spawns are not
-gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``). Direct user chat turns
+gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``),
+which the pull tool reports on the gate's own figure (:func:`spawn_floor_reading`)
+because the posture can read AMPLE while that floor holds every start. Direct user chat turns
 and the gateway's own operation are never gated, and the gate fails open on an
 unknown posture. (A hard, cross-session admission lease is a separate, heavier
 design.)
@@ -50,6 +52,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, MutableMapping
@@ -460,8 +463,16 @@ class ResourceStatus:
     def _load_suffix(self) -> str:
         return f", load {self.load_per_cpu}/core" if self.load_per_cpu is not None else ""
 
-    def context_line(self) -> str:
+    def context_line(
+        self, *, remote: bool = False, workspace_memory: "tuple[int, int] | None" = None
+    ) -> str:
         """The compact ``[RESOURCES]`` advisory injected on a pressured turn.
+
+        ``remote`` is set for a session whose workspace is a remote session
+        environment: the line then scopes the reading to the gateway machine and
+        says the workspace is not measured, instead of advising lighter builds.
+        ``workspace_memory`` (available, total bytes), when a recent reading of
+        that remote machine exists, is reported too and judged on its own.
 
         Returns ``""`` when the line is disabled (``pressure_gb <= 0`` — the
         documented off switch), or when neither ceiling is near: memory is ample
@@ -478,6 +489,8 @@ class ResourceStatus:
         """
         if self.pressure_gb <= 0:
             return ""  # off switch: disables the line regardless of critical tier
+        if remote:
+            return self._remote_line(workspace_memory)
         if not self.under_pressure:
             if self.memory_pressure_held:
                 return self._kernel_pressure_line()
@@ -519,12 +532,75 @@ class ResourceStatus:
             "the resource_status tool to re-check."
         ) + self._tasks_clause()
 
-    def _tasks_clause(self) -> str:
-        """Sentence appended to a memory advisory when tasks are ALSO near the cap."""
+    def _remote_line(self, workspace_memory: "tuple[int, int] | None") -> str:
+        """The line for a session whose workspace is a remote machine.
+
+        Two machines, each judged on its own reading: the gateway (engine and
+        subagents) and the workspace (builds, tests, shells). Build advice is
+        given only when the WORKSPACE is tight, and sub-agent advice only when
+        the gateway is; silent when both are clear.
+        """
+        ws_text, ws_tight = "", False
+        if workspace_memory is not None:
+            available, total = workspace_memory
+            ws_gb = available / 1024**3
+            # Judged on the workspace's own size: the gateway's floor alone would
+            # call an idle 4 GB workspace tight on every turn.
+            ws_tight = ws_gb <= min(self.pressure_gb, total / 1024**3 / 4)
+            ws_total_gb = total / 1024**3
+            # One decimal below 10 GB, so a 512 MiB container is not "of 0 GB".
+            total_text = f"{ws_total_gb:.0f}" if ws_total_gb >= 10 else f"{ws_total_gb:.1f}"
+            ws_text = f"~{ws_gb:.1f} of {total_text} GB free"
+        # The macOS kernel pressure level describes the gateway, like the figure.
+        gateway_pressed = self.under_pressure or self.memory_pressure_held
+        if not gateway_pressed and not ws_tight:
+            if self.slice_tasks_tight:
+                tasks_line = self._tasks_only_line().removeprefix("[RESOURCES] ")
+                return "[RESOURCES] (gateway machine) " + tasks_line
+            return ""
+        parts = []
+        if self.under_pressure:
+            level = "CRITICALLY low" if self.posture == POSTURE_CRITICAL else "tight"
+            parts.append(
+                f"The gateway machine (where this session's engine and subagents run) "
+                f"is {level} on memory (~{self.available_gb:.1f} GB free"
+                f"{self._load_suffix()}), so keep sub-agent waves small." + self._pressure_clause()
+            )
+        elif gateway_pressed:
+            parts.append(
+                "The gateway machine (where this session's engine and subagents run) "
+                "is under kernel memory pressure, so keep sub-agent waves small."
+                + self._pressure_clause()
+            )
+        if ws_tight:
+            parts.append(
+                f"Your remote workspace machine is tight on memory ({ws_text}): before "
+                "heavy work there, prefer targeted tests and serialize memory-heavy builds."
+            )
+        elif ws_text:
+            parts.append(
+                f"Your remote workspace machine is a separate machine with {ws_text}, "
+                "so builds, tests and shells there are not limited by the gateway."
+            )
+        else:
+            parts.append(
+                "Your workspace is a separate remote machine this does not measure, so "
+                "do not narrow builds, tests or shells there for it."
+            )
+        return "[RESOURCES] " + " ".join(parts) + self._tasks_clause(name_gateway=True)
+
+    def _tasks_clause(self, *, name_gateway: bool = False) -> str:
+        """Sentence appended to a memory advisory when tasks are ALSO near the cap.
+
+        ``name_gateway`` names the machine when the advisory before it is about
+        another one (a remote workspace), so the cgroup reading is not read as
+        that machine's.
+        """
         if not self.slice_tasks_tight:
             return ""
+        where = "On the gateway machine, the agent slice" if name_gateway else "The agent slice"
         return (
-            f" The agent slice is also near its task ceiling ({self.slice_tasks_text()}); "
+            f" {where} is also near its task ceiling ({self.slice_tasks_text()}); "
             "past it every agent under that slice fails to fork at once, so close idle "
             "sessions rather than adding more."
         )
@@ -577,6 +653,161 @@ class ResourceStatus:
             lines.append(f"  Agent slice tasks: {tasks}{band}")
         lines.extend(adaptive_summary_lines())
         return lines
+
+
+# ── Temp-directory headroom ───────────────────────────────────────────────────
+# A test run or build that fills the temp directory fails with ENOSPC, and on a
+# tmpfs ``/tmp`` the inodes usually run out first: every fake HOME a test run
+# creates there rebuilds its own bytecode, uv and npm caches, tens of thousands
+# of small files each, while the byte count still looks healthy. Both fractions
+# are checked, plus an absolute inode floor, with the same thresholds as the
+# doctor's Runtime tmpfs row so the two never disagree about one directory.
+TEMP_FREE_PCT_WARN = 10.0
+TEMP_FREE_INODES_FLOOR = 1000
+
+
+@dataclass(frozen=True)
+class TempHeadroom:
+    """Free space and inodes of one temp root, as fractions and a count."""
+
+    root: str
+    free_space_pct: float
+    free_inode_pct: float
+    free_inodes: int
+    # False on a filesystem that keeps no inode count; the two inode fields then
+    # hold "not a constraint" placeholders and are never printed as a reading.
+    counts_inodes: bool = True
+
+    @property
+    def low_space(self) -> bool:
+        return self.free_space_pct < TEMP_FREE_PCT_WARN
+
+    @property
+    def low_inodes(self) -> bool:
+        if not self.counts_inodes:
+            return False
+        return self.free_inode_pct < TEMP_FREE_PCT_WARN or self.free_inodes < TEMP_FREE_INODES_FLOOR
+
+    @property
+    def low(self) -> bool:
+        return self.low_space or self.low_inodes
+
+    def text(self) -> str:
+        inodes = (
+            f"{self.free_inode_pct:.0f}% inodes free ({self.free_inodes} inodes)"
+            if self.counts_inodes
+            else "no inode limit"
+        )
+        reading = f"{self.free_space_pct:.0f}% space free, {inodes}"
+        if not self.low:
+            return reading
+        if self.low_space and self.low_inodes:
+            what = "space and inodes"
+        elif self.low_space:
+            what = "space"
+        else:
+            what = "inodes"
+        return f"LOW on {what}, {reading}"
+
+
+def temp_roots() -> list[str]:
+    """Temp roots this process uses, with duplicate filesystems listed once.
+
+    ``tempfile.gettempdir()`` skips configured directories that are not
+    writable, including a full one. The first existing ``TMPDIR``, ``TEMP`` or
+    ``TMP`` directory is therefore included independently so its exhaustion is
+    still reported. ``/tmp`` remains first on non-Windows systems because test
+    homes and sockets can use it even when the configured root is elsewhere.
+    """
+    roots: list[str] = []
+    seen: set[int] = set()
+    candidates = [] if sys.platform == "win32" else ["/tmp"]
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        configured = os.environ.get(name)
+        if configured and os.path.isdir(configured):
+            candidates.append(configured)
+            break
+    try:
+        candidates.append(tempfile.gettempdir())
+    except OSError:
+        # gettempdir() raises when no candidate directory is writable.
+        pass
+    for root in candidates:
+        try:
+            dev = os.stat(root).st_dev
+        except OSError:
+            continue
+        if dev in seen:
+            continue
+        seen.add(dev)
+        roots.append(root)
+    return roots
+
+
+def temp_headroom(root: str) -> TempHeadroom | None:
+    """Measure *root*, or ``None`` when it cannot be measured.
+
+    A filesystem without inode accounting (``f_files == 0``: btrfs, some FUSE
+    mounts) cannot run out of inodes, so it reads as fully free on that axis
+    and never trips the absolute floor.
+    """
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        return None
+    try:
+        st = statvfs(root)
+    except OSError:
+        return None
+    free_space_pct = 100.0 * st.f_bavail / st.f_blocks if st.f_blocks else 100.0
+    if st.f_files:
+        return TempHeadroom(
+            root, free_space_pct, 100.0 * st.f_favail / st.f_files, int(st.f_favail)
+        )
+    # The doctor row compares these placeholders directly, so they must read as
+    # unconstrained on both axes as well as being flagged as unmeasured.
+    return TempHeadroom(root, free_space_pct, 100.0, TEMP_FREE_INODES_FLOOR, counts_inodes=False)
+
+
+def temp_headroom_lines() -> list[str]:
+    """The pull tool's temp-space block, plus a guidance line when one is low.
+
+    Empty when no root can be measured, so a host without ``statvfs`` prints
+    nothing rather than an "unknown" line on every call.
+    """
+    readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
+    if not readings:
+        return []
+    lines = ["Temp space (advisory):"]
+    lines.extend(f"  {r.root}: {r.text()}" for r in readings)
+    low = [r.root for r in readings if r.low]
+    if low:
+        lines.append(
+            f"\nGuidance: temp space is low on {', '.join(low)}. Writes there fail with "
+            "ENOSPC once it fills. Do not start test runs or builds that put a HOME or "
+            f"caches there; {_temp_alternative(low)}"
+        )
+    return lines
+
+
+def _temp_alternative(low_roots: list[str]) -> str:
+    """Where to send the work instead, never a place on a device already low.
+
+    ``$KIROCREW_SCRATCH`` is usually the same directory as ``$TMPDIR``, so it is
+    named only when it sits on a device none of *low_roots* shares AND its own
+    reading is not low.
+    """
+    scratch = os.environ.get("KIROCREW_SCRATCH", "")
+    if scratch:
+        try:
+            scratch_dev = os.stat(scratch).st_dev
+            low_devs = {os.stat(root).st_dev for root in low_roots}
+        except OSError:
+            scratch_dev, low_devs = None, set()
+        if scratch_dev is not None and scratch_dev not in low_devs:
+            reading = temp_headroom(scratch)
+            if reading is not None and not reading.low:
+                return "use $KIROCREW_SCRATCH instead."
+    return "free space there or use a filesystem that is not low."
 
 
 def adaptive_state() -> dict | None:
@@ -742,6 +973,169 @@ def _classify(available_gb: float, pressure_gb: float, critical_gb: float) -> st
     if pressure_gb > 0 and available_gb <= pressure_gb:
         return POSTURE_TIGHT
     return POSTURE_AMPLE
+
+
+#: What a blocked reading means, on the summary line. Scoped to local top-level
+#: starts: a running subagent's shared nested start skips its own start charge,
+#: and a remote session's children owe no floor at all.
+_BLOCKED_NOTE = "new top-level subagents wait in the queue"
+
+
+@dataclass(frozen=True)
+class SpawnFloorReading:
+    """The subagent spawn floor checked against the gate's own memory figure.
+
+    The posture reads the reclaimable sum (``_available_memory_gb``) against
+    ``resource_pressure_gb``; the spawn gate reads its own, stricter figure
+    (``check_memory_available``) against ``agent.spawn_min_memory_gb`` plus the
+    price of the start (``subagent_manager/admission/gate.py``). The two can
+    disagree, so a posture of AMPLE does not say a subagent can start. This
+    reading says it with the gate's own figure and prices.
+
+    The bar assumes nothing is warming and the cheapest start: the live reserve
+    for starts still warming lives in the gateway's manager, so it is a lower
+    bound.
+    """
+
+    floor_gb: float  # agent.spawn_min_memory_gb; <= 0 disables the gate
+    available_gb: float  # the gate's figure; -1.0 when unmeasurable (gate fails open)
+    min_start_gb: float  # floor plus the lowest price a top-level start can carry
+    unknown_note: str = ""  # set when the gate defers on a figure it cannot read
+    remote: bool = False  # the caller's workspace is remote: its children owe no floor
+
+    @property
+    def enabled(self) -> bool:
+        return self.floor_gb > 0
+
+    @property
+    def blocked(self) -> bool:
+        """True when no local top-level subagent start can be admitted right now."""
+        if not self.enabled or self.remote:
+            return False
+        if self.unknown_note:
+            return True
+        return 0 <= self.available_gb < self.min_start_gb
+
+    def summary_line(self) -> str:
+        """The pull tool's line for the floor, stated against the gate's figure."""
+        if not self.enabled:
+            return "  Subagent spawn floor: off (agent.spawn_min_memory_gb is 0)"
+        head = f"  Subagent spawn floor: {self.floor_gb:g} GB must stay free after a start"
+        if self.remote:
+            return (
+                f"{head}; not applied to this session's subagents, whose workspace is "
+                "remote (only their engines start here)"
+            )
+        if self.unknown_note:
+            return f"{head}; {self.unknown_note} — BLOCKED: {_BLOCKED_NOTE}"
+        if self.available_gb < 0:
+            return f"{head}; the gate's memory figure is unreadable here, so starts are not held"
+        line = (
+            f"{head}; the gate reads {self.available_gb:.1f} GB, a top-level start needs at least "
+            f"{self.min_start_gb:.2f} GB (more for a dedicated one or while other "
+            "starts are warming)"
+        )
+        if self.blocked:
+            return line + f" — BLOCKED: {_BLOCKED_NOTE}"
+        return line
+
+    def blocked_sentence(self) -> str:
+        """One sentence saying spawning is blocked and why, or ``""``."""
+        if not self.blocked:
+            return ""
+        if self.unknown_note:
+            return (
+                f"new top-level subagents cannot start now ({self.unknown_note}); "
+                "they wait in the queue"
+            )
+        return (
+            f"new top-level subagents cannot start now — the gate reads "
+            f"{self.available_gb:.1f} GB and one needs at least {self.min_start_gb:.2f} GB; "
+            "they wait in the queue until memory frees"
+        )
+
+
+def _read_spawn_floor_figure(min_gb: float) -> tuple[float, str]:
+    """The spawn gate's own memory figure (GB, -1 unmeasurable) and its cause."""
+    from kiro_crew.subagent import check_memory_available, pop_memory_check_cause
+
+    pop_memory_check_cause()  # drop a cause left by any earlier reading
+    _ok, avail = check_memory_available(min_gb=min_gb)
+    return avail, pop_memory_check_cause()
+
+
+def _read_learned_settled() -> dict[str, float] | None:
+    """The learned settled figures the gate prices dedicated starts from, or
+    ``None`` when the cost log cannot be read whole. Same read as the manager's."""
+    try:
+        from kiro_crew.subagent_cost import SETTLED_SAMPLE_MAX_AGE_SECS, read_learned_costs_checked
+
+        costs, complete = read_learned_costs_checked(
+            "settled_gb",
+            dedicated_only=True,
+            max_age_secs=SETTLED_SAMPLE_MAX_AGE_SECS,
+        )
+        # A partial read can miss a figure the manager still holds from an
+        # earlier read, so only a complete one may raise the bar.
+        if not complete:
+            return None
+        return dict(costs or {})
+    except Exception:
+        logger.debug("learned settled figures unreadable", exc_info=True)
+        return None
+
+
+def _cheapest_dedicated_price_gb(cost_gb: float) -> float:
+    """The lowest price the gate gives a local dedicated start of any bucket.
+
+    A bucket with no learned figure is priced at ``_UNLEARNED_DEDICATED_START_GB``
+    at least; a learned one at its figure. When the figures cannot be read, the
+    bare ``cost_gb`` is the only bound known, so it is used.
+    """
+    from kiro_crew.subagent import REMOTE_COST_BUCKET_SUFFIX, _dedicated_start_price_gb
+
+    settled = _read_learned_settled()
+    if settled is None:
+        return cost_gb
+    local = [b for b in settled if not b.endswith(REMOTE_COST_BUCKET_SUFFIX)]
+    # The empty-string key is never written (it normalizes to the default
+    # agent), so it stands for a bucket with nothing learned.
+    unlearned = _dedicated_start_price_gb(cost_gb, {}, "")
+    return min([unlearned] + [_dedicated_start_price_gb(cost_gb, settled, b) for b in local])
+
+
+def spawn_floor_reading(cfg: object | None = None, *, remote: bool = False) -> SpawnFloorReading:
+    """Check ``agent.spawn_min_memory_gb`` against the gate's figure. Never raises.
+
+    The prices are the gate's helpers (``start_pricing``): the cheapest
+    top-level start is a shared one at the lowest dedicated price the gate gives
+    any local bucket (:func:`_cheapest_dedicated_price_gb`). *remote* is set when the calling session's workspace
+    is remote: the gate prices that session's children without the floor, so no
+    reading is taken and nothing is reported as blocked. A failure reads as a
+    disabled floor, so the tool says nothing it did not measure.
+    """
+    try:
+        from kiro_crew.subagent import (
+            MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
+            _shared_start_price_gb,
+            _spawn_memory_floor_and_cost,
+        )
+
+        agent_cfg = getattr(cfg if cfg is not None else _load_config(), "agent", None)
+        floor_gb, cost_gb = _spawn_memory_floor_and_cost(agent_cfg)
+        if floor_gb <= 0 or remote:
+            return SpawnFloorReading(floor_gb, -1.0, floor_gb, remote=remote)
+        min_start = floor_gb + _shared_start_price_gb(_cheapest_dedicated_price_gb(cost_gb))
+        avail, cause = _read_spawn_floor_figure(min_start)
+        note = (
+            "memory headroom unknown: a cgroup memory limit is set but its usage is unreadable"
+            if cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            else ""
+        )
+        return SpawnFloorReading(floor_gb, avail, min_start, note)
+    except Exception:  # pragma: no cover - defensive; the probe must never raise
+        logger.debug("spawn floor reading failed", exc_info=True)
+        return SpawnFloorReading(0.0, -1.0, 0.0)
 
 
 def _load_config() -> object | None:

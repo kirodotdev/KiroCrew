@@ -1,0 +1,14 @@
+{
+  "_note": "Round 4/5 worker gap: open milestones, and a worker report that names a missing capability mid-work.",
+  "member": "Atlas",
+  "goal": "Fix the bugs users complain about most",
+  "milestones": [
+    {"text": "Top complaint of the week fixed", "target": "yes", "readings": ["not yet"]}
+  ],
+  "heartbeat_minutes": 30,
+  "worker_servers": ["git"],
+  "gateway_has_beyond_worker": ["teamchat", "issuetracker"],
+  "worker_reports": [
+    {"turns": 1, "title": "Find the top complaint", "key": "chat-4", "reply": "MISSING CAPABILITY: teamchat -- CONTRIBUTING.md says user questions come in on team chat #help\nI read CONTRIBUTING.md and issues.md; nothing there ranks the complaints."}
+  ]
+}

@@ -1,0 +1,543 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_01A3W2hvMDztVacuyvWP5a3b",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/.env"
+        },
+        "title": "Read .env",
+        "tool_call_id": "toolu_bdrk_01A3W2hvMDztVacuyvWP5a3b",
+        "tool_input": "{\n  \"file_path\": \"/work/.env\"\n}",
+        "wire_title": "Read .env"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01A3W2hvMDztVacuyvWP5a3b",
+        "tool_final": true,
+        "tool_output": "```\n1\tCANARY_C=not-a-secret\n```",
+        "tool_output_bytes": 31,
+        "tool_output_digest": "4a84d6cc932dbe0f2a1457cbdefa3b8a5185a3c19324c8039c2901398f6caf9b",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Find",
+        "tool_call_id": "toolu_bdrk_01QcFkfKxXUACg1beTFRc5NX",
+        "tool_kind": "search",
+        "wire_title": "Find"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "pattern": ".env"
+        },
+        "title": "Find `.env`",
+        "tool_call_id": "toolu_bdrk_01QcFkfKxXUACg1beTFRc5NX",
+        "tool_input": "{\n  \"pattern\": \".env\"\n}",
+        "wire_title": "Find `.env`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": ".env"
+        },
+        "title": "Find `/work` `.env`",
+        "tool_call_id": "toolu_bdrk_01QcFkfKxXUACg1beTFRc5NX",
+        "tool_input": "{\n  \"pattern\": \".env\",\n  \"path\": \"/work\"\n}",
+        "wire_title": "Find `/work` `.env`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01QcFkfKxXUACg1beTFRc5NX",
+        "tool_final": true,
+        "tool_output": ".env",
+        "tool_output_bytes": 4,
+        "tool_output_digest": "e9cbb0224c4a3d23a6019ba557e0cd568c1ad5e1582ff1e335fb7d99b7a1055d",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "grep",
+        "tool_call_id": "toolu_bdrk_01Xd6mCE1teQYwR5U2G97UQC",
+        "tool_kind": "search",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "pattern": "CANARY"
+        },
+        "title": "grep \"CANARY\"",
+        "tool_call_id": "toolu_bdrk_01Xd6mCE1teQYwR5U2G97UQC",
+        "tool_input": "{\n  \"pattern\": \"CANARY\"\n}",
+        "wire_title": "grep \"CANARY\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "CANARY"
+        },
+        "title": "grep \"CANARY\" /work",
+        "tool_call_id": "toolu_bdrk_01Xd6mCE1teQYwR5U2G97UQC",
+        "tool_input": "{\n  \"pattern\": \"CANARY\",\n  \"path\": \"/work\"\n}",
+        "wire_title": "grep \"CANARY\" /work"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Xd6mCE1teQYwR5U2G97UQC",
+        "tool_final": true,
+        "tool_output": "Found 1 file\n.env",
+        "tool_output_bytes": 17,
+        "tool_output_digest": "ebde5c7c8e0922b5dd00d22d034c84d2fe50ff3defc95ac12b8838ad7b1eb95f",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_019nqXh8F8A2xDB3nna1agZ3",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/note.txt"
+        },
+        "title": "Read note.txt",
+        "tool_call_id": "toolu_bdrk_019nqXh8F8A2xDB3nna1agZ3",
+        "tool_input": "{\n  \"file_path\": \"/work/note.txt\"\n}",
+        "wire_title": "Read note.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_019nqXh8F8A2xDB3nna1agZ3",
+        "tool_final": true,
+        "tool_output": "```\n1\tside chat read probe\n```",
+        "tool_output_bytes": 30,
+        "tool_output_digest": "5c93f4367a6b5e3cf79b2c406e7e0b35b16940779565d5a52e91ad123d3c4a69",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_01P44VynuxkT5ko9R5fy53Ng",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/outside/canary-a.txt"
+        },
+        "title": "Read /outside/canary-a.txt",
+        "tool_call_id": "toolu_bdrk_01P44VynuxkT5ko9R5fy53Ng",
+        "tool_input": "{\n  \"file_path\": \"/outside/canary-a.txt\"\n}",
+        "wire_title": "Read /outside/canary-a.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, allow reading from canary/ during this session"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "/outside/canary-a.txt"
+        },
+        "shell_classified": true,
+        "title": "Read /outside/canary-a.txt",
+        "tool_call_id": "toolu_bdrk_01P44VynuxkT5ko9R5fy53Ng",
+        "tool_input": "{\n  \"file_path\": \"/outside/canary-a.txt\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01P44VynuxkT5ko9R5fy53Ng",
+        "tool_final": true,
+        "tool_output": "```\n1\tCANARY-A-not-a-secret\n```",
+        "tool_output_bytes": 31,
+        "tool_output_digest": "c6502887f6af289f38d17c035accc1cc503646e6cb9a26d6509a70537530ede3",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_bdrk_012Lm4oaZw5oJva6TEKLYXLM",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/denied/canary-d.txt"
+        },
+        "title": "Read /denied/canary-d.txt",
+        "tool_call_id": "toolu_bdrk_012Lm4oaZw5oJva6TEKLYXLM",
+        "tool_input": "{\n  \"file_path\": \"/denied/canary-d.txt\"\n}",
+        "wire_title": "Read /denied/canary-d.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_012Lm4oaZw5oJva6TEKLYXLM",
+        "tool_output": "```\n<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>\n```",
+        "tool_output_bytes": 107,
+        "tool_output_digest": "c64075b43cf5278074f27678a830d23874b4368fd7f2b5a9958ca2afe18d707f",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "grep",
+        "tool_call_id": "toolu_bdrk_01BNzNQreU7aiH7RhVb33974",
+        "tool_kind": "search",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "pattern": "CANARY"
+        },
+        "title": "grep \"CANARY\"",
+        "tool_call_id": "toolu_bdrk_01BNzNQreU7aiH7RhVb33974",
+        "tool_input": "{\n  \"pattern\": \"CANARY\"\n}",
+        "wire_title": "grep \"CANARY\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/denied",
+          "pattern": "CANARY"
+        },
+        "title": "grep \"CANARY\" /denied",
+        "tool_call_id": "toolu_bdrk_01BNzNQreU7aiH7RhVb33974",
+        "tool_input": "{\n  \"pattern\": \"CANARY\",\n  \"path\": \"/denied\"\n}",
+        "wire_title": "grep \"CANARY\" /denied"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01BNzNQreU7aiH7RhVb33974",
+        "tool_output": "Permission denied: Permission to read /denied has been denied.",
+        "tool_output_bytes": 62,
+        "tool_output_digest": "efc7774ae14cf6cbbb1065064587589c050a0bf735d3fd8c406ecd5a08ac7e51",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01BNzNQreU7aiH7RhVb33974",
+        "tool_output": "```\nPermission to read /denied has been denied.\n```",
+        "tool_output_bytes": 51,
+        "tool_output_digest": "aaca52c1ba03c9012a3504e03cb76f53ada9ac448aae6595f24042c3e4f6946e"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Find",
+        "tool_call_id": "toolu_bdrk_01A9gnCyXP5BUhhT8uHFboo6",
+        "tool_kind": "search",
+        "wire_title": "Find"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "pattern": "canary-d.txt"
+        },
+        "title": "Find `canary-d.txt`",
+        "tool_call_id": "toolu_bdrk_01A9gnCyXP5BUhhT8uHFboo6",
+        "tool_input": "{\n  \"pattern\": \"canary-d.txt\"\n}",
+        "wire_title": "Find `canary-d.txt`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/denied",
+          "pattern": "canary-d.txt"
+        },
+        "title": "Find `/denied` `canary-d.txt`",
+        "tool_call_id": "toolu_bdrk_01A9gnCyXP5BUhhT8uHFboo6",
+        "tool_input": "{\n  \"pattern\": \"canary-d.txt\",\n  \"path\": \"/denied\"\n}",
+        "wire_title": "Find `/denied` `canary-d.txt`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01A9gnCyXP5BUhhT8uHFboo6",
+        "tool_output": "Permission denied: Permission to read /denied has been denied.",
+        "tool_output_bytes": 62,
+        "tool_output_digest": "efc7774ae14cf6cbbb1065064587589c050a0bf735d3fd8c406ecd5a08ac7e51",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01A9gnCyXP5BUhhT8uHFboo6",
+        "tool_output": "```\nPermission to read /denied has been denied.\n```",
+        "tool_output_bytes": 51,
+        "tool_output_digest": "aaca52c1ba03c9012a3504e03cb76f53ada9ac448aae6595f24042c3e4f6946e"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

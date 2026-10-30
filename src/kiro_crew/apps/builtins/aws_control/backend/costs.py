@@ -43,7 +43,7 @@ def read_cached(account: str) -> Optional[dict[str, Any]]:
         # A corrupted/hand-edited cache decoding to a list or scalar must read
         # as "no cache", not crash the console route on the first .get().
         return data if isinstance(data, dict) else None
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 

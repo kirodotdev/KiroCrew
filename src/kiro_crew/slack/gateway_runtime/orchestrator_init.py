@@ -20,9 +20,10 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_open_channels``, ``_owner_id``, ``_pending_queue``, ``_pending_update_mandatory``,
-``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_port_override``,
+``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_pending_update_version``,
+``_port_override``,
 ``_profile_watch_task``, ``_runner_admission``, ``_runner_admission_adopted``,
-``_running_script_ids``, ``_session_tasks``, ``_sign_in_refresher_task``,
+``_running_script_ids``, ``_session_environments_ready``, ``_session_tasks``, ``_sign_in_refresher_task``,
 ``_slack_enabled``, ``_socket_client``, ``_subagent_coalescer_inst``, ``_test_mode``,
 ``_tracking_channels``, ``_update_apply_deferred``, ``_update_check_task``,
 ``_wecom_client``, ``_wheel_update_noticed``, ``autonudge_svc``, ``channel_history``,
@@ -124,6 +125,7 @@ def __init__(
     self._channel_transports_started = False
     self._channel_restart_tasks = set()
     self._channel_restart_gen = {}
+    self._session_environments_ready = False
     self._config_subs = []
     self._register_config_appliers()
 
@@ -189,6 +191,9 @@ def __init__(
     # write-after-clear race without any event-loop dependency.
     self._marker_clear_pending = threading.Event()
     self._dashboard_runner = None
+    # Enterprise build: the service whose boot probe saw the kiro login, handed
+    # to the dashboard so its gate starts open on that verdict. None in oss.
+    self._boot_kiro_service = None
     self._handler_tasks = set()  # type: ignore[type-arg]
     self._session_tasks = {}  # type: ignore[type-arg]
     self._pending_queue = {}
@@ -219,6 +224,10 @@ def __init__(
     # grace instead of restarting the clock.
     self._pending_update_mandatory = False
     self._pending_update_mandatory_key = ""
+    # The version a voluntary managed-venv pending restart would start, so each
+    # retry can honour the user's "Later" for it; empty for a policy floor's
+    # restart and for the git and provider routes, whose code is already replaced.
+    self._pending_update_version = ""
     self._mandatory_update_deferred_at = None
     self._mandatory_update_deferred_key = None
     # Managed-venv notices already sent in this process, so each reaches the

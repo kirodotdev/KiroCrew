@@ -113,7 +113,7 @@ def test_resolve_peer_identity_cycle_terminates(tmp_path: Path) -> None:
 def test_signed_only_refuses_forged_unsigned_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REGRESSION (review finding): the bare .txt is same-uid agent-writable,
+    """The bare .txt is same-uid agent-writable,
     so an attacker planting session_pid_<own_pid>.txt with a victim's key
     must NOT satisfy the authorization walk — signed_only requires the HMAC
     sidecar the attacker cannot produce."""
@@ -1367,7 +1367,7 @@ async def test_unix_site_end_to_end_peer_verification(
 def test_check_origin_trusts_unix_transport_without_origin() -> None:
     """An AF_UNIX request has no loopback request.remote; without this trust
     the CSRF middleware would 403 every mutating internal call on the socket
-    before token auth ever ran (review finding)."""
+    before token auth ever ran."""
     from kiro_crew.dashboard.origin import check_origin
 
     req, _store = _make_request(unix=True)
@@ -1742,3 +1742,98 @@ async def test_unattested_record_keeps_the_recorded_count_on_the_roster_arms(
         err = denied[0]["error"]
         assert shape in err, err
         assert "hosts 2 sessions" in err, err
+
+
+# ---------------------------------------------------------------------------
+# A spawn_run shared subagent on a pid whose mapping names only its parent
+# ---------------------------------------------------------------------------
+# The mapping's roster comes from the session manager, which never registers a
+# shared subagent, so the parent's turn publishes a COMPLETE roster that omits
+# it. The subagent's own stubs (kirocrew-core: skill_search, ...) declare the
+# subagent's key with the subagent's token, and the tenancy table binds that key
+# to the pid for the turn. Denying on roster absence 403'd every such call with
+# peer_session_mismatch.
+
+_PARENT = "dashboard:chat-1-parent"
+_CHILD = "subagent:run-7-child"
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_a_shared_subagent_the_roster_omits_is_admitted_on_its_token_and_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _wire_peer(
+        monkeypatch,
+        resolved=_PARENT,
+        attests=_CHILD,
+        bound_keys=(_PARENT, _CHILD),
+    )
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={
+            "X-Internal-Secret": SECRET,
+            "X-Session-Key": _CHILD,
+            "X-Session-Token": "tok-for-the-child",
+        },
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+    assert store.get("peer_verified") is True
+    assert not [c for c in calls if c.get("outcome") == "denied"]
+    allowed = [c for c in calls if c.get("operation") == "dashboard.peer-identity-co-tenant"]
+    assert allowed and allowed[0]["error"].endswith("binding=confirmed")
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_a_bound_subagent_key_without_its_token_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The binding only routes to attestation; it never admits on its own.
+
+    The parent shares the process and can read the tenancy-bound child key, so a
+    declaration of it with no token naming it must not pass.
+    """
+    _wire_peer(monkeypatch, resolved=_PARENT, attests="", bound_keys=(_PARENT, _CHILD))
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={"X-Internal-Secret": SECRET, "X-Session-Key": _CHILD},
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    assert json.loads(resp.body)["code"] == "peer_session_unattested"
+    assert "peer_verified" not in store
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_an_unbound_key_is_still_a_mismatch_even_with_its_own_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session the tables do not place on this pid keeps the flat denial.
+
+    A valid token proves who the caller is, not that it lives here, so an
+    unrelated session calling through another runtime's process is refused.
+    """
+    _wire_peer(
+        monkeypatch,
+        resolved=_PARENT,
+        attests="dashboard:chat-9-EVIL",
+        bound_keys=(_PARENT, _CHILD),
+    )
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={
+            "X-Internal-Secret": SECRET,
+            "X-Session-Key": "dashboard:chat-9-EVIL",
+            "X-Session-Token": "tok-for-evil",
+        },
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    assert json.loads(resp.body)["code"] == "peer_session_mismatch"
+    assert "peer_verified" not in store

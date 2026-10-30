@@ -12,7 +12,7 @@
 // - stale transient states (a check-phase error) are NOT replayed at all
 // - a live event that arrives before the replay round-trip resolves wins
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -118,6 +118,27 @@ describe('AboutPanel install-failure replay', () => {
     mountFresh({ onState: (cb) => { push = cb; return () => {} } })
     act(() => { push!({ state: 'downloaded', version: '0.1.3' }) })
     expect(await screen.findByRole('dialog')).toBeTruthy()
+  })
+
+  it('re-arms the About card when the install was refused for a newer build', async () => {
+    // The freshness gate refuses a stage the feed has moved past and pursues the
+    // newest build instead: `install` resolves, the app keeps running, and the
+    // newer build is downloaded. A one-way latch on the resolved install would
+    // leave THAT build's Install button disabled on "Restarting…" for good.
+    let push: ((p: AnyRecord) => void) | null = null
+    mountFresh({
+      lastState: { state: 'downloaded', version: '0.1.3', notes: '' },
+      onState: (cb) => { push = cb; return () => {} },
+    })
+    const card = await screen.findByTestId('update-card')
+    fireEvent.click(within(card).getByRole('button', { name: /install update/i }))
+    await settleReplay()
+
+    act(() => { push!({ state: 'found', version: '0.1.4' }) })
+    act(() => { push!({ state: 'downloaded', version: '0.1.4' }) })
+
+    const again = await within(await screen.findByTestId('update-card')).findByRole('button', { name: /install update/i })
+    expect((again as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('does NOT replay a stale check-phase error as current state', async () => {

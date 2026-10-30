@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
     audit_kill_decision,
     audit_kill_phase,
@@ -246,7 +247,14 @@ class CleanupDeps:
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
     prune_session_pid_mappings: Callable[[], int]
+    # Removes ``session_token_*.sig`` identity mappings past their age limit;
+    # answers how many. See ``session_pid._prune_stale_session_token_files``.
+    prune_session_token_mappings: Callable[[], int]
     prune_member_pid_bindings: Callable[[], int]
+    # Removes staging temps a killed writer left in the sessions directory and
+    # unheld lock sentinels whose transcript is gone; answers how many. See
+    # ``session_staging_sweep``.
+    sweep_session_staging_temps: Callable[[], int]
     # Rotates the bundled shell-audit hook's ``audit.log`` once it reaches its
     # cap; answers whether this call moved it aside. See ``shell_audit_log``.
     rotate_shell_audit_log: Callable[[], bool]
@@ -627,9 +635,14 @@ class SessionCleanup:
                 self._note_reconcile_refusal(reading.reason or "unsupported")
                 return
             self._clear_reconcile_refusal()
+            # Each field as "nonzero", never the raw count: a series is kept per
+            # attribute set for the process's life, and a byte sum or pid count
+            # would open a new one on nearly every pass. The leaked counts stay
+            # on the reading the dashboard serves; five others are in the summary
+            # line below.
             self._deps.emit_counter(
-                "session.runtime_reconcile",
-                reading.as_counter_fields(),
+                SESSION_RUNTIME_RECONCILE,
+                {k: bool(v) for k, v in reading.as_counter_fields().items()},
             )
             if reading.unowned_alive or reading.owned_dead:
                 # ``would_kill`` belongs beside the other four: it is the number an
@@ -643,7 +656,8 @@ class SessionCleanup:
                 # all permanently withheld (long-lived tool work, app backends) or
                 # all "not mine to retract" reads the same every tick, and at
                 # WARNING it was a line per tick for the gateway's life. The
-                # counter above still carries every field on every pass.
+                # counter above still carries every field, as a nonzero flag, on
+                # every supported pass.
                 acted = reading.killed or reading.would_kill or reading.forgotten
                 self._deps.logger.log(
                     logging.WARNING if acted else logging.DEBUG,
@@ -1213,7 +1227,9 @@ class SessionCleanup:
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
             await self._sweep_session_pid_mappings()
+            await self._sweep_session_token_mappings()
             await self._sweep_member_pid_bindings()
+            await self._sweep_session_staging_temps()
             await self._sweep_shell_audit_log()
             await self._maybe_prune_pycache()
             await self._sweep_periodic_pids()
@@ -1306,6 +1322,39 @@ class SessionCleanup:
                 type(exc).__name__,
             )
 
+    async def _sweep_session_token_mappings(self) -> None:
+        """Retract ``session_token_*.sig`` mappings unrefreshed past their age limit.
+
+        Every started session publishes one, and the pass that removes them,
+        ``session_pid._prune_stale_session_token_files``, is otherwise reached
+        only from ``cleanup_orphaned_sessions`` (startup and graceful shutdown).
+        A gateway that keeps running, or that is only ever stopped by a kill,
+        would hold one file per session it has started. The pass needs nothing
+        added, only a caller on a bounded cadence, which this tick is.
+
+        Age is the pass's only signal and it is safe at any cadence: a live
+        session republishes its mapping at the start of every turn, before
+        anything in that turn can call a tool, so the TTL never costs a
+        live session its identity. Blocking glob and unlinks over the same-uid
+        agent-writable data home, so it runs on the maintenance executor like
+        the session-pid mapping sweep.
+        """
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.prune_session_token_mappings,
+            )
+            if removed:
+                self._deps.logger.info(
+                    "Periodic sweep: retracted %d stale session-token mappings",
+                    removed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "session token mapping sweep failed: %s",
+                type(exc).__name__,
+            )
+
     async def _sweep_member_pid_bindings(self) -> None:
         """Collect aged per-pid member-memory binding records.
 
@@ -1331,6 +1380,34 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "member-memory pid binding sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_session_staging_temps(self) -> None:
+        """Reclaim staging temps a killed writer left in the sessions directory.
+
+        A writer that is killed between staging a transcript and renaming it into
+        place leaves the staging file behind, and no in-process handler can remove
+        it. The same pass prunes ``*.jsonl.lock`` sentinels whose transcript is
+        gone and which no process holds. The pass is
+        ``session_staging_sweep.sweep_session_staging_temps``, age-gated so a live
+        write is never touched. Blocking filesystem work over
+        an agent-writable directory, so it runs on the maintenance executor like
+        the other sweeps.
+        """
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.sweep_session_staging_temps,
+            )
+            if removed:
+                self._deps.logger.info(
+                    "Periodic sweep: removed %d orphaned session staging/lock file(s)",
+                    removed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "session staging temp sweep failed: %s",
                 type(exc).__name__,
             )
 

@@ -80,7 +80,7 @@ const SHELL: RowShell = {
 
 function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowScene['local']> } = {}): RowScene {
   return {
-    activeSlot: null, crewWindow: null, shell: SHELL, drag: null,
+    activeSlot: null, crewWindow: null, crewParent: null, shell: SHELL, drag: null,
     ...over,
     local: {
       recentRank: new Map(), subagentCounts: {}, subagentApprovalCounts: {}, poppedOut: new Set(), digits: null,
@@ -199,6 +199,22 @@ describe('a peer row never carries local state', () => {
     it('lights the local row by the active slot only while no window is open', () => {
       expect(lit({ activeSlot: 'k' })).toEqual([[true, true, true], [false, false, false], [false, false, false]])
     })
+  })
+
+  it('marks the Crew Mode root as the parent of the worker in the pane, never a peer or under a window', () => {
+    const root = local('root', { crew_mode_root: true } as Partial<Slot>)
+    const plain = local('plain')
+    const rows = buildSidebarRows(inputs([root, plain, thePeer]))
+    const parent = (over: Parameters<typeof scene>[0]) => {
+      const views = rows.views(scene(over))
+      return [root, plain, thePeer].map(s => [views.view(s, AT).isCrewParent, views.view(s, AT).isActive])
+    }
+    // The worker 'w1' is not listed; its root is marked, not lit as active.
+    expect(parent({ activeSlot: 'w1', crewParent: 'root' })).toEqual([[true, false], [false, false], [false, false]])
+    // A plain chat in the pane marks nothing.
+    expect(parent({ activeSlot: 'plain' })).toEqual([[false, false], [false, true], [false, false]])
+    // A crew window covers the pane: no local row is the shown session's parent.
+    expect(parent({ activeSlot: 'w1', crewParent: 'root', crewWindow: { instanceId: 'inst-a', key: 'k' } })).toEqual([[false, false], [false, false], [false, true]])
   })
 
   it('does not ride into a search on a local rank, a local folder match or a local pin', () => {
@@ -601,7 +617,15 @@ describe('the lanes and the folder tree', () => {
     const rows = buildSidebarRows(inputs([
       local('u', { pinned: true }), local('r'), peer('u', { running: true, pinned: true }), peer('old', { last_turn_ts: iso(2 * DAY) }),
     ], { local: { unread: new Set(['u']), running: new Set(['r']), recent: new Set(['u', 'r']) } }))
-    expect(rows.statusCounts).toEqual({ unread: 1, running: 2, pinned: 1, recent: 3 })
+    expect(rows.statusCounts).toEqual({ unread: 1, running: 2, pinned: 1, recent: 3, crew: 0 })
+  })
+
+  it('narrows to Crew Mode roots alone when the Crew Mode chip is on', () => {
+    const rows = buildSidebarRows(inputs([
+      local('root', { crew_mode_root: true }), local('plain'),
+    ], { filters: { status: { active: new Set<SessionFilterKey>(['crew']) } } }))
+    expect(keys(rows.filteredSlots)).toEqual(['root'])
+    expect(rows.statusCounts.crew).toBe(1)
   })
 })
 

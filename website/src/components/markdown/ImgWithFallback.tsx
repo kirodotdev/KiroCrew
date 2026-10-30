@@ -1,13 +1,19 @@
-import React, { useContext, useEffect, useState } from 'react'
+import React, { useContext, useEffect, useRef, useState } from 'react'
 import type { ExtraProps } from 'react-markdown'
-import { Check, Copy, Image as ImageIcon, ImageOff } from 'lucide-react'
+import { Check, Copy, Film, Image as ImageIcon, ImageOff, Music } from 'lucide-react'
+import type { Element as HastElement } from 'hast'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
+import { ImageCommentCtx } from '../../utils/imageComments'
+import { ImageCommentLayer } from '../ImageCommentLayer'
+import { mediaKindOf } from '../../utils/mediaExts'
 import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
-import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdSourceCtx } from './contexts'
+import ErrorNotice from '../ErrorNotice'
+import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdBlockStartCtx, MdSourceCtx } from './contexts'
 import { useTitleCuedCopy } from './copyFeedback'
 import { basenameOf } from './pathReferences'
 import {
+  DeferredMedia,
   GatewayMediaRefused,
   REMOTE_MEDIA_CHIP_CLASS,
   RemoteHostFact,
@@ -27,10 +33,10 @@ import { dispatchLightbox } from './Lightbox'
  * Chat images are read from disk at VIEW time (`/api/file-raw`), not stored in
  * the message — so the dominant failure is a local file that no longer exists
  * (a screenshot written to a temp directory that has since been cleaned), long
- * after the message rendered fine for its author. The chip names that
- * condition, and the whole chip is click-to-copy for the on-disk path:
- * recovery starts from knowing WHICH file is gone, and the path is the one
- * thing the transcript still holds.
+ * after the message rendered fine for its author. The failure is stated by an
+ * inline `ErrorNotice`, and beside it a chip names
+ * the image and copies its on-disk path: recovery starts from knowing WHICH
+ * file is gone, and the path is the one thing the transcript still holds.
  *
  * The `<img>` error event carries no status, so "file no longer exists" is
  * NOT asserted from the error alone — a backend hiccup, a sensitive-path
@@ -42,7 +48,7 @@ import { dispatchLightbox } from './Lightbox'
  * probed: a cross-origin HEAD says nothing reliable and the generic wording
  * is already honest there.
  */
-function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; probeUrl?: string }) {
+function BrokenImage({ path, alt, probeUrl, media }: { path: string; alt?: string; probeUrl?: string; media?: 'video' | 'audio' }) {
   // Names the path's tail, as the path chip does, so the reader knows WHICH
   // image's path failed to copy (#14294).
   const { copied, press, failureBubble } = useTitleCuedCopy(path, i18nT('components.markdownRenderer.couldnt_copy_the_image_path_label', { label: basenameOf(path.replace(/[\\/]+$/, '')) || path }))
@@ -71,26 +77,48 @@ function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; prob
   const idle = alt
     ? `${path}\n${i18nT('components.markdownRenderer.click_to_copy')}`
     : i18nT('components.markdownRenderer.click_to_copy')
+  // A video or audio reference states the failure as media, not as an image:
+  // the reader wrote a clip, and "image" would name the wrong thing.
+  const failure = media
+    ? (confirmedGone
+      ? i18nT('components.markdownRenderer.media_file_no_longer_exists')
+      : i18nT('components.markdownRenderer.media_failed_to_load'))
+    : (confirmedGone
+      ? i18nT('components.markdownRenderer.image_file_no_longer_exists')
+      : i18nT('components.markdownRenderer.image_failed_to_load'))
+  const chipIcon = media === 'video'
+    ? <Film size={14} aria-hidden="true" className="shrink-0" />
+    : media === 'audio'
+      ? <Music size={14} aria-hidden="true" className="shrink-0" />
+      : <ImageOff size={14} aria-hidden="true" className="shrink-0" />
+  // The load failure renders through ErrorNotice like every other failure
+  // (errors-use-error-notice); the chip beside it keeps the one recovery the
+  // transcript itself can offer, copying the on-disk path.
   return (
     <>
-    <span
-      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-2 py-1 text-sm text-muted cursor-pointer hover:text-text"
-      role="button"
-      tabIndex={0}
-      onClick={handleCopy}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleCopy(e) }}
-      title={copied ? i18nT('components.markdownRenderer.copied') : idle}
-    >
-      <ImageOff size={14} aria-hidden="true" className="shrink-0" />
-      <span className="truncate">{alt || path}</span>
-      <span className="shrink-0 opacity-75">
-        {confirmedGone
-          ? i18nT('components.markdownRenderer.image_file_no_longer_exists')
-          : i18nT('components.markdownRenderer.image_failed_to_load')}
+    <span className="inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 align-baseline">
+      <span
+        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-2 py-1 text-sm text-muted cursor-pointer hover:text-text"
+        role="button"
+        tabIndex={0}
+        onClick={handleCopy}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleCopy(e) }}
+        title={copied ? i18nT('components.markdownRenderer.copied') : idle}
+        data-testid="md-broken-image-chip"
+      >
+        {chipIcon}
+        <span className="truncate">{alt || path}</span>
+        {copied
+          ? <Check size={12} aria-hidden="true" className="shrink-0 text-ok" />
+          : <Copy size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
       </span>
-      {copied
-        ? <Check size={12} aria-hidden="true" className="shrink-0 text-ok" />
-        : <Copy size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
+      {/* No hand-off: this fallback renders in every MarkdownRenderer host,
+          including the meeting note's Preview (NoteSidebar), where the note
+          draft lives only in the view the hand-off would unmount, and which
+          withholds the hand-off on its own notice for that reason. A shared
+          renderer cannot tell which host holds a draft, so it never offers
+          the navigation. */}
+      <ErrorNotice variant="inline" message={failure} testId="md-broken-image-error" />
     </span>
     {failureBubble}
     </>
@@ -134,6 +162,117 @@ export function pendingImageBoxStyle(compact: boolean): React.CSSProperties {
   return compact ? { width: '240px', height: '180px' } : { width: '420px', height: '236px' }
 }
 
+/** How many directories above a previewed file a root-relative image is tried
+ *  against. Covers a site or repository root several levels up while bounding
+ *  the 404s a genuinely missing image costs. */
+const MAX_SITE_ROOT_ANCESTORS = 8
+
+/** Fallback on-disk paths for a root-relative image (`/images/a.png`) in a
+ *  previewed file, nearest directory first.
+ *
+ *  A leading `/` in a markdown image usually means "the root of the repository
+ *  or site this file belongs to", not the root of the disk: GitHub resolves it
+ *  against the repository root in a README, and Zenn, Docusaurus and similar
+ *  setups write images the same way (issue #23623). Nothing in the file says
+ *  where that root is, so the directories above the file are the candidates,
+ *  starting with the file's own. On POSIX the filesystem root is left out
+ *  because that candidate IS the absolute path, which the caller tries first.
+ *  A Windows drive root is kept (`D:/images/a.png`): the caller's absolute
+ *  reading resolves against the gateway's own drive, which need not be the
+ *  previewed file's.
+ *
+ *  `\` counts as a separator only when the file itself sits on a drive-rooted
+ *  Windows path; on POSIX a backslash is a legal file-name character. */
+export function siteRootImageCandidates(filePath: string, rootRelative: string): string[] {
+  const rel = rootRelative.replace(/^\/+/, '')
+  if (!rel) return []
+  const parentOf = WINDOWS_ABS_PATH_RE.test(filePath)
+    ? (p: string) => p.replace(/[\\/][^\\/]*$/, '')
+    : (p: string) => p.replace(/\/[^/]*$/, '')
+  let dir = parentOf(filePath)
+  // No separator at all: there is no directory to walk from.
+  if (dir === filePath) return []
+  const out: string[] = []
+  while (dir && out.length < MAX_SITE_ROOT_ANCESTORS) {
+    out.push(`${dir}/${rel}`)
+    // A drive (`D:`) is the top of a Windows path: nothing above it.
+    if (/^[A-Za-z]:$/.test(dir)) break
+    const next = parentOf(dir)
+    if (next === dir) break
+    dir = next
+  }
+  return out
+}
+
+/** Media kind of a remote http(s) reference, read from the URL's pathname so a
+ *  query string (`?v=.mp4`) or fragment never decides it. */
+function remoteMediaKind(url: string): 'video' | 'audio' | null {
+  if (!isRemoteMediaUrl(url)) return null
+  try { return mediaKindOf(new URL(url).pathname) } catch { return null }
+}
+
+/** The hast element a raw-HTML `<video src controls>` would parse to, so a
+ *  markdown media reference reaches `DeferredMedia` in the same shape and the
+ *  remote-media gate sees exactly one URL to disclose. */
+function remoteMediaNode(tag: 'video' | 'audio', src: string, alt?: string): HastElement {
+  return {
+    type: 'element',
+    tagName: tag,
+    properties: { src, controls: true, preload: 'metadata', ...(alt ? { alt } : {}) },
+    children: [],
+  }
+}
+
+/** Range-capable stream URL for a local clip; same image-version parameter as
+ *  the /api/file-raw URL, so a rewritten file is not served from cache. */
+function localMediaUrl(path: string, version: string | null): string {
+  return `/api/file-stream?path=${encodeURIComponent(path)}${version ? `&v=${encodeURIComponent(version)}` : ''}`
+}
+
+/** Inline player for a local video or audio file referenced with image syntax.
+ *  Same size caps as a transcript image, so a clip takes the space a
+ *  screenshot would. A `<span>` wrapper because it renders inside a `<p>`. */
+function LocalMedia({ kind, src, label, title, compact, onError }: {
+  kind: 'video' | 'audio'
+  src: string
+  label: string
+  title: string
+  compact: boolean
+  onError: () => void
+}) {
+  return (
+    <span className="block my-2">
+      {kind === 'video'
+        ? (
+          // eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope
+          <video
+            controls
+            preload="metadata"
+            src={src}
+            aria-label={label}
+            title={title}
+            onError={onError}
+            className={compact
+              ? 'ms-auto block max-w-[240px] max-h-[180px] rounded-md border border-border bg-bg-elevated'
+              : 'block max-w-[min(100%,760px)] max-h-[60vh] rounded-md border border-border bg-bg-elevated'}
+          />
+        )
+        : (
+          // eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope
+          <audio
+            controls
+            preload="metadata"
+            src={src}
+            aria-label={label}
+            title={title}
+            onError={onError}
+            className={compact ? 'ms-auto block w-[240px] max-w-full' : 'block w-full max-w-md'}
+          />
+        )}
+    </span>
+  )
+}
+
 export function ImgWithFallback({
   node,
   src,
@@ -146,6 +285,10 @@ export function ImgWithFallback({
   // Per-src like the outcome flags: a reused instance handed a different src
   // must not inherit the previous image's approval.
   const [remoteApproved, setRemoteApproved] = useState(false)
+  // Which on-disk candidate is loading: 0 is the path as written; a
+  // root-relative path in a previewed file advances through
+  // `siteRootImageCandidates` on each load error.
+  const [attempt, setAttempt] = useState(0)
   const approvedImageRef = useApprovalFocus<HTMLSpanElement>(remoteApproved)
   // Both flags describe the outcome of loading THIS `src`, so neither may
   // outlive it. React reuses an instance whenever the element at a key keeps its
@@ -161,11 +304,38 @@ export function ImgWithFallback({
     setErrored(false)
     setLoaded(false)
     setRemoteApproved(false)
+    setAttempt(0)
   }
   const basePath = useContext(BasePathCtx)
+  // The candidate list is derived from the previewed file too, so neither an
+  // index into one file's list nor that list's outcome may carry over to
+  // another file's: an unkeyed FileViewer reuses this instance when the user
+  // switches tabs, and a stale `errored` would never try the new file's list.
+  // Keyed on the candidate PATHS, not on `basePath`: two files in one folder
+  // naming the same image resolve to the same list, and resetting then would
+  // drop `loaded` for an `<img src>` React leaves untouched, which fires no
+  // new `load` event and leaves the skeleton over a loaded image. The image
+  // version is not part of the key, so a rewritten file keeps the behaviour
+  // it had before this list existed.
+  const [attemptKey, setAttemptKey] = useState<string | null>(null)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
   const source = useContext(MdSourceCtx)
+  // Present only where the host collects box comments on images (the file
+  // viewer); everywhere else the image renders with no overlay.
+  const commentHost = useContext(ImageCommentCtx)
+  const commentImgRef = useRef<HTMLImageElement | null>(null)
+  // Tell the host where this image sits, loaded or not, so it can count every
+  // use of the same file (an offscreen lazy image included) when a saved box
+  // has to find its own use again after an edit.
+  const registerImage = commentHost?.register
+  // The parsed line counts from this image's block; the box needs its line in
+  // the document, as a text comment gets through data-block-start.
+  const blockStart = useContext(MdBlockStartCtx)
+  const blockLine = node?.position?.start?.line
+  const srcLine = blockLine == null ? undefined : blockLine + blockStart - 1
+  const srcColumn = node?.position?.start?.column
+  useEffect(() => (registerImage && src ? registerImage(src, srcLine, srcColumn) : undefined), [registerImage, src, srcLine, srcColumn])
   if (!src) return null
   // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
   // image src) is as local as a POSIX `/…` path and must route to
@@ -182,6 +352,13 @@ export function ImgWithFallback({
   // The on-disk path the backend is asked to read — what the broken-image
   // fallback discloses and copies. Stays `src` verbatim for remote URLs.
   let diskPath = src
+  // The on-disk file the current request reads. Differs from `diskPath` only
+  // once a root-relative image falls back to a directory above the file.
+  let loadingPath = src
+  // Every /api/file-raw URL this image may try, in order; more than one only
+  // for a root-relative path in a previewed file. The broken-image chip probes
+  // all of them.
+  let candidateUrls: string[] = []
   if (isLocal) {
     // micromark percent-encodes destinations in BOTH forms, so wrap-ness is
     // recovered from the source text at this node's position: only a
@@ -196,22 +373,85 @@ export function ImgWithFallback({
     const wrapped = source != null && start != null && end != null
       && /\]\(\s*</.test(source.slice(start, end))
     const localPath = wrapped ? decodeLocalPath(src) : src
-    if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
-      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
-      diskPath = resolved
-      url = `/api/file-raw?path=${encodeURIComponent(resolved)}`
-    } else {
-      diskPath = localPath
-      url = `/api/file-raw?path=${encodeURIComponent(localPath)}`
-    }
     // See ImageVersionCtx: without this every impression of a rewritten file
     // shares one cache entry and a new message renders the previous bytes. The
     // backend reads only `path`, so the extra parameter is inert server-side.
-    if (version) url += `&v=${encodeURIComponent(version)}`
+    const rawUrl = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}${version ? `&v=${encodeURIComponent(version)}` : ''}`
+    let candidatePaths: string[]
+    if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
+      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
+      diskPath = resolved
+      candidatePaths = [resolved]
+    } else {
+      diskPath = localPath
+      // A root-relative path in a previewed file: the absolute reading goes
+      // first, so a real absolute path still loads on the first request, then
+      // the directories above the file (issue #23623). `//` is a protocol-
+      // relative URL or UNC share, never a site root. The chip keeps naming
+      // the path as written, which is what the author can act on.
+      candidatePaths = basePath && src.startsWith('/') && !src.startsWith('//')
+        ? [localPath, ...siteRootImageCandidates(basePath, localPath)]
+        : [localPath]
+    }
+    candidateUrls = candidatePaths.map(rawUrl)
+    let effectiveAttempt = attempt
+    const candidateKey = candidatePaths.join('\n')
+    if (attemptKey !== candidateKey) {
+      // First render, or the list changed (another previewed file). The path
+      // on screen only changes when the new list starts somewhere else, and
+      // only then can the old `loaded` be wrong.
+      if (attemptKey !== null) {
+        const previous = attemptKey.split('\n')
+        const shownPath = previous[Math.min(attempt, previous.length - 1)]
+        if (shownPath !== candidatePaths[0]) setLoaded(false)
+        setAttempt(0)
+        setErrored(false)
+        effectiveAttempt = 0
+      }
+      setAttemptKey(candidateKey)
+    }
+    url = candidateUrls[Math.min(effectiveAttempt, candidateUrls.length - 1)]
+    loadingPath = candidatePaths[Math.min(effectiveAttempt, candidatePaths.length - 1)]
   } else {
     url = src
   }
   if (isGatewayRouteMediaUrl(url)) return <GatewayMediaRefused />
+  // Markdown has no video syntax, so `![clip](demo.mp4)` is how a message
+  // references a recording. An <img> cannot play it (and /api/file-raw refuses
+  // a non-image body), so a video or audio extension renders a player instead.
+  const mediaKind = isLocal ? mediaKindOf(diskPath) : remoteMediaKind(url)
+  if (mediaKind && !isLocal) {
+    // A remote clip goes through the same click-to-load gate as a raw-HTML
+    // <video>/<audio>, so nothing is fetched from the host before consent.
+    // A failed remote clip states the failure through the same chip and
+    // ErrorNotice as a local one. No probe: a HEAD to the host would be a
+    // second fetch the reader never approved.
+    if (errored) return <BrokenImage path={src} alt={alt} media={mediaKind} />
+    return <DeferredMedia tag={mediaKind} node={remoteMediaNode(mediaKind, src, alt)} onError={() => setErrored(true)} />
+  }
+  if (mediaKind) {
+    if (errored) {
+      // Probe the endpoint the player asked: /api/file-raw refuses every
+      // non-image body, so only /api/file-stream can confirm a 404.
+      return <BrokenImage path={diskPath} alt={alt} probeUrl={localMediaUrl(diskPath, version)} media={mediaKind} />
+    }
+    // Same bounded candidate walk as an image: a root-relative clip in a
+    // previewed file is tried at its absolute path, then at the directories
+    // above the file, before the failure chip is shown.
+    return (
+      <LocalMedia
+        kind={mediaKind}
+        src={localMediaUrl(loadingPath, version)}
+        label={alt || basenameOf(diskPath.replace(/[\\/]+$/, '')) || diskPath}
+        title={alt || src}
+        compact={compact}
+        onError={() => {
+          if (attempt + 1 < candidateUrls.length) setAttempt(attempt + 1)
+          else setErrored(true)
+        }}
+      />
+    )
+  }
   if (isRemoteMediaUrl(url) && !remoteApproved) {
     return (
       <button
@@ -229,7 +469,11 @@ export function ImgWithFallback({
     )
   }
   if (errored) {
-    return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? url : undefined} />
+    // The chip names the path as written, so it probes that path: the URL main
+    // probed for every image. A root-relative image's fallbacks are not
+    // probed, which keeps a refused (403) as-written file out of the
+    // missing-file wording however its fallbacks answer.
+    return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? candidateUrls[0] : undefined} />
   }
   // SVGs authored with only a `viewBox` (no width/height) carry no intrinsic
   // size. Under the max-w/max-h-only CSS below they collapse to ~0px and look
@@ -316,6 +560,7 @@ export function ImgWithFallback({
           preview is presentational here. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
+        ref={commentImgRef}
         src={url} alt={alt || ''} loading="lazy"
         // A remote image the user approved is fetched with NO referrer. The
         // approval binds the request this renderer initiates, but a server can
@@ -346,15 +591,39 @@ export function ImgWithFallback({
         style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
+        // Pages with the turn's file cards (see dispatchLightbox).
+        data-lightbox-turn=""
         title={alt || src}
         onLoad={(e) => {
           const el = e.currentTarget
           if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(url, el.naturalWidth, el.naturalHeight)
           setLoaded(true)
         }}
-        onError={() => setErrored(true)}
+        onError={() => {
+          if (attempt + 1 < candidateUrls.length) setAttempt(attempt + 1)
+          else setErrored(true)
+        }}
         {...props}
+        // Where boxes can be drawn, a press-and-drag on the image draws one, so
+        // the browser must not take that drag to carry the image out as a file.
+        {...(commentHost ? { draggable: false } : {})}
       />
+      {/* Mounted once the bytes are in: before that the image is a placeholder,
+          and a box drawn on it would not cover anything in the picture. */}
+      {commentHost && loaded && (
+        <ImageCommentLayer
+          host={commentHost}
+          imgRef={commentImgRef}
+          src={src}
+          // The file this preview loaded, decoded, so the agent is named the
+          // file on disk rather than the percent-encoded destination, and a
+          // root-relative image by the fallback it loaded from.
+          path={loadingPath}
+          alt={alt || undefined}
+          line={srcLine}
+          column={srcColumn}
+        />
+      )}
       {/* Provenance survives the click. Once loaded, a remote image is pixel
           for pixel indistinguishable from a local one, so the only record of
           where it came from would be a chip that no longer exists — and a

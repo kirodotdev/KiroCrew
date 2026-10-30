@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
-import { useAppSelector, useAppDispatch } from '../store'
-import { createSlot } from '../store/chatSlice'
+import { useAppSelector, useAppDispatch, useAppStore } from '../store'
+import { createChatForView, type CreatedChatView } from '../lib/createdChatView'
 import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import {
   TAB_STATUS_COLOR,
   removeTabAt,
@@ -17,8 +18,6 @@ import {
   truncateTabTitle,
   type TabStatus,
 } from '../lib/sessionTabs'
-import type { ChatSlot } from '../types'
-
 import { i18nT } from '../i18n/t'
 interface Tab { slug: string }
 
@@ -68,6 +67,7 @@ function loadTabs(activeSlot: string | null): { tabs: Tab[]; index: number } {
 export default function EmbedTabStrip() {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
+  const store = useAppStore()
   const slots = useAppSelector(s => s.dashboard.slots)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
 
@@ -98,15 +98,35 @@ export default function EmbedTabStrip() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const createSlotMutation = useMutation({
-    mutationFn: () => dispatch(createSlot(undefined)).unwrap(),
-    onSuccess: (slot: ChatSlot) => {
+    // The tab the user was on when they asked, passed in so a late success can
+    // tell a tab switch. The route is no guide here: the embedded chat rewrites
+    // its own `/embed/chat/<slug>` when the create opens the new session. The
+    // tab is held by identity, not index: a drag reorder moves the user's tab
+    // to another index but keeps the same object, and a Sessions tab has no
+    // slug that tells it apart from another.
+    mutationFn: (_fromTab: Tab | undefined) => createChatForView(dispatch, store.getState, undefined),
+    onSuccess: ({ slot, opened, shown: onSamePage }: CreatedChatView, fromTab: Tab | undefined) => {
       const key = slot?.key
       if (!key) return
+      // The `activeSlot` effect below can already have put the new session in
+      // a Sessions tab, whether the user asked from it or opened it during
+      // the create. That tab shows it, so a second tab for it would be a
+      // duplicate.
+      if (tabsRef.current.some(t => t.slug === key)) return
+      // The tab and the page are separate questions. When the create opened
+      // the session and the user is still on the tab they asked from, the
+      // store already shows it there, so that tab's place goes to the new
+      // tab and the strip stays in step with the chat. Only a user still on
+      // the chat page is navigated to it: one who went to a page such as
+      // embedded Settings stays there, and its Back lands on the new session
+      // under the new tab. A user who switched tabs keeps the tab they
+      // picked; the new session still gets its tab, behind it.
+      const selected = opened && !!fromTab && tabsRef.current[activeIndexRef.current] === fromTab
       const newTabs = [...tabsRef.current, { slug: key }]
-      const newIndex = newTabs.length - 1
+      const newIndex = selected ? newTabs.length - 1 : activeIndexRef.current
       setTabs(newTabs)
       setActiveIndex(newIndex)
-      navigate(`/embed/chat/${key}?sid=${key}`)
+      if (selected && onSamePage) navigate(`/embed/chat/${key}?sid=${key}`)
       persist(newTabs, newIndex)
     },
   })
@@ -259,13 +279,15 @@ export default function EmbedTabStrip() {
   const stripRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
-  // The hook owns the node's edge measurement; this keeps a plain handle to
-  // the same node for the drag auto-scroll, pointer capture, and the wheel
-  // translation, which all read stripRef directly.
+  const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+
+  // The hooks own the node's edge measurement and wheel scrolling; this keeps a
+  // plain handle to the same node for the drag auto-scroll and pointer capture.
   const setStrip = useCallback((node: HTMLDivElement | null) => {
     stripRef.current = node
     attachEdges(node)
-  }, [attachEdges])
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
 
   // Tabs opening, closing, or renaming keep the strip's own box, so neither
   // the ResizeObserver nor a scroll event reports the changed content width —
@@ -451,7 +473,6 @@ export default function EmbedTabStrip() {
           ref={setStrip}
           className="flex items-center gap-1 overflow-x-auto relative"
           style={{ scrollbarWidth: 'none' }}
-          onWheel={e => { if (stripRef.current) stripRef.current.scrollLeft += e.deltaY }}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}
@@ -472,7 +493,9 @@ export default function EmbedTabStrip() {
               onPointerDown={e => onPointerDown(e, i)}
               onClick={() => { if (!dragRef.current?.active) selectTab(i) }}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTab(i) } }}
-              className={`group/tab flex items-center gap-2 pl-2 pr-2 py-1.5 rounded-md cursor-pointer select-none shrink-0 text-xs ${
+              // Inset keyboard ring: the unpadded overflow scroller clips an
+              // outset ring.
+              className={`group/tab flex items-center gap-2 pl-2 pr-2 py-1.5 rounded-md cursor-pointer select-none shrink-0 text-xs focus-visible:outline-offset-[-2px] ${
                 active
                   ? 'bg-bg-elevated text-text border border-border'
                   : 'text-muted hover:text-text hover:bg-bg-elevated/50 border border-transparent'
@@ -528,7 +551,7 @@ export default function EmbedTabStrip() {
         onClick={e => {
           if (e.shiftKey) {
             // Shift+click: create new session directly
-            createSlotMutation.mutate()
+            createSlotMutation.mutate(tabsRef.current[activeIndexRef.current])
           } else {
             addTab()
           }

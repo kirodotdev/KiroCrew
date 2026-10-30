@@ -127,6 +127,14 @@ def resolve_spawn_execution(
             requested_mode=_memory_mode,
         )
     execution = execution.with_mode(_memory_mode)
+    if not agent and not conversation_key:
+        # A crewmate selected with no agent named runs on its worker, never on
+        # the conductor its chat runs on: the conductor's spec lives in the
+        # crewmate folder, so it is no agent a sub-agent can load by name. A
+        # continuation keeps the record its run already published.
+        from kiro_crew.mate_worker import spawn_worker_execution
+
+        execution = spawn_worker_execution(execution) or execution
     if agent and not conversation_key:
         if not crew and not target_member:
             # The delegate split: the parent's store and identity, the selected

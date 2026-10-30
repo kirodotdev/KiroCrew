@@ -1,27 +1,26 @@
 """What a dashboard turn writes as its reply: the partial reply a dying turn persists, the
 abnormal end's usage row, the text and thinking stream flushes, the segment cut at a tool call or
-an approval prompt and the run it holds across it, the steer's segment cut, and the error rows the
-stream watchdogs post."""
+an approval prompt and the run it holds across it, the steer's segment cut, the error rows the
+stream watchdogs post, and the whole reply read back from its rows (``_turn_full_reply_text``)."""
 
 from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING
 
+from kiro_crew.constants import reflow_and_label_glued_option_marker
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, chunk_generation, slot_history_key
+from kiro_crew.dashboard.state import row_mid
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         STOP_REASON_CANCELLED,
-        TRANSIENT_RETRY_KIND,
-        _persist_abnormal_turn_usage,
-        chunk_generation,
         crew_log_emit,
         logger,
         provider_last_turn_usage,
         read_turn_model,
-        redact,
-        reflow_and_label_glued_option_marker,
         save_slot_off_loop,
-        slot_history_key,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -33,8 +32,12 @@ if TYPE_CHECKING:
         _redact_segment,
         _segment_row_meta,
     )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
     from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
-    from kiro_crew.dashboard.chat_turn.turn_stats import _attach_owned_turn_stats
+    from kiro_crew.dashboard.chat_turn.turn_stats import (
+        _attach_owned_turn_stats,
+        _persist_abnormal_turn_usage,
+    )
 
 
 async def _persist_partial_reply(turn, reason: str = "") -> None:
@@ -100,14 +103,23 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # Records come out of the same pass for the reason _redact_segment
         # gives: after this line only the placeholder exists, so an
         # interrupted reply would otherwise lose what it explains for good.
-        _redacted, _blocked, _redactions = _redact_segment(slot, turn.assistant_text)
+        _ordered: list[bool] = []
+        _redacted, _blocked, _redactions = _redact_segment(
+            slot, turn.assistant_text, _ordered_out=_ordered
+        )
         _note_reply_row(
             slot,
             slot.append(
                 "assistant",
                 _redacted,
                 "msg msg-a",
-                meta=_segment_row_meta(slot, _blocked, _redactions),
+                meta=_segment_row_meta(
+                    slot,
+                    _blocked,
+                    _redactions,
+                    links_ordered=_ordered == [True],
+                    text=_redacted,
+                ),
             ),
         )
         # Saved once per turn: a recovery arm saves it here, and a cancel
@@ -171,7 +183,7 @@ async def _record_abnormal_turn_usage(turn, reason: str) -> None:
     context-window read live on the wrapper, so the inner handle alone would
     stamp every row ``provider="acp"`` with a ``(0, 0)`` window. The inner
     handle (``slot._acp_client``) is read only to gate on liveness -- it is
-    the ref the ``finally`` drops, so a non-None read means the credits are
+    the ref ``_turn_release_handles`` drops, so a non-None read means the credits are
     still reachable.
     """
     _ttft_visible = turn._ttft_visible
@@ -242,8 +254,8 @@ def _attach_abnormal_turn_stats(
     footer, because there is no row to carry one.
 
     The row is mutated in place; it reaches disk because the turn's
-    ``finally`` runs ``_flush_file_changes``, which marks the slot dirty on
-    every exit. Best-effort: a failure never disturbs the cancel teardown or
+    ``finally`` awaits ``_flush_file_changes_off_loop``, whose on-loop attach
+    marks the slot dirty on every exit. Best-effort: a failure never disturbs the cancel teardown or
     the usage row.
 
     Only a row THIS runner appended (``slot._turn_reply_mids``) can carry
@@ -529,3 +541,65 @@ def _emit_error(turn, msg: str, *, will_retry: bool = False) -> None:
     )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
+
+
+def _turn_full_reply_text(turn: "_ChatTurn") -> tuple[str, str]:
+    """The turn's COMPLETE answer and its FINAL segment, as the transcript shows.
+
+    Returns ``(full_body, final_segment)``. ``full_body`` is everything to
+    mirror; ``final_segment`` is the newest reply row's text, the one an OPTIONS
+    control must be built from (and only from).
+
+    ``turn.assistant_text`` holds only the segment since the last tool call: a
+    tool boundary flushes the text so far to a finalized assistant row and
+    resets the accumulator (``_on_tool_call``), so a turn that answers and then
+    calls one more tool leaves only the trailing fragment -- or nothing -- in
+    it. Mirroring that fragment would publish a truncated reply, or none, on a
+    turn whose answer precedes its last tool call, while the dashboard keeps the
+    whole thing from the transcript. Reading the final segment from the newest
+    row rather than from ``turn.assistant_text`` also keeps a final OPTIONS ask
+    whose row was flushed before a text-less last tool call, which empties
+    ``turn.assistant_text`` -- the dashboard shows those choices from the same
+    row, so the mirror must too.
+
+    The body and the final segment both come from THIS turn's own reply rows
+    (filled by ``_note_reply_row`` at every segment flush including the
+    end-of-turn one), in window order. Identity, not position: a workflow or
+    sub-agent result is appended into the same window by another writer while
+    the turn runs and must not be folded into this reply. The rows are already
+    redacted and OPTIONS-reflow-repaired by ``_flush_segment``, which is what the
+    transcript renders too.
+
+    The ids come from ``turn._reply_mids_snapshot`` when it is set:
+    ``_flush_file_changes`` clears the live ``slot._turn_reply_mids`` on exit and
+    runs BEFORE this leg, so a turn that wrote a file would otherwise find the
+    live list already empty. The snapshot is taken just before that flush. When
+    no snapshot was taken (the flush did not run this turn) the live list is
+    read. Falls back to ``turn.assistant_text`` for both values when neither
+    names a row -- a slot double in a test with no id list, or a turn whose
+    single segment has not been flushed into the window.
+    """
+    trailing = turn.assistant_text
+    non_empty = _turn_reply_segments(turn)
+    if not non_empty:
+        return trailing, trailing
+    return "\n\n".join(non_empty), non_empty[-1]
+
+
+def _turn_reply_segments(turn: "_ChatTurn") -> list[str]:
+    """THIS turn's non-empty reply rows, in window order; ``[]`` when none is named.
+
+    The row ids and why they come from the snapshot: :func:`_turn_full_reply_text`.
+    """
+    slot = turn.slot
+    snapshot = turn._reply_mids_snapshot
+    mids = snapshot if isinstance(snapshot, list) else getattr(slot, "_turn_reply_mids", None)
+    if not isinstance(mids, list) or not mids:
+        return []
+    wanted = set(mids)
+    parts = [
+        row.get("content", "")
+        for row in slot.messages
+        if row_mid(row) in wanted and row.get("role") == "assistant"
+    ]
+    return [p for p in parts if p]

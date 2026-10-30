@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG, git_maintenance_off_entries
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -91,6 +92,8 @@ def _fixture_git_env() -> dict[str, str]:
             "GIT_CONFIG_VALUE_0": "",
         }
     )
+    # Last, so the entry lands after the GIT_CONFIG_COUNT this helper set.
+    env.update(git_maintenance_off_entries(env))
     return env
 
 
@@ -118,6 +121,9 @@ def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
     os.makedirs(origin_dir)
     _git(origin_dir, "init", "--bare")
     _git(origin_dir, "symbolic-ref", "HEAD", "refs/heads/main")
+    # A push starts receive-pack here without our env (see git_maintenance_helpers).
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        _git(origin_dir, "config", key, value)
 
     _git(str(root), "clone", origin_dir, "work")
     _git(clone_dir, "checkout", "-b", "main")
@@ -128,6 +134,14 @@ def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
     _git(clone_dir, "push", "-u", "origin", "main")
 
     return clone_dir, origin_dir
+
+
+def test_the_template_origin_keeps_auto_maintenance_off(_repo_pair_template) -> None:
+    # A push into a copy starts receive-pack there without the fixture env, so
+    # only the origin's own config keeps it from starting auto maintenance.
+    _, template_origin = _repo_pair_template
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        assert (key, _git(template_origin, "config", "--local", "--get", key)) == (key, value)
 
 
 @pytest.fixture
@@ -471,16 +485,22 @@ class TestPushTransportCorroboration:
                 "gh auth setup-git",
             ),
             ("git@github.com: Permission denied (publickey).", "run ssh-add"),
+            ("fatal: Authentication failed for 'https://github.com/octo/target.git/'", "ssh-add"),
+            ("remote: HTTP 401 Unauthorized", "ssh-add"),
+            ("remote: Permission to octo/target.git denied to octo.", "create or reuse a fork"),
+            ("remote: HTTP 403 Forbidden", "create or reuse a fork"),
         ],
     )
     def test_definitive_transport_shapes_block(self, feature_clone, tmp_path, shape, remedy):
         """Each definitive denial shape blocks with the remedy that fits it.
 
-        Repository-not-found is a repo-permission face, so the remedy is the
-        fork path. A missing non-interactive credential (`could not read
-        Username` under disabled prompts, `Permission denied (publickey)`
-        under batch mode) blocks with a credential-setup remedy instead - a
-        fork push would ride the same absent credential.
+        Repository-not-found and an HTTP 403 (a credential accepted but
+        without push rights) are repo-permission faces, so the remedy is the
+        fork path. A missing or rejected non-interactive credential (`could
+        not read Username` under disabled prompts, `Permission denied
+        (publickey)` under batch mode, `Authentication failed` / HTTP 401 from
+        a rejected credential) blocks with a credential-setup remedy instead -
+        a fork push would ride the same credential that was absent or refused.
         """
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()

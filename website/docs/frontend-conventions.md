@@ -265,6 +265,8 @@ so the panel's effects keep one order.
 | `markdownPanelSourcePos.ts` | where a selection sits in the source (`resolveSourcePos`, `findCoords`) |
 | `useMarkdownPanelFind.ts` | the CSS Custom Highlight registry and preview find (Cmd+F) |
 | `useMarkdownPanelDisk.ts` | the disk truth (the panel's reads, the catch-up latch, the watch, the missing-file retry, the last-copy rescue) and the working-tree diff against HEAD |
+| `useImageBoxComments.tsx` | image box comments: the box draft and its typed text (`useImageBoxDraft`), and the host the rendered images read plus the box composer (`useImageBoxHost`) |
+| `useCommentHint.ts` | who sees the comment hint, with which wording, and its New badge |
 | `ChatPane.tsx` | the pane's layout and dock, its store reads, the follow-up chips, the queue-card actions, and the transcript mount (`transcript={{ … }}`) |
 | `ChatPaneProps.ts` | the props interface and `PaneLeading` |
 | `useChatPaneDraft.ts` | the pane-local composer draft, parked and restored per slot |
@@ -319,8 +321,8 @@ navigation rail apart from a filter pill, and the System page stacks both.
 ### The About, Chat and MCP settings panels
 
 `pages/settings/AboutPanel.tsx` (Settings ▸ About), `pages/settings/ChatPanel.tsx`
-(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (the Developer page's MCP
-pool) are facades over sibling owners in `pages/settings/`. Each facade keeps its
+(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (Settings ▸ Developer ▸
+MCP Management) are facades over sibling owners in `pages/settings/`. Each facade keeps its
 module id and every export, so hosts and the specs that mock a panel keep naming the
 facade. Nothing outside a panel's own files imports one of its owners, and no owner
 imports its facade; the only edges between owners are `AboutPanelGatewayUpdate.tsx` to
@@ -340,9 +342,9 @@ fixed order.
 | `useChatPanelDashboard.ts` | the `dashboardConfig` read and writes, Feature Tips and the feature-video readout |
 | `useChatPanelTypedFields.ts` | the draft-backed number and path fields (Advanced, Sessions) |
 | `useChatPanelModels.ts` | the Model page: fallback models, defaults, selectable models, the agent-pin notice, per-role rows |
-| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, both dialogs |
+| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, the Share all list |
 | `mcpManagementModel.ts` | wire types, error-key tables, the row-state derivation and the sharing-evidence verdict |
-| `McpManagementLaunchReview.tsx` | the launch lines, the review a STUB switch opens, the refused-row panel |
+| `McpManagementLaunchReview.tsx` | a row's share button, its Details (the agents that declare it), and its hint |
 | `McpManagementAssessment.tsx` | the Sharing assessment view and its Measure control |
 
 New work for a responsibility in the table goes to its owner, and work that belongs
@@ -367,7 +369,7 @@ component moved whole, so each one registers its hooks in its BASE order.
 |---|---|
 | `SecurityPanel.tsx` | the rail: `SECURITY_SECTIONS`, `SECTION_LABEL_KEY` (read by `gen-ui-index.mjs`), `SECTION_GROUP_KEY`, the rail summaries, the panel, and the Documentation section |
 | `SecurityPanelPosture.tsx` | Live security posture, and the status row and chip the tailnet card reuses |
-| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card and the flagged-file delivery consent card |
+| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card |
 | `SecurityPanelDeniedCommands.tsx` | Denied commands: the built-in rules by category, the custom deny patterns, the pinned and floor tooltip keys |
 | `SecurityPanelTailnet.tsx` | the tailnet origin card and `TAILNET_STATE_KEY`, which the rail summary reads |
 | `SecurityPanelTrust.tsx` | third-party app trust grants, per-registry Git-identity trust grants, and their failure messages |
@@ -601,6 +603,25 @@ payloads. Widening that regex or its key scope is a security change — the same
 constant also decides which paths are treated as local file reads, so the two
 decisions must stay on the one exported copy in `urlTransform.ts`.
 
+A root-relative image (`/images/a.png`) inside a previewed file (a
+`BasePathCtx` is set) is tried as an absolute path first, then against each
+directory above the file, nearest first, up to eight levels
+(`siteRootImageCandidates`). The leading `/` there usually names the root of the
+repository or site the markdown belongs to — GitHub, Zenn and Docusaurus all
+write images that way (issue #23623) — and nothing in the file says where that
+root is. A same-named image in a nearer directory therefore wins over one at
+the real root. Every candidate still goes through `/api/file-raw`, so the fallback
+reads nothing the absolute path could not already ask for. When every candidate
+fails, the broken-image fallback names and probes the path as written, as it
+does for any other image, so its "no longer exists" wording speaks for that path
+alone. That fallback states the failure through an inline `ErrorNotice` beside
+a chip that copies the on-disk path. The notice offers no agent hand-off: the
+renderer also previews unsaved drafts (the meeting note's Preview), and the
+navigation would unmount one. Every surface that
+provides `BasePathCtx` gets this (the file preview, the file explorer, the
+meeting notes sidebar); outside them (chat, artifacts) a leading-slash path
+stays absolute only.
+
 To SHOW a gateway path's file name, use `pathBasename` (and
 `stripTrailingSeparators` for a directory) from `utils/pathBasename.ts`, never
 `.split('/').pop()`: a Windows gateway reports `C:\repo\a.ts`, which a `/`-only
@@ -750,12 +771,10 @@ is finalized within the same scope, so an untouched row resolves back to its bas
 object and keeps its identity.
 
 This is a convention for new and touched code, not a description of the current
-store. Two dashboard collections still assign wholesale and are known gaps rather
-than counterexamples: `sseSubagentStatus` rebuilds its `agents` array every frame,
-and `sseStatus` replaces `state.status` as a whole object that several panels
-subscribe to entirely. Converting them is worthwhile but is its own change —
-`state.status` in particular needs its consumers narrowed first, or the merge buys
-nothing.
+store. One dashboard collection still assigns wholesale and is a known gap rather
+than a counterexample: `sseStatus` replaces `state.status` as a whole object that
+several panels subscribe to entirely. Converting it is worthwhile but is its own
+change: its consumers need narrowing first, or the merge buys nothing.
 
 Two habits belong to the same concern:
 
@@ -850,7 +869,8 @@ files own it:
   `var(--border)`, placeholder colour `var(--muted)`, `cursor: pointer` on
   enabled buttons). Then the imports of `font-faces.css`, `design-tokens.css` and
   `theme-palettes.css`; then the `@layer base` element defaults (box model, the
-  global `:focus-visible` ring, the reduced-motion cut, the global scrollbar)
+  global `:focus-visible` ring, the reduced-motion cut, the scroll-only
+  scrollbar)
   and, unlayered, the ambient backdrop and the app-icon tints; then the imports
   of the other eight partials. Tailwind inlines each `@import` where it stands,
   so the import order IS the cascade order: never reorder the imports, and put a
@@ -868,8 +888,8 @@ files own it:
     card's indeterminate progress bar, `.animate-shimmer`, the custom-font
     ligature toggle, the Kiro-theme overrides of nav, session-row and shell
     chrome, and the workspace-tree token mapping.
-  - `scrollbars-and-touch-hit.css` owns the auto-hiding scrollbar classes and the
-    44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
+  - `scrollbars-and-touch-hit.css` owns the horizontal edge-fade mask for code
+    and diff blocks and the 44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
     hover glow (`.card-glow`) and the stat top-line accent (`.stat-accent`).
   - `shell-chrome.css` owns the top bar and its collapse ladder, the frameless
     Electron window chrome and focus mode. Stray: `.scrollbar-none`.
@@ -912,6 +932,32 @@ semantic roles `--aim`, `--clarify`, and the `--diff-*` family. Never a hardcode
 `text-danger` / `text-info`, and a running state is `text-accent`. See
 [theming-contract](theming-contract.md) for the variable set, the stable class
 hooks, and the checkers.
+
+No scrollbar is visible at rest, anywhere in the dashboard
+([decision](../../docs/decisions/2026-10-23-scrollbars-are-never-always-visible.md)).
+A scroll box either hides its scrollbar entirely (`scrollbar-none`: the sidebar
+lanes, the nav rail, the tab strips) or shows a thin thumb only while it is being
+scrolled, in a column it reserves anyway so the reveal moves no content. The
+second form is the default and needs no class: the base layer in `index.css`
+keeps the 6px WebKit column with a transparent thumb and paints it under
+`[data-scrolling]`, which `lib/scrollReveal.ts` sets on the scrolling element
+and clears after a short linger (Firefox takes the same two states through
+`scrollbar-width: thin` and `scrollbar-color`, fenced behind the `-moz-appearance`
+probe because Blink drops the pseudo-elements once those are set). Never add a
+`::-webkit-scrollbar-thumb` colour or a `scrollbar-color` whose selector lacks
+`[data-scrolling]`, never `scrollbar-width: auto`, and never a hover-revealed
+thumb: the pointer rests over the chat transcript most of the time, so hover is
+"at rest" there. The global rule and the document scroll listener both stop at a
+shadow boundary; Pierre's code, diff and tree surfaces are reached through
+`unsafeCSS` keyed on the same attribute (`PIERRE_SCROLL_REVEAL_CSS`, folded into
+both option factories in `src/pierre/config.ts`, and the tree's
+`PIERRE_TREE_STATE_ROW_CSS`), and `scrollReveal` attaches to those hosts' shadow
+roots itself (`SHADOW_SCROLL_HOSTS`). When a box's edge does not make it obvious
+that it scrolls, the cue is an edge-fade mask (`.edge-fade-x`, `useScrollEdges`)
+or a "more below" affordance (`MORE_BELOW_MASK`, `JumpToBottomButton`), never a
+resting thumb. `src/test/scrollbarRevealOnly.test.ts` scans `src/` for every
+shape that paints one at rest and measures the revealed thumb's contrast per
+theme; the `no-scrollbar-at-rest` rule in `AUTOSDE.yaml` blocks it in review.
 
 Three of those rules are enforced by `@shadcn/lint` inside the blocking
 `eslint src/ --max-warnings 0` gate (configured in `eslint.config.js`, the

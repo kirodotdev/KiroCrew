@@ -21,6 +21,7 @@ import pytest
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 KEY = "discord:kirocrew:direct:42"
 
@@ -170,12 +171,12 @@ class TestWiring:
 
         with patch.object(state, "_notify_inbound_unbind", _slow):
             _listener(state)(KEY, LINK, "dashboard_unlink")
-            await asyncio.wait_for(started.wait(), timeout=5)
+            await await_until(started, what="the notice send starting")
             # A strong reference is held for the task's whole lifetime.
             assert len(state._background_tasks) == 1
             task = next(iter(state._background_tasks))
             release.set()
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="the notice task finishing")
 
         # Released on completion, so the set does not grow without bound.
         assert state._background_tasks == set()
@@ -231,10 +232,9 @@ class TestWorkerThreadDelivery:
             assert await asyncio.to_thread(returned.wait, 5) is True
             thread.join(5)
             # Drain the scheduled callback and the task it creates.
-            for _ in range(200):
-                if transport.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: transport.sent, describe=lambda: "the detached notice was never sent"
+            )
 
         assert len(transport.sent) == 1
         assert "detached" in transport.sent[0][1]

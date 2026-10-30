@@ -108,6 +108,28 @@ def _awaits(fn: ast.AsyncFunctionDef) -> list[tuple[int, str]]:
     return sorted(out)
 
 
+#: Awaits admitted BEFORE the pipeline call: nothing is committed yet, so a
+#: cancellation there orphans nothing. ``to_thread`` carries the ingest-time
+#: TOCTOU path re-check, which stats the disk.
+_PRE_COMMIT_AWAITS = {"to_thread", "_persist_state"}
+#: Awaits admitted AFTER it: only the drained, ``run_to_completion``-backed write.
+_POST_COMMIT_AWAITS = {"_persist_state"}
+
+
+def _misplaced_awaits(names: list[str]) -> list[str]:
+    """The awaits in *names* (source order) that break the ingest await ratchet.
+
+    The pipeline call (``ingest_file``) must appear exactly once; before it only
+    :data:`_PRE_COMMIT_AWAITS` may appear, after it only :data:`_POST_COMMIT_AWAITS`.
+    """
+    if names.count("ingest_file") != 1:
+        return [f"ingest_file x{names.count('ingest_file')}"]
+    commit_at = names.index("ingest_file")
+    return [n for n in names[:commit_at] if n not in _PRE_COMMIT_AWAITS] + [
+        n for n in names[commit_at + 1 :] if n not in _POST_COMMIT_AWAITS
+    ]
+
+
 def test_ingest_file_issues_no_sqlite_call_on_the_event_loop():
     """Ratchet: the coroutine body runs no synchronous sqlite round-trip.
 
@@ -134,7 +156,7 @@ def test_ingest_file_issues_no_sqlite_call_on_the_event_loop():
 
 
 def test_ingest_file_never_awaits_after_the_pipeline_commits():
-    """Ratchet: the only awaits are the pipeline call and drained state writes.
+    """Ratchet: after the pipeline call, the only awaits are drained state writes.
 
     This is the invariant that makes the orphan window unreachable rather than
     merely unlikely. The caller writes the ``folder_file_state`` row naming the new
@@ -151,14 +173,19 @@ def test_ingest_file_never_awaits_after_the_pipeline_commits():
     their terminal ``failed`` row without a synchronous sqlite call on the loop
     (the sqlite ratchet above), and every such branch is one where the pipeline
     never committed, so there is no committed group for the await to orphan.
+
+    A ``to_thread`` hop is admitted only BEFORE the pipeline call, where it runs
+    the ingest-time path re-check: nothing is committed yet, so a cancellation
+    there leaves the caller's 'scanning' marker exactly as a cancellation inside
+    the pipeline before its finalize hop does.
     """
     tree = ast.parse(_WATCHER_SRC.read_text(errors="replace"))
     fn = _async_def(tree, "_ingest_file")
     awaits = _awaits(fn)
     rendered = ", ".join(f"line {ln}: await {name}(...)" for ln, name in awaits)
     names = [name for _, name in awaits]
-    assert names.count("ingest_file") == 1 and set(names) <= {"ingest_file", "_persist_state"}, (
-        f"_ingest_file has awaits other than the pipeline call ({rendered}).\n"
+    assert _misplaced_awaits(names) == [], (
+        f"_ingest_file has an await the commit ordering does not admit ({rendered}).\n"
         "Every await after the pipeline's commit that a cancellation can skip is an "
         "orphan window: a shutdown cancelling there leaves committed items that no "
         "folder_file_state row names, so the next scan duplicates them and the "
@@ -726,7 +753,7 @@ def test_await_ratchet_would_catch_a_reintroduced_post_commit_hop():
     """Negative control: the await detector fires on the shape just removed.
 
     Without this, a detector bug that reports nothing would make the ratchet pass
-    forever. Feeds it the exact code the GPT reviewer flagged.
+    forever. Feeds it the exact post-commit hop shape.
     """
     pre_fix = ast.parse(
         "class W:\n"
@@ -739,6 +766,17 @@ def test_await_ratchet_would_catch_a_reintroduced_post_commit_hop():
     )
     names = [name for _, name in _awaits(_async_def(pre_fix, "_ingest_file"))]
     assert names.count("to_thread") == 2, f"the detector missed the post-commit hops (saw {names})"
+    assert _misplaced_awaits(names) == [
+        "to_thread",
+        "to_thread",
+    ], f"the ratchet admitted a post-commit hop (saw {names})"
+
+
+def test_await_ratchet_admits_a_pre_commit_hop_only():
+    """The ingest-time path re-check may hop to a thread, but only before the commit."""
+    assert _misplaced_awaits(["to_thread", "_persist_state", "ingest_file", "_persist_state"]) == []
+    assert _misplaced_awaits(["ingest_file", "to_thread"]) == ["to_thread"]
+    assert _misplaced_awaits(["to_thread", "_persist_state"]) == ["ingest_file x0"]
 
 
 def test_await_ratchet_ignores_awaits_inside_nested_helpers():

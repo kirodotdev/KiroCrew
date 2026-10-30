@@ -211,6 +211,27 @@ test("managed check(): no checkCommand -> check error (cannot discover, not 'lat
   assert.ok(!states.some((s) => s.state === "not-available"));
 });
 
+// A spawn script for an apply that installs: the check offers 0.5.0.5 until
+// `applyCommand` runs, then reports up to date (non-zero), as a real check does
+// once the version is installed.
+function installsOnApply(applyCommand) {
+  let applied = false;
+  return (cmd) => {
+    if (cmd === applyCommand) {
+      applied = true;
+      return { code: 0, out: "" };
+    }
+    return applied ? { code: 1 } : { code: 0, out: "0.5.0.5" };
+  };
+}
+
+// The quit-apply runs detached from the before-quit handler; wait for its exit.
+async function untilExited(exits) {
+  for (let i = 0; i < 50 && exits.length === 0; i += 1) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   const relaunches = [];
   const exits = [];
@@ -219,8 +240,7 @@ test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   });
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -258,8 +278,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   deps.getAutoDownloadPreference = () => true;
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -267,7 +286,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   assert.ok(quit, "pref true + found must arm a before-quit handler");
   const event = { preventDefault: () => {} };
   quit.fn(event);
-  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  await untilExited(exits);
   assert.ok(commands.includes("pkgtool update kirocrew"), "before-quit must run the updateCommand");
   assert.strictEqual(relaunches.length, 1);
   assert.deepStrictEqual(exits, [0]);
@@ -335,6 +354,75 @@ test("managed auto-on-restart: a FAILED apply on quit exits without relaunching"
   assert.strictEqual(failed.length, 1, "onInstallFailed fires on a failed quit-apply");
 });
 
+test("managed install(): an apply the check still offers again does not relaunch", async (t) => {
+  const failed = [];
+  const exits = [];
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => { throw new Error("must not relaunch into the same version"); };
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.deepStrictEqual(commands, ["check", "apply", "check"], "the check runs again after the apply");
+  assert.deepStrictEqual(exits, [], "the app keeps running");
+  assert.strictEqual(failed.length, 1, "onInstallFailed fires so the gateway comes back");
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "install", "an unchanged install is an install-phase error");
+  assert.match(err.message, /did not change/);
+});
+
+test("managed install(): a re-check offering another version still relaunches", async (t) => {
+  const relaunches = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = () => {};
+  let version = "0.5.0.5";
+  const { restore } = stubSpawn((cmd) => {
+    if (cmd === "check") return { code: 0, out: version };
+    version = "0.5.0.6";
+    return { code: 0, out: "" };
+  });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.strictEqual(relaunches.length, 1, "a newer version on offer is not the same-version loop");
+});
+
+test("managed auto-on-restart: an apply on quit the check still offers quits without relaunching", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const failed = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found arms the quit-apply");
+  quit.fn({ preventDefault: () => {} });
+  await untilExited(exits);
+  assert.deepStrictEqual(commands, ["check", "apply", "check"]);
+  assert.strictEqual(relaunches.length, 0, "an unchanged install must NOT relaunch");
+  assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
+  assert.strictEqual(failed.length, 1);
+});
+
 test("managed check(): the version comes from stdout only, ignoring stderr warnings", async (t) => {
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
@@ -360,6 +448,179 @@ test("managed download() lights the Install action (downloaded) without applying
   const dl = states.find((s) => s.state === "downloaded");
   assert.ok(dl && dl.version === "0.5.0.5", "download surfaces 'downloaded' with the found version");
   assert.ok(!commands.includes("apply"), "download must NOT run the apply command");
+});
+
+// Regression: overlapping checks (launch timer, poll, Check button) each used
+// to emit their own verdict, so the one finishing second demoted "downloaded"
+// back to "found" and closed the ready dialog under the Install click.
+test("managed check(): overlapping calls share ONE run and emit ONE verdict", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await Promise.all([u.check(), u.check()]);
+  assert.deepStrictEqual(commands, ["check"], "a second caller must join the run in flight");
+  assert.strictEqual(states.filter((s) => s.state === "checking").length, 1);
+  assert.strictEqual(states.filter((s) => s.state === "found").length, 1);
+});
+
+test("managed check(): a check finishing after Download keeps the ready state", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.download();
+  await u.check(); // e.g. the poll, or Check clicked again while the dialog is up
+  const last = states[states.length - 1];
+  assert.strictEqual(last.state, "downloaded", "the same version must not demote the ready dialog");
+  assert.strictEqual(last.version, "0.5.0.5");
+});
+
+test("managed check(): a later check after Download never leaves the ready state", async (t) => {
+  // The ready dialog renders only while the state is "downloaded", so even a
+  // transient "checking" from a background check (launch timer, poll) closes
+  // it and can swallow the Install click.
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.download();
+  const readyAt = states.length;
+  await u.check();
+  assert.deepStrictEqual(states.slice(readyAt).map((s) => s.state).filter((s) => s !== "downloaded"), []);
+});
+
+test("managed check(): a check that fails after Download keeps the ready state", async (t) => {
+  // A check error says nothing about the readied version, and emitting it
+  // would replace "downloaded" and close the dialog the same way.
+  let checkWorks = true;
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "0.5.0.5" } : { error: true }));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.download();
+  const readyAt = states.length;
+  checkWorks = false;
+  await u.check();
+  assert.deepStrictEqual(states.slice(readyAt).map((s) => s.state), ["downloaded"], "a failed check must not replace the ready state");
+  checkWorks = true;
+  await u.check(); // and the lane still checks afterwards
+  assert.strictEqual(states[states.length - 1].state, "downloaded");
+});
+
+test("managed check(): the Check button over a ready update brings the card back when the command fails", async () => {
+  // The About panel's Check clears the renderer's update state before it
+  // calls in, so a failed check that stays silent leaves no ready card and no
+  // Install button. Each way a check can fail must re-surface "downloaded".
+  for (const failure of [{ error: true }, { code: null, signal: "SIGTERM" }, { code: 0, out: "  " }]) {
+    let checkWorks = true;
+    const { deps, states } = makeDeps({
+      externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+    });
+    const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "0.5.0.5" } : failure));
+    try {
+      const u = initAutoUpdate(deps);
+      await u.check();
+      await u.download();
+      const clearedAt = states.length; // the Check button nulls the renderer's cache here
+      checkWorks = false;
+      await u.check();
+      const after = states.slice(clearedAt);
+      assert.deepStrictEqual(after.map((s) => s.state), ["downloaded"], `${JSON.stringify(failure)}: the ready state must come back`);
+      assert.strictEqual(after[0].version, "0.5.0.5");
+    } finally {
+      restore();
+    }
+  }
+});
+
+test("managed check(): a check finishing during an install never replaces installing", async (t) => {
+  // The launch timer or the poll can be mid-check when Install is clicked.
+  let releaseStop;
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.stopGateway = () => new Promise((resolve) => { releaseStop = resolve; });
+  deps.app.relaunch = () => {};
+  deps.app.exit = () => {};
+  let version = "0.5.0.5";
+  const { restore } = stubSpawn((cmd) => (cmd === "check" ? { code: 0, out: version } : { code: 0 }));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.download();
+  version = "0.5.0.6";
+  const background = u.check(); // already running when Install is clicked
+  const install = u.install();
+  await background;
+  assert.strictEqual(states[states.length - 1].state, "installing", "the check's verdict must be dropped");
+  releaseStop();
+  await install;
+  assert.ok(!states.some((s) => s.state === "found" && s.version === "0.5.0.6"));
+});
+
+test("managed check(): Check during an install is skipped and re-surfaces installing", async (t) => {
+  let releaseStop;
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.stopGateway = () => new Promise((resolve) => { releaseStop = resolve; });
+  deps.app.relaunch = () => {};
+  deps.app.exit = () => {};
+  const { commands, restore } = stubSpawn((cmd) => (cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0 }));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const install = u.install();
+  await u.check();
+  assert.deepStrictEqual(commands, ["check"], "no check command runs mid-install");
+  const last = states[states.length - 1];
+  assert.strictEqual(last.state, "installing");
+  assert.strictEqual(last.version, "0.5.0.5");
+  releaseStop();
+  await install;
+});
+
+test("managed check(): a failed install hands the state back to checks", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.app.relaunch = () => { throw new Error("must not relaunch on failure"); };
+  const { restore } = stubSpawn((cmd) => (cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 7 }));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  await u.check();
+  assert.strictEqual(states[states.length - 1].state, "found", "checks resume after a failed install");
+});
+
+test("managed check(): a NEWER version after Download supersedes the ready state", async (t) => {
+  let version = "0.5.0.5";
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn(() => ({ code: 0, out: version }));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.download();
+  version = "0.5.0.6";
+  await u.check();
+  const last = states[states.length - 1];
+  assert.strictEqual(last.state, "found", "a different version is offered anew");
+  assert.strictEqual(last.version, "0.5.0.6");
 });
 
 test("managed updater auto-checks on launch + arms a poll (no user action needed)", async (t) => {

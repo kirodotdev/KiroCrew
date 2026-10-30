@@ -33,25 +33,33 @@ adding a unit can move the value while moving the seq DOWN. So the cache drops a
 event whose revision is not higher than the one it holds, and reports ``seq``
 onward only because that is what a reader truncates a crew-log read against.
 
-Staleness is a FACT, not a timer
---------------------------------
-A field is stale when its fold's path stops resolving -- the shape under it
-changed, or the instance was edited onto a manifest whose paths this fold does not
-carry. The page then keeps the last good values and says so, which is part 5's
-stale band. It is deliberately not a clock: a crewmate that did no work for ten
-minutes has a dashboard that is CURRENT and unchanged, and calling that stale would
-teach a reader to ignore the band.
+An unresolved field is the CREWMATE'S news, not the reader's
+------------------------------------------------------------
+A fold field does not resolve for one of three reasons, and :attr:`FieldRead.unresolved`
+names which: its fold has produced no value yet (:data:`FOLD_UNSEEN`), the fold has a
+value with nothing at the field's path (:data:`PATH_MISSING`), or the fold HAS a value
+and the field resolved at an earlier read but not at this one, so the page keeps that
+older value (:data:`OLDER_VALUE`). A fold with no value on this read is always
+:data:`FOLD_UNSEEN`, whatever resolved before: a cold cell (a unit rollover with no
+savepoint, an evicted cell, a prime still running) is not a broken binding. None of them is something the person can act on -- the page and
+its bindings are the crewmate's -- so the frame draws no band for them and
+``dashboard_agentic.turn_block`` tells the crewmate instead. It is deliberately not a
+clock: a crewmate that did no work for ten minutes has a dashboard that is CURRENT and
+unchanged.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from dataclasses import field as dc_field
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Iterable, Mapping
 
 from kiro_crew.crew_log import bus as crew_log_bus
+from kiro_crew.crew_log import fold_delta
 from kiro_crew.crew_log.entry_types import PANEL_FOLD_NAME
 from kiro_crew.crew_log.projection import SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES
 from kiro_crew.dashboard_templates.manifest import TemplateManifest
@@ -60,6 +68,10 @@ from kiro_crew.dashboard_templates.manifest import TemplateManifest
 #: value IS the table of written values -- so a caller asks for it by name through
 #: ``subscribe(manifest, agentic=True)`` rather than through the manifest.
 AGENTIC_FOLD: Final[str] = "agentic"
+
+#: Longest a one-shot read waits for background primes of its cold slot folds, in total.
+#: Past it the fields read as missing, which is what a fold with no value reads as.
+PRIME_WAIT_SECONDS: Final[float] = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +93,68 @@ class _Missing:
 
 
 MISSING: Final[_Missing] = _Missing()
+
+#: Why a fold field did not resolve, as :attr:`FieldRead.unresolved` names it.
+#: The fold has produced no value this feed has seen.
+FOLD_UNSEEN: Final[str] = "fold_unseen"
+#: The fold has a value, and nothing sits at the field's path in it.
+PATH_MISSING: Final[str] = "path_missing"
+#: The fold HAS a value on this read and the field is not in it, but the field resolved
+#: at an earlier read on this slot, so a page that drew it keeps the older value. Never
+#: given for a fold with no value on this read: that is :data:`FOLD_UNSEEN`.
+OLDER_VALUE: Final[str] = "older_value"
+
+#: Which fold fields resolved at an earlier read, by slot, for :data:`OLDER_VALUE`.
+#:
+#: PROCESS-WIDE, because the reads that matter are not one feed's: a Dashboard tab is
+#: refilled from a fresh feed per request, and the turn block reads through another, so
+#: only a record shared by all of them can say a value was on screen before. Bounded by
+#: slot count and forgotten on restart, which only turns an older value into one of the
+#: other two reasons -- the crewmate is still told the field did not resolve.
+_RESOLVED_BEFORE: "OrderedDict[str, set[str]]" = OrderedDict()
+_RESOLVED_SLOTS_MAX: Final[int] = 256
+#: The most field names one slot keeps. A page's fields are bounded by its manifest,
+#: and a read with *declared* keeps only the names the page declares, so this
+#: only matters for a caller that passes none; past it the set is replaced.
+_RESOLVED_NAMES_MAX: Final[int] = 256
+_RESOLVED_LOCK = threading.Lock()
+
+
+def remember_resolved(
+    slot: str, names: Iterable[str], declared: Iterable[str] | None = None
+) -> None:
+    """Record that *names* resolved on *slot*, so a later miss reads as older.
+
+    *declared* is every fold field the page in force declares. Names outside it are
+    forgotten, so a page edited onto other fields does not keep its old ones forever.
+    """
+    names = set(names)
+    if not slot:
+        return
+    with _RESOLVED_LOCK:
+        known = _RESOLVED_BEFORE.pop(slot, set())
+        if declared is not None:
+            known &= set(declared)
+        known |= names
+        if len(known) > _RESOLVED_NAMES_MAX:
+            known = set(sorted(names)[:_RESOLVED_NAMES_MAX])
+        if not known:
+            return
+        _RESOLVED_BEFORE[slot] = known
+        while len(_RESOLVED_BEFORE) > _RESOLVED_SLOTS_MAX:
+            _RESOLVED_BEFORE.popitem(last=False)
+
+
+def resolved_before(slot: str) -> frozenset[str]:
+    """The fold fields that resolved at some earlier read on *slot*."""
+    with _RESOLVED_LOCK:
+        return frozenset(_RESOLVED_BEFORE.get(slot, ()))
+
+
+def forget_resolved() -> None:
+    """Drop every slot's record. For a test that needs a process with no history."""
+    with _RESOLVED_LOCK:
+        _RESOLVED_BEFORE.clear()
 
 
 def page_panel(record: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -135,9 +209,11 @@ class FieldRead:
     #: a crew-log read against. Per-fold seqs genuinely differ, so this is a
     #: watermark and not a claim that every fold is at it.
     seq: int = 0
-    #: True when any field did not resolve. The page keeps its last good values and
-    #: shows the stale band.
-    stale: bool = False
+    #: The FOLD fields that did not resolve, by name, with the reason
+    #: (:data:`FOLD_UNSEEN`, :data:`PATH_MISSING` or :data:`OLDER_VALUE`). A subset of
+    #: ``missing``: an agentic field never written is absent, not unresolved, and has
+    #: its own upkeep text. Read by the crewmate's turn block, never shown to the reader.
+    unresolved: dict[str, str] = dc_field(default_factory=dict)
     #: When each agentic field was WRITTEN, by field name, from the agentic fold's own
     #: row rather than from anything the writer put in its value.
     #:
@@ -219,6 +295,11 @@ class DashboardFeed:
         self._cells: dict[str, _Cell] = {}
         self._disposers: list[Callable[[], None]] = []
         self._folds: frozenset[str] = frozenset()
+        #: Folds with a snapshot re-read in flight (:meth:`_resync_soon`).
+        self._resyncing: set[str] = set()
+        self._resync_again: set[str] = set()
+        #: Notified (under ``_lock``) when a fold leaves ``_resyncing``.
+        self._resync_done = threading.Condition(self._lock)
 
     # -- subscription ------------------------------------------------------- #
 
@@ -242,7 +323,7 @@ class DashboardFeed:
         makes unreachable, so it would be a kernel change), and a SESSION fold on a
         crewmate whose DM thread has no unit yet. The second is ordinary -- a
         crewmate that has never run a turn -- and the fields it feeds read as
-        missing, which the page shows as the stale band rather than as an error.
+        missing and unresolved rather than as an error.
 
         THE BASELINE READ IS FILE I/O ON THIS THREAD, which the bus documents. A
         caller on an event loop runs this through ``asyncio.to_thread``; a caller on
@@ -300,6 +381,45 @@ class DashboardFeed:
             self._cells.clear()
         self._folds = frozenset()
 
+    def wait_for_primes(self, timeout: float = PRIME_WAIT_SECONDS) -> None:
+        """Wait, up to *timeout* s in total, for the slot folds that had no baseline.
+
+        For a ONE-SHOT read (subscribe, read, unsubscribe). A slot fold with no warm
+        cell hands no baseline and is folded by one background prime
+        (:mod:`kiro_crew.crew_log.slot_prime`); a long-lived subscriber receives that
+        value as its next event, but a one-shot reader would unsubscribe first and
+        report fields that exist as missing. So it waits here for the prime, which has
+        already published to this subscription when it settles. The fold still runs
+        off this thread and once per cell; waiting costs no CPU.
+
+        A prime's publish of a ``work`` board is a ``snapshot_needed`` with no value
+        (its first publish in this process), which this feed answers with a re-read
+        on its own thread (:meth:`_resync_soon`). That re-read is waited for too,
+        within the same *timeout*, so a one-shot read still gets the primed value.
+        """
+        from kiro_crew.crew_log import slot_prime
+
+        deadline = time.monotonic() + max(timeout, 0.0)
+        for fold in sorted(self._folds):
+            if scope_for(fold) != crew_log_bus.SCOPE_SLOT:
+                continue
+            with self._lock:
+                cell = self._cells.get(fold)
+                seen = cell is not None and cell.seen
+            if seen:
+                continue
+            slot_prime.wait(self.slot, fold, max(deadline - time.monotonic(), 0.0))
+            self._wait_resync(fold, deadline)
+
+    def _wait_resync(self, fold: str, deadline: float) -> None:
+        """Block until *fold* has no re-read in flight, or until *deadline*."""
+        with self._resync_done:
+            while fold in self._resyncing:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._resync_done.wait(remaining)
+
     def _make_callback(self, fold: str) -> Callable[[Any], None]:
         """The per-fold callback, closed over the fold NAME rather than reading it.
 
@@ -320,11 +440,22 @@ class DashboardFeed:
         The event is read DEFENSIVELY, as the WS exporter reads it and for the same
         reason: a bus carries whatever a publisher sends, and a malformed one must
         cost this update rather than the fan-out to the next subscriber.
+
+        A ``work`` DELTA (``kind`` not ``value``) is applied on the value held when its
+        base is the revision held (:func:`~kiro_crew.crew_log.fold_delta.value_after`),
+        else the whole value the event carries is taken. With neither (a
+        ``snapshot_needed`` or a gap) the render the publisher recorded for this very
+        revision is taken (:meth:`_published_render`). It is held by the publisher,
+        not the warm memo, so a board too big to keep warm still gets its value. Only
+        when that is gone too is the cell re-read off this thread (:meth:`_resync_soon`).
         """
         revision = int(getattr(event, "revision", 0) or 0)
         seq = int(getattr(event, "seq", 0) or 0)
         value = getattr(event, "value", None)
-        if revision <= 0 or not isinstance(value, Mapping):
+        kind = getattr(event, "kind", fold_delta.KIND_VALUE)
+        if revision <= 0:
+            return
+        if kind == fold_delta.KIND_VALUE and not isinstance(value, Mapping):
             return
         with self._lock:
             cell = self._cells.get(fold)
@@ -335,10 +466,19 @@ class DashboardFeed:
                 # can reach here in either order, and seq cannot order them -- see
                 # the module docstring.
                 return
-            cell.value = value
-            cell.revision = revision
-            cell.seq = seq
-            cell.seen = True
+            if kind != fold_delta.KIND_VALUE:
+                held = cell.value if cell.seen and isinstance(cell.value, Mapping) else None
+                value = fold_delta.value_after(held, cell.revision if cell.seen else 0, event)
+                if value is None:
+                    value = self._published_render(fold, revision)
+            if value is not None:
+                cell.value = value
+                cell.revision = revision
+                cell.seq = seq
+                cell.seen = True
+        if value is None:
+            self._resync_soon(fold)
+            return
         # OUTSIDE THE LOCK. The callback hands the frame to the socket loop, and
         # holding this lock across that would put the reader's lock on the folder's
         # critical path for every open dashboard.
@@ -347,6 +487,75 @@ class DashboardFeed:
                 self._on_change(fold)
             except Exception:  # pragma: no cover - a push must not cost the cache
                 logger.debug("dashboard push for %s/%s failed", self.slot, fold, exc_info=True)
+
+    def _published_render(self, fold: str, revision: int) -> "Mapping[str, Any] | None":
+        """The render published for *fold* at exactly *revision*, or ``None``. No I/O.
+
+        Asked inside the bus delivery of that publish, so the publisher's recorded
+        base is that render (:func:`kiro_crew.crew_log.eager.try_published_value`). An
+        older revision answers ``None``. NON-BLOCKING: a held event replayed after a
+        baseline reaches here under the subscriber's delivery guard, while a publish on
+        another thread may hold the publisher's lock and wait on that guard. A busy
+        lock answers ``None`` and the cell is re-read instead. Never raises.
+        """
+        try:
+            from kiro_crew.crew_log import eager
+
+            render = eager.try_published_value(self.slot, fold, revision)
+        except Exception:  # pragma: no cover - a lookup must never cost the cache
+            return None
+        return render if isinstance(render, Mapping) and render else None
+
+    def _resync_soon(self, fold: str) -> None:
+        """Re-read *fold* once on a daemon thread; at most one read per fold in flight.
+
+        The bus calls :meth:`_accept` on the fold worker, which may not read, so the
+        snapshot pull runs on its own thread. The read is labelled with the revision
+        last published for the cell, taken BEFORE the value
+        (:func:`kiro_crew.crew_log.eager.published_revision`), so the next delta, whose
+        base is that publish, applies on it. A read that fails leaves the cell as it
+        was; the next publish tries again.
+        """
+        with self._lock:
+            if fold in self._resyncing:
+                # A gap during the read: the read may predate it, so read once more.
+                self._resync_again.add(fold)
+                return
+            self._resyncing.add(fold)
+        threading.Thread(
+            target=self._resync, args=(fold,), name=f"dashboard-feed-resync-{fold}", daemon=True
+        ).start()
+
+    def _resync(self, fold: str) -> None:
+        while True:
+            self._resync_once(fold)
+            with self._lock:
+                if fold not in self._resync_again:
+                    self._resyncing.discard(fold)
+                    self._resync_done.notify_all()
+                    return
+                self._resync_again.discard(fold)
+
+    def _resync_once(self, fold: str) -> None:
+        try:
+            # Read and labelled under the publisher's lock: the label is this value's
+            # own revision and the base the next delta applies on.
+            folded, label = crew_log_bus._read_slot_labelled(self.slot, fold)
+            value = getattr(folded, "value", None)
+            stored = False
+            if label > 0 and isinstance(value, Mapping):
+                with self._lock:
+                    cell = self._cells.get(fold)
+                    if cell is not None and not (cell.seen and label <= cell.revision):
+                        cell.value = value
+                        cell.revision = label
+                        cell.seq = int(getattr(folded, "seq", 0) or 0)
+                        cell.seen = True
+                        stored = True
+            if stored and self._on_change is not None:
+                self._on_change(fold)
+        except Exception:
+            logger.debug("dashboard feed re-read of %s/%s failed", self.slot, fold, exc_info=True)
 
     # -- reading ------------------------------------------------------------ #
 
@@ -370,14 +579,11 @@ class DashboardFeed:
         accepted.
         """
         read = FieldRead()
-        #: Fold-sourced fields that did not resolve. This -- not `missing` -- is what
-        #: makes a read STALE, because the two say different things. An agentic field
-        #: the crewmate has never written is ABSENT, and the page dims its cell for
-        #: that. Stale means the values on screen are older than the record, which a
-        #: cell that was never filled is not: counting it raised the band forever on
-        #: every crewmate carrying an unwritten agentic field, about a value nothing
-        #: had yet produced.
-        unresolved: list[str] = []
+        #: Fold-sourced fields that did not resolve, and why. An agentic field the
+        #: crewmate has never written is ABSENT rather than unresolved: it goes in
+        #: `missing` only, and its upkeep text already tells the crewmate to write it.
+        unresolved = read.unresolved
+        resolved_fold: list[str] = []
         written = agentic.get("fields") if isinstance(agentic, Mapping) else None
         with self._lock:
             cells = {name: (cell.value, cell.seq, cell.seen) for name, cell in self._cells.items()}
@@ -402,25 +608,44 @@ class DashboardFeed:
                 resolved = resolve_path(page_panel(self.panel_record), spec.path or "")
                 if resolved is MISSING:
                     read.missing.append(name)
-                    unresolved.append(name)
+                    # NEVER PUBLISHED is the panel's "no value yet": the empty record
+                    # has none of a published record's paths, and that is not a bad
+                    # binding.
+                    published = isinstance(self.panel_record, Mapping) and bool(
+                        self.panel_record.get("published_at")
+                    )
+                    unresolved[name] = PATH_MISSING if published else FOLD_UNSEEN
                     continue
                 read.fields[name] = resolved
+                resolved_fold.append(name)
                 if cached is not None and cached[2]:
                     read.seq = max(read.seq, cached[1])
                 continue
             if cached is None or not cached[2]:
                 read.missing.append(name)
-                unresolved.append(name)
+                unresolved[name] = FOLD_UNSEEN
                 continue
             value, seq, _seen = cached
             resolved = resolve_path(value, spec.path or "")
             if resolved is MISSING:
                 read.missing.append(name)
-                unresolved.append(name)
+                unresolved[name] = PATH_MISSING
                 continue
             read.fields[name] = resolved
+            resolved_fold.append(name)
             read.seq = max(read.seq, seq)
-        read.stale = bool(unresolved)
+        # A path miss in a fold that HAS a value, on a field that resolved before, is an
+        # OLDER value on a page that drew it. A fold with no value on this read stays
+        # unseen: the cell may only be cold, and that is not the crewmate's to fix.
+        before = resolved_before(self.slot)
+        for name, reason in unresolved.items():
+            if reason == PATH_MISSING and name in before:
+                unresolved[name] = OLDER_VALUE
+        remember_resolved(
+            self.slot,
+            resolved_fold,
+            declared=[n for n, spec in manifest.fields.items() if not spec.agentic],
+        )
         return read
 
     def folds(self) -> frozenset[str]:

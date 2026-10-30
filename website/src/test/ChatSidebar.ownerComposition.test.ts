@@ -144,13 +144,13 @@ describe('browser-storage keys', () => {
   // Event names share the prefix but are not storage keys.
   const EVENTS = new Set(['mc-config-changed'])
 
-  it('are declared in ./persistence, bar the four status-filter keys', () => {
+  it('are declared in ./persistence, bar the five status-filter keys', () => {
     const elsewhere: string[] = []
     for (const [name, text] of [...ownerSource, ['ChatSidebar', facadeSource] as const]) {
       if (name === 'persistence') continue
       for (const key of keyLiterals(text)) {
         if (EVENTS.has(key)) continue
-        if (name === 'filters' && /^mc-session-(unread|running|pinned|recent)-only$/.test(key)) continue
+        if (name === 'filters' && /^mc-session-(unread|running|pinned|recent|crew)-only$/.test(key)) continue
         elsewhere.push(`${name}: ${key}`)
       }
     }

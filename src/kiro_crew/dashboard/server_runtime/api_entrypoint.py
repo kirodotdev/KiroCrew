@@ -99,6 +99,8 @@ async def start_api_server(
     local_only: bool = True,
     configured_host: str = "",
     assume_kiro_ready: bool = False,
+    # The KiroPrerequisiteService whose enterprise boot probe saw the login.
+    kiro_prerequisite_service: Any = None,
     conversation_log: Any = None,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
     context_builder: ContextBuilder | None = None,
@@ -157,6 +159,9 @@ async def start_api_server(
     # Crew-log class record for a binding that just COMMITTED, taken before anything
     # can be routed through it
     state.wire_session_bind_listener()
+    # Lands a waiting model pick when a channel or cron turn ends, a boundary
+    # no dashboard turn passes
+    state.wire_session_release_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
@@ -181,13 +186,26 @@ async def start_api_server(
     from kiro_crew.slack.handler import load_voice_reply_config
 
     await asyncio.to_thread(load_voice_reply_config)
+    # Enterprise build only: no kiro login, no Crew. The gateway hands in the
+    # service whose boot probe saw the login; a caller that did not run that
+    # check gets it here, still before the bind. A failure exits non-zero.
+    from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
-    app["kiro_prerequisite_service"] = await asyncio.to_thread(
-        KiroPrerequisiteService,
-        assume_ready=assume_kiro_ready,
-    )
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await require_kiro_login(assume_ready=assume_kiro_ready)
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await asyncio.to_thread(
+            KiroPrerequisiteService,
+            assume_ready=assume_kiro_ready,
+        )
+    app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # Enterprise build only: the gate starts open on that verified login and
+    # closes if it expires. The middleware chain installed below reads it.
+    from kiro_crew.dashboard.enterprise_gate_middleware import install_enterprise_gate
+
+    install_enterprise_gate(app, app["kiro_prerequisite_service"])
     # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
     # error; the ACP layer asks this service's whoami verdict to tell it apart.
     from kiro_crew.kiro_prerequisite import register_turn_auth_service
@@ -365,6 +383,12 @@ async def start_api_server(
     bind_addr = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
+    # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):
+    # from here an app cron naming a missing folder creates it through the
+    # dashboard's own folder service. Boot-time registration stays read-only.
+    from kiro_crew.dashboard.handlers.cron_board import wire_app_cron_folder_creator
+
+    wire_app_cron_folder_creator(state)
     # Same listener guard as start_dashboard: a headless gateway loses its
     # listener to a failed accept() exactly the same way.
     _arm_listener_guard(state, runner, site)

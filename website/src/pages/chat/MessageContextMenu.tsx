@@ -1,9 +1,10 @@
 import { Fragment, useState, type ReactNode, type SyntheticEvent } from 'react'
-import { Link, Type } from 'lucide-react'
+import { ExternalLink, Link, Type } from 'lucide-react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui/context-menu'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { safeHttpUrl } from '../../lib/safeUrl'
 
 export interface MessageMenuItem {
   id: string
@@ -58,8 +59,11 @@ function selectionInside(root: HTMLElement): boolean {
  * the two entry points can never disagree about what a message can do.
  *
  * Opening this menu suppresses the browser's own, so a gesture that lands on a
- * link adds Copy link address (the item the native and desktop menus offer)
- * and Copy link text (asked for by the reporter of issue #18536). The link
+ * link adds Open link in new tab (web links only, issue #22880), Copy link
+ * address (the item the native and desktop menus offer) and Copy link text
+ * (asked for by the reporter of issue #18536). The open takes the same
+ * `window.open(..., 'noopener,noreferrer')` path as the other external links
+ * here, so the desktop app hands it to the system browser. The link
  * is read on pointerdown as well as contextmenu, so it is known before Radix
  * opens the menu. A touch device gets no menu, so its native long-press keeps
  * the platform's own link actions.
@@ -87,6 +91,8 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
     copyToClipboard(text).then(ok => { if (!ok) onCopyFailed?.() }, () => onCopyFailed?.())
   }
   const linkItems: MessageMenuItem[] = link ? [
+    // Same gate the renderer uses for these links: http(s) only, no userinfo.
+    ...(safeHttpUrl(link.href) ? [{ id: 'open-link-new-tab', label: i18nT('pages.chat.messageContextMenu.open_link_new_tab'), icon: <ExternalLink size={14} />, onSelect: () => { window.open(link.href, '_blank', 'noopener,noreferrer') } }] : []),
     { id: 'copy-link-address', label: i18nT('pages.chat.messageContextMenu.copy_link_address'), icon: <Link size={14} />, onSelect: () => copy(link.href) },
     ...(link.text ? [{ id: 'copy-link-text', label: i18nT('pages.chat.messageContextMenu.copy_link_text'), icon: <Type size={14} />, onSelect: () => copy(link.text) }] : []),
   ] : []

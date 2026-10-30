@@ -24,6 +24,7 @@ from typing import Any, AsyncIterator, Callable, Optional
 import pytest
 import yarl
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from kiro_crew import platform_compat
 from kiro_crew.loop_lock import LoopBoundLock
@@ -72,6 +73,11 @@ def _build_seed_repo(base: Path) -> None:
     _git("init", "-b", "main", ".", cwd=seed)
     _git("config", "user.email", "test@example.invalid", cwd=seed)
     _git("config", "user.name", "Test", cwd=seed)
+    # The notebook builds its own git env, and a push starts receive-pack in the
+    # remote without ours, so both repos carry it (see git_maintenance_helpers).
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        _git("config", key, value, cwd=remote)
+        _git("config", key, value, cwd=seed)
     (seed / "One.md").write_text("# One\n\nlinks to [[Two]]\n", encoding="utf-8")
     (seed / "sub").mkdir()
     (seed / "sub" / "Two.md").write_text("---\ntitle: Two\n---\n\nbody #tag\n", encoding="utf-8")

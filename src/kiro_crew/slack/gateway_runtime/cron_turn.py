@@ -249,6 +249,7 @@ async def _cron_run_sequence(
                     resumed=_resumed,
                     needs_reinjection=_seq_reinjection,
                     minimal_context=job.minimal_context,
+                    request_prefix_context=cap.prior_result or None,
                 )
                 # Wall clock for the cron agent turn: acp never assigns
                 # TurnUsage.duration_ms, so the row falls back to this.
@@ -383,7 +384,17 @@ async def _cron_run_sequence(
                             agent_session_key,
                         )
                     else:
-                        await self.sessions.reset(agent_session_key)
+                        # skip_if_busy: as in the single-agent finally, a tab
+                        # turn that took the key after the release above is
+                        # left running rather than killed.
+                        if not await self.sessions.reset(
+                            agent_session_key, skip_if_busy=True
+                        ) and self.sessions.is_busy(agent_session_key):
+                            logger.info(
+                                "Cron '%s': not resetting %s, another turn holds it",
+                                job.name,
+                                agent_session_key,
+                            )
                         if self.cron_svc is not None:
                             self.cron_svc.clear_active_session_key(job.id, agent_session_key)
             if not _seq_snf_retry:
@@ -412,7 +423,20 @@ async def _cron_run_sequence(
                     agent,
                 )
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
-            await self.sessions.reset(agent_session_key)
+            # A turn that took the key after the finally's release (the
+            # job's dashboard tab shares it) is not torn down for the retry.
+            # A retry against the un-reset stale binding would
+            # only hit Session not found again, so give the step up.
+            if not await self.sessions.reset(
+                agent_session_key, skip_if_busy=True
+            ) and self.sessions.is_busy(agent_session_key):
+                logger.info(
+                    "Cron '%s': lost session of step %r but another turn "
+                    "holds it; not resetting and not retrying this step",
+                    job.name,
+                    agent,
+                )
+                raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
     if _seq_mcp_notes:
         result_text = "\n".join(_seq_mcp_notes) + "\n\n" + result_text
     if _seq_downgraded:
@@ -620,6 +644,8 @@ async def _cron_run_single(
             needs_reinjection=_needs_reinjection,
             provider_type=_provider,
             minimal_context=job.minimal_context,
+            # The previous run's result, framed as data, ahead of the request.
+            request_prefix_context=cap.prior_result or None,
         )
 
         # Wall clock for the cron agent turn — see the sequential site
@@ -925,7 +951,19 @@ async def _cron_run_single(
                 # the reaper can still target the ephemeral key if the deferred
                 # reset hangs. _subagent_done will clear it after the real reset.
             else:
-                await self.sessions.reset(session_key)
-                # reset done → the reaper does not need this key.
+                # skip_if_busy: the job's dashboard tab runs on this same
+                # key, and a tab turn can take the session in the gap the
+                # release above opened. Declined, the reset leaves that
+                # turn running instead of killing it.
+                if not await self.sessions.reset(
+                    session_key, skip_if_busy=True
+                ) and self.sessions.is_busy(session_key):
+                    logger.info(
+                        "Cron '%s': not resetting %s, another turn holds it",
+                        job.name,
+                        session_key,
+                    )
+                # reset done, or declined for a turn that is not this
+                # run's → the reaper does not need this key.
                 if self.cron_svc is not None:
                     self.cron_svc.clear_active_session_key(job.id, session_key)

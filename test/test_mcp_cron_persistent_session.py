@@ -109,24 +109,25 @@ class TestCronAddPersistentSessionValidation:
         )
         assert specs["persistent_session"].type is bool
 
-    def test_validator_accepts_true(self):
-        """bool True passes through cleanly."""
+    @pytest.mark.parametrize("value", [True, False])
+    def test_validator_accepts_a_bool(self, value):
+        """A real bool passes through cleanly."""
         cleaned = _validate_args(
             "cron_add",
-            {"name": "x", "message": "y", "every": 120, "persistent_session": True},
+            {"name": "x", "message": "y", "every": 120, "persistent_session": value},
         )
-        assert cleaned["persistent_session"] is True
+        assert cleaned["persistent_session"] is value
 
-    def test_validator_accepts_false(self):
-        """bool False passes through cleanly."""
-        cleaned = _validate_args(
-            "cron_add",
-            {"name": "x", "message": "y", "every": 120, "persistent_session": False},
-        )
-        assert cleaned["persistent_session"] is False
-
-    def test_validator_rejects_non_bool_string(self):
-        """LLM that sends the string "false" instead of False must be rejected."""
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # An LLM that sends the string "false" instead of False.
+            pytest.param("false", id="string"),
+            # An int (even 0 or 1) is not a bool, so stored state stays typed.
+            pytest.param(0, id="int"),
+        ],
+    )
+    def test_validator_rejects_a_non_bool(self, value):
         from kiro_crew.validation import ValidationError
 
         with pytest.raises(ValidationError):
@@ -136,22 +137,7 @@ class TestCronAddPersistentSessionValidation:
                     "name": "x",
                     "message": "y",
                     "every": 120,
-                    "persistent_session": "false",
-                },
-            )
-
-    def test_validator_rejects_non_bool_int(self):
-        """An int (even 0 or 1) is not a bool — reject so stored state stays typed."""
-        from kiro_crew.validation import ValidationError
-
-        with pytest.raises(ValidationError):
-            _validate_args(
-                "cron_add",
-                {
-                    "name": "x",
-                    "message": "y",
-                    "every": 120,
-                    "persistent_session": 0,
+                    "persistent_session": value,
                 },
             )
 

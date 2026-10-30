@@ -404,7 +404,7 @@ def update(
         # whatever the slug held by then. A time-of-check guard in the caller
         # cannot close a time-of-use hole here. This is the time of use.
         #
-        # FAIL CLOSED ON ABSENT, which is the half the earlier fixes left open. A
+        # FAIL CLOSED ON ABSENT too, not only on a mismatch. A
         # caller repeatedly PATCHing a predictable empty slug spends most of its
         # time inside the read-to-write gap, so an owner creating a dashboard there
         # lands in it often, with nothing else having to line up. And `dashboard` is

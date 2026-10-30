@@ -949,6 +949,7 @@ class TestLaunchResume:
 class TestSessionManagerPluginPrereq:
     def test_ensure_session_manager_plugin_installs_when_missing(self, monkeypatch, capsys):
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: None)
         monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: True)
         monkeypatch.setattr(
             wizard.ssm,
@@ -961,9 +962,34 @@ class TestSessionManagerPluginPrereq:
 
     def test_ensure_session_manager_plugin_decline(self, monkeypatch):
         monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: None)
         monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: False)
 
         assert wizard._ensure_session_manager_plugin() is False
+
+    def test_ensure_session_manager_plugin_names_a_refusal_instead_of_offering_install(
+        self, monkeypatch, capsys
+    ):
+        """A found-but-refused plugin is not offered a reinstall."""
+        refusal = wizard.ssm.PluginRefusal(
+            path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+            code="other_owner",
+        )
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(wizard.ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        def _no_prompt(*_a, **_k):
+            raise AssertionError("must not offer to install a refused plugin")
+
+        monkeypatch.setattr(wizard.ui, "confirm", _no_prompt)
+        monkeypatch.setattr(wizard.ssm, "install_session_manager_plugin", _no_prompt)
+
+        assert wizard._ensure_session_manager_plugin(assume_yes=True) is False
+        out = capsys.readouterr()
+        text = out.out + out.err
+        assert refusal.path in text and refusal.reason in text
 
 
 class TestDeployProgressInterrupt:

@@ -117,8 +117,14 @@ def _save_slot_to_history(
     after_commit_under_lock: Callable[[], None] | None = None,
     refuse_stale_empty_merge: bool = False,
     turn_timeout_override: tuple[int | None] | None = None,
+    retired_rows: list[dict] | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
+
+    ``retired_rows``: with an explicit *messages* snapshot, the rows the
+    snapshot removes on purpose. The rewrite then still preserves rows another
+    writer appended after the snapshot was taken (see ``compose_payload``);
+    without it a rewrite drops every window-region line the snapshot lacks.
 
     ``refuse_stale_empty_merge``: let the empty-window merge of a message-less
     slot refuse a stale queue snapshot or a replaced slot, as the full save
@@ -217,6 +223,9 @@ def _save_slot_to_history(
     # writer that commits between here and the read costs a refused pass, never a
     # committed value this save could not prove.
     queue_write_basis = slot._queue_persisted_sig
+    # Read before the copy, so the check under the lock can tell a window
+    # copied before a Regenerate swap committed (see ``snapshot_predates_swap``).
+    swap_basis = _write_guards.swap_basis(slot)
     snapshot = _write_guards.paired_window_snapshot(slot, messages, expected_disk_older_count)
     if snapshot is None:
         return False
@@ -339,6 +348,32 @@ def _save_slot_to_history(
         # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
         # so they take the patient acquire path instead of dropping the save.
         with state.conversation_log._locked(history_key):
+            # ── Swap-won guard ──────────────────────────────────────────────
+            # A save copies the window before it waits for this lock, and a
+            # Regenerate swap publishes its commit inside this same lock. A copy
+            # that predates the commit (or falls in its commit-to-memory stretch)
+            # still holds the reply the swap retired, and lacks the variants it
+            # gave the new reply; writing it would undo the swap on disk.
+            if _write_guards.snapshot_predates_swap(slot, swap_basis):
+                if messages is not None:
+                    # A caller's own snapshot cannot be re-taken here: refuse,
+                    # and the caller re-decides against the swapped window.
+                    logger.warning(
+                        "Slot %s save refused: a Regenerate swap committed after its snapshot",
+                        slot.key,
+                    )
+                    _keep_owed_after_refusal(slot)
+                    return False
+                # Captured before the copy, not re-read after it (see
+                # ``apply_committed_swap``).
+                applying = slot._window_swap_applying
+                retaken = _write_guards.paired_window_snapshot(slot, None, None)
+                if retaken is None:
+                    _keep_owed_after_refusal(slot)
+                    return False
+                window, queue_snapshot, queue_candidates, disk_older = retaken
+                window = _write_guards.drop_notes_authorized_elsewhere(slot, window, note_auth_key)
+                window = _write_guards.apply_committed_swap(window, applying)
             existing_meta, _meta_readable, _line_corrupt = _write_guards.read_line_for_save(
                 state.conversation_log, slot, history_key
             )
@@ -410,7 +445,15 @@ def _save_slot_to_history(
             )
             meta_str = json.dumps(meta_line) + "\n"
             payload, frozen_prefix, foreign_lines = _transcript_merge.compose_payload(
-                state, slot, path, history_key, window, disk_older, meta_str, rewrite=rewrite
+                state,
+                slot,
+                path,
+                history_key,
+                window,
+                disk_older,
+                meta_str,
+                rewrite=rewrite,
+                retired_rows=retired_rows,
             )
 
             _preserve_mtime: float | None = None
@@ -574,14 +617,18 @@ async def save_slot_off_loop(
     best_effort: bool = True,
     expected_history_key: str | None = None,
     expected_slot_name: str | None = None,
+    expected_disk_older_count: int | None = None,
     rows_only: bool = False,
     issued_by_the_retraction: bool = False,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    retired_rows: list[dict] | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
+
+    ``retired_rows``: forwarded to :func:`_save_slot_to_history`.
 
     :func:`_save_slot_to_history` holds the per-session cross-process
     ``_locked`` across its read-modify-``atomic_write``. That lock, invoked on
@@ -622,6 +669,9 @@ async def save_slot_off_loop(
     routing pin, so this object-identity recheck under the lock stops the
     truncating snapshot from landing on the replacement's transcript.
 
+    ``expected_disk_older_count``: the ``slot._disk_older_count`` read together
+    with *messages*; see :func:`_save_slot_to_history`. A drift refuses the save.
+
     ``rows_only``: write the window but leave the metadata line's slot-owned
     fields as they stand on disk when the line was published by ANOTHER slot --
     for a caller persisting a slot's rows onto a transcript another live slot now
@@ -658,12 +708,14 @@ async def save_slot_off_loop(
             rewrite=rewrite,
             expected_history_key=expected_history_key,
             expected_slot_name=expected_slot_name,
+            expected_disk_older_count=expected_disk_older_count,
             rows_only=rows_only,
             pending_mode_slot=pending_mode_slot,
             mutes_opened_override=mutes_opened_override,
             muted_override=muted_override,
             after_commit_under_lock=after_commit_under_lock,
             turn_timeout_override=turn_timeout_override,
+            retired_rows=retired_rows,
         )
 
     def _begin_guarded_metadata_write() -> None:

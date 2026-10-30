@@ -313,11 +313,11 @@ class TestAutoNeverResolvesToGlobal:
 
 
 class TestCursorMotionIsWiredToThePointerPath:
-    """Cursor Motion must actually RUN, not merely exist (reviewer finding).
+    """Cursor Motion must actually RUN, not merely exist.
 
-    The overlay supervisor, the motion planner and the AppKit child were all
-    implemented and unit-tested, but nothing in a production dispatch path called
-    them — so the feature could never appear on a user's screen. These pin the
+    The overlay supervisor, the motion planner and the AppKit child are each
+    unit-tested, but unless a production dispatch path calls them the feature
+    never appears on a user's screen. These pin the
     call at the one place it belongs: immediately before a REAL-POINTER gesture.
     """
 
@@ -756,19 +756,19 @@ class TestTheSkillContractMatchesTheRuntime:
 class TestTheDriftWalkHonoursTheSnapshotBudget:
     """A raised ``max_tree_nodes`` must not make its own elements un-actionable.
 
-    Reviewer finding, reproduced end-to-end. A mutating tool takes no tree-budget
-    arguments, so ``tools`` built the drift-verification request from
-    ``service.snapshot_request()`` — the *config default* (1200) — and discarded the
-    budget the cached snapshot was actually walked at. So ``computer_get_state(app,
-    max_tree_nodes=2001)`` rendered element 1400 with no truncation note, and the
-    follow-up ``computer_click(element_index=1400)`` was refused with
-    ``"… now no element at that index"`` because ``verify_fingerprint`` re-walked at
-    1200. Re-snapshotting reproduced the same tree and the same refusal, so the model
-    had no way out of the loop — on a documented happy path: the MCP schema advertises
+    Exercised end-to-end. A mutating tool takes no tree-budget arguments, so a
+    drift-verification request built from ``service.snapshot_request()`` — the
+    *config default* (1200) — would discard the budget the cached snapshot was
+    walked at. Then ``computer_get_state(app, max_tree_nodes=2001)`` renders element
+    1400 with no truncation note, and the follow-up
+    ``computer_click(element_index=1400)`` is refused with
+    ``"… now no element at that index"`` because ``verify_fingerprint`` re-walks at
+    1200. Re-snapshotting reproduces the same tree and the same refusal, so the model
+    has no way out of the loop — on a documented happy path: the MCP schema advertises
     ``max_tree_nodes`` up to 5000 and the Settings copy says to raise it for dense
     apps.
 
-    Fixed by stamping ``Snapshot.walk_budget`` in ``service.snapshot`` and re-walking
+    ``service.snapshot`` stamps ``Snapshot.walk_budget`` and the drift walk re-walks
     at it.
     """
 

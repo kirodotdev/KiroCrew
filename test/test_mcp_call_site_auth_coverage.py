@@ -107,6 +107,8 @@ _UNKNOWN = "{X}"
 _SOURCES = (
     _CORE,
     *sorted((_SRC / "mcp_core_parts").glob("*.py")),
+    _SRC / "mcp_secrets.py",
+    _SRC / "mcp_dashboard.py",
     _SRC / "mcp_shared.py",
     _SRC / "mcp_shared_policy.py",
     _SRC / "mcp_work.py",
@@ -126,6 +128,7 @@ _SOURCES = (
     _SRC / "cli_server_restart.py",
     _SRC / "cli_server_update.py",
     _SRC / "cron_script.py",
+    *sorted(_SRC.glob("cron_script_*.py")),
     _SRC / "cron_trigger.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
@@ -166,7 +169,7 @@ _KNOWN_UNRESOLVED = frozenset(
         "mcp_core.py:_put",
         "mcp_core.py:_patch",
         "mcp_core.py:_delete",
-        "cron_script.py:_post",
+        "cron_script_context.py:_post",
         # The gateway liveness probe: its URL is assembled from a resolved port
         # via a helper, and the endpoint (/api/ready) carries no auth by
         # design — it answers before auth middleware exists so a starting

@@ -23,6 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay g
     # Type-only, so the boot-path import gate is untouched: this name exists for the
     # checker and for test_crew_log_exc_info_sites.py, which reads annotations to decide
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
+    from kiro_crew.crew_log.schema import Entry
     from kiro_crew.crew_log.store import CrewLog
 
 
@@ -341,8 +342,11 @@ def _append_body_entry(
     text: str,
     extra: "dict[str, Any] | None" = None,
     src: str = _SRC_ACP,
-) -> None:
+) -> "Entry | None":
     """Append one body-bearing entry. THE single place a body becomes fields.
+
+    Returns the body-bearing entry it wrote -- the citing one when the body was split
+    into chunks -- so the caller can wake the eager folder for it, or ``None``.
 
     Every family that carries a message body goes through here, so the shape of a
     body is decided once. Under :data:`BODY_MODE_TEXT` the redacted text rides on
@@ -367,8 +371,7 @@ def _append_body_entry(
         key: value for key, value in inline_data.items() if key not in {"turn", "step", "text"}
     }
     if _fits_one_line(text, inline_extra or None):
-        log.append(entry_type, inline_data, src=src)
-        return
+        return log.append(entry_type, inline_data, src=src)
     # A chunk group is written as ONE batch, not entry by entry. The chunks are
     # meaningless without the entry that cites their seqs: appending them
     # separately leaves a window in which a hard kill puts the body on disk with
@@ -402,7 +405,9 @@ def _append_body_entry(
         )
         return {"type": entry_type, "data": citing_data}
 
-    log.append_many(group, src=src, cite=_cite)
+    written = log.append_many(group, src=src, cite=_cite)
+    # The citing entry is the group's last member.
+    return written[-1] if written else None
 
 
 def _payload_digest(payload: str) -> tuple[str, int]:

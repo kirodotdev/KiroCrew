@@ -75,13 +75,17 @@ class TestAcpClientToolAudit:
 
     @pytest.mark.asyncio
     async def test_swallows_sel_errors(self, monkeypatch):
+        reached = []
+
         def _boom():
+            reached.append(True)
             raise RuntimeError("SEL backend down")
 
         monkeypatch.setattr(acp_client, "sel", _boom)
         client = AcpClient(session_key="sk", audit_source="subagent")
         # A SEL failure must never break tool dispatch.
         await client._maybe_audit_tool_call(self._ev())
+        assert reached == [True]
 
     @pytest.mark.asyncio
     async def test_hung_backend_times_out_and_is_swallowed(self, monkeypatch):
@@ -99,6 +103,210 @@ class TestAcpClientToolAudit:
         start = time.monotonic()
         await client._maybe_audit_tool_call(self._ev())  # must not raise / hang
         assert time.monotonic() - start < 4  # returned via timeout, not the 5s sleep
+
+
+class TestAcpClientUnaskedClaudeAutoAudit:
+    """A claude ``auto`` call that never asks the host still gets an SEL record.
+
+    Claude's own classifier approves the call, so no ``session/request_permission``
+    arrives and no consumer writes a decision row. ``_maybe_audit_unasked_tool_call``
+    writes one when the call reaches a terminal status.
+    """
+
+    @staticmethod
+    def _sel_calls(monkeypatch) -> list[dict]:
+        calls: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw):
+                calls.append(kw)
+
+        monkeypatch.setattr(acp_client, "sel", lambda: _Sel())
+        return calls
+
+    @staticmethod
+    def _client(**kw) -> AcpClient:
+        kw.setdefault("permission_mode", "auto")
+        return AcpClient(session_key="sk", agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw)
+
+    @staticmethod
+    def _result_ev(call_id="tc1", status="completed"):
+        return types.SimpleNamespace(tool_call_id=call_id, tool_status=status)
+
+    @staticmethod
+    def _permission_request(call_id="tc1"):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(
+            id=7,
+            method="session/request_permission",
+            params={
+                "sessionId": "s-1",
+                "toolCall": {"toolCallId": call_id, "kind": "execute", "title": "Bash"},
+                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unasked_completed_call_is_recorded(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+        row = calls[0]
+        assert row["session_key"] == "sk"
+        assert row["agent"] == "kirocrew"
+        assert row["source"] == "acp"
+        assert row["tool_name"] == "Bash"
+        assert row["tool_kind"] == "execute"
+        assert row["outcome"] == "auto_approved"
+        assert row["request_id"] == "tc1"
+        assert row["metadata"]["decided_by"] == "claude_classifier"
+        assert row["metadata"]["tool_status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_unasked_call_is_recorded_with_its_status(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev(status="failed"))
+        assert [c["outcome"] for c in calls] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_asked_is_left_to_its_consumer(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        assert client._process_message(self._permission_request("tc1"), 1) == "permission"
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_one_record_per_call(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["in_progress", "pending", None])
+    async def test_a_running_call_is_not_recorded_yet(self, monkeypatch, status):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        await client._maybe_audit_unasked_tool_call(self._result_ev(status=status))
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_not_in_auto_mode_writes_nothing(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(permission_mode=None)
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_audit_source_client_is_not_double_logged(self, monkeypatch):
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(audit_source="subagent")
+        client._observed_tool_calls["tc1"] = ("Bash", "execute")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_swallows_sel_errors(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("SEL backend down")
+
+        monkeypatch.setattr(acp_client, "sel", _boom)
+        client = self._client()
+        # A SEL failure must never break tool dispatch.
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+
+    @pytest.mark.asyncio
+    async def test_the_send_message_path_records_an_unasked_call(self, monkeypatch):
+        """``_read_prompt_response`` writes the row for a call that never asked."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        call_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc9",
+                    "title": "Bash",
+                    "kind": "execute",
+                }
+            }
+        )
+        result_msg = types.SimpleNamespace(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc9",
+                    "status": "completed",
+                    "content": [{"content": {"type": "text", "text": "ok"}}],
+                }
+            }
+        )
+        complete_msg = types.SimpleNamespace(result={"stopReason": "end_turn"})
+
+        async def _fake_loop(req_id, timeout):
+            yield "update", call_msg
+            yield "update", result_msg
+            yield "complete", complete_msg
+
+        monkeypatch.setattr(client, "_prompt_loop", _fake_loop)
+        await client._read_prompt_response(1, 5.0)
+        rows = [c for c in calls if c.get("request_id") == "tc9"]
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "auto_approved"
+
+    @pytest.mark.asyncio
+    async def test_the_stream_path_records_an_unasked_call(self, monkeypatch):
+        """``_dispatch_events`` writes the row for a call that never asked."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        frames = [
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc9",
+                        "title": "Bash",
+                        "kind": "execute",
+                    }
+                },
+            ),
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tc9",
+                        "status": "completed",
+                        "content": [{"content": {"type": "text", "text": "ok"}}],
+                    }
+                },
+            ),
+        ]
+
+        async def _fake_loop(req_id, timeout):
+            for frame in frames:
+                yield "update", frame
+            yield "complete", JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
+
+        client._prompt_loop = _fake_loop
+        client._read_new_tool_results = AsyncMock(return_value=[])
+        async for _ in client._dispatch_events(req_id=1, timeout=5.0):
+            pass
+        rows = [c for c in calls if c.get("request_id") == "tc9"]
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "auto_approved"
 
 
 class TestAcpClientZeroTools:
@@ -228,10 +436,13 @@ class TestAcpClientZeroTools:
 
 
 class TestEffectiveSpecDeclaresZeroTools:
-    """``effective_spec_declares_zero_tools`` judges the projected view the harness
-    consumed through ``--agent`` when one exists, which needs no mirror, so a
-    native-routed backend can be checked; with none, it needs the authored spec to
-    declare an empty list both before the spawn and after start."""
+    """``effective_spec_declares_zero_tools`` judges, when a projection exists, both
+    the view the harness was launched with and the published alias file it loaded,
+    which needs no mirror, so a native-routed backend can be checked; with none, it
+    needs the authored spec to declare an empty list both before the spawn and after
+    start."""
+
+    _ALIAS = "kirocrew-view-abc"
 
     @staticmethod
     def _client_with_projection(specs, errors=None) -> AcpClient:
@@ -239,15 +450,59 @@ class TestEffectiveSpecDeclaresZeroTools:
 
         client = AcpClient(agent="kirocrew-knowledge")
         client._native_skill_projection = NativeSkillProjection(
-            {"kirocrew-knowledge": "kirocrew-view-abc"} if specs else {}, specs, errors or {}
+            {"kirocrew-knowledge": TestEffectiveSpecDeclaresZeroTools._ALIAS} if specs else {},
+            specs,
+            errors or {},
         )
         return client
 
+    @classmethod
+    def _publish(cls, spec: object) -> None:
+        """Write the alias file the harness loads, where the projection publishes it."""
+        from kiro_crew.acp import skill_projection
+
+        agents = skill_projection.kiro_agents_dir()
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / f"{cls._ALIAS}.json").write_text(json.dumps(spec), encoding="utf-8")
+
     def test_an_empty_projected_view_is_confirmed(self):
+        self._publish({"name": self._ALIAS, "tools": [], "includeMcpJson": False})
         client = self._client_with_projection(
-            {"kirocrew-knowledge": {"name": "kirocrew-view-abc", "tools": []}},
+            {"kirocrew-knowledge": {"name": self._ALIAS, "tools": [], "includeMcpJson": False}},
         )
         assert client.effective_spec_declares_zero_tools() is True
+
+    @pytest.mark.parametrize(
+        "published",
+        [{"tools": ["@another-server"]}, {"name": "x"}, {"tools": "none"}, ["tools"]],
+    )
+    def test_an_empty_view_whose_published_file_is_not_an_empty_list_is_not_confirmed(
+        self, published
+    ):
+        """The harness loads the published file, so a tool written to it after the
+        view was prepared refuses even though the view itself is still empty."""
+        self._publish(published)
+        client = self._client_with_projection(
+            {"kirocrew-knowledge": {"name": self._ALIAS, "tools": [], "includeMcpJson": False}},
+        )
+        assert client.effective_spec_declares_zero_tools() is False
+        assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is False
+
+    def test_an_empty_view_whose_published_file_is_missing_is_not_confirmed(self):
+        client = self._client_with_projection(
+            {"kirocrew-knowledge": {"name": self._ALIAS, "tools": [], "includeMcpJson": False}},
+        )
+        assert client.effective_spec_declares_zero_tools() is False
+
+    def test_an_empty_view_with_no_alias_for_the_agent_is_not_confirmed(self):
+        from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+        self._publish({"name": self._ALIAS, "tools": [], "includeMcpJson": False})
+        client = AcpClient(agent="kirocrew-knowledge")
+        client._native_skill_projection = NativeSkillProjection(
+            {}, {"kirocrew-knowledge": {"name": self._ALIAS, "tools": [], "includeMcpJson": False}}
+        )
+        assert client.effective_spec_declares_zero_tools() is False
 
     def test_a_projected_view_carrying_a_tool_is_not_confirmed(self):
         client = self._client_with_projection(
@@ -278,7 +533,7 @@ class TestEffectiveSpecDeclaresZeroTools:
 
     def test_a_projection_with_no_view_for_the_agent_is_not_confirmed(self):
         client = self._client_with_projection(
-            {"another-agent": {"name": "kirocrew-view-def", "tools": []}}
+            {"another-agent": {"name": "kirocrew-view-def", "tools": [], "includeMcpJson": False}}
         )
         assert client.effective_spec_declares_zero_tools() is False
 
@@ -287,21 +542,33 @@ class TestEffectiveSpecDeclaresZeroTools:
         authored spec says now; the post-start read is not even needed."""
         client = AcpClient(agent="kirocrew-knowledge")
         client._native_skill_projection = None
-        monkeypatch.setattr(acp_client, "agent_spec_snapshot", lambda *_a, **_k: {"tools": []})
+        monkeypatch.setattr(
+            acp_client,
+            "agent_spec_snapshot",
+            lambda *_a, **_k: {"tools": [], "includeMcpJson": False},
+        )
         assert client.effective_spec_declares_zero_tools() is False
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=False) is False
 
     def test_a_client_that_never_prepared_a_projection_uses_the_bracket(self, monkeypatch):
         client = AcpClient(agent="kirocrew-knowledge")
         assert not hasattr(client, "_native_skill_projection")
-        monkeypatch.setattr(acp_client, "agent_spec_snapshot", lambda *_a, **_k: {"tools": []})
+        monkeypatch.setattr(
+            acp_client,
+            "agent_spec_snapshot",
+            lambda *_a, **_k: {"tools": [], "includeMcpJson": False},
+        )
         assert client.effective_spec_declares_zero_tools() is False
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is True
 
     def test_no_projection_with_both_reads_empty_is_confirmed(self, monkeypatch):
         client = AcpClient(agent="kirocrew-knowledge")
         client._native_skill_projection = None
-        monkeypatch.setattr(acp_client, "agent_spec_snapshot", lambda *_a, **_k: {"tools": []})
+        monkeypatch.setattr(
+            acp_client,
+            "agent_spec_snapshot",
+            lambda *_a, **_k: {"tools": [], "includeMcpJson": False},
+        )
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is True
 
     def test_no_projection_with_a_spec_changed_after_the_pre_spawn_read_is_not_confirmed(
@@ -311,7 +578,9 @@ class TestEffectiveSpecDeclaresZeroTools:
         agents = tmp_path / "project" / ".kiro" / "agents"
         agents.mkdir(parents=True)
         spec_path = agents / "kirocrew-knowledge.json"
-        spec_path.write_text(json.dumps({"name": "kirocrew-knowledge", "tools": []}))
+        spec_path.write_text(
+            json.dumps({"name": "kirocrew-knowledge", "tools": [], "includeMcpJson": False})
+        )
         client = AcpClient(agent="kirocrew-knowledge", work_dir=tmp_path / "project")
         client._native_skill_projection = None
         before = client.authored_spec_declares_zero_tools()
@@ -335,21 +604,28 @@ class TestEffectiveSpecDeclaresZeroTools:
         client = self._client_with_projection(
             {"kirocrew-knowledge": {"name": "v", "tools": ["@builtin"]}}
         )
-        monkeypatch.setattr(acp_client, "agent_spec_snapshot", lambda *_a, **_k: {"tools": []})
+        monkeypatch.setattr(
+            acp_client,
+            "agent_spec_snapshot",
+            lambda *_a, **_k: {"tools": [], "includeMcpJson": False},
+        )
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is False
 
     def test_a_zero_tool_projected_view_ignores_the_authored_spec(self, monkeypatch):
-        client = self._client_with_projection({"kirocrew-knowledge": {"name": "v", "tools": []}})
+        self._publish({"name": self._ALIAS, "tools": [], "includeMcpJson": False})
+        client = self._client_with_projection(
+            {"kirocrew-knowledge": {"name": "v", "tools": [], "includeMcpJson": False}}
+        )
         monkeypatch.setattr(
             acp_client, "agent_spec_snapshot", lambda *_a, **_k: {"tools": ["@builtin"]}
         )
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=False) is True
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is True
 
-    def test_no_spec_file_is_read_when_a_projection_exists(self, tmp_path, monkeypatch):
-        """With a projection the answer rests on the captured view alone: a resolver
-        that raises and an authored spec carrying tools on disk leave a zero-tool
-        view confirmed."""
+    def test_the_authored_spec_is_not_read_when_a_projection_exists(self, tmp_path, monkeypatch):
+        """With a projection the answer rests on the captured view and the published
+        file: a resolver that raises and an authored spec carrying tools on disk
+        leave a zero-tool view whose published file is empty confirmed."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         project_agents = tmp_path / "project" / ".kiro" / "agents"
         project_agents.mkdir(parents=True)
@@ -361,8 +637,9 @@ class TestEffectiveSpecDeclaresZeroTools:
             raise AssertionError("the confirmation re-read an authored spec")
 
         monkeypatch.setattr(acp_client, "agent_spec_snapshot", _boom)
+        self._publish({"name": self._ALIAS, "tools": [], "includeMcpJson": False})
         client = self._client_with_projection(
-            {"kirocrew-knowledge": {"name": "kirocrew-view-abc", "tools": []}}
+            {"kirocrew-knowledge": {"name": self._ALIAS, "tools": [], "includeMcpJson": False}}
         )
         assert client.effective_spec_declares_zero_tools() is True
         assert client.effective_spec_declares_zero_tools(authored_before_spawn=True) is True
@@ -379,7 +656,7 @@ class TestAuthoredSpecDeclaresZeroTools:
     @pytest.mark.parametrize(
         ("snapshot", "expected"),
         [
-            ({"tools": []}, True),
+            ({"tools": [], "includeMcpJson": False}, True),
             ({"tools": ["@builtin"]}, False),
             ({"name": "x"}, False),
             ({"tools": None}, False),
@@ -407,7 +684,7 @@ class TestAuthoredSpecDeclaresZeroTools:
 
         def _snap(agent, *, work_dir=None):
             seen.update(agent=agent, work_dir=work_dir)
-            return {"tools": []}
+            return {"tools": [], "includeMcpJson": False}
 
         monkeypatch.setattr(acp_client, "agent_spec_snapshot", _snap)
         assert self._client(tmp_path).authored_spec_declares_zero_tools() is True
@@ -424,7 +701,7 @@ class TestAuthoredSpecDeclaresZeroTools:
         monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", user_agents)
         monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
         (user_agents / "kirocrew-knowledge.json").write_text(
-            json.dumps({"name": "kirocrew-knowledge", "tools": []})
+            json.dumps({"name": "kirocrew-knowledge", "tools": [], "includeMcpJson": False})
         )
         project = tmp_path / "project"
         project_agents = project / ".kiro" / "agents"
@@ -620,16 +897,23 @@ class TestAcpClientToolHooks:
     @pytest.mark.asyncio
     async def test_noop_when_hook_store_uninitialized(self, monkeypatch):
         # get_global_hook_store() returns None before the dashboard registers it.
-        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: None)
+        looked_up = []
+        monkeypatch.setattr(
+            acp_client, "get_global_hook_store", lambda: looked_up.append(True) or None
+        )
         client = AcpClient(session_key="sk", audit_source="subagent")
         # Must not raise despite no store.
         await client._maybe_fire_pre_tool_hooks(self._call_ev())
         await client._maybe_fire_post_tool_hooks(self._result_ev())
+        assert looked_up == [True, True]
 
     @pytest.mark.asyncio
     async def test_swallows_hook_engine_errors(self, monkeypatch):
+        fired = []
+
         class _BoomStore:
             async def fire(self, event, **kw):
+                fired.append(event)
                 raise RuntimeError("hook engine down")
 
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: _BoomStore())
@@ -639,6 +923,7 @@ class TestAcpClientToolHooks:
         # A hook-engine failure must never break tool dispatch.
         await client._maybe_fire_pre_tool_hooks(self._call_ev())
         await client._maybe_fire_post_tool_hooks(self._result_ev())
+        assert fired == ["PreToolUse", "PostToolUse"]
 
     @pytest.mark.asyncio
     async def test_read_prompt_response_update_fires_hooks(self, monkeypatch):
@@ -740,3 +1025,63 @@ class TestAcpClientToolHooks:
         monkeypatch.setattr(client, "_prompt_loop", _fake_loop)
         await client._read_prompt_response(1, 5.0)
         assert store.calls == []  # gated off in the _maybe_* methods
+
+
+class TestSpecIsToolless:
+    """``spec_is_toolless`` needs all five keys to mount nothing; the knowledge,
+    guest and lite checks all judge through it."""
+
+    _EMPTY = {"tools": [], "mcpServers": {}, "includeMcpJson": False}
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"allowedTools": []},
+            {"hooks": {}},
+            {"hooks": []},
+            {"includePowers": False},
+            {"permissions": {}},
+            {"toolsSettings": {}},
+            {"resources": ["skill://x"]},
+        ],
+    )
+    def test_an_empty_spec_is_toolless(self, extra):
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+
+        assert spec_is_toolless({**self._EMPTY, **extra}) is True
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"tools": ["@creds-agent"]},
+            {"allowedTools": ["@creds-agent"]},
+            {"allowedTools": "*"},
+            {"mcpServers": {"creds-agent": {"command": "creds"}}},
+            {"mcpServers": []},
+            {"hooks": {"agentSpawn": [{"command": "echo"}]}},
+            {"hooks": "echo"},
+            {"includeMcpJson": True},
+            {"includePowers": True},
+            {"includePowers": None},
+            {"permissions": {"allow": ["@creds-agent"]}},
+            {"toolsSettings": {"shell": {"allowedCommands": [".*"]}}},
+            {"includeMcpJson": None},
+            {"includeMcpJson": 0},
+        ],
+    )
+    def test_anything_mounted_is_not_toolless(self, change):
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+
+        assert spec_is_toolless({**self._EMPTY, **change}) is False
+
+    def test_a_missing_include_mcp_json_is_not_toolless(self):
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+
+        assert spec_is_toolless({"tools": [], "mcpServers": {}}) is False
+
+    @pytest.mark.parametrize("spec", [None, [], "tools", {}])
+    def test_a_non_spec_is_not_toolless(self, spec):
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+
+        assert spec_is_toolless(spec) is False

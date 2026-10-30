@@ -14,8 +14,9 @@ export interface ExtractedLink {
  *  everything else). Issues are checked FIRST: they are a narrower shape than
  *  the PR pattern and must not be mislabelled "PR" in the Resources list. */
 function classifyUrl(url: string): LinkType {
-  // GitHub `/issues/5` and GitLab `/-/issues/5` share one trailing shape.
-  if (/\/(?:issues)\/\d+/i.test(url)) return 'issue'
+  // GitHub `/issues/5` and GitLab `/-/issues/5` share one trailing shape;
+  // GitLab's newer `/-/work_items/5` is the same issue.
+  if (/\/(?:issues|work_items)\/\d+/i.test(url)) return 'issue'
   // Generic pull request / code review detection (GitHub, GitLab, Bitbucket, etc.)
   if (/\/(?:pull|pull-requests|merge_requests)\/\d+/i.test(url) || /\/reviews\/[\w-]+/i.test(url)) return 'cr'
   return 'other'
@@ -29,7 +30,7 @@ function fallbackLabel(url: string, type: LinkType): string {
       return m ? `#${m[1]}` : 'PR'
     }
     case 'issue': {
-      const m = url.match(/\/issues\/(\d+)/i)
+      const m = url.match(/\/(?:issues|work_items)\/(\d+)/i)
       return m ? `#${m[1]}` : 'Issue'
     }
     default: { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url.slice(0, 30) } }
@@ -109,7 +110,7 @@ export function resourceIdentity(link: ExtractedLink): string {
 // show up twice — once with a panel, once in Resources.
 const CR_BASE_RE = [
   /^(https?:\/\/[^/]+\/.*?\/(?:pull|pull-requests|merge_requests)\/\d+)/i,
-  /^(https?:\/\/[^/]+\/.*?\/issues\/\d+)/i,
+  /^(https?:\/\/[^/]+\/.*?\/(?:issues|work_items)\/\d+)/i,
   // The intermediate segment is optional: a registered source provider may
   // serve review paths at the host root (`https://host/reviews/CR-123`), and
   // requiring a segment before `/reviews/` would leave such URLs without a

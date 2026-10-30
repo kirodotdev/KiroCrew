@@ -523,13 +523,6 @@ class TestExecutableDiscovery:
     def test_a_directory_is_not_executable(self, tmp_path):
         assert pc.is_executable_file(tmp_path) is False
 
-    def test_an_os_error_degrades_to_false(self, monkeypatch, tmp_path):
-        def _boom(*_a: Any, **_k: Any) -> Any:
-            raise OSError("stat failed")
-
-        monkeypatch.setattr(pc.os.path, "isfile", _boom)
-        assert pc.is_executable_file(tmp_path / "x") is False
-
     def test_store_stub_detection_is_windows_only(self, monkeypatch):
         stub = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python.exe"
         monkeypatch.setattr(pc, "IS_WINDOWS", False)

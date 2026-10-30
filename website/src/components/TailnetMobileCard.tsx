@@ -71,6 +71,7 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
  *  step that repeats it renders two identical icons stacked, which reads as a
  *  rendering fault rather than as emphasis. */
 const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
+  policy_off: ShieldOff,
   pinned: ShieldOff,
   untrusted_cli: ShieldAlert,
   install: Download,
@@ -89,6 +90,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
  *  them statically (a computed `components.tailnetMobile.${step}.title` cannot
  *  be verified and the strict gate rejects it). */
 const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
+  policy_off: 'components.tailnetMobile.policy_off_title',
   pinned: 'components.tailnetMobile.pinned_title',
   untrusted_cli: 'components.tailnetMobile.untrusted_cli_title',
   install: 'components.tailnetMobile.install_title',
@@ -104,6 +106,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
 }
 
 const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
+  policy_off: 'components.tailnetMobile.policy_off_body',
   pinned: 'components.tailnetMobile.pinned_body',
   untrusted_cli: 'components.tailnetMobile.untrusted_cli_body',
   install: 'components.tailnetMobile.install_body',
@@ -120,7 +123,12 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
 
 /** Which steps are a normal part of setting mobile access up (neutral framing)
  *  versus a state that needs attention. Drives the badge only. */
-const ATTENTION_STEPS = new Set<TailnetMobileStep>(['occupied', 'pinned', 'untrusted_cli'])
+const ATTENTION_STEPS = new Set<TailnetMobileStep>([
+  'occupied',
+  'policy_off',
+  'pinned',
+  'untrusted_cli',
+])
 
 /** Steps whose `detail` is ABOUT that step, so surfacing the daemon's verbatim
  *  text helps rather than confuses.
@@ -620,7 +628,10 @@ export function TailnetMobileCard() {
                 a fix. Expanding the invite refetches instead, so returning from
                 the Tailscale install still re-probes immediately rather than
                 waiting out the poll. */}
-            {step !== 'pinned' && step !== 'ready' && step !== 'install' ? (
+            {step !== 'policy_off' &&
+            step !== 'pinned' &&
+            step !== 'ready' &&
+            step !== 'install' ? (
               <Btn disabled={busy} onClick={invalidate}>
                 <RefreshCw className="lucide-inline" />
                 {i18nT('components.tailnetMobile.recheck')}

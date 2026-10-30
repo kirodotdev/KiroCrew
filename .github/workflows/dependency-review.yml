@@ -45,11 +45,64 @@ jobs:
       # label. Because a new push is a `synchronize` event (not `labeled`), the
       # gate always re-runs on new commits — the override never carries over to
       # unreviewed code.
+      # GitHub's dependency-graph API has outages in which the action fails with
+      # "Dependency review is not supported on this repository" for every PR at
+      # once, which reads like a policy failure. So a failed review is retried
+      # once after a pause, and when the retry fails too the API is probed: an
+      # API that still errors makes the job fail as "could not run", naming
+      # the API answer, not as a license finding. Fail-closed either way.
       - name: Review dependency licenses
+        id: review
         if: ${{ !(github.event.action == 'labeled' && github.event.label.name == 'license-override') }}
+        continue-on-error: true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           config-file: ./.github/dependency-review-config.yml
+
+      - name: Pause before retrying a failed review
+        if: ${{ steps.review.outcome == 'failure' }}
+        run: sleep 60
+
+      - name: Review dependency licenses (retry)
+        id: review_retry
+        if: ${{ steps.review.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+
+      - name: Report the review verdict
+        if: ${{ steps.review.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          RETRY: ${{ steps.review_retry.outcome }}
+        run: |
+          if [ "$RETRY" = "success" ]; then
+            echo "::warning::The first dependency review failed and the retry passed;" \
+                 "the first failure was transient."
+            exit 0
+          fi
+          # Both attempts failed. Ask the dependency-graph API directly whether it
+          # answers for this PR's range; a read that works means the failure above
+          # is the action's own verdict on the dependencies.
+          err="${RUNNER_TEMP:-/tmp}/dep-graph-probe.txt"
+          for attempt in 1 2 3; do
+            if gh api --method GET "repos/$REPO/dependency-graph/compare/$BASE...$HEAD" \
+                --silent 2>"$err"; then
+              echo "::error::Dependency review failed twice while the dependency-graph" \
+                   "API answers, so this is the action's license verdict: see its summary above."
+              exit 1
+            fi
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+          answer="$(head -c 300 "$err" | tr '\n' ' ')"
+          echo "::error::Dependency review could not run: GitHub's dependency-graph API" \
+               "does not answer for this PR (${answer:-no output}). This is not a license" \
+               "finding; re-run this job once the API recovers."
+          exit 1
 
       - name: Record maintainer license override
         if: ${{ github.event.action == 'labeled' && github.event.label.name == 'license-override' }}

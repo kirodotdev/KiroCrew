@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.context_assembly.sections import browser_section, computer_use_block
+from kiro_crew.mcp_instructions import COMPUTER, CRON
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
@@ -20,12 +21,14 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # A maintainer may raise a budget in a reviewed change when a new rule earns
 # its space. Preserve the operational clauses below rather than cutting them
 # to fit; their tests, not a size limit, check the retained text contracts.
-# Measured on the prompt with its Computer Use slot filled by the full section,
-# so the section's bytes still count against the budget after moving into
-# `context_assembly/sections.py`, and with its Browser section kept and its
-# markers gone, as a session with browsing set up gets it. The
+# Measured on the prompt with its Computer Use slot filled the larger way: the
+# pointer a session without `kirocrew-computer` gets (a mounted server carries
+# its own usage text as MCP `instructions`, `kiro_crew.mcp_instructions`), and
+# with its Browser section kept and its markers gone, as a session with browsing
+# set up gets it. The
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
+BABYSIT_SKILL_DIR = CONFIG.parent / "builtin_skills" / "kirocrew-dev" / "babysit"
 PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
@@ -55,10 +58,11 @@ def _require(text: str, *patterns: str) -> None:
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
 def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
     # Normalize checkout line endings so Windows measures the same shipped text.
-    size = len(_resolved(name, mounted=True).encode("utf-8"))
+    size = len(_resolved(name, mounted=False).encode("utf-8"))
     assert size <= PROMPT_BYTE_CEILINGS[name], (name, size, PROMPT_BYTE_CEILINGS[name])
-    assert len(_resolved(name, mounted=False).encode("utf-8")) < size
-    assert len(_resolved(name, browsing=False).encode("utf-8")) < size
+    # Mounted, the slot is empty: the server's own instructions carry the text.
+    assert len(_resolved(name, mounted=True).encode("utf-8")) < size
+    assert len(_resolved(name, mounted=False, browsing=False).encode("utf-8")) < size
 
 
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
@@ -140,20 +144,90 @@ def test_single_task_default_survives_prompt_compaction() -> None:
 
 
 def test_cron_modes_and_session_ownership_remain_explicit() -> None:
-    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    # The cron bullets are kirocrew-cron's own MCP instructions now.
     _require(
-        capabilities,
+        CRON,
         r"no-LLM.*mutually exclusive `command`.*deterministic",
         r"`Skip\(\)` to retry.*`Done\(msg\)` to deliver/remove.*`Report\(msg\)` to deliver/keep",
         r"synchronous runner refuses `async def`",
         r"IANA `timezone`.*global config timezone, then UTC",
         r"THIS session's jobs only; empty does not mean none exist elsewhere",
         r"`timeout` bounds.*subprocess; `timeout_secs` bounds the whole wake",
-        r"BLOCKING in a dashboard session: the call waits for the user and the answers are its result",
     )
     for value in ("persistent_session=false", "minimal_context=true", "hide_in_chat=true"):
-        assert value in capabilities
-    assert "kirocrew cron preview <script:function> -m <message>" in capabilities
+        assert value in CRON
+    assert "kirocrew cron preview <script:function> -m <message>" in CRON
+    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    _require(capabilities, r"`ask_question`.*DEFAULT TO SILENCE", r"\[OPTIONS: .*cheaper")
+
+
+def test_merged_trigger_lines_keep_every_sibling_tools_trigger() -> None:
+    """A deferred tool shows only its name, so each one keeps its own when-to-use line."""
+    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    _require(
+        capabilities,
+        r"`knowledge_add_document`: add a load-bearing design/spec/RFC/runbook/wiki you READ",
+        r"`spawn_release` ends a finished workstream",
+        r"`artifact_mark_review` flags addressed comments; only humans resolve",
+    )
+    # The explicit-signal restriction gates searching only, never adding a document.
+    line = next(ln for ln in capabilities.splitlines() if "explicit knowledge/docs" in ln)
+    restricted = line.split("explicit knowledge/docs", 1)[0]
+    assert "local_knowledge_search" in restricted
+    assert "knowledge_add_document" not in restricted
+    assert "knowledge_*" not in restricted
+
+
+def _tools() -> dict[str, dict]:
+    from kiro_crew import mcp_core
+
+    return {t["name"]: t for t in mcp_core._list_tools()}
+
+
+def test_moved_tool_rules_live_in_their_own_descriptions() -> None:
+    """A rule that matters only at or after the call lives on the tool.
+
+    A deferred tool is loaded before it is called, so its description is in
+    front of the model exactly when these rules apply. The prompt keeps only the
+    one-line trigger that decides whether to reach for the tool.
+    """
+    tools = _tools()
+    expected = {
+        "ask_question": (
+            r"BLOCKS until the user responds.*do NOT end your turn",
+            r"Default to silence",
+        ),
+        "nothing_to_do": (r"TERMINAL", r"REFUSES it on a turn a person opened"),
+        "spawn_run": (
+            r"~3-5s, ~400MB",
+            r"memory-pressure refusal",
+            r"awaiting_approval.*not that it failed",
+        ),
+        "spawn_continue": (r"conversation_busy", r"conversation_gone", r"end your turn"),
+        "learn_add": (r"refused, deduped or unchanged.*nothing was written", r"no `scope`"),
+        "workflow_run": (r"workflow_library_list",),
+        "memory_recall": (r"not transcript text.*search_chat_history",),
+        "set_project": (
+            r"git worktree add",
+            r"headless callers",
+            r"turn another session sent.*is refused",
+        ),
+        "reset_conversation": (r"BEFORE calling this",),
+        "send_message": (r'"origin"', r"REFUSED"),
+        "session_ledger_record": (r"subagent.*refused",),
+        "artifact_save": (
+            r"ALREADY auto-registered",
+            r"incognito or temporary session also refuses",
+        ),
+        "artifact_folder_delete": (r"count.*consent to the permanent deletion",),
+        "deploy_artifact": (r"PREVIEW-ONLY", r"artifact-deploy skill"),
+        "wait": (r"60-1800s", r"end reason", r"ended deliberately"),
+        "register_hook": (r"before ending a session",),
+    }
+    for tool, patterns in expected.items():
+        _require(tools[tool]["description"], *patterns)
+    model = tools["spawn_run"]["inputSchema"]["properties"]["model"]["description"]
+    _require(model, r"dedicated-process path")
 
 
 def test_injected_data_and_refusals_are_not_new_authority() -> None:
@@ -198,45 +272,56 @@ def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
     ), "the carve-out must qualify the STOP rule, and only for a call that finished"
 
 
-def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> None:
+def test_the_prompt_points_monitoring_at_the_babysit_skill() -> None:
+    """The prompt names the skill by its real key and restates none of its rules."""
     monitor = _section(_read(), "## Wait & Webhook Tools")
     _require(
         monitor,
-        r"monitor_watch.*monitor_inspect.*monitor_stop.*NOT `autonudge_stop`",
-        r"Structured monitors support dashboard/Slack/Discord only; Webex uses `monitor_start`",
-        r"exit condition.*autonudge_stop",
-        r"gate=false.*generic comments/advisory scans.*silence itself needs action",
-        r"Arming failure.*not a transient reconnect",
-        r"max_cycles.*runaway backstop, NOT success",
-        r"CREATE-ONLY.*preserves an existing active loop/structured monitor",
-        r"manual pause/user stop is preserved",
-        r"budget-paused.*raise its stopping bound with user authorization",
-        r"typed provider facts.*whole objective.*lifecycle.*checks.*mergeability.*review decision.*review threads",
-        r"only for unsupported targets.*evidence the structured provider cannot see",
-        r"final report or notification.*finite legacy path with `gate=false`",
-        r"positive runtime/token/provider-error budgets",
-        r"`max_agent_turns` also accepts 0.*no wake ceiling",
-        r"Token caps depend on reported usage.*token_usage_known",
-        r"runtime cap is the hard fallback that always applies",
-        r"completed-turn cap is a fallback only when you name a positive value",
-        r"positive `max_cycles` and `max_runtime_secs`; never use zero",
-        r"REQUESTED and END YOUR TURN.*after the turn.*cannot prove arming",
-        r"On a later turn verify session-bound state",
-        r"Terminal records are read-only.*explicit new watch.*retained user-stop evidence.*owner",
-        r"never add a second driver.*unbounded wait/poll",
+        r"core Kiro Crew feature",
+        r"wait for, keep checking, keep an eye on, babysit",
+        r"read the `kirocrew-dev/babysit` skill first, every time",
+        r"required even when you are only asked to plan, describe or propose the call",
+        r"Never choose a driver or write its arguments from memory",
+        r"`wait`, `monitor_watch`, `monitor_start`, `cron_add`, `register_hook`",
+    )
+    assert (BABYSIT_SKILL_DIR / "SKILL.md").is_file()
+    for restated in ("**Using monitor_start:**", "**Legacy timer:**", "gate=false", "max_cycles"):
+        assert restated not in monitor, restated
+
+
+def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
+    skill = " ".join((BABYSIT_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    _require(
+        skill,
+        r"Stop with `monitor_stop\(reason=\.\.\.\)`.*`autonudge_stop` is a compatibility alias",
+        r"Structured watches support dashboard, Slack, and Discord sessions",
+        r"On Webex, use the finite legacy path",
+        r"call `autonudge_stop` with a reason",
+        r"A cap is a backstop, never successful completion",
+        r"`monitor_start` is create-only",
+        r"Manual pauses and user stops stay preserved",
+        r"cap/budget-stopped legacy loop, only with user authorization",
+        r"Typed providers do not observe generic issue/pull-request comments",
+        r"finite legacy path with `gate=false`",
+        r"`max_agent_turns` where 0 = no wake cap",
+        r"token cap applies only when usage is reported.*`token_usage_known`",
+        r"runtime always caps, turns only if set positive",
+        r"never use `0` for unlimited work",
+        r"pending application request, not proof that the monitor armed.*END THE TURN",
+        r"Terminal records are read-only; restarting requires an explicit new watch",
+        r"never add wait/poll beside it",
         r"Missing hosting context permits bounded in-turn wait/poll",
+        r"three settled polls read the same progress key with no push",
+        r'`watch="work-ledger"`',
+        r"never edit the file directly.*cross-process lock",
     )
     for token in (
-        "max_runtime_secs",
         "session_ledger_record",
         "session_ledger_read",
         "kiro_crew.heartbeat.append_heartbeat_task(entry)",
         "HEARTBEAT_KEEP",
     ):
-        assert token in monitor
-    _require(monitor, r"never edit the file directly", r"cross-process lock")
-    assert "Arming failure means NO monitor is running" not in monitor
-    assert "On successful arming, tell the user monitoring is active" not in monitor
+        assert token in skill, token
 
 
 def test_browser_keeps_the_gate_takeover_and_ref_rules() -> None:
@@ -263,11 +348,12 @@ def test_browser_keeps_the_gate_takeover_and_ref_rules() -> None:
 
 
 def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
-    # The section a session gets while its spec mounts `kirocrew-computer`.
-    desktop = _section(_resolved(mounted=True), "## Computer Use (native desktop apps)")
+    # What a session gets while its spec mounts `kirocrew-computer`: the server's
+    # own MCP instructions. Its "off by default" and "turned off after this
+    # session started" lines stayed behind: a mounted server is on, and a session
+    # whose server goes away loses its instructions with it and gets the pointer.
     _require(
-        desktop,
-        r"opt-in and off by default",
+        COMPUTER,
         r"Windows.*keyboard focus.*real cursor.*pass that on",
         r'"disabled" or "not supported" refusal is final',
         r"computer_get_state.*before any action",
@@ -275,8 +361,8 @@ def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
         r'click_method: "global".*ask for it BY NAME.*auto.*never picks it',
         r"Password fields.*<secure>.*never captured",
         r"own dashboard is refused, for reading as well as typing",
-        r"If no `computer_\*` tool is in your tool list.*turned off after this\s+session",
     )
+    assert "## Computer Use" not in _resolved(mounted=True)
 
 
 def test_computer_use_pointer_names_the_setting_and_the_skill() -> None:

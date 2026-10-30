@@ -11,8 +11,8 @@ Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
 Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
 ``_member_reconcile_task``, ``_memory_startup``, ``_persistence_watchdog_task``,
-``_profile_watch_task``, ``_sign_in_refresher_task``, ``_update_check_task``,
-``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
+``_profile_watch_task``, ``_session_environments_ready``, ``_sign_in_refresher_task``,
+``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
 ``dashboard_state``, ``sessions``, ``slack``, ``task_runner``, ``vector_memory``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         _live_session_work_dirs,
         _run_signing_key_preflight_bounded,
         _session_work_dir,
+        _start_coder_retention,
         _sweep_predecessor_session_work_dirs,
         build_dashboard_url,
         build_provider_factory,
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
         hooks_config_from_config_dict,
         is_local_only,
         kiro_agents_dir,
+        live,
         log_probe_failure,
         logger,
         parse_dashboard_url,
@@ -89,6 +91,9 @@ if TYPE_CHECKING:
         warm_backend,
         warn_unreadable_tracked_channels,
     )
+
+    # The facade's KAS floor task (``process_entry._start_kas_cli_floor``); read only.
+    _KAS_CLI_FLOOR_TASK: asyncio.Task[None] | None
 
 
 async def _auto_open_dashboard(self: GatewayOrchestrator, dashboard_url: str) -> None:
@@ -316,15 +321,12 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         bot_name=self._cfg.agent.bot_name,
     )
 
-    # Conversation history
     self.conv_log = ConversationLog()
     self.conv_log.init()
     self.ctx_builder.conversation_log = self.conv_log
 
-    # Session manager
     self.sessions = SessionManager(self._cfg, provider_factory=factory)  # type: ignore[arg-type]
 
-    # History consolidator
     self.consolidator = HistoryConsolidator(
         log=self.conv_log,
         memory=memory,
@@ -651,6 +653,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         slack_client=self.slack,
         owner_id=self._owner_id,
         assume_kiro_ready=self._test_mode,
+        kiro_prerequisite_service=self._boot_kiro_service,
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
     )
@@ -665,6 +668,11 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+    if self.dashboard_state and not self._test_mode:
+        # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
+        from kiro_crew import kiro_on_kas_notice
+
+        kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
 
 
 async def _init_api_server(self: GatewayOrchestrator) -> None:
@@ -695,6 +703,7 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
         local_only=self._local_only,
         configured_host=configured_host,
         assume_kiro_ready=self._test_mode,
+        kiro_prerequisite_service=self._boot_kiro_service,
         conversation_log=self.conv_log,
         schedule_memory_preparation=self._schedule_memory_preparation,
     )
@@ -845,6 +854,13 @@ async def run(self: GatewayOrchestrator) -> None:
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
+    # Enterprise build only: no kiro login, no Crew. Checked before any service
+    # starts and long before the HTTP server binds; a failure exits non-zero.
+    # After the sandbox warm-up because the probe runs kiro-cli in the sandbox.
+    from kiro_crew.enterprise_boot import require_kiro_login
+
+    self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
+
     # ── Initialise all services ──
     from kiro_crew.slack.events import SeenCache, init_socket_mode
     from kiro_crew.slack.interactions import init as init_interactions
@@ -881,11 +897,47 @@ async def run(self: GatewayOrchestrator) -> None:
     self._init_mcp_discovery()
     self._init_subagents()
     self._init_task_runner()
-    if not self._no_dashboard:
-        await self._init_dashboard()
-        self._announce_cron_quarantine()
-    else:
-        await self._init_api_server()
+
+    async def _release_orphan_notices_once_rebuilt(tabs_rebuilt: asyncio.Event) -> None:
+        await tabs_rebuilt.wait()
+        if self.subagent_mgr is not None:
+            self.subagent_mgr.release_orphan_notices()
+
+    try:
+        if not self._no_dashboard:
+            await self._init_dashboard()
+            self._announce_cron_quarantine()
+        else:
+            await self._init_api_server()
+    finally:
+        # The boot orphan sweep's notices go to the tabs that show their parents.
+        # A started dashboard has restored its own chats, but a channel
+        # conversation's tab comes back with the channel reconciler's first
+        # complete pass, which runs in the background: the release waits for it
+        # on a tracked task, so the boot does not (``startup_tabs_rebuilt`` is
+        # already set when channel surfacing is off). The API-only server has no
+        # tabs, and a start that failed before the dashboard state existed
+        # releases at once too, so the sweep can still send the owner DM digest;
+        # if the process exits first, the runs stay untombstoned and the next
+        # start announces them.
+        state = None if self._no_dashboard else self.dashboard_state
+        if state is not None and not state.startup_tabs_rebuilt.is_set():
+            _release_task = asyncio.create_task(
+                _release_orphan_notices_once_rebuilt(state.startup_tabs_rebuilt)
+            )
+            self._background_tasks.add(_release_task)
+            _release_task.add_done_callback(self._background_tasks.discard)
+        elif self.subagent_mgr is not None:
+            self.subagent_mgr.release_orphan_notices()
+    # The socket is bound. Move the boot heap into the permanent generation so
+    # later full collections stop re-scanning it (~150k objects, a 50 ms
+    # stop-the-world pass on the event loop), then turn cyclic GC back on:
+    # `kirocrew gateway` imports with it off (kiro_crew._bootstrap.main).
+    # O(1), and deliberately no gc.collect() first: that is a blocking pass.
+    import gc
+
+    gc.freeze()
+    gc.enable()
     # The dashboard/API socket is bound now. A missing wrapper can take the
     # full pip timeout to repair, so track that work without delaying READY.
     # The task itself catches and logs failures; startup remains available.
@@ -944,6 +996,10 @@ async def run(self: GatewayOrchestrator) -> None:
             "home": str(data_home()),
         }
         print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
+
+    self._session_environments_ready = True
+    if not self._test_mode:
+        _start_coder_retention(live.snapshot() or self._cfg)
 
     # The HTTP socket is bound, and the optional machine-readable marker
     # has been emitted. Background approval-state writes may start now.
@@ -1329,7 +1385,9 @@ async def run(self: GatewayOrchestrator) -> None:
         except Exception:
             logger.warning("Background session start failed", exc_info=True)
 
-    asyncio.create_task(_start_bg_session())
+    _bg_session_task = asyncio.create_task(_start_bg_session())
+    self._background_tasks.add(_bg_session_task)
+    _bg_session_task.add_done_callback(self._background_tasks.discard)
 
     # Stale-asset watchdog: detects when an update prunes the running
     # install's static assets and triggers graceful shutdown so the
@@ -1383,8 +1441,6 @@ async def run(self: GatewayOrchestrator) -> None:
     # event loop.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), check_bundle_freshness)
 
-    print("👻 Kiro Crew gateway starting…")
-
     connected = await self._connect_slack()
     # Record the real socket outcome so status surfaces (e.g. the Slack
     # settings badge) can distinguish "connected" from "tokens present
@@ -1410,7 +1466,10 @@ async def run(self: GatewayOrchestrator) -> None:
         _scope_task.add_done_callback(self._background_tasks.discard)
         _scope_task.add_done_callback(log_probe_failure)
 
-    # Block until shutdown
+    # Boot is finished here: the dashboard is bound and the process serves until
+    # it is stopped. This is the last line a foreground gateway prints, so it
+    # must not read as a step still in progress.
+    print("👻 Kiro Crew gateway running — press Ctrl+C to stop")
     await shutdown_event.wait()
     await self._shutdown_and_exit(_watchdog)
 

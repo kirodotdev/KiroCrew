@@ -79,7 +79,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_answer_secret_request": ("function", True, "40866b9ae753", "runtime_host_requests"),
     "_answer_unroutable_permission": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
-    "_collect_late_start": ("function", False, "df0576b2759e", "runtime_session_create"),
+    # Both take ``request_identity``: the vault identity the ``session/new`` went out
+    # under, for the KAS catalog recorder (``kas_model_catalog``).
+    "_collect_late_start": ("function", False, "7319b7831048", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -90,7 +92,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "70f51c6f9496", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "50a24da61557", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
@@ -200,12 +202,14 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "create_session": ("function", True, "155a6120083d", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
+    "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
     "forget_request": ("function", False, "a0b46301fd2c", "runtime_wire"),
     "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
     "has_active_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
     "is_alive": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "load_session": ("function", True, "abdb4c5767fc", "runtime_session_load"),
+    "load_session": ("function", True, "e76bae1fa2fd", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
     "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),
@@ -256,6 +260,7 @@ _OWNERS = (
     "kiro_crew.acp.runtime_host_requests",
     "kiro_crew.acp.runtime_frame_accounting",
     "kiro_crew.acp.runtime_reader_loop",
+    "kiro_crew.acp.runtime_remote_workspace",
     "kiro_crew.acp.runtime_class",
 )
 
@@ -313,7 +318,7 @@ _BASE_IMPORTS = frozenset("""
     build_session_new_params cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
-    group_vouching_available harness_for has_mirror hoist_managed_servers importlib
+    group_vouching_available harness_for has_mirror hoist_servers_for_session importlib
     inject_xdist_auto_cap injection_server_names is_auth_failure_output
     is_sandbox_init_failure_output kas_client_meta_settings kas_secret_storage
     kas_wire_agent_id kiro_agents_dir launch live logging markdown_spec_for_agent

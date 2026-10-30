@@ -732,7 +732,7 @@ _PNG = base64.b64decode(
 
 
 def _wav(seconds: int, rate: int = 22050) -> bytes:
-    """*seconds* of silent PCM WAV, the container the bundled Piper voice emits."""
+    """*seconds* of silent PCM WAV, the container the system engine emits."""
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as handle:
         handle.setnchannels(1)

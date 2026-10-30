@@ -1060,3 +1060,34 @@ describe('assemblePromptContent — the frontmatter block is the author\'s text'
       .toBe('---\ndescription: now described\n---\n\nJust body.\n')
   })
 })
+
+describe('PromptsTab filter selection (#20262)', () => {
+  // A prompt listed first whose description mentions the query, then the
+  // prompt the user actually typed.
+  const MENTIONS = [
+    { ...USER_PROMPT, name: 'alpha', fullName: 'alpha', description: 'calls review', path: '~/.kiro/prompts/alpha.md' },
+    { ...USER_PROMPT, name: 'review', fullName: 'review', description: 'code review', path: '~/.kiro/prompts/review.md' },
+  ]
+  const lastOpened = () => mockApi.promptDetail.mock.calls.at(-1)?.[0]
+
+  it('opens the prompt whose name matches the filter, not the first row', async () => {
+    mockApi.prompts.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('alpha'))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter prompts/i), { target: { value: 'review' } })
+    await waitFor(() => expect(lastOpened()).toBe('review'))
+    expect(screen.getByRole('option', { name: /alpha/ })).toBeInTheDocument()
+  })
+
+  it('keeps a prompt the user clicked while the filter still shows it', async () => {
+    mockApi.prompts.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('alpha'))
+    fireEvent.click(screen.getByRole('option', { name: /alpha/ }))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter prompts/i), { target: { value: 'review' } })
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(2))
+    expect(lastOpened()).toBe('alpha')
+  })
+})

@@ -9,6 +9,8 @@ store on a temp file, no manager and no sockets.
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,7 @@ from kiro_crew.taskq.waits import (
     WaitLedger,
     WaitRecord,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture
@@ -619,4 +622,86 @@ async def test_resume_grant_publishes_the_bumped_generation_before_the_signal() 
     finally:
         harness.mgr._agents.clear()
         await harness.mgr.cancel_all()
+        harness.close()
+
+
+# ── fire-and-forget tasks are held until they finish ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_wait_resume_and_cancel_tasks_survive_a_gc_pass() -> None:
+    """The ``subagent_waiting`` and ``subagent_resumed`` events and a scheduled
+    cancel each run on a task the caller does not keep. The event loop holds a
+    task only weakly, so a task suspended on a future nothing else references
+    is collected by the next GC pass: the frame never reaches the dashboard,
+    and a cancel never lands, leaving the run alive.
+
+    Each coroutine below suspends on a future only its own frame holds, which
+    is the shape a slow ``on_event`` broadcast or a cancel joining a teardown
+    has. A held task is still alive after ``gc.collect()``; a dropped one is not.
+    """
+    harness = ManagerHarness(max_concurrent=2)
+    mgr = harness.mgr
+    started: dict[str, weakref.ref] = {}
+
+    def _parked(label: str):
+        # Only the call under test parks: any other event the manager fires
+        # meanwhile (a queue-depth heal, a spawn frame) returns at once.
+        async def _park(first: object, *_a, **_k) -> None:
+            if first != label:
+                return
+            started[label] = weakref.ref(asyncio.current_task())
+            await asyncio.get_running_loop().create_future()
+
+        return _park
+
+    collected: list[str] = []
+
+    async def _assert_held(label: str) -> None:
+        await async_wait_until(lambda: label in started, describe=lambda: sorted(started))
+        gc.collect()
+        if started[label]() is None:
+            collected.append(label)
+
+    try:
+        await mgr.wait_taskq_ready()
+        store = harness.store
+
+        # (a) yield_slot -> subagent_waiting
+        mgr._on_event = None
+        spawned = mgr.spawn("waiter", parent_session_key="dash:refs")
+        assert spawned is not None
+        await async_wait_until(lambda: spawned.id in harness.started)
+        info = mgr._agents[spawned.id]
+        await store.run(store.transition, info.id, model.RUNNING)
+        mgr._on_event = _parked("subagent_waiting")
+        assert mgr._admission.yield_slot(info, WaitRecord.input("call-1", since=store.now()))
+        await _assert_held("subagent_waiting")
+
+        # (b) resume_grant -> subagent_resumed
+        mgr._on_event = None
+        parked, _gen, _record = _park_live_run(harness, "resumer")
+        mgr._on_event = _parked("subagent_resumed")
+        assert mgr._admission.resume_grant({"_resume_id": parked.id}) is True
+        await _assert_held("subagent_resumed")
+
+        # (c) _schedule_cancel -> manager.cancel
+        mgr._on_event = None
+        mgr.cancel = _parked("to-cancel")  # type: ignore[method-assign]
+        mgr._admission._schedule_cancel("to-cancel")
+        await _assert_held("to-cancel")
+        assert collected == [], f"garbage-collected mid-flight: {collected}"
+    finally:
+        mgr._on_event = None
+        mgr.__dict__.pop("cancel", None)
+        for ref in started.values():
+            task = ref()
+            if task is not None:
+                task.cancel()
+        for info_id in list(mgr._agents):
+            fut = harness.finish.get(info_id)
+            if fut is not None and not fut.done():
+                fut.set_result("ok")
+        mgr._agents.clear()
+        await mgr.cancel_all()
         harness.close()

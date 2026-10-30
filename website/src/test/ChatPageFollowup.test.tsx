@@ -67,12 +67,16 @@ vi.mock('../api/client', () => ({
     // worktree-failure notice the assertions below look up by role.
     kirocrewConfig: vi.fn().mockResolvedValue({}),
     agentResolvedModel: vi.fn().mockResolvedValue({ pinned: false }),
+    // The composer's environment chip reads this on mount; unanswered, it
+    // fails and renders another `role="alert"`.
+    chatSlotEnvironment: vi.fn().mockResolvedValue({ profiles: [] }),
     // The composer's git probe, which decides between the worktree route and
     // the plain new-chat route on the card.
     projectGit: vi.fn().mockResolvedValue({ repo: true, branch: 'main' }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
+vi.mock('../api/reactions', async () => await import('./__mocks__/reactionsApi')) // empty reactions, so no extra load-failure alert
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))

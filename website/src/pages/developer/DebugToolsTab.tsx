@@ -6,16 +6,16 @@ import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 
 /**
- * Developer > Debug tools — overlays that report what the app is doing to itself,
+ * Settings > Developer > Debug tools — overlays that report what the app is doing to itself,
  * on the device where it is happening.
  *
  * These are not feature previews and not settings. A preview flag hides a surface
  * that is not finished; a setting is a preference the operator keeps. A debug
  * overlay is neither: it is an instrument, it paints over real product UI while
- * on, and nobody wants it on by default. So it lives behind the Developer Mode
- * gate on this page rather than in Settings, where the toggle would also be
- * indexed into Settings search by `gen-settings-registry.mjs` and advertised to
- * readers it is not for.
+ * on, and nobody wants it on by default. So it lives on Settings > Developer >
+ * Debug tools, beside the other internals views, off by default. It is deliberately
+ * kept out of Settings search: indexing it via gen-settings-registry.mjs would
+ * advertise it to readers it is not for.
  *
  * Each tool owns its own storage key and CustomEvent (see the module it drives).
  * The event is what lets an already-open chat pick the change up without a

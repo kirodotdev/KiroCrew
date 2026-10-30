@@ -55,6 +55,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-1",
                 tool_output="hello world",
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -100,6 +101,10 @@ class TestSubagentPostToolUseHook:
             f"stripped, got {kwargs['tool_name']!r}"
         )
         assert kwargs["tool_response"] == {"output": "hello world"}
+        # The child's own key, for per-session attribution, beside the
+        # parent's key that marks the event as a subagent's.
+        assert kwargs["session_key"] == "subagent:t01"
+        assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
     async def test_post_tool_use_truncates_long_output(self) -> None:
@@ -125,6 +130,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-2",
                 tool_output=long_output,
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -201,8 +207,9 @@ class TestSubagentPostToolUseHook:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:t03")
 
-        # Reaching here without exception is the assertion.
-        assert info is not None
+        # The stream ran through the tool result and the run ended clean.
+        assert info.done is True
+        assert not info.error
 
     @pytest.mark.asyncio
     async def test_post_tool_use_hook_exception_is_swallowed(self) -> None:
@@ -217,7 +224,9 @@ class TestSubagentPostToolUseHook:
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(kind=EVENT_TOOL_CALL, title="X", tool_call_id="t-4")
-            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok")
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok", tool_final=True
+            )
             yield LLMEvent(kind=EVENT_COMPLETE)
 
         sessions = _mock_sessions()
@@ -243,10 +252,16 @@ class TestSubagentPostToolUseHook:
         manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
-            # Should not raise even though hook_store.fire raises.
             await manager._run_inner(info, "subagent:t04")
 
+        post_calls = [
+            c
+            for c in manager.hook_store.fire.await_args_list
+            if c.args and c.args[0] == "PostToolUse"
+        ]
+        assert [c.kwargs["tool_name"] for c in post_calls] == ["X"]
         assert info.done is True
+        assert not info.error
 
 
 class TestSubagentParallelToolAttribution:

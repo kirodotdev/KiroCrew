@@ -299,13 +299,13 @@ describe('a staged preview that is re-minted', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(READY_TIMEOUT_MS + 100)
     })
+    // Flush any pending React state updates from the timer callback.
+    await act(async () => {})
     expect(offscreen()).toBeNull()
     await waitFor(() => expect(onPreviewLoaded).toHaveBeenLastCalledWith(0))
 
     // Reporting late still counts: the page did come up.
-    await waitFor(() => {
-      act(() => beacon(nextWindow, false))
-      expect(onPreviewLoaded).toHaveBeenLastCalledWith(7)
-    })
+    act(() => beacon(nextWindow, false))
+    await waitFor(() => expect(onPreviewLoaded).toHaveBeenLastCalledWith(7))
   })
 })

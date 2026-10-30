@@ -108,6 +108,17 @@ def test_description_states_what_discord_does_and_what_it_refuses() -> None:
 # ── The tool ──
 
 
+def _channels_policy(allowed: str):
+    """A ``channels`` governance double that permits only the ``allowed`` transport."""
+
+    def _vet(_caller: str, transport: str, tool_name: str = "send_message") -> str | None:
+        if transport == allowed:
+            return None
+        return f"messaging via {transport} blocked by governance policy"
+
+    return _vet
+
+
 @pytest.fixture
 def cron_caller():
     """Run the tool as a cron, the caller whose bare sends default to Slack."""
@@ -131,21 +142,30 @@ def test_discord_session_is_vetted_on_discord_and_not_on_slack(cron_caller) -> N
     """
     with (
         patch("kiro_crew.mcp_core._post") as post,
-        patch("kiro_crew.mcp_core._vet_channel_governance", return_value=None) as vet,
+        patch(
+            "kiro_crew.mcp_core._vet_channel_governance", side_effect=_channels_policy("discord")
+        ) as vet,
     ):
         post.return_value = {"ok": True, "delivered_to": "discord"}
-        _call_tool("send_message", {"text": "hi", "session": "discord"})
+        result = _call_tool("send_message", {"text": "hi", "session": "discord"})
     assert [call.args[1] for call in vet.call_args_list] == ["discord"]
+    assert not result.startswith("Error:"), result
+    assert "discord" in result
 
 
 def test_slack_session_is_still_vetted_on_slack(cron_caller) -> None:
     with (
         patch("kiro_crew.mcp_core._post") as post,
-        patch("kiro_crew.mcp_core._vet_channel_governance", return_value=None) as vet,
+        patch(
+            "kiro_crew.mcp_core._vet_channel_governance", side_effect=_channels_policy("discord")
+        ) as vet,
     ):
         post.return_value = {"ok": True, "delivered_to": "slack"}
-        _call_tool("send_message", {"text": "hi", "session": "slack"})
+        result = _call_tool("send_message", {"text": "hi", "session": "slack"})
     assert [call.args[1] for call in vet.call_args_list] == ["slack"]
+    assert result.startswith("Error:"), result
+    assert "via slack blocked" in result
+    post.assert_not_called()
 
 
 def test_governance_denial_stops_the_discord_send(cron_caller) -> None:

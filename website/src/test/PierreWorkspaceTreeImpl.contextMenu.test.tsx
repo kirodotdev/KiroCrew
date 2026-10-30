@@ -244,10 +244,10 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
 
 describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
   // Download streams the file's bytes through /api/file-download — the SAME
-  // credential-gated endpoint the viewer's Download uses — then hands the blob
-  // to the browser as a save-to-disk. These tests pin: the row is file-only,
-  // the fetch hits that endpoint (so the gate is in front of it), a refusal is
-  // surfaced not bypassed, and the menu offers Download even with no host.
+  // endpoint the viewer's Download uses — then hands the blob to the browser as
+  // a save-to-disk. These tests pin: the row is file-only, the fetch hits that
+  // endpoint, a failure is surfaced, and the menu offers Download even with no
+  // host.
   const openMenu = (item: MenuItem) => {
     const close = vi.fn()
     const context: MenuContext = {
@@ -261,15 +261,13 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
   }
 
   /** Stub fetch, URL.createObjectURL/revoke and the anchor click so the
-   *  download can be observed without a real network or DOM navigation.
-   *  `code` populates the JSON body the helper reads to tell a credential
-   *  refusal (`content_redacted`) apart from any other 400. */
-  function captureDownload(response: { ok: boolean; status?: number; code?: string }) {
+   *  download can be observed without a real network or DOM navigation. */
+  function captureDownload(response: { ok: boolean; status?: number }) {
     const names: string[] = []
     const origFetch = global.fetch
     const origCreate = URL.createObjectURL
     const origRevoke = URL.revokeObjectURL
-    const body = response.code ? { error: 'refused', code: response.code } : { error: 'refused' }
+    const body = { error: 'refused' }
     const mkRes = () => ({
       ok: response.ok,
       status: response.status ?? (response.ok ? 200 : 400),
@@ -305,11 +303,12 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
       openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
       fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
 
-      // The absolute path goes to the credential-gated endpoint; absolute paths
+      // The absolute path goes to /api/file-download; absolute paths
       // carry no resolve=1.
       await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
       expect(cap.fetchMock).toHaveBeenCalledWith(
         `/api/file-download?path=${encodeURIComponent(`${ROOT}/src/a/b.ts`)}`,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       )
       // The saved file keeps its basename.
       await waitFor(() => expect(cap.names).toEqual(['b.ts']))
@@ -333,34 +332,8 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
     }
   })
 
-  it('surfaces the gate refusal as a distinct credential message and reaches no bytes', async () => {
-    // The credential gate aborts a flagged file with `code: content_redacted`.
-    // The row names that specifically -- not a generic failure a user would
-    // retry forever -- reports it through the tree notice, never falls back to
-    // another transport, and creates no blob.
-    const cap = captureDownload({ ok: false, status: 400, code: 'content_redacted' })
-    try {
-      renderTree({ onAddToContext: vi.fn() })
-      await waitForTree()
-
-      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
-
-      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
-      expect(notice).toHaveTextContent('the credential scan flagged')
-      // The copy points the owner at the setting that releases their own file.
-      expect(notice).toHaveTextContent('Settings → Security → Flagged-file delivery')
-      expect(URL.createObjectURL).not.toHaveBeenCalled()
-      expect(cap.names).toEqual([])
-    } finally {
-      cap.restore()
-    }
-  })
-
-  it('does not read a non-credential 400 as a credential refusal', async () => {
-    // /api/file-download also answers 400 for an invalid or out-of-project path
-    // (no `content_redacted` code). Keying on the bare status would falsely tell
-    // the user their file holds secrets; keying on the body code shows generic.
+  it('surfaces a 400 as the generic Download failed and saves no bytes', async () => {
+    // /api/file-download answers 400 for an invalid or out-of-project path.
     const cap = captureDownload({ ok: false, status: 400 })
     try {
       renderTree({ onAddToContext: vi.fn() })
@@ -371,16 +344,15 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
 
       const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
       expect(notice).toHaveTextContent('Download failed')
-      expect(notice).not.toHaveTextContent('credential scan')
       expect(cap.names).toEqual([])
     } finally {
       cap.restore()
     }
   })
 
-  it('surfaces a non-400 failure as the generic Download failed, not the credential message', async () => {
+  it('surfaces a non-400 failure as the generic Download failed', async () => {
     // Any other non-ok status (a 500, a gone file) is an ordinary failure the
-    // user may retry -- it must NOT read as a credential refusal.
+    // user may retry.
     const cap = captureDownload({ ok: false, status: 500 })
     try {
       renderTree({ onAddToContext: vi.fn() })
@@ -391,7 +363,6 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
 
       const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
       expect(notice).toHaveTextContent('Download failed')
-      expect(notice).not.toHaveTextContent('credential scan')
       expect(cap.names).toEqual([])
     } finally {
       cap.restore()

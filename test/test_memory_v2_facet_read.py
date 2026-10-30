@@ -947,6 +947,16 @@ class TestTheCarveCliVerb:
 
         _memory_carve(_carve_args(**overrides))
 
+    @classmethod
+    def _refused(cls, capsys: pytest.CaptureFixture[str], **overrides: Any) -> str:
+        """Run a carve that must refuse: exit 1, nothing on stdout, the reason on stderr."""
+        with pytest.raises(SystemExit) as exc:
+            cls._run(**overrides)
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert out == ""
+        return err
+
     def test_it_counts_a_named_silo(self, seeded, capsys) -> None:
         self._run(store=seeded, count_by="crew")
         printed = capsys.readouterr().out
@@ -982,16 +992,14 @@ class TestTheCarveCliVerb:
         memories; they must be told this store cannot answer.
         """
         _declare_silos(_FINANCE)
-        self._run(count_by="crew")
-        printed = capsys.readouterr().out
+        printed = self._refused(capsys, count_by="crew")
         assert "Cannot carve" in printed and "v1 schema lineage" in printed
         assert "No live rows" not in printed
 
     def test_an_undeclared_store_is_refused_without_reading_global_memory(self, capsys) -> None:
         """A mistyped private store never authorizes a global memory read."""
         _declare_silos(_FINANCE)
-        self._run(store="nope", count_by="crew")
-        printed = capsys.readouterr().out
+        printed = self._refused(capsys, store="nope", count_by="crew")
         assert "'nope' is not declared" in printed
         assert printed.startswith("Error:")
         assert f"Cannot carve {DEFAULT_MEMORY_STORE!r}" not in printed
@@ -1004,8 +1012,7 @@ class TestTheCarveCliVerb:
         gets a sentence instead of a stack.
         """
         _declare_silos(_FINANCE)
-        self._run(store="../work")
-        printed = capsys.readouterr().out
+        printed = self._refused(capsys, store="../work")
         assert printed.startswith("Error: invalid memory store name")
 
     def test_an_unknown_kind_is_reported_rather_than_answered(self, seeded, capsys) -> None:
@@ -1014,8 +1021,9 @@ class TestTheCarveCliVerb:
         The choice set is UX; the refusal is the contract, and it must not depend
         on which surface the call came through.
         """
-        self._run(store=seeded, kind="preference")
-        assert "Error: unknown memory kind" in capsys.readouterr().out
+        assert "Error: unknown memory kind" in self._refused(
+            capsys, store=seeded, kind="preference"
+        )
 
     def test_an_empty_carve_says_so_without_claiming_the_store_cannot_answer(
         self, seeded, capsys

@@ -5,6 +5,8 @@ import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLongPressReorder } from '../hooks/useLongPressReorder'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -32,6 +34,9 @@ import {
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
+
+/** Latest: open the terminal even if the slide never reports completion. */
+const SETTLE_CEILING_MS = 700
 
 /** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design.
  *  `hintId` names the strip's visible editing helper (rendered outside the
@@ -343,7 +348,7 @@ function TerminalCloseErrorNotice() {
   )
 }
 
-export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
+export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'dock' | 'popout'; deferOpen?: boolean }) {
   const { tabs, activeId, position } = useBottomTerminal()
   // Tabs restored from storage are unverified until the backend has said which
   // shells still exist. Nothing is drawn for them before that ruling — a
@@ -375,6 +380,11 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // only signal that tabs continue past the clipped edge. The scroller keeps
   // its box as tabs open/close/rename, so remeasure on the tabs list.
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLUListElement>()
+  const attachWheel = useWheelToHorizontal<HTMLUListElement>()
+  const attachScroller = useCallback((node: HTMLUListElement | null) => {
+    attachEdges(node)
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
   useEffect(() => { remeasure() }, [tabs, remeasure])
 
   // New tabs spawn in the selected session's project directory when one is
@@ -491,7 +501,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
             shrink below its content like the group did. */}
         <div className="relative min-w-0 flex items-center">
         <Reorder.Group
-          ref={attachEdges}
+          ref={attachScroller}
           axis="x"
           values={tabs}
           onReorder={setTabsOrder}
@@ -604,7 +614,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         )}
         {tabs.map(t => (
           <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeId ? 'block' : 'none' }}>
-            <CliPanel sessionId={t.id} cwd={t.cwd} visible={t.id === activeId} />
+            <CliPanel sessionId={t.id} cwd={t.cwd} chatSlot={t.chatSlot} visible={t.id === activeId} deferOpen={deferOpen} />
           </div>
         ))}
       </div>
@@ -728,6 +738,27 @@ export default function BottomTerminalPanel() {
   const dimension = isRight ? width : height
   const motionProp = isRight ? { width: dimension } : { height: dimension }
   const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
+  // A bottom-docked terminal being typed into rises above the on-screen
+  // keyboard instead of relying on Safari's focus pan (see useKeyboardLift).
+  const panelRef = useRef<HTMLDivElement>(null)
+  const keyboardLift = useKeyboardLift(panelRef, open && !isRight)
+  // A terminal opened for the first time waits until the slide is over before
+  // xterm builds itself (see CliPanel's `deferOpen`), so the slide, and a
+  // drawer the same tap closes (it settles before the slide does), run without
+  // that work in their frames. The ceiling lets go even if no
+  // animation-complete ever arrives. Reset on CLOSE, not on open, so the
+  // render that opens the dock already holds the terminal.
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    if (!open) { setSettled(false); return }
+    const cap = window.setTimeout(() => setSettled(true), SETTLE_CEILING_MS)
+    return () => window.clearTimeout(cap)
+  }, [open])
+  // The exit animation completes too, after the close reset: only the slide
+  // IN may let a held terminal open.
+  const openRef = useRef(open)
+  openRef.current = open
+  const onSlideComplete = useCallback(() => { if (openRef.current) setSettled(true) }, [])
 
   return (
     <>
@@ -735,18 +766,35 @@ export default function BottomTerminalPanel() {
           panel is hidden, so a delete rejected AFTER the last tab closed still
           has a surface to land on. */}
       <TerminalCloseErrorNotice />
+      {/* The keyboard lift is bottom padding on this always-mounted wrapper:
+          the whole column (chat pane, its composer, this panel) gives the
+          keyboard its band, so the composer lands above the terminal instead
+          of over it. When the band leaves less room than the panel's height,
+          the panel shrinks (min-h-0) instead of running under the keyboard. */}
+      <div
+        className={isRight ? 'shrink-0 flex' : 'flex flex-col min-h-0'}
+        style={keyboardLift > 0 ? { paddingBottom: keyboardLift } : undefined}
+      >
       <AnimatePresence initial={false}>
       {open && (
         <motion.div
           key={motionKey}
-          className={`shrink-0 overflow-hidden bg-bg ${isRight ? 'border-l border-border' : 'border-t border-border'}`}
-          initial={isRight ? { width: 0 } : { height: 0 }}
-          animate={motionProp}
-          exit={isRight ? { width: 0 } : { height: 0 }}
+          ref={panelRef}
+          data-testid="bottom-terminal-panel"
+          className={`overflow-hidden bg-bg ${isRight ? 'shrink-0 border-l border-border' : 'min-h-0 border-t border-border'}`}
+          /* The bottom dock takes its full height at once and slides in with a
+             transform: animating `height` re-laid out the whole shell and
+             refit xterm on every frame. */
+          initial={isRight ? { width: 0 } : { y: dimension }}
+          animate={isRight ? motionProp : { y: 0 }}
+          exit={isRight ? { width: 0 } : { y: dimension }}
           transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
-          style={{ willChange: isRight ? 'width' : 'height' }}
+          onAnimationComplete={onSlideComplete}
+          style={isRight
+            ? { willChange: 'width' }
+            : { height: dimension, willChange: 'transform' }}
         >
-          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col'} style={motionProp}>
+          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col h-full'} style={isRight ? motionProp : undefined}>
             <div
               {...grip}
               className={`relative shrink-0 group/drag ${isRight ? 'w-[6px] cursor-col-resize' : 'h-[6px] cursor-row-resize'}`}
@@ -762,12 +810,13 @@ export default function BottomTerminalPanel() {
               }`} />
             </div>
             <div className={isRight ? 'flex-1 min-w-0 min-h-0' : 'flex-1 min-h-0'}>
-              <TerminalTabsView variant="dock" />
+              <TerminalTabsView variant="dock" deferOpen={!settled} />
             </div>
           </div>
         </motion.div>
       )}
       </AnimatePresence>
+      </div>
     </>
   )
 }

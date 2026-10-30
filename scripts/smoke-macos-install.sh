@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install the macOS desktop DMG the way a user does -- mount it, copy the app
-# out -- and prove what only the installed product can show: the app launches
-# and its own supervisor boots the packaged gateway.
+# out -- and prove what only the installed product can show: the app launches,
+# its own supervisor boots the packaged gateway, and that gateway is handed the
+# bundled KAS engine.
 #
 # WHY A SCRIPT AND NOT INLINE YAML: same reason as scripts/smoke-linux-packages.sh
 # and scripts/smoke-windows-install.ps1 -- one set of assertions for every caller
@@ -18,6 +19,15 @@
 #     and its Node carries both architecture slices.
 #   * The REAL app, launched from its own executable, boots the packaged gateway
 #     and that gateway answers /api/health.
+#   * The bundled KAS engine hand-off (BUNDLE_KAS=0 skips): the gateway child
+#     the shell spawned carries KIROCREW_BUNDLED_KAS_DIR naming the installed
+#     backend-dist/kas/ root (gateway-env.js `bundledKasEnvironment`), and the
+#     installed `kirocrew kas status`, run with that environment, reports the
+#     engine as `(built into the app)` from inside that root. The shell runs
+#     nothing from the root at boot, so the child's environment plus the
+#     backend's own reader are the whole hand-off; electron-builder moving or
+#     altering the staged tree would otherwise be seen only by an opted-in user
+#     starting a session.
 #   * Only for a build made with BUNDLE_KIRO_CLI=1 (off by default; the shipped
 #     app detects the user's own kiro-cli): the staged kiro-cli-chat is in the
 #     installed tree and reports the pinned release from
@@ -35,6 +45,8 @@
 # Usage: smoke-macos-install.sh <dist-dir>
 #   BUNDLE_KIRO_CLI=1 turns the bundled-kiro-cli assertions on, for a DMG built
 #   with the same opt-in. The default matches the build's default: off.
+#   BUNDLE_KAS=0 skips the bundled-KAS-engine assertions (the build's
+#   `BUNDLE_KAS=0` opt-out ships no root for the shell to export).
 set -euo pipefail
 
 DIST_DIR="${1:?usage: smoke-macos-install.sh <dir containing the built .dmg>}"
@@ -250,15 +262,17 @@ if [ "$healthy" -ne 1 ]; then
 fi
 echo "▶ Installed app's gateway answered /api/health in $(( $(date +%s) - started ))s"
 
-# --- 5. The bundled hand-off actually happened (BUNDLE_KIRO_CLI=1 only). ------
+# --- 5. The bundled hand-offs actually happened. ------------------------------
+# The gateway child the supervisor spawned, found by the data home it was given;
+# `ps eww` prints its environment. Both hand-offs below are read off this one
+# process: it is the environment gateway-env.js built, nothing the smoke set.
+gateway_pid="$(for pid in $(smoke_gateway_pids); do
+  if ps -o command= -p "$pid" 2>/dev/null | grep -q "gateway"; then echo "$pid"; break; fi
+done)"
+test -n "$gateway_pid" || { echo "ERROR: no gateway child with KIROCREW_HOME=$HOME_DIR found" >&2; ps -axo pid=,command= | grep -i kiro | head -20 >&2; exit 1; }
+child_env="$(ps eww -p "$gateway_pid")"
+
 if [ "${BUNDLE_KIRO_CLI:-0}" = "1" ]; then
-  # The gateway child the supervisor spawned, found by the data home it was
-  # given; `ps eww` prints its environment.
-  gateway_pid="$(for pid in $(smoke_gateway_pids); do
-    if ps -o command= -p "$pid" 2>/dev/null | grep -q "gateway"; then echo "$pid"; break; fi
-  done)"
-  test -n "$gateway_pid" || { echo "ERROR: no gateway child with KIROCREW_HOME=$HOME_DIR found" >&2; ps -axo pid=,command= | grep -i kiro | head -20 >&2; exit 1; }
-  child_env="$(ps eww -p "$gateway_pid")"
   case "$child_env" in
     *"KIROCREW_BUNDLED_KIRO_DIR=$BUNDLED_DIR"*) echo "▶ Gateway child (pid $gateway_pid) carries KIROCREW_BUNDLED_KIRO_DIR=$BUNDLED_DIR" ;;
     *) echo "ERROR: gateway child (pid $gateway_pid) was not handed the bundled kiro-cli directory" >&2
@@ -290,6 +304,46 @@ if [ "${BUNDLE_KIRO_CLI:-0}" = "1" ]; then
   esac
 fi
 
+kas_status_row=""
+if [ "${BUNDLE_KAS:-1}" != "0" ]; then
+  # (a) The shell exported the staged root to the gateway child: the exact root
+  # step 2b checked in the installed tree. A bundle whose root electron-builder
+  # dropped or moved, or whose install record the shell refused, fails here
+  # (the launch log tail then carries the shell's reason).
+  case "$child_env" in
+    *"KIROCREW_BUNDLED_KAS_DIR=$KAS_ROOT"*) echo "▶ Gateway child (pid $gateway_pid) carries KIROCREW_BUNDLED_KAS_DIR=$KAS_ROOT" ;;
+    *) echo "ERROR: gateway child (pid $gateway_pid) was not handed the bundled KAS engine root $KAS_ROOT" >&2
+       [ -n "$LAUNCH_LOG" ] && { echo "gateway-launch.log tail:"; tail -n 40 "$LAUNCH_LOG"; }
+       exit 1 ;;
+  esac
+
+  # (b) The backend reads the installed tree through that environment. `kirocrew
+  # kas status` runs the same reader a session spawn uses
+  # (acp.kas_bundle.installed_bundle: data home first, then this root), and its
+  # `installed:` row says which one answered; `(built into the app)` is the
+  # staged root, and the `engine:` row must sit inside it. The data home is the
+  # smoke's own empty one, so nothing an operator installed can answer instead.
+  # Text is asserted, not the exit code, the same as doctor.
+  kas_status_out="$LOG_DIR/kas-status.out"
+  KIROCREW_HOME="$HOME_DIR" KIROCREW_BUNDLED_KAS_DIR="$KAS_ROOT" KIROCREW_SKIP_MODEL_DOWNLOAD=1 \
+    bounded "$MAX_CLI_SECONDS" "installed kirocrew kas status" \
+    "$LAUNCHER" kas status >"$kas_status_out" 2>&1 || true
+  kas_status_row="$(grep -E '^installed:' "$kas_status_out" | head -1 || true)"
+  kas_engine_row="$(grep -E '^\s*engine:' "$kas_status_out" | head -1 || true)"
+  echo "▶ Installed kas status installed row: $kas_status_row"
+  echo "▶ Installed kas status engine row: $kas_engine_row"
+  case "$kas_status_row" in
+    *"(built into the app)"*) ;;
+    *) echo "ERROR: installed kirocrew kas status did not report the bundled KAS engine as built into the app (KIROCREW_BUNDLED_KAS_DIR=$KAS_ROOT)" >&2
+       tail -n 40 "$kas_status_out" >&2; exit 1 ;;
+  esac
+  case "$kas_engine_row" in
+    *"$KAS_ROOT/"*) ;;
+    *) echo "ERROR: installed kirocrew kas status resolved an engine outside the bundled root $KAS_ROOT" >&2
+       tail -n 40 "$kas_status_out" >&2; exit 1 ;;
+  esac
+fi
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "**macOS install-and-launch smoke** ($APP_NAME)"
@@ -299,6 +353,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "| DMG mount + copy | $APP_NAME |"
     echo "| Installed launcher | $launcher_version |"
     echo "| Bundled kiro-cli | ${kiro_version:-none (the app detects the user's own kiro-cli)} |"
+    echo "| Bundled KAS engine | ${kas_status_row:-skipped (BUNDLE_KAS=0)} |"
     echo "| App launch -> /api/health | $(( $(date +%s) - started ))s (ceiling ${MAX_HEALTH_SECONDS}s) |"
   } >> "$GITHUB_STEP_SUMMARY"
 fi

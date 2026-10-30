@@ -8,7 +8,7 @@ Orchestrator fields read: ``_REQUIRED_DEPS``, ``_wheel_update_noticed``,
 ``dashboard_state``.
 Orchestrator fields written: ``_pending_update_mandatory``,
 ``_pending_update_mandatory_key``, ``_pending_update_respawn``,
-``_update_apply_deferred``.
+``_pending_update_version``, ``_update_apply_deferred``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         build_frontend_async,
         commits_ahead,
         dep_sync,
+        fetch_and_pin_upstream,
         git_command_env,
         hidden_worktree_edits,
         is_bundled_kiro_cli,
@@ -108,7 +109,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # `os.environ`, because an inherited `GIT_DIR` has to be ABSENT and a
         # merge can only add keys. Left in place it would point every call
         # below at unrelated metadata while `cwd` still says `proj`.
-        _git_env = git_command_env()
+        #
+        # Built off the loop: it reads the operator's `safe.directory` values
+        # with a short `git config` child (see `_protected_safe_directories`).
+        _git_env = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), git_command_env
+        )
 
         # `git` itself is resolved OFF `PATH`. A gateway's `PATH` can lead
         # with an agent-writable directory (a worktree venv's `bin`,
@@ -135,7 +141,6 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # does not carry over.
         git_bin: str = _git
 
-        # Detect current branch
         branch_proc = await asyncio.create_subprocess_exec(
             _git,
             "rev-parse",
@@ -222,7 +227,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # update path in the product — no auth, no click, `git reset --hard`
         # + pip + execv on boot — so a blocked host must not touch its tree.
         blocked = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+            # `_git_env` is the env the fetch below runs with, so the pin judges
+            # the URL that isolated fetch will connect to.
+            None,
+            lambda: update_blocked_reason(
+                resolve_remote_url(proj, fetch_env=_git_env, remote="origin")
+            ),
         )
         if blocked:
             logger.warning("Auto-update refused: %s", blocked)
@@ -233,68 +243,33 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("pulling", "Fetching latest changes…")
 
-        fetch = await asyncio.create_subprocess_exec(
-            _git,
-            "fetch",
-            "origin",
-            branch,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=platform_compat.IS_POSIX,
-        )
-        try:
-            await asyncio.wait_for(fetch.communicate(), timeout=60)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(fetch)
-            raise
-
-        if fetch.returncode != 0:
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-            return
-
-        # Capture the fetched commit as an OID, immediately after the fetch,
-        # and use that OID for the comparison AND the reset below. A ref name
-        # is re-resolved on every command, so `origin/<branch>` could be moved
-        # by a concurrent fetch between the decision and the reset — deciding
-        # against one commit and resetting to another. An OID cannot move.
+        # The fetch's ref write is the one git operation here a repo-defined
+        # hook can fire on (`reference-transaction` -> `hook.<name>.command`,
+        # which no `-c` pin or fetch flag closes), so it runs through the shared
+        # isolated helper: the fetch happens in a git dir the gateway owns and no
+        # repository hook exists there, while objects land in this checkout.
         #
-        # The ref is spelled in FULL (`refs/remotes/origin/...`) because the
-        # short form is ambiguous in the attacker's favour: rev-parse's
-        # disambiguation order checks `refs/tags/<name>` BEFORE
-        # `refs/remotes/<name>`, so a tag literally named `origin/main`
-        # resolves instead of the remote-tracking branch — and the update's
-        # own `git fetch` auto-follows tags, so publishing that tag upstream
-        # is enough to create it locally. git prints "refname is ambiguous"
-        # to stderr and still writes the TAG's OID to stdout, which is what
-        # this capture reads, so the short form fails silently here.
-        target_proc = await asyncio.create_subprocess_exec(
-            _git,
-            "rev-parse",
-            "--verify",
-            f"refs/remotes/origin/{branch}^{{commit}}",
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
+        # `target` is the OID the helper fetched, used for the comparison AND the
+        # reset below. It comes straight from the fetch, so it cannot be moved by
+        # a concurrent fetch between decision and reset, and the old
+        # `refs/remotes/origin/<branch>` tag-vs-ref ambiguity does not arise: no
+        # ref name is resolved to get it. The helper also pins that tracking ref
+        # to this OID (by a direct file write, firing no hook) for parity with a
+        # normal fetch.
+        fetched = await fetch_and_pin_upstream(
+            proj, "origin", branch, git=_git, env=_git_env, timeout=60
         )
-        try:
-            target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(target_proc)
-            raise
-        target = (target_out or b"").strip().decode()
-        if target_proc.returncode != 0 or not target:
-            logger.warning(
-                "Auto-update: skipping — could not resolve origin/%s to a commit",
-                branch,
-            )
+        if not fetched:
+            # Refused source URL, a failed or timed-out fetch, or an unreadable
+            # tip -- the helper logs which. Stop without touching the tree.
+            logger.warning("Auto-update: skipping — could not fetch origin/%s", branch)
             if self.dashboard_state:
                 self.dashboard_state.clear_update_progress()
             return
+        # Bound as a plain ``str`` (not ``str | None``) so the closures and
+        # spawns below that capture it type-check: mypy does not carry the
+        # ``if not fetched`` narrowing into a lambda.
+        target: str = fetched
 
         # Check if there are actually new commits
         diff_proc = await asyncio.create_subprocess_exec(
@@ -706,7 +681,25 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # path would let `PATH` answer. `None` means do not spawn it,
         # skipped like any absent backend, which this step already treats as
         # non-fatal.
-        kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+        # On the KAS bundle route kiro-cli is not part of what runs, so its
+        # self-update is skipped with the reason in the log (the only place an
+        # unattended apply reports). The engine is Crew's own install, laid
+        # down separately by `kirocrew kas install` for the pin the installed
+        # release carries; this apply does not install it, so the log names
+        # that command for a changed pin. Local import: this body runs on the
+        # gateway facade's globals, and the config read goes off the loop like
+        # every other blocking read in this apply.
+        from kiro_crew.agent_sdk import kas_bundle
+
+        if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+            logger.info(
+                "Auto-update: kiro-cli update skipped; KAS runs Kiro Crew's own engine "
+                "bundle, not kiro-cli. A changed engine pin needs `kirocrew kas install` "
+                "after the restart."
+            )
+            kiro_cli_bin = None
+        else:
+            kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
         # The desktop app's bundled copy is skipped too: it sits inside the
         # signed app bundle, where an in-place self-update would break the
         # codesign seal, and the app update is what replaces it. Checked
@@ -1010,6 +1003,7 @@ async def _auto_apply_wheel_update(
         self._pending_update_respawn = respawn_executable
         self._pending_update_mandatory = mandatory
         self._pending_update_mandatory_key = mandatory_key
+        self._pending_update_version = "" if mandatory else version
         await self._retry_pending_update_restart()
         return
 
@@ -1042,6 +1036,7 @@ async def _auto_apply_wheel_update(
         self._pending_update_respawn = respawn_executable
         self._pending_update_mandatory = mandatory
         self._pending_update_mandatory_key = mandatory_key
+        self._pending_update_version = "" if mandatory else version
         await self._retry_pending_update_restart()
     elif outcome.status in wheel_apply.RETRY_SOON:
         # Another apply holds the lock, memory is still preparing, or the

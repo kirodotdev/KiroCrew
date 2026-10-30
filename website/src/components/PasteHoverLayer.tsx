@@ -215,6 +215,7 @@ const PasteHoverLayer = forwardRef<PasteHoverHandle, Props>(function PasteHoverL
       content={hovered ? hovered.content : ''}
       seq={hovered ? hovered.seq : 0}
       testIdPrefix="composer-paste-preview"
+      escapeOwner
       // The gestures pasteEditor's handleTextareaClick and Backspace handler
       // honour. The preview never opens on touch, so the mouse wording is
       // the only one a reader of this line can see.

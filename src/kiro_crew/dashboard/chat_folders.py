@@ -45,7 +45,7 @@ from kiro_crew.dashboard.folder_ownership import (  # re-exported: callers impor
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import body_not_object_error, read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     deny_app_slot_access,
@@ -92,7 +92,7 @@ _effective_request_app = effective_request_app
 # the span, so a rollback can only undo its own write.
 #
 # Keyed by the STATE, not the transcript: a transcript-keyed lock changes
-# identity when the slot is rebound mid-request (review-caught), so a second
+# identity when the slot is rebound mid-request, so a second
 # request entering after the rebind would acquire a DIFFERENT lock and the
 # spans would interleave anyway. The state key is stable across rebinds and
 # covers alias slots resolving onto one file too — the same identity
@@ -178,6 +178,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
@@ -262,7 +264,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
                 slot.folder_id = previous
                 slot._folder_changed = previous_changed
             # The UNPINNED periodic flush may have persisted the provisional
-            # value while this save awaited (review-caught): mark dirty so the
+            # value while this save awaited: mark dirty so the
             # next flush reconverges the durable record to the live state.
             slot._dirty = True
             source, caller = _audit_origin(request)
@@ -330,6 +332,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # Optional generation token, the same one api_chat_slot_folder reads: the
     # ``chat_session_pin`` MCP tool resolves the slot from an earlier
     # ``/api/chat/slots`` read, and the slot key can be recreated for a
@@ -387,7 +391,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
             if slot.pinned == new_pinned:
                 slot.pinned = prior_pinned
             # The UNPINNED periodic flush may have persisted the provisional
-            # value while this save awaited (review-caught): mark dirty so the
+            # value while this save awaited: mark dirty so the
             # next flush reconverges the durable record to the live state.
             slot._dirty = True
             source, caller = _audit_origin(request)
@@ -630,9 +634,9 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
             # ``slot.mutes_opened`` is LEFT at ``prior`` across the whole save:
             # the NEW value is persisted as a STAGED override that both save
             # paths honor (the full ``build_full_line`` AND the empty-window
-            # ``merge_empty_window`` branch a message-less newborn takes -- the
-            # latter was the round-1 F1 gap, where the staged value was ignored
-            # and the stale live flag reached disk).
+            # ``merge_empty_window`` branch a message-less newborn takes; if
+            # either ignored the staged value, the stale live flag would reach
+            # disk).
             #
             # Because the live flag does not change until the write commits, a
             # concurrent ``/api/chat/slots`` GET or a worker-completion
@@ -645,7 +649,7 @@ async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Respon
             # commit) while STILL HOLDING the transcript ``_locked``. A
             # concurrent dirty-slot flush needs that same lock to serialize the
             # slot, so it cannot interleave between the commit and the flip and
-            # resurrect ``prior`` (the round-1 F2 race). On a non-raising refuse
+            # resurrect ``prior``. On a non-raising refuse
             # or a raising failure the write never commits, so the callback never
             # runs and the live flag stays ``prior``.
             #
@@ -1114,6 +1118,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     mode = _coerce_requested_mode(body.get("mode", ""))
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)
@@ -1144,7 +1150,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     # api_chat_slot_folder. The busy guard runs INSIDE the lock: waiting on a
     # concurrent metadata save can take long enough for a turn to start, so a
     # guard evaluated before the acquisition would be stale by the time the
-    # mutation runs (review-caught).
+    # mutation runs.
     async with _slot_meta_txn_lock(state):
         # Re-authorize after the awaits above (body parse, lock acquisition):
         # same slot OBJECT still registered under the name, routing still on
@@ -1208,7 +1214,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             if slot.mode == mode:
                 slot.mode = prior_mode
             # The UNPINNED periodic flush may have persisted the provisional
-            # value while this save awaited (review-caught): mark dirty so the
+            # value while this save awaited: mark dirty so the
             # next flush reconverges the durable record to the live state.
             slot._dirty = True
             sel().log_api_access(

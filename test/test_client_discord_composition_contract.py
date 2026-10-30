@@ -200,7 +200,7 @@ BASE_MEMBERS = {
     "_note_invalid": ("function", "(self, status: 'int', headers: 'Mapping[str, str]') -> 'None'"),
     "api_json": (
         "coroutine",
-        "(self, method: 'str', path: 'str', payload: 'dict | list | None', *, timeout: 'int' = 30, destination: 'str' = '') -> 'DiscordApiResult'",
+        "(self, method: 'str', path: 'str', payload: 'dict | list | None', *, timeout: 'int' = 30, destination: 'str' = '', recheck_destination: 'bool' = True) -> 'DiscordApiResult'",
     ),
     "api_files": (
         "coroutine",
@@ -216,7 +216,7 @@ BASE_MEMBERS = {
     ),
     "_api_request": (
         "coroutine",
-        "(self, method: 'str', path: 'str', *, timeout: 'int', build: 'Callable[[], dict[str, Any]]', destination: 'str' = '') -> 'DiscordApiResult'",
+        "(self, method: 'str', path: 'str', *, timeout: 'int', build: 'Callable[[], dict[str, Any]]', destination: 'str' = '', recheck_destination: 'bool' = True) -> 'DiscordApiResult'",
     ),
 }
 

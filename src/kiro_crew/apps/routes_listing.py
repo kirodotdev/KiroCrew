@@ -1,8 +1,9 @@
-"""Reading installed apps: the list, one app, its manifest, and the publish providers.
+"""Reading installed apps: the list, one app, its manifest and config, and the publish providers.
 
 ``handle_list_apps``, ``handle_get_app`` and ``handle_get_manifest`` with the trust
-repository each listed app is stamped with, and ``handle_publish_providers`` over
-``collect_publish_providers``.
+repository each listed app is stamped with, ``handle_app_config`` (an app's own
+``config.json``, written only by its owner or within an app token's scope), and
+``handle_publish_providers`` over ``collect_publish_providers``.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -32,6 +33,7 @@ from kiro_crew.apps.registry import _strip_git_target_userinfo, resolve_installe
 from kiro_crew.apps.routes_lifecycle import _redact_warning
 from kiro_crew.apps.update_status import attach_update, attach_updates
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
+from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -155,7 +157,7 @@ def _provider_is_configured(app_name: str, pp: dict[str, Any]) -> bool:
     cfg_path = apps_dir() / app_name / "data" / config_file
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     return bool(isinstance(cfg, dict) and str(cfg.get(field_name, "")).strip())
 
@@ -281,8 +283,12 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     # fail-closed CPP, same as every other publish surface.
     deploy_denied = None
     if admits_cloud:
+        # The core row's endpoint is ``/api/deploy/deploy``, which checks the
+        # publish lists itself.
         deploy_denied = await asyncio.to_thread(
-            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+            lambda: publish_denied_reason(
+                request, DEPLOY_WEB_PROVIDER_ID, lists_checked_by_caller=True
+            )
         )
 
     if not admits_cloud or deploy_denied:
@@ -304,6 +310,14 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
                 "providers": [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID],
             }
         )
+    # An app row under the core id publishes at the app's own endpoint, which does
+    # not check the publish lists, so it is dropped whenever they restrict.
+    if any(p.get("id") == DEPLOY_WEB_PROVIDER_ID for p in providers):
+        squat_denied = await asyncio.to_thread(
+            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+        )
+        if squat_denied:
+            providers = [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID]
     try:
         from kiro_crew.deploy import profiles as _deploy_profiles
 
@@ -331,7 +345,7 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
 async def handle_get_app(request: web.Request) -> web.Response:
     """GET /api/apps/{name} — get single app details."""
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         # Compat: migrated deploy-web requests hit this generic handler before
         # the deploy module's /api/apps/deploy-web/{tail} redirect (aiohttp
@@ -345,10 +359,83 @@ async def handle_get_app(request: web.Request) -> web.Response:
 async def handle_get_manifest(request: web.Request) -> web.Response:
     """GET /api/apps/{name}/manifest — get app manifest."""
     name = request.match_info["name"]
-    manifest = get_app_manifest(name)
+    manifest = await asyncio.to_thread(get_app_manifest, name)
     if not manifest:
         # Compat: migrated deploy-web — redirect to canonical endpoint.
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/config")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
     return web.json_response(manifest.to_dict())
+
+
+async def handle_app_config(request: web.Request) -> web.Response:
+    """GET/PUT /api/apps/{name}/config — read or write app config.json.
+
+    Reads/writes ``~/.kiro/crew/apps/{name}/data/config.json``.
+    GET returns the current config (empty ``{}`` if none exists).
+    PUT replaces the config with the request body. A dashboard subject must be
+    the owner to PUT; an app token reaches this handler only inside the scope
+    ``token_auth`` already granted it (its own app, or a manifest grant).
+    """
+    name = request.match_info["name"]
+    info = await asyncio.to_thread(get_app, name)
+    if not info:
+        # Compat: migrated deploy-web — redirect to canonical deploy config endpoint.
+        if name == "deploy-web":
+            raise web.HTTPTemporaryRedirect(location="/api/deploy/config")
+        return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+
+    from kiro_crew.apps.manager import app_data_dir
+    from kiro_crew.atomic_write import atomic_write
+
+    data_dir = app_data_dir(name)
+    config_path = data_dir / "config.json"
+
+    if request.method == "GET":
+        if not await asyncio.to_thread(config_path.is_file):
+            # Missing config (e.g. data dir wiped by an app update) — seed an
+            # empty config so the app gets a valid response instead of hanging
+            # on a perpetual "loading" state. The app repopulates it on first use.
+            try:
+                await asyncio.to_thread(atomic_write, config_path, "{}\n")
+            except OSError:
+                pass
+            return web.json_response({})
+        try:
+            text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
+            return web.json_response(json.loads(text))
+        except (json.JSONDecodeError, OSError) as exc:
+            return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
+
+    # PUT — write config.
+    # An app token was already scoped by token_auth's _enforce_app_scope (its own
+    # app via _app_owns_path, a foreign app only with a manifest grant), so only a
+    # dashboard subject (an empty or missing app claim) needs the owner check.
+    if not request.get("app"):
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "app_config_write")
+        if denied is not None:
+            return denied
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    if not isinstance(body, dict):
+        return web.json_response({"error": "config must be a JSON object"}, status=400)
+
+    try:
+        content = json.dumps(body, indent=2) + "\n"
+        await asyncio.to_thread(atomic_write, config_path, content)
+    except OSError as exc:
+        return web.json_response({"error": f"failed to write config: {exc}"}, status=500)
+
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_config_write",
+        outcome="completed",
+        resources=name,
+    )
+    return web.json_response({"ok": True, "name": name})

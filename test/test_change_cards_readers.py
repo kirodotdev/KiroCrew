@@ -2,10 +2,11 @@
 
 What a card shows and checks comes from the gateway's own reads of the current state.
 These pin the small readers the card routes otherwise reach only through stubs: the
-global MCP entry a server row reads (and its fallback to the discovered servers), the
-registry facts an MCP install card displays, the server names an MCP undo plan
-removes, a crewmate's display label, a schedule's editable fields, and the preview of
-a cron expression that never runs.
+global MCP entry a server row reads (and its fallback to the discovered servers), a
+scope file that cannot be decoded reading as unreadable, the registry facts an MCP
+install card displays, the server names an MCP undo plan removes, a crewmate's display
+label, a schedule's editable fields, and the preview of a cron expression that never
+runs.
 """
 
 from __future__ import annotations
@@ -88,6 +89,28 @@ def test_a_server_exists_when_any_scope_holds_its_spec(monkeypatch):
 
     assert cards._mcp_exists("alpha") is True
     assert cards._mcp_exists("beta") is False
+
+
+def test_a_scope_file_that_is_not_utf8_is_unreadable_not_an_error(tmp_path, monkeypatch):
+    # A hand-edited mcp.json saved in a legacy code page: the 0xe9 is a
+    # latin-1 "é" that UTF-8 cannot decode.
+    legacy, readable = tmp_path / "legacy.json", tmp_path / "readable.json"
+    legacy.write_bytes(b'{"mcpServers": {"srv": {"command": "caf\xe9"}}}')
+    readable.write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}), encoding="utf-8")
+    monkeypatch.setattr(
+        mcp_handlers,
+        "_uninstall_scope_files",
+        lambda: [("kiroGlobal", legacy), ("kirocrew", readable)],
+    )
+    monkeypatch.setattr(cards, "_mcp_value_key", lambda: b"k" * 32)
+
+    try:
+        scopes = cards._mcp_scopes("srv")
+    except UnicodeDecodeError as exc:
+        pytest.fail(f"an undecodable scope raised instead of reading as unreadable: {exc}")
+
+    assert scopes["kiroGlobal"] == "unreadable"
+    assert scopes["kirocrew"] not in ("", "unreadable")
 
 
 # ── the server names an MCP undo plan removes ──

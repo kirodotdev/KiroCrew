@@ -147,7 +147,7 @@ def sessions():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# StatusReactionController — Slack API failures and the stall watchdog
+# StatusReactionController — Slack API failures
 # ──────────────────────────────────────────────────────────────────────
 class TestStatusReactionControllerFailures:
     """Every reaction call is best-effort; none may propagate."""
@@ -156,99 +156,15 @@ class TestStatusReactionControllerFailures:
     async def test_swap_emoji_swallows_add_and_remove_failures(self):
         slack = FlakySlack("add_reaction", "remove_reaction")
         ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        try:
-            # Immediate phase: add_reaction raises inside _swap_emoji.
-            ctrl.set_phase("queued")
-            await _drain()
-            assert ctrl._current_emoji == h._PHASE_EMOJIS["queued"]
-
-            # Debounced phase fired by hand: now there IS an old emoji, so the
-            # remove_reaction failure arm runs too.
-            ctrl.set_phase("coding")
-            ctrl._cancel_debounce()
-            ctrl._fire_debounce()
-            await _drain()
-            assert ctrl._current_emoji == h._PHASE_EMOJIS["coding"]
-        finally:
-            ctrl._cancel_debounce()
-            ctrl._cancel_stall_timers()
-
-    @pytest.mark.asyncio
-    async def test_apply_pending_is_a_noop_once_finalized(self):
-        slack = FlakySlack()
-        ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        ctrl._pending_phase = "coding"
-        ctrl._finalized = True
-        await ctrl._apply_pending()
-        assert ctrl._current_emoji is None
-
-    @pytest.mark.asyncio
-    async def test_stall_emojis_upgrade_and_finalize_despite_failures(self):
-        slack = FlakySlack("add_reaction", "remove_reaction")
-        ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        try:
-            ctrl._on_stall_soft()
-            await _drain()
-            assert ctrl._stall_emoji == h._STALL_EMOJI_SOFT
-
-            # Upgrading soft -> hard removes the previous stall emoji first;
-            # that remove_reaction raises and must be swallowed.
-            ctrl._on_stall_hard()
-            await _drain()
-            assert ctrl._stall_emoji == h._STALL_EMOJI_HARD
-
-            # finalize() clears the stall emoji before the terminal swap.
-            ctrl.finalize(error=True)
-            await _drain()
-            assert ctrl._stall_emoji is None
-            assert ctrl._current_emoji == h._PHASE_EMOJIS["error"]
-        finally:
-            ctrl._cancel_stall_timers()
-
-    @pytest.mark.asyncio
-    async def test_add_stall_emoji_after_finalize_is_dropped(self):
-        slack = FlakySlack()
-        ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        ctrl._finalized = True
-        await ctrl._add_stall_emoji(h._STALL_EMOJI_SOFT)
-        assert ctrl._stall_emoji is None
-
-    @pytest.mark.asyncio
-    async def test_reset_watchdog_clears_stall_emoji_and_swallows_failure(self):
-        slack = FlakySlack("remove_reaction")
-        ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        try:
-            ctrl._stall_emoji = h._STALL_EMOJI_SOFT
-            ctrl._reset_stall_watchdog()
-            await _drain()
-            assert ctrl._stall_emoji is None
-            assert ctrl._stall_soft_handle is not None
-        finally:
-            ctrl._cancel_stall_timers()
-
-    @pytest.mark.asyncio
-    async def test_reset_watchdog_arms_nothing_while_paused(self):
-        slack = FlakySlack()
-        ctrl = h.StatusReactionController(slack, "C1", "1.0")
-        ctrl.pause_stall_watchdog()
-        ctrl._reset_stall_watchdog()
-        assert ctrl._stall_soft_handle is None
-        assert ctrl._stall_hard_handle is None
-        # on_progress() must stay inert while paused.
-        ctrl.on_progress()
-        assert ctrl._stall_soft_handle is None
-
-    @pytest.mark.asyncio
-    async def test_disabled_controller_never_arms_timers(self):
-        slack = FlakySlack()
-        ctrl = h.StatusReactionController(slack, "C1", "1.0", enabled=False)
-        ctrl._reset_stall_watchdog()
-        ctrl.resume_stall_watchdog()
-        ctrl.set_phase("coding")
-        ctrl.finalize()
-        assert ctrl._stall_soft_handle is None
-        assert ctrl._debounce_handle is None
-        assert ctrl._current_emoji is None
+        # The ack: add_reaction raises inside _swap_emoji.
+        ctrl.start(native_status=False)
+        await _drain()
+        assert ctrl._current_emoji == h._PHASE_EMOJIS["queued"]
+        # The error swap: now there IS an old emoji, so the remove_reaction
+        # failure arm runs too.
+        ctrl.finalize(error=True)
+        await _drain()
+        assert ctrl._current_emoji == h._PHASE_EMOJIS["error"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -521,9 +437,7 @@ class TestCommandHelperEarlyReturns:
         runner = MagicMock()
         runner.running = False
         missing = tmp_path / "no-such-spec.yaml"
-        out = await h._handle_run_command(
-            f"task run {missing}", runner, FlakySlack(), "C1", "t1"
-        )
+        out = await h._handle_run_command(f"task run {missing}", runner, FlakySlack(), "C1", "t1")
         assert out is not None and "Spec file not found" in out
 
     @pytest.mark.asyncio
@@ -566,7 +480,14 @@ class TestAutoTitle:
         slack = FlakySlack()
         h._titled_threads["slack:t1"] = "manual"
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi there", pin=_PRESENT_PIN,
+            slack,
+            title_sessions,
+            "C1",
+            "slack:t1",
+            None,
+            "hello",
+            "hi there",
+            pin=_PRESENT_PIN,
         )
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
@@ -576,7 +497,14 @@ class TestAutoTitle:
         log = MagicMock()
         log.set_title = MagicMock(side_effect=RuntimeError("log locked"))
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", log, "hello", "hi there", pin=_PRESENT_PIN,
+            slack,
+            title_sessions,
+            "C1",
+            "slack:t1",
+            log,
+            "hello",
+            "hi there",
+            pin=_PRESENT_PIN,
         )
         titled = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert titled and titled[0][1]["title"] == "Deploy the gateway"
@@ -589,7 +517,14 @@ class TestAutoTitle:
         title_sessions.get_or_create = AsyncMock(return_value=(_TitleClient("SKIP"), None, None))
         h._titled_threads["slack:t1"] = "auto"
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi", pin=_PRESENT_PIN,
+            slack,
+            title_sessions,
+            "C1",
+            "slack:t1",
+            None,
+            "hello",
+            "hi",
+            pin=_PRESENT_PIN,
         )
         assert "slack:t1" not in h._titled_threads
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
@@ -604,11 +539,31 @@ async def _msg(slack, sessions, text, *, user="U1", **kw):
 
 class TestHandleMessageKeywordDispatch:
     @pytest.mark.asyncio
-    async def test_linked_thread_intercept_short_circuits(self, sessions, owner, monkeypatch):
+    @pytest.mark.parametrize(
+        ("gate", "verdict", "text"),
+        [
+            pytest.param(
+                "maybe_route_linked_thread",
+                True,
+                "anything at all",
+                id="test_linked_thread_intercept_short_circuits",
+            ),
+            pytest.param(
+                "channel_inbound_permitted",
+                False,
+                "status",
+                id="test_governance_denial_drops_the_message",
+            ),
+        ],
+    )
+    async def test_gate_drops_the_message(self, sessions, owner, monkeypatch, gate, verdict, text):
         slack = FlakySlack()
-        monkeypatch.setattr(h, "maybe_route_linked_thread", AsyncMock(return_value=True))
-        await _msg(slack, sessions, "anything at all")
+        gate_mock = AsyncMock(return_value=verdict)
+        monkeypatch.setattr(h, gate, gate_mock)
+        await _msg(slack, sessions, text)
+        gate_mock.assert_awaited_once()
         assert slack.actions == []
+        sessions.get_or_create.assert_not_called()
 
     # NOTE: the bare ``status`` keyword (handler.py:2642) is NOT covered here.
     # ``handle_message`` re-imports ``current_context`` locally further down its
@@ -622,8 +577,9 @@ class TestHandleMessageKeywordDispatch:
         slack = FlakySlack()
         called: dict = {}
 
-        async def _fake(cmd_text, _slack, channel, reply_ts, msg_ts, session_key, log,
-                        *, sessions=None):
+        async def _fake(
+            cmd_text, _slack, channel, reply_ts, msg_ts, session_key, log, *, sessions=None
+        ):
             called["session_key"] = session_key
 
         monkeypatch.setattr(h, "_handle_sessions_command", _fake)
@@ -639,11 +595,26 @@ class TestHandleMessageKeywordDispatch:
         h._handle_sessions_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_compact_keyword_dispatches_for_the_owner(self, sessions, owner, monkeypatch):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("!compact", id="test_compact_keyword_dispatches_for_the_owner"),
+            pytest.param(
+                "<@UBOT|kirocrew> !compact",
+                id="test_mention_prefix_is_stripped_before_command_matching",
+            ),
+        ],
+    )
+    async def test_compact_keyword_dispatch(self, sessions, owner, monkeypatch, text):
         slack = FlakySlack()
         monkeypatch.setattr(h, "_handle_compact_command", AsyncMock())
-        await _msg(slack, sessions, "!compact")
+        await _msg(slack, sessions, text)
         h._handle_compact_command.assert_awaited_once()
+        args = h._handle_compact_command.await_args.args
+        assert args[0] is slack and args[1] is sessions
+        assert args[2] == "C1"
+        assert args[4] == "m1"
+        assert args[5] == h.canonical_key("m1")
 
     @pytest.mark.asyncio
     async def test_compact_keyword_denied_for_a_stranger(self, sessions, owner, monkeypatch):
@@ -654,36 +625,29 @@ class TestHandleMessageKeywordDispatch:
         h._handle_compact_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_allowed_user_command_denied_for_a_stranger(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
-        await _msg(slack, sessions, "!dashboard", user="U999")
-        assert "Not authorized." in _texts(slack)
-        h._handle_slash_command.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_owner_only_command_denied_for_a_stranger(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
-        await _msg(slack, sessions, "!agent kirocrew", user="U999")
-        assert "Owner-only command." in _texts(slack)
-        h._handle_slash_command.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_mention_prefix_is_stripped_before_command_matching(
-        self, sessions, owner, monkeypatch
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "!dashboard",
+                "Not authorized.",
+                id="test_allowed_user_command_denied_for_a_stranger",
+            ),
+            pytest.param(
+                "!agent kirocrew",
+                "Owner-only command.",
+                id="test_owner_only_command_denied_for_a_stranger",
+            ),
+        ],
+    )
+    async def test_command_denied_for_a_stranger(
+        self, sessions, owner, monkeypatch, text, expected
     ):
         slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_compact_command", AsyncMock())
-        await _msg(slack, sessions, "<@UBOT|kirocrew> !compact")
-        h._handle_compact_command.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_governance_denial_drops_the_message(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "channel_inbound_permitted", AsyncMock(return_value=False))
-        await _msg(slack, sessions, "status")
-        assert slack.actions == []
+        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
+        await _msg(slack, sessions, text, user="U999")
+        assert expected in _texts(slack)
+        h._handle_slash_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hook_auto_reply_answers_without_touching_acp(self, sessions, owner):
@@ -703,23 +667,37 @@ class TestHandleMessageKeywordDispatch:
 class TestSafeUpdates:
     @pytest.mark.asyncio
     async def test_safe_update_truncates_and_swallows_failure(self):
+        sent: list[str] = []
+
         class _Boom(MockSlackClient):
             async def update_message(self, channel, ts, text):
+                sent.append(text)
                 raise RuntimeError("message_not_found")
 
         await h._safe_update(_Boom(), "C1", "1.0", "x" * (h.SLACK_MSG_LIMIT + 50))
+        assert len(sent) == 1
+        assert sent[0].startswith("x" * h.SLACK_MSG_LIMIT)
+        assert not sent[0][h.SLACK_MSG_LIMIT :].startswith("x")
 
     @pytest.mark.asyncio
     async def test_safe_final_update_swallows_both_edit_and_followup_failures(self):
-        slack = FlakySlack("post_message")
+        calls: list[str] = []
 
         class _BoomUpdate(FlakySlack):
             async def update_message(self, channel, ts, text):
+                calls.append("update")
                 raise RuntimeError("message_not_found")
+
+            async def post_message(self, channel, text, thread_ts=None):
+                calls.append("post")
+                return await super().post_message(channel, text, thread_ts)
 
         boom = _BoomUpdate("post_message")
         await h._safe_final_update(boom, "C1", "1.0", "y" * (h.SLACK_MSG_LIMIT * 2), "t1")
-        assert isinstance(slack, FlakySlack)
+        # The failed edit does not stop the overflow parts from being attempted.
+        assert calls[0] == "update"
+        assert "post" in calls[1:]
+        assert boom.actions == []
 
 
 # ──────────────────────────────────────────────────────────────────────

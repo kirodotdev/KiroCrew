@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import ast
 import importlib
-import logging
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,6 +31,10 @@ from kiro_crew.apps import bridges as facade
 
 # Walks src/kiro_crew for owner imports; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_bridges_facade")
+
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("base_names_resolve", "owners_log_as_facade")
 
 _SRC = Path(kiro_crew.__file__).resolve().parent
 _FACADE = "kiro_crew.apps.bridges"
@@ -104,28 +107,6 @@ def test_the_facade_serves_a_mirror_over_every_sibling_owner() -> None:
     assert sorted(index.owners) == on_disk
     assert index.excluded == ()
     assert index.divergent() == ()
-
-
-def test_every_base_module_name_resolves_through_the_facade() -> None:
-    index = _index()
-    missing = sorted(name for name in _BASE_MODULE_NAMES if not hasattr(facade, name))
-    assert missing == []
-    for name in sorted(_BASE_MODULE_NAMES):
-        holders = index.holders.get(name, ())
-        assert holders, f"{name} is no owner's name"
-        assert all(
-            getattr(importlib.import_module(holder), name) is getattr(facade, name)
-            for holder in holders
-        ), name
-
-
-def test_every_owner_logs_as_the_facade() -> None:
-    shared = logging.getLogger(_FACADE)
-    assert facade.logger is shared
-    loggers = {
-        owner: vars(importlib.import_module(owner)).get("logger") for owner in _index().owners
-    }
-    assert {owner: log for owner, log in loggers.items() if log not in (None, shared)} == {}
 
 
 def _served_imports(index: _facade_mirror.MirrorIndex) -> set[str]:

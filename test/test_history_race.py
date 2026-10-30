@@ -9,9 +9,9 @@ which it then injects as "history" alongside the same message under
 
 The fix: ConversationLog.recent / recent_chained / recent_with_provenance now
 accept ``exclude_last_n`` to drop trailing raw entries before role filtering.
-The dashboard caller (chat_runner._run_chat) passes exclude_last_n=1 because
-exactly one message is appended per turn before _run_chat invokes context
-build.
+The dashboard caller (_turn_build_prompt, chat_turn/prompt_assembly.py)
+passes exclude_last_n=1 because exactly one message is appended per turn
+before _run_chat invokes context build.
 """
 from __future__ import annotations
 

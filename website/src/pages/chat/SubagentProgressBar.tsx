@@ -114,8 +114,7 @@ function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
 /** Active subagent summary above the chat input. */
 const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: string | null }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  // Use chatSlice.subagents — populated by subagent_spawn/tool/done WS events
-  // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
+  // chatSlice.subagents, populated by the subagent_spawn/tool/done WS events.
   const dispatch = useAppDispatch()
   const subagents = useAppSelector(s => slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot ?? '']?.subagents ?? EMPTY_SUBAGENTS)
   // Aggregate "waiting to start" count for this slot — agents accepted but

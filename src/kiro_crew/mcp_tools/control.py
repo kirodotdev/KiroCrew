@@ -468,6 +468,11 @@ def _ask_question_blocking(sk: str, questions: list[dict]) -> "str | DeferredToo
         return _await_ask_outcome(sk, ask_id, confirmed=False)
     if not (isinstance(opened, dict) and opened.get("ask_id") == ask_id):
         code = (opened.get("code") or "") if isinstance(opened, dict) else ""
+        if code == "crew_worker_asks_conductor":
+            # A Crew Mode worker: the gateway's own instruction, not "ask in plain
+            # text", which would put the question in front of the person after all.
+            logger.info("ask_question: a Crew Mode worker's question goes to its conductor")
+            return str(opened.get("error") or "Ask your conductor with work_report.")
         if isinstance(opened, dict) and "clients" in opened and not opened.get("clients"):
             why = "no dashboard window is open to show it"
         elif code == "slot_not_found":
@@ -661,6 +666,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_tools.control_parts.schemas import (  # noqa: F401
         _ARMING_STEER_STRUCTURED_BY_DEFAULT,
         _ARMING_STEER_STRUCTURED_ON_CONDITION,
+        _MONITOR_MESSAGE_BUDGET_CHARS,
         _WATCH_STEER_STRUCTURED_DEFAULT,
         _WATCH_WORK_LEDGER,
         _ending_clause,
@@ -700,6 +706,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         publicly_armable_objectives,
     )
     from kiro_crew.monitoring.targets import normalize_pull_request_target  # noqa: F401
+    from kiro_crew.session_directive import MAX_DIRECTIVE_CHARS  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         AUTONUDGE_STOP_SCHEMA,
         CHAT_TAG_SCHEMA,

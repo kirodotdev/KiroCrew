@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../types'
 import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
+import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
 // Their visible text lives in a separate document the in-chat highlighter's
@@ -21,6 +22,10 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  * never see highlighted.
  */
 export function searchableText(m: ChatMessage): string {
+  // A structured warm brief draws a card, not its plain-text `content` (whose
+  // labels differ), so search reads the card's own text.
+  const brief = warmBriefOf(m)
+  if (brief) return warmBriefVisibleText(brief)
   if (m.role === 'assistant' || m.role === 'streaming') {
     // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
     // shows (#7948), so a search hit inside it would be a phantom match.
@@ -43,6 +48,9 @@ const _memo = new WeakMap<ChatMessage, { content: string; text: string }>()
  * paths (the keystroke-debounced match loop and snippet building).
  */
 export function searchableTextMemo(m: ChatMessage): string {
+  // Not cached: the card's labels follow the UI language, which `content`
+  // does not key, and the brief is a few short fields.
+  if (warmBriefOf(m)) return searchableText(m)
   const hit = _memo.get(m)
   if (hit && hit.content === m.content) return hit.text
   const text = searchableText(m)

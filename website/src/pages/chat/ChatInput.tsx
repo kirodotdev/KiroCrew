@@ -1,10 +1,12 @@
-import { openActivityToTab, restoreSideConversation, setAgentSwitchNotice, sideSendStatus } from '../../store/chatSlice'
+import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus, sseSideQueue, takeSideQueueDroppedByClose } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
-import { sendTurn } from '../../chat-core/transport/sendTurn'
+import { sendTurn, SEND_ABORT_MS } from '../../chat-core/transport/sendTurn'
 import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
+import { readSideChatDraft, writeSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { mergeIntoDraft } from '../../utils/chatDrafts'
 import { sideTurnWire } from './sideTurnWire'
-import type { AppDispatch } from '../../store'
+import type { AppDispatch, RootState } from '../../store'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
 
@@ -137,24 +139,35 @@ export async function interceptSlashCommand(
     return { intercepted: true, failed: true, stage: 'open' }
   }
   const message = match[1]?.trim() ?? ''
+  // Neither request below has a deadline of its own, so the command waits for
+  // each only until the send's deadline, as the panel's send does, and reports
+  // instead of waiting with no outcome. The open is idempotent, so `/side` sent
+  // again after an open that timed out simply asks again.
+  let openDeadline: ReturnType<typeof setTimeout> | undefined
   try {
-    await api.sideOpen(slot)
+    const opened = await Promise.race([
+      api.sideOpen(slot).then(() => true),
+      new Promise<false>(resolve => { openDeadline = setTimeout(() => resolve(false), SEND_ABORT_MS) }),
+    ])
+    if (!opened) return { intercepted: true, failed: true, stage: 'open' }
   } catch (e: unknown) {
     // Diagnostic breadcrumb; the user-facing report is the caller's notice,
     // fed by `error`.
     // eslint-disable-next-line no-console
     console.warn('[/side] sideOpen failed:', e)
     return { intercepted: true, failed: true, error: failureMessage(e), stage: 'open' }
+  } finally {
+    clearTimeout(openDeadline)
   }
   // After a page reload the gateway can hold a side conversation this page has not
   // drawn yet, and the question joins it. Read it first, as the panel does; a read
-  // that fails holds the question back, so it is not sent into a conversation the
-  // panel cannot show. The command stays in the composer.
-  try {
-    await dispatch(restoreSideConversation(slot)).unwrap()
-  } catch (e: unknown) {
+  // that fails, or is still outstanding at the deadline, holds the question back,
+  // so it is not sent into a conversation the panel cannot show. The command
+  // stays in the composer.
+  const restored = await dispatch(awaitSideRestore({ slot, ms: SEND_ABORT_MS })).unwrap()
+  if (restored !== 'restored') {
     // eslint-disable-next-line no-console
-    console.warn('[/side] side restore failed:', e)
+    console.warn('[/side] side conversation not loaded:', restored)
     // Not the panel's `restore_failed`: that notice tells the reader to press
     // Retry, and there is no Retry here. Nothing opened, so this reports in the
     // composer's own terms, where the command is what stayed behind.
@@ -188,8 +201,24 @@ export async function interceptSlashCommand(
     const receipt = await sendTurn({ message, slot, wire: sideTurnWire(slot) })
     switch (receipt.status) {
       case 'dispatched':
-      case 'queued':
+      case 'queued': {
+        const res = receipt.body as Awaited<ReturnType<typeof api.sideTurn>>
+        if (res.queued && res.queue_id && (res.still_queued ?? true)) {
+          // Another tab's close drops a queue card whose raw text this tab does not
+          // hold, so the question goes on its card unredacted, as the panel's own
+          // composer does. A close that dropped it before this receipt arrived
+          // hands it to the slot's side draft instead, as it would the card.
+          const droppedByClose = takeSideQueueDroppedByClose(slot, res.queue_id)
+          const closed = dispatch((_: AppDispatch, getState: () => RootState) => getState().chat.slotSideClosed?.[slot] === true)
+          if (droppedByClose || closed) {
+            writeSideChatDraft(slot, mergeIntoDraft(readSideChatDraft(slot), message))
+          } else {
+            dispatch(sseSideQueue({ slot, action: 'push', queue_id: res.queue_id, content: message, raw: true }))
+            dispatch(sseSideQueue({ slot, action: 'edit', queue_id: res.queue_id, content: message, raw: true }))
+          }
+        }
         return { intercepted: true }
+      }
       case 'refused':
         // The server said no (409 a side turn is already in flight, 400 the
         // expanded question exceeds the byte limit). `failed` lets the caller

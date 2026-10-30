@@ -81,29 +81,27 @@ def _ffmpeg_candidate_dirs() -> list[str]:
 _FFMPEG_CANDIDATE_DIRS = _ffmpeg_candidate_dirs()
 
 
-# imageio-ffmpeg==0.6.0 executables, taken from the published wheels that the
-# desktop matrix installs -- one per shipped platform, and which platforms those
-# are is _SHIPPED_FFMPEG_PLATFORMS below rather than a count restated here. The
-# filename selects the platform artifact; size makes a truncated payload fail
-# cheaply; SHA-256 is the trust anchor. Desktop build staging is intentionally
-# writable, so path placement or a removable `.git` marker cannot establish
-# provenance. These are the bytes the WHEEL publishes.
+# The minimal audio-only decoder executables of stt.decoder.DECODER_RELEASE, the
+# ones the desktop matrix installs -- one per shipped platform, and which
+# platforms those are is _SHIPPED_FFMPEG_PLATFORMS below rather than a count
+# restated here. The filename selects the platform artifact; size makes a
+# truncated payload fail cheaply; SHA-256 is the trust anchor. Desktop build
+# staging is intentionally writable, so path placement or a removable `.git`
+# marker cannot establish provenance. These are the bytes the RELEASE publishes.
 #
-# The table is OWNED by `stt.decoder`, which also pins the wheel each artifact
-# comes out of and installs it into the digest-verified store this module resolves
-# from. One table, because the store must never be able to install bytes the
+# The table is OWNED by `stt.decoder`, which also installs each artifact into the
+# digest-verified store this module resolves from, and into the desktop bundle.
+# One table, because the store must never be able to install bytes the
 # resolver would refuse: two copies would fail as a decoder that downloads
 # successfully and then cannot be executed, with nothing to say which copy is
 # wrong. The name stays here because this is where every reader of it looks.
 _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = decoder.PACKAGED_FFMPEG_ARTIFACTS
 
 
-# The upstream imageio_ffmpeg platform KEYS the desktop matrix actually ships a
-# bundled decoder for. This is the maintainer-owned source of truth for WHICH
-# platforms are covered; the completeness test in test_transcribe_ffmpeg.py maps each key
-# through imageio_ffmpeg._definitions.FNAME_PER_PLATFORM to derive the authoritative
-# filename set and asserts _PACKAGED_FFMPEG_ARTIFACTS covers exactly it. Keys, not
-# filenames, so this module imports no imageio_ffmpeg at all (not a core dependency).
+# The build-ffmpeg.sh --target KEYS the desktop matrix actually ships a bundled
+# decoder for. This is the maintainer-owned source of truth for WHICH platforms are
+# covered; the completeness test in test_transcribe_ffmpeg.py asserts the pinned
+# artifact table covers exactly these keys, so adding a lane forces a pin.
 #
 # Each key ties to the build leg that ships it:
 #   macos-aarch64 = the arm64 half of the ONE universal DMG from the macos-15 leg
@@ -116,8 +114,8 @@ _PACKAGED_FFMPEG_ARTIFACTS: dict[str, tuple[int, str]] = decoder.PACKAGED_FFMPEG
 # Intel backend ships no decoder and resolves a system FFmpeg instead
 # (stt.decoder.bundle_carries_decoder).
 #
-# windows-i686 (upstream ffmpeg-win32-v4.2.2.exe) is DELIBERATELY excluded: no
-# 32-bit Windows target exists in any build workflow or the Electron config.
+# windows-i686 is DELIBERATELY excluded: no 32-bit Windows target exists in any
+# build workflow or the Electron config.
 # Adding a win32 lane must add its key here, which then forces a pin via the
 # completeness test.
 _SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
@@ -131,7 +129,7 @@ _SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
 
 
 # Artifacts the macOS app signer REWRITES on its way into a release, so the
-# upstream digest above cannot be the only anchor. Signing replaces the wheel's
+# pinned digest above cannot be the only anchor. Signing replaces the release's
 # ad-hoc LC_CODE_SIGNATURE with a Developer ID one (plus hardened runtime and a
 # secure timestamp), which changes both size and SHA-256, and it is not optional:
 # Apple notarization rejects the whole submission over an unsigned nested
@@ -141,12 +139,12 @@ _SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
 # service has run.
 #
 # So these artifacts are authenticated by EITHER anchor, both cryptographic:
-#   - the pinned upstream digest -- a local/unsigned build, and the desktop build
+#   - the pinned release digest -- a local/unsigned build, and the desktop build
 #     gate, which executes the decoder BEFORE the bundle is signed; or
 #   - a valid Developer ID signature from our own team on the exact bytes staged
 #     for execution, which is what a released app carries.
 # Neither anchor is a path or a filesystem-permission claim.
-# The arm64 slice is here because build-desktop.sh ships its imageio-ffmpeg
+# The arm64 slice is here because build-desktop.sh ships its decoder
 # executable as a plain Mach-O under Contents/Resources, and the app signer signs
 # every nested binary with Developer ID + hardened runtime + secure timestamp
 # (generate-manifest.py enumerates them), so the released bytes authenticate via
@@ -156,7 +154,7 @@ _SHIPPED_FFMPEG_PLATFORMS: frozenset[str] = frozenset(
 # test_transcribe_ffmpeg.py asserts that equality rather than a subset: a macOS slice added
 # above but forgotten here has no anchor left once signing has rewritten its bytes,
 # so a SIGNED release would refuse its own decoder.
-_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset({"ffmpeg-macos-aarch64-v7.1"})
+_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS: frozenset[str] = frozenset({"ffmpeg-macos-aarch64"})
 
 
 # Upper bound on a signer-rewritten payload, whose exact size is unknowable in
@@ -508,7 +506,7 @@ def _authenticated_ffmpeg(
     the image. In every case the bytes hashed are the bytes staged for execution.
 
     ``signature_anchored`` marks an artifact the macOS app signer rewrites (see
-    ``_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS``): the upstream digest still authenticates
+    ``_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS``): the pinned digest still authenticates
     an unsigned build, and a Developer ID signature from our own team authenticates
     the released one. One of the two must hold; a payload that satisfies neither is
     refused exactly as before.
@@ -589,7 +587,7 @@ def _authenticated_ffmpeg(
             execution_path = f"/proc/self/fd/{snapshot}"
         else:
             execution_path = snapshot_path
-        # Bytes that are not the pinned upstream payload are only executed when
+        # Bytes that are not the pinned payload are only executed when
         # macOS itself vouches for their signature, on the snapshot about to run.
         if not upstream_bytes and not _macos_developer_id_authentic(execution_path):
             return None
@@ -621,7 +619,7 @@ def _open_authenticated_in(
     """Open every pinned artifact directly inside *binaries_root* that authenticates.
 
     One implementation for both places a pinned executable can be found -- a
-    bundled interpreter's ``imageio_ffmpeg/binaries`` and the digest-verified store
+    bundled interpreter's ``kirocrew_ffmpeg/bin`` and the digest-verified store
     under the data home -- so the path-safety checks around the digest cannot be
     present at one and missing at the other. Callers differ only in whether the
     macOS signature anchor applies (it does not in the store: nothing signs those
@@ -677,12 +675,12 @@ def _open_authenticated_in(
 
 
 def _open_packaged_ffmpeg_resource() -> _AuthenticatedFfmpeg | None:
-    """Open the one authenticated imageio-ffmpeg executable in this runtime."""
+    """Open the one authenticated bundled decoder executable in this runtime."""
     candidates: list[_AuthenticatedFfmpeg] = []
     for root in _trusted_site_package_roots():
         root = os.path.realpath(root)
-        package_root = os.path.realpath(os.path.join(root, "imageio_ffmpeg"))
-        binaries_root = os.path.realpath(os.path.join(package_root, "binaries"))
+        package_root = os.path.realpath(os.path.join(root, decoder.PACKAGED_DIR[0]))
+        binaries_root = os.path.realpath(os.path.join(package_root, *decoder.PACKAGED_DIR[1:]))
         try:
             if os.path.commonpath((root, package_root)) != root:
                 continue
@@ -708,7 +706,7 @@ def _open_store_ffmpeg_resource() -> _AuthenticatedFfmpeg | None:
     The third and last source, after a bundled interpreter's own payload and a
     package manager's system FFmpeg. It exists because a source install on a
     distribution that ships no FFmpeg package has no other decoder it can
-    reach, and the store is how ``stt.decoder`` puts the SAME upstream bytes
+    reach, and the store is how ``stt.decoder`` puts the SAME pinned bytes
     the desktop release carries onto such a host.
 
     This does not widen the trust model, and the distinction is worth being exact
@@ -755,11 +753,10 @@ def _store_ffmpeg() -> str | None:
 def _packaged_ffmpeg_resource() -> str | None:
     """Resolve the ffmpeg executable inside this interpreter's package tree.
 
-    The pinned imageio-ffmpeg wheel stores one platform-native executable beside
-    its Python package. Resolve that exact package resource instead of calling
-    ``get_ffmpeg_exe()``: the public helper deliberately falls back to an ambient
-    PATH, which this gateway must never execute, and honours an environment
-    override that would let outside state replace release payload.
+    The desktop build stores one platform-native executable in
+    ``site-packages/kirocrew_ffmpeg/bin`` (``stt.decoder.PACKAGED_DIR``). Resolve
+    that exact resource rather than anything on an ambient PATH, which this
+    gateway must never execute.
     """
     authenticated = _open_packaged_ffmpeg_resource()
     if authenticated is None:
@@ -802,7 +799,7 @@ class PackagedDecoderProbe:
 
     Two INDEPENDENT questions, and collapsing them is what made this unreadable.
     ``authentic`` is a property of the ARTIFACT: the bytes matched the pinned
-    upstream digest or an accepted signature, and it must hold on every host.
+    pinned digest or an accepted signature, and it must hold on every host.
     ``ok`` additionally requires that they EXECUTED, which is a property of the
     BUILD HOST -- a container image can lack an OS library the executable
     load-time imports, and the loader then refuses it before its entry point runs
@@ -851,7 +848,7 @@ def _packaged_ffmpeg_version_probe() -> PackagedDecoderProbe:
             authentic=False,
             code=DECODER_UNAUTHENTIC,
             detail=(
-                "no packaged decoder authenticated against the pinned upstream "
+                "no packaged decoder authenticated against the pinned release "
                 "digest or an accepted signature"
             ),
         )
@@ -925,7 +922,23 @@ def _close_abandoned_ffmpeg_resolution(
 
 
 async def _resolve_ffmpeg_for_execution() -> str | _AuthenticatedFfmpeg | None:
-    """Resolve off-loop and retain cleanup ownership if this task is cancelled."""
+    """Resolve off-loop and retain cleanup ownership if this task is cancelled.
+
+    When nothing resolves but the store still holds a decoder under a RETIRED
+    pinned name (an install that fetched one before the pins were renamed), the
+    current pin is fetched once and resolution retried, so an upgrade does not
+    silently break batch voice until someone presses Download again.
+    """
+    resolved = await _resolve_once()
+    if resolved is not None:
+        return resolved
+    if await decoder.migrate_retired_decoder() is None:
+        return None
+    return await _resolve_once()
+
+
+async def _resolve_once() -> str | _AuthenticatedFfmpeg | None:
+    """One off-loop resolution, keeping cleanup ownership across cancellation."""
     resolution = asyncio.ensure_future(asyncio.to_thread(_open_ffmpeg_for_execution))
     try:
         return await asyncio.shield(resolution)

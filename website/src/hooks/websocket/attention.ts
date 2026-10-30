@@ -7,10 +7,28 @@
 import { store } from '../../store'
 import { isChatPath } from '../notificationBanner'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
+import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
+import { isMemberThreadSlot } from '../unreadOnAttention'
+import { slotLastTsOf } from '../../store/slotLastTs'
 import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
+import { bindSubagentReplaySender } from '../../lib/subagentReplayScope'
+
+/** The conductor of *slot* when *slot* is a Crew Mode crew member whose conductor
+ *  is a live slot, else ''. Its tool approvals are decided on that conductor's
+ *  approval card, so their alerts (chime, unread mark, bell note, banner, OS
+ *  toast) still fire but point at the conductor, under the crew member's name.
+ *  A crew member whose conductor is closed has no card to show them (it is a row
+ *  of the person's lists again, `crewModeView`'s rule), so it alerts like any
+ *  chat. Rule: docs/decisions/2026-10-29-crew-member-approvals-notify.md. */
+export function crewWorkerRoot(slot: string): string {
+  if (!slot) return ''
+  const slots = store.getState().dashboard.slots
+  const root = slots.find(s => s.key === slot)?.crew_root
+  return root && slots.some(s => s.key === root) ? root : ''
+}
 
 /** True when this window is rendering the active slot's transcript: the chat
  *  routes (the root path serves ChatPage too) plus the popout and embed chat
@@ -79,7 +97,7 @@ export function attendArrival(
     onOffScreen(slot)
   }
   else if (slot && !reconnecting && !document.hidden && document.hasFocus() && isSlotRenderedVisibly(slot)) {
-    const readTs = ts || store.getState().dashboard.slots?.find(s => s.key === slot)?.last_ts
+    const readTs = ts || slotLastTsOf(store.getState().dashboard, slot)
     emitSlotRead(slot, readTs)
   }
 }
@@ -95,6 +113,15 @@ let sendSlotFocusedImpl: (slot: string | null) => void = () => {}
 export function emitSlotFocused(slot: string | null): void {
   sendSlotFocusedImpl(slot)
 }
+
+/* Compose intent (lib/composeIntent.ts): the user focused or typed in the
+   composer of the slot this socket last announced. Re-sending that same
+   slot_focused frame re-arms the server's resume prefetch for a chat the idle
+   sweep reclaimed while its window kept focus (the server keeps a prefetch
+   still pending and no-ops on a live session). Throttled per slot so typing
+   sends at most one frame per COMPOSE_INTENT_THROTTLE_MS. Crewmate threads
+   are left alone: their warm-up has its own design. */
+export const COMPOSE_INTENT_THROTTLE_MS = 10_000
 
 export interface FocusRelayDeps {
   socket: SocketConnection
@@ -113,10 +140,29 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
   // deep links, history), tab visibility, and split-view pane focus via
   // emitSlotFocused — so the HTTP and WS notions of "focused" cannot
   // drift. Best-effort: dropped silently while the socket is not OPEN.
+  // The slot the server last heard as focused, from any source: the compose
+  // intent only repeats it, so it can never move focus or cancel another
+  // slot's prefetch.
+  // Seeded like lastFocusSent below: the connect catch-up announces this slot.
+  let lastAnnounced: string | null = focusedSlotForCurrentSurface()
   const sendFocus = (slot: string | null, hidden = false) => {
+    lastAnnounced = hidden ? null : slot
     socket.sendIfOpen(hidden ? { type: 'slot_focused', slot: null, hidden: true } : { type: 'slot_focused', slot })
   }
   sendSlotFocusedImpl = slot => sendFocus(slot)
+  // A view that starts showing more slots' subagent cards asks for their
+  // finished runs on the same best-effort contract.
+  bindSubagentReplaySender(slots => socket.sendIfOpen({ type: 'subagent_replay', slots }))
+  const composeSentAt = new Map<string, number>()
+  bindComposeIntentSender(slot => {
+    if (document.hidden || slot !== lastAnnounced) return
+    if (isMemberThreadSlot(slot, store.getState().dashboard.slots)) return
+    const now = Date.now()
+    const last = composeSentAt.get(slot)
+    if (last !== undefined && now - last < COMPOSE_INTENT_THROTTLE_MS) return
+    composeSentAt.set(slot, now)
+    sendFocus(slot)
+  })
   // Read-relay sender rides the same socket with the same best-effort
   // contract; slotReadRelay owns the per-slot throttle and the watermark.
   bindSlotReadSender((slot: string, readTs?: string) => {
@@ -162,7 +208,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
       flushSlotActivity()
       const active = store.getState().chat.activeSlot
       if (active && !socket.reconnectingRef.current && document.hasFocus() && isChatSurfaceVisible()) {
-        emitSlotRead(active, store.getState().dashboard.slots?.find(s => s.key === active)?.last_ts)
+        emitSlotRead(active, slotLastTsOf(store.getState().dashboard, active))
       }
     }
   }
@@ -182,5 +228,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     unsubFocus()
     unsubMemberThread()
     sendSlotFocusedImpl = () => {}
+    bindSubagentReplaySender(null)
+    bindComposeIntentSender(null)
   }
 }

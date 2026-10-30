@@ -38,17 +38,13 @@ from typing import Callable, Iterator, Sequence
 
 from kiro_crew import vector_memory
 from kiro_crew.eval.bench.errors import BenchRefusal
-from kiro_crew.eval.bench.kb_retrieval import mrr_at_k
+from kiro_crew.eval.bench.kb_retrieval import KEYWORD_ONLY_EMBEDDER_ID, mrr_at_k
 from kiro_crew.eval.bench.retrieval import ndcg_at_k, recall_all_at_k, recall_any_at_k
 from kiro_crew.eval.bench.safepath import UnsafePathError, read_text_nofollow
 from kiro_crew.eval.bench.toy_embedder import TOY_EMBEDDER_ID, toy_embed_fn
 from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
-
-#: Reported as the embedder identity for a run with no vectors, so a keyword-only
-#: run can never carry a semantic embedder label.
-KEYWORD_ONLY_EMBEDDER_ID = "keyword-only (no embeddings)"
 
 LESSON_QUERY_CLASSES: tuple[str, ...] = (
     "distinctive_term",

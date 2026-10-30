@@ -248,6 +248,8 @@ class TestBackgroundTasksAndShutdown:
         backend = _make_backend(returncode=0)
         await backend.shutdown()
         cast(Any, backend.stdin).close.assert_not_called()
+        # The early return records no shutdown reason of its own.
+        assert backend.dead_reason is None
 
     @pytest.mark.asyncio
     async def test_graceful_shutdown_closes_stdin_and_records_reason(self) -> None:
@@ -279,8 +281,9 @@ class TestBackgroundTasksAndShutdown:
         backend = _make_backend()
         # timeout=0 makes the first wait_for fail synchronously.
         await backend.shutdown(timeout=0)
-        tree_kill.assert_awaited_once()
+        tree_kill.assert_awaited_once_with(backend.process.pid, backend_mod.platform_compat.SIGKILL)
         cast(Any, backend.process).kill.assert_not_called()
+        assert backend.dead_reason == "shutdown rc=None"
 
     @pytest.mark.asyncio
     async def test_tree_kill_failure_falls_back_to_process_kill(
@@ -294,6 +297,7 @@ class TestBackgroundTasksAndShutdown:
         backend = _make_backend()
         await backend.shutdown(timeout=0)
         cast(Any, backend.process).kill.assert_called_once()
+        assert backend.dead_reason == "shutdown rc=None"
 
     @pytest.mark.asyncio
     async def test_process_kill_of_vanished_pid_is_tolerated(

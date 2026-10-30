@@ -23,6 +23,7 @@ import urllib.parse
 from typing import Any
 
 from kiro_crew import guide_catalog
+from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.change_card_catalog_kinds import (
     _CODE_EXEC_SETTINGS,
@@ -50,12 +51,15 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SETTING_CHANGE,
     KIND_TEMPLATE_UPDATE,
     KIND_TRUST_APP,
+    KIND_WORKFLOW_SAVE,
+    KIND_WORKFLOW_UPDATE,
     LIST_OP_ADD,
     RISK_CODE_EXEC,
     RISK_NORMAL,
     RISK_TIGHTEN,
     RISK_WIDEN,
     _fail,
+    workflow_save_slug,
 )
 from kiro_crew.config.sections import (
     DEFAULT_MODEL,
@@ -502,51 +506,7 @@ def build_preview(
             apply.append(_create_schedule_step(p))
         out["apply"] = apply
     elif kind == KIND_CREWMATE_IMPORT:
-        if snapshot.get("exists"):
-            raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
-        out["title"] = f"Import mate “{p['name']}”"
-        out["changes"] = [
-            {"field": "name", "label": "Name", "after": p["name"]},
-            {"field": "sender", "label": "From", "after": p.get("sender", "")},
-        ]
-        for key in ("description", "goal"):
-            if p.get(key):
-                out["changes"].append({"field": key, "label": key.title(), "after": p[key]})
-        # Trust is the receiver's to grant: the mode rides on the create itself,
-        # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
-        inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
-        # ``import_approval`` only when a row of inherited grants follows: its
-        # hint says the crewmate asks like the owner's other crewmates do.
-        mode = "import_approval" if inherited else "approval_mode"
-        out["changes"].append({"field": mode, "label": "Approval", "after": "normal"})
-        if inherited:  # granted by the template, so the press widens (as crewmate.create)
-            reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
-            row = {
-                "field": "template_auto_approve",
-                "label": "Your mates use these without asking",
-            }
-            out["changes"].append({**row, "after": reach or ", ".join(inherited)})
-            out["risk"] = RISK_WIDEN
-        out["changes"].append(
-            {"field": "not_included", "label": "Stays with the sender", "after": "private"}
-        )
-        if p.get("not_imported"):
-            out["changes"].append(
-                {"field": "not_imported", "label": "Not brought over", "after": p["not_imported"]}
-            )
-        body = {
-            "name": p["name"],
-            "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
-            "source": "kirocrew",
-            "description": p.get("description", ""),
-            "approval_mode": "normal",
-        }
-        out["apply"] = [step("POST", "/api/agents", body)]
-        if p.get("goal"):  # crewmate.create's goal step, addressed by step 0's member_id
-            fills = [_step_path_fill("slug", 0, "member_id"), _step_fill("member", 0, "name")]
-            path = f"/api/members/{placeholder(fills[0])}/goals/long-term"
-            body = _with_fills({"long_term": p["goal"], "expected": ""}, fills[1:])
-            out["apply"].append(step("PUT", path, body, fill=fills))
+        out.update(_import_preview(p, snapshot))
     elif kind == KIND_CREWMATE_UPDATE:
         if not snapshot.get("exists"):
             raise _fail("not_found", f"no mate named '{p['name']}'")
@@ -588,7 +548,15 @@ def build_preview(
         # it (its display name, from the context); the key is the identity the
         # plan addresses and stays in the params and the path.
         label = str(context.get("label") or p["name"])
-        out["title"] = f"Update mate “{label}”"
+        out["title"] = (
+            # The Preview opt-in a crewmate's first ``request_capabilities`` raises
+            # while its flag is off (``kiro_crew.mate_tool_access``): a question
+            # in the user's words, with no preview internals.
+            f"Allow {label} to ask you for tools its worker needs? "
+            "Each one still needs your approval."
+            if changed == {"dynamic_capabilities": True}
+            else f"Update mate “{label}”"
+        )
         # ``field`` lets the card draw the user's word for the field and its
         # values (the dashboard's FIELD_LABELS); ``label`` stays the fallback.
         out["changes"] = [
@@ -764,6 +732,19 @@ def build_preview(
             # A server this card defines runs its launch line in the member's
             # next session: shown in full, and marked as running code.
             out["changes"] += _server_spec_rows(server, spec)
+        origins = p.get("origins") or {}
+        gateway = set(context.get("gateway") or ())
+        out["changes"] += _mate_catalog.origin_rows(p["draft"], origins, gateway, impact, _display)
+        # Named additions read as one plain line each; the raw rows (sections,
+        # launch lines, origins) stay on the card behind its Details.
+        summary = _mate_catalog.addition_summary(p["draft"], origins, gateway, impact, _display)
+        if summary:
+            # An approval row that widens stays in the main view: a grant (a
+            # whole server's included) is never hidden behind Details.
+            out["changes"] = summary + [
+                row if _widening_row(row, impact) else {**row, "detail": True}
+                for row in out["changes"]
+            ]
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         # An auto-approval this draft grants widens what the member runs without
         # asking, and a launch line runs third-party code. Both can be true at
@@ -775,6 +756,12 @@ def build_preview(
         # both would surface as ``code_exec`` and silently drop the "runs
         # without asking" acknowledgement the plain-widen draft requires.
         approval_expanded = any(i.get("approval_expanded") for i in impact)
+        # Named additions that are all servers this gateway already runs bring
+        # no new outside code, so only the third-party warning goes. An approval
+        # the draft widens keeps its acknowledgement, whatever the server.
+        known_code = bool(summary) and _mate_catalog.only_gateway_servers(p["draft"], gateway)
+        if known_code:
+            launched = []
         out["widen"] = approval_expanded
         if launched:
             out["risk"] = RISK_CODE_EXEC
@@ -928,6 +915,80 @@ def build_preview(
         elif remove:
             out["risk"] = RISK_TIGHTEN
         out["apply"] = [_folder_steering_step(p["folder"], new)]
+    elif kind == KIND_WORKFLOW_SAVE:
+        slug = workflow_save_slug(p)
+        if snapshot.get("slug_taken"):
+            # The library would save it under a suffixed slug, so the command the
+            # card shows would start the workflow already saved under that name.
+            raise _fail("slug_taken", f"'/workflow {slug}' is already a saved workflow")
+        out["title"] = f"Save workflow “{_short(p['name'], 80)}” to the library"
+        out["changes"] = [{"field": "name", "label": "Name", "after": _display(p["name"])}]
+        if p["description"]:
+            out["changes"].append(
+                {
+                    "field": "description",
+                    "label": "Description",
+                    "after": _display(p["description"]),
+                }
+            )
+        out["changes"].append(
+            {"field": "workflow_command", "label": "Command", "after": f"/workflow {slug}"}
+        )
+        out["changes"].append(
+            {"field": "workflow_source", "label": "Script", "after": _display(p["source"])}
+        )
+        # A saved workflow is a script anyone can start by name, so the card says it
+        # runs code whatever the script does.
+        out["risk"] = RISK_CODE_EXEC
+        out["apply"] = [step("POST", "/api/workflows/definitions", _workflow_save_body(p))]
+    elif kind == KIND_WORKFLOW_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", f"no saved workflow '{p['workflow']}'")
+        if snapshot.get("format") != "python":
+            raise _fail("not_python", "only a Python workflow can be revised from a card")
+        changed = {k: p[k] for k in ("name", "description") if k in p and p[k] != snapshot.get(k)}
+        diff = str(context.get("diff") or "")
+        # Any difference in the script is a change, even one no diff line shows.
+        source_changed = bool(context.get("source_changed")) or bool(diff)
+        if not source_changed and not changed:
+            raise _fail("no_change", "the saved workflow already reads like that")
+        label = str(snapshot.get("name") or p["workflow"])
+        revision = int(snapshot.get("revision") or 0)
+        out["title"] = f"Save a new revision of workflow “{_short(label, 80)}”"
+        out["changes"] = [
+            {
+                "field": "workflow_command",
+                "label": "Command",
+                "after": f"/workflow {snapshot.get('slug') or p['workflow']}",
+            },
+            {"label": "Revision", "before": revision, "after": revision + 1},
+        ]
+        for key, value in changed.items():
+            out["changes"].append(
+                {
+                    "field": key,
+                    "label": key.capitalize(),
+                    "before": _display(str(snapshot.get(key) or "")),
+                    "after": _display(value),
+                }
+            )
+        if diff:
+            out["changes"].append(
+                {"field": "workflow_diff", "label": "Changes to the script", "after": diff}
+            )
+        if source_changed:
+            # The whole new script whenever it differs, so a change the diff could
+            # not show is still in front of the owner: under Details next to a
+            # diff, in the open without one.
+            row = {"field": "workflow_source", "label": "Script", "after": _display(p["source"])}
+            if diff:
+                row["detail"] = True
+            out["changes"].append(row)
+        out["risk"] = RISK_CODE_EXEC
+        body = {"source": p["source"], "expected_revision": revision, **changed}
+        out["apply"] = [
+            step("PATCH", f"/api/workflows/definitions/{_q(str(snapshot['id']))}", body)
+        ]
     else:  # KIND_DENIED_COMMAND
         if p["action"] == "add":
             if snapshot.get("exists"):
@@ -994,9 +1055,27 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         # The yes only starts a wake; the page it leads to goes back with
         # ``dashboard_rollback``, a version like any other.
         KIND_CREWMATE_DASHBOARD_PAGE,
+        # The library has no delete, and a revision is never taken back: an earlier
+        # revision stays in the definition's history.
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
     ):
         return True
     return kind == KIND_DENIED_COMMAND and params.get("action") == "add"
+
+
+def _workflow_save_body(p: dict[str, Any]) -> dict[str, Any]:
+    """The Workflows tab's own save body for a ``workflow.save`` card."""
+    # The card shows ``/workflow <slug>``, asked for or derived from the name; the
+    # save refuses a used slug rather than suffixing it, so the command the owner
+    # approved is the one saved.
+    return {
+        "source": p["source"],
+        "name": p["name"],
+        "description": p["description"],
+        "slug": workflow_save_slug(p),
+        "exact_slug": True,
+    }
 
 
 def _folder_steering_step(folder: str, steering_dirs: list[str]) -> dict[str, Any]:
@@ -1026,6 +1105,186 @@ def _create_schedule_step(p: dict[str, Any]) -> dict[str, Any]:
         **_cron_body(p["schedule"]),
     }
     return step("POST", "/api/crons", _with_fills(body, fills), fill=fills)
+
+
+#: The roles of a ``crewmate.import`` card's apply steps, in plan order
+#: (rfc-crewmate-share.md §5.4). Step 0 is always the create.
+IMPORT_STEP_CREATE = "create"
+IMPORT_STEP_GOAL = "goal"
+IMPORT_STEP_RULES = "rules"
+IMPORT_STEP_FILES = "files"
+IMPORT_STEP_CRON = "cron"
+
+
+def _import_message_crons(p: dict[str, Any]) -> list[dict[str, Any]]:
+    """The crons a plain cron step creates; a ``script`` cron is made with its script."""
+    return [job for job in p.get("crons") or () if "script" not in job]
+
+
+def import_step_roles(p: dict[str, Any]) -> list[str]:
+    """What each apply step of a ``crewmate.import`` card writes, by index."""
+    roles = [IMPORT_STEP_CREATE]
+    if p.get("goal"):
+        roles.append(IMPORT_STEP_GOAL)
+    if p.get("rules"):
+        roles.append(IMPORT_STEP_RULES)
+    if p.get("carried"):
+        roles.append(IMPORT_STEP_FILES)
+    roles += [IMPORT_STEP_CRON] * len(_import_message_crons(p))
+    return roles
+
+
+def import_files_path(slug: str) -> str:
+    """The owner route that writes a new crewmate's carried files (and takes them back)."""
+    return f"/api/members/{slug}/import-files"
+
+
+def _import_member_fills() -> list[dict[str, Any]]:
+    return [_step_path_fill("slug", 0, "member_id"), _step_fill("member", 0, "name")]
+
+
+def _import_rules_step(rules: str) -> dict[str, Any]:
+    fills = _import_member_fills()
+    path = f"/api/members/{placeholder(fills[0])}/rules"
+    return step("PUT", path, _with_fills({"rules": rules}, fills[1:]), fill=fills)
+
+
+def _import_files_step(sha: str) -> dict[str, Any]:
+    """Write the carried files from the staged copy named *sha*, into the new crewmate's own space."""
+    fills = _import_member_fills()
+    body = _with_fills({"sha256": sha}, fills[1:])
+    return step("POST", import_files_path(placeholder(fills[0])), body, fill=fills)
+
+
+def _import_cron_step(job: dict[str, Any]) -> dict[str, Any]:
+    """One imported cron, bound to the new crewmate and created paused in the same write."""
+    fills = [_step_fill("member_id", 0, "member_id")]
+    body = {
+        **_cron_body(job),
+        "agent": DEFAULT_CREWMATE_TEMPLATE,
+        "enabled": False,
+    }
+    return step("POST", "/api/crons", _with_fills(body, fills), fill=fills)
+
+
+def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The ``crewmate.import`` card: every part shown, then the §5.4 ordered plan."""
+    from kiro_crew import crewmate_carried
+
+    if snapshot.get("exists"):
+        raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
+    carried = p.get("carried") or {}
+    scripts = {s["file"] for s in carried.get("scripts") or ()}
+    named = {job["script"].partition(":")[0] for job in p.get("crons") or () if "script" in job}
+    if named != scripts:
+        raise _fail("invalid_param", "each script cron needs its script, and each script a cron")
+    bundled = {r["name"] for r in p.get("skills") or () if r["source"] == "bundled"}
+    if bundled != {s["name"] for s in carried.get("skills") or ()}:
+        raise _fail("invalid_param", "each bundled skill needs its files")
+    out: dict[str, Any] = {"risk": RISK_NORMAL, "title": f"Import mate “{p['name']}”"}
+    changes: list[dict[str, Any]] = [
+        {"field": "name", "label": "Name", "after": p["name"]},
+        {"field": "sender", "label": "From", "after": p.get("sender", "")},
+    ]
+    for key, label in (("description", "Description"), ("model_hint", "Model")):
+        if p.get(key):
+            changes.append({"field": key, "label": label, "after": p[key]})
+    refs = [r for r in p.get("skills") or () if r["source"] != "bundled"]
+    if refs:
+        changes.append({"field": "import_skills", "label": "Skills", "after": refs})
+    if carried.get("skills"):
+        row = {"field": "carried_skills", "label": "Skills it brings"}
+        changes.append({**row, "after": carried["skills"]})
+    if p.get("rules"):
+        changes.append({"field": "rules", "label": "Rules", "after": p["rules"]})
+    if p.get("goal"):
+        changes.append({"field": "goal", "label": "Goal", "after": p["goal"]})
+    if p.get("crons"):
+        changes.append({"field": "import_crons", "label": "Crons", "after": p["crons"]})
+    if carried.get("scripts"):
+        row = {"field": "carried_scripts", "label": "Cron scripts"}
+        changes.append({**row, "after": carried["scripts"]})
+    if carried.get("avatar"):
+        changes.append({"field": "carried_avatar", "label": "Picture", "after": carried["avatar"]})
+    if p.get("dashboard_template"):
+        row = {"field": "dashboard_template", "label": "Dashboard"}
+        changes.append({**row, "after": p["dashboard_template"]})
+    # Trust is the receiver's to grant: the mode rides on the create itself,
+    # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
+    inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
+    # ``import_approval`` only when a row of inherited grants follows: its
+    # hint says the crewmate asks like the owner's other crewmates do.
+    mode = "import_approval" if inherited else "approval_mode"
+    changes.append({"field": mode, "label": "Approval", "after": "normal"})
+    if inherited:  # granted by the template, so the press widens (as crewmate.create)
+        reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
+        row = {"field": "template_auto_approve", "label": "Your mates use these without asking"}
+        changes.append({**row, "after": reach or ", ".join(inherited)})
+        out["risk"] = RISK_WIDEN
+    if crewmate_carried.code_exec(carried):
+        # Each runs on this machine; a widening press still asks for its acknowledgement.
+        out["widen"] = out["risk"] == RISK_WIDEN
+        out["risk"] = RISK_CODE_EXEC
+    changes.append({"field": "not_included", "label": "Stays with the sender", "after": "private"})
+    if p.get("not_imported"):
+        row = {"field": "not_imported", "label": "Not brought over"}
+        changes.append({**row, "after": p["not_imported"]})
+    out["changes"] = changes
+
+    create: dict[str, Any] = {
+        "name": p["name"],
+        "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
+        "source": "kirocrew",
+        "description": p.get("description", ""),
+        "approval_mode": "normal",
+        "imported": {
+            "format_version": p["format_version"],
+            "sender_label": p.get("sender", ""),
+            "sha256": p.get("bundle_sha256", ""),
+        },
+    }
+    if p.get("avatar_traits") and not carried.get("avatar"):
+        create["avatar"] = {"kind": "ghost", "traits": p["avatar_traits"]}
+    apply = [step("POST", "/api/agents", create)]
+    if p.get("goal"):  # crewmate.create's goal step, addressed by step 0's member_id
+        fills = _import_member_fills()
+        body = _with_fills({"long_term": p["goal"], "expected": ""}, fills[1:])
+        path = f"/api/members/{placeholder(fills[0])}/goals/long-term"
+        apply.append(step("PUT", path, body, fill=fills))
+    if p.get("rules"):
+        apply.append(_import_rules_step(p["rules"]))
+    if carried:
+        apply.append(_import_files_step(p["bundle_sha256"]))
+    apply += [_import_cron_step(job) for job in _import_message_crons(p)]
+    out["apply"] = apply
+    return out
+
+
+def import_undo(
+    p: dict[str, Any], evidence: list[dict[str, Any]], applied_steps: int
+) -> list[dict[str, Any]]:
+    """Take back what an applied (or ``partial``) import wrote, newest part first.
+
+    Its plain crons are deleted by the ids their creates answered, its carried
+    files (and the script crons made with them) by the file step's own record,
+    its rules are cleared (a rules file outlives the crewmate it belongs to),
+    and the crewmate is deleted last, so every earlier step still finds it.
+    """
+    roles = import_step_roles(p)[:applied_steps]
+    plan = []
+    for index, role in enumerate(roles):
+        job_id = evidence[index].get("id") if index < len(evidence) else None
+        if role == IMPORT_STEP_CRON and job_id:
+            plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
+    name = (evidence[0].get("name") if evidence else None) or p["name"]
+    slug = str((evidence[0].get("member_id") if evidence else "") or "")
+    if IMPORT_STEP_FILES in roles:
+        plan.append(step("DELETE", import_files_path(_q(slug)), {"member": name}))
+    if IMPORT_STEP_RULES in roles:
+        body = {"member": name, "rules": ""}
+        plan.append(step("PUT", f"/api/members/{_q(slug)}/rules", body))
+    plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+    return plan
 
 
 def legacy_create_apply(
@@ -1158,6 +1417,18 @@ def _capability_plan(member: str, revision: str, draft: dict[str, Any]) -> list[
     ]
 
 
+def _widening_row(row: dict[str, Any], impact: list[dict[str, Any]]) -> bool:
+    """Whether *row* (an :func:`_impact_rows` row) adds an approval the preview counts as wider."""
+    section = row.get("label")
+    if section not in ("allowedTools", "autoApprove"):
+        return False
+    added = set(row.get("add") or [])
+    return any(
+        i.get("approval_expanded") and i.get("section") == section and i.get("id") in added
+        for i in impact
+    )
+
+
 def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, list[str]]] = {}
     for item in impact:
@@ -1181,12 +1452,15 @@ def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def capability_inverse(
-    draft: dict[str, Any], rows: list[dict[str, Any]]
+    draft: dict[str, Any], rows: list[dict[str, Any]], *, severed: bool = False
 ) -> list[dict[str, Any]] | None:
     """Operations that restore each row *draft* touches to its state in *rows*.
 
     ``None`` when a row cannot be restored exactly: an MCP server definition the
     mate set locally is shown redacted, so writing it back would not restore it.
+    *severed* is a crewmate's own file (view ``mode="mate"``): with no parent, a
+    row that was absent or off (``present``) is restored with ``remove``, and an
+    on approval or switch with ``set True``.
     """
     by_key = {(r.get("section"), r.get("id")): r for r in rows if isinstance(r, dict)}
     ops: list[dict[str, Any]] = []
@@ -1194,7 +1468,11 @@ def capability_inverse(
         section, rid = op.get("section"), op.get("id")
         row = by_key.get((section, rid)) or {}
         state = row.get("state") or "inherited"
-        if state == "removed":
+        if severed and not row.get("present"):
+            ops.append({"section": section, "id": rid, "action": "remove"})
+        elif severed and section in ("tools", "allowedTools", "autoApprove", "skills"):
+            ops.append({"section": section, "id": rid, "action": "set", "value": True})
+        elif state == "removed":
             ops.append({"section": section, "id": rid, "action": "remove"})
         elif state == "local":
             if section == "mcpServers":

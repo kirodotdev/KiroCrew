@@ -430,7 +430,7 @@ class TestProvisionBuildPaths:
         import tomllib
 
         root = Path(__file__).resolve().parents[1]
-        declared = tomllib.loads((root / "pyproject.toml").read_text())["project"][
+        declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"][
             "requires-python"
         ]
         assert declared == f">={prov.MIN_PYTHON[0]}.{prov.MIN_PYTHON[1]}"

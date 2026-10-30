@@ -78,6 +78,7 @@ from kiro_crew.mcp_core import (
     _resolve_session_key,
     require_strict_session_key,
 )
+from kiro_crew.mcp_instructions import GUIDE as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
@@ -223,8 +224,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "List the change-card kinds you can propose (settings, schedules, "
                 "crewmates, capabilities, templates, MCP servers, connections, "
-                "secrets, app trust, denied commands), each with its params schema "
-                "and which fields the user may edit on the card."
+                "secrets, app trust, denied commands, saved workflows), each with "
+                "its params schema and which fields the user may edit on the card."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
@@ -356,7 +357,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "find_ui",
             "description": (
                 "Find where something is in the dashboard, e.g. 'older sessions' or "
-                "'较早的会话'. Call it first for every where-is or how-do-I-find question "
+                "'较早的会话'. Call it first for every where-is or how-do-I-find question, "
+                "with no text before the call (no 'let me check the layout first': the "
+                "user sees every word), "
                 "and quote only what it returns: never guess or recall a location. Pass the user's words as `query` and the language of "
                 "their words as `lang` (e.g. 'zh-CN') when known. Labels and paths "
                 "come back in the language the user's dashboard shows "
@@ -408,7 +411,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "offscreen, hidden, unmounted, disabled, ambiguous, unknown, with "
                 "observed_at), or not_observed when their tab did not answer; it "
                 "never reads page text. A result may also carry blocker: "
-                "gate_off (a setting such as developer mode is off; setting_id "
+                "gate_off (a setting such as a feature preview is off; setting_id "
                 "names it, or is null when no setting turns it on), "
                 "needs_selection (the user must first open one item, e.g. a "
                 "crewmate, named in selection), "
@@ -1370,6 +1373,7 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )
 
 

@@ -1152,6 +1152,49 @@ async def test_delete_never_unlinks_a_row_whose_filename_is_not_a_spec_beneath_a
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("on_disk", [True, False], ids=["deleted", "missing"])
+async def test_delete_checks_the_spec_path_off_the_event_loop_thread(
+    agents_dir, monkeypatch, on_disk
+):
+    """``_spec_file_beneath`` resolves the agents directory and stats the spec;
+    on a mount that stopped answering those block for as long as the kernel
+    does, so the handler never calls it on the loop thread -- and its answer
+    (a deletable file, or ``None`` for a row naming nothing on disk) still
+    decides the response exactly as before."""
+    import threading
+
+    from kiro_crew.agent_discovery import AgentInfo
+    from kiro_crew.dashboard.handlers import agent_templates as module
+
+    if on_disk:
+        _write(agents_dir, "scratch.json", name="scratch")
+    _seed_config()
+    rows = [AgentInfo(name="scratch", filename="scratch.json", description="", model="")]
+    monkeypatch.setattr(module, "_find_infos", lambda _name: rows)
+    loop_thread = threading.get_ident()
+    calls: list[tuple[int, Path | None]] = []
+    real = module._spec_file_beneath
+
+    def tracked(agents_dir_arg, filename):
+        result = real(agents_dir_arg, filename)
+        calls.append((threading.get_ident(), result))
+        return result
+
+    monkeypatch.setattr(module, "_spec_file_beneath", tracked)
+    resp = await api_agent_template_delete(_request("DELETE", "scratch"))
+    if on_disk:
+        assert resp.status == 200, resp.text
+        assert not (agents_dir / "scratch.json").exists()
+        # The pre-lock check and the re-check under the spec lock both ran.
+        assert [result for _thread, result in calls] == [agents_dir / "scratch.json"] * 2
+    else:
+        assert resp.status == 404, resp.text
+        assert (await _body(resp))["code"] == "template_not_found"
+        assert [result for _thread, result in calls] == [None]
+    assert all(thread != loop_thread for thread, _result in calls), calls
+
+
+@pytest.mark.asyncio
 async def test_delete_never_unlinks_a_file_that_does_not_answer_to_the_requested_name(
     agents_dir, monkeypatch
 ):

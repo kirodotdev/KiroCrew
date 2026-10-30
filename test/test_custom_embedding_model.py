@@ -309,8 +309,11 @@ class TestSensitivePathGate:
             "kiro_crew.embeddings._load_llama_class", lambda: _fake_llama_class(n_embd=1024)
         )
         embedder = LlamaCppEmbedder(model_path=model, dim=1024, model_id="x:1")
-        embedder.wait_ready(timeout=5)
-        assert embedder.is_ready() is True
+        try:
+            embedder.wait_ready(timeout=5)
+            assert embedder.is_ready() is True
+        finally:
+            embedder.close()  # a published model starts an evictor; it ends with the test
 
     def test_persistent_error_is_logged_once(self, tmp_path: Path, caplog) -> None:
         """The resolver runs on polled paths — it must not flood the log.
@@ -426,9 +429,12 @@ class TestLoadTimeDimValidation:
             "kiro_crew.embeddings._load_llama_class", lambda: _fake_llama_class(n_embd=768)
         )
         embedder = LlamaCppEmbedder(model_path=model, dim=768, model_id="m:1")
-        embedder.wait_ready(timeout=5)
-        assert embedder.is_ready() is True
-        assert embedder.embed("hello") == [0.1] * 768
+        try:
+            embedder.wait_ready(timeout=5)
+            assert embedder.is_ready() is True
+            assert embedder.embed("hello") == [0.1] * 768
+        finally:
+            embedder.close()
 
     def test_runtime_without_n_embd_still_loads(self, tmp_path: Path, monkeypatch) -> None:
         """The probe is advisory — a runtime lacking n_embd() is not blocked."""
@@ -437,8 +443,11 @@ class TestLoadTimeDimValidation:
             "kiro_crew.embeddings._load_llama_class", lambda: _fake_llama_class(n_embd=None)
         )
         embedder = LlamaCppEmbedder(model_path=model, dim=1024, model_id="m:1")
-        embedder.wait_ready(timeout=5)
-        assert embedder.is_ready() is True
+        try:
+            embedder.wait_ready(timeout=5)
+            assert embedder.is_ready() is True
+        finally:
+            embedder.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

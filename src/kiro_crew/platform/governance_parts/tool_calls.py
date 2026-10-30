@@ -12,9 +12,15 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 from kiro_crew.platform.governance_parts.matching import _url_host
+from kiro_crew.platform.guest_paths import (
+    GuestPath,
+    guest_also_local,
+    guest_root,
+    guest_unverifiable,
+)
 from kiro_crew.platform.tool_paths import (
     TARGET_PATH_KEYS,
     edit_target_candidates,
@@ -219,6 +225,45 @@ _TRUNCATED_SCAN_ITEM = "\x00<governance:path-scan-truncated-unverifiable>"
 #: edit, while an ungoverned scope still permits (standalone default preserved).
 _UNANCHORED_TARGET_ITEM = "\x00<governance:edit-target-unanchored-unverifiable>"
 
+#: Same never-permittable construction, for a remote-workspace target whose
+#: spelling another reader could resolve to a different file (a ``$``, a ``~``
+#: segment, a backslash) or that cannot be anchored in the guest. It is emitted
+#: BESIDE the literal guest path, not instead of it: a deny is still checked against
+#: the path the guest opens, and an allow-mode confinement additionally refuses.
+_GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
+
+
+#: Same never-permittable construction, for a scope a proven host built-in is
+#: judged in (``gate_decision``'s ``own_scopes``) whose arguments name no target
+#: there: a pathless ``grep`` searches a directory the gate cannot see. An
+#: allow-mode confinement refuses it; a deny-mode or ungoverned scope permits it.
+#: Absolute on purpose: the path matcher anchors a relative item at the gateway's
+#: working directory, which would put a relative marker inside a workspace
+#: allow-prefix whenever the gateway runs there.
+_NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
+
+
+def _governed_targets(
+    paths: Iterable[str], root: Optional[str], also_local: bool = False
+) -> Tuple[str, ...]:
+    """The governed items for *paths*: unchanged for a local call (``root`` None).
+
+    For a remote-workspace call each path becomes a :class:`GuestPath` anchored in
+    the guest workdir *root*, matched with POSIX rules, and any one
+    :func:`guest_unverifiable` adds :data:`_GUEST_UNVERIFIABLE_ITEM` once. With
+    *also_local* each plain path is kept beside its guest twin, so a call the
+    builder could not place for certain must pass every rule under both readings.
+    """
+    paths = tuple(paths)
+    if root is None:
+        return paths
+    items: list = [GuestPath(path, root) for path in paths]
+    if any(guest_unverifiable(item) for item in items):
+        items.append(_GUEST_UNVERIFIABLE_ITEM)
+    if also_local:
+        items[:0] = paths
+    return tuple(items)
+
 
 def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[Tuple[str, ...], bool]:
     """Return every distinct, non-empty path carried under a supported alias,
@@ -327,8 +372,26 @@ def classify_tool_args(
     scan cannot prove the buried path hit that one pattern; the always-on,
     resolved ``is_sensitive_path`` keystone in ``hooks`` (which hard-denies ANY
     truncated scan) remains the authoritative guard for the sensitive tiers there.
+
+    **Remote-workspace targets.**  When *raw_params* are a remote workspace's
+    call arguments (:class:`~kiro_crew.platform.guest_paths.GuestPathParams`,
+    tagged by ``build_permission_event`` for a call the runtime that attached the
+    workspace identified), every path target is emitted as a
+    :class:`~kiro_crew.platform.guest_paths.GuestPath`, which the ``path``
+    matcher normalizes with POSIX rules in the guest workdir rather than this
+    gateway's ``os.path`` -- so a ``/workspace/app/**`` rule binds the guest's
+    file on a Windows gateway too. A target the guest would read literally but
+    another reader might not (``$``, a ``~`` segment, a backslash) or that
+    cannot be anchored also emits ``_GUEST_UNVERIFIABLE_ITEM``: the literal path
+    still meets every deny, and an allow-mode confinement refuses the call.
     """
     params = raw_params if raw_params and isinstance(raw_params, Mapping) else None
+    # A remote workspace's call names guest files: each target is minted as a
+    # GuestPath so the path matcher reads it with POSIX rules (see
+    # ``_governed_targets``). ``None`` for every other call, which keeps its
+    # targets as the plain strings the gateway's own rules match.
+    root = guest_root(raw_params)
+    also_local = guest_also_local(raw_params)
     if is_edit_call(tool_kind, diff_path):
         # The edit's judged target set is the params∪diff-block union, from the
         # same helper both edit gates consume — a diff-only edit (params carry
@@ -338,7 +401,8 @@ def classify_tool_args(
         # evidence whatever the spec-optional ``kind`` field says, so a
         # kindless (or mislabelled) call carrying one is classified here too.
         candidates = edit_target_candidates(params, diff_path, tool_kind=tool_kind)
-        edit_pairs: list = [("filesystem.write", path) for path in candidates]
+        targets = _governed_targets(candidates, root, also_local)
+        edit_pairs: list = [("filesystem.write", path) for path in targets]
         if candidates.truncated:
             edit_pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
         if candidates.unanchored:
@@ -347,7 +411,7 @@ def classify_tool_args(
             # A kindless call routed here by its diff block also keeps the
             # read pairs the shape-inference fallback applies to kindless
             # paths — additive only, so no call loses a pair.
-            for path in candidates:
+            for path in targets:
                 edit_pairs.append(("filesystem.read", path))
         # ADDITIVE for every other classified dimension too: routing a call
         # here because its frame carried a diff block must never DROP a pair
@@ -365,7 +429,8 @@ def classify_tool_args(
     if params is None:
         return ()
     pairs: list = []
-    paths, paths_truncated = _tool_arg_paths(params)
+    found, paths_truncated = _tool_arg_paths(params)
+    paths = _governed_targets(found, root, also_local)
     url = params.get("url") or params.get("uri")
     has_command = bool(params.get("command"))  # a shell tool → commands scope
     if tool_kind == _KIND_READ:

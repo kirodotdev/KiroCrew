@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -684,3 +686,82 @@ def test_partial_deploy_recovery_reuses_bucket(fake, monkeypatch):
     assert "s3api create-bucket" not in fake.actions()
     # Distribution creation + sync still ran.
     assert "cloudfront create-distribution-with-tags" in fake.actions()
+
+
+_ENGINE_SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "deploy" / "engine.py"
+
+
+class TestDeployBucketDurability:
+    """Every deploy bucket is hardened through ``_harden_bucket``, and the
+    versioning, lifecycle and access-logging controls stay out of it on purpose.
+
+    Versioning cannot be enabled until teardown is version-aware: `empty_bucket`
+    runs `s3 rm --recursive`, which leaves noncurrent versions and delete markers
+    on a versioned bucket, so `delete-bucket` would fail BucketNotEmpty after the
+    distribution is deleted and strand billable infrastructure. Access logging
+    needs a bucket-policy grant to ``logging.s3.amazonaws.com`` on these
+    ``BucketOwnerEnforced`` buckets, and ``put_oac_bucket_policy`` writes a
+    complete policy after hardening that would overwrite it.
+    """
+
+    def _argvs(self):
+        with mock.patch.object(engine, "_checked") as checked:
+            engine._harden_bucket("kirocrew-web-example", "p", "TagSet=[]")
+        return [c[0][0] for c in checked.call_args_list]
+
+    def test_baseline_controls_are_applied(self):
+        verbs = {argv[1] for argv in self._argvs()}
+        assert {
+            "put-public-access-block",
+            "put-bucket-ownership-controls",
+            "put-bucket-encryption",
+            "put-bucket-tagging",
+        } <= verbs
+
+    @pytest.mark.parametrize(
+        "verb",
+        [
+            "put-bucket-versioning",
+            "put-bucket-lifecycle-configuration",
+            "put-bucket-logging",
+        ],
+    )
+    def test_deferred_controls_stay_out(self, verb):
+        """Each of these breaks something if added alone.
+
+        versioning/lifecycle -> teardown fails BucketNotEmpty (needs a
+        version-aware purge in destroy() and the reaper, plus
+        s3:DeleteObjectVersion + s3:ListBucketVersions in the generated IAM
+        policy). logging -> no permitted destination on a BucketOwnerEnforced
+        target, and a grant added here is overwritten by put_oac_bucket_policy.
+        """
+        assert verb not in {argv[1] for argv in self._argvs()}
+
+    def test_teardown_is_not_version_aware(self):
+        """The precondition behind the deferral. If this starts failing, teardown
+        has learned about versions and the deferral can be revisited.
+
+        Scoped to the empty_bucket body -- a whole-file grep would be tripped by
+        the explanatory comment in _harden_bucket.
+        """
+        src = _ENGINE_SRC.read_text(encoding="utf-8")
+        body = src.split("def empty_bucket", 1)[1].split("\ndef ", 1)[0]
+        assert '"s3", "rm"' in body, "empty_bucket no longer uses the recursive rm"
+        assert "version" not in body.lower(), (
+            "empty_bucket looks version-aware now -- revisit enabling versioning"
+        )
+
+    @pytest.mark.parametrize(
+        "_case",
+        [
+            "test_live_deploy_path_uses_the_shared_helper",
+            "test_hardening_lives_in_one_place",
+        ],
+    )
+    def test_live_deploy_path_uses_the_shared_helper(self, _case):
+        """One hardening seam, so a control cannot be added to a copy that
+        nothing calls."""
+        src = _ENGINE_SRC.read_text(encoding="utf-8")
+        assert src.count("_harden_bucket(") >= 3, (
+            "expected the definition plus both call sites to go through one helper"
+        )

@@ -90,7 +90,19 @@ jobs:
     # Skip while the PR is a draft; `ready_for_review` above runs it once the
     # PR is ready. Non-PR events have no pull_request, so they always run.
     if: github.event.pull_request.draft != true
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the job name uses it, so the rendered check names
+    # do not change. In THIS repository the Linux and Windows legs take the
+    # `kirocrew-linux-4-core` / `kirocrew-windows-4-core` larger-runner groups
+    # instead of the shared standard pool, whose concurrency is shared
+    # enterprise-wide. Targeted by LABEL, not `group:`: a group belongs to the
+    # kirodotdev organization, so a fork running this workflow in its own
+    # repository cannot reach one, and a job dispatched to a group that does not
+    # admit the repository queues until the 24-hour auto-cancel. The conditional
+    # degrades to the hosted image there; a group reference cannot. The macOS leg
+    # stays hosted: see "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md for why its definition is not a like-for-like
+    # swap.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     timeout-minutes: 15
     strategy:
       max-parallel: 4

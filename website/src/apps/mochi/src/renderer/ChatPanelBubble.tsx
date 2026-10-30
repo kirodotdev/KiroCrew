@@ -34,6 +34,7 @@ import type { ApprovalTarget } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { useLanguageGeneration } from '../../../../i18n/useLanguageGeneration'
 import { i18next } from '../../../../i18n'
+import { Trans } from 'react-i18next'
 import { LocalImage, MD_REHYPE, MD_REMARK, mdComponents } from './ChatPanelMarkdown'
 
 /** Sentinel standing in for the tool name while the sentence is translated.
@@ -126,6 +127,20 @@ const trustScopeBtnStyle: React.CSSProperties = {
   fontSize: 11,
   cursor: 'pointer',
   textAlign: 'left',
+}
+
+/** Monospace chip for the exact-command label in the trust row.
+ *  Component-scoped because Mochi has no Tailwind — a class would be inert.
+ *  Background and border give the command a visible boundary; border ensures
+ *  contrast even when the host surface uses the same background token. */
+const monoChipStyle: React.CSSProperties = {
+  fontFamily: 'monospace',
+  backgroundColor: 'var(--bg-elevated)',
+  padding: '1px 6px',
+  borderRadius: 4,
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'var(--border)',
 }
 
 // Exported for the capture harness (capture/mochi-trust-label.tsx), which mounts
@@ -249,7 +264,10 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                       title carries the whole command, so hovering reads the
                       middle the clamp elides. */}
                   <span style={{ minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
-                    {i18nT('apps.mochi.approval.trust_this_command', { cmd: truncateCommandLabel(req.fullCommand) })}
+                    <Trans
+                      i18nKey="apps.mochi.approval.trust_this_command"
+                      components={{ mono: <code style={monoChipStyle}>{truncateCommandLabel(req.fullCommand)}</code> }}
+                    />
                   </span></button>
               )}
               {showTrustBase && (

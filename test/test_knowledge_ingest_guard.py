@@ -199,13 +199,18 @@ class TestChunkingOffLoop:
 
     def test_run_chunker_dispatch(self):
         chunker = MagicMock()
-        ingestion_mod._run_chunker(chunker, ".pptx", "t", "u")
+        # Each chunker method returns its own MagicMock, so an identity check
+        # proves which method's chunks came back.
+        assert ingestion_mod._run_chunker(chunker, ".pptx", "t", "u") is (
+            chunker.chunk_slides.return_value)
         chunker.chunk_slides.assert_called_once_with("t")
-        ingestion_mod._run_chunker(chunker, ".py", "t", "u")
+        assert ingestion_mod._run_chunker(chunker, ".py", "t", "u") is (
+            chunker.chunk_code.return_value)
         chunker.chunk_code.assert_called_once_with("t", language="py")
-        ingestion_mod._run_chunker(chunker, ".md", "t", "u")
+        assert ingestion_mod._run_chunker(chunker, ".md", "t", "u") is (
+            chunker.chunk_markdown.return_value)
         chunker.chunk_markdown.assert_called_once_with("t")
-        ingestion_mod._run_chunker(chunker, ".txt", "t", "u")
+        assert ingestion_mod._run_chunker(chunker, ".txt", "t", "u") is chunker.chunk.return_value
         chunker.chunk.assert_called_once_with("t", source_uri="u")
 
 

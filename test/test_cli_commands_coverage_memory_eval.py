@@ -4,13 +4,15 @@ The knowledge-store subcommands (``learn``, ``memory``, ``artifact``), pod
 dispatch, the telemetry beacon switches and the ``kirocrew eval`` runner. Same
 conventions as ``test_cli_commands_coverage.py``: handlers are called directly
 with an ``argparse.Namespace``, HTTP goes through a patched
-``kiro_crew.cli_commands.loopback_urlopen``, and every write lands in ``tmp_path``.
+``kiro_crew.cli_commands._gateway_send``, and every write lands in ``tmp_path``.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import struct
 import subprocess
 import sys
 import urllib.error
@@ -155,14 +157,22 @@ class TestLearnCli:
             cc._learn(_ns(learn_action="remove", query="q"))
         assert "Removed lessons matching: q" in capsys.readouterr().out
 
-    def test_remove_no_match(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_remove_no_match_exits_1_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A miss removed nothing, so `learn remove q && next` must stop.
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.remove.return_value = False
-            cc._learn(_ns(learn_action="remove", query="q"))
-        assert "No lessons match: q" in capsys.readouterr().out
+            with pytest.raises(SystemExit) as exc:
+                cc._learn(_ns(learn_action="remove", query="q"))
+            h.vs.close.assert_called_once()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "No lessons match: q\n"
 
-    def test_remove_forwards_repo_scope_to_vector_store(self) -> None:
+    def test_remove_forwards_repo_scope_to_vector_store(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         # The scope selector must reach the store, or a scoped and a global
         # lesson sharing rule text cannot be deleted independently.
         with _LearnHarness() as h:
@@ -170,21 +180,30 @@ class TestLearnCli:
             h.vs.delete_lesson.return_value = True
             cc._learn(_ns(learn_action="remove", query="q", repo_scope="src/pkg"))
         h.vs.delete_lesson.assert_called_once_with("q", "src/pkg")
+        h.jsonl.remove.assert_not_called()
+        assert capsys.readouterr().out == "Removed lessons matching: q\n"
 
-    def test_remove_forwards_repo_scope_to_jsonl_store(self) -> None:
+    def test_remove_forwards_repo_scope_to_jsonl_store(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.remove.return_value = True
             cc._learn(_ns(learn_action="remove", query="q", repo_scope="src/pkg"))
         h.jsonl.remove.assert_called_once_with("q", "src/pkg")
+        h.vs.delete_lesson.assert_not_called()
+        assert capsys.readouterr().out == "Removed lessons matching: q\n"
 
-    def test_remove_without_the_flag_passes_none_scope(self) -> None:
+    def test_remove_without_the_flag_passes_none_scope(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         # Absent flag -> None -> the historical every-scope match, unchanged.
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.remove.return_value = True
             cc._learn(_ns(learn_action="remove", query="q"))
         h.jsonl.remove.assert_called_once_with("q", None)
+        assert capsys.readouterr().out == "Removed lessons matching: q\n"
 
     def test_remove_refuses_a_selector_naming_no_usable_scope(
         self, capsys: pytest.CaptureFixture[str]
@@ -394,14 +413,19 @@ class TestMemoryCli:
         assert "Migration complete" in out and "Skipped:  3" in out
 
     def test_import_requires_a_file_argument(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=None))
-        assert "Usage: kirocrew memory import" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "Usage: kirocrew memory import" in capsys.readouterr().err
 
     def test_import_missing_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        # A refused import must stop `memory import f && next`.
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json")))
-        assert "File not found" in capsys.readouterr().out
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "File not found" in out.err
 
     def test_import_reads_through_safe_read_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -427,6 +451,61 @@ class TestMemoryCli:
         out = capsys.readouterr().out
         assert "embedding vectors are not built by this command" in out
         assert "keyword-searchable only" in out
+
+    def test_import_names_pending_semantic_embeddings(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Semantic rows that landed without a vector get the same note."""
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"semantic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {"semantic": 4, "episodic": 0, "skipped": 0}
+            h.store.has_pending_embeddings.return_value = True
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        assert "embedding vectors are not built by this command" in capsys.readouterr().out
+
+    def test_export_ships_restorable_vectors_and_their_model(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import embeddings
+
+        blob = struct.pack("2f", 0.5, -1.0)
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.return_value = None
+            h.store.get_all_semantic.return_value = [
+                {"key": "a", "embedding": blob},
+                {"key": "b", "embedding": None},
+            ]
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+        data = json.loads(capsys.readouterr().out)
+        assert [row["embedding"] for row in data["semantic"]] == [
+            base64.b64encode(blob).decode("ascii"),
+            None,
+        ]
+        assert list(data)[-2:] == ["embedding_space_sig", "embedding_model"]
+        assert data["embedding_space_sig"] == embeddings.default_embedding_space_signature()
+        assert data["embedding_model"] == {
+            "model_id": embeddings._MODEL_ID,
+            "dim": embeddings._DEFAULT_DIM,
+        }
+
+    def test_export_names_no_space_when_it_changed_during_the_read(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import embeddings
+
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.side_effect = ["aaaa", "bbbb", "bbbb"]
+            h.store.get_all_semantic.return_value = [{"key": "a", "embedding": b"\x00" * 4}]
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            with patch.object(embeddings, "get_shared_embedder", side_effect=RuntimeError):
+                cc._memory_cmd(_ns(mem_action="export", output=None))
+        data = json.loads(capsys.readouterr().out)
+        assert data["embedding_space_sig"] is None
+        assert data["embedding_model"] is None
 
     def test_import_omits_embedding_note_when_nothing_pending(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -464,7 +543,7 @@ class _ArtifactHarness:
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
             patch("kiro_crew.cli_commands.parse_dashboard_url", return_value=("localhost", 5476)),
             patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=self._responses),
+            patch("kiro_crew.cli_commands._gateway_send", side_effect=self._responses),
         ]
         started = [p.start() for p in self._patches]
         self.urlopen = started[-1]
@@ -942,8 +1021,13 @@ class TestArtifactCli:
 class TestPodDispatch:
     def test_pod_delegates_to_verb_layer(self) -> None:
         args = _ns(pod_action="ls")
-        with patch("kiro_crew.pod.cli.dispatch") as dispatch:
+        # The verb layer's exit status must reach the shell unchanged.
+        with (
+            patch("kiro_crew.pod.cli.dispatch", side_effect=SystemExit(3)) as dispatch,
+            pytest.raises(SystemExit) as exc,
+        ):
             cc._pod(args)
+        assert exc.value.code == 3
         dispatch.assert_called_once_with(args)
 
 
@@ -1215,7 +1299,7 @@ class TestRunEval:
 
     @pytest.mark.asyncio
     async def test_all_scenarios_loads_the_whole_directory(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         scenarios = [_scenario("a"), _scenario("b")]
@@ -1226,10 +1310,13 @@ class TestRunEval:
             await cc._run_eval(_ns(all_scenarios=True, scenarios=None, judge=False))
         assert loader.call_args[0][0].name == "scenarios"
         h.runner.run_scenarios.assert_awaited_once_with(scenarios)
+        out = capsys.readouterr().out
+        assert "Running: a, b (4 turns)" in out
+        assert "Overall: 1/2 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_named_scenario_is_resolved_by_extension(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
         with (
@@ -1240,15 +1327,21 @@ class TestRunEval:
                 _ns(all_scenarios=False, scenarios=["memory_recall_basic"], judge=False)
             )
         assert ld.call_args[0][0].name == "memory_recall_basic.json"
+        out = capsys.readouterr().out
+        assert "Running: named" in out and "Overall: 1/1 scenarios passed" in out
 
     @pytest.mark.asyncio
     async def test_unknown_scenario_lists_available_and_returns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        with _EvalHarness([]) as h:
+        with _EvalHarness([]) as h, pytest.raises(SystemExit) as exc:
             await cc._run_eval(_ns(all_scenarios=False, scenarios=["does-not-exist"], judge=False))
-        out = capsys.readouterr().out
+        # An unknown name ran nothing, so `kirocrew eval x && next` must stop.
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        out = captured.err
         assert "scenario 'does-not-exist' not found" in out
         assert "smoke_test" in out
         h.runner.run_scenarios.assert_not_awaited()

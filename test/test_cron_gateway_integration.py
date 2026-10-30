@@ -398,7 +398,6 @@ class TestCommandExecution:
         _, mock_run = await _run_command_callback(
             gw, job, {"status": "ok", "output": "done\n", "exit_code": 0}
         )
-        # Verify cmd_timeout was passed
         mock_run.assert_called_once()
         args = mock_run.call_args[0]
         assert args[0] == "echo hello"

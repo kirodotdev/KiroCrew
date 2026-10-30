@@ -5,7 +5,7 @@ the session queue before a prompt starts.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -424,7 +424,9 @@ async def test_pre_turn_drain_answers_a_permission_request_whose_id_collides():
         await _bounded(gen.__anext__(), what="the first prompt event")
     await gen.aclose()
 
-    handle.reject_tool.assert_awaited_once_with(3)
+    assert handle.reject_tool.await_args_list == [call(3)]
+    # Answering the request did not settle our own call that shares its id.
+    assert 3 in handle._awaited_responses
 
 
 @pytest.mark.asyncio
@@ -647,3 +649,44 @@ async def test_cancel_during_drain_reject_does_not_wedge_handle():
     assert handle.is_turn_active is False  # not wedged
     # The stranded request went back on the queue for the next drain.
     assert not q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_cancels_a_stranded_elicitation_request():
+    """An MCP server's elicitation that arrived while no turn was reading (an
+    abandoned turn's tool still running) sits in the queue at the next prompt.
+    The drain answers it ``cancel`` -- a server->client request the engine waits
+    on, like a stranded permission -- rather than discarding it with the frames
+    around it, which would hold that tool call open for the life of the process.
+    """
+    import contextlib
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+    rt.send_response = AsyncMock()
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 77,
+                "method": "_kiro/mcp/elicitation",
+                "params": {
+                    "sessionId": "sA",
+                    "toolCallId": "toolu_x",
+                    "elicitation": {
+                        "mode": "url",
+                        "message": "go",
+                        "url": "https://e.x/c",
+                        "elicitationId": "e",
+                    },
+                },
+            }
+        )
+    )
+    gen = handle.prompt("hi", timeout=0.2)
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        await _bounded(gen.__anext__(), what="the first prompt event")
+    await gen.aclose()
+    assert any(c.args == (77, {"action": "cancel"}) for c in rt.send_response.await_args_list)

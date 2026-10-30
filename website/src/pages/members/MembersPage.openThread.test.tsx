@@ -33,7 +33,6 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -220,7 +219,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 // The profile settings write the live slot; the stub shows which slot the page
 // handed it, so a refused thread is proven to get none.
@@ -237,13 +235,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
-      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
+      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-hide-empty-hint={rest.hideEmptyHint ? '1' : '0'}>
         {slotKey}
-        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -314,9 +311,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -540,7 +534,7 @@ describe('MembersPage unread drain', () => {
 })
 
 describe('MembersPage identity pill and Profile entry', () => {
-  beforeEach(() => { localStorage.clear(); localStorage.setItem('mc-preview-crew', '1') })
+  beforeEach(() => { localStorage.clear() })
 
   it('the identity pill opens the Profile card, not the editor', async () => {
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -848,36 +842,16 @@ describe('MembersPage colliding slugs (live projection)', () => {
   })
 })
 
-/** The greeting is drawn INSIDE the chat (ChatPane's `crewmateGreeting`), in
- *  the crewmate's own message bubble, not as a card above the transcript. */
-function expectCrewmateMessage(card: HTMLElement) {
-  expect(within(screen.getByTestId('chat-pane-stub')).getByTestId(card.dataset.testid!)).toBe(card)
-  expect(card.closest('[data-testid="crewmate-message"]')).not.toBeNull()
-  expect(card.querySelector('.message-bubble.crewmate-bubble')).not.toBeNull()
-  // Never wider than the chat column: a long goal must not size it past a 320px chat.
-  expect(within(card).getByTestId('mate-greeting-bubble').style.maxWidth).toBe('min(100%, 72ch)')
-}
-
-describe('MembersPage cold welcome (a new or long-idle thread)', () => {
+describe('MembersPage long-idle open', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
-  it('opening a long-idle mate with no goal in flight recaps its paused and recent work, once', async () => {
-    vi.mocked(api.memberRecap).mockResolvedValue({
-      slug: 'oncall', member: 'oncall',
-      paused: [{ goal: 'Rotate the pager keys', next: 'confirm with Sam' }],
-      recent: [{ title: 'Triage last night\'s alarms', ts: 1 }],
-    })
+  it('opening a long-idle mate with no goal in flight shows the empty-chat hint and reads no board', async () => {
     await renderPage([row({ last_active_ts: 1 })])
     fireEvent.click(await rosterRow('oncall'))
-    const card = await screen.findByTestId('member-welcome-card', undefined, PANE_READY)
-    // A message from the crewmate in its chat, not a card above it.
-    expectCrewmateMessage(card)
-    expect(api.memberRecap).toHaveBeenCalledExactlyOnceWith('oncall', 'oncall')
-    expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent('Paused: Rotate the pager keys (its next step: confirm with Sam)')
-    expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent("Recent session, may be finished: Triage last night's alarms")
-    expect(screen.queryByTestId('member-resume-card')).toBeNull()
+    const pane = await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    expect(pane.dataset.hideEmptyHint).toBe('0')
+    expect(api.crewBoard).not.toHaveBeenCalled()
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(localStorage.getItem('kc-mate-welcomed-member-oncall')).toBe('1')
   })
 })
 
@@ -899,9 +873,8 @@ describe('MembersPage active task greeting', () => {
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
-    await waitFor(() => expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall'))
     expect(screen.queryByTestId('member-resume-card')).toBeNull()
-    expect(api.memberRecap).not.toHaveBeenCalled()
+    expect(api.crewBoard).not.toHaveBeenCalled()
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
@@ -930,13 +903,4 @@ describe('MembersPage active task greeting', () => {
     expect(messages.slice(-2).map(message => message.role)).toEqual(['assistant', 'assistant'])
     expect(screen.queryByTestId('warm-task-brief-card')).toBeNull()
   })
-
-  it('a failed board read uses the cold-welcome error surface', async () => {
-    vi.mocked(api.crewBoard).mockRejectedValue(Object.assign(new Error('ledger needs repair'), { status: 409 }))
-    await renderPage([row()])
-    fireEvent.click(await rosterRow('oncall'))
-    expect(await screen.findByTestId('member-resume-error', undefined, PANE_READY)).toHaveTextContent("Couldn't read what oncall was working on.")
-    expect(screen.queryByTestId('member-resume-card')).toBeNull()
-  })
-
 })

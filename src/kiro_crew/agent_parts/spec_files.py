@@ -292,7 +292,7 @@ def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
     """
     lock_path = agents_dir / ".kirocrew-agents.lock"
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     except OSError as exc:
         # Naming the path AND the errno is the point: "Read-only file system" on
         # this specific path is what tells the operator to move KIRO_HOME, and it

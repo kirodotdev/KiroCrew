@@ -9,6 +9,7 @@ vectors and never Global in their place, otherwise the workspace's V1 store; for
 lessons the member's vectors, a populated vector store, a named store's JSONL or the
 global JSONL, keyed on POPULATION rather than on what a render returned. It also
 owns the first message's early embed through the store the activity block reads,
+the early memory reads a session-start build takes when nothing they read has moved,
 the per-message lessons block and the in-memory record of what a session was
 already shown; the builder keeps one such record per session through
 :mod:`kiro_crew.context_assembly.delivery_records`.
@@ -19,8 +20,15 @@ here; new store handles belong in :mod:`kiro_crew.context`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import sqlite3 as _stdlib_sqlite3
+import threading
+import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import budget as _budgets
@@ -144,6 +152,9 @@ def turn_lessons_block(
         record.add(lesson for _, lesson in chosen)
     if not chosen:
         return ""
+    from kiro_crew import injection_receipts
+
+    injection_receipts.record(injection_receipts.TURN_LESSONS, [{"key": key} for key, _ in chosen])
     lines = "\n".join(f"- {_markers._scrub_turn_lesson(lesson)}" for _, lesson in chosen)
     return (
         "[Learned corrections — relevant to this message, not shown earlier in this "
@@ -222,16 +233,22 @@ def session_memory_parts(
                 "for explicit corrections.\n"
             )
         elif memory is not None:
-            memory_ctx = memory.get_context(
-                prefs_cap=caps.prefs,
-                projects_cap=caps.projects,
-                history_cap=caps.memory_history,
-                semantic_cap=caps.semantic,
-                episodic_cap=min(_budgets._EPISODIC_INJECT_CAP, caps.episodic),
+            # Read early beside the session's startup when the dashboard turn
+            # started that (see "Early memory reads" below); otherwise, or when any
+            # input moved since, read here exactly as before.
+            inject_activity = bool(cfg.memory.inject_activity)
+            reads = _take_memory_prefetch(
+                memory,
+                caps,
+                workspace=workspace,
+                memory_store=memory_store,
                 query=query_text,
-                include_activity=False,
-                prefs_startup_cap=caps.prefs_startup,
-            )
+                inject_activity=inject_activity,
+            ) or read_session_memory(memory, caps, query_text, inject_activity=inject_activity)
+            from kiro_crew import context_omissions
+
+            context_omissions.replay(reads.omissions)
+            memory_ctx = reads.memory_ctx
             if memory_ctx:
                 # Preferences are read complete below the model-safe ceiling.
                 # The ceiling itself is the one bound they cannot cross: a
@@ -264,29 +281,23 @@ def session_memory_parts(
                         budget_chars=max(0, room),
                     )
                     memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
-                append_required(memory_ctx)
-            activity = memory.activity_index()
-            if activity:
-                append_required(activity)
+                # Bounded by the model-safe ceiling (its ``pref.*`` rows by
+                # ``_PREFS_STARTUP_CAP``), not by the background pool the
+                # activity block below competes for, so it does not use that pool up.
+                blocks.append_authored(memory_ctx)
+            if reads.activity:
+                append_required(reads.activity)
             # The recent-activity block (projects, daily history, task facts,
             # relevant episodes) is background, not a rule: it enters the
             # discretionary pool and the admission loop may drop it whole, so
             # a long history can never displace preferences or lessons.
-            inject_activity = bool(cfg.memory.inject_activity)
             if inject_activity:
-                activity_ctx = memory.get_activity_context(
-                    projects_cap=caps.projects,
-                    history_cap=caps.memory_history,
-                    semantic_cap=caps.semantic,
-                    episodic_cap=min(_budgets._EPISODIC_INJECT_CAP, caps.episodic),
-                    query=query_text,
-                )
                 # The activity block ranks its facts and episodes against the
                 # first message. When that ranking embeds it, the lessons block
                 # can reuse the cached vector.
-                activity_ranked = memory.ranks_activity_against(query_text)
-                if activity_ctx:
-                    parts.append(activity_ctx)
+                activity_ranked = reads.activity_ranked
+                if reads.activity_ctx:
+                    parts.append(reads.activity_ctx)
             # The note must not assert content the admission loop below may
             # drop: it names the activity block only conditionally.
             loaded_note = (
@@ -341,6 +352,510 @@ def embed_startup_query(
     return store.startup_lesson_query(text).vector is not None
 
 
+# ── Early memory reads ────────────────────────────────────────────────────────
+#
+# A dashboard turn that starts its session on the send path builds the session-start
+# context only after ``session/new`` and the managed MCP servers are ready. The
+# memory reads are most of that build (the embedding search above all), so the turn
+# starts them as it starts the session, and the build takes the result instead of
+# reading again. The result is used only when every input the build would read with
+# is the same: the store object and its vector store, the message, the caps, the
+# activity switch, today's date, the stat of every Markdown source the reads touch
+# and the vector store's own validity token, taken before and after the reads.
+# Anything else, or a read that failed, and the build reads for itself exactly as
+# without this. A prefetch is taken once; one nobody takes expires.
+
+#: An untaken prefetch is dropped after this long (a start that failed, a turn that
+#: resumed instead). It outlasts the slowest session start measured (~14 s).
+_MEMORY_PREFETCH_TTL_SECS = 60.0
+#: At most this many prefetches are held at once; the oldest goes first.
+_MEMORY_PREFETCH_MAX = 16
+#: The most text one held prefetch may carry. Above the largest protected ceiling a
+#: build admits (``_ResolvedCaps.protected_context`` at the 1M reference window, 500K),
+#: so a result the build could use whole is never dropped; with the count above it
+#: bounds held prefetch text at 16 x 512K characters.
+_MEMORY_PREFETCH_MAX_CHARS = 512_000
+
+
+@dataclass(frozen=True)
+class SessionMemoryReads:
+    """What :func:`read_session_memory` read for one session-start build."""
+
+    memory_ctx: str
+    activity: str
+    activity_ctx: str
+    activity_ranked: bool
+    omissions: dict[str, dict[str, Any]]
+
+    def chars(self) -> int:
+        """The text this result holds, for the size bound on a held prefetch."""
+        return len(self.memory_ctx) + len(self.activity) + len(self.activity_ctx)
+
+
+@dataclass
+class _MemoryPrefetch:
+    created: float
+    started: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    reads: SessionMemoryReads | None = None
+    inputs: tuple[Any, ...] | None = None
+    # The embedding budget the reads run under. The build that takes this prefetch
+    # cuts its deadline down to its own, so a slow embed gives up exactly when the
+    # build's own read would have.
+    work: Any = None
+
+
+_memory_prefetch_lock = threading.Lock()
+_memory_prefetches: dict[tuple[str | None, str, str], _MemoryPrefetch] = {}
+
+
+def _query_digest(query: str) -> str:
+    """The message as the prefetch table holds it: a fixed-size digest, never the text."""
+    return hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _prefetch_key(
+    workspace: str | None, memory_store: str | None, query: str
+) -> tuple[str | None, str, str]:
+    """The table key: the default store under one spelling, the message as its digest.
+
+    The dashboard turn names the default store ``"default"`` (its bindings), and the
+    build it feeds names it ``""`` (the execution record's ``legacy_name``) or
+    ``None``. All three are the one V1 store ``get_memory_for`` answers, so they key
+    one entry; any other name is a store of its own and keys as it is.
+    """
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    store = "" if not memory_store or memory_store == DEFAULT_MEMORY_STORE else memory_store
+    return (workspace, store, _query_digest(query))
+
+
+def read_session_memory(
+    memory: MemoryStore, caps: _budgets._ResolvedCaps, query: str, *, inject_activity: bool
+) -> SessionMemoryReads:
+    """The memory reads of one session-start build, in the order the build makes them.
+
+    Blocking. The omission records the reads make are returned rather than left in
+    the caller's collection, so a prefetch can hand them to the build that takes it.
+    """
+    from kiro_crew import context_omissions
+
+    with context_omissions.collect() as omissions:
+        memory_ctx = memory.get_context(
+            prefs_cap=caps.prefs,
+            projects_cap=caps.projects,
+            history_cap=caps.memory_history,
+            semantic_cap=caps.semantic,
+            episodic_cap=min(_budgets._EPISODIC_INJECT_CAP, caps.episodic),
+            query=query,
+            include_activity=False,
+            prefs_startup_cap=caps.prefs_startup,
+        )
+        activity = memory.activity_index()
+        activity_ctx = ""
+        activity_ranked = False
+        if inject_activity:
+            activity_ctx = memory.get_activity_context(
+                projects_cap=caps.projects,
+                history_cap=caps.memory_history,
+                semantic_cap=caps.semantic,
+                episodic_cap=min(_budgets._EPISODIC_INJECT_CAP, caps.episodic),
+                query=query,
+            )
+            activity_ranked = memory.ranks_activity_against(query)
+    return SessionMemoryReads(memory_ctx, activity, activity_ctx, activity_ranked, dict(omissions))
+
+
+def _lstat(path: Any) -> tuple[int, int] | None:
+    try:
+        st = os.lstat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _dir_lstat(path: Any) -> tuple[int, int, int] | None:
+    try:
+        with os.scandir(path) as entries:
+            stats = [entry.stat(follow_symlinks=False) for entry in entries]
+    except (OSError, TypeError, ValueError):
+        return None
+    return (
+        len(stats),
+        max((s.st_mtime_ns for s in stats), default=0),
+        sum(s.st_size for s in stats),
+    )
+
+
+def _admitted_file_stats(memory: MemoryStore) -> tuple[Any, ...] | None:
+    """The Markdown sources' metadata, or ``None`` when it cannot be read safely.
+
+    Taken only behind the memory reader's own admission: the local file seam's
+    root gate (a UNC workspace, a linked ancestor on Windows, a linked root or
+    history dir) and its leaf link check, then ``lstat`` with no link followed.
+    A store served by another file provider has no local metadata that tracks its
+    content, so it has none either. ``None`` means the prefetch is not used.
+    """
+    from kiro_crew.memory_files import LocalMemoryFiles
+    from kiro_crew.platform_compat import is_link_or_junction
+
+    try:
+        files = memory._files
+        if not isinstance(files, LocalMemoryFiles) or not files._read_root_guard():
+            return None
+        leaves = (memory._preferences_file, memory._projects_file)
+        if any(is_link_or_junction(leaf) for leaf in leaves):
+            return None
+        return (*(_lstat(leaf) for leaf in leaves), _dir_lstat(memory._history_dir))
+    except Exception:  # noqa: BLE001 - unreadable metadata is never a match
+        return None
+
+
+def _memory_read_inputs(
+    memory: MemoryStore, caps: _budgets._ResolvedCaps, query: str, inject_activity: bool
+) -> tuple[Any, ...] | None:
+    """Everything the reads depend on, compared whole between prefetch and build.
+
+    ``None`` when the Markdown sources' metadata cannot be read safely; nothing
+    then matches, so the build reads for itself.
+    """
+    file_stats = _admitted_file_stats(memory)
+    if file_stats is None:
+        return None
+    vector_store = memory.vector_store
+    return (
+        id(memory),
+        id(vector_store),
+        _query_digest(query),
+        inject_activity,
+        (
+            caps.prefs,
+            caps.projects,
+            caps.memory_history,
+            caps.semantic,
+            caps.episodic,
+            caps.prefs_startup,
+        ),
+        _date.today(),
+        file_stats,
+        _vector_token(vector_store),
+    )
+
+
+def _vector_token(vector_store: Any) -> tuple[Any, ...] | None:
+    """The vector store's own validity token for what its reads return.
+
+    The same token its scoring caches use: in-process generations every
+    scoring-relevant write bumps, and ``PRAGMA data_version``, which moves when
+    another connection commits. The reads' own access stamps move neither, so
+    the token is the same before and after a read nobody else wrote during.
+    """
+    if vector_store is None:
+        return None
+    try:
+        data_version = vector_store._sqlite_data_version()
+        token = (
+            vector_store._semantic_scoring_generation,
+            vector_store._episodic_scoring_generation,
+            vector_store._space_generation,
+            data_version,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable token is never a match
+        data_version = None
+    # No data_version means another process's write cannot be seen: never a match.
+    return token if data_version is not None else (object(),)
+
+
+def reserve_memory_prefetch(workspace: str | None, memory_store: str | None, query: str) -> None:
+    """Mark a prefetch for this message as coming, before it is submitted.
+
+    Reserved on the loop so a build that runs before the prefetch thread starts
+    finds it not started and reads for itself instead of waiting.
+    """
+    now = time.monotonic()
+    with _memory_prefetch_lock:
+        for key in [
+            k for k, p in _memory_prefetches.items() if now - p.created > _MEMORY_PREFETCH_TTL_SECS
+        ]:
+            del _memory_prefetches[key]
+        while len(_memory_prefetches) >= _MEMORY_PREFETCH_MAX:
+            del _memory_prefetches[next(iter(_memory_prefetches))]
+        _memory_prefetches[_prefetch_key(workspace, memory_store, query)] = _MemoryPrefetch(
+            created=now
+        )
+
+
+def discard_memory_prefetch(workspace: str | None, memory_store: str | None, query: str) -> None:
+    """Drop a prefetch nobody will take (the session start failed)."""
+    with _memory_prefetch_lock:
+        _memory_prefetches.pop(_prefetch_key(workspace, memory_store, query), None)
+
+
+def prefetch_session_memory(
+    builder: ContextBuilder, text: str, *, workspace: str | None, memory_store: str | None
+) -> None:
+    """Do the reads for a reserved prefetch. Blocking; a failure only costs the head start.
+
+    Only for a non-member session, the one :func:`session_memory_parts` reads through
+    ``get_memory_for``, under the same config gates.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.embeddings import embedding_work
+
+    key = _prefetch_key(workspace, memory_store, text)
+    with _memory_prefetch_lock:
+        entry = _memory_prefetches.get(key)
+    if entry is None:
+        return
+    # ``memory.startup_recall_timeout_secs: 0`` turns the early embedding off, and
+    # these reads would embed the message just as early: never started, so the
+    # build reads (and embeds) for itself without waiting.
+    if _budgets._startup_recall_timeout_secs() <= 0:
+        return
+    entry.work = embedding_work.get()
+    entry.started.set()
+    try:
+        cfg = ctx.KiroCrewConfig.load()
+        if _inclusion._group_included(
+            ctx._config_scoped_groups(None, cfg), _inclusion.CONTEXT_GROUP_MEMORY
+        ):
+            memory = builder.get_memory_for(workspace, memory_store)
+            # The memory caps do not depend on the model window (_resolve_caps_cached).
+            caps = ctx._resolve_caps(None)
+            inject_activity = bool(cfg.memory.inject_activity)
+            before = _memory_read_inputs(memory, caps, text, inject_activity)
+            if before is None:
+                return
+            reads = read_session_memory(memory, caps, text, inject_activity=inject_activity)
+            # A write DURING the reads may have landed after a source was read, so
+            # the result is kept only when nothing moved across the whole read.
+            # Held only up to a fixed size: a preferences file has no size limit of
+            # its own, and up to _MEMORY_PREFETCH_MAX results can wait to be taken.
+            # A larger one is dropped and its build reads for itself.
+            unchanged = _memory_read_inputs(memory, caps, text, inject_activity) == before
+            if unchanged and reads.chars() <= _MEMORY_PREFETCH_MAX_CHARS:
+                entry.reads = reads
+                entry.inputs = before
+    except Exception:  # noqa: BLE001 - the build reads for itself
+        entry.reads = None
+        logger.debug("Session memory was not read early", exc_info=True)
+    finally:
+        entry.done.set()
+
+
+def _take_memory_prefetch(
+    memory: MemoryStore,
+    caps: _budgets._ResolvedCaps,
+    *,
+    workspace: str | None,
+    memory_store: str | None,
+    query: str,
+    inject_activity: bool,
+) -> SessionMemoryReads | None:
+    """The prefetched reads for this build, or ``None`` to read as usual.
+
+    A prefetch that never started is not waited for. One still running started
+    earlier than this build could, so it is joined, not restarted: a fresh read
+    would queue the same work behind it on the same pool. Its embedding deadline
+    is cut to this build's own, and the join ends at
+    ``_PROMPT_BUILD_EMBED_TIMEOUT_SECS`` (at this build's own deadline when the
+    prefetch recorded no deadline to cut); past it the build reads for itself. A
+    prefetch older than its TTL is not taken.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.embeddings import embedding_work
+
+    with _memory_prefetch_lock:
+        entry = _memory_prefetches.pop(_prefetch_key(workspace, memory_store, query), None)
+    if entry is None or not entry.started.is_set():
+        return None
+    if time.monotonic() - entry.created > _MEMORY_PREFETCH_TTL_SECS:
+        return None
+    # The reads wait for the first message's embedding only as long as this build
+    # would: a joined embed polls the deadline, so cutting it here ends that wait at
+    # the build's own deadline and the reads rank by keyword, as the build's would.
+    own = embedding_work.get()
+    bound = ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
+    if own is not None:
+        if entry.work is not None:
+            # Once cut, what the prefetch reads past this deadline is the keyword
+            # read this build would make itself, already under way. So the join
+            # keeps the long bound rather than run that read a second time beside it.
+            entry.work.deadline = min(entry.work.deadline, own.deadline)
+        else:
+            # Nothing to cut: the join ends at this build's own deadline, so it never
+            # waits past what this build would have spent reading for itself.
+            bound = min(bound, own.deadline - time.monotonic())
+    if not entry.done.wait(max(0.0, bound)):
+        return None
+    if (
+        entry.reads is None
+        or entry.inputs is None
+        or entry.inputs != _memory_read_inputs(memory, caps, query, inject_activity)
+    ):
+        return None
+    return entry.reads
+
+
+def _lessons_renderer(
+    builder: ContextBuilder,
+    *,
+    memory: MemoryStore | None,
+    member_vectors: VectorMemoryStore | None,
+    activity_ranked: bool,
+    workspace: str | None,
+    memory_store: str | None,
+    project: str | None,
+    caps: _budgets._ResolvedCaps,
+    query_text: str,
+) -> Callable[[int], str]:
+    """The lessons renderer for whichever store answers: member, vector, named or global JSONL.
+
+    Shared by the session-start block and its post-compaction copy, so both read
+    the same store under the same population rule. The renderer takes the hard
+    character cap it may fill.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    # V1 only: the JSONL store answers when the vector store is absent OR not yet
+    # populated, and stays silent once it holds lessons.
+    #
+    # Two real failures pull in opposite directions here and both are
+    # avoided by keying on POPULATION rather than on the rendered result.
+    # Keying on "the render came back empty" lets the JSONL store speak for
+    # a live store whose rows were simply all out of scope, re-injecting
+    # rows deleted from it. Keying on "a store object exists" instead
+    # silences saved corrections while a first-boot migration is still
+    # filling that store. Population tells the two apart: no rows at all
+    # means the JSONL store is still the authority, rows-but-none-in-scope
+    # means this store already answered.
+    if member_vectors is not None:
+        member_store = member_vectors
+
+        def _render_member_lessons(hard_cap: int) -> str:
+            return member_store.get_lessons_context(
+                query_text=query_text,
+                cap=caps.lessons,
+                project_dir=project,
+                background=True,
+                hard_cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+            )
+
+        return _render_member_lessons
+    elif memory is not None and memory.vector_store and memory.vector_store.has_any_lesson():
+        vector_store = memory.vector_store
+        # Only after the activity block ranked against the first message:
+        # when that ranking embedded it, the shared cache can answer
+        # without a second inference. Built once, outside the renderer,
+        # because the renderer runs again when the protected ceiling trims
+        # lessons.
+        vector_query = vector_store.startup_lesson_query(query_text) if activity_ranked else None
+
+        def _render_vector_lessons(hard_cap: int) -> str:
+            return vector_store.get_lessons_context(
+                query_text=query_text,
+                cap=caps.lessons,
+                project_dir=project,
+                recall_query=vector_query,
+                background=True,
+                hard_cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+            )
+
+        return _render_vector_lessons
+    elif ctx._resolved_store_name(memory_store):
+        lesson_store = builder.get_lessons_for(workspace, memory_store)
+
+        def _render_named_jsonl_lessons(hard_cap: int) -> str:
+            return lesson_store.get_context(
+                project_dir=project,
+                cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+                query_text=query_text,
+            )
+
+        return _render_named_jsonl_lessons
+    else:
+
+        def _render_default_jsonl_lessons(hard_cap: int) -> str:
+            return builder.lessons.get_context(
+                project_dir=project,
+                cap=hard_cap,
+                directive_budget=caps.lessons_startup,
+                experience_budget=caps.lesson_experience,
+                query_text=query_text,
+            )
+
+        return _render_default_jsonl_lessons
+
+
+def compaction_lessons_block(
+    builder: ContextBuilder,
+    *,
+    private: bool,
+    blocks_reads: bool,
+    context_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    project: str | None,
+    model_window: int | None,
+    essentials: str,
+    query_text: str,
+) -> str:
+    """The session-start lessons block again, for the first turn after a compaction.
+
+    The compaction dropped the ``[Learned corrections]`` and ``[Learned
+    experience]`` blocks with the rest of session start. This renders them from
+    the store that answers at session start (see :func:`_lessons_renderer`), under
+    the same gates: nothing on a read-blocked (temporary or incognito) turn,
+    nothing when the operator's config or the caller's context groups withhold
+    lessons, and nothing for a private member whose own store is not prepared --
+    Global lessons never stand in for it. The startup budgets apply, ranked
+    against *query_text*. A store that cannot be read costs the block, never the
+    turn.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    if blocks_reads:
+        return ""
+    if not _inclusion._group_included(
+        ctx._config_scoped_groups(context_groups), _inclusion.CONTEXT_GROUP_LESSONS
+    ):
+        return ""
+    try:
+        memory: MemoryStore | None = None
+        member_vectors: VectorMemoryStore | None = None
+        if private:
+            member_vectors = ctx._vector_stores.get(memory_store or "")
+            if member_vectors is None:
+                return ""
+        else:
+            memory = builder.get_memory_for(workspace, memory_store)
+        caps = ctx._resolve_caps(model_window)
+        renderer = _lessons_renderer(
+            builder,
+            memory=memory,
+            member_vectors=member_vectors,
+            activity_ranked=False,
+            workspace=workspace,
+            memory_store=memory_store,
+            project=project,
+            caps=caps,
+            query_text=query_text,
+        )
+        return renderer(max(1, caps.protected_context - len(essentials)))
+    # Both libraries: the stores use the compat module (pysqlite3 where installed),
+    # and a store on the stdlib one raises its own Error class, which the compat
+    # module's does not catch (see sqlite_wal._OPERATIONAL_ERRORS).
+    except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error, _stdlib_sqlite3.Error):
+        logger.warning("Post-compaction lessons skipped: the lesson store could not be read")
+        return ""
+
+
 def session_lessons_part(
     builder: ContextBuilder,
     blocks: _budgets.ContextParts,
@@ -365,7 +880,6 @@ def session_lessons_part(
 
     parts = blocks.parts
     protected_parts = blocks.protected
-    append_required = blocks.append_required
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated
     # by the same project scope the skill loader applies. A lesson with no
     # ``repo_scope`` applies everywhere; a scoped one reaches only sessions
@@ -387,83 +901,17 @@ def session_lessons_part(
     if (memory is not None or member_vectors is not None) and _inclusion._group_included(
         effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
     ):
-        # V1 only: the JSONL store answers when the vector store is absent OR not yet
-        # populated, and stays silent once it holds lessons.
-        #
-        # Two real failures pull in opposite directions here and both are
-        # avoided by keying on POPULATION rather than on the rendered result.
-        # Keying on "the render came back empty" lets the JSONL store speak for
-        # a live store whose rows were simply all out of scope, re-injecting
-        # rows deleted from it. Keying on "a store object exists" instead
-        # silences saved corrections while a first-boot migration is still
-        # filling that store. Population tells the two apart: no rows at all
-        # means the JSONL store is still the authority, rows-but-none-in-scope
-        # means this store already answered.
-        if member_vectors is not None:
-            member_store = member_vectors
-
-            def _render_member_lessons(hard_cap: int) -> str:
-                return member_store.get_lessons_context(
-                    query_text=query_text,
-                    cap=caps.lessons,
-                    project_dir=project,
-                    background=True,
-                    hard_cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                )
-
-            lessons_renderer = _render_member_lessons
-        elif memory is not None and memory.vector_store and memory.vector_store.has_any_lesson():
-            vector_store = memory.vector_store
-            # Only after the activity block ranked against the first message:
-            # when that ranking embedded it, the shared cache can answer
-            # without a second inference. Built once, outside the renderer,
-            # because the renderer runs again when the protected ceiling trims
-            # lessons.
-            vector_query = (
-                vector_store.startup_lesson_query(query_text) if activity_ranked else None
-            )
-
-            def _render_vector_lessons(hard_cap: int) -> str:
-                return vector_store.get_lessons_context(
-                    query_text=query_text,
-                    cap=caps.lessons,
-                    project_dir=project,
-                    recall_query=vector_query,
-                    background=True,
-                    hard_cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                )
-
-            lessons_renderer = _render_vector_lessons
-        elif ctx._resolved_store_name(memory_store):
-            lesson_store = builder.get_lessons_for(workspace, memory_store)
-
-            def _render_named_jsonl_lessons(hard_cap: int) -> str:
-                return lesson_store.get_context(
-                    project_dir=project,
-                    cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                    query_text=query_text,
-                )
-
-            lessons_renderer = _render_named_jsonl_lessons
-        else:
-
-            def _render_default_jsonl_lessons(hard_cap: int) -> str:
-                return builder.lessons.get_context(
-                    project_dir=project,
-                    cap=hard_cap,
-                    directive_budget=caps.lessons_startup,
-                    experience_budget=caps.lesson_experience,
-                    query_text=query_text,
-                )
-
-            lessons_renderer = _render_default_jsonl_lessons
-
+        lessons_renderer = _lessons_renderer(
+            builder,
+            memory=memory,
+            member_vectors=member_vectors,
+            activity_ranked=activity_ranked,
+            workspace=workspace,
+            memory_store=memory_store,
+            project=project,
+            caps=caps,
+            query_text=query_text,
+        )
         protected_before_lessons = len(essentials) + sum(
             len(parts[index]) for index in protected_parts
         )
@@ -484,7 +932,9 @@ def session_lessons_part(
             lessons_ctx = ""
         if lessons_ctx:
             lessons_part_index = len(parts)
-            append_required(lessons_ctx)
+            # The rule tier has its own window-independent allowance
+            # (``_LESSONS_STARTUP_CAP``); it is not charged to the background pool.
+            blocks.append_authored(lessons_ctx)
     return lessons_renderer, lessons_part_index
 
 

@@ -242,6 +242,17 @@ export interface ChatSlot extends TurnIdentityFields {
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
   created_by?: string
+  /** True on a Crew Mode root: a root session running a conductor template
+   *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
+  crew_mode_root?: boolean
+  /** On a session a Crew Mode root dispatched (directly or through another
+   *  worker): that root's key. The person's session list leaves such a row out;
+   *  the side panel lists it under its root. Absent on every other row. */
+  crew_root?: string
+  /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
+   *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
+   *  the configured `agent.crew_mode_agent`. */
+  crew_mode_agent?: string
   /** Whether THIS gateway process stamped `created_by` at mint, rather than
    * rehydrating it from the transcript. `created_by` is restored from a metadata
    * line an agent's file tools can edit, so on its own it is a claim; this says
@@ -249,6 +260,9 @@ export interface ChatSlot extends TurnIdentityFields {
    * before nesting a row that has no session-tree node yet — a child between
    * `session_create` and its first turn, which has no crew log to fold. */
   lineage_minted?: boolean
+  /** A worker tab's process: held (`live`) or stopped by the idle sweep
+   * (`released`); the conversation resumes on the next message either way. */
+  process?: 'live' | 'released'
   /** The user-owned "mute sessions it opens" rule. When true on a creating
    * session, every session it opens -- and anything those open, down the
    * `created_by` chain -- is muted for attention: no turn-done chime,
@@ -342,7 +356,7 @@ export interface ChatSlot extends TurnIdentityFields {
 }
 
 export interface ChatFolder {
-  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; default_destination_crew?: string; project_dir?: string; hidden?: boolean; history_count?: number
   /** Epoch seconds the folder was created, written by every folder creator since
    *  the sidebar's `created` sort existed. Absent on a row from before that; such
    *  a row sorts as older than every stamped one. Read only through
@@ -402,7 +416,9 @@ export interface SideSnapshot {
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
   messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean }>
-  queue?: Array<{ id: string; content: string; ts: string }>
+  /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
+   *  can tell which of two copies of the entry is newer. */
+  queue?: Array<{ id: string; content: string; ts: string; rev?: number }>
 }
 
 export interface ChatMessage {
@@ -586,12 +602,26 @@ export interface ContentBlock {
    * this to render the bookmark filled, link the title to /artifacts/<slug>,
    * and treat clicks as un-save rather than save. */
   slug?: string
+  /** This markdown block is one paragraph-bounded piece of the trailing
+   * markdown block. `from` is that block's startLine and `part` this piece's
+   * index, so a piece keeps its React key while lines above it are
+   * reclassified. Set while streaming, and after the stream ends in the view
+   * that streamed it; never on a message mounted already finished. */
+  split?: { from: number; part: number }
 }
 
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** OS-banner collapse tag the gateway stamps on every delivered note
+   *  (`native_notification_tag`). The service worker's Web Push banner carries
+   *  the same value, so one event shows one banner. Absent on client-made notes. */
+  tag?: string
   slot?: string; session_key?: string; slack_link?: string
+  /** A Crew Mode crew member's approval: the key of the crew member that waits.
+   *  `slot` then names its conductor, whose approval card is the only place it is
+   *  decided, so the note offers no Approve or Reject of its own. Client-made. */
+  crew_member?: string
   /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
   history_key?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
@@ -618,11 +648,15 @@ export interface NotificationChannel {
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
+  /** A coordinator record's instance: pins a decision to that one record. */
+  request_instance?: string
   tool_purpose?: string
   tool: string
   tool_input: string
   tool_kind: string
   request_id: string
+  /** "1" when the slot approve route would honor a `trust` decision for it. */
+  trust_grantable?: string
 }
 
 export interface SubagentInfo {
@@ -639,4 +673,99 @@ export interface SubagentInfo {
 
 export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
+}
+
+/** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */
+export interface CrewWorker {
+  key: string
+  title: string
+  agent: string
+  /** `working` while a turn runs, `needs_approval` while one waits on a tool
+   *  approval, `asking` while an old question card is open, `idle` otherwise,
+   *  `closed` once the tab is gone. */
+  status: 'working' | 'idle' | 'needs_approval' | 'asking' | 'closed'
+  /** The side panel's group: a tool approval only the person can give, moving,
+   *  waiting on its conductor, not started, finished. */
+  group: 'approval' | 'working' | 'with_conductor' | 'waiting' | 'done'
+  /** ISO time of the worker's last turn or message; "" when it has none yet. */
+  last_activity: string
+  /** The work-ledger item the worker is bound to, or "" when it is not bound. */
+  ledger_item: string
+  /** One line on the task: its latest report or title on the ledger, else its
+   *  last reply; "" when it has neither yet. */
+  summary?: string
+  /** The session that dispatched it: the root itself or another worker. */
+  created_by: string
+  /** Its direct dispatcher by the lineage the server walks (the parent edge,
+   *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
+  dispatched_by?: string
+}
+
+/** One bar on a Crew Mode timeline lane, from recorded transcript rows only. */
+export interface CrewTimelineSegment {
+  kind: 'turn' | 'tool' | 'waiting'
+  start: string
+  end: string
+  /** `recorded`: a row stamps the end. `next_row`: the end is not stamped, so the
+   *  bar stops at the next row the session wrote. `now`: still open. */
+  end_bound: 'recorded' | 'next_row' | 'now'
+  label: string
+}
+
+/** A point on a lane: an error row (`failed`) or a refused tool (`refused`). */
+export interface CrewTimelineMark {
+  kind: 'failed' | 'refused'
+  ts: string
+  label: string
+}
+
+/** One session's lane: the conductor first, then its workers. */
+export interface CrewTimelineLane {
+  key: string
+  title: string
+  agent: string
+  model: string
+  /** `served`: the backend reported it. `chosen`: the session's own pick.
+   *  `default`: the session runs the gateway default (`model` names it, `auto`
+   *  when the backend chooses). */
+  model_source: 'served' | 'chosen' | 'default'
+  role: 'conductor' | 'worker'
+  status: CrewWorker['status']
+  /** The Workers list's group for this session, by the same server rule. */
+  group: CrewWorker['group']
+  running: boolean
+  waiting: boolean
+  segments: CrewTimelineSegment[]
+  marks: CrewTimelineMark[]
+  credits: number
+  first_ts: string
+  last_ts: string
+  /** Older bars left out to bound the reply; 0 when every bar is here. */
+  dropped_segments: number
+  /** A closed worker's lane only: false when its saved transcript cannot be read,
+   *  so it has no bars to draw. */
+  record?: boolean
+}
+
+/** A dispatch: the sender's `session_send` call to the worker's seed row. */
+export interface CrewTimelineHandoff {
+  from: string
+  to: string
+  start: string
+  end: string
+}
+
+/** `GET /api/chat/slots/{root}/crew-timeline`. */
+export interface CrewTimeline {
+  root: string
+  now: string
+  live: boolean
+  started: string
+  ended: string
+  elapsed_ms: number
+  credits: number
+  lanes: CrewTimelineLane[]
+  handoffs: CrewTimelineHandoff[]
+  /** What the transcript does not record, so the view does not draw it. */
+  gaps: string[]
 }

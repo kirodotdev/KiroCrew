@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import sections as _sections
+from kiro_crew.context_assembly import store_admission as _store_admission
+from kiro_crew.context_assembly import tool_names as _tool_names
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -39,6 +41,7 @@ def post_compaction_parts(
     session_key: str | None,
     agent: str | None,
     project: str | None,
+    template_dir: str | None = None,
     mode: str,
     is_cc: bool,
     private_owner: bool,
@@ -54,19 +57,22 @@ def post_compaction_parts(
     provider_type: str | None,
     context_provider: Any,
     native_launch_sources: Collection[str],
+    query_text: str = "",
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
     The agent contract, the memory activity index, the skills index (same gate and
-    glob restriction as session start), the CURRENT reply-style preferences and the
-    CURRENT folder steering. The member section is re-injected by the caller,
-    through the member lifecycle chokepoint. Also starts the session's shown-lesson
-    record again, since the compaction dropped those blocks too.
+    glob restriction as session start), the learned-lessons block (same store,
+    gates and budgets as session start, ranked against *query_text*, the user's
+    own text for this turn), the CURRENT reply-style preferences and the CURRENT
+    folder steering. The member section is re-injected by the caller, through the
+    member lifecycle chokepoint. Also starts the session's shown-lesson record
+    again, from the lessons block re-sent here.
 
     A minimal-context turn (shared and guest channel turns, minimal crons) gets back
     only what its minimal session start carried: the agent contract and the
-    reply-style preferences. The operator's memory, skills and folder steering stay
-    out of a prompt other people read.
+    reply-style preferences. The operator's memory, lessons, skills and folder
+    steering stay out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -78,9 +84,11 @@ def post_compaction_parts(
     # compaction that drops it leaves the session with no contract.
     # Trusted content (managed contract or the user's own persona),
     # so no marker scrub — the session-start path applies none either.
+    # The contract's spec is found where session start found it: *template_dir*
+    # stands in for a missing project in this lookup only.
     _agent_prompt = builder._resolve_agent_prompt(
         agent,
-        project=project,
+        project=project or template_dir,
         mode=mode,
         session_key=session_key,
         is_cc=is_cc,
@@ -89,6 +97,11 @@ def post_compaction_parts(
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The tool-name rule went with the session start too, and the contract just
+    # restored names the tools bare again. Minimal turns carried it as well.
+    _tool_names_part = _tool_names.tool_names_block(provider_type)
+    if _tool_names_part:
+        parts.append(_tool_names_part)
     # The reply-style block is session-start context too, and unlike
     # the skills index its loss is invisible: the model simply drifts
     # back to default-length prose. Re-read the CURRENT setting so a
@@ -147,6 +160,32 @@ def post_compaction_parts(
                 + ctx._neutralize_structural_markers(skills_ctx)
                 + "\n[END REINJECTED]\n\n"
             )
+    # Lessons are session-start context too: the user's standing corrections
+    # went with the compaction, and nothing else brings them back (the
+    # per-message block only adds new matches, and is off by default).
+    _lessons_ctx = _store_admission.compaction_lessons_block(
+        builder,
+        private=private_owner,
+        blocks_reads=blocks_reads,
+        context_groups=context_groups,
+        workspace=workspace,
+        memory_store=memory_store,
+        project=project,
+        model_window=model_window,
+        essentials=_essentials,
+        query_text=query_text,
+    )
+    if _lessons_ctx:
+        if session_key and ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn:
+            # The block as sent: per-message lessons skip what it holds.
+            builder._remember_startup_lessons(session_key, _lessons_ctx)
+        # Lesson text is user- and agent-written: scrub the payload, keep the
+        # trusted wrapper outside it.
+        parts.append(
+            "[REINJECTED AFTER COMPACTION — learned corrections]\n"
+            + ctx._neutralize_structural_markers(_lessons_ctx)
+            + "\n[END REINJECTED]\n\n"
+        )
     if _prefs:
         parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
     # Folder steering is session-start context too, and unlike kiro's
@@ -260,7 +299,7 @@ def thread_context_parts(
         # the delimiter and forge a trusted continuation. Matching is
         # case-insensitive and whitespace-tolerant so lowercase / spaced
         # variants of the marker are neutralized too (not just the literal).
-        safe_parent = ctx._neutralize_structural_markers(
+        safe_parent = _markers._neutralize_context_payload(
             _markers._neutralize_fence_markers(thread_parent_text or "")
         )
         blocks.append(
@@ -321,6 +360,7 @@ def rail_parts(
     context_groups: frozenset[str] | None,
     board_tags: list[tuple[str, str]] | None,
     minimal_context: bool,
+    session_dashboard: str | None = None,
     folder_path: str | None,
     session_key: str | None,
     agent: str | None,
@@ -336,7 +376,36 @@ def rail_parts(
     parts: list[str] = []
     # Project context — inject on every message so the LLM always knows
     # the active project, even when set/changed after session start.
-    if project and _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT):
+    from kiro_crew.session_environment import remote_workspace_for
+
+    # A remote session works in the GUEST's directory; naming the gateway checkout
+    # (which its tools cannot reach) sent the model to the wrong machine. Values
+    # come from operator config (profile name, workdir).
+    remote = remote_workspace_for(session_key)
+    project_on = _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT)
+    if remote is not None and project_on:
+        env_name, env_workdir = remote
+        parts.append(
+            f"[PROJECT] This session runs in a remote environment ({env_name}). "
+            f"Its working directory is {env_workdir} on that remote machine, "
+            "reached only through the @workspace tools (read_file, write_file, "
+            "edit_file, list_directory, glob, grep, run_command). Files, commands, "
+            "the OS and installed tools all describe that remote machine. "
+            "Subagents you spawn run in the same remote environment. "
+            "The gateway machine that hosts you is a different computer, and "
+            "anything describing it (paths, host memory) is not this session's "
+            "workspace.\n\n"
+        )
+        from kiro_crew.session_environment import take_workspace_recreated
+
+        if take_workspace_recreated(session_key):
+            parts.append(
+                "[PROJECT] This session's remote workspace was recreated empty: files, "
+                "uncommitted changes and installed tools from earlier in this "
+                "conversation are gone. Re-clone or rebuild before relying on them; "
+                "anything pushed to git is still on its remote.\n\n"
+            )
+    elif project and project_on:
         parts.append(
             f"[PROJECT] Active project directory: {project}\n"
             "This is the codebase you are working in for this session. "
@@ -379,6 +448,14 @@ def rail_parts(
                 f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
             )
 
+    # The root session's own dashboard page -- the `[DASHBOARD]` block a crewmate gets
+    # inside its member section, built by `dashboard_agentic.session_turn_block` for the
+    # session's store key. Every turn, so the page the side panel Overview shows is
+    # known even after a page is adopted mid-chat. Built by the caller, which owns the
+    # slot and the root test; empty for a session that adopted no page.
+    if session_dashboard and not minimal_context:
+        parts.append(session_dashboard.rstrip("\n") + "\n\n")
+
     # Resource pressure — inject a compact advisory ONLY when a host ceiling
     # is near: memory tight/critical, the agent slice close to its cgroup task
     # ceiling, or the macOS kernel reporting memory pressure of WARN or worse,
@@ -393,7 +470,22 @@ def rail_parts(
             from kiro_crew.resource_status import probe as _probe_resources
 
             _rstatus = _probe_resources()
-            _rline = _rstatus.context_line()
+            _wsmem = None
+            if remote is not None and _rstatus.pressure_gb > 0:
+                from kiro_crew.session_environment import (
+                    REMOTE_MEMORY_MAX_AGE_SECS,
+                    refresh_remote_memory_soon,
+                    remote_memory_for,
+                )
+
+                # Cached only: the read never waits on the remote machine.
+                # A stale reading is still used (it ages out at 5 minutes)
+                # while a background refresh replaces it for the next turn.
+                _cached = remote_memory_for(session_key)
+                if _cached is not None and _cached[2] < 5 * REMOTE_MEMORY_MAX_AGE_SECS:
+                    _wsmem = (_cached[0], _cached[1])
+                refresh_remote_memory_soon(session_key)
+            _rline = _rstatus.context_line(remote=remote is not None, workspace_memory=_wsmem)
             if _rline:
                 parts.append(_rline + "\n\n")
                 logger.info(
@@ -453,7 +545,7 @@ def rail_parts(
     # persona) travels through an explicit prefix channel rather than being
     # appended after the user's text, so the authoritative user slice owns EOF.
     if request_prefix_context:
-        parts.append(ctx._neutralize_structural_markers(request_prefix_context))
+        parts.append(_markers._neutralize_context_payload(request_prefix_context))
         # The prefix is caller-shaped text: a `$skill` body arrives with its
         # frontmatter stripped and `.strip()`ed, so it ends mid-line. Every
         # block the assembly emits opens at the start of a line, and the

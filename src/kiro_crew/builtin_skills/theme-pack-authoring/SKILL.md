@@ -1,6 +1,6 @@
 ---
 name: theme-pack-authoring
-description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 56-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
+description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 60-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
 triggers: theme pack, custom theme, theme.json, variables.json, overrides.css, install theme, theme font, dashboard theme, build a theme
 ---
 
@@ -16,7 +16,7 @@ real debugging time.
 ```
 my-theme/
 ├── theme.json          # manifest: slug, name, emoji, level, formatVersion, fonts[]
-├── variables.json      # dark + light palettes (56 allowlisted CSS vars)
+├── variables.json      # dark + light palettes (60 allowlisted CSS vars)
 ├── readme.md           # optional; attribution and notes
 ├── styles/
 │   ├── overrides.css   # optional; scoped structural CSS (see allowlist below)
@@ -53,7 +53,10 @@ Kiro Crew maps these names to bundled Lucide symbols and keeps the stock
 cross-fading carousel; packs cannot inject loader code or SVG through this field.
 To ship your own loader art instead, put 1–8 `.png`/`.webp`/`.gif`/`.svg` files
 in `loader/` (Level 1): one renders alone, 2–8 are cycled, and they win over
-`loaderIcons`. With neither, the default Kiro ghost poses remain.
+`loaderIcons`. With neither, the default Kiro ghost poses remain. Animated art
+(WebP/APNG/GIF, or SVG with its own animation) plays as authored, except under
+reduced motion: there Kiro Crew shows each image's first frame, held still, so
+make the first frame read as the loader at rest.
 
 ## Fonts — the role system (the ONLY supported route)
 
@@ -82,7 +85,7 @@ in `loader/` (Level 1): one renders alone, 2–8 are cycled, and they win over
 
 ## variables.json — the palette
 
-Two blocks, `dark` and `light`, each holding up to **56 allowlisted variables**.
+Two blocks, `dark` and `light`, each holding up to **60 allowlisted variables**.
 Required minimum per block: `--bg`, `--text`, `--accent`. Unknown keys are
 REJECTED (install fails), so do not invent variables; the allowlist is
 `_THEME_CSS_VARS` in `kiro_crew/dashboard/theme_validate.py`.
@@ -98,12 +101,16 @@ REJECTED (install fails), so do not invent variables; the allowlist is
 - Two terminal hues (`--term-magenta`, `--term-cyan`) and the seven `--diff-*`
   vars are allowlisted too. The other fourteen terminal colors are derived from
   `--bg` / `--text` / `--danger` / `--ok` / `--warn` / `--info`, so a pack that
-  wants its own terminal palette sets only those two.
+  wants its own terminal palette sets only those two. To colour the terminal
+  surface itself independently of the agent chat, set `--term-bg`, `--term-fg`,
+  `--term-cursor` and `--term-selection`; each falls back to `--bg`, `--text`,
+  `--accent` and `--accent-subtle` respectively, so a pack that omits them keeps
+  today's terminal colors.
 
 ### Omitted tokens are derived from your palette
 
 You only have to declare the three required vars, so most packs omit most of the
-56. Those omissions are **derived from your own `--bg` / `--text` / `--accent`**
+60. Those omissions are **derived from your own `--bg` / `--text` / `--accent`**
 by `buildCustomThemeCss` (`website/src/hooks/themeCss.ts`) — they are not
 inherited from a built-in theme:
 
@@ -178,7 +185,8 @@ not against the count of 6.
 
 Beyond `theme.json`, `variables.json`, `readme.md`, `styles/` and `LICENSE.txt`,
 the classifier also recognizes `branding/logo.{svg,png}`,
-`branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}` and
+`branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}`,
+`branding/welcome.{svg,png,webp,gif}` and
 `branding/preview.{png,webp}` and `loader/*.{png,webp,gif,svg}` (max 8) at
 level 1, and `persona.md`, `overlays/*.html`,
 `topbar/{dark,light}.html`, `audio/manifest.json` and `audio/*.{mp3,ogg,wav}` at

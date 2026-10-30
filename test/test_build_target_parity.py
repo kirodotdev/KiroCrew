@@ -25,7 +25,9 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # Targets that exist for make's own bookkeeping rather than as a build action a
 # user invokes. ``all`` is make's default-goal convention; make.ps1 spells the
 # same default as its ``$Target`` parameter default, not as a switch arm.
-_MAKE_ONLY_TARGETS = frozenset({"all"})
+# ``check-edition`` is a prerequisite of the packaging targets, not a target a
+# user runs; on Windows setup.py's own check covers KIROCREW_BUILD_EDITION.
+_MAKE_ONLY_TARGETS = frozenset({"all", "check-edition"})
 
 
 def _makefile_targets() -> set[str]:

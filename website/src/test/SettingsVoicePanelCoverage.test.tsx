@@ -2,8 +2,8 @@
  * Coverage pass over Settings ▸ Voice (`pages/settings/VoicePanel.tsx`).
  *
  * Nothing mounted this panel before, so every branch was unexecuted: the load
- * error + retry arm, the skeleton arm, both provider field sets (Piper and
- * Amazon Polly), the optimistic `voice-config-changed` broadcast, the rollback
+ * error + retry arm, the skeleton arm, both provider field sets (the built-in
+ * engine and Amazon Polly), the optimistic `voice-config-changed` broadcast, the rollback
  * on a failed save, the engine-compatibility fold when a voice changes, and the
  * live Polly catalogue vs. the offline fallback list.
  *
@@ -16,6 +16,7 @@
  *  - `renderWithProviders` supplies a QueryClient with `retry: false`, so a
  *    rejected query surfaces on the first attempt.
  */
+import { Profiler } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 
@@ -52,17 +53,13 @@ type VoiceConfig = Awaited<ReturnType<typeof api.voiceConfig>>
 function config(over: Record<string, unknown> = {}) {
   return {
     enabled: false,
-    provider: 'piper',
+    provider: 'system',
     voice: 'Ruth',
     engine: 'generative',
     rate: '100%',
     autoSpeak: false,
     aws_profile: '',
     region: '',
-    piper_binary: '',
-    piper_model: '',
-    piper_model_config: '',
-    piper_length_scale: 1.0,
     system_voice: '',
     ...over,
   } as VoiceConfig
@@ -98,6 +95,8 @@ interface SeedOpts {
   systemUnavailable?: boolean
   /** Reject the host-voice probe, driving the inline notice + retry. */
   systemVoicesFail?: boolean
+  /** Called once per commit of the panel, after the DOM is written. */
+  onCommit?: () => void
 }
 
 function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
@@ -122,7 +121,13 @@ function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
   if (opts.saveFails) save.mockRejectedValue(new Error('write refused'))
   else save.mockImplementation(async (patch: object) => ({ ...cfg, ...patch }) as VoiceConfig)
 
-  const view = renderWithProviders(<VoicePanel />)
+  // `onRender` runs in the commit phase, after the DOM is written and before
+  // passive effects, so a probe there sees exactly what one commit shows.
+  const view = renderWithProviders(
+    <Profiler id="voice" onRender={() => opts.onCommit?.()}>
+      <VoicePanel />
+    </Profiler>,
+  )
   return { ...view, cfg, load, voices, systemVoices, save }
 }
 
@@ -166,67 +171,6 @@ describe('VoicePanel load states', () => {
   })
 })
 
-/* ── Piper (default provider) ─────────────────────────────────────────────── */
-
-describe('VoicePanel piper fields', () => {
-  it('renders the piper field set and no Polly-only fields', async () => {
-    seed({ piper_model: '/m.onnx', piper_binary: '/usr/bin/piper' })
-    await field('Piper Model')
-    await field('Piper Binary')
-    expect(select(/^Speed$/)).toBeTruthy()
-    expect(screen.queryByRole('combobox', { name: /^Voice$/ })).toBeNull()
-    expect(screen.queryByRole('combobox', { name: /^Engine$/ })).toBeNull()
-    expect(screen.queryByText('AWS Profile (Amazon Polly)')).toBeNull()
-  })
-
-  it('does not fetch the Polly catalogue for a piper user', async () => {
-    const { voices } = seed()
-    await field('Piper Model')
-    expect(voices).not.toHaveBeenCalled()
-  })
-
-  it('seeds the local input state from the loaded config', async () => {
-    seed({ piper_model: '/models/en.onnx', piper_binary: '/opt/piper' })
-    await field('Piper Model')
-    await waitFor(() => {
-      expect((screen.getByDisplayValue('/models/en.onnx') as HTMLInputElement).tagName).toBe('INPUT')
-    })
-    expect(screen.getByDisplayValue('/opt/piper')).toBeTruthy()
-  })
-
-  it('saves a trimmed piper model path on blur', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    const input = screen.getByPlaceholderText('~/piper/en_US-lessac-medium.onnx')
-    fireEvent.change(input, { target: { value: '  /models/new.onnx  ' } })
-    fireEvent.blur(input)
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_model: '/models/new.onnx' }))
-  })
-
-  it('saves a trimmed piper binary path on blur', async () => {
-    const { save } = seed()
-    await field('Piper Binary')
-    const input = screen.getByPlaceholderText('(auto-detect)')
-    fireEvent.change(input, { target: { value: ' /usr/local/bin/piper ' } })
-    fireEvent.blur(input)
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_binary: '/usr/local/bin/piper' }))
-  })
-
-  it('writes the numeric length_scale behind the friendly speed label', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    await pick(/^Speed$/, 'Fastest')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_length_scale: 0.7 }))
-  })
-
-  it('switches provider to Amazon Polly from the dropdown', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    await pick(/^Provider$/, 'Amazon Polly (cloud)')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'polly' }))
-  })
-})
-
 /* ── System (built-in engine, the default provider) ───────────────────────── */
 
 describe('VoicePanel system fields', () => {
@@ -234,8 +178,6 @@ describe('VoicePanel system fields', () => {
     seed({ provider: 'system' })
     expect(await screen.findByRole('combobox', { name: /^Voice$/ })).toBeTruthy()
     expect(select(/^Speed$/)).toBeTruthy()
-    expect(screen.queryByText('Piper Model')).toBeNull()
-    expect(screen.queryByText('Piper Binary')).toBeNull()
     expect(screen.queryByRole('combobox', { name: /^Engine$/ })).toBeNull()
     expect(screen.queryByText('AWS Profile (Amazon Polly)')).toBeNull()
   })
@@ -247,8 +189,8 @@ describe('VoicePanel system fields', () => {
   })
 
   it('does not probe the host engine while another provider is selected', async () => {
-    const { systemVoices } = seed({ provider: 'piper' })
-    await field('Piper Model')
+    const { systemVoices } = seed({ provider: 'polly' })
+    await field('AWS Profile (Amazon Polly)')
     expect(systemVoices).not.toHaveBeenCalled()
   })
 
@@ -330,11 +272,21 @@ describe('VoicePanel system fields', () => {
     await waitFor(() => expect(systemVoices.mock.calls.length).toBeGreaterThan(calls))
   })
 
-  it('switches provider to Piper from the dropdown', async () => {
+  it('switches provider to Amazon Polly from the dropdown', async () => {
     const { save } = seed({ provider: 'system' })
     await screen.findByRole('combobox', { name: /^Voice$/ })
-    await pick(/^Provider$/, 'Piper (local, offline)')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'piper' }))
+    await pick(/^Provider$/, 'Amazon Polly (cloud)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'polly' }))
+  })
+
+  it('offers only the built-in engine and Amazon Polly', async () => {
+    // Piper was removed (#23154); the dropdown must not offer a provider the
+    // gateway no longer accepts.
+    seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    fireEvent.click(select(/^Provider$/))
+    const options = await screen.findAllByRole('option', undefined, { timeout: 5_000 })
+    expect(options.map(o => o.textContent)).toEqual(['System (built-in)', 'Amazon Polly (cloud)'])
   })
 })
 
@@ -381,7 +333,23 @@ describe('VoicePanel polly fields', () => {
     expect(select(/^Voice$/)).toBeTruthy()
     expect(select(/^Engine$/)).toBeTruthy()
     await waitFor(() => expect(voices).toHaveBeenCalled())
-    expect(screen.queryByText('Piper Model')).toBeNull()
+  })
+
+  it('shows the stored profile and region in the first commit that has the rows', async () => {
+    // The rows are seeded from the served config in the render that first has
+    // it, not latched by a later effect: a commit showing the rows empty is a
+    // frame a user can see and a test can land on.
+    const commits: { rows: boolean; profile: string | null; region: string | null }[] = []
+    seed({ provider: 'polly', aws_profile: 'voice-prod', region: 'eu-west-1' }, {
+      onCommit: () => {
+        const profile = screen.queryByLabelText('AWS Profile (Amazon Polly)') as HTMLInputElement | null
+        const region = screen.queryByLabelText('AWS Region (Amazon Polly)') as HTMLInputElement | null
+        commits.push({ rows: profile !== null, profile: profile?.value ?? null, region: region?.value ?? null })
+      },
+    })
+    await field('AWS Profile (Amazon Polly)')
+    const first = commits.find(c => c.rows)
+    expect(first).toEqual({ rows: true, profile: 'voice-prod', region: 'eu-west-1' })
   })
 
   it('labels catalogue voices as name (locale gender-initial)', async () => {
@@ -529,5 +497,49 @@ describe('VoicePanel save failure', () => {
     expect(banner).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     await waitFor(() => expect(screen.queryByText('Failed to save voice config')).toBeNull())
+  })
+})
+
+/* ── Language (edition providers) ────────────────────────────────────────── */
+
+/** A registered edition provider: the only kind that reads `language_code`. */
+const EDITION_PROVIDERS = [
+  { name: 'system', label: 'system', builtin: true, available: true, reason: null, action: null },
+  { name: 'polly', label: 'polly', builtin: true, available: true, reason: null, action: null },
+  { name: 'acme', label: 'Acme Speech', builtin: false, available: true, reason: null, action: null },
+]
+const LANGUAGE_CODES = ['', 'en-US', 'ja-JP', 'zh-CN']
+
+describe('VoicePanel language picker', () => {
+  it('offers the served codes with the provider default first, and saves the pick', async () => {
+    const { save } = seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language).toHaveTextContent('Provider default')
+
+    await pick(/^Language$/, 'Japanese (ja-JP)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ language_code: 'ja-JP' }))
+  })
+
+  it('carries its own setting id, so search highlights it and not the STT Language row', async () => {
+    seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language.closest('[data-setting-id]')?.getAttribute('data-setting-id')).toBe('voice.language-2')
+  })
+
+  it('shows a stored code as the selection', async () => {
+    seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: 'zh-CN', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language).toHaveTextContent('Chinese (zh-CN)')
+  })
+
+  it('leaves when a built-in provider is picked, since those speak the voice\'s own language', async () => {
+    const { cfg, load } = seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+
+    // The refetch after the save must read the saved provider, as the gateway would.
+    load.mockResolvedValue({ ...cfg, provider: 'system' })
+    await pick(/^Provider$/, 'System (built-in)')
+    await screen.findByRole('combobox', { name: /^Voice$/ }, { timeout: 5_000 })
+    expect(screen.queryByRole('combobox', { name: /^Language$/ })).toBeNull()
   })
 })

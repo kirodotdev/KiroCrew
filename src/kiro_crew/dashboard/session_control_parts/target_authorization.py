@@ -16,10 +16,11 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _app_owned_cron_refusal,
     _caller_is_ownership_fenced,
     _channel_link_of,
-    _created_by_other,
+    _conductor_fenced,
     _cron_caller,
-    _member_bypass,
+    _dispatch_bypass,
     _member_caller,
+    _outside_reach,
     _sel_off_loop,
     caller_slot_key,
     session_control_enabled,
@@ -671,7 +672,10 @@ def _broadcast_resolution_slots(
             continue
         if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
             continue
-        if ownership_fenced and _created_by_other(slot, caller_key):
+        # The same reach the delivery gate applies for ``send``: the manager, and with
+        # the chain switch on every manager above it, so a title two reachable
+        # sessions share is refused as ambiguous rather than resolved to one of them.
+        if ownership_fenced and _outside_reach(state, slot, caller_key, "send"):
             continue
         out.append(slot)
     return out
@@ -762,10 +766,12 @@ def refuse_caller_identity(
     # (default true = today's behaviour) is on. Turn that ceiling off and the
     # member falls back under the switch. The member's reach stays bounded by
     # the ownership check below, which restricts it to slots it created itself.
+    # The Conductor in the owner's own tab bypasses on the same terms
+    # (`_conductor_bypass`), and is fenced the same way while it does.
     if (
         not skip_enabled_check
         and not session_control_enabled()
-        and not _member_bypass(state, caller_key)
+        and not _dispatch_bypass(state, caller_key)
     ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
@@ -942,6 +948,11 @@ def _not_creator_reason(
         return "this session can only control sessions it created itself"
     elif _member_caller(state, caller_key):
         return "a crew member can only control worker sessions it created itself"
+    elif _conductor_fenced(state, caller_key):
+        return (
+            "with agent.session_control off, the Conductor can only control worker "
+            "sessions it created itself"
+        )
     else:
         return "an agent-created session can only control sessions it created itself"
 
@@ -1058,10 +1069,15 @@ def authorize_target(
     # waiver an agent-created session could never release itself from a parent,
     # because its own ``_created_by`` names its creator and not itself.
     self_addressed = slot.key == caller_key
-    if ownership_fenced and not self_addressed and _created_by_other(slot, caller_key):
+    if (
+        ownership_fenced
+        and not self_addressed
+        and _outside_reach(state, slot, caller_key, operation)
+    ):
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
-        # (`created_by` is written at birth and rehydrated on restart). Always
+        # (`created_by` is written at birth and rehydrated on restart), or, for the
+        # verbs that run a session, the sessions handed to it (`_outside_reach`). Always
         # enforced -- even when the global switch is on -- so no exemption
         # silently widens to the user's own sessions because of an unrelated
         # opt-in.

@@ -442,6 +442,61 @@ def wire_session_bind_listener(self: DashboardState) -> None:
     self.sessions.set_bind_listener(_on_bind)
 
 
+def wire_session_release_listener(self: DashboardState) -> None:
+    """Land a waiting model pick when a turn lease on its session ends.
+
+    The picker defers a pick that arrives mid-turn, and ``session_set_model``
+    queues one for the target's next turn; both were landed only at a DASHBOARD
+    turn boundary. A turn a channel (Slack, Discord, Telegram, Teams) or a cron
+    run drives passes none, so the live session kept the old model while the
+    picker showed the new one. Every surface ends a turn with
+    ``SessionManager.release``, which is the one transport-neutral point this
+    observer hangs on: the channel-neutral messaging layer stays untouched.
+
+    The observer itself only filters and schedules. It runs synchronously inside
+    ``release``, possibly off the loop thread, so the landing hops to the loop
+    captured here at wire time, the same way the unbind notice does. Slots with
+    nothing waiting cost one attribute read each; most releases match none.
+    """
+    # circular import: session_control imports dashboard modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        channel_pick_waits_on,
+        landing_holds_lease,
+        schedule_channel_pick_landing,
+    )
+
+    loop = asyncio.get_event_loop()
+
+    def _land(key: str) -> None:
+        for slot in list(self._slots.values()):
+            if slot.running:
+                # The slot's own dashboard turn, reserved or running, lands its pick
+                # at its own boundary.
+                continue
+            try:
+                waits = channel_pick_waits_on(self, slot, key)
+            except Exception:
+                logger.debug("Model pick probe failed for slot %s", slot.key, exc_info=True)
+                continue
+            if waits:
+                schedule_channel_pick_landing(self, slot)
+
+    def _on_release(key: str) -> None:
+        if landing_holds_lease(key):
+            # The landing's own lease ending: that is not a turn boundary.
+            return
+        if not any(
+            s._deferred_model_switch_key or s._pending_model_pick is not None
+            for s in list(self._slots.values())
+        ):
+            return
+        if loop.is_closed():
+            return
+        loop.call_soon_threadsafe(_land, key)
+
+    self.sessions.on_session_released = _on_release
+
+
 def wire_session_unbind_listener(self: DashboardState) -> None:
     """Register the channel notice for a removed inbound resume binding.
 
@@ -581,6 +636,7 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
     """
 
     async def _on_recycled(key: str, *, reason: str) -> None:
+        from kiro_crew.dashboard.chat_handlers import _has_conversation
         from kiro_crew.dashboard.chat_utils import (
             _broadcast_expired_oauth_banners,
             dashboard_slot_key,
@@ -597,17 +653,25 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             return
         message = _SESSION_RECYCLED_NOTICE.format(reason=reason)
         try:
+            # A tab starts its agent before the first message (eager spawn),
+            # and that idle tree can already sit over the RSS ceiling, so the
+            # watchdog can recycle a session nobody has talked to yet. The
+            # notice explains a reset of a conversation; on a tab with none it
+            # only makes a fresh "+ New" chat look broken. The banner
+            # verdict below still goes out: the recycle did end that child.
+            #
             # Tag kind="compaction" so the dashboard's follow-up [OPTIONS:]
             # backward scan skips this proactive system notice, matching the
             # auto-compact notice invariant. `notice` marks it as borrowing
             # the tag: it reports no compaction, so `is_turn_interrupted`
             # must not read it as a `/compact` request's result.
-            slot.append(
-                "assistant",
-                message,
-                "msg msg-a",
-                meta={"kind": "compaction", "notice": "session_recycled"},
-            )
+            if _has_conversation(slot):
+                slot.append(
+                    "assistant",
+                    message,
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "session_recycled"},
+                )
         except Exception:
             logging.getLogger("kiro_crew.dashboard.state").exception(
                 "Failed to append recycle notice to slot %s", slot_key

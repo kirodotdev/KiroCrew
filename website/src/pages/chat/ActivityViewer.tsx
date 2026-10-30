@@ -24,14 +24,16 @@ import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { slotRowByKey } from '../../store/slotIndex'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
 // that draws each one, on a tab most sessions never open. Fetched on first open
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
-// for its templates tab and `DeveloperPage` for the memory graph.
+// for its templates tab and `DeveloperPanel` for the memory graph.
 const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
@@ -797,13 +799,13 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   // Companion binding for this slot. Narrowed to the primitive so an unrelated
   // slot field changing (message count, running flag) can't re-render the tab.
   const boundArtifactSlug = useAppSelector(
-    s => s.dashboard.slots.find(x => x.key === slot)?.artifact || '',
+    s => slotRowByKey(s.dashboard.slots, slot)?.artifact || '',
   )
   // The sidebar folder this chat is filed in, if any: it adds a "Browse this
   // folder" link that opens the library scoped to the chats in that folder and
   // its sub-folders.
   const slotFolderId = useAppSelector(
-    s => s.dashboard.slots.find(x => x.key === slot)?.folder_id || '',
+    s => slotRowByKey(s.dashboard.slots, slot)?.folder_id || '',
   )
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
@@ -1170,7 +1172,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     queryKey: ['workflow-runs'],
     queryFn: () => api.workflowRuns().then(d => (Array.isArray(d?.runs) ? (d.runs as WfRunRow[]) : [])),
     enabled: open,
-    refetchInterval: 2500,
+    // Fast only on the Workflows view or while this chat has a running run;
+    // a slow heal tick otherwise, and no tick at all on a hidden tab.
+    refetchInterval: query => workflowRunsPollInterval(view ?? tab, query.state.data, slot),
+    refetchIntervalInBackground: false,
   })
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
@@ -1258,6 +1263,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('pages.chat.activityViewer.no_pull_requests_yet')}
+              {/* Says what the tab holds, so a first-time reader who expected
+                  edited files under "Changes" learns where those live. */}
+              <div className="mt-1 text-[12px] leading-snug">
+                {i18nT('pages.chat.activityViewer.changes_empty_hint')}
+              </div>
             </div>
           )}
         </div>

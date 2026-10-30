@@ -46,6 +46,10 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_server_md_notebook_facade")
 
+#: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
+#: the same for every facade, so it is written once there and parametrized per module.
+SHARED_FACADE_CHECKS = ("corpus_gate",)
+
 PKG = "kiro_crew.apps.builtins.md_notebook"
 FACADE = f"{PKG}.server"
 _THIS_FILE = Path(__file__).resolve()
@@ -240,16 +244,6 @@ def test_every_name_the_corpus_patches_through_the_facade_is_routed() -> None:
     assert sorted(KNOWN_SCANNED_SEAMS - corpus) == []
     routed = set(index.holders) | set(index.facade_only)
     assert sorted(corpus - routed) == []
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
 
 
 def _bindings(members: tuple[str, ...], name: str) -> dict[str, object]:

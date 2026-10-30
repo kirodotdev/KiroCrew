@@ -23,6 +23,7 @@ import { store as globalStore } from '../store'
 import { sseSlots, sseSlotsPartial, markSlotUnread, markSlotRead } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { sharedItem } from './unreadStorageTestUtils'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -69,7 +70,7 @@ const TS = '2026-01-01T00:00:00Z'
 
 const unread = () => globalStore.getState().dashboard.unreadSlots
 const unreadSince = (key: string) => globalStore.getState().dashboard.unreadSince[key]
-const persisted = () => Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}'))
+const persisted = () => Object.keys(JSON.parse(sharedItem('mc-unread-shared') ?? '{}'))
 const listed = () => globalStore.getState().dashboard.slots.map(s => s.key)
 
 describe('useWebSocket slotsPartial label', () => {

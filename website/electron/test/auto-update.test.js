@@ -675,6 +675,9 @@ test("#709: an in-flight re-check reports the PENDING version, not the running o
   await u.check();
   emit("update-available", { version: "1.1.0" });
   u.download(); // leave it in flight
+  // The click re-confirms the feed first; wait for that hand-off so a download really
+  // is in flight when the re-check below asks what is happening.
+  await new Promise((r) => setImmediate(r));
   states.length = 0;
   await u.check(); // must report progress, with the pending version
   const s = states.find((x) => x.state === "downloading");
@@ -991,11 +994,30 @@ test("the update runtime loads without Electron and without load-time effects", 
   const updateFiles = [nodePath.join(electronDir, "auto-update.js")];
   const runtimeDir = nodePath.join(electronDir, "runtime", "update");
   const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
-  assert.deepStrictEqual(owners, ["feed-lane.js", "managed-lane.js", "state-reporter.js"]);
-  const facade = nodeFs.readFileSync(updateFiles[0], "utf8");
+  assert.deepStrictEqual(owners, [
+    "feed-lane.js", "freshness-gate.js", "managed-lane.js", "policy-channel.js", "state-reporter.js",
+  ]);
+  // Who composes whom: the facade composes the two lanes and the reporter; the
+  // feed lane composes its own freshness gate, which the facade never sees; the
+  // IPC registrar reads the policy channel and hands it to the facade.
+  const composedBy = {
+    "feed-lane.js": { file: updateFiles[0], path: "./runtime/update/feed-lane" },
+    "managed-lane.js": { file: updateFiles[0], path: "./runtime/update/managed-lane" },
+    "state-reporter.js": { file: updateFiles[0], path: "./runtime/update/state-reporter" },
+    "freshness-gate.js": { file: nodePath.join(runtimeDir, "feed-lane.js"), path: "./freshness-gate" },
+    "policy-channel.js": {
+      file: nodePath.join(electronDir, "ipc-registrar.js"),
+      path: "./runtime/update/policy-channel",
+    },
+  };
   for (const owner of owners) {
     updateFiles.push(nodePath.join(runtimeDir, owner));
-    assert.match(facade, new RegExp(`require\\("\\./runtime/update/${owner.replace(/\.js$/, "")}"\\)`));
+    const { file, path } = composedBy[owner];
+    assert.match(
+      nodeFs.readFileSync(file, "utf8"),
+      new RegExp(`require\\("${path.replace(/[./]/g, "\\$&")}"\\)`),
+      `${nodePath.basename(file)} must compose ${owner}`,
+    );
     assert.doesNotMatch(
       nodeFs.readFileSync(nodePath.join(runtimeDir, owner), "utf8"),
       /__dirname|require\(\s*["'](?:\.\.\/\.\.\/)?auto-update["']\s*\)/,
@@ -1096,6 +1118,8 @@ test("getInfo and every lifecycle payload keep their key order", async () => {
     "channel",
     "stampedChannel",
     "channelSwitchable",
+    "channelLockedByPolicy",
+    "requiredChannel",
     "channelPreference",
     "laneVersion",
     "runningAheadOfLane",

@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 import yarl
 from aiohttp.test_utils import TestClient, TestServer
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 from md_notebook_helpers import _seed_template  # noqa: F401 - fixture
 from md_notebook_helpers import fixtures_fixture  # noqa: F401 - fixture
 from md_notebook_helpers import SECRET, _clone, _git, signed_client
@@ -37,6 +38,18 @@ from conftest import requires_symlinks
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
+
+
+def test_the_seed_template_keeps_auto_maintenance_off(
+    _seed_template: Path,  # noqa: F811 - the fixture imported above
+) -> None:
+    # The notebook runs git with its own env, and a push starts receive-pack in
+    # the remote without ours, so only each repo's own config reaches both.
+    for repo in ("remote.git", "seed"):
+        for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+            got = _git("config", "--local", "--get", key, cwd=_seed_template / repo)
+            assert (key, got) == (key, value), repo
+
 
 # ---------------------------------------------------------------------------
 # Health and auth
@@ -1400,3 +1413,65 @@ async def test_reads_a_note_with_non_finite_frontmatter(fixtures) -> None:
         assert status == 200, read
         fm = read["meta"]["frontmatter"]
         assert isinstance(fm["x"], str) and isinstance(fm["y"], str)
+
+
+class TestMdNotebookErrorRedaction:
+    """Error text that reaches the browser goes through ``_safe_error``, which
+    strips local paths and credentials but keeps the diagnosis."""
+
+    def test_absolute_paths_are_stripped(self):
+        """The dominant leak shape here. redact_credentials alone does NOT match
+        this, so a fix that only chains the credential/URL passes is cosmetic."""
+        from kiro_crew.apps.builtins.md_notebook import server as md_server
+
+        exc = FileNotFoundError(
+            "[Errno 2] No such file or directory: '/home/alice/.kiro/crew/vaults/v1'"
+        )
+        out = md_server._safe_error(exc)
+        assert "/home/alice" not in out
+        assert "alice" not in out
+        assert "No such file or directory" in out
+
+    def test_credentials_are_stripped(self):
+        from kiro_crew.apps.builtins.md_notebook import server as md_server
+
+        token = "sk-" + "abcdefghijklmnopqrstuvwxyz" + "012345"
+        exc = RuntimeError("Authorization: Bearer " + token)
+        assert token not in md_server._safe_error(exc)
+
+    def test_plain_message_survives(self):
+        from kiro_crew.apps.builtins.md_notebook import server as md_server
+
+        assert md_server._safe_error(ValueError("vault not found")) == "vault not found"
+
+    @pytest.mark.asyncio
+    async def test_both_middleware_branches_route_through_the_helper(self):
+        """The modeled and catch-all branches both reach the browser, so neither
+        may return raw exception text."""
+        from aiohttp import web
+
+        from kiro_crew.apps.builtins.md_notebook import server_http
+
+        leak = "/home/alice/.kiro/crew/vaults/v1"
+
+        class _Req:
+            path = "/api/notes"
+
+        async def _modeled(_request):
+            raise FileNotFoundError(f"[Errno 2] No such file or directory: '{leak}'")
+
+        async def _unmodeled(_request):
+            raise RuntimeError(f"boom while reading {leak}")
+
+        with pytest.raises(web.HTTPException) as modeled:
+            await server_http.error_middleware(_Req(), _modeled)
+        modeled_body = json.loads(modeled.value.text)
+        assert "alice" not in modeled_body["error"]
+        assert "No such file or directory" in modeled_body["error"]
+
+        resp = await server_http.error_middleware(_Req(), _unmodeled)
+        assert resp.status == 500
+        body = json.loads(resp.text)
+        assert body["code"] == "internal_error"
+        assert "alice" not in body["error"]
+        assert "boom while reading" in body["error"]

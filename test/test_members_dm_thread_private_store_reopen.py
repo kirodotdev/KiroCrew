@@ -647,7 +647,6 @@ async def test_fresh_private_thread_pin_failure_leaves_no_ghost_slot(tmp_path, m
     await asyncio.to_thread(configure)
     state = _make_state(tmp_path)
 
-    # Record the slot keys visible at each push_slots_update call.
     broadcast_snapshots: list[list[str]] = []
 
     _real_push = state.push_slots_update
@@ -670,7 +669,6 @@ async def test_fresh_private_thread_pin_failure_leaves_no_ghost_slot(tmp_path, m
         body = await resp.json()
 
     if fault == "pin_raises":
-        # The route returns 503 (store_unavailable).
         assert resp.status == 503, body
         assert body.get("code") == "store_unavailable"
     else:
@@ -682,7 +680,6 @@ async def test_fresh_private_thread_pin_failure_leaves_no_ghost_slot(tmp_path, m
     # pin runs before get_or_create_slot, so no slot is created on a refusal.
     lingering = [k for k in state._slots if k.startswith("member-")]
     assert not lingering, f"ghost slot(s) in _slots after refused open: {lingering}"
-    # No member slot reached any broadcast.
     ghost_broadcasts = [
         snap for snap in broadcast_snapshots if any(k.startswith("member-") for k in snap)
     ]

@@ -53,22 +53,21 @@ class TestModelBackfill:
     def test_bedrock_profile_detection(self, model, expected):
         assert chat_runner._is_bedrock_profile_id(model) is expected
 
-    def test_missing_provider_model_backfills_nothing(self):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            pytest.param("", id="test_missing_provider_model_backfills_nothing"),
+            pytest.param("auto", id="test_auto_sentinel_is_skipped"),
+            # Caching a resolved profile id would pin the slot to one region.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8[1m]",
+                id="test_profile_id_is_dropped_off_the_claude_code_path",
+            ),
+        ],
+    )
+    def test_unusable_model_backfills_nothing(self, model):
         client = MagicMock()
-        client.client._model = ""
-
-        assert chat_runner._backfill_canonical_model(client, "kiro") == ""
-
-    def test_auto_sentinel_is_skipped(self):
-        client = MagicMock()
-        client.client._model = "auto"
-
-        assert chat_runner._backfill_canonical_model(client, "kiro") == ""
-
-    def test_profile_id_is_dropped_off_the_claude_code_path(self):
-        """Caching a resolved profile id would pin the slot to one region."""
-        client = MagicMock()
-        client.client._model = "global.anthropic.claude-opus-4-8[1m]"
+        client.client._model = model
 
         assert chat_runner._backfill_canonical_model(client, "kiro") == ""
 
@@ -135,6 +134,19 @@ class TestRunChatLocalCommands:
         assert slot.messages[-1]["role"] == "done"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/issue", "/issue details from the user"])
+    async def test_issue_is_refused_before_session_acquisition(self, tmp_path, command):
+        state, client = _runner_state(tmp_path)
+        slot = _slot("issue-command")
+
+        await _drive(state, slot, command)
+
+        state.sessions.get_or_create.assert_not_awaited()
+        client.stream.assert_not_called()
+        client.stream_command.assert_not_called()
+        assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "provider,acp_backend,refused",
         [
@@ -173,7 +185,10 @@ class TestRunChatLocalCommands:
             await _drive(state, slot, "/todos")
 
         select_backend.assert_called_once_with(
-            chat_runner.effective_session_key(slot), cfg.agent.member_acp_backend, acp_backend
+            chat_runner.effective_session_key(slot),
+            cfg.agent.member_acp_backend,
+            acp_backend,
+            crew_backend=None,
         )
 
         notices = [
@@ -598,7 +613,7 @@ class TestRunChatLocalCommands:
             select_backend.assert_not_called()
         else:
             select_backend.assert_called_once_with(
-                chat_runner.effective_session_key(slot), "claude", ""
+                chat_runner.effective_session_key(slot), "claude", "", crew_backend=None
             )
 
     @pytest.mark.asyncio
@@ -688,6 +703,7 @@ class TestRunChatLocalCommands:
 
         state.sessions.mark_provider_switch_replay.assert_not_called()
         client.stream.assert_not_called()
+        assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
 
     def test_kiro_only_members_are_still_forwarded_once_unblocked(self):
         """The gate drops these for the claude harness; forwarding must then happen.
@@ -721,52 +737,53 @@ class TestRunChatLocalCommands:
         assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
-    async def test_goal_command_is_handled_locally(self, tmp_path):
+    async def test_goal_command_is_handled_locally(self, tmp_path, monkeypatch):
         state, client = _runner_state(tmp_path)
         slot = _slot()
+        # No AutoNudge service: the local handler answers with its own notice.
+        monkeypatch.setattr(chat_runner, "get_instance", lambda: None)
 
-        with patch.object(chat_runner, "_handle_goal_command", new=AsyncMock()) as handler:
-            await _drive(state, slot, "/goal ship the thing")
+        await _drive(state, slot, "/goal ship the thing")
 
-        handler.assert_awaited_once()
         state.sessions.get_or_create.assert_not_awaited()
+        assert any("Goal loops are unavailable" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
-    async def test_prompts_get_blocked_path_reports_a_sensitive_path(self, tmp_path):
+    @pytest.mark.parametrize(
+        "name,status,reported",
+        [
+            pytest.param(
+                "secret",
+                "blocked",
+                "sensitive path",
+                id="test_prompts_get_blocked_path_reports_a_sensitive_path",
+            ),
+            pytest.param(
+                "big",
+                "too_large",
+                "exceeds size limit",
+                id="test_prompts_get_too_large_path_reports_the_limit",
+            ),
+            pytest.param(
+                "nope",
+                "not_found",
+                "not found",
+                id="test_prompts_get_missing_prompt_reports_not_found",
+            ),
+        ],
+    )
+    async def test_prompts_get_refusal_is_reported_locally(self, tmp_path, name, status, reported):
         state, client = _runner_state(tmp_path)
         slot = _slot()
 
         with patch.object(
-            chat_runner, "_resolve_prompt_mention", return_value=("@secret", "blocked", "")
-        ):
-            await _drive(state, slot, "/prompts get secret")
+            chat_runner, "_resolve_prompt_mention", return_value=(f"@{name}", status, "")
+        ) as resolve:
+            await _drive(state, slot, f"/prompts get {name}")
 
-        assert any("sensitive path" in m.get("content", "") for m in slot.messages)
+        assert resolve.call_args.args[0] == f"@{name}"
+        assert any(reported in m.get("content", "") for m in slot.messages)
         state.sessions.get_or_create.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_prompts_get_too_large_path_reports_the_limit(self, tmp_path):
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-
-        with patch.object(
-            chat_runner, "_resolve_prompt_mention", return_value=("@big", "too_large", "")
-        ):
-            await _drive(state, slot, "/prompts get big")
-
-        assert any("exceeds size limit" in m.get("content", "") for m in slot.messages)
-
-    @pytest.mark.asyncio
-    async def test_prompts_get_missing_prompt_reports_not_found(self, tmp_path):
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-
-        with patch.object(
-            chat_runner, "_resolve_prompt_mention", return_value=("@nope", "not_found", "")
-        ):
-            await _drive(state, slot, "/prompts get nope")
-
-        assert any("not found" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
     async def test_prompts_listing_with_none_available(self, tmp_path):

@@ -12,8 +12,9 @@ from kiro_crew.mcp_core import _call_tool
 class TestSpawnRunSessionKeyRouting:
     def test_uses_env_var_when_set(self):
         """KIROCREW_SESSION_KEY env var is used as parent_session."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "sess-from-env"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "sess-from-env"}),
         ):
             mock_post.return_value = {"id": "agent1"}
 
@@ -25,8 +26,9 @@ class TestSpawnRunSessionKeyRouting:
     def test_falls_back_to_pid_file(self, tmp_path):
         import os
 
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch(
-            "pathlib.Path.home", return_value=tmp_path / "fake_home"
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch("pathlib.Path.home", return_value=tmp_path / "fake_home"),
         ):
             env = os.environ.copy()
             env.pop("KIROCREW_SESSION_KEY", None)
@@ -41,9 +43,10 @@ class TestSpawnRunSessionKeyRouting:
                 (kirocrew_dir / f"session_pid_{os.getppid()}.txt").write_text("sess-from-pid")
 
                 mock_post.return_value = {"id": "agent1"}
-                _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
+                out = _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
 
                 assert mock_post.call_args[0][1]["parent_session"] == "sess-from-pid"
+                assert "agent1" in out
 
 
 class TestSendMessageUnfurlForwarding:
@@ -98,8 +101,9 @@ class TestSendMessageCronSession:
         subject at the egress chokepoint, and for a cron, whose key drives the
         Slack-DM routing default.
         """
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "dashboard:chat-1"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "dashboard:chat-1"}),
         ):
             mock_post.return_value = {"ok": True}
             result = _call_tool("send_message", {"text": "build passed"})
@@ -112,10 +116,16 @@ class TestSendMessageCronSession:
     def test_cron_bare_send_attaches_caller_session(self):
         """A cron bare send attaches caller_session so the gateway can apply
         the cron→Slack default, and reports the Slack landing site."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}),
         ):
-            mock_post.return_value = {"ok": True, "slack": True, "delivered_to": "slack", "ts": "9.9"}
+            mock_post.return_value = {
+                "ok": True,
+                "slack": True,
+                "delivered_to": "slack",
+                "ts": "9.9",
+            }
             result = _call_tool("send_message", {"text": "sweep done"})
 
             payload = mock_post.call_args[0][1]
@@ -126,8 +136,9 @@ class TestSendMessageCronSession:
     def test_cron_send_notification_only_warns(self):
         """When a cron send only reaches the dashboard (no Slack), surface a
         loud warning instead of a success string."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}),
         ):
             mock_post.return_value = {"ok": True, "delivered_to": "notification"}
             result = _call_tool("send_message", {"text": "sweep done"})
@@ -137,8 +148,9 @@ class TestSendMessageCronSession:
 
     def test_explicit_session_origin_passes_through(self):
         """LLM explicitly passes session=origin → origin in payload."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}),
         ):
             mock_post.return_value = {"ok": True}
             _call_tool("send_message", {"text": "hi", "session": "origin"})
@@ -148,8 +160,9 @@ class TestSendMessageCronSession:
 
     def test_explicit_session_slack(self):
         """session='slack' routes to Slack DM + notification."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}),
         ):
             mock_post.return_value = {"ok": True, "slack": True, "ts": "123.456"}
             result = _call_tool("send_message", {"text": "hi", "session": "slack"})
@@ -160,8 +173,9 @@ class TestSendMessageCronSession:
 
     def test_invalid_session_value_rejected(self):
         """session must be 'origin' or 'slack'; other values rejected."""
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "cron:abc123"}),
         ):
             result = _call_tool("send_message", {"text": "hi", "session": "bogus"})
             assert "session" in result.lower() or "error" in result.lower()
@@ -297,6 +311,7 @@ class TestSessionKeyHeaderError:
 
 # --- deploy_artifact MCP tool (item 6 R18) ---
 
+
 class TestDeployArtifactMCPTool:
     """Tests for the deploy_artifact MCP tool handler."""
 
@@ -311,10 +326,13 @@ class TestDeployArtifactMCPTool:
                 "site_id": "my-app",
             }
 
-            result = _call_tool("deploy_artifact", {
-                "site_id": "my-app",
-                "artifact_slug": "my-demo",
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "my-app",
+                    "artifact_slug": "my-demo",
+                },
+            )
 
             mock_post.assert_called_once()
             call_path, call_body = mock_post.call_args[0]
@@ -342,45 +360,43 @@ class TestDeployArtifactMCPTool:
                 "site_id": "my-app",
             }
 
-            result = _call_tool("deploy_artifact", {
-                "site_id": "my-app",
-                "artifact_slug": "my-demo",
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "my-app",
+                    "artifact_slug": "my-demo",
+                },
+            )
 
             assert "WARNING: Anyone with the published link can view this content." in result
             assert "no authentication" in result
 
-    def test_deploy_artifact_rejects_confirm_param(self):
-        """confirm param is rejected via schema — returns controlled error string."""
-        result = _call_tool("deploy_artifact", {
-            "site_id": "my-app",
-            "artifact_slug": "x",
-            "confirm": True,
-        })
+    @pytest.mark.parametrize("field", ["confirm", "override_scan"])
+    def test_deploy_artifact_rejects_bypass_param(self, field):
+        """A bypass param is rejected via schema — returns controlled error string."""
+        result = _call_tool(
+            "deploy_artifact",
+            {
+                "site_id": "my-app",
+                "artifact_slug": "x",
+                field: True,
+            },
+        )
         assert result.startswith("Error:")
-        assert "unknown field" in result or "confirm" in result
-
-    def test_deploy_artifact_rejects_override_scan_param(self):
-        """override_scan param is rejected via schema — returns controlled error string."""
-        result = _call_tool("deploy_artifact", {
-            "site_id": "my-app",
-            "artifact_slug": "x",
-            "override_scan": True,
-        })
-        assert result.startswith("Error:")
-        assert "unknown field" in result or "override_scan" in result
+        assert "unknown field" in result or field in result
 
     def test_deploy_artifact_restricted_denial(self):
         """deploy_artifact returns error when restricted-session denies."""
         with patch("kiro_crew.mcp_core._post") as mock_post:
-            mock_post.return_value = {
-                "error": "restricted session cannot perform this operation"
-            }
+            mock_post.return_value = {"error": "restricted session cannot perform this operation"}
 
-            result = _call_tool("deploy_artifact", {
-                "site_id": "s",
-                "artifact_slug": "a",
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "s",
+                    "artifact_slug": "a",
+                },
+            )
 
             assert "Error:" in result
             assert "restricted" in result
@@ -399,25 +415,33 @@ class TestDeployArtifactMCPTool:
                 "credential": True,
                 "findings": "AKIA found, .pem found",
             }
-            result = _call_tool("deploy_artifact", {
-                "site_id": "my-app",
-                "local_dir": "/tmp/test-site",
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "my-app",
+                    "local_dir": "/tmp/test-site",
+                },
+            )
             assert "BLOCKED" in result
             assert "2" in result
 
-        with patch("kiro_crew.mcp_core._post") as mock_post, \
-                patch("kiro_crew.deploy.pending.add_pending") as mock_pending:
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch("kiro_crew.deploy.pending.add_pending") as mock_pending,
+        ):
             # Non-credential: overridable — pending entry with the flag.
             mock_post.return_value = {
                 "blocked": True,
                 "count": 1,
                 "findings": "internal-host reference",
             }
-            result = _call_tool("deploy_artifact", {
-                "site_id": "my-app",
-                "local_dir": "/tmp/test-site",
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "my-app",
+                    "local_dir": "/tmp/test-site",
+                },
+            )
             assert "blocked by scan" in result
             assert "Pending confirmations" in result
             # The override path commits a publish too — it must carry the
@@ -436,11 +460,14 @@ class TestDeployArtifactMCPTool:
                 "scan": "clean",
             }
 
-            result = _call_tool("deploy_artifact", {
-                "site_id": "test",
-                "artifact_slug": "art",
-                "ttl_hours": 24,
-            })
+            result = _call_tool(
+                "deploy_artifact",
+                {
+                    "site_id": "test",
+                    "artifact_slug": "art",
+                    "ttl_hours": 24,
+                },
+            )
 
             call_body = mock_post.call_args[0][1]
             assert call_body["ttl_hours"] == 24

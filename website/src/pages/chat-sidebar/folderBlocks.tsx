@@ -3,7 +3,7 @@
  *  sorted and dormant rows and the hidden-folder reveal, and the folder-scoped
  *  create-failure notice. Built once per shell render (`createFolderBlocks`). */
 import { Fragment } from 'react'
-import { X, Eye, EyeOff, FolderPlus, CornerUpRight, MessageSquarePlus, Pencil, Link2, MoreVertical, Settings } from 'lucide-react'
+import { X, Eye, EyeOff, FolderPlus, MessageSquare, MessageSquarePlus, Plus, Pencil, Link2, MoreVertical, Settings } from 'lucide-react'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -25,6 +25,7 @@ import { PrivateChatRow } from './PrivateChatRow'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
+import { sessionRowIdentity } from './rowIdentity'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { SidebarScope } from './scope'
@@ -35,13 +36,13 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
-    folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderNameMatchIds,
+    folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
     hiddenByContainer, hideEmptyFolderBody, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
-    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestoreRef,
+    slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -264,12 +265,12 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // or on the row: the session cards and the folder body are what they are on
     // main.
     //
-    // The label names the FOLDER and the second line says what the chat it
-    // opens is to that folder. A label carrying the word "conductor" and
-    // nothing else left a first-time reader unable to say what the click opens,
-    // and the two other chat affordances on the same row made that worse rather
-    // than clearer. The two-line shape is the one the ephemeral-chat items in
-    // the header's New menu already use.
+    // The label is one line, "Chat with <folder>": it names the thing the click
+    // talks to, the way a project's "new chat" entry does in peer products. It
+    // does not explain how that chat came to own the folder; that lineage rule
+    // is the detector's business, and spelling it out read as roundabout. The
+    // word "folder" is left out because the reader is already on the folder.
+    // The glyph is the chat bubble, the same one the row button wears.
     //
     // It names the folder rather than the conductor's own title because the
     // folder is what the reader has in front of them: they opened this menu on
@@ -280,23 +281,20 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     return (
       <>
         {conductor && (
-          <Item className="items-start" data-testid={tid('conductor-chat')} onClick={() => {
+          <Item data-testid={tid('conductor-chat')} onClick={() => {
             // The same offline gate every session-row click has (see the row's
             // own `onClick`/`onKeyDown`). Switching slots while the backend is
             // down selects a session nothing can load, so the click would close
             // the menu onto an empty pane with no way back to the row.
             if (!connected) return
-            dispatch(switchSlot({ key: conductor.key, announceOnMissing: true }))
+            dispatch(switchSlot({ key: conductor.key, announceOnMissing: true, gesture: true }))
             onSelectSlot?.(conductor.key)
           }}>
-            <CornerUpRight size={14} className="text-accent mt-[3px] shrink-0" />
-            <span className="flex min-w-0 flex-col gap-px">
-              <span className="truncate">{i18nT('pages.chatSidebar.chat_with_folder', { folder: folderNameText(folder) })}</span>
-              <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.chat_with_folder_desc')}</span>
-            </span>
+            <MessageSquare size={13} className="text-accent shrink-0" />
+            <span className="truncate">{i18nT('pages.chatSidebar.chat_with_folder', { folder: folderNameText(folder) })}</span>
           </Item>
         )}
-        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestore(); setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* The two private modes are listed flat, each naming its own action
          *  and what it does with memory. A grouping caption read as a button
@@ -366,6 +364,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // `button` when the row toggles something, a plain `span` when it does not.
     const HeaderShell = (emptyRow ? 'span' : 'button') as 'button'
     const hasUnread = folderTreeHasUnread(folder.id)
+    const focusListFolderRow = () => {
+      document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`)?.focus({ preventScroll: true })
+    }
     const draggable = !!dragHandleProps && editingId !== folder.id
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
@@ -397,6 +398,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // copy sorts first in the DOM — the same ambiguity the session reveal
         // avoids by targeting `data-session-row` instead of `data-slot-key`.
         data-folder-row={folder.id}
+        tabIndex={-1}
         // Non-interactive container (role="group"): the row holds a collapse
         // toggle button + action buttons, so it must NOT itself be a button —
         // an interactive element can't legally contain other interactive
@@ -465,11 +467,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // (`.folder-row-sticky`); `sticky` also serves as the containing block
         // the old `relative` provided for the absolutely-positioned children.
         style={{ top: `calc(var(--folder-row-sticky-h) * ${depth} - var(--folder-row-sticky-inset))`, zIndex: FOLDER_ROW_STICKY_Z - depth }}
-        className={`folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
+        className={`folder-row folder-row-sticky focus-ring-accent-inset group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (
@@ -605,7 +607,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
               e.stopPropagation()
               createChatInFolder(folder.id, { inNewTab: 'background' })
             }) : undefined}
-            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><MessageSquarePlus size={12} /></button>
+            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><Plus size={12} /></button>
           {/* Third control: the conductor's own chat, on the row itself.
            *
            *  This is the one place in the sidebar over the two-controls-per-row
@@ -631,15 +633,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
            *  so the action is named identically wherever it is reached and a
            *  screen reader gets it without hover.
            *
-           *  The glyph is an ARROW, not a speech bubble. Two bubble glyphs were
-           *  tried here and both failed the same way: new-chat's neighbouring
-           *  `MessageSquarePlus` is a bubble, so a blind UX read of the hovered
-           *  row came back "purple speech bubble with no plus ... I'm not sure,
-           *  nothing tells me what it does". `CornerUpRight` shares no outline
-           *  with it at 12px, and it points the right way: the conductor sits
-           *  ABOVE the chats it opened, so "up and over to that one" is what the
-           *  click does. It is deliberately the mirror of the `CornerDownRight`
-           *  the session row already draws for a row nested UNDER its creator.
+           *  The glyph is the plain chat bubble, `MessageSquare`: the click
+           *  opens a chat, so it wears the chat glyph. The new-chat control
+           *  beside it is a bare `Plus` for that reason, matching the sidebar
+           *  header's New button, so the two never share an outline and the
+           *  row reads menu, add, talk.
            *
            *  And the glyph does not carry the meaning alone -- that was the rest
            *  of the same finding, since an icon-only control keeps its name in
@@ -662,10 +660,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
                 // every session click has: switching to a session nothing can
                 // load would leave an empty pane with no way back to the row.
                 if (!connected) return
-                dispatch(switchSlot({ key: folderRowConductor.key, announceOnMissing: true }))
+                dispatch(switchSlot({ key: folderRowConductor.key, announceOnMissing: true, gesture: true }))
                 onSelectSlot?.(folderRowConductor.key)
               }}>
-              <CornerUpRight size={12} className="shrink-0" />
+              <MessageSquare size={12} className="shrink-0" />
               {/* The name, on screen, in the page.
                *
                *  `title` alone was the finding: it is OS chrome, a reader may
@@ -881,7 +879,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
         && !startsAutomaticSection(freshChildSlots, i + 1)
       if (startsAutomaticSection(freshChildSlots, i)) {
-        childNodes.push(<PinnedSessionDivider key={`pinned-divider-${folder.id}`} />)
+        // Keyed by the row it precedes, as the Fragment lanes key theirs. A
+        // frame with two pinned-to-unpinned boundaries then gives each divider
+        // its own key, and React removes the one that goes away.
+        childNodes.push(<PinnedSessionDivider key={`pinned-divider-${sessionRowIdentity(s)}`} />)
       }
       childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
     })

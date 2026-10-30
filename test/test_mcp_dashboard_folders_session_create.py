@@ -340,6 +340,72 @@ class TestSessionCreateFolder:
         assert folder_write.session_key == "dashboard:gate-key"
 
 
+class TestSessionCreateFolderInCrewMode:
+    """`session_create.folder` from a chat that turned Crew Mode on.
+
+    The folder is never filed into and nothing is created; an EXISTING folder is
+    still named so the worker gets its project directory. The reference resolves
+    through the shared folder resolver, so an ambiguous, unknown or differently
+    cased reference means what it means for every other folder tool.
+    """
+
+    _CREW_ROOT = {
+        "key": "chat-1-100",
+        "title": "Conductor",
+        "crew_mode_root": True,
+        "crew_mode_agent": "kirocrew",
+    }
+
+    def _routes(self, folders: list[dict] | None = None) -> dict[str, Any]:
+        return {
+            **_reads(folders=folders, slots=[dict(self._CREW_ROOT)]),
+            "POST /api/session-control/create": lambda req: {
+                "target": "chat-9-900",
+                "title": "worker",
+                "crew_mode": True,
+                "folder_ignored": "crew_mode",
+            },
+        }
+
+    def test_an_existing_folder_rides_as_the_id_only(self) -> None:
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/0811"}, self._routes()
+        )
+        (create,) = _writes(dash)
+        assert create.body["folder_id"] == "bbbbbbbbbbbb"
+        assert "folder ignored" in out
+        assert "filed in" not in out
+
+    def test_an_ambiguous_reference_is_still_refused(self) -> None:
+        # Ignoring it would pick a project directory nobody chose.
+        folders = [
+            {"id": "aaaaaaaaaaaa", "name": "kirocrew", "parent_id": None},
+            {"id": "bbbbbbbbbbbb", "name": "0811", "parent_id": "aaaaaaaaaaaa"},
+            {"id": "cccccccccccc", "name": "0811", "parent_id": "aaaaaaaaaaaa"},
+        ]
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "kirocrew/0811"},
+            self._routes(folders=folders),
+        )
+        assert out.startswith("Error:")
+        assert "render the same path" in out and "folder not found" not in out
+        assert _writes(dash) == []
+
+    def test_an_unknown_reference_is_ignored_like_the_folder_itself(self) -> None:
+        """The conductor's instructions name a goal folder created on the way; a Crew
+        Mode caller files nothing, so a reference that resolves to no existing folder
+        names no project directory and the dispatch goes ahead unfiled."""
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/missing"}, self._routes()
+        )
+        assert not out.startswith("Error:")
+        (create,) = _writes(dash)
+        assert create.path == "/api/session-control/create"
+        assert "folder_id" not in create.body or not create.body["folder_id"]
+        assert "folder ignored" in out
+
+
 class TestAdvertisedSet:
     """Reaching this server means an agent spec referenced it.
 
@@ -374,6 +440,7 @@ class TestAdvertisedSet:
             "session_retry",
             "session_continue",
             "session_set_model",
+            "session_set_color",
             "session_reload",
             "session_rename",
             "session_generate_title",
@@ -386,5 +453,39 @@ class TestAdvertisedSet:
             "session_read_message",
             "session_summary",
             "session_adopt",
+            "session_handoff",
             "session_release",
+            "work_dispatch",
         }
+
+
+def test_a_record_less_conductor_refusal_reaches_the_model_with_its_own_remedy() -> None:
+    """The loopback decoder (``mcp_core._http_error_body``) rewrites some auth codes'
+    messages; this refusal's code is its own, so its remedy survives to the tool reply."""
+    import io
+    import json
+    import urllib.error
+
+    from kiro_crew.mcp_core_parts.gateway import _http_error_body
+
+    refusal = {
+        "error": (
+            "this chat has no memory record, so its crewmate's worker cannot be "
+            "opened from it; open a new chat with the crewmate"
+        ),
+        "code": "conductor_record_missing",
+    }
+    exc = urllib.error.HTTPError(
+        "http://127.0.0.1/api/session-control/create",
+        400,
+        "Bad Request",
+        {},
+        io.BytesIO(json.dumps(refusal).encode()),
+    )
+    decoded = _http_error_body(exc)
+    assert decoded["code"] == "conductor_record_missing"
+
+    out, _ = _call("session_create", {"title": "w"}, {"POST /api/session-control/create": decoded})
+
+    assert out.startswith("Error: could not create a session:")
+    assert "open a new chat with the crewmate" in out

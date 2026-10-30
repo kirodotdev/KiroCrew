@@ -351,7 +351,7 @@ def _from_template_instance(member: str) -> PackageRead:
         # system -- and the ANSWER is the same either way.
         raise PackageReadError(f"the dashboard package for {slug!r} cannot be read: {exc}") from exc
     # Read DEFENSIVELY off the store, each name with the literal it stands for as its
-    # default, which is what ``read_instance`` did before this and for the same reason:
+    # default, for this reason:
     # this module resolves the store at call time so a narrower stand-in can be put in
     # its place, and an attribute lookup that raised would turn a replaced store into
     # a 500.

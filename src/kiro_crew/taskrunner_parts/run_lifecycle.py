@@ -102,7 +102,9 @@ async def run(
     if input_content is not None:
         spec_content = input_content.strip()
     else:
-        if not spec_path.exists():
+        # The spec path is caller-supplied and may sit on a slow mount, so the
+        # existence probe runs in a worker like the read below it.
+        if not await asyncio.to_thread(spec_path.exists):
             raise FileNotFoundError(f"Spec not found: {spec_path}")
         # The whole file goes into the LLM prompt, the persisted run and the
         # review context, so it is read through the same descriptor gate as
@@ -120,7 +122,7 @@ async def run(
     _override = _resolve_workspace_dir(workspace_dir)
     _effective_ws = _override or self._workspace_dir
     task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / spec_path.stem
-    task_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(task_dir.mkdir, parents=True, exist_ok=True)
     existing = self._runs.get(task_id)
     run = Project(
         spec_path=str(spec_path),

@@ -164,6 +164,14 @@ describe('query-string builders', () => {
     expect(call().url).toBe('/api/instances/cd-1/status?diagnose=1')
   })
 
+  it('clearSessions sends user_only only when asked', async () => {
+    await api.clearSessions()
+    expect(call().url).toBe('/api/sessions')
+    await api.clearSessions(true)
+    expect(call(1).url).toBe('/api/sessions?user_only=1')
+    expect(call(1).method).toBe('DELETE')
+  })
+
   it('sessions/search/episodic pass their paging and tag filters through', async () => {
     await api.sessions()
     expect(call().url).toBe('/api/sessions?limit=30&offset=0')
@@ -250,13 +258,15 @@ describe('query-string builders', () => {
     expect(call(1).url).toBe('/api/artifacts/session-docs?session=chat-1')
   })
 
-  it('vectorContextPreview and telemetryContextTrace encode their query', async () => {
+  it('vectorContextPreview, telemetryContextTrace and telemetryContextTurn encode their query', async () => {
     await api.vectorContextPreview()
     expect(call().url).toBe('/api/memory/context-preview')
     await api.vectorContextPreview('a b')
     expect(call(1).url).toBe('/api/memory/context-preview?q=a%20b')
     await api.telemetryContextTrace('chat 1')
     expect(call(2).url).toBe('/api/telemetry/context-trace?slot=chat%201')
+    await api.telemetryContextTurn('chat 1', 12)
+    expect(call(3).url).toBe('/api/telemetry/context-trace?slot=chat%201&turn=12')
   })
 
   it('deleteArtifactFolder states the cascade explicitly in the query', async () => {
@@ -457,7 +467,7 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(1).body).toEqual({ content: 'ctx', source: 'artifact', ephemeral: false })
   })
 
-  it('sideTurn flags a steer, and sideQueueCancel names the owning tab', async () => {
+  it('sideTurn flags a steer, and sideQueueCancel and sideClose name the owning tab', async () => {
     await api.sideTurn('chat-1', 'why?')
     expect(call().body).toEqual({ question: 'why?' })
     await api.sideTurn('chat-1', 'why?', { steer: true })
@@ -465,6 +475,8 @@ describe('request bodies with conditionally-omitted keys', () => {
     await api.sideQueueCancel('chat-1', 'q1')
     expect(call(2).method).toBe('DELETE')
     expect(call(2).body).toHaveProperty('client')
+    await api.sideClose('chat-1')
+    expect(call(3).body).toHaveProperty('client')
   })
 
   it('cancelTaskRunner and installDiscoveredSkill keep their optional fields optional', async () => {

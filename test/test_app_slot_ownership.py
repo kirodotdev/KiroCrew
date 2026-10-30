@@ -323,7 +323,11 @@ def test_the_in_gateway_path_clears_inside_the_lock_via_the_live_map(tmp_path):
     is the NEW installation's.
     """
     src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "apps"
+        / "routes_uninstall.py"
     ).read_text(encoding="utf-8")
     handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 
@@ -390,7 +394,11 @@ def test_the_in_gateway_path_enumerates_through_the_live_manager(tmp_path):
     clear, which goes through the live map, then leaves it for a reinstall.
     """
     src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "apps"
+        / "routes_uninstall.py"
     ).read_text(encoding="utf-8")
     handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 
@@ -551,7 +559,11 @@ def test_the_in_gateway_path_suppresses_replay_and_finishes_durable(tmp_path):
     the same invariant as ``flush()`` before releasing the lock.
     """
     src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "apps"
+        / "routes_uninstall.py"
     ).read_text(encoding="utf-8")
     handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 

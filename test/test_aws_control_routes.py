@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import logging
 import re
+import subprocess
 import sys
 import threading
 from unittest import mock
@@ -51,6 +54,7 @@ from aws_control_routes_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
 from kiro_crew.deploy.engine import AWSError
+from kiro_crew.testing.wait import until_parked
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -80,11 +84,15 @@ class TestHelpers:
         assert resp.status == 502
         assert _payload(resp)["code"] == "aws_call_failed"
 
-    def test_audit_swallows_a_failing_sel_backend(self):
+    def test_audit_swallows_a_failing_sel_backend(self, caplog):
         # The audit is best-effort: a broken SEL sink must never propagate into
         # the response path, so a raising backend is logged and swallowed.
+        caplog.set_level(logging.DEBUG, logger=routes_mod.logger.name)
         with mock.patch.object(routes_mod, "sel", side_effect=RuntimeError("no sel")):
             routes_mod._audit_sync("op", "res", "denied")  # must not raise
+        logged = [r for r in caplog.records if r.name == routes_mod.logger.name]
+        assert [r.getMessage() for r in logged] == ["aws-control SEL audit failed"]
+        assert str(logged[0].exc_info[1]) == "no sel"
 
     def test_audit_routes_the_sel_write_off_the_event_loop(self):
         # The SEL write's first touch pays log construction, so the async
@@ -109,15 +117,19 @@ class TestHelpers:
         # ran on the loop would report this thread.
         assert seen["thread"] is not threading.current_thread()
 
-    def test_audit_swallows_a_failing_thread_dispatch(self):
+    def test_audit_swallows_a_failing_thread_dispatch(self, caplog):
         # The wrapper keeps the sync body's never-raises contract even when
         # the dispatched call raises out of the worker (the real _audit_sync
         # swallows its own errors; this pins the wrapper's guard for anything
         # that escapes thread dispatch itself).
+        caplog.set_level(logging.DEBUG, logger=routes_mod.logger.name)
         with mock.patch.object(
             routes_mod, "_audit_sync", side_effect=RuntimeError("executor down")
         ):
             asyncio.run(routes_mod._audit("op", "res", "denied"))  # must not raise
+        logged = [r for r in caplog.records if r.name == routes_mod.logger.name]
+        assert [r.getMessage() for r in logged] == ["aws-control SEL audit dispatch failed"]
+        assert str(logged[0].exc_info[1]) == "executor down"
 
     def test_every_audit_call_site_awaits_the_wrapper(self):
         # Wiring pin: with _audit patched as an AsyncMock, an UNAWAITED
@@ -216,8 +228,20 @@ class TestDriveStatus:
                     _request("GET", f"/drive/{ACCOUNT}", match_info={"account": ACCOUNT})
                 )
             )
-        assert _payload(resp) == {"exists": False}
+        # The drive is one per account but discovery searches one region, so "no
+        # drive" names the region it searched: a drive created from a profile in
+        # another region is invisible here, and the owner must be able to see why.
+        assert _payload(resp) == {"exists": False, "searched_region": "us-west-2"}
         usage.assert_not_called()
+
+    def test_an_empty_profile_region_reports_the_region_discovery_used(self):
+        # The status must name the region find_drive ACTUALLY queried, which is the
+        # default when the profile carries none -- not an empty string.
+        assert (
+            routes_mod.storage_mod.searched_region("")
+            == routes_mod.storage_mod.engine.DEFAULT_REGION
+        )
+        assert routes_mod.storage_mod.searched_region("eu-west-1") == "eu-west-1"
 
     def test_status_returns_bucket_and_usage_then_serves_cache(self):
         handlers = _registered()
@@ -318,6 +342,8 @@ class TestRequireDrive:
             )
         assert resp.status == 409
         assert _payload(resp)["code"] == "drive_missing"
+        # The refusal names the one region discovery searched.
+        assert "us-west-2" in _payload(resp)["error"]
 
     def test_list_surfaces_a_discovery_error_as_502(self):
         handlers = _registered()
@@ -786,6 +812,35 @@ class _FakeContent:
 
 
 class TestDriveUpload:
+    @pytest.fixture(autouse=True)
+    def _tls_policy(self, _floor_monkeypatch):
+        """Keep the post-upload TLS-policy check off the real AWS CLI."""
+        from kiro_crew.apps.builtins.aws_control.backend.routes_parts import drive_writes
+
+        _floor_monkeypatch.setattr(drive_writes, "_TLS_POLICY_CHECKED", set())
+        self.ensure_tls = mock.Mock()
+        _floor_monkeypatch.setattr(
+            routes_mod.storage_mod, "ensure_tls_only_policy", self.ensure_tls
+        )
+
+    def test_an_upload_confirms_the_tls_only_policy_once_per_drive(self):
+        self._run([b"one"])
+        self._run([b"two"])
+        self.ensure_tls.assert_called_once()
+        assert self.ensure_tls.call_args.kwargs == {"account": ACCOUNT}
+
+    @pytest.mark.parametrize(
+        "failure", [AWSError("AccessDenied"), subprocess.TimeoutExpired("aws", 30)]
+    )
+    def test_a_tls_policy_failure_does_not_fail_the_upload(self, failure):
+        self.ensure_tls.side_effect = failure
+        resp, put = self._run([b"hello"])
+        assert resp.status == 200
+        put.assert_called_once()
+        # Tried once per process: a denied profile is not asked again on every upload.
+        self._run([b"again"])
+        self.ensure_tls.assert_called_once()
+
     def _run(self, chunks, *, key="f.bin", app_enabled_recheck=True, consent_recheck=True):
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -1291,7 +1346,7 @@ class TestDriveMove:
             p3,
             _consent_ok(),
             _drive_found(),
-            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=live),
+            mock.patch.object(routes_mod.shares_mod, "list_shares_strict", return_value=live),
             mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
             mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
             mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
@@ -1301,6 +1356,60 @@ class TestDriveMove:
             )
         assert resp.status == 409
         assert _payload(resp)["code"] == "share_active"
+        assert not head.called and not copy.called and not delete.called
+
+    def test_move_onto_a_key_with_an_unexpired_share_is_refused(self):
+        # A share link outlives the object it was minted for. Moving a file onto
+        # that key would make the old link serve the moved file.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+        live = [{"account": ACCOUNT, "section": "drive", "key": "b.txt"}]
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares_strict", return_value=live),
+            mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "destination_share_active"
+        assert not head.called and not copy.called and not delete.called
+
+    @pytest.mark.parametrize("failure", [OSError("EIO"), json.JSONDecodeError("bad", "", 0)])
+    def test_move_refuses_when_the_share_ledger_cannot_be_read(self, failure):
+        # An unreadable ledger must not read as "nothing is shared".
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares_strict", side_effect=failure),
+            mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        assert _payload(resp)["code"] == "share_ledger_corrupt"
         assert not head.called and not copy.called and not delete.called
 
     def test_move_destination_probe_failure_fails_closed(self):
@@ -1431,13 +1540,11 @@ class TestDriveKeyLocks:
                     task = asyncio.create_task(
                         handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
                     )
-                    # Give the handler every chance to (wrongly) probe while
-                    # the destination key is held by the "upload". Real sleeps,
-                    # not sleep(0): the probe crosses to_thread, so a zero-tick
-                    # yield could leave the handler short of the lock and make
-                    # the empty-calls assertion vacuous.
-                    for _ in range(10):
-                        await asyncio.sleep(0.01)
+                    # The handler is observed parked on the held destination
+                    # key before the absence is asserted: a probe before the
+                    # lock would already be in ``calls`` by then, so the
+                    # empty-calls assertion cannot pass vacuously.
+                    await until_parked(routes_mod._drive_key_locks[f"{bucket}\ndrive\nb.txt"])
                     assert calls == []
                 resp = await task
                 assert not copy.called
@@ -1516,8 +1623,10 @@ class TestDriveSectionSweepLock:
                     task = asyncio.create_task(
                         handlers[("POST", "/drive/{account}/folder/delete")](req)  # type: ignore[operator]
                     )
-                    for _ in range(10):
-                        await asyncio.sleep(0.01)
+                    # The sweep is observed parked on the section's exclusive
+                    # wait before the absence is asserted.
+                    section = routes_mod._drive_section_lock(bucket, "drive")
+                    await until_parked(section._state()["cond"])
                     assert not sweep.called
                 resp = await task
                 assert sweep.called

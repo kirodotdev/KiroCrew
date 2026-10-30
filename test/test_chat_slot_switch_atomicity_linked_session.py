@@ -75,17 +75,30 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_awaited_once()
             assert state.sessions.reset.await_args.args[0] == "slack:123.456"
 
-    @pytest.mark.asyncio
-    async def test_model_switch_sees_the_linked_sessions_active_turn(self):
-        # The busy probe now lands on the live linked session: an in-flight
-        # channel turn answers 409 instead of a silent success over it.
+    @staticmethod
+    def _busy_acp(backend: str):
+        """A live, mid-turn AcpProvider double carrying *backend*'s real capabilities."""
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
         from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.capabilities = capabilities_for(backend)
+        provider.has_active_turn.return_value = True
+        provider.available_models.return_value = [{"modelId": "auto"}]
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_live_capable_pick_on_a_busy_linked_session_is_deferred(self):
+        # A channel turn's end now lands a deferred pick live (the session
+        # manager's release observer), so a pick the live switch can express is
+        # deferred on a channel-linked session too: committed, marked with the
+        # linked key, and nothing torn down under the streaming channel reply.
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
 
         slot = _ChatSlot("test")
         slot.model = _MODEL_A
         slot.linked_session_key = "slack:123.456"
-        provider = MagicMock(spec=AcpProvider)
-        provider.has_active_turn.return_value = True
+        provider = self._busy_acp(ACP_BACKEND_KIRO)
         state = _mock_state(slot, provider=None)
         state.sessions.get_provider = MagicMock(
             side_effect=lambda key: provider if key == "slack:123.456" else None
@@ -93,9 +106,57 @@ class TestLinkedSlotSessionKey:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
             data = await resp.json()
+            assert resp.status == 200
+            assert data["deferred"] is True
+            assert slot.model == _MODEL_B
+            assert slot._deferred_model_switch_key == "slack:123.456"
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_only_pick_on_a_busy_linked_session_answers_409(self):
+        # Auto on a provider-namespace backend has no set_model value, so it can
+        # land only through a reset, and a channel turn cold-starts on the
+        # default ladder rather than on slot.model: a reset cannot land it at a
+        # channel boundary. Such a pick keeps the 409. Nothing is mutated.
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        slot.linked_session_key = "slack:123.456"
+        provider = self._busy_acp(ACP_BACKEND_CLAUDE)
+        state = _mock_state(slot, provider=None)
+        state.sessions.get_provider = MagicMock(
+            side_effect=lambda key: provider if key == "slack:123.456" else None
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": ""})
+            data = await resp.json()
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
             assert slot.model == _MODEL_A
+            assert not slot._deferred_model_switch_key
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_channel_resumed_dashboard_key_keeps_the_409_for_a_reset_only_pick(self):
+        # A `!sessions` resume keeps its ``dashboard:`` key but is driven by the
+        # channel (mirror link accepts inbound resume). The key prefix alone says
+        # "dashboard", so the mirror-inbound signal is what keeps a reset-only
+        # mid-turn pick at 409 rather than deferring a pick no channel turn lands.
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        provider = self._busy_acp(ACP_BACKEND_CLAUDE)
+        state = _mock_state(slot, provider=provider)
+        state.sessions.mirror_accepts_inbound = MagicMock(return_value=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": ""})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "turn_in_flight"
+            assert slot.model == _MODEL_A
+            assert not slot._deferred_model_switch_key
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio

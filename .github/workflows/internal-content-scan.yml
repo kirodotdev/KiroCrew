@@ -38,7 +38,14 @@ permissions: {}
 jobs:
   scan:
     name: internal-content-scan
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. This is a `workflow_call` target, so `github.repository` is
+    # the CALLER's, and onboarding another repository is a copy of the caller:
+    # naming this repository keeps every other caller on the hosted image rather
+    # than asking for a label no runner it can see carries, which would wait out
+    # GitHub's pending limit instead of running. See "Larger runners for the
+    # review lanes and CodeQL" in docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read

@@ -1,9 +1,14 @@
 name: AI Review Human Override
 
 # Human judgment is authoritative over the three AI review gates. A repository
-# writer can record a SHA-scoped false-positive / not-applicable decision with:
+# writer can record a SHA-scoped release decision, named by a class, with:
 #
-#   /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha>: <reason>
+#   /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha> <class>[ #N]: <reason>
+#
+# The grammar, the class table and the deferral issue test live in
+# .github/scripts/release_record.py; this file only reads its answers. The old
+# command without a class is accepted, with a warning, until that file's
+# LEGACY_CUTOVER date.
 #
 # issue_comment workflows execute from the trusted default branch, never from
 # the PR head. The handler validates identity + commit freshness, records a
@@ -16,11 +21,16 @@ on:
 
 # Re-run the affected reviewer workflows, dispatch PR Readiness, and record the
 # trusted decision. PR-write is required because the trusted
-# record is a pull-request comment. Deliberately no id-token or contents:write.
+# record is a pull-request comment. issues: read is for class `deferred`, which
+# reads the follow-up issue it names: a scope not listed here is `none`, so
+# without it every deferred override would fail the read three times and be
+# refused as a retry. Deliberately no id-token or contents:write.
+# test_workflow_token_scopes.py derives the scopes from the calls below.
 permissions:
   actions: write
   checks: write
   contents: read
+  issues: read
   pull-requests: write
 
 concurrency:
@@ -42,15 +52,50 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # The release-record module comes from the default branch's tree at the
+      # commit this workflow itself runs from (github.sha), read through the
+      # contents API. No checkout: this job never fetches pull-request code, and
+      # the module is stdlib Python that only parses text it is given on env.
+      - name: Load the release-record module
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RELEASE_RECORD: ${{ runner.temp }}/release_record.py
+        run: |
+          set -euo pipefail
+          dest="$RELEASE_RECORD"
+          for attempt in 1 2 3; do
+            if gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$REPO/contents/.github/scripts/release_record.py?ref=$WORKFLOW_SHA" \
+              > "$dest" && [ -s "$dest" ]; then
+              exit 0
+            fi
+            echo "Loading release_record.py failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          echo "::error::Could not load .github/scripts/release_record.py from $WORKFLOW_SHA after 3 attempts, so the command cannot be read."
+          jq -n --arg body "AI-review override not recorded: the handler could not load its command reader (a GitHub read failed, not your command). Re-issue the command." '{body: $body}' \
+            | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - >/dev/null || true
+          exit 1
+
       - name: Validate and record the decision
         id: context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.issue.number }}
-          ACTOR: ${{ github.event.comment.user.login }}
+          # The actor is the event's SENDER: whoever made this create or edit.
+          # An edit made by someone other than the comment's author must not be
+          # judged as the author's, so the two are compared below.
+          ACTOR: ${{ github.event.sender.login }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          RELEASE_RECORD: ${{ runner.temp }}/release_record.py
         run: |
           set -euo pipefail
 
@@ -60,25 +105,36 @@ jobs:
                   --input - >/dev/null
           }
 
-          first_line="${COMMENT_BODY%%$'\n'*}"
-          pattern='^/ai-review override (fable|gpt|design|ux|first-principles|scope|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
-          if [[ ! "$first_line" =~ $pattern ]]; then
-            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha>: <one-sentence reason>`.'
+          # A create is always the own act of the comment author. An EDIT can be made by
+          # anyone with edit rights on the comment, and the permission check
+          # and the record below would then bind the edit to the wrong person.
+          # Refuse it; the author, or the person who means it, posts the
+          # command themselves.
+          # Logins compare case-insensitively. `tr`, not bash 4's `${x,,}`:
+          # the tests run this step under macOS's /bin/bash 3.2.
+          actor_lc="$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')"
+          comment_author_lc="$(printf '%s' "$COMMENT_AUTHOR" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$ACTOR" ] || [ "$actor_lc" != "$comment_author_lc" ]; then
+            post_notice "AI-review override not recorded: this comment was changed by @$ACTOR, not by its author @$COMMENT_AUTHOR. Post the command as a new comment from the person who is releasing."
             exit 1
           fi
-          target="${BASH_REMATCH[1]}"
-          requested_sha="${BASH_REMATCH[2],,}"
-          reason="${BASH_REMATCH[3]}"
-          reason="${reason#"${reason%%[![:space:]]*}"}"
-          reason="${reason%"${reason##*[![:space:]]}"}"
-          if [ -z "$reason" ]; then
-            post_notice "AI-review override not recorded: provide a brief reason."
+
+          # The grammar, the class table and every per-class requirement are
+          # the job of release_record.py. COMMENT_BODY reaches it on env, never in argv.
+          if ! parsed="$(python3 "$RELEASE_RECORD" parse)"; then
+            post_notice "AI-review override not recorded: the command reader failed. Re-issue the command; if it fails again a maintainer has to look at this run."
             exit 1
           fi
-          if [ "${#reason}" -gt 500 ]; then
-            post_notice "AI-review override not recorded: keep the reason to 500 characters or fewer."
+          if [ "$(jq -r '.ok' <<<"$parsed")" != "true" ]; then
+            post_notice "$(jq -r '.notice' <<<"$parsed")"
             exit 1
           fi
+          target="$(jq -r '.lane' <<<"$parsed")"
+          requested_sha="$(jq -r '.sha' <<<"$parsed")"
+          release_class="$(jq -r '.class' <<<"$parsed")"
+          release_issue="$(jq -r '.issue' <<<"$parsed")"
+          reason="$(jq -r '.reason' <<<"$parsed")"
+          legacy_warning="$(jq -r '.warning' <<<"$parsed")"
 
           pr_json="$(gh api "repos/$REPO/pulls/$PR")"
           head="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
@@ -151,10 +207,77 @@ jobs:
             exit 1
           fi
 
+          # Class `deferred` is a promise, so the issue it names is read HERE,
+          # in the same run that records the release, and judged by the same
+          # four tests the deferral check applies (release_record.py). A read
+          # that FAILED is not an issue that failed the tests: only HTTP 404
+          # means "this number is not an issue here"; any other failure is
+          # retried three times and then refused as a retry, never as invalid.
+          if [ "$release_class" = "deferred" ]; then
+            issue_json=""
+            issue_read=""
+            issue_err="$(mktemp)"
+            for attempt in 1 2 3; do
+              if issue_json="$(gh api "repos/$REPO/issues/$release_issue" 2>"$issue_err")"; then
+                issue_read=1
+                break
+              fi
+              if grep -qE 'HTTP 404' "$issue_err"; then
+                issue_read=404
+                break
+              fi
+              echo "Reading issue #$release_issue failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            rm -f "$issue_err"
+            if [ -z "$issue_read" ]; then
+              echo "::error::Could not read issue #$release_issue after 3 attempts, so this handler cannot tell whether the deferral is tracked."
+              post_notice "AI-review override not recorded: issue #$release_issue could not be READ (the issues API did not answer after 3 attempts). This is not a judgement about the issue -- re-issue the command once the API is healthy."
+              exit 1
+            fi
+            if [ "$issue_read" = "404" ]; then
+              post_notice "AI-review override not recorded: #$release_issue is not an issue in this repository. Class \`deferred\` needs an open follow-up issue labelled \`deferred-finding\`, assigned, with a \`Due: YYYY-MM-DD\` line."
+              exit 1
+            fi
+            if ! issue_problems="$(printf '%s' "$issue_json" | python3 "$RELEASE_RECORD" issue-problems)"; then
+              post_notice "AI-review override not recorded: the answer for issue #$release_issue could not be read. Re-issue the command."
+              exit 1
+            fi
+            if [ -n "$issue_problems" ]; then
+              # Built in plain steps, one command per line, not as a command
+              # substitution nested in a quoted string and continued across
+              # lines: the Windows Git Bash run of this script stopped with an
+              # unclosed quote at end of file.
+              missing_list="$(printf '%s\n' "$issue_problems" | sed 's/^/- /')"
+              printf -v not_tracked 'AI-review override not recorded: issue #%s is not a tracked deferral. What is missing:\n\n%s\n\nFix the issue, then re-issue the command.' "$release_issue" "$missing_list"
+              post_notice "$not_tracked"
+              exit 1
+            fi
+          fi
+
+          pr_author="$(printf '%s' "$pr_json" | jq -r '.user.login // ""')"
+          author_is_actor=false
+          pr_author_lc="$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "$pr_author" ] && [ "$pr_author_lc" = "$actor_lc" ]; then
+            author_is_actor=true
+          fi
+          if ! record_line="$(env CLASS="$release_class" ISSUE="$release_issue" AUTHOR_IS_ACTOR="$author_is_actor" python3 "$RELEASE_RECORD" render)"; then
+            post_notice "AI-review override not recorded: the record line could not be rendered. Re-issue the command."
+            exit 1
+          fi
+
+          # Line 1 is the marker every lane selects on and OVERRIDE_MARKER_RE
+          # reads; it stays byte-identical. Line 2 is the class record.
           marker="<!-- ai-review-human-override target=$target head=$head actor=$ACTOR source=$COMMENT_ID -->"
-          printf -v decision_body '%s\n## Human judgment recorded\n\n@%s marked the **%s** AI finding as false positive, not applicable, or explicitly accepted for `%s`.\n\n> %s\n\n_This decision applies only to this commit. A new push requires a new judgment._' \
-            "$marker" "$ACTOR" "$target" "$head" "$reason"
+          printf -v decision_body '%s\n%s\n## Human judgment recorded\n\n@%s recorded a **%s** release (class `%s`) for the **%s** AI finding on `%s`.\n\n> %s\n\n_This decision applies only to this commit. A new push requires a new judgment._' \
+            "$marker" "$record_line" "$ACTOR" "$release_class" "$release_class" "$target" "$head" "$reason"
           post_notice "$decision_body"
+          if [ -n "$legacy_warning" ]; then
+            echo "::warning::$legacy_warning"
+            post_notice "$legacy_warning" || echo "::warning::could not post the old-grammar notice"
+          fi
 
           {
             echo "target=$target"
@@ -162,6 +285,7 @@ jobs:
             echo "actor=$ACTOR"
             echo "source=$COMMENT_ID"
             echo "reason=$reason"
+            echo "class=$release_class"
             echo "fork=$is_fork"
             echo "head_repo=$head_repo"
             echo "head_ref=$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"

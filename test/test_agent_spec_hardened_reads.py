@@ -1026,6 +1026,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/skill_projection_parts/preparation.py": [
         ("native_skill_projection", "acp"),
     ],
+    # The zero-tool confirmation reads the published alias file the harness loaded
+    # after start; a link or an oversized file at the alias reads as unconfirmed.
+    "kiro_crew/acp/client_mcp_array.py": [("zero_tool_confirmation", "acp")],
     # Three reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the
@@ -1095,7 +1098,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_prompt", "context"),
         ("steering_resources", "unknown"),
     ],
-    "kiro_crew/cron_script.py": [("cron_resolve_mcp_server", "cron")],
+    "kiro_crew/cron_script_mcp.py": [("cron_resolve_mcp_server", "cron")],
     "kiro_crew/dashboard/agent_admin/agent_detail.py": [
         ("api_agent_detail", "dashboard"),
         ("api_agent_detail", "dashboard"),
@@ -1140,9 +1143,12 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The first read is not the side turn's: it words an ACP "Agent mode ... is
     # not available" refusal by checking the derived file's owner marker, on
     # whatever channel's session raised it -- hence its own label and "unknown".
+    # The second words the same refusal for an ordinary agent whose file is
+    # present, so it carries the same label.
     # ``side_readonly_reap`` is the reaper's read of a derived file it may
     # remove: gateway maintenance no channel asked for, so "unknown" as well.
     "kiro_crew/dashboard/side_readonly_spec.py": [
+        ("agent_mode_refusal", "unknown"),
         ("agent_mode_refusal", "unknown"),
         ("side_readonly_reap", "unknown"),
         ("side_readonly_spec", "dashboard"),
@@ -1393,6 +1399,9 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),
     ],
+    # The knowledge pool's pre-spawn repair compares Crew's own spec against its
+    # template; a link at the name is screened before it is followed.
+    "kiro_crew/agent_materialization/service_agents.py": [("knowledge_spec_repair", "unknown")],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
     "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py": [
         ("session_tool_policy", "dashboard"),

@@ -19,6 +19,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.side_state import SideState
+
 pytestmark = pytest.mark.asyncio
 
 OWNER = "U0OWNER0000"
@@ -290,7 +292,7 @@ async def test_side_turn_refuses_non_owner(monkeypatch) -> None:
     dispatch = MagicMock(return_value="run-1")
     monkeypatch.setattr(side, "_dispatch_side_turn", dispatch)
     slot = MagicMock(key="chat-1-1700000000", _app="")
-    slot._side = SimpleNamespace(open=True, last_run_id="", is_complete=True, queue=[])
+    slot._side = SideState(open=True)
     app = web.Application(middlewares=[_non_owner])
     app["state"] = SimpleNamespace(owner_id=OWNER, _slots={"chat-1-1700000000": slot})
     app.router.add_post("/api/chat/slots/{slot}/side/turn", side.api_side_turn)

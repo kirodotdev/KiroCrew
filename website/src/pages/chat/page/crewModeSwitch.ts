@@ -1,0 +1,121 @@
+/**
+ * Crew Mode on the composer (CrewModeChip): whether the switch is offered for
+ * this chat, whether it is on, the toggle, and the side panel task board it
+ * opens.
+ *
+ * A UI over the existing conductor. A chat is in Crew Mode exactly when it runs
+ * a conductor template (lib/crewMode: `runsConductor`), so flipping it is the ordinary agent switch
+ * and there is no other Crew Mode state. The composer exists only for an open
+ * session, so this reads the session itself, never a pending pick.
+ *
+ * The task board is the side panel's existing Dashboard view (`command-center`),
+ * whose Overview is the session's own Dynamic Dashboard. It is opened the way
+ * every other caller outside the panel opens a view (open the panel, then
+ * `openView`), and only for a ROOT session (`isRootSession`): any other session
+ * has no Overview of its own, and the gateway would refuse the read.
+ */
+import { useCallback, useState } from 'react'
+import type { ChatSlot } from '../../../types'
+import type { ViewKind } from '../../../hooks/usePanelTabs'
+import { useAppDispatch } from '../../../store'
+import { openActivityPanel } from '../../../store/chatSlice'
+import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, runsCrewMode } from '../../../lib/crewMode'
+import { isRootSession } from '../command-center/model'
+
+const EMPTY: ReadonlySet<string> = new Set()
+const withKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => (set.has(key) ? set : new Set(set).add(key))
+const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => {
+  if (!set.has(key)) return set
+  const next = new Set(set)
+  next.delete(key)
+  return next
+}
+
+export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView }: {
+  currentSlot: ChatSlot | undefined
+  /** The catalog's default template: the agent a plain chat runs on. */
+  defaultAgent: string
+  /** The chat's transcript has a user message: Crew Mode can no longer be turned off. */
+  hasUserMessage: boolean
+  switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
+  /** The side panel's view opener (`usePanelTabs().openView`). */
+  openView: (kind: ViewKind) => void
+}) {
+  const dispatch = useAppDispatch()
+  // Offered on a plain local, non-app, Persistent chat that runs on the default
+  // template (a plain session is never a crewmate) or already on the conductor.
+  // Incognito and Temporary chats are left out: such a session may not open
+  // sessions, so a conductor there could not conduct. With the conductor itself
+  // configured as the default agent there is nothing to switch back to, so the
+  // switch is not offered at all. A gateway whose agent catalog carries no Crew
+  // Mode fields (one that predates it) runs no conductor: nothing is offered
+  // there, so a press can never switch a chat onto a template the gateway does
+  // not treat as Crew Mode.
+  const plainChat = !!currentSlot && gatewayRunsCrewMode() && !currentSlot.mode && !currentSlot.instance_id && currentSlot.origin !== 'app'
+    && memoryModeAllowsCrewMode(currentSlot.memory_mode)
+  // Every conductor TEMPLATE is Crew Mode: `runsCrewMode` reads a crewmate that
+  // carries a conductor's name as that crewmate, not as a conductor. Whether the
+  // chat IS in Crew Mode does not depend on the switch being offered: a chat
+  // opened on a conductor that is itself the default agent still has the Crew
+  // Mode welcome, its task board, and no memory-mode chip.
+  const crewModeOn = plainChat && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent)
+  const crewModeEligible = plainChat && !runsConductor(defaultAgent, 'template')
+    && (crewModeOn || (currentSlot?.agent_kind !== 'member' && isDefaultAgentName(currentSlot?.agent ?? '', defaultAgent)))
+  const taskBoardOffered = (crewModeEligible || crewModeOn) && isRootSession(currentSlot)
+  const openTaskBoard = useCallback(() => {
+    dispatch(openActivityPanel())
+    openView('command-center')
+  }, [dispatch, openView])
+  // The chats whose switch to the conductor is in flight, by slot key: a press in
+  // another chat while one is in flight must not drop the first chat's hold. The
+  // composer's chips go the moment the chip is pressed, not when the switch
+  // lands: `switchAgent` writes the slot from the server's answer before it
+  // settles, so on success the slot is already on the conductor when its entry
+  // clears, and on a refused switch (which `switchAgent` reports as its own
+  // notice) the chat never turned on and its chips come back.
+  const [turningOn, setTurningOn] = useState<ReadonlySet<string>>(EMPTY)
+  // The chats whose switch back to the default agent is in flight: their chips
+  // come back the moment the mark is pressed, the same way they leave on turning on.
+  const [turningOff, setTurningOff] = useState<ReadonlySet<string>>(EMPTY)
+  // The template namespace is named, since a bare name would be read as a crewmate
+  // whenever the slot's kind is unset. Turning it on also opens the task board.
+  const turnOnCrewMode = useCallback(() => {
+    if (crewModeOn || !currentSlot) return
+    const key = currentSlot.key
+    setTurningOn(set => withKey(set, key))
+    void switchAgent(crewModeAgent(), 'template').finally(() => setTurningOn(set => withoutKey(set, key)))
+    if (taskBoardOffered) {
+      openTaskBoard()
+      // The Workers tab lands beside the board and in front: it is where the
+      // chats this one opens are listed (they are not rows of the session list).
+      openView('workers')
+    }
+  }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, openTaskBoard, openView])
+  const crewModeLeaving = !!currentSlot && turningOff.has(currentSlot.key)
+  const crewModeArriving = !!currentSlot && turningOn.has(currentSlot.key)
+  /** Crew Mode is on, or being turned on, for this chat: the composer then shows
+   *  neither the memory-mode chip nor the Crew Mode chip. */
+  const crewModeChosen = (crewModeOn || crewModeArriving) && !crewModeLeaving
+  /** The switch either way is in flight for this chat. The composer is held
+   *  meanwhile, the way it is during a memory-mode switch: a send that reached
+   *  the server first would start the turn on the agent the chat is leaving, and
+   *  the switch would then be refused (the server switches no chat mid-turn). The
+   *  draft stays in the box; `null` when nothing is in flight. */
+  const crewModeSwitching: 'on' | 'off' | null = crewModeLeaving ? 'off' : crewModeArriving ? 'on' : null
+  // Until the first user message Crew Mode can be turned off again (the server
+  // allows it only then): back to the default agent this chat had before, which
+  // is the only agent the switch is offered on. After that it is locked.
+  // Never when the default agent is itself a conductor: there is nothing to go back to.
+  const crewModeCancellable = crewModeEligible && crewModeOn && !crewModeLeaving && !hasUserMessage && !currentSlot?.running
+  const turnOffCrewMode = useCallback(() => {
+    if (!crewModeCancellable || !currentSlot) return
+    const key = currentSlot.key
+    setTurningOff(set => withKey(set, key))
+    void switchAgent(defaultAgent || 'kirocrew', 'template').finally(() => setTurningOff(set => withoutKey(set, key)))
+  }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent])
+  return {
+    crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode,
+    turnOffCrewMode: crewModeCancellable ? turnOffCrewMode : undefined,
+    openTaskBoard: taskBoardOffered ? openTaskBoard : undefined,
+  }
+}

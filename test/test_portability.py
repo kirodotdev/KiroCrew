@@ -80,7 +80,6 @@ class TestExport:
         assert "hostname" in manifest
         assert "contents" in manifest
 
-        # Verify it's a valid zip
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
         names = zf.namelist()
         assert any("MANIFEST.json" in n for n in names)
@@ -170,7 +169,6 @@ class TestExport:
         zf.close()
 
     def test_export_excludes_pid_files(self, patched_config_dir):
-        # Add a .pid file
         (patched_config_dir / "gateway.pid").write_text("99999")
         zip_bytes, _ = create_export_zip()
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
@@ -179,7 +177,6 @@ class TestExport:
         zf.close()
 
     def test_export_skips_symlinks(self, patched_config_dir):
-        # Create a symlink in workspace
         link = patched_config_dir / "workspace" / "memory" / "evil_link.md"
         try:
             link.symlink_to("/etc/passwd")
@@ -1004,7 +1001,6 @@ class TestValidate:
         assert "Invalid zip" in error
 
     def test_validate_missing_manifest(self, tmp_path):
-        # Create a zip without MANIFEST.json
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("some-dir/config.json", '{"agent":{}}')

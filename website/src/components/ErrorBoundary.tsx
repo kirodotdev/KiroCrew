@@ -33,6 +33,14 @@ interface Props {
    * draft, turning a contained render crash into data loss.
    */
   retryOnly?: boolean
+  /**
+   * The active language generation (`useLanguageGeneration()`), passed by a
+   * parent the React Compiler compiles. A class cannot subscribe through the
+   * hook, and the compiled parent would otherwise hand back the same cached
+   * element after a language switch, leaving a visible crash card in the old
+   * language. A changed prop re-renders the boundary without resetting it.
+   */
+  languageGeneration?: number
 }
 
 export default class ErrorBoundary extends Component<Props, State> {

@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 from skill_script_helpers import load_skill_script, no_bytecode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,12 +92,22 @@ class TestWhatDoesNotCount:
     def test_inline_code_is_not_a_declaration(self, module, grammar):
         assert _declared(module, grammar, "The harness checks `Closes #999` too.") == []
 
-    @pytest.mark.parametrize("line", ["Related to #5", "see #5", "Addresses #5"])
-    def test_unlisted_keywords_do_not_count(self, module, grammar, line):
-        assert _declared(module, grammar, line) == []
-
-    @pytest.mark.parametrize("line", ["Discloses #5", "Unfixed #5", "prefixes #5"])
-    def test_keyword_must_start_the_trailer(self, module, grammar, line):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            *named_cases(
+                "test_unlisted_keywords_do_not_count",
+                "line",
+                ["Related to #5", "see #5", "Addresses #5"],
+            ),
+            *named_cases(
+                "test_keyword_must_start_the_trailer",
+                "line",
+                ["Discloses #5", "Unfixed #5", "prefixes #5"],
+            ),
+        ],
+    )
+    def test_the_line_declares_nothing(self, module, grammar, line):
         assert _declared(module, grammar, line) == []
 
     def test_other_repository_is_not_this_repository(self, module, grammar):

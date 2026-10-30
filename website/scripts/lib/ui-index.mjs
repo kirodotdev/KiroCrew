@@ -367,7 +367,8 @@ export function buildUiIndex(inputs) {
         label_key: sourceKey(s),
         placements: [{
           surface_id: 'settings', route: `/settings/${tab}/${s.id}`,
-          parent_ids: ['page.settings', `settings.tab.${tab}`], entry_kind: 'tab', requires: [],
+          parent_ids: ['page.settings', `settings.tab.${tab}`], entry_kind: 'tab',
+          requires: previewRequires(inputs.settingsTabPreview[tab], `Settings sub-page '${tab}/${s.id}'`),
         }],
       }, 'Settings sub-page')
     }
@@ -399,7 +400,9 @@ export function buildUiIndex(inputs) {
       setting_id: e.id,
       placements: [{
         surface_id: 'settings', route: agent.route,
-        parent_ids: ['page.settings', tabId, ...(subId ? [subId] : [])], entry_kind: 'tab', requires: [],
+        // A setting on a preview-gated tab is reachable only once that preview is on.
+        parent_ids: ['page.settings', tabId, ...(subId ? [subId] : [])], entry_kind: 'tab',
+        requires: previewRequires(inputs.settingsTabPreview[tab], `setting '${e.id}'`),
       }],
     }, 'setting')
   }

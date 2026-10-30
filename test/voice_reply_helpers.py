@@ -46,14 +46,6 @@ def _capture_mkstemp(monkeypatch) -> list[str]:
     return allocated
 
 
-def _make_executable(path: str) -> None:
-    """Touch *path* and flag it executable so shutil.which / os.access pass."""
-    with open(path, "wb") as f:
-        f.write(b"#!/bin/sh\n")
-    # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- marks a fake binary under tmp_path executable so shutil.which finds it, moved verbatim
-    os.chmod(path, 0o755)
-
-
 # _synthesize_polly() short-circuits to None when the `aws` CLI is absent, so any
 # test that exercises the argv build or the subprocess lifecycle must state that
 # the CLI is present. It is NOT present on a stock Windows box (nor on a minimal

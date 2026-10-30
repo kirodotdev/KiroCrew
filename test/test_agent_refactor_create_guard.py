@@ -42,6 +42,11 @@ _DYNAMIC = "<dynamic>"
 _REPO = Path(__file__).resolve().parents[1]
 _SRC = _REPO / "src" / "kiro_crew"
 
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_refactor_create_guard")
+
+
 #: What a ``mock.patch`` callable resolves to, per module that provides one: the
 #: standard library, its PyPI backport, and pytest-mock's ``mocker`` fixture.
 _PATCH_FORMS = {

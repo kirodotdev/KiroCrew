@@ -1024,7 +1024,7 @@ class TestTheReadingHappensBeforeTheJudge:
         real = service._write_monitor_snapshot_locked
         seen: list[tuple[dict, dict]] = []
 
-        async def _write(payload: dict | None = None) -> None:
+        async def _write(payload: dict | None = None, **kwargs: Any) -> None:
             # A payload-less call serializes live state, which by definition carries the
             # baseline memory already holds; only a staged payload can be a commit.
             row = None
@@ -1036,7 +1036,7 @@ class TestTheReadingHappensBeforeTheJudge:
                     if on_refuse is not None:
                         on_refuse()
                     raise OSError("disk went away")
-            await real(payload)
+            await real(payload, **kwargs)
 
         service._write_monitor_snapshot_locked = _write  # type: ignore[method-assign]
         return seen
@@ -1259,8 +1259,8 @@ class TestTheReadingHappensBeforeTheJudge:
 
         real = service._write_monitor_snapshot_locked
 
-        async def _turn_lands_mid_write(payload: dict | None = None) -> None:
-            await real(payload)
+        async def _turn_lands_mid_write(payload: dict | None = None, **kwargs: Any) -> None:
+            await real(payload, **kwargs)
             if payload is None:
                 return
             row = next(r for r in payload["loops"] if r["id"] == loop.id)
@@ -1312,8 +1312,8 @@ class TestTheReadingHappensBeforeTheJudge:
 
         real = service._write_monitor_snapshot_locked
 
-        async def _lands_then_cancelled(payload: dict | None = None) -> None:
-            await real(payload)
+        async def _lands_then_cancelled(payload: dict | None = None, **kwargs: Any) -> None:
+            await real(payload, **kwargs)
             # A payload-less write serializes live state; the reading's own write stages
             # a payload too. The commit is the one whose row carries a baseline memory
             # does not yet hold.

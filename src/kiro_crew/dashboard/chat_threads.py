@@ -1035,7 +1035,9 @@ async def _run_thread_turn(
             logger.warning("Thread turn aborted (prompt busy): slot=%s mid=%s", slot.key, mid)
             _final(_FAILED_FALLBACK, is_error=True)
             return
-        if not chunks:
+        # The returned text, not the streamed chunks: a prompt-busy retry starts its
+        # text over, so chunks from an earlier attempt can stand beside an empty answer.
+        if not response_text:
             response_text = (
                 _NO_TEXT_FALLBACK_TOOLS if tools_available else _NO_TEXT_FALLBACK_NO_TOOLS
             )

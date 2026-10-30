@@ -390,6 +390,11 @@ class SlotProjection:
                 }
                 if meta.get("tool_purpose"):
                     pending_approval_info["tool_purpose"] = redact(meta["tool_purpose"])
+                # Whether the card's "trust" decision is grantable for this request
+                # (the slot approve route's own proof), so a card that relays it
+                # (the Crew Mode conductor's approval card) offers Trust only then.
+                if str(meta.get("trust_grantable") or "") == "1":
+                    pending_approval_info["trust_grantable"] = "1"
                 break
         if pending_approval_info is None and coordinator_pending:
             # No unresolved permission row supplied the card: the pending
@@ -404,6 +409,9 @@ class SlotProjection:
                 "tool_input": redact(str(record.get("tool_input") or "")),
                 "tool_kind": "spawn" if approval_id.startswith("spawn:") else "",
                 "request_id": redact(approval_id),
+                # Names THIS record (the id can recur), so a card that relays it
+                # (the Crew Mode conductor's approval card) pins its decision.
+                "request_instance": str(record.get("instance") or ""),
             }
             if record.get("tool_purpose"):
                 # Import after state initialization: chat_utils itself imports state.
@@ -420,6 +428,9 @@ class SlotProjection:
             "title": redact(slot.display_title),
             "agent": slot.agent,
             "agent_kind": getattr(slot, "agent_kind", ""),
+            # The agent Crew Mode turned on with, "" when it never did
+            # (``crew_mode.stamp_rows`` and the dashboard's ``runsCrewMode`` read it).
+            "crew_mode_agent": redact(getattr(slot, "crew_mode_agent", "") or ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on

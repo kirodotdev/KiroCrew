@@ -79,6 +79,10 @@ class ScopeSpec:
 # validate`` reports a partially-governed ``capabilities`` block so the gap is
 # visible instead of implied.
 #
+# An ENTERPRISE build is the exception: there an unnamed scope is answered by the
+# built-in baseline (``baseline.py``, RFC D3), so a new row here also needs a row
+# in ``BASELINE_CONTROLS`` or ``BASELINE_UNGATED``; a test fails until it has one.
+#
 # The absent-key semantics below are verified by executing parse_policy + resolve,
 # not inferred from the comments.
 
@@ -119,6 +123,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),
+    # Which app versions may be installed and loaded, as ``<app>@<version>``
+    # (``{"mode": "allow", "allow": ["file-explorer@1.*"]}``). Asked by
+    # ``apps.admission.app_admission_denied`` at install, update, boot and enable
+    # (``extension_governance.app_version_denied``). RFC enterprise edition,
+    # appendix row "App versions".
+    "app_versions": ScopeSpec(RULESET, matcher="identifier"),
     "commands": ScopeSpec(RULESET, matcher="command"),
     "filesystem.read": ScopeSpec(RULESET, matcher="path"),
     "filesystem.write": ScopeSpec(RULESET, matcher="path"),
@@ -168,6 +178,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # existing single gate ``resolve_selected_backend`` reads the narrowed registry, so
     # it degrades a denied persisted value with no second check.
     "agent_backend": ScopeSpec(RULESET, matcher="identifier"),
+    # Which inbound webhook sources may start work (RFC crew-enterprise-edition,
+    # appendix rows "Incoming webhooks" and Red "Webhooks by source"). Members are
+    # source ids: ``agent`` (``POST /api/hooks/agent``) and ``ops-mission-control``
+    # (that app's signal webhook), e.g. ``{"webhooks": {"mode": "allow", "allow":
+    # ["agent"]}}``. Asked by ``kiro_crew.webhook_sources.source_refusal`` at each
+    # source's entry, policy layer only (a request carries no session). An absent
+    # scope leaves each source to its own switch.
+    "webhooks": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (registered defaults — see the CAPABILITY-DEFAULT CONTRACT above):
     "capabilities.spawn": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
@@ -180,7 +198,16 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # that is available unless a policy explicitly sets
     # ``{"capabilities": {"browse": {"enabled": false}}}``.
     "capabilities.browse": ScopeSpec(CAPABILITY, capability_default=True),
-    "capabilities.script_hooks": ScopeSpec(CAPABILITY, capability_default=False),
+    # Inner ``events`` ruleset (``identifier`` matcher): which hook trigger events
+    # may fire a script hook once the capability is on, by event name --
+    # ``AgentSpawn``, ``PreToolUse``, ``Stop`` and the rest (``hooks.HOOK_EVENT_*``)
+    # (RFC crew-enterprise-edition, appendix row "Hook trigger events"). Queried as
+    # ``events:<event>`` by ``hook_runtime.governance_gate`` before a hook runs, and
+    # for each event of the user's kiro hooks before they are installed. An unnamed
+    # ruleset permits every event.
+    "capabilities.script_hooks": ScopeSpec(
+        CAPABILITY, capability_default=False, scope_matchers={"events": "identifier"}
+    ),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),
     # Agent workload identity + Gateway MCP (opt-in, like messaging/publish).
@@ -202,8 +229,21 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # implements a destination is the orthogonal CPP PublishRegistry seam; this
     # gate only decides WHETHER + to WHERE.  Not a lever over ``git push`` (deny
     # floor) or ``network.egress`` (fetch host) — those are separate planes.
+    #
+    # Three more inner rulesets (RFC crew-enterprise-edition, appendix rows "Deploy
+    # regions", "Publish audiences", "Deploy accounts"), checked before anything is
+    # uploaded (``publish_governance``): ``regions`` (the cloud region a deploy
+    # writes to), ``audience`` (who may read the result: ``public``, ``shared`` or
+    # ``private``) and ``accounts`` (the cloud account id a deploy writes to).
     "capabilities.publish": ScopeSpec(
-        CAPABILITY, capability_default=False, scope_matchers={"destinations": "identifier"}
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={
+            "destinations": "identifier",
+            "regions": "identifier",
+            "audience": "identifier",
+            "accounts": "identifier",
+        },
     ),
     # Installed theme packs may ship a persona.md whose (consent-gated) text is
     # injected into the agent's FIRST turn — third-party text entering the
@@ -253,7 +293,17 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # per-surface profile is not the question it answers.
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # theme_install).
-    "capabilities.telemetry": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``otlp_hosts`` ruleset (``host`` matcher): which OTLP collector hosts
+    # the metrics exporter may send to (RFC crew-enterprise-edition, appendix row
+    # "Diagnostic telemetry target"). Queried as ``otlp_hosts:<host>`` for every
+    # destination before its reader is built and before each export
+    # (``metrics/otlp_governance.py``), policy layer only like the beacon probe. A policy that names the row with
+    # ``enabled: false`` therefore stops OTLP export too; an unnamed ruleset
+    # leaves every host permitted, as before.
+    "capabilities.telemetry": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"otlp_hosts": "host"}
+    ),
     # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
     # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
     # to the local ``tailscale`` daemon at startup and, on success, puts the
@@ -293,6 +343,24 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # telemetry).
     "capabilities.tailnet_origin": ScopeSpec(CAPABILITY, capability_default=True),
+    # The gateway's TCP bind address (RFC appendix row "Bind address and tunnel").
+    # Queried with the canonical IP text by ``dashboard.urls.bind_address_for``
+    # whenever the address is not ``127.0.0.1`` (today only ``KIROCREW_BIND``
+    # widens it). A refused address binds loopback. Policy layer only.
+    "bind_address": ScopeSpec(RULESET, matcher="ip"),
+    # Extra dashboard origins beyond this machine's loopback origins on the bound
+    # port (RFC appendix row "Dashboard origins"): ``dashboard.url``, the
+    # configured host, ``KIROCREW_CORS_ORIGINS``, ``KIROCREW_ALLOWED_LOOPBACK_PORTS``
+    # and the rest. Queried per origin (``scheme://host[:port]``) by
+    # ``dashboard.urls.build_allowed_origins``; a refused origin is dropped. The
+    # tailnet origin answers to ``capabilities.tailnet_origin`` instead. The
+    # ``origin`` matcher keeps IPv6 brackets literal.
+    "dashboard_origins": ScopeSpec(RULESET, matcher="origin"),
+    # Desktop control (RFC appendix row "Desktop control"). ANDed with the
+    # operator's ``computer_use.json`` opt-in in ``computer_use.enable_state``;
+    # a policy-layer ``enabled: false`` keeps the feature off. Default True so
+    # naming the row without ``enabled`` keeps today's behaviour.
+    "capabilities.computer_use": ScopeSpec(CAPABILITY, capability_default=True),
     # "Connect your phone": minting a live mobile session credential (tailnet QR
     # or one-time login link) is an auth-surface widening an enterprise POLICY
     # must be able to close wholesale or narrow per method. The ``methods``
@@ -323,7 +391,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # surface through ``vet_and_audit``, fail-closed, mirroring the
     # mobile_connect listing). Data row only — CONTRACT_VERSION and the
     # evaluator are untouched.
-    "capabilities.social_share": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``sites`` ruleset (``identifier`` matcher): which share sites the
+    # dialog may offer, by id -- ``x``, ``linkedin`` (``social_share.SHARE_SITES``).
+    # ``GET /api/dashboard/config`` reports the permitted ids as
+    # ``social_share_sites`` and the dialog draws only those buttons.
+    "capabilities.social_share": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"sites": "identifier"}
+    ),
     # Hosted feature-video clips: the gateway fetches a signed manifest from a
     # vendor CDN and then downloads media from it into the data home
     # (``feature_videos_manifest`` / ``feature_videos_cache``). That is outbound
@@ -357,7 +432,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # on disk is a separate decision this row does not make.
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
-    "capabilities.feature_videos_download": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``hosts`` ruleset (``host`` matcher): which hosts the manifest and
+    # its media may be fetched from (a mirror named by the URL override included).
+    # Queried as ``hosts:<host>`` before each manifest request and each clip or
+    # poster request (``feature_videos_manifest.host_denied``).
+    "capabilities.feature_videos_download": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"hosts": "host"}
+    ),
     # The Jev decision seam: an enabled, sampled session sends message excerpts and
     # skill descriptions to an external, PAID provider endpoint and spends the
     # operator's account to do it. The keystone ``decisions_consent.json`` is the
@@ -379,7 +461,21 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # ``decisions_enabled`` so the Feature Previews card is not drawn at all.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
-    "capabilities.decisions": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Three inner rulesets bound WHAT the seam may use once it is on, each queried
+    # by ``decide`` before a request is sent (``capability.targets_denied``):
+    # ``models`` (``identifier``: the model id the request names), ``points``
+    # (``identifier``: the decision point, e.g. ``skills.select``) and
+    # ``endpoints`` (``host``: the provider endpoint's host). ``models`` and
+    # ``endpoints`` bind the decision provider, so the judge's LLM lane, which
+    # runs on the session's own model provider, is asked about its point only.
+    # They bind local presets too, because a ``capabilities.decisions`` answer
+    # already does.
+    "capabilities.decisions": ScopeSpec(
+        CAPABILITY,
+        capability_default=True,
+        scope_matchers={"models": "identifier", "points": "identifier", "endpoints": "host"},
+    ),
     # The same seam answered by a LOCAL PRESET model on this machine
     # (``decisions/local_models.py``) instead of hosted Jev. Nothing leaves the
     # machine and nothing is spent, so a fleet that permits hosted Jev can still
@@ -392,6 +488,27 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # row permits, as for every capability.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched.
     "capabilities.decisions_local": ScopeSpec(CAPABILITY, capability_default=True),
+    # Installing extensions through the edition's ``CapabilityManager``: MCP
+    # servers, skills, agent packages and plugin sync. Off pins every install,
+    # uninstall and sync shut. Inner ``extensions`` ruleset (``identifier``): what
+    # may be installed, as ``<kind>:<id>`` (``mcp:github``, ``plugin:reviewer``).
+    # Enforced at the seam every caller goes through
+    # (``capability_bound.BoundedCapabilityManager``, via
+    # ``extension_governance``). Default True: naming the row without ``enabled``
+    # keeps install working. RFC enterprise edition, appendix rows "Extension
+    # install", "Extension uninstall" and "Plugin sync". Named by the RFC's policy
+    # term, not its ``capability_install`` Crew key: an edition may already
+    # ``register_scope`` that name with its own spec, and a second spec under one
+    # name makes ``register_scope`` raise at composition.
+    "capabilities.extension_install": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"extensions": "identifier"}
+    ),
+    # App developer mode (``apps/dev_mode.py``): live reload and ``no-store``
+    # serving of an app's own UI tree. Asked at the toggle and on every read, so a
+    # policy that turns it off also stops apps already in dev mode. Default True.
+    # ``extension_governance.developer_mode_permitted`` is the one reader. RFC
+    # enterprise edition, appendix row "App developer mode".
+    "capabilities.app_dev_mode": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

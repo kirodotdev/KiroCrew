@@ -14,12 +14,13 @@ import shutil
 import stat
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
 from typing import Iterator, NoReturn
 
 import pytest
+
+from kiro_crew.testing.wait import wait_until
 
 
 def _required() -> bool:
@@ -40,6 +41,8 @@ pytestmark = pytest.mark.skipif(
 
 _TURN_TIMEOUT = 120.0
 _READY_TIMEOUT = 90.0
+#: How often a slot is re-read over HTTP while a real kiro-cli turn is awaited.
+_SLOT_POLL_SECS = 1.0
 _HOST_PROBE_PREFIX = "KIROCREW_REAL_SMOKE_HOST_PROBE:"
 _PROMPT_TEMPLATE = (
     "This is an automated smoke test. Use your file-reading tool to read the "
@@ -365,11 +368,12 @@ def _await_completed_turn(
     require_manual: bool = True,
 ) -> tuple[dict, dict]:
     """Approve one correlated read, then require a genuine successful terminal state."""
-    deadline = time.monotonic() + timeout
     detail: dict = {}
     approved_id = ""
     approved_tool_call_id = ""
-    while time.monotonic() < deadline:
+
+    def _completed() -> tuple[dict, dict] | None:
+        nonlocal detail, approved_id, approved_tool_call_id
         detail = client.get(f"/api/chat/slots/{slot}")
         messages = detail.get("messages", [])
         if not isinstance(messages, list):
@@ -462,16 +466,18 @@ def _await_completed_turn(
                     f"to the nonce: {assistants!r}"
                 )
             return exact[0], tool
-        time.sleep(1.0)
+        return None
 
-    seen = [
-        (message.get("role"), str(message.get("content", ""))[:160])
-        for message in detail.get("messages", [])
-    ]
-    raise AssertionError(
-        f"no safely completed real-backend turn within {timeout:.0f}s; "
-        f"slot messages={seen!r}\n{client.diagnostics()}"
-    )
+    def _seen() -> str:
+        seen = [
+            (message.get("role"), str(message.get("content", ""))[:160])
+            for message in detail.get("messages", [])
+        ]
+        return (
+            f"no safely completed real-backend turn; slot messages={seen!r}\n{client.diagnostics()}"
+        )
+
+    return wait_until(_completed, timeout=timeout, interval=_SLOT_POLL_SECS, describe=_seen)
 
 
 def _confined_read(name: str, params: dict) -> str:
@@ -584,8 +590,7 @@ def _set_smoke_project(handle, project: Path) -> None:
 
 
 def _await_denied_read(client, slot: str, path: Path, marker: str, start: int) -> None:
-    deadline = time.monotonic() + _TURN_TIMEOUT
-    while time.monotonic() < deadline:
+    def _denied_and_finished() -> bool:
         detail = client.get(f"/api/chat/slots/{slot}")
         messages = detail.get("messages", [])[start:]
         assert marker not in json.dumps(messages), "denied synthetic file contents escaped"
@@ -595,22 +600,28 @@ def _await_denied_read(client, slot: str, path: Path, marker: str, start: int) -
                 _reject_unexpected(
                     client, pending[0], "read confinement did not deny before approval"
                 )
-        if detail.get("running") is False:
-            assert not detail.get("queue"), "denied turn queued recovery"
-            denied = [
-                m
-                for m in messages
-                if m.get("role") == "tool"
-                and _is_exact_nonce_read((m.get("meta") or {}).get("input"), path)
-                and "Blocked by governance policy"
-                in (m.get("content", "") + str((m.get("meta") or {}).get("output", "")))
-            ]
-            assert denied, f"no pre-execution filesystem.read denial: {messages!r}"
-            assert not any((m.get("meta") or {}).get("output") == marker for m in messages)
-            print("negative read: production filesystem.read denial; synthetic marker absent")
-            return
-        time.sleep(0.1)
-    raise AssertionError("confined negative read did not finish")
+        if detail.get("running") is not False:
+            return False
+        assert not detail.get("queue"), "denied turn queued recovery"
+        denied = [
+            m
+            for m in messages
+            if m.get("role") == "tool"
+            and _is_exact_nonce_read((m.get("meta") or {}).get("input"), path)
+            and "Blocked by governance policy"
+            in (m.get("content", "") + str((m.get("meta") or {}).get("output", "")))
+        ]
+        assert denied, f"no pre-execution filesystem.read denial: {messages!r}"
+        assert not any((m.get("meta") or {}).get("output") == marker for m in messages)
+        print("negative read: production filesystem.read denial; synthetic marker absent")
+        return True
+
+    wait_until(
+        _denied_and_finished,
+        timeout=_TURN_TIMEOUT,
+        interval=_SLOT_POLL_SECS,
+        describe=lambda: "confined negative read did not finish",
+    )
 
 
 def test_real_kiro_completes_one_approved_nonce_read(

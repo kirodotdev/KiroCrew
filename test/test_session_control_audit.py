@@ -27,6 +27,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import wait_until
 
 #: One valid call per kirocrew-dashboard tool, for the refusal-audit sweep below.
 _DASHBOARD_TOOL_CALLS = {
@@ -55,18 +56,21 @@ _DASHBOARD_TOOL_CALLS = {
     "session_continue": {"target": "chat-2"},
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
+    "session_set_color": {"target": "chat-2", "color": "1"},
     "session_rename": {"target": "chat-2", "title": "Worker"},
     "session_generate_title": {"target": "chat-2"},
     "session_close": {"target": "chat-2"},
     "session_revive": {"target": "chat-2"},
     "session_history_list": {},
     "session_send": {"target": "chat-2", "message": "hi"},
-    "session_broadcast": {"message": "hi", "mode": "queue"},
+    "session_broadcast": {"message": "hi", "mode": "queue", "all": True},
     "session_status": {},
     "session_adopt": {"target": "chat-2"},
+    "session_handoff": {"target": "chat-2", "to": "chat-3"},
     "session_release": {"target": "chat-2"},
     "session_read_message": {"target": "chat-2"},
     "session_summary": {"target": "chat-2"},
+    "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
 }
 
 
@@ -144,7 +148,6 @@ def test_the_audit_write_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     Mutation guard: calling `sel()` inline runs it on the calling thread.
     """
     import threading
-    import time
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -164,12 +167,7 @@ def test_the_audit_write_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     loop_thread = asyncio.run(_drive())
 
     # The offload is fire-and-forget, so wait for it rather than racing it.
-    # flake-ok: pre-existing 5 s bounded poll for the fire-and-forget audit offload; moved verbatim and tracked for a de-flake pass
-    deadline = time.monotonic() + 5
-    while "thread" not in seen and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    assert "thread" in seen, "the audit never ran"
+    wait_until(lambda: "thread" in seen, describe=lambda: "the audit never ran")
     assert (
         seen["thread"] != loop_thread
     ), "the audit must be dispatched off the loop's thread, not called inline"
@@ -185,7 +183,6 @@ def test_the_denial_audit_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     Mutation guard: calling `sel()` inline in `deny` runs it on the loop thread.
     """
     import threading
-    import time
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -209,12 +206,7 @@ def test_the_denial_audit_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
 
     loop_thread = asyncio.run(_drive())
 
-    # flake-ok: pre-existing 5 s bounded poll for the fire-and-forget audit offload; moved verbatim and tracked for a de-flake pass
-    deadline = time.monotonic() + 5
-    while "thread" not in seen and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    assert "thread" in seen, "the denial was never audited"
+    wait_until(lambda: "thread" in seen, describe=lambda: "the denial was never audited")
     assert (
         seen["thread"] != loop_thread
     ), "the denial audit must be dispatched off the loop's thread"
@@ -235,7 +227,6 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
 
     Mutation guard: dropping either `redact` call in `deny` fails this.
     """
-    import time
 
     # Assembled rather than written literally: a real-looking token in source
     # trips secret scanners for no benefit. `redact_credentials` matches the
@@ -263,12 +254,7 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
 
     asyncio.run(_drive())
 
-    # flake-ok: pre-existing 5 s bounded poll for the fire-and-forget audit offload; moved verbatim and tracked for a de-flake pass
-    deadline = time.monotonic() + 5
-    while "resources" not in captured and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    assert "resources" in captured, "the denial was never audited"
+    wait_until(lambda: "resources" in captured, describe=lambda: "the denial was never audited")
     assert noisy_target not in captured["resources"], (
         "the raw target reached the audit's `resources`; /api/sel/events would "
         "serve the credential back to the dashboard"

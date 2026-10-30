@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +17,7 @@ from external_logout_detection_helpers import (
     _FakeProvider,
     _FakeRuntime,
 )
+from source_corpus import parsed_candidates, src_root
 
 from kiro_crew import kiro_prerequisite as kp
 from kiro_crew.session_allocation import (
@@ -1223,7 +1223,7 @@ class TestRetirementCoverage:
 
         import ast
 
-        source_root = Path(__file__).parents[1] / "src" / "kiro_crew"
+        source_root = src_root()
         registration_paths = {
             ("session_allocation.py", "seed_conversation"),
             ("session_allocation_parts/get_or_create.py", "_get_or_create_impl"),
@@ -1265,8 +1265,11 @@ class TestRetirementCoverage:
                 child = parent
             return False
 
-        for path in sorted(source_root.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        # A writer spells ``_session_map`` as an attribute, so only files whose text
+        # holds it are parsed.
+        for path, _text, tree in parsed_candidates(
+            require_any=("_session_map",), skip_syntax_errors=False
+        ):
             parents = {
                 child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
             }

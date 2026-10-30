@@ -60,6 +60,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.memory_recall import recall_terms
 from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
+from kiro_crew.sqlite_wal import enable_wal
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,15 @@ _SCHEMA_VERSION = 7
 #: Another process may be indexing the same skill. Wait briefly, then give up and
 #: let the caller read files this once rather than block a chat turn on a lock.
 _BUSY_TIMEOUT_SECS = 2.0
+
+#: Cap on the ``-wal`` file a checkpoint leaves behind. In WAL mode SQLite reuses
+#: the log file after a checkpoint instead of shrinking it, so on one long-lived
+#: connection the file stays at the largest transaction it ever held (10 MB beside
+#: an 18 MB index was measured) until the process exits. With
+#: ``journal_size_limit`` set, the log is truncated to this size each time it is
+#: reset after a checkpoint. That is the same automatic checkpoint that already
+#: runs, so no write waits on a reader and readers stay non-blocking.
+_WAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024
 
 #: Above this size, decline the index for the current search so the caller uses
 #: the legacy full-body reader. Indexing only a prefix would silently hide terms
@@ -366,8 +376,10 @@ class SkillSearchIndex:
                 )
                 # WAL so a reader is never blocked by the indexing writer; NORMAL
                 # because a lost commit only costs a re-index.
-                conn.execute("PRAGMA journal_mode=WAL")
+                enable_wal(conn, timeout_secs=_BUSY_TIMEOUT_SECS)
                 conn.execute("PRAGMA synchronous=NORMAL")
+                # Per connection, not stored in the file, so every opener sets it.
+                conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
                 conn.executescript(_DDL)
                 signature = tokenizer_signature()
                 row = conn.execute("SELECT version, tokenizer FROM skill_index_schema").fetchone()

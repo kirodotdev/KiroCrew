@@ -347,10 +347,10 @@ def test_a_racing_public_publish_refuses_rather_than_handing_out_a_403_link(monk
 
     inner = pd.engine._checked
 
-    def _policy_denied(args, profile, action="", timeout=0):
+    def _policy_denied(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["s3api", "put-bucket-policy"]:
             raise pd.engine.AWSError("AccessDenied: s3:PutBucketPolicy")
-        return inner(args, profile, action=action)
+        return inner(args, profile, action=action, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _policy_denied)
 
@@ -386,10 +386,10 @@ def test_a_racing_private_publish_still_proceeds_when_the_policy_cannot_be_reass
     monkeypatch.setattr(provider, "_find_drive", _find)
     inner = pd.engine._checked
 
-    def _policy_denied(args, profile, action="", timeout=0):
+    def _policy_denied(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["s3api", "put-bucket-policy"]:
             raise pd.engine.AWSError("AccessDenied: s3:PutBucketPolicy")
-        return inner(args, profile, action=action)
+        return inner(args, profile, action=action, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _policy_denied)
     res = _publish(provider, payload, visibility="private")

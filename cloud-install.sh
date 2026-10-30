@@ -61,6 +61,25 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 SUDO=""
 if [ "$(id -u)" != "0" ] && has sudo; then SUDO="sudo"; fi
 
+# Pinned AWS CLI / SSM plugin versions and their sha256 (packaging/pins).
+# shellcheck source=packaging/pins/aws-tools.env
+. "$REPO_ROOT/packaging/pins/aws-tools.env"
+
+# fetch_verified <url> <out> <sha256>: download, then keep the file only if its
+# sha256 matches. On any failure the file is removed and nothing is installed.
+fetch_verified() {
+    if ! curl -fsSL "$1" -o "$2"; then
+        warn "Download failed: $1"; rm -f "$2"; return 1
+    fi
+    if has sha256sum; then _got="$(sha256sum "$2" | awk '{print $1}')"
+    elif has shasum; then _got="$(shasum -a 256 "$2" | awk '{print $1}')"
+    else warn "No sha256sum/shasum available — refusing to install $(basename "$2") unverified"; rm -f "$2"; return 1
+    fi
+    if [ "$_got" != "$3" ]; then
+        warn "Checksum mismatch for $1 — not installing"; rm -f "$2"; return 1
+    fi
+}
+
 echo
 echo "  ${MAGENTA}${BOLD}KiroCrew — run on your own AWS${RESET}"
 echo "  ${DIM}Platform: $OS $ARCH${RESET}"
@@ -125,14 +144,14 @@ else
     info "Installing the AWS CLI v2…"
     tmp="$(mktemp -d)"
     if [ "$OS" = "Darwin" ]; then
-        curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "$tmp/awscli.pkg"
-        sudo installer -pkg "$tmp/awscli.pkg" -target / && ok "aws CLI installed" || warn "aws CLI install failed — see https://aws.amazon.com/cli/"
+        fetch_verified "https://awscli.amazonaws.com/AWSCLIV2-${AWSCLI_VERSION}.pkg" "$tmp/awscli.pkg" "$AWSCLI_SHA256_MACOS_PKG" \
+            && sudo installer -pkg "$tmp/awscli.pkg" -target / && ok "aws CLI installed" || warn "aws CLI install failed — see https://aws.amazon.com/cli/"
     else
         case "$ARCH" in
-            aarch64|arm64) url="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip";;
-            *) url="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip";;
+            aarch64|arm64) url="https://awscli.amazonaws.com/awscli-exe-linux-aarch64-${AWSCLI_VERSION}.zip"; sha="$AWSCLI_SHA256_LINUX_AARCH64";;
+            *) url="https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWSCLI_VERSION}.zip"; sha="$AWSCLI_SHA256_LINUX_X86_64";;
         esac
-        curl -fsSL "$url" -o "$tmp/awscliv2.zip" && (cd "$tmp" && unzip -q awscliv2.zip && sudo ./aws/install --update) \
+        fetch_verified "$url" "$tmp/awscliv2.zip" "$sha" && (cd "$tmp" && unzip -q awscliv2.zip && sudo ./aws/install --update) \
             && ok "aws CLI installed" || warn "aws CLI install failed — see https://aws.amazon.com/cli/"
     fi
     rm -rf "$tmp"
@@ -145,27 +164,28 @@ if has session-manager-plugin; then
 else
     info "Installing the SSM Session Manager plugin…"
     tmp="$(mktemp -d)"
+    ssm_base="https://session-manager-downloads.s3.amazonaws.com/plugin/${SSM_PLUGIN_VERSION}"
     if [ "$OS" = "Darwin" ]; then
         # Pick the package by CPU arch up front — Intel Macs must not fetch the
         # arm64 build (a valid download of the wrong architecture).
         case "$ARCH" in
-            aarch64|arm64) mac_url="https://session-manager-downloads.s3.amazonaws.com/plugin/latest/mac_arm64/session-manager-plugin.pkg";;
-            *)             mac_url="https://session-manager-downloads.s3.amazonaws.com/plugin/latest/mac/session-manager-plugin.pkg";;
+            aarch64|arm64) mac_url="$ssm_base/mac_arm64/session-manager-plugin.pkg"; sha="$SSM_SHA256_MAC_ARM64";;
+            *)             mac_url="$ssm_base/mac/session-manager-plugin.pkg"; sha="$SSM_SHA256_MAC";;
         esac
-        if curl -fsSL "$mac_url" -o "$tmp/ssm.pkg"; then sudo installer -pkg "$tmp/ssm.pkg" -target / 2>/dev/null || true; fi
+        if fetch_verified "$mac_url" "$tmp/ssm.pkg" "$sha"; then sudo installer -pkg "$tmp/ssm.pkg" -target / 2>/dev/null || true; fi
         if has session-manager-plugin; then ok "session-manager-plugin installed"; else warn "SSM plugin install failed (needed to connect)"; fi
     elif has dnf || has rpm; then
-        case "$ARCH" in aarch64|arm64) url="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_arm64/session-manager-plugin.rpm";; *) url="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm";; esac
+        case "$ARCH" in aarch64|arm64) url="$ssm_base/linux_arm64/session-manager-plugin.rpm"; sha="$SSM_SHA256_LINUX_ARM64_RPM";; *) url="$ssm_base/linux_64bit/session-manager-plugin.rpm"; sha="$SSM_SHA256_LINUX_64BIT_RPM";; esac
         # Explicit if/elif (not a mixed &&/|| chain, which can latch a success
         # message onto a partial failure). Verify the binary landed at the end.
-        if curl -fsSL "$url" -o "$tmp/ssm.rpm"; then
+        if fetch_verified "$url" "$tmp/ssm.rpm" "$sha"; then
             if has dnf; then sudo dnf install -y "$tmp/ssm.rpm" 2>/dev/null || true
             else sudo rpm -i "$tmp/ssm.rpm" 2>/dev/null || true; fi
         fi
         if has session-manager-plugin; then ok "session-manager-plugin installed"; else warn "SSM plugin install failed"; fi
     elif has apt-get || has dpkg; then
-        case "$ARCH" in aarch64|arm64) url="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb";; *) url="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb";; esac
-        if curl -fsSL "$url" -o "$tmp/ssm.deb"; then sudo dpkg -i "$tmp/ssm.deb" 2>/dev/null || true; fi
+        case "$ARCH" in aarch64|arm64) url="$ssm_base/ubuntu_arm64/session-manager-plugin.deb"; sha="$SSM_SHA256_UBUNTU_ARM64_DEB";; *) url="$ssm_base/ubuntu_64bit/session-manager-plugin.deb"; sha="$SSM_SHA256_UBUNTU_64BIT_DEB";; esac
+        if fetch_verified "$url" "$tmp/ssm.deb" "$sha"; then sudo dpkg -i "$tmp/ssm.deb" 2>/dev/null || true; fi
         if has session-manager-plugin; then ok "session-manager-plugin installed"; else warn "SSM plugin install failed"; fi
     else
         warn "Could not auto-install the SSM plugin — see AWS docs; connect will still print the URL."

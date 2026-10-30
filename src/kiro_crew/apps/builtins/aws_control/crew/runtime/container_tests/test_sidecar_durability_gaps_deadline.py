@@ -670,7 +670,7 @@ def test_a_cut_upload_is_not_read_as_a_permanent_fault(tmp_path):
         # the comparison and the deadline can never be reached.
         mp.setattr(store_mod, "time", _FakeTime)
         mp.setattr(objects, "time", _FakeTime)
-        store = S3ObjectStore("a-bucket", client=_SlowClient())
+        store = S3ObjectStore("a-bucket", client=_SlowClient(), expected_owner="111122223333")
         with path.open("rb") as fh:
             with pytest.raises(objects.UploadDeadlineExceeded) as caught:
                 store.put("crews/c/big.jsonl", fh, 4096, budget=10.0)
@@ -717,7 +717,7 @@ def test_a_transport_that_swallows_the_body_error_is_still_read_as_the_window(tm
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store_mod, "time", _FakeTime)
         mp.setattr(objects, "time", _FakeTime)
-        store = S3ObjectStore("a-bucket", client=_SwallowingClient())
+        store = S3ObjectStore("a-bucket", client=_SwallowingClient(), expected_owner="111122223333")
         with path.open("rb") as fh:
             with pytest.raises(objects.UploadDeadlineExceeded) as caught:
                 store.put("crews/c/big.jsonl", fh, 4096, budget=10.0)
@@ -776,7 +776,7 @@ def test_a_final_cycle_get_is_cut_when_the_drain_deadline_expires(tmp_path):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store_mod, "time", _FakeTime)
         mp.setattr(objects, "time", _FakeTime)
-        store = S3ObjectStore("a-bucket", client=_SlowGetClient())
+        store = S3ObjectStore("a-bucket", client=_SlowGetClient(), expected_owner="111122223333")
         # A deadline five simulated seconds out: the trickling body spends one second per
         # chunk, so the read is cut long before the 4096 bytes arrive.
         deadline = clock() + 5.0
@@ -1202,7 +1202,7 @@ def test_the_store_reads_a_swallowed_body_error_as_the_stop(tmp_path):
                 raise ConnectionError("connection reset by peer") from exc
             return {}
 
-    store = S3ObjectStore("a-bucket", client=_SwallowingClient())
+    store = S3ObjectStore("a-bucket", client=_SwallowingClient(), expected_owner="111122223333")
     with path.open("rb") as fh:
         with pytest.raises(objects.UploadCancelled) as caught:
             store.put("crews/c/big.jsonl", fh, 4096, cancel=stopping.is_set)
@@ -1259,7 +1259,9 @@ def test_an_in_flight_interval_upload_ends_when_the_stop_arrives(tmp_path):
         backup_mod._upload_phase(
             plan.data,
             settings=settings,
-            store=S3ObjectStore("a-bucket", client=_SlowButProgressing()),
+            store=S3ObjectStore(
+                "a-bucket", client=_SlowButProgressing(), expected_owner="111122223333"
+            ),
             state={},
             result=result,
             committed_index={},
@@ -1420,7 +1422,7 @@ def test_the_store_hands_the_body_the_transmission_share_not_the_reservation(tmp
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store_mod, "BoundedReader", _Recording)
-        store = store_mod.S3ObjectStore("a-bucket", client=_Client())
+        store = store_mod.S3ObjectStore("a-bucket", client=_Client(), expected_owner="111122223333")
         # flake-ok: pre-existing real-clock ceiling (one second of slack on the transmission share), moved verbatim; tracked for a de-flake pass
         before = time.monotonic()
         with path.open("rb") as fh:

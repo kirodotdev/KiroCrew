@@ -302,7 +302,7 @@ class TestCronTriggerMCP:
 class TestCronTriggerCLI:
     """Tests for the CLI cron trigger subcommand."""
 
-    def test_cli_subcommand_registered(self, tmp_path):
+    def test_cli_subcommand_registered(self, tmp_path, capsys):
         """kirocrew cron trigger is a recognized subcommand with job_id argument."""
         import argparse
 
@@ -316,8 +316,8 @@ class TestCronTriggerCLI:
             return_value=(True, "Triggered job: test-job (abc12345)"),
         ) as mock_trigger:
             _cron(args)
-        mock_trigger.assert_called_once()
         assert mock_trigger.call_args[0][0] == "abc12345"
+        assert capsys.readouterr().out.strip() == "Triggered job: test-job (abc12345)"
 
     def test_cli_trigger_success(self, mock_dashboard, capsys):
         """CLI trigger prints success message."""

@@ -228,17 +228,25 @@ class TestCard:
         text = refusal_card_text(None)
         assert "agent.refusal_fallback_model" not in text
 
-    def test_fallback_off_hint_names_the_setting(self):
-        # When fallback_off=True the card names agent.refusal_fallback_model.
+    @pytest.mark.parametrize(
+        "expected",
+        [
+            # When fallback_off=True the card names agent.refusal_fallback_model.
+            pytest.param(
+                ("agent.refusal_fallback_model", "switched off"),
+                id="fallback_off_hint_names_the_setting",
+            ),
+            # The hint appends to the rephrase tail, not as an alternative branch.
+            pytest.param(
+                ("rephrasing", "agent.refusal_fallback_model"),
+                id="fallback_off_hint_is_additive_with_rephrase_tail",
+            ),
+        ],
+    )
+    def test_fallback_off_hint(self, expected):
         text = refusal_card_text(None, fallback_off=True)
-        assert "agent.refusal_fallback_model" in text
-        assert "switched off" in text
-
-    def test_fallback_off_hint_is_additive_with_rephrase_tail(self):
-        # The hint appends to the rephrase tail, not as an alternative branch.
-        text = refusal_card_text(None, fallback_off=True)
-        assert "rephrasing" in text
-        assert "agent.refusal_fallback_model" in text
+        for part in expected:
+            assert part in text
 
     def test_fallback_off_hint_is_additive_with_recommended_model_tail(self):
         # The hint also appends when the provider suggests a model, not lost.

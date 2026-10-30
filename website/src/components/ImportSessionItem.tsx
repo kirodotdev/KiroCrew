@@ -1,18 +1,20 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Check, Upload, Loader2 } from 'lucide-react'
+import { Check, Upload, Loader2, X } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { findReport, parseErrorCode, type ErrorReport } from '../utils/errorReport'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore, type AppDispatch } from '../store'
 import { addSlotOptimistic, fetchSlots } from '../store/dashboardSlice'
-import { switchSlot } from '../store/chatSlice'
+import { captureForkOrigin, forkMayOpen, requestSlotFolderOpen, switchSlot, type ForkOrigin } from '../store/chatSlice'
 import ErrorNotice, {
   ErrorNoticeMenuItem,
   type ErrorNoticeMenuItemComponent,
 } from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { useNavigate } from 'react-router-dom'
+import { useGuardedLeave } from './NavigationLeaveGuard'
 
 /**
  * The endpoint's refusal codes, in the vocabulary of what the person chose.
@@ -111,11 +113,19 @@ interface ImportFailure {
    *  differs from it, so the agent hand-off is given the report itself. */
   readonly report?: ErrorReport
 }
+/** A success the shell must show because the import did not open it: the user
+ *  opened another session while the file uploaded. */
+interface ImportSuccess {
+  readonly key: string
+  readonly title: string
+  readonly folderId?: string
+}
 interface ImportOutcome {
   readonly pending: boolean
   readonly failure: ImportFailure | null
+  readonly success: ImportSuccess | null
 }
-let outcome: ImportOutcome = { pending: false, failure: null }
+let outcome: ImportOutcome = { pending: false, failure: null, success: null }
 const outcomeListeners = new Set<() => void>()
 function setOutcome(next: Partial<ImportOutcome>): void {
   outcome = { ...outcome, ...next }
@@ -129,19 +139,110 @@ function useImportOutcome(): ImportOutcome {
   return useSyncExternalStore(subscribeOutcome, () => outcome)
 }
 
+/**
+ * Open an imported session: the one place an import switches to its session,
+ * whether at the end of the upload or from the shell notice's Open button.
+ * Filed under Imported, which the user may have collapsed after an earlier
+ * import, so the folder path is opened too and the active row shows.
+ */
+function openImported(dispatch: AppDispatch, key: string, folderId: string | undefined, when: 'on-upload' | 'from-notice'): void {
+  if (when === 'on-upload') {
+    // Right after the import answered, a 404 is the create/fetch race (#6309):
+    // the session exists, the detail read just ran ahead of it.
+    dispatch(switchSlot({ key, keepTargetOnMissing: true }))
+  } else {
+    // A later click, minutes after the upload. A session that is gone or fails
+    // to load by then is a real failure the user must be told about.
+    dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
+  }
+  dispatch(requestSlotFolderOpen({ key, folder_id: folderId }))
+}
+
+/** Plain Open: the popout and embed frames show one chat each and route
+ *  themselves, so the switch is all they need. */
+function OpenImportedButton({ success, onOpen }: { success: ImportSuccess; onOpen: () => void }) {
+  const dispatch = useAppDispatch()
+  return (
+    <button
+      type="button"
+      className="shrink-0 rounded px-2 py-1 text-accent hover:bg-bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+      onClick={() => {
+        onOpen()
+        openImported(dispatch, success.key, success.folderId, 'from-notice')
+      }}
+    >
+      {i18nT('components.importSessionItem.open')}
+    </button>
+  )
+}
+
+/** The dashboard's Open: the notice can be up over any page, so it goes to
+ *  /chat as well, through the leave guard like every other go-to-chat button. */
+function OpenImportedOnChatButton({ success, onOpen }: { success: ImportSuccess; onOpen: () => void }) {
+  const dispatch = useAppDispatch()
+  const navigate = useNavigate()
+  const leave = useGuardedLeave()
+  return (
+    <button
+      type="button"
+      className="shrink-0 rounded px-2 py-1 text-accent hover:bg-bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+      onClick={() => leave(() => {
+        onOpen()
+        openImported(dispatch, success.key, success.folderId, 'from-notice')
+        navigate('/chat')
+      }, '/chat')}
+    >
+      {i18nT('components.importSessionItem.open')}
+    </button>
+  )
+}
+
 /** Pinned over the page rather than in its flow: it mounts above every layout,
  *  and each of those is a full-height shell a banner would push off-screen.
  *  Bottom, not top: the top band belongs to `NotificationBanner`. */
 const OVERLAY = 'fixed left-safe-offset-3 right-safe-offset-3 bottom-safe-offset-[224px] z-50 md:bottom-safe-offset-[140px] md:left-auto md:right-safe-offset-6 md:w-[28rem]'
 
 /**
- * The refusal of an import whose menu row is gone, rendered in-page by the app
+ * The outcome of an import whose menu row is gone, rendered in-page by the app
  * shell. The row reports the outcome inline while it is still mounted; this is
- * where a refusal lands once the picker's blur has closed the menu. A success
- * needs no notice: it opens the imported session.
+ * where an outcome lands once the picker's blur has closed the menu. A refusal
+ * always lands here. A success usually needs no notice, because it opens the
+ * imported session. The exception is a user who opened another session while
+ * the file uploaded: the import does not pull them off it, and the new row can
+ * sit in a collapsed folder, so this names the session and offers to open it.
  */
-export function ImportSessionOutcomeNotice() {
-  const { failure } = useImportOutcome()
+export function ImportSessionOutcomeNotice({ navigateToChat = false }: { navigateToChat?: boolean } = {}) {
+  const { failure, success } = useImportOutcome()
+  // Opening the imported session any other way, such as from its sidebar row,
+  // answers the notice too, so it clears instead of lingering over that chat.
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  useEffect(() => {
+    if (success && activeSlot === success.key) setOutcome({ success: null })
+  }, [success, activeSlot])
+  if (!failure && success) {
+    const dismiss = () => setOutcome({ success: null })
+    return (
+      <div className={`${OVERLAY} rounded-lg bg-bg shadow-lg`} role="status">
+        <div className="flex items-center gap-2 px-3 py-2 text-sm">
+          <Check size={14} className="shrink-0 text-ok" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate" title={success.title}>
+            {i18nT('components.importSessionItem.imported_named', { title: success.title })}
+          </span>
+          {navigateToChat
+            ? <OpenImportedOnChatButton success={success} onOpen={dismiss} />
+            : <OpenImportedButton success={success} onOpen={dismiss} />}
+          <button
+            type="button"
+            className="shrink-0 rounded p-1 text-muted hover:bg-bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label={i18nT('components.errorNotice.dismiss')}
+            onClick={dismiss}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+    )
+  }
   if (!failure) return null
   return (
     <div className={`${OVERLAY} rounded-lg bg-bg shadow-lg`}>
@@ -196,7 +297,8 @@ interface ImportSessionItemProps {
  * **The outcome does not depend on the menu staying open.** Selecting the row
  * prevents the select-close, but the picker itself blurs the window and Radix
  * closes the menu then anyway. So a success OPENS the imported session — the
- * one signal that survives the menu — and a refusal the unmounted row can no
+ * one signal that survives the menu — unless the user opened another session
+ * while the file uploaded, and a refusal the unmounted row can no
  * longer show goes to `ImportSessionOutcomeNotice`. While the row is still
  * mounted it reports the outcome inline, and an import in flight keeps the row
  * disabled across remounts, so reopening the menu cannot start a second one.
@@ -204,6 +306,7 @@ interface ImportSessionItemProps {
 export default function ImportSessionItem({ Item }: ImportSessionItemProps) {
   const errorId = useId()
   const dispatch = useAppDispatch()
+  const store = useAppStore()
   const [state, setState] = useState<ImportState>({ kind: 'idle' })
   const { pending } = useImportOutcome()
   const mountedRef = useRef(true)
@@ -215,12 +318,13 @@ export default function ImportSessionItem({ Item }: ImportSessionItemProps) {
   // Option-level callbacks, not `mutate()` ones: the row has usually unmounted
   // before the pick lands, and only these run for an unmounted observer.
   const importMutation = useMutation({
-    mutationFn: (file: File) => api.importSessionFromFile(file),
+    // `origin` is where the user stood when they chose the row; see onSuccess.
+    mutationFn: ({ file }: { file: File; origin: ForkOrigin }) => api.importSessionFromFile(file),
     onMutate: () => {
-      setOutcome({ pending: true, failure: null })
+      setOutcome({ pending: true, failure: null, success: null })
       if (mountedRef.current) setState({ kind: 'importing' })
     },
-    onSuccess: async (r) => {
+    onSuccess: async (r, { origin }) => {
       if (mountedRef.current) setState({ kind: 'done', title: r.title })
       // Listed as a membership add before anything else, like a create or a
       // fork: a full `slots` frame the gateway built before the import can
@@ -231,9 +335,18 @@ export default function ImportSessionItem({ Item }: ImportSessionItemProps) {
       // stamp to run to its cap. A failed refresh is deliberately not
       // surfaced: the import succeeded, the row is already listed, and the
       // switch loads the session by key.
-      dispatch(addSlotOptimistic({ key: r.key, title: r.title || r.key, messages: r.messages || 0, running: false }))
+      dispatch(addSlotOptimistic({ key: r.key, title: r.title || r.key, messages: r.messages || 0, running: false, ...(r.folder_id ? { folder_id: r.folder_id } : {}) }))
       await dispatch(fetchSlots())
-      dispatch(switchSlot({ key: r.key, keepTargetOnMissing: true }))
+      // A large file can upload for seconds. A session the user opened in that
+      // time is a choice the import must not undo, the same rule a create or
+      // fork follows; the imported session stays listed either way. The menu
+      // has closed by then, so the shell's notice names the session and offers
+      // to open it, or the import would finish with no sign at all.
+      if (!forkMayOpen(store.getState(), origin)) {
+        if (!mountedRef.current) setOutcome({ success: { key: r.key, title: r.title || r.key, folderId: r.folder_id } })
+        return
+      }
+      openImported(dispatch, r.key, r.folder_id, 'on-upload')
     },
     onError: (e) => {
       // Looked up by the RAW message: the catalog rewording below would miss
@@ -263,7 +376,10 @@ export default function ImportSessionItem({ Item }: ImportSessionItemProps) {
         disabled={pending}
         onSelect={(event: Event) => {
           event.preventDefault()
-          pickSessionFile((file) => { importMutation.mutate(file) })
+          // Taken at the click: the picker is modal, so nothing the user does
+          // can come between this and the pick.
+          const origin = captureForkOrigin(store.getState())
+          pickSessionFile((file) => { importMutation.mutate({ file, origin }) })
         }}
       >
         <Upload size={13} className="shrink-0 text-muted" />

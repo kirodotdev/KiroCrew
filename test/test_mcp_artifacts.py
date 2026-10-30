@@ -69,7 +69,6 @@ class TestArtifactReferenceLink:
     """
 
     def test_save_non_widget_emits_markdown_link(self) -> None:
-        # given a saved markdown artifact
         with patch(
             "kiro_crew.mcp_core._post",
             return_value={
@@ -79,12 +78,10 @@ class TestArtifactReferenceLink:
                 "kind": "markdown",
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Release Notes", "content": "# notes", "kind": "markdown"},
             )
-        # then it carries the clickable link form: [<name>](/artifacts/<slug>)
         assert "[Release Notes](/artifacts/release-notes)" in result
 
     def test_save_widget_omits_markdown_link(self) -> None:
@@ -98,7 +95,6 @@ class TestArtifactReferenceLink:
                 "kind": "widget",
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Dash", "content": "<div/>", "kind": "widget"},
@@ -122,12 +118,10 @@ class TestArtifactReferenceLink:
                 "slug_collided_with": "run-summary",
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Run Summary", "content": "# corrected", "kind": "markdown"},
             )
-        # then it names the taken slug and the verb that versions in place
         assert "'run-summary'" in result
         assert "artifact_update" in result
 
@@ -148,7 +142,6 @@ class TestArtifactReferenceLink:
         assert "already taken" not in result
 
     def test_get_non_widget_emits_markdown_link(self) -> None:
-        # given a fetched markdown artifact
         with patch(
             "kiro_crew.mcp_core._get",
             return_value={
@@ -159,13 +152,10 @@ class TestArtifactReferenceLink:
                 "content": "# hi",
             },
         ):
-            # when the get tool result is rendered
             result = _call_tool_inner("artifact_get", {"slug": "doc"})
-        # then the clickable reference is appended
         assert "[My Doc](/artifacts/doc)" in result
 
     def test_get_widget_omits_markdown_link(self) -> None:
-        # given a fetched widget artifact
         with patch(
             "kiro_crew.mcp_core._get",
             return_value={
@@ -176,33 +166,32 @@ class TestArtifactReferenceLink:
                 "content": "<div/>",
             },
         ):
-            # when the get tool result is rendered
             result = _call_tool_inner("artifact_get", {"slug": "w"})
         # then no link form — widget round-trips via the re-emit tag
         assert ARTIFACT_ROUTE_PREFIX not in result
         assert "<mcwidget" in result
 
-    def test_update_non_widget_emits_markdown_link(self) -> None:
-        # given an updated text artifact
+    @pytest.mark.parametrize(
+        "response,expected_link",
+        [
+            pytest.param(
+                b'{"slug": "log", "version": 5, "name": "Run Log", "kind": "text"}',
+                "[Run Log](/artifacts/log)",
+                id="named",
+            ),
+            # Without a name the slug is the link text, so the link is never empty.
+            pytest.param(
+                b'{"slug": "log", "version": 1, "kind": "markdown"}',
+                "[log](/artifacts/log)",
+                id="falls-back-to-slug-when-name-missing",
+            ),
+        ],
+    )
+    def test_update_non_widget_emits_markdown_link(self, response, expected_link) -> None:
         with patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock:
-            urlopen_mock.return_value.__enter__.return_value.read.return_value = (
-                b'{"slug": "log", "version": 5, "name": "Run Log", "kind": "text"}'
-            )
-            # when the update tool result is rendered
+            urlopen_mock.return_value.__enter__.return_value.read.return_value = response
             result = _call_tool_inner("artifact_update", {"slug": "log", "content": "new"})
-        # then the clickable reference is appended
-        assert "[Run Log](/artifacts/log)" in result
-
-    def test_link_falls_back_to_slug_when_name_missing(self) -> None:
-        # given an updated non-widget artifact whose response omits 'name'
-        with patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock:
-            urlopen_mock.return_value.__enter__.return_value.read.return_value = (
-                b'{"slug": "anon-doc", "version": 1, "kind": "markdown"}'
-            )
-            # when the update tool result is rendered
-            result = _call_tool_inner("artifact_update", {"slug": "anon-doc", "content": "x"})
-        # then the slug is used as the link text so the link is never empty
-        assert "[anon-doc](/artifacts/anon-doc)" in result
+        assert expected_link in result
 
     def test_link_label_redacts_credential_in_name(self) -> None:
         # given a non-widget artifact whose LLM-provided name embeds a
@@ -217,7 +206,6 @@ class TestArtifactReferenceLink:
                 "version": 1,
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {
@@ -248,7 +236,6 @@ class TestArtifactReferenceLink:
                 "version": 1,
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Doc", "content": "# notes", "kind": "markdown"},
@@ -258,7 +245,6 @@ class TestArtifactReferenceLink:
         assert f"[Doc]({ARTIFACT_ROUTE_PREFIX}evilxhttpattackertest)" in result
 
     def test_link_url_redacts_credential_in_slug(self) -> None:
-        # given a save whose server-returned slug carries a credential pattern
         leaked_credential = "AKIAIOSFODNN7EXAMPLE"
         with patch(
             "kiro_crew.mcp_core._post",
@@ -269,7 +255,6 @@ class TestArtifactReferenceLink:
                 "version": 1,
             },
         ):
-            # when the save tool result is rendered
             result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Doc", "content": "# notes", "kind": "markdown"},
@@ -295,9 +280,7 @@ class TestArtifactReferenceLink:
                 "content": "# hi",
             },
         ):
-            # when the get tool result is rendered
             result = _call_tool_inner("artifact_get", {"slug": "doc"})
-        # then it degrades to plain text: the name surfaces with no broken link
         assert "Orphan Doc" in result
         assert f"]({ARTIFACT_ROUTE_PREFIX}" not in result
 
@@ -316,7 +299,6 @@ class TestArtifactReferenceLink:
                 "content": "# hi",
             },
         ):
-            # when the get tool result is rendered
             result = _call_tool_inner("artifact_get", {"slug": "q-report"})
         # then the link label has the newline collapsed to a space, keeping the
         # whole anchor on a single line so it linkifies correctly
@@ -480,11 +462,12 @@ class TestArtifactSave:
                 return_value={"slug": "x", "version": 1},
             ),
         ):
-            _call_tool_inner(
+            result = _call_tool_inner(
                 "artifact_save",
                 {"name": "Notes", "content": "# notes", "kind": "markdown"},
             )
         get.assert_not_called()
+        assert "Possible duplicate" not in result
 
     def test_dedup_hint_swallows_probe_failure_silently(self) -> None:
         # If the artifact_list probe fails (network blip, store error),
@@ -615,8 +598,10 @@ class TestArtifactGet:
             "kiro_crew.mcp_core._get",
             return_value={"slug": "x", "name": "X", "version": 1, "content": "v1"},
         ) as get:
-            _call_tool_inner("artifact_get", {"slug": "x", "version": 1})
+            result = _call_tool_inner("artifact_get", {"slug": "x", "version": 1})
         assert get.call_args.args[0] == "/api/artifacts/x/versions/1"
+        assert "version: 1" in result
+        assert "v1" in result
 
     def test_redacts_credentials_in_content(self) -> None:
         with patch(
@@ -1012,9 +997,10 @@ class TestArtifactGetCommentsEdgeCases:
             "kiro_crew.mcp_core._get",
             return_value={"comments": []},
         ) as get:
-            _call_tool_inner(
+            result = _call_tool_inner(
                 "artifact_get_comments", {"slug": "empty", "exclude_resolved": True}
             )
+        assert "No comments" in result
         assert get.call_args.args[0] == "/api/artifacts/empty/comments?exclude_resolved=true"
 
     def test_error_response(self) -> None:
@@ -1277,8 +1263,7 @@ class TestArtifactReplyCommentTool:
         ) as post:
             _call_tool_inner(
                 "artifact_reply_comment",
-                {"slug": "doc", "parent_id": "c1",
-                 "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                {"slug": "doc", "parent_id": "c1", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
             )
         _, payload = post.call_args.args
         assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]

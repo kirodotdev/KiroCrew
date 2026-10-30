@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { store } from '../../store'
@@ -19,8 +19,8 @@ export function resetFirstGreetingRequests(): void {
 /**
  * Ask the gateway for a crewmate's first greeting once its pinned thread is open.
  *
- * `enabled` is true only for a crewmate that can be owed one (Mate, with the
- * Crewmates preview on, and a crewmate created on the dashboard), and
+ * `enabled` is true only for a crewmate that can be owed one (Mate, and a
+ * crewmate created on the dashboard), and
  * `slotKey` only once the thread endpoint has confirmed it, so the request
  * never races the thread's creation. The server decides: it starts a real turn
  * only for a crewmate whose creation recorded the welcome it owes (Mate's
@@ -30,8 +30,21 @@ export function resetFirstGreetingRequests(): void {
  * A failure says nothing: the greeting is a courtesy, the chat below works
  * without it, and the person can simply write. The request is forgotten, so the
  * next open of the thread asks again.
+ *
+ * `onStarted` fires with the thread's slot key for exactly the answer that
+ * means the greeting was dispatched NOW (`started`) and for no other: a thread
+ * already greeted, a reload, a second tab or a failed request never fires it.
+ * The first Mate's entrance (#23207) keys on it, which is what makes the
+ * entrance once-only without a marker of its own: the server's `O_EXCL` claim
+ * already decides which single request ever hears `started`.
  */
-export function useFirstGreeting(slug: string | undefined, slotKey: string, enabled: boolean): void {
+export function useFirstGreeting(
+  slug: string | undefined, slotKey: string, enabled: boolean, onStarted?: (slot: string) => void,
+): void {
+  // Read at answer time, so a new callback identity never re-arms the effect
+  // below (which would ask again) and the latest one is what hears `started`.
+  const onStartedRef = useRef(onStarted)
+  onStartedRef.current = onStarted
   const { mutate } = useMutation({
     mutationFn: ({ slug: s }: { slug: string; slot: string }) => api.memberGreet(s),
     // Hook-level, so it runs even when the page unmounted before the answer
@@ -53,7 +66,12 @@ export function useFirstGreeting(slug: string | undefined, slotKey: string, enab
     const epoch = selectSlotRunEpoch(store.getState(), slotKey)
     mutate({ slug, slot: slotKey }, {
       onSuccess: (res) => {
-        if (res?.outcome === 'started') store.dispatch(startServerTurn({ slot: slotKey, epoch }))
+        if (res?.outcome !== 'started') return
+        // The entrance first, then the turn: the store's dispatch renders at
+        // once, and the pane must already be veiled when the turn's "Working"
+        // row would otherwise show for a frame under the face.
+        onStartedRef.current?.(slotKey)
+        store.dispatch(startServerTurn({ slot: slotKey, epoch }))
       },
     })
   }, [enabled, slug, slotKey, mutate])

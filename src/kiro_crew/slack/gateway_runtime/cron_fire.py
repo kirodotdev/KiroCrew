@@ -59,6 +59,9 @@ class _CronCapture(NamedTuple):
     cron_memory_store: str
     cron_agent: str
     default_substituted: bool
+    # The previous run's result framed as untrusted data, for build_message's
+    # request_prefix_context (``cron_prior_result_context``); "" when none.
+    prior_result: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -266,9 +269,12 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     the agent it dispatches: the configured default stands in for the bare floor
     only where that is safe. Every kind of job captures, before the overlap guard.
     """
-    # helper picks stable vs ephemeral session key and
-    # decides whether to prepend last_result, based on job.persistent_session.
+    # helper picks stable vs ephemeral session key; a persistent job's previous
+    # result is carried separately, framed as data, ahead of the request.
     session_key, msg = build_cron_session_context(job)
+    from kiro_crew.cron_service.identity import cron_prior_result_context
+
+    prior_result = cron_prior_result_context(job)
 
     from kiro_crew.cron import resolve_cron_memory
     from kiro_crew.execution_context import (
@@ -294,8 +300,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     #   * Above the branch, because every record created since the
     #     execution-context migration carries `execution_context` and so
     #     takes the other arm. Resolving inside `else:` reaches only
-    #     pre-migration jobs and leaves the reported symptom in place for
-    #     everything created since.
+    #     pre-migration jobs and leaves every newer job on the floor.
     #   * Not into the capture, because `cron_execution` is what
     #     `bind_session_execution` publishes under the session key, and a
     #     persistent_session job (the default) reuses the stable key
@@ -373,6 +378,24 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
             )
 
         cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+    if not agent_sequence_dispatches(cron_agents):
+        # A crewmate's scheduled turn is work, so it runs on that crewmate's
+        # worker (its kit, servers and permissions), never on the conductor its
+        # chat runs on. The key, store, member and mode are the capture's; only
+        # the selection becomes the worker's. Read at every fire, so a job
+        # captured before the crewmate owned its file needs no migration.
+        from kiro_crew.mate_worker import cron_worker_execution
+
+        # The live config the resolver below reads, never a reload: the capture
+        # runs on the loop's behalf and a fire must not reread config.json.
+        _cfg_live = live.snapshot() or getattr(self, "_cfg", None)
+        worker_execution = (
+            await asyncio.to_thread(cron_worker_execution, cron_execution, _cfg_live)
+            if _cfg_live is not None
+            else None
+        )
+        if worker_execution is not None:
+            cron_execution = worker_execution
     cron_memory_store, cron_agent = (
         cron_execution.store.legacy_name,
         cron_execution.template_id,
@@ -382,7 +405,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # of which any durable record compares.
     #
     # Gated on the resolved agent still being the bare "kirocrew" floor,
-    # which is the whole of what this change replaces. A record whose
+    # the only value the default may replace. A record whose
     # captured template_id names a REAL template keeps it: a schedule
     # created from a template chat with no `agent` argument names its
     # template ONLY there, `agent_id` staying empty: bind_cron_memory
@@ -393,11 +416,11 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # captured execution and memory store stayed the original template's,
     # and dispatched_agents_from_disk -- the delete guard's ONE walk of
     # the dispatch-mirroring rule -- still reported the old agent: guard
-    # and dispatch would drift, which is the same silent wrong-agent class
-    # this change removes, reintroduced on the other arm. Compared after
+    # and dispatch would drift into a silent wrong-agent dispatch.
+    # Compared after
     # .strip() so a whitespace-only capture counts as the floor, which is
-    # where whitespace agent_id handling lives now that the capture itself
-    # is left byte-for-byte alone.
+    # where whitespace agent_id handling lives: the capture itself is
+    # left byte-for-byte alone.
     # Also gated on the capture carrying no member_id. A cron created
     # from a crew member's chat is captured by resolve_member_execution
     # as a MEMBER execution whose template_id is
@@ -420,7 +443,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # the namespace is the authoritative answer to "did this capture
     # select a member?" and member_id is only its persisted form.
     # Requiring BOTH keeps a legacy member on an unmigrated store out of
-    # the override, which a member_id-only gate admitted.
+    # the override; a member_id-only gate would admit it.
     #
     # And BOTH capture gates together are still not enough, because on
     # the `job.execution_context is None` arm cron_execution is
@@ -437,7 +460,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # with nothing backfilling execution_context on load. So the JOB is
     # asked as well: on that arm it is the only surviving evidence of the
     # selection. A truthy non-str also declines, which is the safe
-    # direction -- declining leaves the pre-change floor behaviour.
+    # direction -- declining keeps the floor agent.
     if (
         _default_agent
         and (cron_agent or "").strip() in ("", "kirocrew")
@@ -459,21 +482,17 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         # the substituted template is never consulted and a child it
         # forbids starts.
         #
-        # Honouring it properly means a NON-DURABLE parent execution the
-        # spawn gate reads, in two files this change does not touch and
-        # whose reviewers are scoped to spawn admission, not cron. So
-        # this change narrows itself instead: a default that declares an
-        # allowlist is not substituted, and the job keeps the floor it
-        # already had before this change. Nothing an operator has today
-        # regresses; the capability simply waits for that CR.
+        # Honouring it would need a NON-DURABLE parent execution the
+        # spawn gate reads. Until that exists, a default that declares an
+        # allowlist is not substituted, and the job keeps the floor.
         #
         # DENY BY DEFAULT. A non-empty tuple declines, and so does the
         # reader's `None`. Only `()` -- "no readable spec declares this
         # name, and every spec file parsed" -- permits the substitution.
         #
-        # An earlier revision substituted on `None`, arguing the spawn
-        # gate would refuse anyway because it asks about the CAPTURE's
-        # floor spelling. That premise is false: `agent.py` generates and
+        # `None` must not substitute on the theory that the spawn gate
+        # refuses anyway because it asks about the CAPTURE's floor
+        # spelling. That premise is false: `agent.py` generates and
         # installs `kirocrew.json` into the agents directory and
         # `config/defaults.json` declares `"name": "kirocrew"`, so a
         # readable spec DOES declare the floor name -- and
@@ -515,6 +534,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_memory_store,
         cron_agent,
         _default_substituted,
+        prior_result,
     )
 
 
@@ -627,6 +647,9 @@ def _resolve_cron_agent(
         # through to the by-alias path below instead.
         resolved_alias = alias
         captured_member = None if sequence_step else getattr(cron_execution, "member_id", None)
+        from kiro_crew.mate_worker import MATE_WORKER_AGENT, is_own_worker_execution
+
+        own_worker = not sequence_step and is_own_worker_execution(cron_execution)
         if captured_member:
             try:
                 from kiro_crew.execution_context import member_config_for_id
@@ -658,6 +681,12 @@ def _resolve_cron_agent(
         # execution-context resolution validates the store later.
         bindings = resolve_agent_bindings(cfg, resolved_alias, validate_memory_files=False)
         kiro_agent = bindings.kiro_agent or None
+        if own_worker:
+            # The crewmate's alias resolves to its chat agent, the conductor; a
+            # scheduled turn runs on its worker instead, in the crewmate's
+            # workspace. No crew alias: a worker is a template session whose
+            # identity is its record (member, store), as a hand-off opens it.
+            kiro_agent = MATE_WORKER_AGENT
         # Anchor the workspace dir by the one placement rule. The
         # resolved bindings.workspace_dir is the RAW configured value
         # (e.g. the shipped relative default "workspace"); handing
@@ -685,7 +714,7 @@ def _resolve_cron_agent(
         # prepare_runtime needs it to resolve the member identity (the
         # kiro_agent name alone is not a config.agents key), and it is
         # the alias pinned to the captured member_id above.
-        return kiro_agent, cwd, resolved_alias
+        return kiro_agent, cwd, ("" if own_worker else resolved_alias)
     except Exception:
         logger.debug("cron agent resolve failed for %r", alias, exc_info=True)
         return None, None, None
@@ -737,6 +766,12 @@ async def _acquire_with_model_fallback(
         )
     else:
         await asyncio.to_thread(bind_session_execution, key, bound_execution)
+    # A crewmate's scheduled turn runs on its worker (``cron_worker_execution``),
+    # so its key takes the worker's backend route (``select_provider_backend``:
+    # the crewmate's member backend), as a hand-off's worker does.
+    from kiro_crew.mate_worker import note_worker_session
+
+    note_worker_session(key, bound_execution)
     modes = getattr(self.ctx_builder, "_session_memory_modes", None)
     if isinstance(modes, dict):
         # A separately scheduled run is durable work, not a child

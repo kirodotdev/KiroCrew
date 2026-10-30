@@ -60,6 +60,10 @@ EXPECTED_AGENT_KINDS = frozenset(
         "team_lead",
         "heartbeat",
         "dashboard_manager",
+        # A crewmate's conductor and its own worker (kirocrew-mate-conductor /
+        # kirocrew-mate-worker, both in OWNED_KIRO_AGENT_FILES).
+        "mate_conductor",
+        "mate_worker",
         "default",
         "crewmate",
         "other",
@@ -130,8 +134,8 @@ class _State:
 
 
 class TestOpEnum:
-    def test_the_closed_list_is_the_rfcs_eighteen(self):
-        assert len(scc.SESSION_CONTROL_OPS) == 18
+    def test_the_closed_list_is_the_rfcs_nineteen(self):
+        assert len(scc.SESSION_CONTROL_OPS) == 19
 
     @pytest.mark.parametrize("op", sorted(scc.SESSION_CONTROL_OPS))
     def test_a_named_op_passes_through(self, op):
@@ -286,7 +290,7 @@ class TestExactlyOnce:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("op", sorted(scc.SESSION_CONTROL_OPS))
     async def test_one_completed_call_is_one_count(self, rec, op):
-        """Every one of the eighteen ops, end to end through the real wrapper."""
+        """Every one of the nineteen ops, end to end through the real wrapper."""
 
         @handler._counted(op)
         async def route(_request):
@@ -426,8 +430,8 @@ class TestRouteOps:
                 assert len(emitted) == 1, f"{path} emitted {len(emitted)} counts, want 1"
                 found[path] = emitted[0]["attrs"]["op"]
 
-        # ``revive`` and ``history`` appear here as ``other``: that IS what the
-        # counter records for them, which is the fact worth pinning.
+        # ``set_color``, ``revive`` and ``history`` appear here as ``other``: that
+        # IS what the counter records for them, which is the fact worth pinning.
         assert found == {
             "/api/session-control/create": "create",
             "/api/session-control/fork": "fork",
@@ -439,6 +443,7 @@ class TestRouteOps:
             "/api/session-control/reload": "reload",
             "/api/session-control/rename": "rename",
             "/api/session-control/generate-title": "generate_title",
+            "/api/session-control/set-color": "other",
             "/api/session-control/close": "close",
             "/api/session-control/revive": "other",
             "/api/session-control/history": "other",
@@ -446,6 +451,7 @@ class TestRouteOps:
             "/api/session-control/broadcast": "broadcast",
             "/api/session-control/status": "status",
             "/api/session-control/adopt": "adopt",
+            "/api/session-control/handoff": "handoff",
             "/api/session-control/release": "release",
             "/api/session-control/read": "read_message",
             "/api/session-control/summary": "summary",
@@ -453,7 +459,7 @@ class TestRouteOps:
 
     @pytest.mark.asyncio
     async def test_every_named_op_is_reachable_from_a_real_route(self, rec):
-        """The eighteen ops are the routes' own verbs, not an aspiration.
+        """The nineteen ops are the routes' own verbs, not an aspiration.
 
         Reds if an op is named in the enum but no route ever emits it -- a value
         the dashboard would wait for forever.
@@ -508,9 +514,9 @@ class TestPrivacy:
                 assert secret not in value
 
     def test_the_whole_series_space_is_bounded_and_small(self):
-        """19 ops (18 named plus ``other``) x 16 caller kinds x 2 outcomes."""
+        """20 ops (19 named plus ``other``) x 18 caller kinds x 2 outcomes."""
         space = (len(scc.SESSION_CONTROL_OPS) + 1) * len(scc.SESSION_CONTROL_CALLER_KINDS) * 2
-        assert space <= 700
+        assert space <= 720
 
 
 class TestTelemetryOff:

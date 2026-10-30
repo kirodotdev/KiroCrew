@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_meta_cache``.
 
-Instance fields read: none.
+Instance fields read: ``_read_projection``.
 """
 
 from __future__ import annotations
@@ -194,9 +194,11 @@ def mark_consolidated(
         if not path.exists():
             return
         prev_mtime = _safe_mtime(path)
+        before = path.stat()
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         if not lines:
             return
+        old_head = lines[0]
         meta = json.loads(lines[0])
         # Reconcile the caller's absolute *offset* against the messages
         # actually present now. Line 0 is the metadata line; every other
@@ -286,11 +288,16 @@ def mark_consolidated(
         # bookkeeping — if a crash loses it we simply re-consolidate a few
         # messages — so paying a disk flush while holding the cross-process
         # lock (blocking every other writer of this session) isn't worth it.
-        atomic_write(path, "".join(lines), fsync=False)
+        # ``newline=""``: the lines hold the LF ends the transcript is written with,
+        # and a translating write would turn every one into CRLF on Windows.
+        atomic_write(path, "".join(lines), fsync=False, newline="")
         # Housekeeping bookkeeping — must not advance the session's mtime
         # (see _restore_mtime). Otherwise consolidation floats stale sessions
         # to the top of list_sessions on every gateway restart.
         _restore_mtime(path, prev_mtime)
+        # A first-line rewrite: move the page index onto the new file so the next
+        # history page does not frame the whole transcript again.
+        self._read_projection.carry_index_over_head_rewrite(key, before, old_head, lines[0])
         # Invalidate while still holding the lock. Outside it there is a
         # window where the file is already rewritten but the generation has
         # not moved, so a concurrent fold / snippet / metadata read could
@@ -337,9 +344,11 @@ def advance_consolidation_sub_offset(
         if not path.exists():
             return
         prev_mtime = _safe_mtime(path)
+        before = path.stat()
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         if not lines:
             return
+        old_head = lines[0]
         meta = json.loads(lines[0])
         current_generation = int(meta.get("rotation_generation", 0) or 0)
         if current_generation != generation:
@@ -384,8 +393,11 @@ def advance_consolidation_sub_offset(
         # Same cheap, mtime-preserving, no-fsync write as mark_consolidated:
         # a lost sub-offset only re-slices the head from its start, which is
         # correct behaviour, so it is not worth a disk flush under the lock.
-        atomic_write(path, "".join(lines), fsync=False)
+        # ``newline=""``: the lines hold the LF ends the transcript is written with,
+        # and a translating write would turn every one into CRLF on Windows.
+        atomic_write(path, "".join(lines), fsync=False, newline="")
         _restore_mtime(path, prev_mtime)
+        self._read_projection.carry_index_over_head_rewrite(key, before, old_head, lines[0])
         self._invalidate_cache(key)
 
 

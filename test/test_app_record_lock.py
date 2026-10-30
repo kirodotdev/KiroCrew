@@ -40,11 +40,15 @@ def _raw_record(name: str) -> dict:
 
 
 def test_the_lock_is_reentrant_in_one_thread(app_home):
+    held = manager_mod._record_lock_state
     with app_record_lock("test-app"):
+        assert held.held["test-app"] == 1
         with app_record_lock("test-app"):
-            pass
+            assert held.held["test-app"] == 2
         with app_record_lock("test-app"):
-            pass
+            assert held.held["test-app"] == 2
+        assert held.held["test-app"] == 1
+    assert "test-app" not in held.held
 
 
 def test_holding_outside_a_locked_writer_refuses(app_home):

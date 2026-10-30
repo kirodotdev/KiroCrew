@@ -14,7 +14,10 @@ import contextlib
 import io
 import json
 import os
+import random
 import sqlite3
+import tempfile
+import tracemalloc
 import warnings
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -23,7 +26,7 @@ from unittest.mock import patch
 import portability_helpers
 import pytest
 
-from kiro_crew import platform_compat, portability, snapshot
+from kiro_crew import platform_compat, portability, portability_export, snapshot
 from kiro_crew.portability import apply_import_zip, create_export_zip, validate_import_zip
 
 # Fixtures shared with the sibling modules, bound by assignment so pytest registers
@@ -206,6 +209,113 @@ def test_database_export_opens_read_only(tmp_path, exists, filename):
         with contextlib.closing(sqlite3.connect(str(source))):
             pass
         assert source.exists()
+
+
+# ── Database members stream ──
+
+#: Big enough that one whole-database buffer dwarfs the copy buffer, small enough
+#: to build in well under a second. Random blobs, so deflate cannot shrink the
+#: member and hide a whole-member write behind compression.
+_BIG_DB_BYTES = 6 * 1024 * 1024
+
+
+def _grow_memory_db(mc: Path) -> int:
+    rng = random.Random(23234)
+    with contextlib.closing(sqlite3.connect(str(mc / "memory.db"))) as db:
+        db.execute("CREATE TABLE bulk (payload BLOB)")
+        db.executemany(
+            "INSERT INTO bulk VALUES (?)",
+            ((rng.randbytes(4096),) for _ in range(_BIG_DB_BYTES // 4096)),
+        )
+        db.commit()
+    return (mc / "memory.db").stat().st_size
+
+
+class TestDatabaseMembersStream:
+    """A SQLite member is backed up to a temp file and streamed into the archive,
+    so neither the archive nor the database is ever held whole in memory."""
+
+    def test_a_large_database_streams_in_bounded_memory(
+        self, patched_config_dir, tmp_path, monkeypatch
+    ):
+        db_size = _grow_memory_db(patched_config_dir)
+        # A small copy chunk, so the sink-write bound below is about the chunk and
+        # not the database.
+        monkeypatch.setattr(portability_export, "_SQLITE_COPY_CHUNK_BYTES", 64 * 1024)
+        write_bound = 1024 * 1024
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(spool))
+        out_path = tmp_path / "export.zip"
+        writes: list[int] = []
+
+        plan = portability.plan_export()
+        with open(out_path, "wb") as out:
+
+            def sink(chunk: bytes) -> None:
+                writes.append(len(chunk))
+                out.write(chunk)
+
+            tracemalloc.start()
+            try:
+                manifest = portability.stream_export_zip(sink, plan)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+
+        # A database read whole and written in one piece peaks at several times
+        # its size and hands the sink one write about as large as itself. The
+        # streamed peak is a few copy chunks plus the zip writer's and the
+        # platform's own buffers (about 0.4 MiB on Linux, 1.4 MiB on Windows),
+        # so it is held to a third of the database: well clear of either
+        # platform's streamed peak, far below the buffered one.
+        assert db_size > 6 * write_bound
+        assert peak < db_size // 3, (peak, db_size)
+        assert max(writes) < write_bound, (max(writes), db_size)
+        assert len(writes) > 4
+        # The temp file the backup went through is gone.
+        assert list(spool.iterdir()) == []
+
+        # Same contents: the member is a complete database the importer accepts.
+        ok, error, _ = validate_import_zip(out_path)
+        assert ok, error
+        with zipfile.ZipFile(out_path) as zf:
+            (name,) = [n for n in zf.namelist() if n.endswith("/memory.db")]
+            assert zf.getinfo(name).file_size == manifest["contents"]["memory.db"]
+            restored = tmp_path / "restored.db"
+            restored.write_bytes(zf.read(name))
+        with contextlib.closing(sqlite3.connect(str(restored))) as db:
+            assert db.execute("SELECT count(*) FROM bulk").fetchone() == (_BIG_DB_BYTES // 4096,)
+            assert db.execute("SELECT value_json FROM semantic_memory").fetchall() == [('"Alice"',)]
+
+    def test_the_streamed_member_matches_a_buffered_backup(self, patched_config_dir, tmp_path):
+        _grow_memory_db(patched_config_dir)
+        whole = io.BytesIO()
+        size = portability._backup_sqlite(patched_config_dir / "memory.db", whole)
+        assert size == len(whole.getvalue())
+
+        zip_bytes, _ = create_export_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            (name,) = [n for n in zf.namelist() if n.endswith("/memory.db")]
+            assert zf.read(name) == whole.getvalue()
+            # The member keeps the mode ``writestr`` gave it.
+            assert (zf.getinfo(name).external_attr >> 16) & 0o777 == 0o600
+
+    def test_a_failed_copy_removes_the_temp_file(self, patched_config_dir, tmp_path, monkeypatch):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(spool))
+
+        class _Broken(io.BufferedIOBase):
+            def writable(self) -> bool:
+                return True
+
+            def write(self, b) -> int:
+                raise OSError("client went away")
+
+        with pytest.raises(OSError, match="client went away"):
+            portability._backup_sqlite(patched_config_dir / "memory.db", _Broken())
+        assert list(spool.iterdir()) == []
 
 
 # ── Memory-only export and import ──
