@@ -477,7 +477,11 @@ its own once the cache refreshes with a list that carries it.
   `ollama/qwen3:8b` saves too). It refuses empty
   segments and shell metacharacters; `_validate_role_model` then judges
   entitlement as above. The chat default `agent.model` uses the same grammar
-  (its picker lists the same names) without the entitlement check. `decisions.nudge_wake.llm_model` keeps the bare-id
+  (its picker lists the same names) without the entitlement check, and so does
+  `knowledge.extraction_model`: its picker lists the default harness's models,
+  while the knowledge pool's zero-tool workers may run on another backend
+  (`llm_pool._get_acp_backend` falls back to Kiro for codex and claude), so
+  neither catalog can judge every id the picker offers. `decisions.nudge_wake.llm_model` keeps the bare-id
   grammar, because the decision gate scrubs any model `is_model_id` refuses.
 - Backends with `resolves_model_from_advertised_list` use their own advertised
   model namespace: their live session's model ids, then their persisted
