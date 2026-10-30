@@ -31,6 +31,7 @@
 import { useSyncExternalStore } from 'react'
 
 import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 import { BROWSER_HANDBACK_CHAT_EVENT, type BrowserHandbackSaid } from '../api/client/browserLive'
 import type { BrowserInputEvent } from './useBrowserLive.input'
 import { FrameRing, decodeBrowserFrame, type DecodedBrowserFrame } from './useBrowserLive.frame'
@@ -195,7 +196,7 @@ export const TAKEOVER_HEARTBEAT_MS = 60_000
 /** The text a failed write leaves for the card: the gateway's own, else the error's. */
 function errorText(e: unknown): string {
   if (e instanceof Error && e.message) return e.message
-  return String(e || 'request failed')
+  return e ? String(e) : i18nT('pages.chatPage.unknown_error')
 }
 
 function readSteps(raw: unknown): BrowserLiveStep[] {
