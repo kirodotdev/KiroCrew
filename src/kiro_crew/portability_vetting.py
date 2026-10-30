@@ -119,7 +119,17 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                 manifest_bytes = _read_manifest_bytes(zf, top)
             except ValueError as exc:
                 return False, f"Rejected: {exc}", {}
-            manifest_data = json.loads(manifest_bytes)
+            # Bytes json cannot decode as text, or nest too deep to parse, are as
+            # invalid as bad JSON, and only an object can carry a version: each
+            # refuses like any other bad archive.
+            try:
+                manifest_data = json.loads(manifest_bytes)
+            except UnicodeDecodeError as exc:
+                return False, f"Invalid manifest: {exc}", {}
+            except RecursionError:
+                return False, "Invalid manifest: nested too deeply", {}
+            if not isinstance(manifest_data, dict):
+                return False, "Invalid manifest: not a JSON object", {}
             version = manifest_data.get("version")
             memory_bundle = version == MEMORY_EXPORT_MANIFEST_VERSION and manifest_is_memory_only(
                 manifest_data

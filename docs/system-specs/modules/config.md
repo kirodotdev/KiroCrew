@@ -1403,7 +1403,7 @@ which the facade re-exports and which reads these names as `portability.<name>`.
 **HTTP refusals** of `/api/portability/*` (`dashboard/handlers/portability.py`)
 each carry a machine-readable `code`: `file_field_required` (400),
 `invalid_import_mode` (400), `import_archive_invalid` (400, with the validator's
-detail), `invalid_components` (400, a `?components=` value other than `memory`),
+detail; a manifest that is not a JSON object, or not decodable text, is one), `invalid_components` (400, a `?components=` value other than `memory`),
 `memory_only_merge_only` (400, a Replace asked for memory only or given a memory
 bundle), `import_archive_too_large` (413), `auth_required` (401), a 409 with the
 refusal's own code, and `export_failed` / `import_failed` / `preview_failed`

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
 import json
 import threading
+import zipfile
 from typing import Any
 
 import pytest
@@ -936,3 +938,66 @@ async def test_export_stalled_client_tears_down_and_frees_the_lock(monkeypatch, 
         for e in log.events
     )
     assert not any(e.get("outcome") == "ok" for e in log.events)
+
+
+def _manifest_upload(manifest: bytes) -> FormData:
+    """A real zip whose one top-level manifest holds *manifest* verbatim."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("export/MANIFEST.json", manifest)
+    data = FormData()
+    data.add_field("file", buf.getvalue(), filename="export.zip")
+    return data
+
+
+#: Manifests that are not a JSON object: bad JSON, valid JSON of another type,
+#: and bytes json cannot decode as text. Each is an invalid archive, never a 500.
+_UNUSABLE_MANIFESTS = [
+    b"{bad",
+    b"[]",
+    b"null",
+    b'"export"',
+    b"7",
+    b"\xff\xfe\x00",
+    pytest.param(b"[" * 100_000, id="nested-too-deep"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manifest", _UNUSABLE_MANIFESTS)
+async def test_an_unusable_manifest_is_a_400_on_import(monkeypatch, manifest: bytes) -> None:
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import",
+            data=_manifest_upload(manifest),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "import_archive_invalid"
+    assert body["error"].startswith("Invalid manifest")
+    assert [e["outcome"] for e in audit.events] == ["denied"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manifest", _UNUSABLE_MANIFESTS)
+async def test_an_unusable_manifest_is_refused_on_preview(monkeypatch, manifest: bytes) -> None:
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/preview",
+            data=_manifest_upload(manifest),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 200
+    assert body["ok"] is False
+    assert body["error"].startswith("Invalid manifest")
