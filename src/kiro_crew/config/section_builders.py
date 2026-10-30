@@ -282,6 +282,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             else section.default("decay_rates")
         ),
         semantic_keys=section.get("semantic_keys"),
+        recency_boost=section.read("recency_boost", _safe_float, lo=0.0, hi=1.0),
         history_idle_hours=section.get("history_idle_hours"),
         history_max_days=section.read("history_max_days", _safe_nonnegative_int),
         backup_enabled=section.read("backup_enabled", _safe_bool),
