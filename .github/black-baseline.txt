@@ -611,7 +611,6 @@ test/test_papyrus_routes.py
 test/test_papyrus_store.py
 test/test_papyrus_tectonic.py
 test/test_parse_options.py
-test/test_parse_time_string_tz.py
 test/test_pending_skill_notification_content.py
 test/test_perf_memory_quickwins.py
 test/test_perf_sampler.py
