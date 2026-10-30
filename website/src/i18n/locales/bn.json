@@ -307,7 +307,9 @@
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "চ্যাট",
     "tab_title_session": "{{session}} — {{panel}}",
-    "release_notes_not_published_yet": "{{release}}-এর রিলিজ নোট এখনো প্রকাশিত হয়নি। এর বদলে {{shown}}-এর নোট দেখানো হচ্ছে।"
+    "release_notes_not_published_yet": "{{release}}-এর রিলিজ নোট এখনো প্রকাশিত হয়নি। এর বদলে {{shown}}-এর নোট দেখানো হচ্ছে।",
+    "titlebar_menu_disabled_footer": "কিছু আইটেম এখানে উপলব্ধ নয়। দেখানো শর্টকাটগুলি এখনও কাজ করে।",
+    "titlebar_menu_refused_notice": "“{{item}}” চলেনি। এই উইন্ডোটি স্থানীয় ড্যাশবোর্ড হিসেবে নিশ্চিত করা যায়নি।"
   },
   "appSdk": {
     "chatEmbed": {

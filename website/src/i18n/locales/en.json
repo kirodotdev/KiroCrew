@@ -31,6 +31,8 @@
     "open_inbox": "Open inbox",
     "open_menu": "Open menu",
     "open_the_full_inbox": "Open the full inbox",
+    "titlebar_menu_disabled_footer": "Some items are unavailable here. The shortcuts shown still work.",
+    "titlebar_menu_refused_notice": "“{{item}}” did not run. This window could not be confirmed as the local dashboard.",
     "overage_rate": "Overage rate",
     "overage_used": "Overage used",
     "page_will_reconnect_when_ready": "Page will reconnect when ready…",

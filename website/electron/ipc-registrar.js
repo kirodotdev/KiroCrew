@@ -100,6 +100,78 @@ function createIpcRegistrar({
   // answers "no choice" instead of stacking another dialog.
   let folderPickOpen = false;
 
+  // Rejection-log throttle. `glog` is an unrotated synchronous
+  // `fs.appendFileSync` on the MAIN thread and the gate below writes one line
+  // per rejection, so an unthrottled reject path converts a remote page's
+  // loop into main-thread stalls plus unbounded disk growth. The channels
+  // routed through this gate are reachable with NO backpressure:
+  // `dev-mode-changed` is a fire-and-forget `ipcRenderer.send`, and while
+  // `app-menu:execute` answers through `ipcRenderer.invoke`, a hostile page
+  // need not AWAIT it — an un-awaited invoke fired in a loop is the same
+  // flood. The pre-existing gated channels self-throttle only because THEIR
+  // callers await, which is a property of those call sites rather than of the
+  // channel shape. The single-flight coalescer in `registerShell()`
+  // below does NOT cover this: each IPC message is its own main-thread task
+  // and microtasks drain between tasks, so the in-flight entry is always
+  // empty when the next message lands.
+  //
+  // This throttles the WRITE, never the VERDICT. Every call still runs all
+  // three gates and still rejects, so there is no cached `false` that could
+  // strand a legitimate local user on a permanently-greyed titlebar menu —
+  // the failure mode the removal of negative caching exists to prevent. Same
+  // shape as the coalescer: a third option satisfying two lanes whose
+  // literal asks conflicted. See the F1 finding in GPT 5.6 Review on
+  // 7234d97b9 (UPHOLD-FENCED, adjudication `flagged=0`).
+  //
+  // Scoped here rather than inside `registerShell()` because the gate it
+  // serves is itself at this scope: `registerUpdater`'s
+  // `update:notify-policy-governed` runs the same three gates and its
+  // rejections need the same per-sender budget.
+  const REJECTION_LOG_BURST = 5;
+  const REJECTION_LOG_WINDOW_MS = 60_000;
+  const rejectionLogState = new WeakMap();
+
+  // Keyed per WebContents so one flooding sender cannot spend another
+  // window's diagnostic budget and blind an investigator to its rejects.
+  function logGateRejection(wc, line) {
+    // A torn-down or absent sender is a single event, not a flood vector —
+    // never drop its diagnostic to a bookkeeping miss.
+    if (!wc) {
+      log(line);
+      return;
+    }
+    const now = Date.now();
+    let state = rejectionLogState.get(wc);
+    if (!state) {
+      state = { windowStart: now, written: 0, suppressed: 0 };
+      rejectionLogState.set(wc, state);
+    }
+    if (now - state.windowStart >= REJECTION_LOG_WINDOW_MS) {
+      // Report the scale before resetting, so a SUSTAINED flood — the actual
+      // attack — is visible in the log at full magnitude once per window.
+      // A flood that stops mid-window loses only its tail count, never the
+      // fact of the rejections: the window's first `REJECTION_LOG_BURST`
+      // lines were already written. The alternative, a flush timer, would
+      // either hold the WebContents alive or keep the loop warm for a
+      // diagnostic nicety.
+      if (state.suppressed > 0) {
+        log(
+          `${state.suppressed} further local-dashboard gate rejections suppressed `
+          + `for this sender in the last ${REJECTION_LOG_WINDOW_MS}ms`,
+        );
+      }
+      state.windowStart = now;
+      state.written = 0;
+      state.suppressed = 0;
+    }
+    if (state.written < REJECTION_LOG_BURST) {
+      state.written += 1;
+      log(line);
+      return;
+    }
+    state.suppressed += 1;
+  }
+
   // Shared local-dashboard gate — used by both registerShell() and
   // registerUpdater() so the contract test finds a single spelling.
   // See the comment block inside registerShell() for the full rationale.
@@ -109,21 +181,33 @@ function createIpcRegistrar({
       origin = new URL(event.senderFrame.url).origin;
     } catch { /* about:blank, malformed URL, or torn-down frame */ }
     if (origin !== backendUrl) {
-      log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+      logGateRejection(
+        event.sender,
+        `${channel} rejected for sender origin ${origin || "(unreadable)"}`,
+      );
       throw new Error(`${channel} is restricted to the local dashboard`);
     }
     const owner = windows.windowForWebContents(event.sender);
     if (!windows.security.isGatewayLocalForWindow(owner)) {
-      log(`${channel} rejected for a sender window without a local gateway`);
+      logGateRejection(
+        event.sender,
+        `${channel} rejected for a sender window without a local gateway`,
+      );
       throw new Error(`${channel} is restricted to the local dashboard`);
     }
     const portOwner = await gateway.probePrimaryPortOwner();
     if (portOwner !== "kirocrew" && portOwner !== "service") {
-      log(
+      logGateRejection(
+        event.sender,
         `${channel} rejected: :${port} held by ${portOwner}, `
         + "not this shell's gateway",
       );
-      throw new Error(`${channel} is restricted to the local dashboard`);
+      // Every caller still sees a refusal. The classified owner rides along
+      // only so the app-menu gate can tell an inconclusive probe from a
+      // foreign holder; the other channels ignore it and stay fail-closed.
+      const refusal = new Error(`${channel} is restricted to the local dashboard`);
+      refusal.portOwner = portOwner;
+      throw refusal;
     }
   };
 
@@ -170,12 +254,482 @@ function createIpcRegistrar({
     // and traffic-light/zoom reconciliation live.
     windows.menu.buildApplicationMenu();
 
-    ipcMain.handle("app-menu:items", (event, id) =>
-      windows.menu.items(event.sender, id));
-    ipcMain.on("app-menu:execute", (event, id, index) =>
-      windows.menu.execute(event.sender, id, index));
-    ipcMain.on("dev-mode-changed", (_event, enabled) =>
-      windows.menu.setDevMode(enabled));
+    // `app-menu:execute` (and now `app-menu:items` + `dev-mode-changed`) use
+    // PER-ACTION gating rather than the channel-level rejection every other
+    // privileged handler below uses. Reason:
+    //   - Some menu roles are dispatched with the sender's own WebContents
+    //     as click(...) arguments — Electron's role dispatch reads those, so
+    //     cut/copy/undo/redo/selectAll and role reload naturally scope to
+    //     the sender's page.
+    //   - Custom click handlers in app-menu.js resolve their targets through
+    //     `focusedDashboardWebContents()` / `focusedDashboardWindow()`,
+    //     which return the LOCAL user's focused window regardless of who
+    //     sent the IPC. So EVERY custom-click item invoked by a remote
+    //     sender reaches the LOCAL user's window, and every custom-click
+    //     item that reaches for a WebContents is fenced (LOCAL_ONLY_ITEM_IDS
+    //     includes reload, force-reload, zoom-*, devtools-toggle, settings,
+    //     about, keep-on-top). There is no "remote-safe custom-click item"
+    //     class — the assumption that page-level Reload/Zoom would be safe
+    //     was retracted in the F2 fix during pre-flight review.
+    // Refusing the whole channel would blank the menu in connection windows;
+    // letting everything through would leak the local clipboard, mutate the
+    // operator's window state, or grant DevTools to a remote sender. So we
+    // classify the sender once (see `resolveSenderIsLocal` below), hand the
+    // verdict down through `windows.menu.items` / `windows.menu.execute`,
+    // and let the three LOCAL_ONLY_* sets in windows-menu-model.js make
+    // the per-item decision. `serializeMenuItems` reflects the verdict as
+    // `enabled: false` on LOCAL_ONLY rows so the renderer paints a greyed
+    // label instead of a silently-refused click.
+    //
+    // The gate itself throwing is a diagnostic signal ("this sender was not
+    // the local dashboard"), NOT an error to surface to the renderer. Every
+    // reject already logs (see `logGateRejection(...)` inside assertLocalDashboard).
+    // `resolveSenderIsLocal` swallows the throw and returns a boolean, so
+    // menu dispatch always runs — safe items pass, LOCAL_ONLY items become
+    // no-ops (or `enabled: false` on the items surface).
+    //
+    // Caching: the verdict is a fact about a WebContents (its origin, its
+    // window's gateway, this shell's primary-port owner). Gate 3
+    // (`gateway.probePrimaryPortOwner`) shells out to netstat/PowerShell on
+    // Windows, so recomputing on every menu click added hundreds of ms of
+    // latency to a hot path (Spock FUNC-01). Cache per WebContents and
+    // invalidate on BOTH `did-start-navigation` (before commit) AND
+    // `did-navigate` (after commit) — gate 1 keys off the frame origin,
+    // and a same WebContents that navigates to a different origin must
+    // revalidate before the new document can issue any IPC. Clearing only
+    // on `did-navigate` leaves the cache holding a stale `true` between
+    // the moment a navigation is requested and the moment it commits, and
+    // a preload IPC dispatched during that window could reach a
+    // LOCAL_ONLY leaf against the wrong origin (GPT 5.6 Review F1 on 06b1d9c4a).
+    //
+    // **Only `true` verdicts are cached.** `false` re-probes every call.
+    // Two reasons:
+    //   1. The `did-navigate` event fires only on FULL top-frame navigations,
+    //      not on SPA route changes (which fire `did-navigate-in-page`). The
+    //      Kiro Crew dashboard is an SPA, so its route changes would never
+    //      clear this cache — a transient `false` (netstat locale hiccup,
+    //      PowerShell policy timeout, one flaky probe) would grey the local
+    //      user's titlebar menu for the entire session with no in-product
+    //      remedy. Re-probing on every menu click is cheap when the answer
+    //      is "not local", because gate 1 (origin) or gate 2 (URL match)
+    //      short-circuits before the netstat/PowerShell shell-out.
+    //   2. The generation counter below exists solely to protect the POSITIVE
+    //      direction from a race where a WebContents navigates to a remote
+    //      origin during the probe, letting stale `true` unlock LOCAL_ONLY
+    //      leaves for that remote origin. The negative direction has no
+    //      symmetric threat — a stale `false` refuses actions, not authorises
+    //      them — so its caching adds risk without reward.
+    //
+    // **A cached positive also EXPIRES.** The generation counter above covers
+    // the two gates that are facts about the PAGE: a navigation moves the
+    // frame's origin (gate 1) and the sending window's gateway (gate 2), and
+    // the listeners clear the cache when it does. Gate 3 is different in kind
+    // — it is a fact about the MACHINE, the primary port's LISTEN owner — and
+    // it can change with NOTHING happening to the sender. Our gateway exits,
+    // releasing the socket; a foreign process or a hand-rolled `ssh -L` binds
+    // that port; the page never navigates, so no listener fires, and the
+    // cached `true` keeps answering for the WebContents' remaining lifetime.
+    // That skips the only gate that can see a tunnel and keeps the clipboard
+    // roles and devtools-toggle unlocked against a port this shell no longer
+    // owns. SPA route changes fire `did-navigate-in-page` and are deliberately
+    // non-clearing, so there is no recovery short of a full top-frame
+    // navigation.
+    //
+    // A foreign listener can only take the port if OUR gateway released it
+    // first — nothing else can bind while we hold the LISTEN socket — so the
+    // exposure is bounded by "our gateway exited", and a short expiry bounds
+    // it in time. The window is long enough that the repeat calls one menu
+    // interaction produces still hit the cache, which is the whole reason the
+    // cache exists (Spock FUNC-01: a probe per click added hundreds of ms to a
+    // hot path). Like the rejection-log throttle above, this bounds the reuse
+    // of a verdict and never the verdict itself: a `false` is still never
+    // cached, so a transient probe hiccup still cannot strand a legitimate
+    // local user on a permanently-greyed menu. See the F1 finding in GPT 5.6
+    // Review on bd68985db (UPHOLD-FENCED, adjudication `flagged=0`).
+    //
+    // Ordering is load-bearing: wire the invalidation listener BEFORE the
+    // first probe, and check a generation counter after the probe returns
+    // before writing the cache. `assertLocalDashboard` is asynchronous
+    // (netstat / PowerShell port-owner probe on Windows), so a navigation
+    // completing DURING that probe would otherwise fire `did-navigate` with
+    // no listener attached, the cache would then be written with the pre-
+    // navigation verdict, and a remote origin would inherit `true`.
+    //
+    // The map holds the mint time of a positive verdict, never a bare `true`:
+    // the only entries it ever carries are positives, so the timestamp IS the
+    // verdict plus the one thing a reader needs to judge whether it still
+    // stands.
+    const POSITIVE_VERDICT_TTL_MS = 5_000;
+    const senderIsLocalCache = new WeakMap();
+    const senderIsLocalWired = new WeakSet();
+    const senderIsLocalGeneration = new WeakMap();
+    // Single-flight coalescer: if a probe is already in flight for THIS
+    // WebContents, subsequent callers `await` the same promise instead of
+    // launching another netstat/PowerShell. This closes the DoS vector where
+    // a manual-SSH-tunnel remote page on the primary port (gates 1 and 2 pass,
+    // gate 3 fails) can loop `app-menu:*` calls and, with negative caching
+    // deliberately removed to avoid stranding a legitimate local user on a
+    // greyed menu after a transient probe hiccup, spawn a fresh OS probe on
+    // every call. Coalescing is state-free at rest — the in-flight entry is
+    // deleted the instant the probe resolves — so it does not reintroduce
+    // the stranding hazard the removal of negative caching was designed to
+    // fix, and a legitimate next click starts a fresh probe against fresh
+    // state. See the DoS finding in GPT 5.6 Review on cfa37ff95.
+    //
+    // The in-flight entry stores BOTH the probe promise AND the generation
+    // observed when the probe was created. Joining callers apply the SAME
+    // generation-equality fail-closed guard the creator does, so a
+    // WebContents that navigates cross-origin mid-probe hands ALL callers
+    // (creator and joiners) a `false` — not just the creator. Without this,
+    // a joiner would receive the raw probe verdict and dispatch LOCAL_ONLY
+    // leaves against the post-navigation (now-remote) origin. See the
+    // joiner-race finding in GPT 5.6 Review and Opus 5 Review on 07e0060c5.
+    const senderIsLocalInFlight = new WeakMap();
+
+    // Extracted so creator and joiner apply IDENTICAL fail-closed logic. A
+    // stale `true` from a probe that observed a pre-navigation state is
+    // forced to `false` if the WebContents has since navigated — the caller
+    // will re-probe against the fresh state on its next call.
+    function applyGenerationGuard(wc, verdict, genAtStart) {
+      const generationUnchanged =
+        (senderIsLocalGeneration.get(wc) || 0) === genAtStart;
+      return verdict === true && generationUnchanged;
+    }
+
+    // A port-owner probe that could not NAME a holder is not evidence of a
+    // foreign one. `unknown` is the probe itself failing (netstat locale,
+    // PowerShell policy timeout); `none` is the primary port briefly unbound
+    // while our gateway restarts; `unidentified` is a holder netstat DID name
+    // whose command line could not be read. None proves a foreign holder, so
+    // none revokes the last positive this WebContents earned, and the paint path
+    // keeps drawing the local user's rows enabled instead of greying them over
+    // a hiccup. None proves OUR gateway holds the port either, so none
+    // authorizes an action: a probe failure can coincide with a foreign
+    // listener, and only a fresh `local` outcome may unlock a LOCAL_ONLY leaf.
+    //
+    // `unidentified` is soft HERE and hard at the adopt boundary, where
+    // `holder-decision.js` refuses it alongside `foreign` because adopting
+    // posts this machine's `.local_secret`. Painting a row costs nothing if it
+    // is wrong -- the click is still gated -- so the two consumers can and must
+    // answer the same ambiguity differently.
+    const INCONCLUSIVE_PORT_OWNERS = new Set(["unknown", "none", "unidentified"]);
+
+    // Turn a probe outcome into a verdict for THIS WebContents. Only `local`
+    // authorizes. `inconclusive` refuses but leaves the last positive in place
+    // for painting; `refused` also drops it, so a later inconclusive probe
+    // cannot keep painting rows enabled after a foreign holder was proven.
+    //
+    // The kept positive is bounded, but by a FAILING PROBE and never by age
+    // alone. Rows painted enabled while every click is refused is a dead menu
+    // with nothing on screen to explain it, so once a probe has come back
+    // inconclusive the positive survives only `INCONCLUSIVE_PAINT_GRACE_MS`
+    // beyond its own window, then drops and the rows grey with the footer. The
+    // grace covers a gateway restart; a probe that keeps failing longer than
+    // that is shown, not hidden.
+    //
+    // Age on its own carries no such evidence, and bounding the PAINT by it put
+    // the common case back on the probe's critical path: real menu opens are
+    // minutes apart, so each one awaited a netstat/PowerShell round trip and
+    // drew an empty popup for the length of it. An idle gap is not a probe
+    // failure. See buluoray Blocking 1 on cb31d4f18a.
+    const INCONCLUSIVE_PAINT_GRACE_MS = 30_000;
+
+    // Set while the latest probe for this WebContents came back inconclusive;
+    // cleared by the next proven `local`, and by a proven foreign holder. This
+    // is what separates "we asked and could not tell" from "nobody has asked
+    // recently" — a distinction the mint timestamp alone cannot make, because
+    // both look identical to it.
+    const senderProbeInconclusive = new WeakSet();
+
+    // Does a last positive still stand for PAINTING? Any age qualifies: a
+    // positive is revoked by navigation or by a proven foreign holder, not by
+    // the clock. The only bound is a probe that has actually contradicted it.
+    function positiveIsPaintable(wc) {
+      if (senderIsLocalCache.get(wc) === undefined) return false;
+      return !senderProbeInconclusive.has(wc) || inconclusiveGraceRemains(wc);
+    }
+
+    // Does a positive kept through an inconclusive probe have grace left?
+    // Measured from the MINT time, so a run of inconclusive probes cannot
+    // extend the window by restarting the clock on each one.
+    function inconclusiveGraceRemains(wc) {
+      const mintedAt = senderIsLocalCache.get(wc);
+      return mintedAt !== undefined
+        && Date.now() - mintedAt < POSITIVE_VERDICT_TTL_MS + INCONCLUSIVE_PAINT_GRACE_MS;
+    }
+
+    function settleProbeOutcome(wc, outcome) {
+      if (outcome === "local") {
+        senderProbeInconclusive.delete(wc);
+        return true;
+      }
+      if (outcome === "inconclusive") {
+        senderProbeInconclusive.add(wc);
+        if (!inconclusiveGraceRemains(wc)) senderIsLocalCache.delete(wc);
+        return false;
+      }
+      // `refused` — a proven foreign holder. Drop the positive outright, and
+      // forget the inconclusive mark with it so a positive re-earned later
+      // starts from a clean slate rather than inheriting a spent grace.
+      senderIsLocalCache.delete(wc);
+      senderProbeInconclusive.delete(wc);
+      return false;
+    }
+
+    async function resolveSenderIsLocal(event, channel) {
+      const wc = event && event.sender;
+      if (!wc) return false;
+      // A positive answers on its own only while it is fresh. A lapsed entry is
+      // KEPT as the last positive (see settleProbeOutcome) but falls through to
+      // a fresh three-gate probe, which is what re-establishes the
+      // port-ownership fact nothing else can invalidate.
+      const mintedAt = senderIsLocalCache.get(wc);
+      if (mintedAt !== undefined && Date.now() - mintedAt < POSITIVE_VERDICT_TTL_MS) {
+        return true;
+      }
+      const inFlight = senderIsLocalInFlight.get(wc);
+      if (inFlight) {
+        // Joining caller path — MUST apply the same generation guard the
+        // creator does. Otherwise a navigation completing between the probe
+        // START (creator's genAtStart) and the joiner receiving the verdict
+        // would let a raw `true` reach a now-remote document.
+        const joinerOutcome = await inFlight.promise;
+        return applyGenerationGuard(wc, settleProbeOutcome(wc, joinerOutcome), inFlight.genAtStart);
+      }
+      // Wire the invalidation BEFORE the probe and seed the generation, so
+      // any navigation that lands during the probe increments the counter
+      // and the cache write below is skipped. A plain object in tests has
+      // no `.on`; the listener wiring is best-effort in mid-teardown paths.
+      if (!senderIsLocalWired.has(wc)) {
+        senderIsLocalWired.add(wc);
+        senderIsLocalGeneration.set(wc, 0);
+        try {
+          if (typeof wc.on === "function") {
+            const invalidate = () => {
+              senderIsLocalGeneration.set(
+                wc,
+                (senderIsLocalGeneration.get(wc) || 0) + 1,
+              );
+              senderIsLocalCache.delete(wc);
+            };
+            // Invalidate on BOTH `did-start-navigation` (before Chromium
+            // commits the new document) AND `did-navigate` (after commit).
+            // The start-side listener is load-bearing: `did-navigate` alone
+            // leaves the cache holding a stale `true` between the moment a
+            // top-frame cross-origin navigation is requested and the moment
+            // it commits, so a preload IPC dispatched during the new
+            // document's init could reach a LOCAL_ONLY leaf (DevTools
+            // toggle, settings, clipboard) against the wrong origin. Scope
+            // to real navigations only — an in-place `pushState`
+            // (`isInPlace: true`) does not change the frame's origin, and
+            // a sub-frame navigation (`!isMainFrame`) does not move gate 1
+            // (top-frame origin) either. Both would churn the cache without
+            // guarding anything.
+            wc.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+              if (!isMainFrame || isInPlace) return;
+              invalidate();
+            });
+            // did-navigate remains as a defence-in-depth listener: if a
+            // navigation ever completes without a matching start event
+            // (Electron edge case, aborted-and-redirected chain), the
+            // commit still clears the cache. Idempotent — the generation
+            // counter just increments again, which is harmless.
+            wc.on("did-navigate", invalidate);
+          }
+        } catch { /* WebContents mid-teardown */ }
+      }
+      const genAtStart = senderIsLocalGeneration.get(wc) || 0;
+      // Publish the in-flight promise BEFORE awaiting so any concurrent call
+      // that arrives during the async probe joins it rather than starting a
+      // second probe. The `.finally` guarantees the entry is removed once
+      // the probe resolves, regardless of the verdict — leaving a stale
+      // in-flight entry would freeze subsequent probes on a resolved promise.
+      const probe = (async () => {
+        try {
+          await assertLocalDashboard(event, channel);
+          return "local";
+        } catch (err) {
+          // The gate already logged the reject through glog. A gate-3 refusal
+          // carries the classified owner, which is what separates "could not
+          // tell" from "someone else holds the port".
+          if (err && INCONCLUSIVE_PORT_OWNERS.has(err.portOwner)) return "inconclusive";
+          return "refused";
+        }
+      })();
+      senderIsLocalInFlight.set(wc, { promise: probe, genAtStart });
+      let outcome;
+      try {
+        outcome = await probe;
+      } finally {
+        senderIsLocalInFlight.delete(wc);
+      }
+      const verdict = settleProbeOutcome(wc, outcome);
+      // Cache only positive verdicts, and only when no navigation completed
+      // during the probe (see the header comment). A `false` re-probes on
+      // the next call — cheap, and it survives a transient probe failure
+      // that would otherwise strand the local user on a permanently-greyed
+      // titlebar menu since SPA route changes fire `did-navigate-in-page`
+      // rather than `did-navigate`. The stored value is the mint time, which
+      // is what bounds how long gate 3's mutable port-ownership fact may be
+      // taken on trust. Only a proven local owner mints or re-mints it; a
+      // positive kept through an inconclusive probe keeps its old mint time.
+      const guarded = applyGenerationGuard(wc, verdict, genAtStart);
+      if (guarded) {
+        senderIsLocalCache.set(wc, Date.now());
+      }
+      // The RETURN path also has to fail closed on the navigation race, not
+      // just the cache write. A probe that started when the sender was the
+      // LOCAL dashboard and finished with `verdict = true` AFTER a cross-
+      // origin navigation described a WebContents state the caller has
+      // already left; returning `true` for a now-remote document would
+      // dispatch a LOCAL_ONLY leaf (paste, devtools-toggle) against the
+      // wrong origin.
+      return guarded;
+    }
+
+    // Items advertises labels only; but the enabled column reflects the
+    // per-action gate so a connection window paints greyed LOCAL_ONLY rows
+    // rather than enabled ones that silently no-op on click. Async only
+    // because the first call on a sender WebContents warms the cache
+    // through `assertLocalDashboard`; subsequent calls are synchronous.
+    //
+    // Painting the rows never waits on a re-probe. When this WebContents holds
+    // a last positive that has merely aged out, the rows paint from it and the
+    // re-probe runs in the background, so opening the menu after an idle gap
+    // costs no netstat/PowerShell wait. This is safe because `items` only
+    // decides how a row LOOKS: every click goes through `app-menu:execute`,
+    // which never answers from a lapsed positive — it joins that same
+    // in-flight probe and refuses when it finds a foreign holder. The one
+    // stale paint that remains is a row drawn enabled for a single open after
+    // a foreign process took the port, and clicking it is refused VISIBLY: the
+    // refusal is answered back to the renderer, which refetches these rows and
+    // re-paints them greyed with the footer naming the reason. The refused
+    // click's own probe has by then dropped the positive, so this second call
+    // takes the awaited path rather than repeating the stale answer.
+    function resolveSenderIsLocalForPaint(event, channel) {
+      const wc = event && event.sender;
+      if (wc && positiveIsPaintable(wc)) {
+        // resolveSenderIsLocal never rejects; a fresh entry returns without
+        // probing, a lapsed one starts (or joins) the single-flight re-probe.
+        //
+        // The handler is attached anyway, and not because the invariant above
+        // is in doubt. This is a DISCARDED promise in the Electron main
+        // process, where an unhandled rejection is fatal to the whole app, and
+        // the invariant is a property of a function several layers away that a
+        // later edit can break without ever reading this line. `app-menu:execute`
+        // below wraps its own async work for exactly this reason; a comment is
+        // not the same protection as a handler.
+        resolveSenderIsLocal(event, channel).catch((err) => {
+          log(`app-menu:items background re-probe failed: ${(err && err.stack) || err}`);
+        });
+        return true;
+      }
+      return resolveSenderIsLocal(event, channel);
+    }
+    ipcMain.handle("app-menu:items", async (event, id) => {
+      const senderIsLocal = await resolveSenderIsLocalForPaint(event, "app-menu:items");
+      return windows.menu.items(event.sender, id, senderIsLocal);
+    });
+    // A request/response `handle`, not a fire-and-forget `send`, because the
+    // ANSWER is load-bearing: a refusal is the only moment the renderer can
+    // learn the rows it painted are stale, and it refetches `app-menu:items` on
+    // one. That refetch is what greys the rows and renders the footer naming
+    // the reason — without it a refused click is wholly silent, since a stale
+    // paint sends every row `gated: false` and the footer only explains gated
+    // rows. GPT 5.6 lane finding on 1f3a603c46.
+    //
+    // The refetch genuinely re-paints rather than repeating the stale answer:
+    // this call's own probe has by then proven a foreign holder, and
+    // `settleProbeOutcome("refused")` drops the positive outright, so
+    // `positiveIsPaintable` is false for the next `items` call.
+    ipcMain.handle("app-menu:execute", async (event, id, index) => {
+      try {
+        // Captured BEFORE the await, because the await is precisely what makes
+        // this necessary. The custom click handlers in window-lifecycle.js
+        // (`reload`, `forceReload`, `toggleDevTools` and `zoomMenuItem`'s three
+        // actions) take no arguments and each resolve
+        // `focusedDashboardWebContents()` THEMSELVES at dispatch time, so a
+        // focus change while the ownership probe runs sends the action to
+        // whichever window is focused when it settles — a Reload throws away
+        // the unsaved state of a window the user never clicked in. As a
+        // synchronous `ipcMain.on` there was no window in which focus could
+        // move, which is why `executeMenu` still asserts the premise that no
+        // longer holds. Refusing is the whole remedy: the renderer refetches on
+        // a `false`, so the click is declined and re-painted rather than
+        // misdirected. GPT 6.1 lane finding F1 on 934946a45a.
+        const focusedWindowAtRequestTime = windows.focusedDashboardWindow();
+        const senderIsLocal = await resolveSenderIsLocal(event, "app-menu:execute");
+        if (windows.focusedDashboardWindow() !== focusedWindowAtRequestTime) {
+          log(
+            `app-menu:execute refused ${id}[${index}]: focus moved while the `
+            + "ownership probe ran, so the dispatch target is no longer the requester",
+          );
+          return false;
+        }
+        // Strict `=== true` on the way OUT for the same reason the gate is
+        // strict on the way in: anything else — a caller composed against an
+        // older façade that returns nothing, a truthy proxy — must read as
+        // "did not dispatch" so the renderer refetches rather than trusting a
+        // click that may never have fired.
+        return windows.menu.execute(event.sender, id, index, senderIsLocal) === true;
+      } catch (err) {
+        // resolveSenderIsLocal never rejects, and windows.menu.execute
+        // ordinarily catches its own click errors — but an escaping error
+        // here would surface in the renderer as a thrown `invoke` rather
+        // than an answer (and as a bare `.on` listener, which this channel
+        // used to be, an unhandled rejection was process-fatal — Spock
+        // ERR-01). Log and answer fail-closed: "could not dispatch" is
+        // exactly what the refetch is the right response to.
+        log(`app-menu:execute dispatch failed: ${(err && err.stack) || err}`);
+        return false;
+      }
+    });
+    // dev-mode-changed flips the visibility of the DevTools menu item. Only
+    // a local sender may change it — otherwise a remote gateway could show
+    // DevTools in the local user's menu (they'd still be blocked from
+    // clicking it by LOCAL_ONLY_ITEM_IDS, but leaving the visibility
+    // un-gated hands a remote a UI knob on the local user's window).
+    //
+    // Visibility is cosmetic, so it reads gate 3 the way the PAINT path does
+    // rather than the way the authorizing path does: an inconclusive probe is
+    // not a refusal here. A probe only reaches `inconclusive` AFTER gates 1 and
+    // 2 pass, so the sender is already proven to be the local dashboard on a
+    // local gateway and the single unproven fact is who holds the port. The row
+    // it reveals is still gated per action by `app-menu:execute`, which
+    // re-resolves and refuses on its own, so a wrong answer here costs a greyed
+    // click — while the reverse answer costs the local user the row for the
+    // whole SESSION, because the renderer syncs dev mode once on mount with
+    // empty deps and never retries.
+    //
+    // This lives in the SAME commit as `senderProbeInconclusive` rather than in
+    // the gate commit that introduced the channel, because it reads that set:
+    // the gate commit alone has no notion of an inconclusive probe, so the
+    // predicate would reference an undeclared binding there.
+    //
+    // `senderProbeInconclusive` carries exactly the distinction this needs:
+    // `settleProbeOutcome` ADDS the WebContents on an inconclusive gate-3
+    // outcome and DELETES it on a proven foreign holder or a gates-1/2 refusal,
+    // so membership after the resolve is the signal. The generation counter is
+    // re-read for the same reason the authorizing path applies it — a probe that
+    // settled after a cross-origin navigation committed describes a document the
+    // caller has already left, and its soft pass must not outlive it.
+    async function senderMayFlipDevMenuVisibility(event) {
+      const wc = event && event.sender;
+      if (!wc) return false;
+      const generationAtStart = senderIsLocalGeneration.get(wc) || 0;
+      if (await resolveSenderIsLocal(event, "dev-mode-changed")) return true;
+      if (!senderProbeInconclusive.has(wc)) return false;
+      return (senderIsLocalGeneration.get(wc) || 0) === generationAtStart;
+    }
+    ipcMain.on("dev-mode-changed", (event, enabled) => {
+      (async () => {
+        if (await senderMayFlipDevMenuVisibility(event)) {
+          windows.menu.setDevMode(enabled);
+        }
+      })().catch((err) => {
+        log(`dev-mode-changed dispatch failed: ${(err && err.stack) || err}`);
+      });
+    });
 
     // The export path announces each download it is about to start ("expect one
     // download named <name>") so the will-download handler auto-saves ONLY
@@ -257,6 +811,13 @@ function createIpcRegistrar({
     // Every rejection is LOGGED, not silent. The UI renders a sender rejection
     // and a genuinely empty answer ("no crashes", "no WSL install") the same
     // way, so diagnostics are the only place those two causes can be told apart.
+    //
+    // Most callers throw the rejection through to the renderer as a hard
+    // refusal. `app-menu:execute` is the exception (see its handler above): it
+    // catches the throw, treats the outcome as a boolean, and uses it as a
+    // PER-ACTION gate inside `executeMenuItem`. Both callers use the same
+    // three gates — the difference is only what happens on rejection.
+    //
     // (assertLocalDashboard is defined at createIpcRegistrar scope, above.)
 
     // Crash artifacts left by a previous run, so the dashboard can say "this

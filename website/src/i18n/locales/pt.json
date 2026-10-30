@@ -321,7 +321,9 @@
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
     "tab_title_session": "{{session}} — {{panel}}",
-    "release_notes_not_published_yet": "As notas da versão {{release}} ainda não foram publicadas. Mostrando as notas da {{shown}} em seu lugar."
+    "release_notes_not_published_yet": "As notas da versão {{release}} ainda não foram publicadas. Mostrando as notas da {{shown}} em seu lugar.",
+    "titlebar_menu_disabled_footer": "Alguns itens não estão disponíveis aqui. Os atalhos exibidos continuam funcionando.",
+    "titlebar_menu_refused_notice": "“{{item}}” não foi executado. Não foi possível confirmar que esta janela é o painel local."
   },
   "appSdk": {
     "chatEmbed": {

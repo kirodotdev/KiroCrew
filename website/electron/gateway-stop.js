@@ -874,8 +874,9 @@ async function probePortBinding(port, { getListenPids, log = () => {} }) {
  *   "foreign"  — a local LISTEN owner exists but is not ours (e.g. `ssh`).
  *   "none"     — nothing is listening locally, yet something answered. A race,
  *                or a socket we cannot see; treat as not ours.
- *   "unknown"  — the probe itself could not run (no lsof / EACCES). Never
- *                mistake "couldn't look" for "safe to kill".
+ *   "unknown"  — the probe itself could not run (no lsof / EACCES), or a named
+ *                holder's command line could not be read. Never mistake
+ *                "couldn't look" for "safe to kill".
  *
  * Side effects are injected so this is unit-testable without Electron or real
  * OS processes (mirrors forceStopPort above).
@@ -901,8 +902,34 @@ async function classifyPortOwner(
     log(`port-owner: no local LISTEN owner on :${port}`);
     return "none";
   }
+  // A holder whose command line could not be READ is not a holder proven to
+  // belong to someone else. `windowsProcessCommand` returns an empty string
+  // when the netstat step named a pid but BOTH the PowerShell and WMIC lookups
+  // failed (execution-policy timeout, WMIC absent on current releases), and
+  // calling that `foreign` tells the app-menu gate a foreign process was proven
+  // to hold the port -- which revokes the local user's rows at once, with none
+  // of the grace an inconclusive probe earns. A PROVEN foreign holder still
+  // outranks an unreadable one: a pid positively identified as not ours is
+  // evidence, and must not be softened because a second pid went unread.
+  //
+  // It is `unidentified` and NOT `unknown`, and the distinction is load-bearing
+  // rather than cosmetic. `unknown` above means the probe never ran, so NOTHING
+  // is known to hold the port; `holder-decision.js` fails OPEN on it and adopts,
+  // which is only safe because no holder was found. Here a holder demonstrably
+  // EXISTS -- netstat named its pid -- and only its identity is missing, so
+  // adopting it would post this machine's `.local_secret` to a process we could
+  // not name. Two consumers need opposite answers from the same ambiguity: the
+  // app-menu gate wants it soft (see `INCONCLUSIVE_PORT_OWNERS`), and the adopt
+  // path needs it hard. A separate value is what lets both be right.
+  let anyUnidentifiedHolder = false;
+  let anyProvenForeignHolder = false;
   for (const pid of pids) {
     const cmd = (await getCommand(pid)).trim();
+    if (!cmd) {
+      anyUnidentifiedHolder = true;
+      log(`port-owner: :${port} held by pid=${pid} whose command line could not be read — owner unidentified, will not evict and will not adopt`);
+      continue;
+    }
     const ours = isKirocrew(cmd);
     if (ours) {
       if (await isServiceManaged(pid, getPpid)) {
@@ -912,8 +939,10 @@ async function classifyPortOwner(
       log(`port-owner: :${port} held by local KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
       return "kirocrew";
     }
+    anyProvenForeignHolder = true;
     log(`port-owner: :${port} held by NON-KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
   }
+  if (!anyProvenForeignHolder && anyUnidentifiedHolder) return "unidentified";
   return "foreign";
 }
 

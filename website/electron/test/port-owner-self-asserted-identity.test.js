@@ -52,7 +52,7 @@ const IDENTITY_PROBE = "probeGatewayPortOwner";
 // `switch` writes `case "none":` and an array writes a bare `"none"`, so a guard
 // that only understood `===` would let exactly the shapes it exists to catch
 // through.
-const SENTINELS = ["free", "bound", "none", "unknown", "kirocrew", "service", "foreign"];
+const SENTINELS = ["free", "bound", "none", "unknown", "unidentified", "kirocrew", "service", "foreign"];
 
 // THE FOUR OCCUPANCY DECISIONS. Each entry is the exact source text and the
 // exact number of times it appears, so a site that is reworded stops matching
@@ -121,7 +121,7 @@ const IDENTITY_SITES = [
   },
   {
     what: "restart handoff: the probe could not look, and refusing is the safer answer",
-    code: 'if (owner === "unknown") {',
+    code: 'if (owner === "unknown" || owner === "unidentified") {',
     times: 1,
   },
   {
@@ -160,8 +160,8 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "boot: refuse to adopt a holder this app did not start with no remote crew configured",
-    code: 'if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {',
+    what: "boot: refuse to adopt a holder this app did not start, or one it could not name, with no remote crew configured",
+    code: 'if (decision.action === "reuse" && (localOwner === "foreign" || localOwner === "unidentified") && !remoteHost) {',
     times: 1,
   },
   {

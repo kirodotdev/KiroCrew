@@ -831,6 +831,71 @@ test("classifyPortOwner: an unrunnable probe is 'unknown', never 'none'", async 
   assert.strictEqual(owner, "unknown");
 });
 
+test("classifyPortOwner: a holder whose command line cannot be read is 'unidentified'", async () => {
+  // The netstat step SUCCEEDS and names a pid, then both command-line lookups
+  // fail -- a PowerShell policy timeout with WMIC absent returns an empty
+  // string (windowsProcessCommand). That is "could not look", not "someone
+  // else holds the port": reporting `foreign` here revokes the local user's
+  // menu over a probe hiccup, with no grace.
+  //
+  // It must NOT share `unknown` with the unrunnable-probe case above. That one
+  // means nothing was found holding the port, and `holder-decision.js` fails
+  // open on it and adopts; here a holder demonstrably EXISTS and only its name
+  // is missing, so adopting would post this machine's `.local_secret` to a
+  // process we could not identify. Pinned end to end by "win32 never prompts
+  // for an unidentified listener" in gateway-supervisor.port-holders.test.js.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "",
+  });
+  assert.strictEqual(owner, "unidentified");
+});
+
+test("classifyPortOwner: a PROVEN foreign holder outranks an unreadable one", async () => {
+  // Precedence matters: one holder we positively identified as not ours is
+  // evidence of a foreign holder, and must not be softened to `unidentified`
+  // just because a second pid's command line could not be read.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 909 ? "" : "ssh -NL 5476:localhost:5476 host"),
+  });
+  assert.strictEqual(owner, "foreign");
+});
+
+test("classifyPortOwner: ours outranks an unreadable holder", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 909 ? "" : "kirocrew gateway"),
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("classifyPortOwner: a from-source venv gateway on Windows is 'foreign' — accepted break", async () => {
+  // ACCEPTED BREAK for this change, pinned here so the behaviour is on the
+  // record rather than discovered. Windows identity is PATH-BOUND: the trusted
+  // set holds the bundled launcher's own resolved interpreters plus whatever
+  // this app spawned, and nothing else. A gateway run out of a source
+  // checkout's virtualenv is in neither, so it classifies as `foreign` and the
+  // app-menu gate greys every LOCAL_ONLY row in the main window on that build.
+  // Teaching the trust predicate to resolve a venv's base prefix through
+  // `pyvenv.cfg` is tracked as a follow-up, not done here.
+  const bundledPython = "C:\\Program Files\\KiroCrew\\python.exe";
+  const venvGatewayCommand =
+    '"C:\\dev\\KiroCrew\\.venv\\Scripts\\python.exe" -m kiro_crew gateway --port 5476';
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => venvGatewayCommand,
+    isKirocrew: (cmd) => isKirocrewCommand(cmd, { trustedExecutablePaths: [bundledPython] }),
+  });
+  assert.strictEqual(owner, "foreign");
+  // It is specifically the PATH that fails, not the command shape: the very
+  // same argv from the bundled interpreter is recognised as ours. That is what
+  // makes this a trust-set gap rather than a parsing one.
+  assert.ok(isKirocrewCommand(`"${bundledPython}" -m kiro_crew gateway --port 5476`, {
+    trustedExecutablePaths: [bundledPython],
+  }));
+});
+
 test("classifyPortOwner: ours wins when a mixed set holds the port", async () => {
   const owner = await classifyPortOwner(5476, {
     getListenPids: async () => [909, 4242],

@@ -32,6 +32,17 @@ declare global {
     label: string
     accelerator: string
     enabled: boolean
+    /**
+     * True when THIS ROW was disabled by the app-menu:* per-action gate
+     * (LOCAL_ONLY_* set membership and a remote sender). False when a row is
+     * disabled for any other reason — Electron's own dispatch marks role
+     * items disabled based on runtime state (an `undo` role with no history,
+     * a `paste` role for a WebContents that lost text-selection focus,
+     * etc.). The renderer scopes its "unavailable from this window —
+     * shortcut still works here" affordance to `gated: true` rows only,
+     * because that message is only accurate for gate-caused disables.
+     */
+    gated: boolean
     checked: boolean
   }
 
@@ -58,7 +69,14 @@ declare global {
     watchCursorAway?: (cb: (away: boolean) => void) => (() => void) | undefined
     setDevMode: (enabled: boolean) => void
     getAppMenuItems: (id: string) => Promise<ElectronAppMenuItem[]>
-    executeAppMenuItem: (id: string, index: number) => void
+    /**
+     * Answers whether the per-action gate dispatched the click. Returns `void`
+     * on a shell older than that gate, whose bridge is still a fire-and-forget
+     * `send` — it has already forwarded the command and cannot answer. A
+     * caller must therefore treat a non-thenable answer as dispatched and
+     * require strict `true` only of one that acknowledges.
+     */
+    executeAppMenuItem: (id: string, index: number) => Promise<boolean> | void
     onNavigate: (cb: (path: string) => void) => () => void
     /** View > Toggle Focus Mode. Optional: absent on a shell older than the menu item. */
     onToggleFocusMode?: (cb: () => void) => () => void

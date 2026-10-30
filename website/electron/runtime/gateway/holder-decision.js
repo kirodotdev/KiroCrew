@@ -247,14 +247,18 @@ function createHolderDecision({
     // any 403 is seen, so there is no recovery after the fact.
     //
     // A `foreign` owner with no `remoteHosts` entry is exactly "cannot attribute
-    // it". `kirocrew` and `service` still adopt, and so do `none` and `unknown`:
-    // the fail-open this narrows is preserved wherever the probe did not
-    // positively find someone else holding the port.
+    // it", and so is `unidentified`: netstat named a pid on the port and its
+    // command line could not be read, so a holder demonstrably exists and only
+    // its identity is missing. `kirocrew` and `service` still adopt, and so do
+    // `none` and `unknown`: the fail-open this narrows is preserved wherever the
+    // probe did not positively find someone else holding the port. `unidentified`
+    // is NOT one of those -- the probe did find a holder -- which is why it is a
+    // value of its own rather than another spelling of `unknown`.
     //
     // `warn-stale` cannot reach here with a `foreign` owner: the bundled-path
     // probe above only runs for a `kirocrew` or `service` owner, so that action
     // is unreachable without positive local attribution.
-    if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {
+    if (decision.action === "reuse" && (localOwner === "foreign" || localOwner === "unidentified") && !remoteHost) {
       glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
       return "foreign-holder";
     }

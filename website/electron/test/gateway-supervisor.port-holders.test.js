@@ -236,6 +236,7 @@ test("win32 Cancel aborts on the first prompt, exactly as before", async () => {
 for (const [label, state, adopted] of [
   ["an unprobeable listener", { held: true, probeFails: true }, true],
   ["a foreign listener", { held: true, command: FOREIGN_COMMAND }, false],
+  ["an unidentified listener", { held: true, command: "" }, false],
   ["no local listener", { held: false }, true],
 ]) {
   test(`win32 never prompts for ${label}`, async () => {
@@ -253,14 +254,17 @@ for (const [label, state, adopted] of [
     // three: a tunnel is not ours to evict, and the AppleScript quit would target
     // a local app that is not running.
     //
-    // Whether the holder is ADOPTED is a different question, and only the foreign
-    // case answers it differently now. A positively foreign LISTEN owner with no
+    // Whether the holder is ADOPTED is a different question, and two cases
+    // answer it differently now. A positively foreign LISTEN owner with no
     // crew recorded on the port cannot be attributed to us or to a crew the user
     // named, and adopting it posts this machine's local secret to it -- the mint
     // only requires a literal loopback origin, which a tunnel's local end is. An
-    // unreadable probe and an unseen socket are not that, so they keep the
-    // historical reuse: this narrows the fail-open to the case that carries the
-    // exposure rather than closing it.
+    // `unidentified` holder -- netstat named a pid, its command line could not be
+    // read -- carries the same exposure, because a holder demonstrably exists and
+    // only its name is missing. An unrunnable PROBE and an unseen socket are not
+    // that: neither found anything holding the port, so both keep the historical
+    // reuse. This narrows the fail-open to the cases that carry the exposure
+    // rather than closing it.
     assert.strictEqual(await supervisor.start(), adopted, label);
     assert.strictEqual(shown.length, 0, `${label}: no takeover prompt`);
     assert.deepStrictEqual(quits, [], `${label}: nothing is quit`);

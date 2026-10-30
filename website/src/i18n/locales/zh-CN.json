@@ -293,7 +293,9 @@
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "聊天",
     "tab_title_session": "{{session}} — {{panel}}",
-    "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。"
+    "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。",
+    "titlebar_menu_disabled_footer": "某些项目在此处不可用。显示的快捷键仍然有效。",
+    "titlebar_menu_refused_notice": "“{{item}}”未执行。无法确认此窗口为本地仪表板。"
   },
   "appSdk": {
     "chatEmbed": {

@@ -119,7 +119,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Windows custom titlebar: menu surfaces render in the dashboard so hover
   // can switch between them; command execution stays in the main process.
   getAppMenuItems: (id) => ipcRenderer.invoke("app-menu:items", id),
-  executeAppMenuItem: (id, index) => ipcRenderer.send("app-menu:execute", id, index),
+  // Answers whether the click DISPATCHED. `invoke`, not `send`, because the
+  // renderer acts on a refusal: a row can be painted enabled and still be
+  // refused by the per-action gate, and the refusal is the only moment the
+  // renderer can learn its rows are stale. It refetches on `false`, which
+  // greys the gated rows and renders the footer naming the reason.
+  executeAppMenuItem: (id, index) => ipcRenderer.invoke("app-menu:execute", id, index),
   // App-menu navigation: main.js sends an in-app path ("/settings",
   // "/settings/about") when the user picks Settings…/About from the
   // native application menu; the SPA routes to it (see App.tsx).
