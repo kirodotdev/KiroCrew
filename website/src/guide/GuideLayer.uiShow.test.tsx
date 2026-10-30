@@ -725,7 +725,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]
     expect(last.cautionKey).toBe('pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its')
-    expect(i18nT(last.cautionKey!)).toMatch(/only unbinds/)
+    expect(i18nT(last.cautionKey!)).toMatch(/workspace, memory and past chats are kept/)
     expect(r.action.steps.slice(0, -1).every(st => st.cautionKey === undefined)).toBe(true)
   })
 
