@@ -445,10 +445,10 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=0.25,
         changed_in="#12203",
     ),
-    # Session recycling is off by default. An install materialized while the
-    # default was 1536 MiB of process-tree RSS still recycles any idle session
+    # Session recycling defaults to 4096 MiB of process-tree RSS. An install
+    # materialized while the default was 1536 MiB still recycles any idle session
     # whose tree passes 1536 MiB, which an agent with several MCP servers reaches
-    # after one heavy turn.
+    # after one heavy turn. A stored 0 is the documented off switch, not drift.
     #
     # REPORT-ONLY: 1536 is an ordinary deliberate ceiling, and holding it is
     # survivable -- a recycled session keeps its history and restarts its process
@@ -456,7 +456,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     SupersededDefault(
         dotted_key="session.watchdog_rss_max_mb",
         old_default=1536,
-        new_default=0,
+        new_default=4096,
         changed_in="#16393",
     ),
     # The language default is auto-detect. On the local recogniser a stored 'en-US'

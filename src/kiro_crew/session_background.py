@@ -998,10 +998,11 @@ class BackgroundSessionRuntime:
     async def _rss_recycle_reason(self, background_key: str) -> str | None:
         """The recycle reason when the background tree is at or over its ceiling.
 
-        The ceiling is ``session.watchdog_rss_max_mb`` when it is positive, else
-        ``BACKGROUND_RSS_FALLBACK_MB``: the per-session knob is off by default,
-        and this internal runtime is the one tree a transcript of oversized
-        records grows without bound, so it keeps a ceiling either way.
+        The ceiling is ``session.watchdog_rss_max_mb`` when it is positive and
+        below ``BACKGROUND_RSS_FALLBACK_MB``, else that fallback: the per-session
+        knob is sized for chat sessions with many MCP servers, while this
+        internal runtime is the one tree a transcript of oversized records grows
+        without bound, so it keeps its own lower ceiling either way.
         The RSS sweep in ``session_cleanup`` skips persistent keys and the
         background key is one, so this is the only path that compares this
         runtime's tree against that number. It belongs here rather than there
@@ -1012,7 +1013,7 @@ class BackgroundSessionRuntime:
         context and prompt criteria decide the turn on their own.
         """
         ceiling = self._deps.rss_max_mb()
-        if ceiling <= 0:
+        if ceiling <= 0 or ceiling > BACKGROUND_RSS_FALLBACK_MB:
             ceiling = BACKGROUND_RSS_FALLBACK_MB
         # This module owns the background runtime: it spawns the provider, is the
         # one place that retires it, and the background key is a pool of one, so

@@ -757,9 +757,9 @@ if needed — no compaction, since background tasks are stateless:
   chat-turn hook and never advances `_bg`), and the log names the backstop rather
   than the percentage that did not trigger it.
 - Process-tree RSS at or over `session.watchdog_rss_max_mb` → recycle. When
-  that knob is 0 (its default, which turns the chat-session sweep off) the
-  ceiling is `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB), so this runtime stays
-  bounded either way.
+  that knob is 0 (which turns the chat-session sweep off) or above
+  `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB, below the 4096 default), the ceiling
+  is that fallback, so this runtime keeps its own lower bound either way.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction, `background_turn()`,
@@ -2041,7 +2041,7 @@ against sweep completeness, and are torn down at `close_all`.
   path — is recorded in
   `../../architecture/design-notes/tool-stall-watchdog-placement.md`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
-  `session.watchdog_rss_max_mb`, default 0 via
+  `session.watchdog_rss_max_mb`, default 4096 via
   `DEFAULT_WATCHDOG_RSS_MAX_MB`; 0 disables): recycles non-busy
   sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
   persistent (`_PERSISTENT_KEYS`) and `channel:`-prefixed keys — the same
