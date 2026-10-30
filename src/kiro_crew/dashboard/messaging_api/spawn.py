@@ -131,6 +131,44 @@ async def _requested_backend(raw: object) -> tuple[str | None, web.Response | No
     backend = by_name.get(raw) if isinstance(raw, str) else None
     if backend is not None and backend in available:
         return backend, None
+
+    # The chosen backend is not available. Before refusing, consult the operator's
+    # failover policy: if it is enabled and names this backend in its chain, walk
+    # to the first LATER chain member that is available for a configured terminal
+    # trigger. Each hop is an explicit, selectable, probed backend, so this never
+    # silently degrades to Kiro — an exhausted or absent chain falls through to the
+    # same typed refusal as before. Phase 1 covers the two spawn-time triggers
+    # (backend_not_installed, backend_restart_required); the runtime triggers
+    # (usage_limit, auth) are a later phase.
+    refusal_code = (
+        "unknown_backend"
+        if backend not in states
+        else (
+            "backend_restart_required"
+            if states[backend].restart_required
+            else "backend_not_installed"
+        )
+    )
+    if backend is not None and refusal_code != "unknown_backend":
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.subagent_parts.backend_failover import next_failover_backend
+
+        failover = (await asyncio.to_thread(KiroCrewConfig.load)).agent.acp_failover
+        if failover.enabled:
+            hop_from = backend
+            while True:
+                nxt = next_failover_backend(
+                    current=hop_from,
+                    chain=failover.chain,
+                    triggers=failover.triggers,
+                    verdict=refusal_code,
+                )
+                if nxt is None:
+                    break
+                if nxt in available:
+                    return nxt, None
+                hop_from = nxt
+
     if backend not in states:
         return None, web.json_response(
             {
