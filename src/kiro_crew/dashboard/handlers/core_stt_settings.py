@@ -620,6 +620,11 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
         extra = "voice-aws"
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        needs_extra = codex.availability().code == codex.CODE_EXTRA
+        extra = "voice-codex"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,

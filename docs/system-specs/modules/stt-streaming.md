@@ -4,13 +4,14 @@
 
 Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono Int16 PCM over a WebSocket and the server relays partial hypotheses, one or more final transcripts, and (when enabled) an auto-submit signal.
 
-All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, and `transcribe` sends it to AWS Transcribe Streaming. The fourth selectable value, `off`, is not a recogniser: it runs nothing.
+All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, and `codex` adapts Codex's experimental voice transport. The selectable value `off` is not a recogniser: it runs nothing.
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
 | `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | desktop builds include the runtime; select a model and click **Download now** |
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
+| `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex CLI with voice access, ChatGPT login, and `pip install 'kirocrew[voice-codex]'` |
 | `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
@@ -135,6 +136,15 @@ Legacy provider values and the loader behavior for persisted values are in
 
 ## Retention
 
+For `codex`, audio goes to OpenAI and the account's retention rules apply. The
+connection requests an ephemeral Codex thread, keeps live audio in memory, and
+does not copy Codex credentials or use an API-key fallback. Its settings notice
+states the hosted-audio boundary and account-dependent usage. Installing Codex
+alone does not prove voice entitlement: the local availability probe checks the
+binary and optional media dependency; starting dictation checks the actual voice
+connection. Codex selects the spoken language automatically, so its settings hide
+the language picker rather than offering an ineffective preference.
+
 Neither the gateway nor the user's AWS account keeps dictation audio, and
 **Settings -> Voice** answers "Is my audio kept?" in one line under the provider
 picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
@@ -154,6 +164,110 @@ picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
   documentation.
 - **Text.** The transcript becomes composer text and is kept with the message
   like typed input.
+
+
+## Codex voice adapter and offline testing
+
+`stt/codex.py` implements the existing helper-session contract and
+`dashboard/stt_adapted_stream.py` uses `_drive_helper_session`. The existing origin
+check, duration/concurrency caps, partial/final redaction, audit pair, semantic
+endpointing, and microphone recovery apply. The default stays `local`.
+Recorded clips use the same connection, are limited to 300 seconds, and fail
+loudly over that cap. The shared decoder takes an optional shorter bound without
+loading the local recognizer. WebRTC input is paced 16 kHz mono PCM16 in 20 ms
+frames; its encoder handles the RTP rate conversion. Pending input is bounded to
+90 seconds. Stop drains it, allows four seconds of RTP silence, sends
+`{"type":"session.close"}` on the data channel, and waits up to fifteen seconds
+for `session.closed` with reason `client_request` (Codex 0.163.0), also accepting
+the documented Live spelling `close_requested`. Late input ASR is still read
+until that confirmation, even when no user `turn.done` arrives. Silence alone
+does not establish completion. A failed finalization
+emits an error and preserves the partial draft rather than claiming success.
+
+The transport is **experimental**. The verified wire contract is Codex CLI
+`0.163.0`. The initialization user-agent must identify a release at least that
+new; older, prerelease and unknown builds are refused before opening a thread,
+so an old server cannot silently ignore the handoff-control flag. Normal Codex
+app-server thread APIs do not constitute a stable
+transcription API. The ChatGPT voice route uses WebRTC and realtime `v3` with
+`outputModality: "audio"`. Text-only output needs realtime v2, while the observed
+ChatGPT route accepts v1 or v3. The adapter discards incoming assistant media;
+it never plays it or uses an assistant answer as a transcript.
+
+`stt/codex_rpc.py` owns a dedicated stdio app-server with fixed argv, an empty
+temporary cwd, an empty MCP-server override and no shell tool. Codex itself owns
+authentication. The `codex` binary is never a bare `PATH` lookup. The
+well-known provider install directories (`github_runner.PROVIDER_EXECUTABLE_DIRS`)
+come first, then `PATH` hits unless strict provider binaries are configured, and
+each candidate must pass `validate_provider_executable`, the provenance walk the
+other provider CLIs use. That walk still accepts a same-user copy, for example
+one in `~/.local/bin`, so the child also runs through
+`sandbox.sandboxed_spawn_argv_async` with resource limits, like an agent tool. Its
+tier is the operator's `agent.sandbox` when that is `cc` or `strict`, and
+`standard` otherwise, so it is never looser than the agent's. A planted binary is therefore confined the same way agent code is.
+`~/.codex` is not a masked credential home, so Codex's own login keeps working.
+Codex refuses to run without real operating-system confinement even when the operator permits unsandboxed execution, which makes it unavailable on Windows.
+`wrap_argv(require_confinement=True)` is the single spawn decision point; Settings uses `sandbox.no_backend_refuses_spawn(...)` only as an availability hint, while `CodexRpc.start` requires confinement at the spawn chokepoint and maps refusal to `stt_codex_sandbox_unavailable`.
+The environment allowlist excludes API keys and
+unrelated cloud credentials, and no sandbox policy or credential mask is widened. Every server-originated
+request is rejected. Only the following calls are allowed:
+
+```json
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"kiro_crew_dictation","version":"1"},"capabilities":{"experimentalApi":true}}}
+{"method":"initialized"}
+{"id":2,"method":"account/read","params":{}}
+{"id":3,"method":"thread/start","params":{"ephemeral":true,"cwd":"<temporary directory>","sandbox":"read-only","approvalPolicy":"untrusted","baseInstructions":"Dictation transport only. Never execute tasks or use tools."}}
+{"id":4,"method":"thread/realtime/start","params":{"threadId":"voice-fixture-thread","version":"v3","outputModality":"audio","includeStartupContext":false,"clientManagedHandoffs":true,"flushTranscriptTailOnSessionEnd":false,"prompt":"Listen for dictation. Do not answer or perform tasks. The client handles all work.","transport":{"type":"webrtc","sdp":"<offer>"}}}
+{"id":5,"method":"thread/realtime/stop","params":{"threadId":"voice-fixture-thread"}}
+```
+
+`clientManagedHandoffs: true` leaves work dispatch to explicit client append
+calls. The adapter never sends those calls, `turn/start`, or any task RPC. Tail
+forwarding into a Codex task is explicitly off. Instructions to remain silent
+are not an execution control. Assistant and delegation events are ignored.
+
+The RPC reader consumes `thread/realtime/sdp` to apply an answer and treats
+`thread/realtime/error`, unexpected `thread/realtime/closed`, process exit,
+malformed JSON, and queue overflow as failures. The WebRTC `oai-events` channel
+must deliver `session.started` before the microphone is ready. Only
+`input_transcript.added.item.text` contributes speech text; item IDs deduplicate
+it and fragments are concatenated exactly, preserving spaces and repeated words.
+A `turn.done` with `turn.role: "user"` commits the pending ASR fragments while
+recording; graceful session closure commits any remaining fragments. Neither
+the parallel RPC transcript notifications nor `turn.transcript` is appended,
+because that would duplicate speech.
+
+Offline tests do **not** need a voice-capable Codex, an account or WebRTC wheels:
+
+```bash
+python -m pytest -n0 test/test_codex_stt.py
+```
+
+`test/fixtures/codex_voice.json` contains synthetic, sanitized response and
+notification shapes. `FakePeer` in the tests supplies an SDP answer, connection
+state and a data channel. Patch `codex_media.create_peer` and `remote_answer`
+at the media boundary, `CodexRpc.call`/`start` at the process boundary, and
+`availability` for local prerequisites. The fake emits `session.started`, input
+ASR fragments, a user turn, assistant output and an attempted delegation; only
+the user ASR becomes a final transcript. Separate pipe-level tests exercise
+initialize/account responses, API-key-login refusal, credential scrubbing,
+approval denial, process failure and cleanup. Do not invent an
+`audio/transcriptions` RPC or substitute API-key voice as the mock: neither is
+the integration being tested. A real smoke test uses synthetic speech and
+existing Codex login; physical microphones and other OSes require separate checks.
+
+Finalization mocks must send `session.closed` only after the client sends
+`session.close`, and may deliver trailing input ASR before it. A missing final
+event is an error, including for a recording with no transcript. A user turn is
+not a substitute for this confirmation. This follows the [Live lifecycle](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close)
+and was checked against Codex's WebRTC transport; it does not replace the Codex
+authentication route with the API-key Live creation endpoint.
+
+Source installs add the `voice-codex` extra. POSIX desktop packaging installs it
+separately from the local recognizer, because sealed application bundles cannot
+install missing media packages later. The Windows bundle omits it: Windows has no
+agent sandbox, so Codex dictation is unavailable there.
+The native media imports stay lazy until Codex is selected.
 
 ## Architecture
 

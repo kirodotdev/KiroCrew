@@ -3858,12 +3858,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Provider",
-      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `off` runs no recogniser at all, the same as turning speech input off.",
+      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `codex` sends audio to OpenAI through an existing Codex ChatGPT login (experimental; requires voice access and voice-codex). `off` runs no recogniser at all, the same as turning speech input off.",
       "hasChildren": false,
       "enumValues": [
         "local",
         "apple",
         "transcribe",
+        "codex",
         "off"
       ],
       "defaultValue": "local"

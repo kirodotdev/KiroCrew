@@ -290,6 +290,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
+        no_backend_refuses_spawn
         """.split()),
     "kiro_crew.sandbox_cgroup": tuple("""
         _CGROUP_DEFAULT_MAX_PROCESSES _CGROUP_DEFAULT_CPU_WEIGHT _CGROUP_MEMORY_FRACTION

@@ -598,6 +598,8 @@ describe("first-download installer design contract", () => {
       /root_uri="\$\(cd "\$ROOT" && "\$out\/python\.exe" -c[\s\S]*?sys\.stdout\.write\(Path\.cwd\(\)\.as_uri\(\)\)/
     );
     assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
+    assert.match(buildScript, /"\$ROOT\[voice-codex\]"/);
+    assert.doesNotMatch(windowsBuilder, /"kirocrew\[voice-codex\] @ \$root_uri"/);
     assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
     assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
     assert.doesNotMatch(windowsBuilder, /if\s+!\s+[\s\S]*?kirocrew\[voice\]/);

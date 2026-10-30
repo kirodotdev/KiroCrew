@@ -42,6 +42,7 @@ REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "whatsapp": ("neonize==0.4.3.post0",),
     "feishu": ("lark-oapi>=1.4,<2",),
     "voice-aws": ("boto3>=1.34,<2", "amazon-transcribe>=0.6.3,<1"),
+    "voice-codex": ("aiortc>=1.15,<2",),
     "voice": ("boto3>=1.34,<2", "amazon-transcribe>=0.6.3,<1", "pywhispercpp>=1.5,<2"),
 }
 
