@@ -1,6 +1,7 @@
 export const FE_CSS = `
 .mc-fe-root { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--bg); color:var(--text); font-size:13px; font-family:var(--font-body, -apple-system, BlinkMacSystemFont, sans-serif); letter-spacing:-.02em; }
-.mc-fe-tabstrip-outer { position:relative; border-bottom:1px solid var(--border); background:var(--bg); }
+.mc-fe-tabstrip-outer { display:flex; padding-right:6px; border-bottom:1px solid var(--border); background:var(--bg); }
+.mc-fe-tabstrip-scroll { position:relative; flex:1; min-width:0; }
 .mc-fe-tabstrip-fade { position:absolute; top:0; bottom:0; width:28px; pointer-events:none; z-index:2; }
 .mc-fe-fade-left { left:0; background:linear-gradient(to right, var(--bg), transparent); }
 .mc-fe-fade-right { right:0; background:linear-gradient(to left, var(--bg), transparent); }

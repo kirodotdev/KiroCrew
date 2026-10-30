@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, renderHook, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
-import { createTestStore, expectWheelToScrollRow } from './helpers'
+import { createTestStore, expectWheelToScrollRow, openAllTabsMenu } from './helpers'
 import type { RootState } from '../store'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { useSessionTabs } from '../hooks/useSessionTabs'
@@ -37,6 +37,7 @@ function renderStrip(props: {
   onClose?: (k: string) => void
   slots?: Slots
   unread?: string[]
+  connected?: boolean
 }) {
   const onSelect = props.onSelect ?? vi.fn()
   const onClose = props.onClose ?? vi.fn()
@@ -48,6 +49,7 @@ function renderStrip(props: {
         onSelect={onSelect}
         onClose={onClose}
         onReorder={vi.fn()}
+        connected={props.connected}
       />
     </Provider>,
   )
@@ -159,6 +161,40 @@ describe('SessionTabStrip wheel', () => {
   it('scrolls sideways on a vertical wheel only while the tabs are clipped', () => {
     renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'] })
     expectWheelToScrollRow(screen.getByTestId('session-tab-scroller'))
+  })
+})
+
+describe('SessionTabStrip all-tabs menu', () => {
+  it('lists every session with its status word and switches to the one picked', () => {
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'], activeKey: 'chat-1', unread: ['chat-3'] })
+    const rows = openAllTabsMenu()
+    expect(rows.map(r => r.textContent)).toEqual([
+      expect.stringContaining('Design review'),
+      expect.stringContaining('Debugging the reaper'),
+      expect.stringMatching(/Release notes.*(unread|Unread)/s),
+    ])
+    act(() => { fireEvent.click(rows[1]) })
+    expect(onSelect).toHaveBeenCalledWith('chat-2')
+  })
+
+  it('brings the active tab back into view, without switching, when its row is picked', () => {
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2'], activeKey: 'chat-1' })
+    const rows = openAllTabsMenu()
+    scroll.mockClear()
+    act(() => { fireEvent.click(rows[0]) })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(scroll.mock.contexts).toContain(screen.getByTestId('session-tab-chat-1'))
+    scroll.mockRestore()
+  })
+
+  it('refuses a switch from the menu while offline, keeping the menu open and the status word in the name', () => {
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2'], activeKey: 'chat-1', unread: ['chat-2'], connected: false })
+    const rows = openAllTabsMenu()
+    expect(rows[1]).toHaveAccessibleName(/Debugging the reaper.*(unread|Unread)/s)
+    act(() => { fireEvent.click(rows[1]) })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
   })
 })
 

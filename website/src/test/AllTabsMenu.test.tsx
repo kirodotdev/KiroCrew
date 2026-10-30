@@ -185,6 +185,19 @@ describe('AllTabsMenu selection', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
   })
 
+  it('refuses other rows while offline, keeping the menu open, but still reveals the current one', async () => {
+    const { onSelect } = renderMenu({ currentId: 'b', offlineVerb: 'switch sessions' })
+    openMenu()
+    expect(rowById('c')).toHaveAttribute('aria-disabled', 'true')
+    expect(rowById('b')).not.toHaveAttribute('aria-disabled', 'true')
+    act(() => { fireEvent.click(rowById('c')) })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    act(() => { fireEvent.click(rowById('b')) })
+    expect(onSelect).toHaveBeenCalledWith('b')
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
   it('selects with the arrow keys and Enter from wherever Radix puts focus', async () => {
     const { onSelect } = renderMenu({ currentId: null })
     openMenu()

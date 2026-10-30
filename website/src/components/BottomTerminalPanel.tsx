@@ -6,6 +6,7 @@ import { useLongPressReorder } from '../hooks/useLongPressReorder'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
 import {
@@ -13,6 +14,8 @@ import {
 } from './ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { Input } from './ui'
+import { AllTabsMenu } from './AllTabsMenu'
+import { TerminalTabTitle } from '../pages/chat/SidePanelTabNav'
 import { useTranslation } from 'react-i18next'
 import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
 import { useConfirm } from './ConfirmDialog'
@@ -118,6 +121,7 @@ function TabChip({ tab, active, closing = false, hintId, closeActions, onSelect,
         <div
           ref={chipRef}
           role="tab"
+          {...{ [TAB_ID_ATTR]: tab.id }}
           aria-label={title}
           aria-selected={active}
           aria-busy={closing || undefined}
@@ -381,10 +385,12 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
   // its box as tabs open/close/rename, so remeasure on the tabs list.
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLUListElement>()
   const attachWheel = useWheelToHorizontal<HTMLUListElement>()
+  const [attachReveal, reveal] = useRevealActiveTab<HTMLUListElement>(activeId)
   const attachScroller = useCallback((node: HTMLUListElement | null) => {
     attachEdges(node)
     attachWheel(node)
-  }, [attachEdges, attachWheel])
+    attachReveal(node)
+  }, [attachEdges, attachWheel, attachReveal])
   useEffect(() => { remeasure() }, [tabs, remeasure])
 
   // New tabs spawn in the selected session's project directory when one is
@@ -550,6 +556,12 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         >
           <Plus size={15} />
         </button>
+        <AllTabsMenu
+          groups={[{ id: 'terminals', rows: tabs.map(t => ({ id: t.id, glyph: <TerminalSquare size={13} />, title: t.name || <TerminalTabTitle sessionId={t.id} fallback={i18nT('components.bottomTerminalPanel.terminal')} /> })) }]}
+          currentId={activeId}
+          onSelect={id => { if (id === activeId) reveal(id); else setActiveTab(id) }}
+          label={i18nT('pages.chat.sidePanel.all_tabs')}
+        />
         {variant === 'dock' ? (
           <div className="flex items-center gap-0.5 ml-auto shrink-0">
             <DropdownMenu guideScope="menu:shell.terminal-more">

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Folder, File, Image, X, Plus } from 'lucide-react'
 import Clickable from '../../components/Clickable'
+import { AllTabsMenu } from '../../components/AllTabsMenu'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../../hooks/useWheelToHorizontal'
+import { TAB_ID_ATTR, useRevealActiveTab } from '../../hooks/useRevealActiveTab'
 import { IMAGE_EXTS } from './constants'
 import { extOf, basename } from './utils'
 import type { FolderTab, FileTab } from './types'
@@ -22,6 +24,8 @@ interface TabStripProps {
   onRenameFolder: (id: string, label: string) => void
 }
 
+const folderName = (t: FolderTab) => t.label || basename(t.rootPath) || '/'
+
 export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeFileId, onActivateFolder, onActivateFile, onCloseFolder, onCloseFile, onNewFolder, onRenameFolder }: TabStripProps) {
   // Only one rename input renders at a time, so a single instance is safe.
   const ime = useImeGuard()
@@ -29,10 +33,13 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
   const [renameDraft, setRenameDraft] = useState('')
   const [attachEdges, fades, remeasure] = useScrollEdges<HTMLDivElement>()
   const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+  const activeId = activeFileId ?? activeFolderId
+  const [attachReveal, reveal] = useRevealActiveTab<HTMLDivElement>(activeId)
   const attachScroller = useCallback((node: HTMLDivElement | null) => {
     attachEdges(node)
     attachWheel(node)
-  }, [attachEdges, attachWheel])
+    attachReveal(node)
+  }, [attachEdges, attachWheel, attachReveal])
 
   // Opening a file appends a tab: the strip keeps its own box, so no resize is
   // observed and no scroll fires, and the cue would stay dark over tabs that
@@ -41,12 +48,14 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
 
   return (
     <div className="mc-fe-tabstrip-outer">
+      <div className="mc-fe-tabstrip-scroll">
       {fades.left && <div className="mc-fe-tabstrip-fade mc-fe-fade-left" />}
       {fades.right && <div className="mc-fe-tabstrip-fade mc-fe-fade-right" />}
       <div className="mc-fe-tabs" ref={attachScroller}>
         {folderTabs.map((t) => (
           <div
             key={t.id}
+            {...{ [TAB_ID_ATTR]: t.id }}
             className={'mc-fe-tab mc-fe-tab-folder' + (t.id === activeFolderId && !activeFileId ? ' is-active' : '') + (t.id === activeFolderId ? ' is-current-folder' : '')}
             onClick={() => onActivateFolder(t.id)}
             onDoubleClick={() => { setRenameId(t.id); setRenameDraft(t.label || basename(t.rootPath)) }}
@@ -74,7 +83,7 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
                 })}
               />
             ) : (
-              <span className="mc-fe-tab-label">{t.label || basename(t.rootPath) || '/'}</span>
+              <span className="mc-fe-tab-label">{folderName(t)}</span>
             )}
             <Clickable className="mc-fe-tab-close" onClick={(e) => { e?.stopPropagation(); onCloseFolder(t.id) }} title={i18nT('apps.fileExplorer.tabStrip.close_workspace_tab')} aria-label={i18nT('apps.fileExplorer.tabStrip.close_workspace_tab')}>
               <X size={11} />
@@ -85,6 +94,7 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
         {fileTabs.map((ft) => (
           <div
             key={ft.id}
+            {...{ [TAB_ID_ATTR]: ft.id }}
             className={'mc-fe-tab mc-fe-tab-file' + (ft.id === activeFileId ? ' is-active' : '')}
             onClick={() => onActivateFile(ft.id)}
             title={ft.path}
@@ -103,6 +113,20 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
           <Plus size={13} />
         </button>
       </div>
+      </div>
+      <AllTabsMenu
+        groups={[
+          { id: 'folders', rows: folderTabs.map(t => ({ id: t.id, glyph: <Folder size={11} />, title: folderName(t), tooltip: t.rootPath })) },
+          { id: 'files', rows: fileTabs.map(ft => ({ id: ft.id, glyph: IMAGE_EXTS.has(extOf(ft.path)) ? <Image size={11} /> : <File size={11} />, title: basename(ft.path), tooltip: ft.path })) },
+        ]}
+        currentId={activeId}
+        onSelect={id => {
+          if (id === activeId) reveal(id)
+          else if (fileTabs.some(ft => ft.id === id)) onActivateFile(id)
+          else onActivateFolder(id)
+        }}
+        label={i18nT('pages.chat.sidePanel.all_tabs')}
+      />
     </div>
   )
 }

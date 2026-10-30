@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { Reorder, useReducedMotion } from 'framer-motion'
+import { AllTabsMenu, type AllTabsRow } from './AllTabsMenu'
 import { useAppSelector } from '../store'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
@@ -341,6 +342,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
   if (tabs.length < 2) return null
 
   const instant = reduceMotion || freeze !== null
+  const menuRows: AllTabsRow[] = []
   const items = tabs.map(key => {
     const slot = slots.find(s => s.key === key)
     // An untitled tab reads "Untitled session", never its key; the key
@@ -363,6 +365,13 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
     const tooltip = statusWord
       ? i18nT('components.sessionTabStrip.tab_name_with_status', { name: hoverTitle, status: statusWord })
       : hoverTitle
+    menuRows.push({
+      id: key,
+      glyph: <span aria-hidden="true" className="block w-1.5 h-1.5 rounded-full" style={{ background: TAB_STATUS_COLOR[status] }} />,
+      title,
+      secondary: statusWord || undefined,
+      tooltip,
+    })
     return (
       <ReorderableSessionTab
         key={key}
@@ -496,12 +505,13 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
     // the gutter and leave a notch. Drawing it once, on the shell, keeps the
     // hairline continuous across the full width.
     <div
-      className="relative shrink-0 min-w-0"
+      className="flex items-center shrink-0 min-w-0 pr-1.5"
       style={{ background: 'var(--bg)' }}
       // The shell drawer sees this touch before a long-press can arm, so the
       // strip claims both horizontal directions from touchstart.
       data-owns-swipe="left right"
     >
+      <div className="relative min-w-0 flex-1">
       {/* The scroller is a wrapper, not the group. Framer's drag auto-scroll
           looks for a scrollable ANCESTOR of the Reorder.Group, so a group
           that scrolls itself never scrolls while a tab is held at its edge,
@@ -520,6 +530,18 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
       {edges.right && (
         <div aria-hidden="true" data-testid="session-tab-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 z-10 bg-gradient-to-l from-bg to-transparent" />
       )}
+      </div>
+      <AllTabsMenu
+        groups={[{ id: 'sessions', rows: menuRows }]}
+        currentId={activeKey}
+        // Picking the active tab changes nothing, so bring it into view directly.
+        onSelect={key => {
+          if (key === activeKey) tabRefs.current[key]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+          else onSelect(key)
+        }}
+        label={i18nT('pages.chat.sidePanel.all_tabs')}
+        offlineVerb={connected ? undefined : i18nT('utils.offline.switch_sessions')}
+      />
     </div>
   )
 }

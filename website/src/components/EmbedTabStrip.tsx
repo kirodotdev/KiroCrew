@@ -5,11 +5,13 @@ import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { createChatForView, type CreatedChatView } from '../lib/createdChatView'
 import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
+import { AllTabsMenu } from './AllTabsMenu'
 import { errMessage } from '../utils/thunkError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
 import {
   TAB_STATUS_COLOR,
   removeTabAt,
@@ -20,6 +22,8 @@ import {
 } from '../lib/sessionTabs'
 import { i18nT } from '../i18n/t'
 interface Tab { slug: string }
+/** A Sessions tab has no slug, so its position names it. */
+const tabId = (tab: Tab, i: number) => tab.slug || `new-${i}`
 
 /** Tab state injected by the host embedding plugin onto `window`. */
 interface EmbedTabsWindow extends Window {
@@ -246,7 +250,6 @@ export default function EmbedTabStrip() {
     setActiveIndex(newIndex)
     navigate('/embed/sessions')
     persist(newTabs, newIndex)
-    setTimeout(() => tabRefs.current[newIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }), 0)
   }
 
   // --- Drag reorder: tab follows cursor, reorder on drop ---
@@ -280,14 +283,17 @@ export default function EmbedTabStrip() {
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
   const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+  const activeTabId = tabs[activeIndex] ? tabId(tabs[activeIndex], activeIndex) : null
+  const [attachReveal, reveal] = useRevealActiveTab<HTMLDivElement>(activeTabId)
 
-  // The hooks own the node's edge measurement and wheel scrolling; this keeps a
-  // plain handle to the same node for the drag auto-scroll and pointer capture.
+  // The hooks own edge measurement, wheel scrolling and reveal; the drag
+  // auto-scroll and pointer capture also need the node.
   const setStrip = useCallback((node: HTMLDivElement | null) => {
     stripRef.current = node
     attachEdges(node)
     attachWheel(node)
-  }, [attachEdges, attachWheel])
+    attachReveal(node)
+  }, [attachEdges, attachWheel, attachReveal])
 
   // Tabs opening, closing, or renaming keep the strip's own box, so neither
   // the ResizeObserver nor a scroll event reports the changed content width —
@@ -481,12 +487,13 @@ export default function EmbedTabStrip() {
           const active = i === activeIndex
           const title = getTitle(tab.slug, i)
           const truncated = truncateTabTitle(title)
-          const isDragged = dragSlug != null && (tab.slug || `new-${i}`) === dragSlug
+          const isDragged = dragSlug != null && tabId(tab, i) === dragSlug
           return (
             <div
-              key={tab.slug || `new-${i}`}
+              key={tabId(tab, i)}
               ref={el => { tabRefs.current[i] = el }}
               role="tab"
+              {...{ [TAB_ID_ATTR]: tabId(tab, i) }}
               tabIndex={0}
               aria-selected={active}
               title={getHoverTitle(tab.slug, title)}
@@ -562,6 +569,27 @@ export default function EmbedTabStrip() {
       >
         <Plus size={14} />
       </button>
+      <AllTabsMenu
+        groups={[{
+          id: 'tabs',
+          rows: tabs.map((tab, i) => {
+            const title = getTitle(tab.slug, i)
+            return {
+              id: tabId(tab, i),
+              glyph: <span aria-hidden="true" className="block w-1.5 h-1.5 rounded-full" style={{ background: tab.slug ? TAB_STATUS_COLOR[getStatus(tab.slug)] : 'transparent' }} />,
+              title,
+              tooltip: getHoverTitle(tab.slug, title),
+            }
+          }),
+        }]}
+        currentId={activeTabId}
+        onSelect={id => {
+          const i = tabs.findIndex((tab, j) => tabId(tab, j) === id)
+          if (i === activeIndex) reveal(id)
+          else if (i !== -1) selectTab(i)
+        }}
+        label={i18nT('pages.chat.sidePanel.all_tabs')}
+      />
     </div>
       {createSlotMutation.isError && (
         // A rejected createSlot otherwise leaves the "+" looking dead. Its own

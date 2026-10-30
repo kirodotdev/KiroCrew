@@ -7,7 +7,7 @@
  * Note: FileViewer is NOT tested here because it imports MarkdownRenderer
  * which transitively loads highlight.js + mermaid (5s timeout in vitest).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
@@ -15,7 +15,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { createTestStore, expectWheelToScrollRow } from './helpers'
+import { createTestStore, expectWheelToScrollRow, openAllTabsMenu, stubTabRow } from './helpers'
 
 // Polyfill ResizeObserver for jsdom (TabStrip uses it for scroll fade detection)
 globalThis.ResizeObserver = class {
@@ -310,6 +310,8 @@ describe('SearchPanel', () => {
 // ─── TabStrip ───────────────────────────────────────────────────────────────
 
 describe('TabStrip', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
   const folders: FolderTab[] = [
     { id: 'ft-1', rootPath: '/home/user', label: 'Home', expanded: {}, showSearch: false },
     { id: 'ft-2', rootPath: '/tmp', label: '', expanded: {}, showSearch: false },
@@ -355,6 +357,32 @@ describe('TabStrip', () => {
         onCloseFile={vi.fn()} onNewFolder={vi.fn()} onRenameFolder={vi.fn()} />,
     )
     expectWheelToScrollRow(container.querySelector('.mc-fe-tabs') as HTMLElement)
+  })
+
+  it('lists folders and files in the all-tabs menu and activates the one picked', () => {
+    const onFolder = vi.fn()
+    const onFile = vi.fn()
+    render(
+      <TabStrip folderTabs={folders} fileTabs={files} activeFolderId="ft-1" activeFileId={null}
+        onActivateFolder={onFolder} onActivateFile={onFile} onCloseFolder={vi.fn()}
+        onCloseFile={vi.fn()} onNewFolder={vi.fn()} onRenameFolder={vi.fn()} />,
+    )
+    const rows = openAllTabsMenu()
+    expect(rows.map(r => r.textContent)).toEqual(['Home', 'tmp', 'main.ts'])
+    fireEvent.click(rows[2])
+    expect(onFile).toHaveBeenCalledWith('of-1')
+    fireEvent.click(openAllTabsMenu()[1])
+    expect(onFolder).toHaveBeenCalledWith('ft-2')
+  })
+
+  it('scrolls the active tab into view when it changes', () => {
+    const many: FolderTab[] = Array.from({ length: 6 }, (_, i) => ({ id: `ft-${i}`, rootPath: `/p${i}`, label: `P${i}`, expanded: {}, showSearch: false }))
+    const props = { fileTabs: [], activeFileId: null, onActivateFolder: vi.fn(), onActivateFile: vi.fn(), onCloseFolder: vi.fn(), onCloseFile: vi.fn(), onNewFolder: vi.fn(), onRenameFolder: vi.fn() }
+    const { container, rerender } = render(<TabStrip folderTabs={many} activeFolderId="ft-0" {...props} />)
+    const row = stubTabRow(container.querySelector('.mc-fe-tabs') as HTMLElement)
+    rerender(<TabStrip folderTabs={many} activeFolderId="ft-5" {...props} />)
+    expect(row.tabRect('ft-5').right).toBeLessThanOrEqual(100)
+    expect(row.left()).toBeGreaterThan(0)
   })
 
   it('calls onNewFolder when + button clicked', async () => {
