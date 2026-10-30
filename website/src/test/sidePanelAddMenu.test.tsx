@@ -179,8 +179,8 @@ describe('side panel Dashboard view', () => {
 
 describe('newMenuSections', () => {
   const DIAGNOSTICS = new Set(['logs', 'context', 'crewlog'] as const)
-  const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean }) =>
-    newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
+  const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean; hasWorkflowRuns?: boolean }) =>
+    newMenuSections({ summaryEnabled: true, hasWorkflowRuns: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
@@ -210,17 +210,27 @@ describe('newMenuSections', () => {
       .toEqual(['command-center', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'])
   })
 
+  it('hides Workflows while the chat has no workflow runs', () => {
+    // With no run launched from this chat the view can only say "no workflow
+    // runs", so the row waits for the first one. Only that row goes.
+    expect(kinds({ terminalEnabled: true, hasWorkflowRuns: false })[0])
+      .toEqual(['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'git'])
+    expect(kinds({ terminalEnabled: true, hasWorkflowRuns: true })[0]).toContain('workflows')
+  })
+
   it('keeps each group id fixed however the gates fall', () => {
     // The group id is the menu's React key. If it moved when a gate resolved,
     // React would remount the group and detach the row under the user's cursor
     // — `summaryEnabled` in particular starts undefined and flips when its
     // request lands, i.e. potentially mid-click. So the id a group reports must
     // depend only on its declaration, never on which rows survived.
-    const idsFor = (o: { terminalEnabled: boolean; summaryEnabled: boolean }) =>
-      newMenuSections(o).map(g => g.id)
+    const idsFor = (o: { terminalEnabled: boolean; summaryEnabled: boolean; hasWorkflowRuns?: boolean }) =>
+      newMenuSections({ hasWorkflowRuns: true, ...o }).map(g => g.id)
 
     // Gating a row must not touch its group's id.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: false }))
+      .toEqual(idsFor({ terminalEnabled: true, summaryEnabled: true }))
+    expect(idsFor({ terminalEnabled: true, summaryEnabled: true, hasWorkflowRuns: false }))
       .toEqual(idsFor({ terminalEnabled: true, summaryEnabled: true }))
 
     // Dropping a whole group must not renumber the survivors: with every
@@ -228,7 +238,7 @@ describe('newMenuSections', () => {
     // keep the ids they had.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: true }))
       .toEqual(['session-output', 'workspaces', 'diagnostics'])
-    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
+    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
       .toEqual(['session-output', 'workspaces'])
 
     // And ids stay unique, or two groups would collide on one key.
@@ -254,14 +264,14 @@ describe('newMenuSections', () => {
     // under any gate combination.
     for (const hiddenViews of [undefined, DIAGNOSTICS]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hiddenViews })) {
+        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews })) {
           expect(group.items.length).toBeGreaterThan(0)
         }
       }
     }
     // Terminal off and diagnostics withheld: diagnostics gone outright,
     // Terminal dropped from Workspaces — two groups, not three with a hole.
-    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
+    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
