@@ -239,8 +239,9 @@ def _list_stores_blocking() -> list[dict[str, Any]]:
         # reserved so a new same-named member cannot claim the old memory), but
         # no route can read it: every content request fails the member lookup.
         # Listing it under the dead crew's name gives the picker a row whose
-        # every click is a 503, so the picker omits it; ``kirocrew memory scan``
-        # and ``doctor`` still see the record.
+        # every click is a 503, so the picker omits it. The record stays in
+        # ``memory_stores``, so ``kirocrew memory backups`` still lists it;
+        # ``memory backup`` and ``doctor`` cover living members' stores only.
         owner_id = getattr(record, "owner_member_id", "")
         if getattr(record, "memory_version", 1) == 2 and (
             not isinstance(owner_id, str) or owner_id not in living_ids
