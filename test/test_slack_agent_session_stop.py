@@ -1139,7 +1139,7 @@ def _record_dispatch(
 
     started: list[str] = []
 
-    async def dispatch(_orch: Any, _key: str, _ts: str, text: str, kwargs: Any) -> None:
+    async def dispatch(_orch: Any, _key: str, _ts: str, text: str, kwargs: Any, **_kw: Any) -> None:
         started.append(text)
         if on_start is not None:
             await on_start()
@@ -1749,7 +1749,7 @@ async def test_the_queue_drain_records_the_entrys_thread(monkeypatch: pytest.Mon
     orch = Orch(sessions, flat=True)
     gate = asyncio.Event()
 
-    async def dispatch(*_a: Any) -> None:
+    async def dispatch(*_a: Any, **_kw: Any) -> None:
         await gate.wait()
 
     monkeypatch.setattr(events, "_dispatch_queued", dispatch)

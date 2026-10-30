@@ -328,6 +328,16 @@ export const CHUNK_BUDGETS = {
   // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
   ModelEffortDropdown: 558 * KB, // measured 543,975 B on 2026-10-29 (~5% headroom)
 
+  // The Settings route chunk: every eager Settings panel (Chat, Display,
+  // Channels, Security, ...), already lazy behind the router. Measured
+  // 2026-11-03: merge refs of three unrelated PRs on main's tip build it at the
+  // same 526.07 kB (Vite's decimal unit), about 1.2 KB under the 500 KB default,
+  // and the Slack Reconnect action (#25780: the Reconnect button, its status
+  // line and error copy in settings/SlackPanel.tsx, +2.34 kB of first-party
+  // code, no new dependency) builds it at 501.0 KB, 1.0 KB over. The ~5%
+  // convention over that measurement, rounded up to whole KB, is 527 KB.
+  SettingsPage: 527 * KB, // measured 501.0 KB on 2026-11-03 (~5% headroom)
+
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`
   // imports it lazily, only when a HEIC/HEIF photo is attached in a browser with
