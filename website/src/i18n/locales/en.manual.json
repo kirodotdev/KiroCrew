@@ -5017,7 +5017,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Mates",
-      "crews_description": "Your AI teammates",
+      "crews_description": "Always-on AI agents",
       "connections_label": "Connections",
       "connections_description": "Connect official services and manage custom MCP servers",
       "skills_label": "Skills",
@@ -7949,7 +7949,11 @@
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",
-        "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose, and per-device unless a card says otherwise."
+        "feature_previews_desc": "Unreleased features and pages. Your choices here are saved on this {{productName}}, so they apply wherever you open the dashboard, in any browser or in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",
+        "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
+        "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again.",
+        "feature_previews_carry_failed": "“{{name}}” is on in this browser only: it couldn’t be saved on this {{productName}}. Reload the page to try again; it stays on until then.",
+        "feature_previews_carry_denied": "“{{name}}” was turned on in this browser before it could be saved here. Only the owner of this {{productName}} can save it, so it stays on in this browser only."
       },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",

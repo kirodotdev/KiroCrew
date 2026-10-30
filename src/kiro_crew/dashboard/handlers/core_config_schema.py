@@ -52,6 +52,7 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
     EXTERNAL_TERMINAL_APPS,
+    FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     LIVE_MAX_FPS_CHOICES,
@@ -588,6 +589,15 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     }
+
+
+# The Feature previews switches (Settings > Developer > Feature previews), one
+# boolean per known preview name. The dashboard keeps a browser copy of each as a
+# cache and writes the switch here, so it holds on every browser and address of
+# this gateway. Only the names in ``FEATURE_PREVIEW_FLAGS`` are writable, so the
+# route cannot grow the section with arbitrary keys.
+for _preview in FEATURE_PREVIEW_FLAGS:
+    _EDITABLE_CONFIG[f"dashboard.feature_previews.{_preview}"] = {"type": "bool"}
 
 
 # The wake judge's two per-point settings. In the editable set where

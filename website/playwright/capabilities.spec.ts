@@ -25,7 +25,7 @@ test.describe('Capabilities Page — /capabilities', () => {
     // (CapabilitiesPage.tsx:16), not a PageHeader subtitle, so there is no
     // page-subtitle testid on this route. KiroCrewAgentsPage renders the same
     // string as a real PageHeader subtitle, hence the #main-content scope.
-    await expect(page.locator('#main-content').getByText('Your AI teammates', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('#main-content').getByText('Always-on AI agents', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
   test('shows all 6 tab buttons in the side nav', async ({ page }) => {

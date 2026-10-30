@@ -26,7 +26,7 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
 from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
@@ -237,6 +237,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.browser_local_origins",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        # A feature preview only decides whether the dashboard OFFERS an
+        # unreleased page or menu entry; the feature's own routes and checks
+        # are the same either way.
+        *(f"dashboard.feature_previews.{_name}" for _name in FEATURE_PREVIEW_FLAGS),
         "dashboard.folder_sort",
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",

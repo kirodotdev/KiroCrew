@@ -679,6 +679,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _acp_backend_patch_values,
         _agent_values,
         _editable_config_spec,
+        _preview,
         _selectable_acp_backends,
         _tier,
     )
