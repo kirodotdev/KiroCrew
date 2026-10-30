@@ -53,8 +53,10 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 
 ## Concurrency
 
-- `_processing` flag prevents overlapping ticks from double-processing tasks
-- FTS rebuild runs independently of task processing
+- Task processing runs as its own tracked task (`_process_task`), started by the tick and never awaited by it, so a turn that runs up to `HEARTBEAT_TASK_TIMEOUT_SECS` does not hold the FTS rebuild, the daily prune or idle consolidation; those keep their tick cadence
+- A tick that finds the previous pass still running (`_process_task` not done, or `_processing` set) skips the file, so passes never overlap and no task is double-processed
+- A failing pass is logged (`Heartbeat task processing failed`) by the task itself; it never reaches the tick
+- `stop()` cancels the loop, the running pass and the backup pass; `wait_closed()` awaits them (bounded by `_STOP_DRAIN_SECS`), so a cancelled turn unwinds its session release and cycle-end recycle before gateway shutdown moves on. A cancelled pass rewrites nothing: its tasks stay in `HEARTBEAT.md`
 - Uses dedicated `heartbeat:task` session key — no interference with user or cron sessions
 
 ## Per-Task Timeout (Unattended Turn Bound)
@@ -67,7 +69,7 @@ mirroring cron's `_JOB_TIMEOUT_SECS`). This is the analogue of cron's
 
 Without it, if the agent calls a non-allowlisted tool, the interactive-approval
 callback would block on the human-approval wait with no human present — wedging
-`HeartbeatService._processing=True` and freezing the whole heartbeat subsystem.
+`HeartbeatService._processing=True` so no HEARTBEAT.md task would ever run again.
 
 On `asyncio.TimeoutError`:
 1. Reset the heartbeat session (`sessions.reset(HEARTBEAT_KEY)`) BEFORE the
@@ -107,7 +109,7 @@ percentage is only logged. The next cycle's first task starts a fresh session.
 - `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kirocrew-heartbeat"`, streams the response (gated by the heartbeat allowlist in `_heartbeat_approval`), posts the result, and releases the per-key semaphore
 - `on_cycle_end` callback: invokes `SessionManager.recycle_heartbeat` once after `asyncio.gather` completes — tears the session down unconditionally
 - Callback re-raises exceptions so heartbeat can track failures
-- Stopped during gateway shutdown
+- Stopped during gateway shutdown: `exit_path` calls `stop()` and then awaits `wait_closed()`
 
 ### Session Identity
 
@@ -147,6 +149,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `_MEMORY_BACKUP_TICKS` / `_MEMORY_BACKUP_OFFSET` | 1440 / 30 | `heartbeat.py` |
 | `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
+| `_STOP_DRAIN_SECS` | 10 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
 | `HEARTBEAT_KEY` | `_hb` | `session_parts/policy.py` |
 | `_HEARTBEAT_SAFE_CORE_MCP_TOOLS` | frozenset of `kirocrew-core` reads | `slack/gateway_runtime/tool_policy.py` |

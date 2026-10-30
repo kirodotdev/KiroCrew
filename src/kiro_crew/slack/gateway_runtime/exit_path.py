@@ -307,6 +307,7 @@ async def _stop_services_and_sessions(
         await self.cron_svc.stop()
     if self.heartbeat_svc:
         self.heartbeat_svc.stop()
+        await self.heartbeat_svc.wait_closed()
 
     # Stop the pooled MCP gateway broker + its backends. gatewayd is
     # spawned with start_new_session (and no PR_SET_PDEATHSIG), so on a

@@ -15,15 +15,18 @@ import pytest
 
 import kiro_crew.heartbeat as hb_mod
 from kiro_crew.heartbeat import _HEADER, HeartbeatService
+from kiro_crew.testing.wait import await_until
 
 # "café" in latin-1: byte 0xe9 is not valid UTF-8.
 _LATIN1_TASKS = b"# Heartbeat\n- [ ] caf\xe9 check\n"
 
 
 async def _tick(svc: HeartbeatService) -> None:
-    """Run one tick; a raise is the bug, since ``_loop`` would drop the rest of it."""
+    """Run one tick and its file pass; a raise from either is the bug."""
     try:
         await svc._beat()
+        if svc._process_task is not None:
+            await await_until(svc._process_task, what="the tick's file pass")
     except Exception as exc:
         pytest.fail(f"the tick raised {exc!r} instead of skipping the file")
 
