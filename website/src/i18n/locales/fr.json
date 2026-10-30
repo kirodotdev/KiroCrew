@@ -11971,6 +11971,7 @@
         "restore_retry": "Réessayer",
         "send_blocked_not_loaded": "cette conversation annexe n'est pas encore chargée",
         "steer_demoted_to_queue": "Le tour s'est terminé — mis en file d'attente à la place",
+        "closed_in_another_tab": "L’actualisation du contexte dans un autre onglet a effacé ce chat annexe",
         "thinking": "Réflexion…",
         "turn_many": "{{count}} tours",
         "turn_one": "{{count}} tour",

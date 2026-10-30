@@ -11804,6 +11804,7 @@
         "restore_retry": "फिर से कोशिश करो",
         "send_blocked_not_loaded": "यह साइड बातचीत अभी लोड नहीं हुई है",
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
+        "closed_in_another_tab": "दूसरे टैब में संदर्भ ताज़ा करने से यह साइड चैट साफ़ हो गई",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
         "turn_other": "{{count}} टर्न",

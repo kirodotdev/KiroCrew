@@ -1073,7 +1073,7 @@ export const {
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideClosedElsewhere, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 /** The `GET /api/spawn` read in flight, shared by every gone card that asks

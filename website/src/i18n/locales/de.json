@@ -11804,6 +11804,7 @@
         "restore_retry": "Wiederholen",
         "send_blocked_not_loaded": "diese Nebenunterhaltung ist noch nicht geladen",
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
+        "closed_in_another_tab": "Das Aktualisieren des Kontexts in einem anderen Tab hat diesen Seitenchat geleert",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
         "turn_other": "{{count}} Züge",

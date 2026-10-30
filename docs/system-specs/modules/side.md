@@ -390,6 +390,15 @@ slot's side draft when the close came first. A card whose edit is still in
 flight goes back with the edit's wording, and the edit's own result does not
 hand it back a second time.
 
+When another tab sent the close (`origin_client` names a tab other than this
+one), and this tab showed rows or queue cards or handed a question back to its
+composer, it then marks the slot (`sideClosedElsewhere`). Its panel says that
+refreshing the context in another tab cleared this side chat. That line replaces
+an error the panel showed for the closed conversation. It remains until a new
+conversation begins there (a user frame, this tab's send, or a send status for
+the slot) or this tab closes it. A close this tab sent, or one that names no
+tab, shows nothing new.
+
 ## Backend Modules
 
 ### `dashboard/ws.py` — `broadcast_side_queue`
@@ -1012,6 +1021,9 @@ action types stay `chat/<name>` and every consumer keeps importing them from
   duplicate cannot overwrite the raw text), `edit` rewrites, `cancel`/`drain`
   remove. Never resurrects a closed side.
 - `sideClose` action drops per-slot side state.
+- `sideClosedElsewhere` action marks a slot another tab closed while this tab
+  showed it (`slotSideClosedElsewhere`); `sideClose` and a new conversation
+  clear it.
 - Cleaned up with the slot's other per-slot state (`evictSlotState` in
   `store/chat/slotResidue.ts`) on `deleteSlot.fulfilled` and when the slot
   leaves the authoritative slot list.
@@ -1020,8 +1032,8 @@ action types stay `chat/<name>` and every consumer keeps importing them from
 
 `case 'chat.side_result':` dispatches `sseSideResult`,
 `case 'chat.side_queue':` dispatches `sseSideQueue` and `case 'chat.side_closed':`
-dispatches `sideClose` (see Wire Protocol), alongside the existing subagent/tool
-dispatch cases.
+dispatches `sideClose`, then `sideClosedElsewhere` for another tab's close (see
+Wire Protocol), alongside the existing subagent/tool dispatch cases.
 
 ## Security & Isolation
 

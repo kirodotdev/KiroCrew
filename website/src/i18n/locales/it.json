@@ -11971,6 +11971,7 @@
         "restore_retry": "Riprova",
         "send_blocked_not_loaded": "questa conversazione a parte non è ancora stata caricata",
         "steer_demoted_to_queue": "Il turno è terminato: messo in coda invece",
+        "closed_in_another_tab": "L’aggiornamento del contesto in un’altra scheda ha svuotato questa chat laterale",
         "thinking": "Riflessione…",
         "turn_many": "{{count}} turni",
         "turn_one": "{{count}} turno",

@@ -11637,6 +11637,7 @@
         "restore_retry": "重试",
         "send_blocked_not_loaded": "此侧边对话尚未加载完成",
         "steer_demoted_to_queue": "本轮已结束 — 已改为排队",
+        "closed_in_another_tab": "另一个标签页刷新了上下文，此随手问已清空",
         "thinking": "思考中…",
         "turn_other": "{{count}} 轮",
         "stop_failed": "无法停止侧边对话 — 请重试",

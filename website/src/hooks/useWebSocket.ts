@@ -8,7 +8,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, trigge
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -859,8 +859,9 @@ export function useWebSocket() {
             const handBackOrNoteDropped = (
               handedBackQueueIds: ReadonlySet<string> = new Set(),
               handedBackSteerIds: ReadonlySet<string> = new Set(),
-            ) => {
+            ): boolean => {
               const unowned: { queueId: string; steerId?: string }[] = []
+              let handedBack = false
               for (const entry of dropped) {
                 if (handedBackQueueIds.has(entry.queueId)
                   || (!!entry.steerId && handedBackSteerIds.has(entry.steerId))) continue
@@ -870,9 +871,11 @@ export function useWebSocket() {
                 if (content !== undefined && entry.steerId) {
                   writeSideChatDraft(slot, mergeIntoDraft(readSideChatDraft(slot), content))
                   forgetSideSteerSubmittedText(slot, entry.steerId)
+                  handedBack = true
                 } else unowned.push(entry)
               }
               noteSideQueueDroppedByClose(slot, unowned)
+              return handedBack
             }
             let closing = store.getState().chat.slotSide[closed.slot]
             // This tab clears before sending the request. Rows, a run id, or a queue
@@ -923,8 +926,16 @@ export function useWebSocket() {
               }
               if (entry.steerId) forgetSideSteerSubmittedText(closed.slot, entry.steerId)
             }
-            handBackOrNoteDropped(handedBackQueueIds, handedBackSteerIds)
+            const handedBackDropped = handBackOrNoteDropped(handedBackQueueIds, handedBackSteerIds)
             dispatch(sideClose(closed.slot))
+            // Another tab's Refresh context emptied this panel, or took back a question
+            // this tab had in the conversation. Without a word the conversation just
+            // vanishes and the question returns unsent, so the panel says why.
+            const closedByAnotherTab = typeof closed.origin_client === 'string'
+              && closed.origin_client !== '' && closed.origin_client !== TAB_ID
+            const showedConversation = !!closing && (closing.messages.length > 0 || !!closing.queue?.length)
+            const handedBack = !!closing?.releasedText || handedBackQueueIds.size > 0 || handedBackDropped
+            if (closedByAnotherTab && (showedConversation || handedBack)) dispatch(sideClosedElsewhere(closed.slot))
             break
           }
           case 'chat.thread_reply':

@@ -11971,6 +11971,7 @@
         "restore_retry": "Tentar novamente",
         "send_blocked_not_loaded": "esta conversa paralela ainda não foi carregada",
         "steer_demoted_to_queue": "O turno terminou — enfileirado em vez disso",
+        "closed_in_another_tab": "Atualizar o contexto em outra aba limpou este chat lateral",
         "thinking": "Pensando…",
         "turn_many": "{{count}} turnos",
         "turn_one": "{{count}} turno",

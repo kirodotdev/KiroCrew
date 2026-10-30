@@ -11637,6 +11637,7 @@
         "restore_retry": "再試行",
         "send_blocked_not_loaded": "このサイドの会話がまだ読み込まれていません",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
+        "closed_in_another_tab": "別のタブでコンテキストを更新したため、このサイドチャットはクリアされました",
         "thinking": "考え中…",
         "turn_other": "{{count}} ターン",
         "stop_failed": "サイドターンを停止できませんでした — もう一度お試しください",

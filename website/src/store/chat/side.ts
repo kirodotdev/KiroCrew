@@ -75,6 +75,13 @@ function noteSideQueueCardsDroppedByClose(slot: string, entries: readonly SideQu
   })))
 }
 
+/** A new side conversation begins in the slot, so neither the closed sentinel nor
+ *  the mark that another tab closed the last one applies any more. */
+function reopenClosedSide(state: ChatState, slot: string): void {
+  if (state.slotSideClosed) delete state.slotSideClosed[slot]
+  if (state.slotSideClosedElsewhere) delete state.slotSideClosedElsewhere[slot]
+}
+
 function takeSideQueueCardDroppedByClose(
   slot: string,
   matches: (card: SideQueueCardDroppedByClose) => boolean,
@@ -364,7 +371,7 @@ export const sideReducers = {
     if (steer && state.slotSideClosed[slot]) return
     // Intentional re-open (new user frame) clears the closed sentinel
     if (role === 'user' && state.slotSideClosed[slot]) {
-      delete state.slotSideClosed[slot]
+      reopenClosedSide(state, slot)
     }
     // Block late assistant chunks after sideClose
     if (!state.slotSide[slot] && state.slotSideClosed[slot]) return
@@ -634,7 +641,7 @@ export const sideReducers = {
     // path too, whose test stores seed only the fields they exercise.
     if (!state.slotSide?.[slot]) {
       if (error == null && notice == null) return
-      if (state.slotSideClosed) delete state.slotSideClosed[slot]
+      reopenClosedSide(state, slot)
       const parentTurnCount = slot === state.activeSlot
         ? (state.messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant').length
         : 0
@@ -669,11 +676,21 @@ export const sideReducers = {
     noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
     delete state.slotSide[slot]
     state.slotSideClosed[safeKey(slot)] = true
+    if (state.slotSideClosedElsewhere) delete state.slotSideClosedElsewhere[slot]
     // Closed here, so this page knows the gateway holds nothing for the slot: a
     // restore read still in flight describes the conversation just closed.
     state.slotSideRestored ??= {}
     state.slotSideRestored[safeKey(slot)] = true
     if (state.slotSideReading) delete state.slotSideReading[slot]
+  },
+  /** Another tab closed the slot's side conversation while this tab showed it or held
+   *  one of its questions, so the panel says why it emptied. Applies only to a slot
+   *  `sideClose` closed, which is why it is dispatched after it. */
+  sideClosedElsewhere(state: ChatState, action: PayloadAction<string>) {
+    const slot = action.payload
+    if (isUnsafeKey(slot) || !state.slotSideClosed?.[slot]) return
+    state.slotSideClosedElsewhere ??= {}
+    state.slotSideClosedElsewhere[safeKey(slot)] = true
   },
   /** A restore read of the slot's side conversation started (`reading: true`), or
    *  failed (`reading: false`). Only while one is in flight does the panel keep an
@@ -757,7 +774,7 @@ export const sideReducers = {
   sideOptimisticAppend(state: ChatState, action: PayloadAction<{ slot: string; message: SideMessage }>) {
     const { slot, message } = action.payload
     if (isUnsafeKey(slot)) return
-    if (state.slotSideClosed[slot]) delete state.slotSideClosed[slot]
+    reopenClosedSide(state, slot)
     const madeEarlier = !!state.slotSide[slot]
     if (!state.slotSide[slot]) {
       const parentTurnCount = slot === state.activeSlot
