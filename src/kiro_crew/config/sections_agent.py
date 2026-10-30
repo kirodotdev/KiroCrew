@@ -41,6 +41,7 @@ from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -249,6 +250,25 @@ class AgentConfig:
             # Same no-enum reasoning as acp_backend above: the live selectable
             # set comes from the registry via resolve_selected_backend, never a
             # frozen literal.
+        ),
+    )
+    acp_failover: "AcpFailoverConfig" = field(
+        default_factory=AcpFailoverConfig.disabled,
+        metadata=_meta(
+            "ACP backend failover",
+            "Opt-in, off-by-default policy that retries a sub-agent on another "
+            "harness when its chosen backend is unavailable. An object with "
+            "'enabled' (bool), 'chain' (ordered list of selectable backend ids "
+            "tried in order), and optional 'triggers' (which terminal "
+            "availability verdicts cause a hop: usage_limit, auth, "
+            "backend_not_installed, backend_restart_required). A hop only ever "
+            "goes to another explicit selectable backend, never a silent Kiro "
+            "fallback; a transient fault is never a trigger (that is the "
+            "same-backend retry ladder's job). Absent means no failover.",
+            # No enum: 'chain' holds selectable backend ids, whose live set comes
+            # from the registry, and 'triggers' is validated against the terminal
+            # verdict set in AcpFailoverConfig.from_raw — a frozen literal here
+            # would drift from both, the same hazard acp_backend documents.
         ),
     )
     kas_bundle: bool = field(
