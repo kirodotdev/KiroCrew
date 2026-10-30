@@ -9102,8 +9102,6 @@
       "stopped_responding_it_ll_reconnect_automatically": "응답을 멈췄습니다.\n 복구되면 자동으로 다시 연결됩니다 — 지금 새로 고쳐도 됩니다.",
       "the_agent_started_a_local_preview_load_it_to_vie": "에이전트가 로컬 미리 보기를 시작했습니다. 이 패널에서 사이트를 보려면 불러오세요.",
       "the_server_at": "서버:",
-      "browser_view_can_t_load_its_files_here": "브라우저 보기가 여기서 파일을 불러오지 못하는 것 같습니다",
-      "a_sign_in_proxy_refuses_the_view_s_files": "보기의 파일이 쿠키 없이는 거부되었지만 쿠키가 있으면 응답했습니다. 대시보드 앞에 있는 무언가(로그인 프록시나 터널 등)가 모든 요청에서 쿠키를 확인하는 것이 원인일 수 있습니다. 보기는 격리된 프레임에서 실행되어 그 쿠키를 보낼 수 없습니다. 그런 경우라면 직접 SSH 포트 포워딩으로 대시보드에 접속하세요.",
       "this_url_is_the_dashboard_s_own_server_which_ref": "이 URL은 대시보드 자체의 서버이며 삽입이 허용되지 않습니다. 대신 개발 서버 URL을 입력하세요.",
       "web_preview": "웹 미리 보기",
       "annotate": "주석",
@@ -9145,7 +9143,8 @@
       "annotate_clear_confirm_other": "메모 {{count}}개를 지우시겠습니까?",
       "annotate_click_to_edit": "클릭하여 이 메모 편집",
       "annotate_note_for_n": "표시 {{n}}의 메모",
-      "annotate_added_ack": "메시지 입력란에 추가했습니다 — 메시지를 보내기 전에는 전송되지 않습니다"
+      "annotate_added_ack": "메시지 입력란에 추가했습니다 — 메시지를 보내기 전에는 전송되지 않습니다",
+      "try_again": "다시 시도"
     },
     "welcomeView": {
       "incognito": "시크릿",
@@ -12489,7 +12488,7 @@
         "sign_in_not_saved": "{{host}}의 이번 로그인에만 쓰고 바로 버려요. 저장하지 않아요.",
         "take_over_instead_hint": "패스키나 퍼즐인가요?",
         "take_over_instead": "페이지 직접 조작",
-        "error_no_field": "이 화면에서 입력할 곳을 찾지 못했어요. 직접 조작해서 페이지에서 마무리하세요.",
+        "error_no_field": "Kiro가 이 화면에서 입력할 곳을 찾지 못했어요. 직접 조작해서 페이지에서 마무리하세요.",
         "secure_sign_in": "안전한 로그인",
         "enter": "입력",
         "confirm_then": "그다음: Kiro가 ‘{{button}}’을 한 번 누릅니다",

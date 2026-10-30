@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 
 import { browserLiveStore } from '../../hooks/useBrowserLive'
+import { createImeLatch, type ImeLatch } from '../../hooks/useImeGuard'
 import type { DecodedBrowserFrame } from '../../hooks/useBrowserLive.frame'
 import {
   diffToEvents, focusOfReply, isHandBackKey, isSwipe, keyboardHints, keyToEvent, pointerToEvent,
@@ -258,6 +259,10 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
   // else closes it again.
   const proxyRef = useRef<HTMLInputElement>(null)
   const proxyDown = useRef(new Set<string>())
+  /** The shared IME latch: WebKit's candidate-commit Enter arrives after
+   *  `compositionend` with `isComposing` false, so only the latch can keep it
+   *  from reaching the page as a real Enter. */
+  const imeRef = useRef<ImeLatch | null>(null)
   /** The proxy's value as the page last heard it; the next edit is diffed against it. */
   const proxySent = useRef(PROXY_FILL)
   const tapSeq = useRef(0)
@@ -429,6 +434,7 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     if (!interactive) return
     if (isHandBackKey(e.key)) { e.preventDefault(); proxyRef.current?.blur(); onHandBack?.(); return }
     if (!proxyKeyIsForwarded(e.nativeEvent)) return
+    if (imeRef.current && !imeRef.current.claimSyntheticKey(e)) return
     e.preventDefault()
     proxyDown.current.add(e.code || e.key)
     void sendInOrder(keyToEvent('down', e.nativeEvent))
@@ -448,6 +454,8 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     if (!p) return
     if (!interactive) { if (document.activeElement === p) p.blur(); resetProxy(); return }
     let composing = false
+    const ime = createImeLatch()
+    imeRef.current = ime
     let commitTimer: ReturnType<typeof setTimeout> | null = null
     /** Send what changed since the page last heard; refill once the IME lets go. */
     const syncProxy = () => {
@@ -463,9 +471,9 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
       if (!composing && wordDone) resetProxy()
     }
     const onInput = () => syncProxy()
-    const onCompositionStart = () => { composing = true }
-    const onCompositionEnd = () => {
+    const onCompositionEnd = (e: CompositionEvent) => {
       composing = false
+      ime.onCompositionEnd(e.data)
       // Safari sends its last input after compositionend, Chrome before: sync once
       // it has. A committed word is final (the IME corrects inside the
       // composition), so the proxy forgets it.
@@ -482,9 +490,11 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     const onBlur = () => {
       proxyDown.current.clear()
       composing = false
+      ime.reset()
       if (commitTimer) { clearTimeout(commitTimer); commitTimer = null }
       resetProxy()
     }
+    const onCompositionStart = () => { composing = true; ime.onCompositionStart() }
     p.addEventListener('input', onInput)
     p.addEventListener('compositionstart', onCompositionStart)
     p.addEventListener('compositionend', onCompositionEnd)
@@ -495,6 +505,8 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
       p.removeEventListener('compositionend', onCompositionEnd)
       p.removeEventListener('blur', onBlur)
       if (commitTimer) clearTimeout(commitTimer)
+      ime.reset()
+      if (imeRef.current === ime) imeRef.current = null
       resetProxy()
     }
   }, [interactive, sendInOrder])

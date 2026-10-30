@@ -22,7 +22,6 @@ import {
 } from './webPreviewPanelUrl'
 import { useWebPreviewPanelAnnotate } from './useWebPreviewPanelAnnotate'
 import { useFrameNavigationBlock } from './useFrameNavigationBlock'
-import { useRelayCookieRefusal } from './useRelayCookieRefusal'
 import WebPreviewPanelNativeSurface from './WebPreviewPanelNativeSurface'
 
 import { i18nT } from '../i18n/t'
@@ -494,13 +493,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     framed,
     !!url && allowed === true && !selfOrigin && !pending && active,
     reloadKey,
-  )
-  // The relay path's own failure: a cookie-checking front door refuses the
-  // opaque-origin frame's asset fetches, so the view never boots (#23180).
-  const viewCookieRefused = useRelayCookieRefusal(
-    viewUrl || '',
-    viewIsRelay && viewRunning && showBrowserView && active,
-    viewProbeKey,
   )
 
   /**

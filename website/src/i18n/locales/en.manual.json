@@ -3542,8 +3542,6 @@
       "responsive_desktop": "Responsive (desktop)",
       "can_t_preview_this_dashboard_here": "Can't preview this dashboard here",
       "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead.",
-      "browser_view_can_t_load_its_files_here": "Browser view probably can't load its files here",
-      "a_sign_in_proxy_refuses_the_view_s_files": "The view's files were refused without a cookie but answered with one. A likely cause is something in front of the dashboard, like a sign-in proxy or tunnel, that checks a cookie on every request. The view runs in a locked-down frame that can't send that cookie. If that is the case, reach the dashboard over a direct SSH port forward instead.",
       "some_pages_refuse_embedding_and_appear_blank": "Note: Some pages don't allow embedding and appear blank here.",
       "frame_navigation_blocked_title": "This page can't open inside the preview",
       "frame_navigation_blocked_body": "Some pages, like Google or GitHub sign-in, won't load inside another app. Open your app in a new browser tab to continue there.",
@@ -3558,7 +3556,8 @@
       "origin_not_allowed_title": "This address is not in your local preview list",
       "origins_unavailable": "Could not read the local preview list, so nothing can be allowed right now.",
       "outside_url_body": "Open this in your Chrome, or ask Kiro. This tab previews your own dev server; Kiro’s browser shows up as a live card in the chat.",
-      "outside_url_title": "This is not a local address"
+      "outside_url_title": "This is not a local address",
+      "try_again": "Try again"
     },
     "welcomeView": {
       "incognito": "Incognito",

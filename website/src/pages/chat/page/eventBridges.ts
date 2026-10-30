@@ -126,6 +126,8 @@ export function useChatEventBridges({
   const runsHere = useSlotRunsHere(activeSlot)
   const runsHereRef = useRef(runsHere)
   runsHereRef.current = runsHere
+  const activeSlotRef = useRef(activeSlot)
+  activeSlotRef.current = activeSlot
   const runInTerminalScope = useRunInTerminalBridge({
     queryClient,
     showActionError,

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import i18next from 'i18next'
 import '../i18n/all'
 
@@ -136,7 +136,9 @@ describe('BrowserLiveCard faces', () => {
     expect(canvas).toHaveAttribute('data-interactive', 'true')
     // Typing goes to the browser, not to the transcript.
     fireEvent.keyDown(canvas, { key: 'a', code: 'KeyA' })
-    expect(writes.input).toHaveBeenCalledWith(S, expect.objectContaining({ type: 'key', action: 'down', key: 'a', text: 'a' }))
+    // Keystrokes go out one at a time on a promise chain, so the send lands a
+    // microtask later.
+    await waitFor(() => expect(writes.input).toHaveBeenCalledWith(S, expect.objectContaining({ type: 'key', action: 'down', key: 'a', text: 'a' })))
     fireEvent.keyDown(canvas, { key: 'Escape', code: 'Escape' })
     expect(writes.release).toHaveBeenCalledWith(S)
     expect(writes.input).toHaveBeenCalledTimes(1)

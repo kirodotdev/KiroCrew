@@ -121,9 +121,9 @@ export function BrowserStatusCard({
       ? 'border-warn bg-warn-subtle'
       : 'border-border bg-bg-elevated'
   const iconFrame = red
-    ? 'bg-danger text-white'
+    ? 'bg-danger text-danger-fg'
     : yellow
-      ? 'bg-warn text-white'
+      ? 'bg-warn text-warn-fg'
       : 'bg-accent-subtle text-accent'
 
   return (

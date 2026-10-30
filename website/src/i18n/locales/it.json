@@ -9378,8 +9378,6 @@
       "stopped_responding_it_ll_reconnect_automatically": "ha smesso di rispondere.\n              Si riconnetterà automaticamente quando sarà di nuovo attivo — oppure ricarica adesso.",
       "the_agent_started_a_local_preview_load_it_to_vie": "L'agente ha avviato un'anteprima locale. Caricala per visualizzare il sito in questo pannello.",
       "the_server_at": "Il server su",
-      "browser_view_can_t_load_its_files_here": "Probabilmente la vista del browser non può caricare i suoi file qui",
-      "a_sign_in_proxy_refuses_the_view_s_files": "I file della vista sono stati rifiutati senza cookie ma hanno risposto con il cookie. Una causa probabile è qualcosa davanti alla dashboard, come un proxy di accesso o un tunnel, che controlla un cookie a ogni richiesta. La vista gira in un riquadro isolato che non può inviare quel cookie. Se è così, raggiungi la dashboard con un inoltro di porta SSH diretto.",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Questo URL è il server della dashboard stessa, che rifiuta di essere incorporato. Inserisci invece l'URL di un server di sviluppo.",
       "web_preview": "Anteprima web",
       "annotate": "Annota",
@@ -9425,7 +9423,8 @@
       "annotate_clear_confirm_many": "Cancellare {{count}} note?",
       "annotate_click_to_edit": "Fai clic per modificare questa nota",
       "annotate_note_for_n": "Nota per il segnaposto {{n}}",
-      "annotate_added_ack": "Aggiunto al campo del messaggio — nulla viene inviato finché non invii il messaggio"
+      "annotate_added_ack": "Aggiunto al campo del messaggio — nulla viene inviato finché non invii il messaggio",
+      "try_again": "Riprova"
     },
     "welcomeView": {
       "incognito": "Incognito",

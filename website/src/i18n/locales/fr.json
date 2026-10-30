@@ -9378,8 +9378,6 @@
       "stopped_responding_it_ll_reconnect_automatically": "ne répond plus.\n              Il se reconnectera automatiquement dès qu'il sera de retour — ou rechargez maintenant.",
       "the_agent_started_a_local_preview_load_it_to_vie": "L'agent a démarré un aperçu local. Chargez-le pour voir le site dans ce panneau.",
       "the_server_at": "Le serveur à l'adresse",
-      "browser_view_can_t_load_its_files_here": "La vue du navigateur ne peut probablement pas charger ses fichiers ici",
-      "a_sign_in_proxy_refuses_the_view_s_files": "Les fichiers de la vue ont été refusés sans cookie mais ont répondu avec. Une cause probable est un élément placé devant le tableau de bord, comme un proxy de connexion ou un tunnel, qui vérifie un cookie à chaque requête. La vue tourne dans un cadre isolé qui ne peut pas envoyer ce cookie. Si c'est le cas, accède plutôt au tableau de bord via une redirection de port SSH directe.",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement.",
       "web_preview": "Aperçu web",
       "annotate": "Annoter",
@@ -9425,7 +9423,8 @@
       "annotate_clear_confirm_many": "Effacer {{count}} notes ?",
       "annotate_click_to_edit": "Cliquez pour modifier cette note",
       "annotate_note_for_n": "Note pour le repère {{n}}",
-      "annotate_added_ack": "Ajouté à la zone de message — rien n’est envoyé avant que vous n’envoyiez le message"
+      "annotate_added_ack": "Ajouté à la zone de message — rien n’est envoyé avant que vous n’envoyiez le message",
+      "try_again": "Réessayer"
     },
     "welcomeView": {
       "incognito": "Incognito",

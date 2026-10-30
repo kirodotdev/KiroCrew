@@ -1761,7 +1761,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Command Center (the Dashboard tab is the one dashboard entrance here),
     // Artifacts — pinned on the chat page, but this page's standing set is
     // Dashboard + Files —, Subagents, Workflows, Git and the diagnostics group
-    // (Logs, Context, Crew log). Terminal, Browser, Side Chat and app tabs
+    // (Logs, Context, Crew log). Terminal, Preview, Side Chat and app tabs
     // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
     expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
@@ -1794,7 +1794,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser']) {
+    for (const name of ['Side Chat', 'Terminal', 'Preview']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
     for (const name of [

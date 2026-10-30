@@ -65,6 +65,8 @@ const iso = (h: string): string =>
 
 /** The quick-pick target as it reaches the frame and the hint's link. */
 const PICKED = `http://${iso('localhost')}:3000/`
+/** The address as the person picked it: links outside the dashboard keep it. */
+const PICKED_AS_TYPED = 'http://localhost:3000/'
 
 beforeEach(() => {
   localStorage.clear()
@@ -115,7 +117,7 @@ describe('WebPreviewPanel - a framed preview says why it may be blank', () => {
     expect(link.target).toBe('_blank')
     // The PRISTINE url, not the iframe's cache-busted src: the reader is being
     // handed the page's real address to open outside the dashboard.
-    expect(link.getAttribute('href')).toBe(PICKED)
+    expect(link.getAttribute('href')).toBe(PICKED_AS_TYPED)
     expect(link.getAttribute('href')).not.toContain('_kcreload')
   })
 
@@ -126,7 +128,7 @@ describe('WebPreviewPanel - a framed preview says why it may be blank', () => {
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.src).toContain('_kcreload')
     const link = screen.getByTestId(HINT).querySelector('a') as HTMLAnchorElement
-    expect(link.getAttribute('href')).toBe(PICKED)
+    expect(link.getAttribute('href')).toBe(PICKED_AS_TYPED)
   })
 
   it('shows the hint for a device-sized frame too', async () => {

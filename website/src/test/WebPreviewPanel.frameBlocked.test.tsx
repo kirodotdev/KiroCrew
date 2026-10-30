@@ -47,6 +47,8 @@ const HINT = 'web-preview-frame-hint'
 const iso = (h: string): string =>
   window.location.hostname === h ? (h === 'localhost' ? '127.0.0.1' : 'localhost') : h
 const PICKED = `http://${iso('localhost')}:3000/`
+/** The address as the person picked it: links outside the dashboard keep it. */
+const PICKED_AS_TYPED = 'http://localhost:3000/'
 
 /** Replay the event Chromium fires at the policy-owning document. */
 function violate(
@@ -98,7 +100,7 @@ describe('WebPreviewPanel - a refused in-frame navigation is explained', () => {
     // The way out opens the APP (pristine url), where sign-in runs top-level,
     // not the sign-in provider the frame was refused, and says so.
     const link = within(notice).getByRole('link', { name: 'Open in browser' })
-    expect(link.getAttribute('href')).toBe(PICKED)
+    expect(link.getAttribute('href')).toBe(PICKED_AS_TYPED)
     expect(link.getAttribute('target')).toBe('_blank')
   })
 

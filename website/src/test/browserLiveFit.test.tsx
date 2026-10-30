@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import BrowserLiveCardCanvas from '../pages/chat/BrowserLiveCardCanvas'
 import { browserLiveStore } from '../hooks/useBrowserLive'
@@ -114,7 +114,7 @@ describe('canvas reports the frame size', () => {
     expect(onFrameSize).toHaveBeenLastCalledWith({ w: 1280, h: 800 })
   })
 
-  it('a click in a letterboxed box lands on the drawn frame, a side-bar press is dropped', () => {
+  it('a click in a letterboxed box lands on the drawn frame, a side-bar press is dropped', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 1000, height: 400, right: 1000, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
     render(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive aria-label="frame" />)
     act(() => browserLiveStore.applyFrame(frameOf(1, 1280, 800)))
@@ -122,6 +122,8 @@ describe('canvas reports the frame size', () => {
     fireEvent.pointerDown(c, { clientX: 50, clientY: 200, button: 0, pointerId: 1 })
     expect(input).not.toHaveBeenCalled()
     fireEvent.pointerDown(c, { clientX: 500, clientY: 200, button: 0, pointerId: 1 })
+    // A press goes out on the ordered send chain, a microtask later.
+    await waitFor(() => expect(input).toHaveBeenCalled())
     expect(input.mock.calls[0][1]).toMatchObject({ action: 'down', x: 640, y: 400 })
   })
 })
