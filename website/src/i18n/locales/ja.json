@@ -15988,7 +15988,10 @@
       "jobs_table": "スケジュール済みのジョブ",
       "type_crewmate": "クルーメイト",
       "filter_by_crewmate": "クルーメイトで絞り込み",
-      "all_crewmates": "すべてのクルーメイト"
+      "all_crewmates": "すべてのクルーメイト",
+      "details_tab": "詳細",
+      "logs_tab": "ログ",
+      "delete_n_selected_jobs_other": "選択した {{count}} 件のジョブを削除"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",

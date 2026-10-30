@@ -16270,7 +16270,11 @@
       "jobs_table": "Geplante Jobs",
       "type_crewmate": "Crew-Kamerad",
       "filter_by_crewmate": "Nach Crew-Kamerad filtern",
-      "all_crewmates": "Alle Crew-Kameraden"
+      "all_crewmates": "Alle Crew-Kameraden",
+      "details_tab": "Details",
+      "logs_tab": "Protokolle",
+      "delete_n_selected_jobs_one": "{{count}} ausgewählten Job löschen",
+      "delete_n_selected_jobs_other": "{{count}} ausgewählte Jobs löschen"
     },
     "servicesTab": {
       "channels": "Chat-Plattformen",

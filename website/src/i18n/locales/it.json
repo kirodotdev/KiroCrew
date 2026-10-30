@@ -16552,7 +16552,12 @@
       "jobs_table": "Attività pianificate",
       "type_crewmate": "Compagno",
       "filter_by_crewmate": "Filtra per compagno",
-      "all_crewmates": "Tutti i compagni"
+      "all_crewmates": "Tutti i compagni",
+      "details_tab": "Dettagli",
+      "logs_tab": "Log",
+      "delete_n_selected_jobs_one": "Elimina {{count}} job selezionato",
+      "delete_n_selected_jobs_many": "Elimina {{count}} job selezionati",
+      "delete_n_selected_jobs_other": "Elimina {{count}} job selezionati"
     },
     "servicesTab": {
       "channels": "Piattaforme di chat",

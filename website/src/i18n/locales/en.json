@@ -9214,7 +9214,11 @@
       "owning_session": "Owning session",
       "type_crewmate": "Mate",
       "filter_by_crewmate": "Filter by mate",
-      "all_crewmates": "All mates"
+      "all_crewmates": "All mates",
+      "details_tab": "Details",
+      "logs_tab": "Logs",
+      "delete_n_selected_jobs_one": "Delete {{count}} selected job",
+      "delete_n_selected_jobs_other": "Delete {{count}} selected jobs"
     },
     "servicesTab": {
       "connected": "Connected",

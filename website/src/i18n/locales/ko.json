@@ -15988,7 +15988,10 @@
       "jobs_table": "예약된 작업",
       "type_crewmate": "크루메이트",
       "filter_by_crewmate": "크루메이트로 필터",
-      "all_crewmates": "모든 크루메이트"
+      "all_crewmates": "모든 크루메이트",
+      "details_tab": "세부 정보",
+      "logs_tab": "로그",
+      "delete_n_selected_jobs_other": "선택한 작업 {{count}}개 삭제"
     },
     "servicesTab": {
       "channels": "채팅 플랫폼",

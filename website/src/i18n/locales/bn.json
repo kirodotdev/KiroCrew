@@ -16270,7 +16270,11 @@
       "jobs_table": "নির্ধারিত জব",
       "type_crewmate": "ক্রুমেট",
       "filter_by_crewmate": "ক্রুমেট অনুযায়ী ফিল্টার",
-      "all_crewmates": "সব ক্রুমেট"
+      "all_crewmates": "সব ক্রুমেট",
+      "details_tab": "বিস্তারিত",
+      "logs_tab": "লগ",
+      "delete_n_selected_jobs_one": "{{count}}টি নির্বাচিত জব মুছুন",
+      "delete_n_selected_jobs_other": "{{count}}টি নির্বাচিত জব মুছুন"
     },
     "servicesTab": {
       "channels": "চ্যাট প্ল্যাটফর্ম",
