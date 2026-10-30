@@ -321,13 +321,16 @@ class KiroPrerequisiteService:
 
     @staticmethod
     def _kas_bundle_route() -> bool:
-        """Whether ``agent.kas_bundle`` is on, read from the config at call time."""
-        from kiro_crew.config import KiroCrewConfig
+        """The shared bundle-route predicate, ``agent_sdk.kas_bundle.kas_bundle_route``.
 
-        try:
-            return bool(KiroCrewConfig.load().agent.kas_bundle)
-        except Exception:
-            return False
+        Its one caller already requires ``backend == kas``, and both callers of that
+        method pass the CONFIGURED backend, so the predicate's backend half is
+        settled here and the answer equals ``agent.kas_bundle``. Unreadable config
+        answers False, as before.
+        """
+        from kiro_crew.agent_sdk import kas_bundle
+
+        return kas_bundle.kas_bundle_route()
 
     async def record_independent_backend_setup(self, backend: str) -> bool:
         """Persist first-run completion after the configured harness is usable.
