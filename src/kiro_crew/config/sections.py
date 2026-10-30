@@ -182,6 +182,7 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     worker_session_defaults,
 )
 from kiro_crew.config.sections_browser import (  # noqa: F401
+    _WARNED_BROWSER_VALUES,
     BROWSER_CHOICE_AUTO,
     BROWSER_CHOICES,
     CREDENTIAL_DOMAIN_PATTERN,
@@ -190,10 +191,18 @@ from kiro_crew.config.sections_browser import (  # noqa: F401
     LIVE_MAX_FPS_DEFAULT,
     LIVE_QUALITIES,
     LIVE_QUALITY_AUTO,
+    RECORDING_MB_MAX,
+    RECORDING_MB_MIN,
+    RECORDING_SESSION_MB_DEFAULT,
+    RECORDING_TOTAL_MB_DEFAULT,
     BrowserConfig,
     BrowserCredentialsConfig,
     BrowserLiveConfig,
     BrowserRecordingConfig,
+    _validated_choice,
+    _validated_max_fps,
+    _validated_quality,
+    _warn_once,
     browser_choice_resolution,
     coerce_credential_domains,
     live_max_fps_resolution,
@@ -533,17 +542,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 if TYPE_CHECKING:  # the owner-defined names this module serves, for type checkers
-    from kiro_crew.config.sections_browser import (  # noqa: F401
-        _WARNED_BROWSER_VALUES,
-        RECORDING_MB_MAX,
-        RECORDING_MB_MIN,
-        RECORDING_SESSION_MB_DEFAULT,
-        RECORDING_TOTAL_MB_DEFAULT,
-        _validated_choice,
-        _validated_max_fps,
-        _validated_quality,
-        _warn_once,
-    )
     from kiro_crew.config.sections_stt import (  # noqa: F401
         _LAST_WARNED_TRANSCRIBE_LANGUAGES,
         _LAST_WARNED_TRANSCRIBE_VOCABULARY,

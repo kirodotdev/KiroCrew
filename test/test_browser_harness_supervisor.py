@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tmpdir_helpers import SHORT_TMP_PREFIX
 
 from kiro_crew import sandbox_leaves, sandbox_precreate
 from kiro_crew.browser_harness import HARNESS_VERSION, helper_worker, supervisor
@@ -196,7 +197,10 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
         "buf=b''\n"
         "while not buf.endswith(b'\\0'): buf+=os.read(3,1)\n"
         "req=json.loads(buf[:-1])\n"
-        "os.write(4, json.dumps({'id':req['id'],'result':{'product':'fake/1'}}).encode()+b'\\0')\n",
+        "os.write(4, json.dumps({'id':req['id'],'result':{'product':'fake/1'}}).encode()+b'\\0')\n"
+        # Like Chromium, hold fd 3 open until the gateway closes its end: exiting right
+        # after the reply could close fd 3 before ``send`` drains and fail it as reset.
+        "os.close(4)\n" "while os.read(3,4096): pass\n",
     ]
     proc, upstream = await sup._launch_chromium_pipe(fake_chromium)
     try:
@@ -206,7 +210,10 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
         assert int(argv[4]) >= supervisor._FIRST_SAFE_FD
         assert int(argv[5]) >= supervisor._FIRST_SAFE_FD
         await upstream.send(json.dumps({"id": 7, "method": "Browser.getVersion"}))
-        replies = [raw async for raw in upstream.messages()]
+        replies = []
+        async for raw in upstream.messages():
+            replies.append(raw)
+            break
     finally:
         await upstream.close()
         await supervisor._stop_process(proc)
@@ -551,7 +558,8 @@ def test_the_socket_path_guard_measures_the_resolved_home(tmp_path: Path) -> Non
     deep.mkdir()
     # pytest's tmp_path is itself too long for the premise; the SHORT side of the
     # link lives directly under /tmp and is removed below.
-    short_root = Path(tempfile.mkdtemp(prefix="kb", dir="/tmp"))
+    # The run-owned short root is itself too long here, so this uses the shared /tmp.
+    short_root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "bh-", dir="/tmp"))
     try:
         link = short_root / "k"
         link.symlink_to(deep, target_is_directory=True)

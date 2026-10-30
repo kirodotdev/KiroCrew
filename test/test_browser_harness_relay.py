@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -193,6 +194,11 @@ async def test_without_the_secret_the_relay_is_a_404_on_every_path(relay: CdpRel
     assert relay.forwarded_up == 0
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="--remote-debugging-pipe is POSIX-only: on Windows the supervisor launches "
+    "Chromium on a loopback port (_launch_chromium_port) and never builds a pipe upstream",
+)
 @pytest.mark.asyncio
 async def test_a_pipe_upstream_carries_nul_terminated_cdp_both_ways() -> None:
     """The ``--remote-debugging-pipe`` transport, with a coroutine as the browser.

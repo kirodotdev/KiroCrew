@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.doctor_checks import install as doctor_install
+from kiro_crew.doctor_checks import render
 
 
 def test_doctor_says_nothing_when_no_leftover_prefix_exists(
@@ -32,5 +33,7 @@ def test_doctor_names_a_leftover_prefix_and_leaves_it_alone(
     out = capsys.readouterr().out
     assert out.count("\n") == 1
     assert "browser:" in out and "left over from an earlier version" in out
-    assert str(leftover) in out
+    # The doctor prints paths through ``render._safe_display`` (``repr``), so a Windows
+    # path shows with escaped backslashes; compare against that rendering.
+    assert render._safe_display(str(leftover)) in out
     assert marker.is_dir(), "doctor reports the directory; it never deletes it"

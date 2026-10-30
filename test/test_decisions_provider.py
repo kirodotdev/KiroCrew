@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import json
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -100,7 +101,21 @@ def no_network(monkeypatch):
     def _refuse(*_args, **_kwargs):
         pytest.fail("a decision path opened a network connection")
 
-    monkeypatch.setattr(socket.socket, "connect", _refuse)
+    real_connect = socket.socket.connect
+
+    def _connect(self, *args, **kwargs):
+        # On Windows every new event loop (``asyncio.run`` in each test) builds its
+        # self-pipe with ``socket.socketpair()``, whose stdlib fallback connects two
+        # loopback sockets. That is the loop's own plumbing, not a decision path.
+        caller = sys._getframe(1)
+        if caller.f_globals.get("__name__") == "socket" and caller.f_code.co_name in (
+            "_fallback_socketpair",
+            "socketpair",
+        ):
+            return real_connect(self, *args, **kwargs)
+        return _refuse()
+
+    monkeypatch.setattr(socket.socket, "connect", _connect)
     monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
     monkeypatch.setattr(socket, "create_connection", _refuse)
 
