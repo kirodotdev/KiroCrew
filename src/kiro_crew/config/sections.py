@@ -532,6 +532,17 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 if TYPE_CHECKING:  # the owner-defined names this module serves, for type checkers
+    from kiro_crew.config.sections_browser import (  # noqa: F401
+        _WARNED_BROWSER_VALUES,
+        RECORDING_MB_MAX,
+        RECORDING_MB_MIN,
+        RECORDING_SESSION_MB_DEFAULT,
+        RECORDING_TOTAL_MB_DEFAULT,
+        _validated_choice,
+        _validated_max_fps,
+        _validated_quality,
+        _warn_once,
+    )
     from kiro_crew.config.sections_stt import (  # noqa: F401
         _LAST_WARNED_TRANSCRIBE_LANGUAGES,
         _LAST_WARNED_TRANSCRIBE_VOCABULARY,

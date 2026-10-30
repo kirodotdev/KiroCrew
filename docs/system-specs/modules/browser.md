@@ -804,6 +804,9 @@ snapshot.
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
 under the route's fence (the route holds the op until the hand-back, see Takeover).
+Before each page read or input and before the card follows a tab, the current URL
+passes the same committed-URL gate; a refused link landing is blanked and answers
+`redirect_refused`, while an empty `about:blank` recovery tab remains usable.
 A refusal is a value (`{ok: false, code}`); a transport
 failure is the route's `browser_error`; `timeout` is the route's budget (20 s, 75 s
 for the slow ops, each plus the decision hooks' 12 s headroom); `browser_busy` is the bounded wait for another chat's op on the
@@ -985,8 +988,9 @@ entry byte for byte, after the same refusals and with userinfo refused outright;
 the gateway's own API port is refused even when listed. The list is read fresh
 per call and fails closed to empty. The agent cannot extend it: `config.json` is
 read-only inside the sandbox and `PUT /api/dashboard/config` does not accept the
-key. **Accepted residual:** once a listed page is open, `click`/`back` follow
-whatever that page links to, since only `navigate` is URL-gated.
+key. Link and history landings are checked again before a page read, input or
+live-card follow with the same gate, so an unlisted private destination is blanked
+and refused rather than being operated through a link.
 
 Passwords never pass the model: `type` refuses a password field, the frame masks
 one, and logins happen during takeover.

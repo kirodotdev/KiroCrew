@@ -158,8 +158,8 @@ NAV_REFRESH_BUDGET_SECS = budgets.CREDENTIAL_REPULL_S
 #: forever). ``--use-mock-keychain`` keeps the key in memory; ``--password-store=basic``
 #: is the same guard for a Linux desktop keyring (GNOME Keyring / KWallet unlock
 #: prompt). The profile is Kiro's hidden ``browser-profile`` leaf, not the person's,
-#: so nothing of theirs is left less protected. Playwright and ``dashboard_verify``
-#: pass the same pair for the same reason.
+#: so nothing of theirs is left less protected. Playwright and the dashboard page
+#: check pass the same pair for the same reason.
 _CHROMIUM_PIPE_ARG = "--remote-debugging-pipe"
 _CHROMIUM_PORT_ARG = "--remote-debugging-port=0"
 _CHROMIUM_ARGS: tuple[str, ...] = (

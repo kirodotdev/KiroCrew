@@ -32,7 +32,7 @@ class FakeBrowser:
 
     def __init__(self, tmp_path: Path) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.page: dict[str, Any] = {}
+        self.page: dict[str, Any] = {"askedValues": 0, "passwordBoxes": 0}
         self.helpers: dict[str, Any] = {}
         self.steps: list[str] = []
         self.held = False
@@ -41,6 +41,8 @@ class FakeBrowser:
         self.tmp = tmp_path
 
     async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "current_tab" and helper not in self.helpers:
+            return {"url": "https://example.com/"}
         self.calls.append((helper, kwargs))
         if helper == "js":
             expression = kwargs["expression"]
@@ -708,3 +710,32 @@ def test_the_default_context_admits_every_landing_and_the_route_wires_the_real_g
     assert url_gate.target_is_allowed_local("http://localhost:5173/", listed, 6776)
     assert not url_gate.target_is_allowed_local("http://localhost:5173/", listed, None)
     assert not url_gate.target_is_allowed_local("http://localhost:6776/", listed, 6776)
+
+
+@pytest.mark.parametrize("op", [op for op in ops.OPS if op not in {"navigate", "tabs", "ask"}])
+def test_current_private_page_is_refused_before_reads_actions_or_decisions(fake, op) -> None:
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = {"url": "http://127.0.0.1:5173/admin"}
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+
+    class Decisions:
+        async def run(self, *_args):
+            pytest.fail("a decision must not read a refused page")
+
+    ctx.decisions = Decisions()
+    out = run(ops.run_op(op, {"x": 1, "y": 2, "text": "x"}, ctx))
+    assert out["code"] == "redirect_refused"
+    assert fake.calls == [("current_tab", {}), ("goto", {"url": "about:blank"})]
+
+
+def test_link_to_private_page_is_refused_before_the_card_follows(fake) -> None:
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    tab = {"url": "https://example.com/"}
+    fake.helpers["current_tab"] = lambda: dict(tab)
+    fake.helpers["click"] = lambda **_kw: tab.update(url="http://169.254.169.254/latest")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["code"] == "redirect_refused"
+    assert fake.calls[-1] == ("goto", {"url": "about:blank"})

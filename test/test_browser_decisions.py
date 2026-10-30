@@ -259,7 +259,7 @@ def test_a_gated_off_seam_refuses_a_target_exactly_as_with_no_hooks(seam, tmp_pa
     assert expected["code"] == "needs_ref"
     page = FakePage()
     assert _run("click", args, _ctx(page, tmp=tmp_path)) == expected
-    assert page.calls == [] and seam.provider.calls == []
+    assert page.calls == [("current_tab", {})] and seam.provider.calls == []
 
 
 def test_no_model_chosen_does_not_even_read_the_keystone(seam, tmp_path, monkeypatch):

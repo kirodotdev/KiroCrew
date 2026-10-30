@@ -676,9 +676,9 @@ async def test_typing_into_a_cross_origin_frame_is_judged_by_that_frame(
 
 
 async def test_frame_secrets_count_toward_the_screenshot_guard(tmp_path: Path) -> None:
-    ctx = _ctx(FakeFrames(counts=1), {"askedValues": 0}, [], tmp_path)
+    ctx = _ctx(FakeFrames(counts=1), {"askedValues": 0, "passwordBoxes": 0}, [], tmp_path)
     assert (await ops.run_op("screenshot", {}, ctx))["code"] == "asked_value_on_page"
-    ctx = _ctx(FakeFrames(counts=0), {"askedValues": 0}, [], tmp_path)
+    ctx = _ctx(FakeFrames(counts=0), {"askedValues": 0, "passwordBoxes": 0}, [], tmp_path)
     assert (await ops.run_op("screenshot", {}, ctx))["ok"] is True
 
 

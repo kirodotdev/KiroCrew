@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from kiro_crew.dashboard import state as state_facade
 from kiro_crew.dashboard import websocket_hub as wh
 from kiro_crew.dashboard.state_parts import dashboard_state, slots_push
 
@@ -93,7 +94,7 @@ async def test_text_delivery_still_uses_send_str() -> None:
     assert ws.sent_bytes == [] and '"type": "browser_live"' in ws.sent_text[0]
 
 
-async def test_the_state_facade_forwards_to_the_hub() -> None:
+async def test_the_state_facade_forwards_to_the_hub(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[bytes] = []
 
     class _Hub:
@@ -105,10 +106,7 @@ async def test_the_state_facade_forwards_to_the_hub() -> None:
     assert (
         dashboard_state.DashboardState.deliver_ws_owners_bytes is slots_push.deliver_ws_owners_bytes
     )
-    original = slots_push._websocket_for
-    slots_push._websocket_for = lambda _s: _Hub()  # type: ignore[assignment]
-    try:
-        assert await slots_push.deliver_ws_owners_bytes(state, b"x") == 1  # type: ignore[arg-type]
-    finally:
-        slots_push._websocket_for = original  # type: ignore[assignment]
+    # Through the facade, so every owner that binds the name sees the stand-in.
+    monkeypatch.setattr(state_facade, "_websocket_for", lambda _s: _Hub())
+    assert await slots_push.deliver_ws_owners_bytes(state, b"x") == 1  # type: ignore[arg-type]
     assert sent == [b"x"]

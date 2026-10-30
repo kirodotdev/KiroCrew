@@ -964,6 +964,8 @@ async def test_a_screenshot_is_refused_while_an_asked_field_holds_its_value(
     async def helper(name: str, **kw: Any) -> Any:
         calls.append(name)
         if name == "js":
+            if ".passwordBoxes(" in kw["expression"]:
+                return 0
             return asked if ".askedValues(" in kw["expression"] else None
         if name == "screenshot":
             Path(kw["path"]).write_bytes(b"png")

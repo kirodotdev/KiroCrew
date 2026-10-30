@@ -23,6 +23,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew.browser_harness import live_hub as hub_mod
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.dashboard.handlers import browser_ops as mod
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +148,7 @@ async def test_result_passes_through_and_the_context_is_bound(
     assert body == {"ok": True, "result": {"ok": True, "url": "u", "title": "t", "snapshot": ""}}
     # The bind comes first: the daemon's current tab (T1, in the relay's ledger and
     # owned by nobody) is adopted by this session, then the op runs on it.
-    assert [c[0] for c in sup.calls[:2]] == ["current_tab", "js"]
+    assert [c[0] for c in sup.calls[:4]] == ["current_tab", "current_tab", "current_tab", "js"]
     assert hub_mod.get_live_hub().target_of("chat-1") == "T1"
     # The live card's glue: the hub session is keyed by the SLOT key (the
     # ``dashboard:`` transport prefix folded off), the op is a step on an open
@@ -450,7 +451,13 @@ async def test_two_chats_get_their_own_tabs_and_never_drive_each_others(
     assert ("new_tab", {"url": "about:blank"}) in sup.calls
     sup.calls.clear()
     assert (await _op("chat-a"))["ok"] is True
-    assert [c[0] for c in sup.calls[:3]] == ["current_tab", "switch_tab", "js"]
+    assert [c[0] for c in sup.calls[:5]] == [
+        "current_tab",
+        "switch_tab",
+        "current_tab",
+        "current_tab",
+        "js",
+    ]
     assert sup.calls[1][1] == {"target": "T1", "activate": False}
     assert sup.current == "T1"
     # Each card streams its own tab (the fake start_stream keeps no stream, so A's
@@ -503,22 +510,27 @@ async def test_ops_from_different_chats_run_one_at_a_time(monkeypatch: pytest.Mo
     _install(monkeypatch, sup)
     _no_stream(monkeypatch)
     gate = asyncio.Event()
+    parked = asyncio.Event()
     inner = sup.call
 
     async def slow_call(helper: str, **kwargs: Any) -> Any:
         if helper == "js":
-            await gate.wait()
+            parked.set()
+            await await_until(gate, what="release serialized browser op")
         return await inner(helper, **kwargs)
 
     sup.call = slow_call  # type: ignore[method-assign]
     first = asyncio.ensure_future(_op("chat-a"))
     second = asyncio.ensure_future(_op("chat-b"))
-    for _ in range(20):
-        await asyncio.sleep(0)
-    # A is parked inside its op; B has not even asked for the current tab.
-    assert [c[0] for c in sup.calls] == ["current_tab"]
-    gate.set()
-    assert (await first)["ok"] is True and (await second)["ok"] is True
+    try:
+        await await_until(parked, what="first browser op entered the page read")
+        await until_parked(mod._OP_LOCK, describe=lambda: "second chat awaits the browser lock")
+        # A is parked inside its op; B has not even asked for the current tab.
+        assert [c[0] for c in sup.calls] == ["current_tab"] * 3
+    finally:
+        gate.set()
+        results = await await_until(asyncio.gather(first, second), what="serialized ops")
+    assert all(result["ok"] for result in results)
     assert sup.current == "T-new1"
 
 
@@ -679,3 +691,18 @@ async def test_no_agent_op_runs_while_a_quick_ask_waits(
     hub._session(key).ask = SimpleNamespace(outcome="filled")
     resp = await mod.api_browser_op(_request({"op": "snapshot", "session_key": "k"}))
     assert json.loads(resp.body)["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_follow_current_tab_refuses_private_link_before_streaming(monkeypatch) -> None:
+    sup = _Supervisor()
+    sup.tab.update(url="http://169.254.169.254/latest", title="private contents")
+    streams = _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    hub.turn_started("k", "t")
+    out = await mod.follow_current_tab(hub, "k", sup)
+    assert out is not None and out["code"] == "redirect_refused"
+    assert streams == []
+    assert sup.calls[-1] == ("goto", {"url": "about:blank"})
+    assert hub.get("k").url == "about:blank"
+    assert hub.get("k").title == ""

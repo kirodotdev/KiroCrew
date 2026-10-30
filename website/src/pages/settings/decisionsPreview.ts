@@ -84,6 +84,14 @@ export const DECISIONS_MEMORY_POINT = 'memory.recall'
 export const DECISIONS_NUDGE_WAKE_POINT = 'nudge.wake'
 
 /**
+ * The point that helps the browser tool pick its next step (`browser_harness/decide.py`).
+ *
+ * Named here for the same cross-layer reason: the Decisions card lists it, with what
+ * it sends, so the person can see that a browser op may reach the decision model.
+ */
+export const DECISIONS_BROWSER_STEP_POINT = 'browser.step'
+
+/**
  * Config path of the sampling share. One of the six `decisions.*` values the config
  * PATCH accepts, beside the three `model_route` tiers and the two `nudge_wake` keys;
  * the address and the credential are deliberately not among them.

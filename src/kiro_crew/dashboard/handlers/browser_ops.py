@@ -319,7 +319,7 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any) -> str:
     return target
 
 
-async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> None:
+async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> dict[str, Any] | None:
     """Point the session's stream at the daemon's current tab; update the address pill.
 
     One cheap IPC call (``current_tab``) per op. A new target (first op, ``tabs
@@ -329,17 +329,17 @@ async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> None:
     """
     relay = getattr(supervisor, "relay", None)
     if relay is None:
-        return
+        return None
     try:
         tab = await supervisor.call("current_tab")
     except Exception:  # noqa: BLE001 - the card is best-effort beside the op
         logger.debug("browser live: current_tab failed", exc_info=True)
-        return
+        return None
     if not isinstance(tab, dict):
-        return
+        return None
     target = str(tab.get("targetId") or tab.get("target_id") or "")
     if not target:
-        return
+        return None
     url = str(tab.get("url") or "")
     title = str(tab.get("title") or "")
     sess = hub.get(key)
@@ -351,13 +351,19 @@ async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> None:
     owner = hub.owner_of_target(target)
     if owner not in (None, key):
         logger.debug("browser live: current tab %s belongs to %s, not streamed", target, owner)
-        return
+        return None
+    if url != "about:blank":
+        refused = await harness_ops._refuse_committed_url(build_context(key, supervisor, hub), url)
+        if refused is not None:
+            await hub.stop_stream(key)
+            hub.page_changed(key, url="about:blank", title="")
+            return refused
     if target in set(_ledgered_targets(supervisor)):
         hub.bind_target(key, target)
     stream = sess.stream if sess is not None else None
     if stream is not None and getattr(stream, "target_id", None) == target:
         hub.page_changed(key, url=url, title=title)
-        return
+        return None
     browser: dict[str, Any] = {}
     if hasattr(supervisor, "status"):
         browser = (await asyncio.to_thread(supervisor.status)).get("browser") or {}
@@ -374,6 +380,7 @@ async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> None:
         )
     except Exception:  # noqa: BLE001 - a screencast that will not start leaves the op intact
         logger.debug("browser live: start_stream failed", exc_info=True)
+    return None
 
 
 async def api_browser_op(request: web.Request) -> web.Response:
@@ -599,7 +606,9 @@ async def _fenced_op(
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
-            await follow_current_tab(hub, key, supervisor)
+            refused = await follow_current_tab(hub, key, supervisor)
+            if refused is not None:
+                return refused
             from kiro_crew.dashboard.handlers.browser_ask import run_ask
 
             result = await asyncio.wait_for(run_ask(hub, key, args), timeout=OP_TIMEOUT_S)
@@ -626,7 +635,9 @@ async def _fenced_op(
         return {"ok": False, "code": "browser_error", "error": _safe(exc)}
     _audit(request, "allowed")
     if not hub.in_control(key):
-        await follow_current_tab(hub, key, supervisor)
+        refused = await follow_current_tab(hub, key, supervisor)
+        if refused is not None:
+            return refused
     return result
 
 

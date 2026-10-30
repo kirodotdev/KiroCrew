@@ -42,7 +42,7 @@ import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -293,6 +293,24 @@ def format_outline(nodes: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+class _PageRefused(Exception):
+    """A URL refusal carried across an op's nested page reads."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        super().__init__(result["error"])
+
+
+async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
+    """Judge the active tab before reading it, including a link's landing."""
+    tab = await ctx.helper("current_tab")
+    url = str(tab.get("url") or "") if isinstance(tab, dict) else ""
+    # The gateway's empty recovery/new tab has no page content to expose.
+    if url == "about:blank":
+        return None
+    return await _refuse_committed_url(ctx, url)
+
+
 async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     """Call one method of the walker in the page: the ONLY use of the ``js`` helper.
 
@@ -302,6 +320,10 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     take the cross-origin frames into account, failing closed when one cannot
     be read.
     """
+    if method not in ("stamp", "state"):
+        refused = await _refuse_current_url(ctx)
+        if refused is not None:
+            raise _PageRefused(refused)
     framed = split_frame_ref(args[0]) if args else None
     if framed is not None:
         frames = ctx.frames()
@@ -849,7 +871,9 @@ async def _tabs(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
                 "title": t.get("title"),
             }
             for t in (tabs if isinstance(tabs, list) else [])
-            if isinstance(t, dict) and (t.get("target_id") or t.get("targetId")) in owned
+            if isinstance(t, dict)
+            and (t.get("target_id") or t.get("targetId")) in owned
+            and (t.get("url") == "about:blank" or ctx.url_allowed(str(t.get("url") or "")))
         ]
         return {"ok": True, "tabs": mine}
     if action == "switch":
@@ -913,8 +937,44 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "user_in_control",
             "the user has taken over the browser; wait for them to hand it back",
         )
-    if ctx.decisions is not None:
-        return await ctx.decisions.run(op, args, ctx, handler)  # type: ignore[no-any-return]
-    if names_target_only(op, args):
-        return needs_ref()
-    return await handler(ctx, args)
+    raw_ctx = ctx
+
+    async def checked_helper(name: str, **kwargs: Any) -> Any:
+        if name in {
+            "click",
+            "mouse_move",
+            "drag",
+            "scroll",
+            "type_text",
+            "press_key",
+            "screenshot",
+            "page_info",
+            "wait_for_load",
+        }:
+            refused = await _refuse_current_url(raw_ctx)
+            if refused is not None:
+                raise _PageRefused(refused)
+        return await raw_ctx.helper(name, **kwargs)
+
+    ctx = replace(ctx, helper=checked_helper)
+    try:
+        # Navigation/new tabs must still be able to leave a refused page.
+        if op not in ("navigate", "tabs", "ask"):
+            refused = await _refuse_current_url(ctx)
+            if refused is not None:
+                return refused
+        if ctx.decisions is not None:
+            result = await ctx.decisions.run(op, args, ctx, handler)
+        elif names_target_only(op, args):
+            return needs_ref()
+        else:
+            result = await handler(ctx, args)
+        # A link, key or tab switch can move the page without a navigate op.
+        # Check again before the route follows it or publishes a successful result.
+        if result.get("ok"):
+            refused = await _refuse_current_url(ctx)
+            if refused is not None:
+                return refused
+        return result  # type: ignore[no-any-return]
+    except _PageRefused as exc:
+        return exc.result
