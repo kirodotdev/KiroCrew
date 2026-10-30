@@ -80,6 +80,8 @@ MAX_ENVELOPE_BYTES = 2 * MAX_POLICY_BYTES
 ISSUER_PREFIX = "kiro-enterprise-management:"
 
 _HASH_PREFIX = "sha256:"
+#: Joins the scope and the neutral document's digest in a DISABLED answer's etag.
+_DISABLED_TAG = "/disabled/"
 _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 _TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
 _SIGN_IN = "sign in with `kirocrew kas login --provider idc --start-url <your start URL>`"
@@ -145,7 +147,15 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
             ) from None
     # The profile the document was read for, so a cached copy is never served to another.
     document["identity"] = {"issuer": ISSUER_PREFIX + scope}
-    return pd.FetchedPolicy(body=_encode(document), etag=etag)
+    body = _encode(document)
+    if status == STATUS_DISABLED:
+        # DISABLED has no versionId, so the document's own digest stands in for one. The
+        # tag puts no ':' after the scope, so _version_for never sends it to the service.
+        etag = f"{scope}{_DISABLED_TAG}{hashlib.sha256(body).hexdigest()[:16]}"
+        if request.etag == etag:
+            # The same profile's same DISABLED document is cached: nothing to install.
+            return pd.FetchedPolicy(etag=etag, not_modified=True)
+    return pd.FetchedPolicy(body=body, etag=etag)
 
 
 def document_scope(body: bytes) -> str:

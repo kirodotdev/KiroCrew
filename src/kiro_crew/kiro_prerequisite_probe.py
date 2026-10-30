@@ -419,13 +419,24 @@ async def _probe(
                         version_probe, sandbox_failure = carve_out_version, None
             if sandbox_failure is not None and candidate_runnable:
                 kind, detail, remedy = sandbox_failure
-                logger.warning(
-                    "Kiro CLI at %s is present and executable but could not be "
-                    "verified: the sandbox refused the probe (%s: %s)",
-                    first_candidate,
-                    kind,
-                    detail,
-                )
+                if carve_out_whoami is not None and carve_out_whoami.ok:
+                    # Still a WARNING: agent sessions cannot start on this host.
+                    logger.warning(
+                        "Kiro CLI at %s is signed in (confirmed by the enterprise sign-in "
+                        "check); agent sessions still need a sandbox, which this host "
+                        "cannot build (%s: %s)",
+                        first_candidate,
+                        kind,
+                        detail,
+                    )
+                else:
+                    logger.warning(
+                        "Kiro CLI at %s is present and executable but could not be "
+                        "verified: the sandbox refused the probe (%s: %s)",
+                        first_candidate,
+                        kind,
+                        detail,
+                    )
                 login_cmd, sso_cmd, bundled = login_commands_for(first_candidate, self._environ)
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
