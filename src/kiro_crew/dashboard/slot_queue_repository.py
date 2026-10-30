@@ -82,6 +82,39 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: consumer asks instead of trying to tell the two apart from the actor alone.
 RESTORED_QUEUE_KEY = "_restored_from_disk"
 
+
+def is_held_queue_entry(item: Any) -> bool:
+    """Whether *item* waits for an explicit action instead of the drain.
+
+    A restored entry is HELD: no process owns it, so nothing runs it on its
+    own. It is handed back as a card, and only the person moves it: Send now
+    on that card (the idle Run-now path names it by id), an edit, or a delete.
+    A turn that ends, a Resume and a fresh send all pass it by. The reason is
+    the one ``sendTurn.ts`` gives for an indeterminate send: the process that
+    accepted these words is gone, and a prompt is never re-sent for the person.
+
+    Every reader that asks "will the runner pick this queue up?" asks this
+    instead of ``queue_depth``. The drain skips held entries, Continue does
+    not count them as pending, and the slot projection reports them apart
+    (``queue_held_depth``). A held queue is then never shown as work in flight.
+
+    A restored send the boot drain accepted (``drain_restored_parked_sends``,
+    :data:`BOOT_ACCEPTED_KEY`) is the one exception: a durable parked work row
+    proves it was accepted for dispatch, so it is not held anywhere.
+    """
+    return (
+        isinstance(item, dict)
+        and bool(item.get(RESTORED_QUEUE_KEY))
+        and not item.get(BOOT_ACCEPTED_KEY)
+    )
+
+
+#: Process-local stamp on a restored entry ``drain_restored_parked_sends``
+#: accepted for dispatch. Not in ``_DURABLE_QUEUE_KEYS``, so a later restart
+#: restores the entry held again and the boot drain decides afresh.
+BOOT_ACCEPTED_KEY = "_boot_accepted"
+
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -491,6 +524,8 @@ async def drain_restored_parked_sends(state: Any) -> None:
                     and work.reason in (None, ReasonCode.CANCELLED_BY_USER)
                 ):
                     queue_ids.add(entry["id"])
+                    # Not held: every reader sees it as the work it is.
+                    entry[BOOT_ACCEPTED_KEY] = True
                     break
         if queue_ids:
             accepted[slot.key] = frozenset(queue_ids)

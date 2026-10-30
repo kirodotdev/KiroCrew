@@ -952,8 +952,7 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             )
             continue
         title = str(row.get("title", ""))
-        depth = int(row.get("queue_depth", 0) or 0)
-        queued = f", {depth} queued" if depth else ""
+        queued = _queue_phrase(row)
         if status == "unknown":
             # Its OWN mark, not the glyph map's default. Falling through to that
             # default draws idle's sleep glyph -- "open and doing nothing", the
@@ -1036,6 +1035,18 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
+def _queue_phrase(resp: dict[str, Any], unit: str = "") -> str:
+    """ ", N queued", counting only the entries that will run.
+
+    A held entry (restored after a restart) runs only when the person presses
+    Send now on its card, and "queued" tells an agent the message still runs
+    after the turn, so held entries are left out of the count.
+    """
+    depth = int(resp.get("queue_depth", 0) or 0)
+    ready = depth - min(depth, int(resp.get("queue_held_depth", 0) or 0))
+    return f", {ready}{unit} queued" if ready else ""
+
+
 def _pending_approval_phrase(resp: dict[str, Any]) -> str:
     """The state words for a session parked on a tool approval."""
     tool = str(resp.get("pending_approval_tool") or "")
@@ -1054,9 +1065,7 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
     state_line = "still working" if resp.get("running") else "idle"
     if resp.get("pending_approval"):
         state_line = _pending_approval_phrase(resp)
-    queued = resp.get("queue_depth", 0)
-    if queued:
-        state_line += f", {queued} message(s) queued"
+    state_line += _queue_phrase(resp, unit=" message(s)")
     if resp.get("model"):
         state_line += f", model {redact(str(resp['model']))}"
     if resp.get("pending_model"):

@@ -196,9 +196,12 @@ async def continue_slot_turn(
             raise SlotContinueRefusal("slot is running", "slot_running")
         if slot._stopping or slot._stop_state != "idle":
             raise SlotContinueRefusal("a stop is in progress", "slot_stopping")
-        if slot.queue_depth:
+        if slot.queue_ready_depth:
             # The runner is about to pick the thread back up on its own; adding a
-            # continuation would double-fire.
+            # continuation would double-fire. Held cards (restored after a
+            # restart) are not counted: nothing picks them up, so refusing on
+            # them left an interrupted chat with no way forward but a new
+            # message. The recovery runs ahead of them and they stay held.
             raise SlotContinueRefusal("queued messages pending", "slot_queue_pending")
         if any(not f.done() for f in slot._approval_futures.values()):
             raise SlotContinueRefusal("approval pending", "slot_approval_pending")

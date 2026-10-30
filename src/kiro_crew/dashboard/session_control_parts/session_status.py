@@ -601,9 +601,16 @@ async def created_session_status(
             {
                 "target": key,
                 "title": _bounded_status_title(slot.display_title),
-                "status": "working" if running else ("queued" if queue_depth else "idle"),
+                # "queued" promises the runner will start it; held cards (restored
+                # after a restart) wait for the person, so they read as idle.
+                "status": (
+                    "working" if running else ("queued" if slot.queue_ready_depth else "idle")
+                ),
                 "running": running,
                 "queue_depth": queue_depth,
+                # Restored cards no drain will start; agents read "queued" as
+                # "will run", so they get the split.
+                "queue_held_depth": slot.queue_held_depth,
                 "process": process_state(state, slot),
                 **_pending_approval_fields(state, slot),
                 "source": "+".join(sources),
@@ -790,6 +797,7 @@ def read_messages(
         # "nothing happening".
         **({"streaming": True} if durable_end < len(raw_window) else {}),
         "queue_depth": len(slot._queue),
+        "queue_held_depth": slot.queue_held_depth,
         # A turn parked on a tool approval is still ``running``; this says it is
         # waiting on a person rather than working.
         **_pending_approval_fields(state, slot),

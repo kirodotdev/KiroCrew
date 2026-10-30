@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_marker import (
+        TURN_DISPATCH_ROW,
         _begin_local_turn_marker,
         _local_turn_generation_for,
     )
@@ -269,7 +270,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # inside it still reaches _run_chat's finally with something to retire.
     _local_turn_marker_generation = _local_turn_generation_for(slot)
     turn._local_turn_marker_generation = _local_turn_marker_generation
-    await _begin_local_turn_marker(state, slot, _local_turn_marker_generation)
+    # The row this dispatch handed the turn: a queued send whose row was written
+    # at send time is copied from it, with its queue entry id, so the marker
+    # alone tells a restore the entry ran (`_local_turn_opening_row`).
+    _dispatch_row_token = TURN_DISPATCH_ROW.set(turn._current_message)
+    try:
+        await _begin_local_turn_marker(state, slot, _local_turn_marker_generation)
+    finally:
+        TURN_DISPATCH_ROW.reset(_dispatch_row_token)
 
     # Resolve agent bindings early so we pass the correct kiro-cli
     # agent name (e.g. "kirocrew") instead of the Kiro Crew slot name

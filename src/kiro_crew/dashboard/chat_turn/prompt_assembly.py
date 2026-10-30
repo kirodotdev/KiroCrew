@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import (
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
+from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
 from kiro_crew.executors import (
     EmbedAdmissionTimeout,
@@ -48,6 +49,8 @@ from kiro_crew.messaging.dispatch import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
         _STARTUP_QUERY_PREWARM_SECS,
@@ -106,6 +109,45 @@ if TYPE_CHECKING:
 _BUILD_ADMISSION_TIMEOUT_SECS = 60.0
 
 
+def _unsent_send_filter(slot: _ChatSlot) -> Callable[[dict], bool] | None:
+    """Whether a row is the user row of a send that is not part of the cut turn.
+
+    A crewmate send writes its user row at send time (``write_row_at_send``),
+    tagged with its queue entry's id. When the restart hands that entry back
+    held, the row stays in the transcript but was never sent again. Without
+    this filter a Resume's replay or interrupted-turn preamble takes it, the
+    newest user row, as the request to continue.
+    ``None`` when no row can match.
+    """
+    # circular import: responsive_chat reaches the chat runner at module level.
+    from kiro_crew.dashboard.responsive_chat import QUEUED_ROW_META_KEY
+
+    skipped = {item.get("id") for item in slot._queue if is_held_queue_entry(item)}
+    if not skipped:
+        return None
+
+    def _unsent(row: dict) -> bool:
+        meta = row.get("meta")
+        if row.get("role") != "user" or not isinstance(meta, dict):
+            return False
+        # A row's meta comes from the transcript, so its id may be any JSON
+        # value; only a string can name a queue entry (and a list or dict
+        # would raise on the set lookup).
+        entry_id = meta.get(QUEUED_ROW_META_KEY)
+        return isinstance(entry_id, str) and entry_id in skipped
+
+    return _unsent
+
+
+def _rows_without_held_sends(slot: _ChatSlot, rows: list[dict] | None = None) -> list[dict]:
+    """*rows* (the slot's rows by default) minus those :func:`_unsent_send_filter` matches."""
+    rows = list(slot.messages) if rows is None else rows
+    unsent = _unsent_send_filter(slot)
+    if unsent is None:
+        return rows
+    return [row for row in rows if not unsent(row)]
+
+
 async def _session_replay_history(
     state: DashboardState,
     context_builder: ContextBuilder,
@@ -161,8 +203,10 @@ async def _session_replay_history(
             _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
-            # whether or not the periodic flush has persisted it yet, and
-            # the previous reply a Regenerate turn is replacing.
+            # whether or not the periodic flush has persisted it yet, the
+            # previous reply a Regenerate turn is replacing, and the rows of
+            # held sends, from disk and live alike.
+            _unsent = _unsent_send_filter(slot)
             compressed = (
                 await asyncio.to_thread(
                     build_session_replay,
@@ -172,6 +216,7 @@ async def _session_replay_history(
                     current_message=_current_replay_message,
                     exclude_messages=regenerate_replaced_rows(slot),
                     model_window=window_for_provider_client(client),
+                    skip_row=_unsent,
                     **_budget,
                 )
                 or ""
@@ -706,6 +751,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,
                     state.context_builder.conversation_log,
                     session_key,
+                    skip_row=_unsent_send_filter(slot),
                 )
                 if preamble:
                     message = preamble + "\n\n" + message
@@ -727,7 +773,9 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             )
 
             preamble = build_interrupted_turn_preamble(
-                rows_before_regenerate_target(slot, list(slot.messages)),
+                _rows_without_held_sends(
+                    slot, rows_before_regenerate_target(slot, list(slot.messages))
+                ),
                 current=_current_replay_message,
                 opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
             )

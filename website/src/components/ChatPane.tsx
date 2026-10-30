@@ -330,8 +330,17 @@ export default function ChatPane({
   const composerBusy = busy || awaitingReply
   // Queued rows are drawn in place from the slot's full row list, so a parked
   // message sits where it was sent (`withQueuedAsBubbles`).
+  // A held message (restored after a restart) is the exception: it is not
+  // waiting for the crewmate, nothing sends it, so it is not drawn as a sent
+  // bubble but as a Held card the person can send now or take back.
+  const crewmateHeld = useMemo(
+    () => (crewmate ? queuedMessages.filter(m => m.meta?.held === true) : []),
+    [crewmate, queuedMessages],
+  )
   const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(withQueuedAsBubbles(allMessages, queuedMessages)) : paneMessages),
+    () => (crewmate
+      ? filterCrewmateChat(withQueuedAsBubbles(allMessages, queuedMessages.filter(m => m.meta?.held !== true)))
+      : paneMessages),
     [crewmate, allMessages, paneMessages, queuedMessages],
   )
   // This pane shows the chat's transcript once it has rows; a bell note for a
@@ -957,7 +966,16 @@ export default function ChatPane({
         {/* A crewmate's chat draws a queued message as the person's own
             bubble in the thread instead (`withQueuedAsBubbles`). */}
         {!crewmate && queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} turnRunning={running || !!paneSlot?.running} />
+        )}
+        {/* A crewmate's held messages (restored after a restart) are the one
+            queue a crewmate chat shows as cards, and the one place it offers
+            Send now: nothing else will send them. Edit and Cancel are withheld
+            when the gateway already wrote the message's row (rowWritten). */}
+        {crewmate && crewmateHeld.length > 0 && (
+          // Send now and Cancel only: two actions per row. To change a held
+          // send, cancel it (its text comes back to the composer) and send again.
+          <QueueStack messages={crewmateHeld} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} pendingIds={queuePendingIds} turnRunning={crewmateLive} />
         )}
 
         {/* The pending ask_question card shares the message column's gutter and

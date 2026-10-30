@@ -15,6 +15,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     SlotQueueRepository,
     durable_queue_entries,
     durable_queue_view,
+    is_held_queue_entry,
     queue_persist_signature,
 )
 from kiro_crew.dashboard.state_parts import slot_ladder as _slot_ladder
@@ -920,6 +921,25 @@ class _ChatSlot:
     def queue_depth(self) -> int:
         """Number of prompts currently queued behind the active turn."""
         return len(self._queue)
+
+    @property
+    def queue_held_depth(self) -> int:
+        """Queued entries no drain will start: restored cards waiting for the person.
+
+        See :func:`slot_queue_repository.is_held_queue_entry`.
+        """
+        return sum(1 for item in self._queue if is_held_queue_entry(item))
+
+    @property
+    def queue_ready_depth(self) -> int:
+        """Queued entries the runner starts on its own when the slot frees.
+
+        The number every "will this queue drain?" decision reads: Continue's
+        pending-queue refusal, the completion sound's ``continuing`` flag, the
+        session-status ``queued`` state. ``queue_depth`` still counts every
+        card the person can see.
+        """
+        return self.queue_depth - self.queue_held_depth
 
     @property
     def model_withheld(self) -> bool | None:

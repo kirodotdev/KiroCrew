@@ -331,7 +331,7 @@ async def chat_done_payload(
     try:
         continuing = bool(
             continuing
-            or (slot.queue_depth and not queue_held and not slot._last_turn_auth_required)
+            or (slot.queue_ready_depth and not queue_held and not slot._last_turn_auth_required)
             or await background_wake_pending(state, slot, "completion_sound")
         )
     except Exception:

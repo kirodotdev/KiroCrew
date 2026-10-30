@@ -149,7 +149,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/members_thread_turns.py", "_turn_ends_within"),
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
-                ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
                 ("chat_api/slot_model.py", "api_chat_slot_model"),
                 ("chat_api/slot_note.py", "api_chat_slot_note"),
                 # The project route arms a deferred reset when a start carrying
@@ -277,6 +276,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_regenerate.py", "api_chat_slot_edit_resend"),
                 ("chat_regenerate.py", "api_chat_slot_regenerate"),
                 ("chat_regenerate.py", "api_chat_slot_switch_variant"),
+                # Send now: the reservation gates the idle dispatch, and the
+                # executing turn's identity, read across the early body read,
+                # stands a press down when that turn changed under it.
+                ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
             }
         },
     }

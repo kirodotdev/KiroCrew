@@ -1134,6 +1134,7 @@ def build_cancelled_turn_preamble(
     *,
     user_cap: int = 2000,
     assist_cap: int = 2000,
+    skip_row: Callable[[dict], bool] | None = None,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1145,7 +1146,9 @@ def build_cancelled_turn_preamble(
     short bracketed preamble. Returns "" if nothing to inject.
 
     Called by both dashboard and Slack callers after ``prev_turn_cancelled``
-    is observed on the session.
+    is observed on the session. *skip_row* drops rows before the walk, as in
+    :func:`build_session_replay`: the dashboard passes the held-send filter so
+    a send still waiting on its card is never read as the cancelled request.
     """
     try:
         # Whole rows: ``recent()`` keeps only role and content, and the walk reads
@@ -1154,6 +1157,8 @@ def build_cancelled_turn_preamble(
         rows = _without_warm_task_brief_messages(conversation_log.read_messages(session_key))
     except Exception:
         return ""
+    if skip_row is not None:
+        rows = [row for row in rows if not skip_row(row)]
     return _replay.cancelled_turn_preamble(rows[-20:], user_cap=user_cap, assist_cap=assist_cap)
 
 
@@ -1172,11 +1177,13 @@ def _replay_rows(
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
     exclude_messages: list[dict] | None = None,
+    skip_row: Callable[[dict], bool] | None = None,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
     Conversation rows get the full quota whatever the inject volume, which a
-    single bounded query cannot guarantee.
+    single bounded query cannot guarantee. *skip_row* drops rows from the
+    merged disk and live view before the quotas are counted.
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
@@ -1185,6 +1192,8 @@ def _replay_rows(
         )
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
+    if skip_row is not None:
+        messages = [row for row in messages if not skip_row(row)]
     messages = _without_warm_task_brief_messages(messages)
     messages = [row for row in messages if not _replay.is_context_cap_notice(row)]
     return _replay._quota_tail(
@@ -1236,6 +1245,7 @@ def build_session_replay(
     current_message: dict | None = None,
     budget_chars: int = _REPLAY_BUDGET_CHARS,
     exclude_messages: list[dict] | None = None,
+    skip_row: Callable[[dict], bool] | None = None,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
@@ -1252,6 +1262,7 @@ def build_session_replay(
     The legacy *exclude_last_n* applies only when no live snapshot is supplied.
     *exclude_messages* (with a live snapshot) are left out on both sides by
     delivery identity: the previous reply a Regenerate is replacing.
+    *skip_row* drops rows from that merged view, disk copies included.
 
     *model_window* scales the replay budget to the active model's context
     window (the dashboard's primary history vehicle — it must shrink on a
@@ -1266,6 +1277,7 @@ def build_session_replay(
         pending_messages=pending_messages,
         current_message=current_message,
         exclude_messages=exclude_messages,
+        skip_row=skip_row,
     )
     if not messages:
         return None

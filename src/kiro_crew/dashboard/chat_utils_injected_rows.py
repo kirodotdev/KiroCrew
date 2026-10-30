@@ -15,7 +15,7 @@ import json
 from enum import Enum
 from typing import Any
 
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
+from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, is_held_queue_entry
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -575,7 +575,9 @@ def _dequeue_next_system_message(slot) -> tuple:
     drained item, or ``(None, [])`` when only held (user) messages remain queued.
     """
     for i, item in enumerate(slot._queue):
-        if releases_past_subagent_hold(item):
+        # A held card (restored after a restart) runs only on its own Send now,
+        # never because this scan reached it: a restored steer keeps its mark.
+        if releases_past_subagent_hold(item) and not is_held_queue_entry(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

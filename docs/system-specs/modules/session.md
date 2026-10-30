@@ -3985,6 +3985,22 @@ so absence clears it.
   drains an idle slot on boot, so the user sends, edits or deletes them. This is
   the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
   turn may have run un-persisted must never be auto-resent.
+  A restored card is **held** (`slot_queue_repository.is_held_queue_entry`) for
+  as long as it waits, not only at boot. The drain passes it by: a turn that
+  ends, a Resume and a fresh send all run ahead of it, and only the card's own
+  Send now (the idle Run-now path, which names it by `queue_id`) starts it.
+  Behind a running turn, Send now on a held card is refused with 409
+  `held_turn_running` before anything is promoted or stopped, and the card's
+  Send now control is disabled while the turn runs: the turn-end drain would
+  pass the card by, so a deferred start has nothing to run it.
+  Every reader that asks whether the queue will drain counts
+  `slot.queue_ready_depth` instead of `queue_depth`: Continue's
+  `slot_queue_pending` refusal, the completion sound's `continuing` flag and the
+  session-status `queued` state. The slot frame carries `queue_held_depth` and
+  each held queue entry `meta.held`, so the sidebar, board and command center do
+  not count a held card as work in flight and the card drops its waiting
+  animation. An interrupted chat with only held cards therefore offers Resume,
+  as its restart notice says.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a

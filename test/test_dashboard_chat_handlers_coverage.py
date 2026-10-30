@@ -925,6 +925,31 @@ class TestQueueCancel:
         state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_held_send_already_in_the_conversation_is_not_cancelled_either(self, _sel):
+        # Restored after a restart (held) with its row written at send: the
+        # row is the message, so Cancel is refused like any written send and
+        # Send now is the way out. The card stays, held.
+        from kiro_crew.dashboard.responsive_chat import QUEUED_ROW_META_KEY
+        from kiro_crew.dashboard.slot_queue_repository import (
+            RESTORED_QUEUE_KEY,
+            is_held_queue_entry,
+        )
+
+        slot = _ChatSlot("s1")
+        qid = slot.queue_append("orig")
+        slot._queue[0][RESTORED_QUEUE_KEY] = True
+        slot.append("user", "orig", "msg msg-u", meta={QUEUED_ROW_META_KEY: qid})
+        state = _state(slot)
+
+        status, body = await self._delete(state, "s1", qid)
+
+        assert status == 409
+        assert body["code"] == "queue_item_already_sent"
+        assert [q["id"] for q in slot._queue] == [qid]
+        assert is_held_queue_entry(slot._queue[0])
+        state.broadcast_ws.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_send_already_in_the_conversation_is_not_cancelled(self, _sel):
         # Its row is in the transcript already: dropping only the entry would
         # leave the message there and give the text back to send twice.

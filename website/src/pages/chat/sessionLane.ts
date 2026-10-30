@@ -34,6 +34,15 @@ export interface LaneSlotFields {
   running?: boolean
   subagents_running?: boolean
   queue_depth?: number
+  /** How many queued cards no drain will start (restored after a restart). */
+  queue_held_depth?: number
+}
+
+/** Queued entries the gateway will start on its own. A held card (restored
+ *  after a restart) waits for the person, so it is not work in flight: counting
+ *  it kept a dead chat spinning "In progress" with its Resume hidden. */
+export function readyQueueDepth(slot: Pick<LaneSlotFields, 'queue_depth' | 'queue_held_depth'>): number {
+  return Math.max(0, (slot.queue_depth ?? 0) - (slot.queue_held_depth ?? 0))
 }
 
 /** Signals that live outside the slot payload but change which lane is right.
@@ -65,7 +74,7 @@ export function hasLiveSessionWork(slot: LaneSlotFields, extras: LaneExtras = {}
   return !!(
     slot.running ||
     slot.subagents_running ||
-    (slot.queue_depth ?? 0) > 0 ||
+    readyQueueDepth(slot) > 0 ||
     extras.workflowActive ||
     extras.detailedSubagentsRunning
   )

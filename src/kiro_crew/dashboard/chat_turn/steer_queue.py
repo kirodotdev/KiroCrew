@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -483,8 +484,18 @@ def _queue_entry_is_orchestration(item: dict) -> bool:
     have their intervention silently ignored while the announced action dispatches
     anyway. A user message carries no enqueue tag, so it correctly counts as a
     user follow-up and aborts the pending recovery; real cron / sub-agent events
-    are tagged at their injection sites and stay excluded."""
-    return is_synthetic_payload_item(item) or is_system_injection_item(item)
+    are tagged at their injection sites and stay excluded.
+
+    A HELD entry (restored after a restart, `is_held_queue_entry`) is excluded
+    too. The person said it to a process that is gone, and it waits for them to
+    send it; it is not this process's user intervening. Counted, it would keep
+    every recovery off for as long as the card sits, which is until the person
+    acts on it. Send now lifts the hold, and from then on it counts again."""
+    return (
+        is_synthetic_payload_item(item)
+        or is_system_injection_item(item)
+        or is_held_queue_entry(item)
+    )
 
 
 #: Which turn actor an enqueue-time queue ``kind`` names. The tag is stamped by

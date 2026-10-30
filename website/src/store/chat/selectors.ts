@@ -12,6 +12,7 @@ import type { SlotState } from './state'
 import { safeKey } from './wire'
 import { selectSlotSubagentsActive } from './subagents'
 import { slotRowByKey } from '../slotIndex'
+import { readyQueueDepth } from '../../pages/chat/sessionLane'
 
 /** Path B selectors: read a slot's messages / stream-state, falling back to the
  *  global active mirror when the slot IS the currently-active one. */
@@ -197,13 +198,22 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
   // Keyed on `executor`, not `instance_id`: a half-open binding (marker set,
   // triple incomplete) is refused server-side too, so it must not offer here.
   if (slotIsRemoteBound(dashSlot)) return false
+  // The slots frame's count is the gateway's own: Continue refuses while any
+  // entry is ready (`queue_ready_depth`), and the rows here can lag that
+  // frame, so the rows alone could offer a Resume that answers 409.
+  if (dashSlot && readyQueueDepth(dashSlot) > 0) return false
   const msgs = other ? selectSlotMessages(state, other) : c.messages
   if (!msgs.length) return false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     // A pending queued message means the backend is about to run the thread on
-    // its own — offering Continue would double-fire the turn.
-    if (m.role === 'queued') return false
+    // its own — offering Continue would double-fire the turn. A HELD card
+    // (restored after a restart) is not: nothing runs it, the gateway's Continue
+    // does not count it (`queue_ready_depth`), and Resume runs ahead of it.
+    if (m.role === 'queued') {
+      if (m.meta?.held === true) continue
+      return false
+    }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       // System notices (compaction, session reload) are assistant-role status

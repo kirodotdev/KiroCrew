@@ -505,6 +505,10 @@ class SlotProjection:
             # the backend's answer cannot disagree.
             "stop_declined": stop_declined_armed(slot),
             "queue_depth": slot.queue_depth,
+            # How many of those cards no drain will start: restored after a
+            # restart, they wait for Send now, an edit or a delete. Readers that
+            # ask "is work coming?" subtract it; see `is_held_queue_entry`.
+            "queue_held_depth": slot.queue_held_depth,
             "stopping": slot._stopping,
             "pending_approval": pending_approval,
             "pending_approval_info": pending_approval_info,

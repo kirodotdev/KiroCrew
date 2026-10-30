@@ -186,6 +186,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,
     _arm_queued_delivery_settlement,
     _drain_parked_queues,
+    _memory_preparation_pending,
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
     idle_slot_admits_drain,
@@ -271,6 +272,7 @@ from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
+    dispatched_entries,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook

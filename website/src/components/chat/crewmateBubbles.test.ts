@@ -438,6 +438,11 @@ describe('awaitingCrewmateReply', () => {
     expect(awaitingCrewmateReply([said('2026-10-14T07:59:00Z'), q], 's1')).toBe(true)
   })
 
+  it('does not wait on a held send restored after a restart: nothing will run it', () => {
+    const q: ChatMessage = { role: 'queued', content: 'ping', cls: '', meta: { queueId: 'q1', sendId: 's1', held: true } }
+    expect(awaitingCrewmateReply([said('2026-10-14T07:59:00Z'), q], 's1')).toBe(false)
+  })
+
   it('a quiet end, an error, a stop card or a pending approval ends the wait', () => {
     const quiet: ChatMessage = { role: 'assistant', content: '\u200B', cls: '' }
     const error: ChatMessage = { role: 'error', content: 'failed', cls: '' }

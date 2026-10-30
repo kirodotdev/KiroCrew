@@ -106,11 +106,11 @@ def local_turn_prompt_within_bounds(prompt: Mapping[str, object]) -> bool:
         return False
     meta = prompt.get("meta")
     if isinstance(meta, Mapping):
-        for key in ("mid", "injectKind"):
+        for key in ("mid", "injectKind", "queuedEntryId"):
             value = meta.get(key)
             if isinstance(value, str) and len(value) > _LOCAL_TURN_PROMPT_MAX_FIELD_CHARS:
                 return False
-        for key in ("files", "dirs"):
+        for key in ("files", "dirs", "queuedEntryIds"):
             value = meta.get(key)
             if isinstance(value, list):
                 if len(value) > _LOCAL_TURN_PROMPT_MAX_ATTACHMENTS:
@@ -157,6 +157,17 @@ def _local_turn_prompt(meta: Mapping[str, object]) -> dict | None:
         kind = raw_meta.get("injectKind")
         if isinstance(kind, str) and kind:
             kept_meta["injectKind"] = kind
+        # The queue entry the turn ran (a send whose row was written at send
+        # time): the reconcile retires that entry's queue copy.
+        entry_id = raw_meta.get("queuedEntryId")
+        if isinstance(entry_id, str) and entry_id:
+            kept_meta["queuedEntryId"] = entry_id
+            # The rest of a merged run of such sends, anchored on this row.
+            merged = raw_meta.get("queuedEntryIds")
+            if isinstance(merged, list):
+                merged_ids = [item for item in merged if isinstance(item, str) and item]
+                if merged_ids:
+                    kept_meta["queuedEntryIds"] = merged_ids
     ts = stored.get("ts")
     # No ``cls`` is read: the transcript never persists one for these roles,
     # and a JSON ``cls`` on the re-appended row would be parsed into ``meta``
@@ -249,10 +260,30 @@ def _reconcile_local_turn_marker(
     """
     if generation <= 0:
         return False
+    # The turn ran a queued send whose row was written at send time. The marker
+    # landed, so the turn did start: a copy of its entry still in the restored
+    # queue is stale, and left there it would come back held, hiding the cut
+    # turn's own opener from Resume. One write carried both facts, so this
+    # never drops an entry the marker does not name.
+    prompt_meta_for_id = prompt.get("meta") if prompt is not None else None
+    ran_entry = (
+        prompt_meta_for_id.get("queuedEntryId") if isinstance(prompt_meta_for_id, dict) else None
+    )
+    if isinstance(ran_entry, str) and ran_entry:
+        merged = (
+            prompt_meta_for_id.get("queuedEntryIds")
+            if isinstance(prompt_meta_for_id, dict)
+            else None
+        )
+        ran = {ran_entry, *(merged if isinstance(merged, list) else ())}
+        slot._queue[:] = [item for item in slot._queue if item.get("id") not in ran]
     if prompt is not None and not _window_holds_row(
         slot.messages if persisted is None else persisted, prompt
     ):
         prompt_meta = prompt.get("meta")
+        if isinstance(prompt_meta, dict) and "queuedEntryIds" in prompt_meta:
+            # Restore bookkeeping, not part of the row.
+            prompt_meta = {k: v for k, v in prompt_meta.items() if k != "queuedEntryIds"}
         role = str(prompt["role"])
         slot.append(
             role,

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _history_key_for,
         _mark_permission_resolved,
+        _memory_preparation_pending,
         _orphan_in_current_turn,
         _slot_replaced_while_queued,
         _start_next_queued_turn,
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
         crew_steer_discarded,
         deny_app_slot_access,
         effective_session_key,
+        is_held_queue_entry,
         logger,
         read_bounded_json,
         relay_archive_refusal,
@@ -941,6 +943,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
                 {"error": "queue_id required for idle interrupt", "code": "invalid_queue_id"},
                 status=400,
             )
+        if (linked_turn or slot.linked_turn_running) and any(
+            item.get("id") == queue_id and is_held_queue_entry(item) for item in slot._queue
+        ):
+            # A held card behind a channel-path turn: the same refusal as behind
+            # a dashboard turn, before that turn is cancelled for it.
+            return web.json_response(
+                {
+                    "error": "a turn is running; send it again when it ends",
+                    "code": "held_turn_running",
+                },
+                status=409,
+            )
         if linked_turn:
             # Validated: cancel the channel-path turn, then dispatch the selected
             # card below, which starts once the channel path releases the session.
@@ -967,6 +981,20 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             )
             if denied is not None:
                 return denied
+            # A held card (restored after a restart) that the drain would park
+            # here never runs: the drain that ends the parking names no card and
+            # passes held ones by. Refuse it as what it is, so the person sends
+            # it again once memory is ready.
+            if _memory_preparation_pending(state) and any(
+                item.get("id") == queue_id and is_held_queue_entry(item) for item in slot._queue
+            ):
+                return web.json_response(
+                    {
+                        "error": "memory is still being prepared; send it again when it is ready",
+                        "code": "memory_preparing",
+                    },
+                    status=409,
+                )
             started = await _start_next_queued_turn(
                 state,
                 slot,
@@ -1039,6 +1067,66 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # _stop_state == "idle" and slip past the guard (double stop_turn +
     # double SEL audit for one logical press). /stop is race-safe because it
     # has no await between guard and claim; this makes /interrupt match.
+    #
+    # Except when the queue holds a held card (restored after a restart): the
+    # body is read FIRST, so a press naming one is refused before any claim.
+    # A claim bumps ``_stop_generation``, which never rewinds, and a moved
+    # generation tells a queued recovery continuation that a stop happened
+    # (``RecoveryReplays.revalidate``), purging it for a press that stopped
+    # nothing. The idempotency guard is re-read after that await and the claim
+    # follows it with no await between, so the race the claim closes stays
+    # closed. With no claim held during that read, the turn's own teardown has
+    # no posture to reset, so the running turn's identity is captured first: a
+    # turn that ended, or was replaced by the drain's next turn, during the read
+    # makes the press stand down like the claim-first path's supersede guard,
+    # instead of stopping a turn the person never pressed on.
+    early_body: dict | None = None
+    if any(is_held_queue_entry(item) for item in slot._queue):
+        turn_before = (slot.task, slot._turn_generation, slot.turn_running)
+        stop_generation_before = slot._stop_generation
+        early_body, early_err = await read_bounded_json(request, allow_absent=True)
+        if early_err is not None:
+            return early_err
+        assert early_body is not None  # read_bounded_json returns (dict, None) on success
+        early_id = early_body.get("queue_id")
+        if early_id and any(
+            item.get("id") == early_id and is_held_queue_entry(item) for item in slot._queue
+        ):
+            return web.json_response(
+                {
+                    "error": "a turn is running; send it again when it ends",
+                    "code": "held_turn_running",
+                },
+                status=409,
+            )
+        if turn_before[2] and (slot.task, slot._turn_generation, slot.turn_running) != turn_before:
+            # The benign supersede of the claim-first path: the person's "run
+            # this next" choice still lands, and nothing is stopped. Only while
+            # no later stop happened: that stop's own press may have promoted
+            # its selection, and this older one must not overwrite it.
+            if early_id and slot._stop_generation == stop_generation_before:
+                slot.queue_promote_by_id(early_id)
+            sel().log_tool_invocation(
+                session_key=_history_key_for(name),
+                agent=getattr(slot, "agent", "") or "kirocrew",
+                source="dashboard",
+                tool_name="dashboard_interrupt",
+                tool_kind="command",
+                outcome="noop",
+                metadata={"slot": name, "reason": "turn changed during body read"},
+            )
+            return web.json_response({"ok": True, "info": "stop already in progress"})
+        if slot._stop_state != "idle":
+            sel().log_tool_invocation(
+                session_key=_history_key_for(name),
+                agent=getattr(slot, "agent", "") or "kirocrew",
+                source="dashboard",
+                tool_name="dashboard_interrupt",
+                tool_kind="command",
+                outcome="noop",
+                metadata={"slot": name, "reason": "stop already in progress"},
+            )
+            return web.json_response({"ok": True, "info": "stop already in progress"})
     slot._stop_state = "soft_pending"
     # Per-attempt identity for the claim itself. The stand-down guard below
     # cannot rely on the state VALUE alone: a concurrent /stop can escalate,
@@ -1058,7 +1146,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # and an unconditional reset to "idle" would erase that escalation and
     # admit another stop while the hard kill is still running.
     try:
-        body, body_err = await read_bounded_json(request, allow_absent=True)
+        if early_body is not None:
+            body, body_err = early_body, None
+        else:
+            body, body_err = await read_bounded_json(request, allow_absent=True)
     except Exception:
         # Generation-guarded like the stand-down below: "soft_pending" alone
         # cannot prove the claim is OURS — an escalate-settle-repress sequence

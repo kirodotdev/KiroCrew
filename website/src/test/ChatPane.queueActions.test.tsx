@@ -275,6 +275,29 @@ describe('cold-mount queue from slot detail', () => {
     expect(screen.queryByRole('button', { name: 'Cancel queued message' })).toBeNull()
   })
 
+  it('draws a mate entry held after a restart as a Held card with Cancel, not a sent bubble', async () => {
+    vi.setSystemTime(new Date(COLD_TS))
+    const heldDetail = { ...coldDetail, running: false, queue: [{ ...coldQueue, meta: { ...coldQueue.meta, held: true } }] }
+    vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue(heldDetail as never)
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+      preloadedState: { dashboard: { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true } },
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<Provider store={store}><QueryClientProvider client={qc}><ThemeProvider><MemoryRouter>
+      <ChatPane slotKey={COLD_SLOT} crewmate={{ name: 'Radar' }} />
+    </MemoryRouter></ThemeProvider></QueryClientProvider></Provider>)
+    expect(await screen.findByTestId('queue-card-held')).toBeInTheDocument()
+    expect(screen.getAllByText(coldQueue.content)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeInTheDocument()
+    // Nothing else will send a held card, so it is the one crewmate card with Send now.
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeInTheDocument()
+    // Two actions per row: no Edit beside them.
+    expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull()
+    // And the hint does not offer the Edit the card does not have.
+    expect(screen.getByTestId('queue-card-held').getAttribute('title')).not.toMatch(/edit/i)
+  })
+
   it.each([false])('restores one cancellable card (mate=%s)', async (crewmate) => {
     vi.setSystemTime(new Date(COLD_TS))
     vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue(coldDetail as never)

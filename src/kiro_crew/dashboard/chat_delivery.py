@@ -28,7 +28,11 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_for_display,
     _redact_meta,
 )
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
+from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_META_KEYS,
+    is_held_queue_entry,
+    warn_if_not_durable,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1524,7 +1528,7 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
     return {k: v for k, v in redacted.items() if isinstance(v, list)}
 
 
-def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
+def queue_entry_view(item: dict[str, Any], *, row_written: bool = False) -> dict[str, Any]:
     """The wire form of one queue entry: ``id``, ``content``, and ``meta``
     holding its attachment lists when it carries any.
 
@@ -1578,4 +1582,28 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    # A held card (restored after a restart) waits for the person rather than
+    # the drain, so the card must not animate as if it is next to run. Omitted
+    # otherwise, like the other flags. See `slot_queue_repository.is_held_queue_entry`.
+    if is_held_queue_entry(item):
+        view.setdefault("meta", {})["held"] = True
+        # The caller knows whether the entry's user row is already in the
+        # transcript (a crewmate send writes it at send). Such an entry can be
+        # sent or discarded, not edited.
+        if row_written:
+            view["meta"]["rowWritten"] = True
     return view
+
+
+def queue_entry_views(slot: Any) -> list[dict[str, Any]]:
+    """``queue_entry_view`` for every entry of *slot*, with ``rowWritten`` decided."""
+    # circular import: responsive_chat imports this module.
+    from kiro_crew.dashboard import responsive_chat
+
+    return [
+        queue_entry_view(
+            q,
+            row_written=is_held_queue_entry(q) and responsive_chat.row_already_written(slot, q),
+        )
+        for q in slot._queue
+    ]

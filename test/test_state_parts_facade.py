@@ -274,6 +274,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "False) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
+    "queue_held_depth": ("property", False, False, "(self) -> 'int'"),
+    "queue_ready_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
         "function",
         False,

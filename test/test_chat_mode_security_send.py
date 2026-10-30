@@ -1027,6 +1027,21 @@ async def _drain_once(state, slot, **kwargs) -> dict:
     return slot.messages[-1]
 
 
+async def _send_now_once(state, slot, **kwargs) -> dict:
+    """Run the head card the way a person's Send now does: named by its id.
+
+    A restored entry is held (`is_held_queue_entry`), so this is the one path
+    that still turns its text into a row, and the one these rules must cover.
+    """
+    return await _drain_once(
+        state,
+        slot,
+        allow_user_during_subagents=True,
+        required_queue_id=slot._queue[0]["id"],
+        **kwargs,
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_queued_mcp_app_message_is_an_app_inject_whatever_its_text(state) -> None:
     slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1064,7 +1079,7 @@ async def test_a_restored_queue_entry_is_never_a_cron_notification(state) -> Non
     slot._queue = sanitize_restored_queue(durable_queue_entries(live._queue))
     assert slot._queue, "a plain queued send must survive the restart"
 
-    row = await _drain_once(state, slot)
+    row = await _send_now_once(state, slot)
 
     assert row["role"] == "user"
     assert "injectKind" not in (row.get("meta") or {})
@@ -1105,7 +1120,7 @@ async def test_restored_recovery_identity_cannot_continue_a_live_stream(state) -
     )
     slot._queue[0][RESTORED_QUEUE_KEY] = True
 
-    await _drain_once(state, slot, predecessor_actor="app", predecessor_turn_id="turn-a")
+    await _send_now_once(state, slot, predecessor_actor="app", predecessor_turn_id="turn-a")
 
     assert slot.drain()[0]["cls"] == TURN_END_WIRE_CLS
 
@@ -1118,7 +1133,7 @@ async def test_restored_app_turn_titles_only_an_app_owned_slot(state, owned: boo
     slot = _user_slot(state)
     slot._queue = sanitize_restored_queue(durable_queue_entries(live._queue))
     assert TURN_ACTOR_META_KEY not in slot._queue[0].get("meta", {})
-    row = await _drain_once(state, slot)
+    row = await _send_now_once(state, slot)
     # Exercise the titler's owner exemption independently of queue admission:
     # an app-bound restore may itself be held by containment revalidation.
     slot._app = "crew-keyboard" if owned else ""
@@ -1155,20 +1170,21 @@ async def test_restored_and_fresh_queue_rows_never_merge(state, restored_first: 
     config = KiroCrewConfig()
     config.dashboard.merge_queued_messages = True
     with patch.object(KiroCrewConfig, "load", return_value=config):
-        first = await _drain_once(state, slot)
+        # The drain takes the fresh entry wherever the held one sits, alone.
+        fresh = await _drain_once(state, slot)
         slot.append("assistant", "first reply")
         assert slot.queue_depth == 1
-        second = await _drain_once(state, slot)
+        # The held card runs only when the person sends it.
+        restored_row = await _send_now_once(state, slot)
         slot.append("assistant", "second reply")
     assert slot.queue_depth == 0
-    fresh, restored_row = (second, first) if restored_first else (first, second)
     assert fresh["content"] == "fresh user request"
     assert restored_row["content"] == "restored app request"
     assert _counts_as_user_turn(slot, fresh)
     assert not _counts_as_user_turn(slot, restored_row)
     assert [row["content"] for row in _titling_messages(slot)] == [
         "fresh user request",
-        "second reply" if restored_first else "first reply",
+        "first reply",
     ]
     # Keep the count above the fixed-milestone floor, so counting the restored
     # row incorrectly changes the rebase result instead of hiding under it.

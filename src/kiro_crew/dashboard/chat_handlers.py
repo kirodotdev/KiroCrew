@@ -348,6 +348,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     normalize_send_id,
     queue_entry_is_user_origin,
     queue_entry_view,
+    queue_entry_views,
     queue_for_next_turn,
     queued_text_for_display,
     quote_meta,
@@ -388,6 +389,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _context_usage_payload,
+    _memory_preparation_pending,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,
@@ -501,7 +503,12 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
+    BOOT_ACCEPTED_KEY,
+    RESTORED_QUEUE_KEY,
+    is_held_queue_entry,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,

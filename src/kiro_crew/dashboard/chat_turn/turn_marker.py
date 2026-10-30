@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
+from collections.abc import Iterable, Iterator, Mapping
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_persistence import (
@@ -40,7 +43,36 @@ def _local_turn_generation_for(slot: _ChatSlot) -> int:
 # attachment lists and, for an inject, the kind that makes the classifier
 # count it as a turn opener. Everything else about the row is recomputed by
 # ``_ChatSlot.append`` or belongs to the process that wrote it.
-_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
+_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind", "queuedEntryId")
+
+#: The row the dispatch handed the turn being admitted (``_current_message``).
+#: Admission sets it around its awaited marker write, in the turn's own task,
+#: so no other turn reads it (:func:`_local_turn_opening_row`).
+TURN_DISPATCH_ROW: "ContextVar[dict[str, Any] | None]" = ContextVar(
+    "kirocrew_turn_dispatch_row", default=None
+)
+
+#: The queue entry ids the drain consumed for the turn being started. A merged
+#: run of waiting sends anchors on its last row, so the dispatch row alone names
+#: one entry; the marker carries the rest from here. Set by the drain around the
+#: task's creation, so the turn's task inherits it.
+TURN_DISPATCH_ENTRY_IDS: "ContextVar[tuple[str, ...]]" = ContextVar(
+    "kirocrew_turn_dispatch_entry_ids", default=()
+)
+
+
+@contextlib.contextmanager
+def dispatched_entries(consumed: "Iterable[Mapping[str, Any]]") -> "Iterator[None]":
+    """Start the turn created inside the block as the queue entries *consumed*."""
+    ids = tuple(
+        entry_id for item in consumed if isinstance(entry_id := item.get("id"), str) and entry_id
+    )
+    previous = TURN_DISPATCH_ENTRY_IDS.get()
+    TURN_DISPATCH_ENTRY_IDS.set(ids)
+    try:
+        yield
+    finally:
+        TURN_DISPATCH_ENTRY_IDS.set(previous)
 
 
 #: Roles whose row opens a turn by itself. ``inject`` opens one only with a
@@ -70,8 +102,23 @@ def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
     transcript row again, not an admission. A copy outside
     ``local_turn_prompt_within_bounds`` (serialized size, attachment count,
     per-field length) is not carried at all.
+
+    A queued send whose row was written when it was sent is the exception: its
+    row can sit above a later reply, so the tail walk would miss it. When the
+    dispatch row (:data:`TURN_DISPATCH_ROW`) carries a ``queuedEntryId`` and is
+    still in the window, that row is the opener, and its copy keeps the id so
+    the restore can retire the entry's queue copy in the same write. A merged
+    run's other entries (:data:`TURN_DISPATCH_ENTRY_IDS`) ride along as
+    ``queuedEntryIds`` for the same reason.
     """
-    for row in reversed(slot.messages):
+    current = TURN_DISPATCH_ROW.get()
+    current_meta = current.get("meta") if isinstance(current, dict) else None
+    entry_id = current_meta.get("queuedEntryId") if isinstance(current_meta, dict) else None
+    if isinstance(entry_id, str) and entry_id and any(r is current for r in slot.messages):
+        rows: "list[dict[str, Any]]" = [current]  # type: ignore[list-item]
+    else:
+        rows = list(reversed(slot.messages))
+    for row in rows:
         role = row.get("role")
         if role == "assistant" and row.get("content"):
             return None
@@ -82,6 +129,11 @@ def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
                 for key in _LOCAL_TURN_PROMPT_META_KEYS
                 if isinstance(meta, dict) and key in meta
             }
+            # A merged run anchors on its last row: name every entry it ran, so
+            # the restore retires each one's queue copy, not only the anchor's.
+            merged = [i for i in TURN_DISPATCH_ENTRY_IDS.get() if i != entry_id]
+            if isinstance(entry_id, str) and entry_id and row is current and merged:
+                kept_meta["queuedEntryIds"] = merged
             # No ``cls``: the transcript never persists one for a ``user`` or
             # ``inject`` row, and a cron inject's in-memory ``cls`` is JSON that
             # the emit path would parse into ``meta`` over the row's real

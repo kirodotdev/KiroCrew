@@ -193,6 +193,10 @@ async def test_recovery_leaves_unaccepted_cards_in_the_same_slot(
         await asyncio.wait_for(drain_restored_parked_sends(state), timeout=30)
         if memory_pending:
             assert calls == [] and len(slot._queue) == len(saved)
+            # While the drain waits on memory, an accepted send is shown as the
+            # work it is, never as a held card; only the unaccepted ones are held.
+            if not cancelled:
+                assert slot.queue_held_depth == len(plain)
             drained.clear()
             state.memory_startup_task.set_result(None)
             await await_until(drained)

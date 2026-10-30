@@ -20,7 +20,19 @@ import { usePasteTokens } from '../chat-core/composer/pasteEditor'
  *  queue card is noise at scale — they collapse into one progress line
  *  (SubagentDeliveryProgress) instead of the interactive QueueStack. */
 export function isSystemDelivery(m: ChatMessage): boolean {
+  // A held entry (restored after a restart) is the person's own words whatever
+  // its text opens with: the gateway restores only plain prompts. It must stay
+  // an actionable card on every surface, since only the person moves it.
+  if (isHeldQueued(m)) return false
   return hasSubagentCompletionPrefix(m.content || '')
+}
+
+/** A queued entry the gateway restored after a restart and holds for the
+ *  person (`is_held_queue_entry`): no drain starts it, so every surface that
+ *  draws queue cards must draw it with Send now. Read from `meta.held`, the
+ *  server's structural flag, never from the text. */
+export function isHeldQueued(m: ChatMessage): boolean {
+  return m.meta?.held === true
 }
 
 /** A queued entry that must NOT render as an interactive (edit/cancel) user
@@ -35,6 +47,7 @@ export function isSystemDelivery(m: ChatMessage): boolean {
  *  filtered out of the QueueStack (sub-agent deliveries are still counted for
  *  the progress line via isSystemDelivery). */
 export function isNonInteractiveQueued(m: ChatMessage): boolean {
+  if (isHeldQueued(m)) return false
   return isSystemDelivery(m) || parseRecoveryMessage(m.content || '') !== null
 }
 
@@ -445,7 +458,7 @@ function EditInput({ initial, onCommit, onCancel, onDraftChange, pastes = [] }: 
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft, onReorder, fuseBelow = true, pendingIds }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft, onReorder, fuseBelow = true, pendingIds, turnRunning = false }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
@@ -462,6 +475,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
    *  is only retired once the server confirms, that second request races the
    *  first and comes back 404, reporting a failure for an action that worked. */
   pendingIds?: ReadonlySet<string>
+  /** A turn is running in this slot. A held card's Send now waits for it to
+   *  end: the gateway refuses Send now on a held card behind a running turn. */
+  turnRunning?: boolean
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -635,6 +651,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                 </span>
               </span>
             ) : null
+            // Restored after a restart: nothing will send it on its own, so the
+            // card says so in words and drops the "next up" hourglass motion.
+            const isHeld = m.meta?.held === true
 
             return (
               // The motion box only places the card (peek offset, scale, layer);
@@ -679,7 +698,19 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
               >
                 <span className="flex items-center gap-1.5 h-full">
                   <span className="shrink-0 text-[10px] font-mono opacity-50 w-4 text-center">{i + 1}</span>
-                  {isFrontCollapsed && (
+                  {isHeld ? (
+                    <span
+                      className="shrink-0 inline-flex items-center text-[11px] uppercase tracking-wide opacity-80 cursor-help"
+                      // The hint names only the controls this card has: a card
+                      // whose row is already written offers only Send now, and
+                      // a stack with no Edit (a crewmate chat) offers Send now
+                      // and Cancel.
+                      title={i18nT(m.meta?.rowWritten === true ? 'components.queueStack.held_hint_sent' : onEdit ? 'components.queueStack.held_hint' : 'components.queueStack.held_hint_no_edit')}
+                      data-testid="queue-card-held"
+                    >
+                      {i18nT('components.queueStack.held')}
+                    </span>
+                  ) : isFrontCollapsed && (
                     <span className="shrink-0 inline-flex animate-[hourglass-flip_3s_ease-in-out_infinite]">
                       <Hourglass size={13} />
                     </span>
@@ -756,7 +787,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                           </button>
                         </>
                       )}
-                      {onEdit && showActions && !isAppEntry && (
+                      {onEdit && showActions && !isAppEntry && m.meta?.rowWritten !== true && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
@@ -770,15 +801,21 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                       {onInterrupt && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors text-[var(--text)] disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
+                          // A held card runs only when nothing else is running
+                          // (the gateway answers 409 `held_turn_running`), so
+                          // its Send now waits for the current turn to end.
+                          title={i18nT(isHeld && turnRunning ? 'components.queueStack.held_send_now_after_turn' : 'components.queueStack.interrupt_current_turn_and_send_this_now')}
                           aria-label={i18nT('components.queueStack.send_now')}
-                          disabled={isPending}
+                          disabled={isPending || (isHeld && turnRunning)}
                           onClick={(e) => { e.stopPropagation(); onInterrupt(queueId!) }}
                         >
                           <Zap size={13} fill="currentColor" />
                         </button>
                       )}
-                      {onCancel && showActions && (
+                      {/* A held card whose row is already in the transcript has
+                          no Cancel: the gateway refuses it (409
+                          `queue_item_already_sent`), and Send now is its way out. */}
+                      {onCancel && showActions && m.meta?.rowWritten !== true && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT(isAppEntry ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
@@ -815,6 +852,7 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.messages.length === next.messages.length &&
   prev.fuseBelow === next.fuseBelow &&
   prev.pendingIds === next.pendingIds &&
+  prev.turnRunning === next.turnRunning &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&

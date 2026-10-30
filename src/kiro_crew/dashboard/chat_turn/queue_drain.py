@@ -36,7 +36,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
     REFUSAL_WAKE_LOOP_ID_META_KEY,
 )
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, is_held_queue_entry
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
@@ -75,7 +75,10 @@ if TYPE_CHECKING:
         _actor_for_queue_items,
         _drop_stale_admissions,
     )
-    from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
+    from kiro_crew.dashboard.chat_turn.turn_marker import (
+        _gateway_shutdown_requested,
+        dispatched_entries,
+    )
 
 
 def _arm_queued_delivery_settlement(
@@ -236,6 +239,22 @@ MEMORY_PREPARATION_PARKED_TEXT = (
     "ℹ️ Memory is still being prepared after the gateway restart. "
     "Queued messages will run when it is ready."
 )
+
+
+def _next_dispatchable_entry(slot: _ChatSlot, required_queue_id: str | None) -> dict | None:
+    """The entry the drain would start: the named card, else the first one not held.
+
+    ``None`` means the drain has nothing it may start: a queue holding only
+    restored cards waits for Send now, an edit or a delete
+    (:func:`is_held_queue_entry`).
+    """
+    for item in slot._queue:
+        if required_queue_id:
+            if item.get("id") == required_queue_id:
+                return item
+        elif not is_held_queue_entry(item):
+            return item
+    return None
 
 
 def _memory_preparation_pending(state: DashboardState) -> bool:
@@ -535,7 +554,9 @@ async def _start_next_queued_turn(
     # first would consume input that never runs, so leave the queue as it is
     # (cards stay visible, order unchanged) and let the preparation task's
     # completion drain it (`_arm_parked_queue_drain`).
-    if slot._queue and _memory_preparation_pending(state):
+    if _next_dispatchable_entry(
+        slot, required_queue_id
+    ) is not None and _memory_preparation_pending(state):
         _arm_parked_queue_drain(state, slot, notice=True)
         return False
 
@@ -565,8 +586,11 @@ async def _start_next_queued_turn(
     # Withheld when the next queued item carries a structural origin tag -- a cron
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
-    # USER turn, and that cycle's own flush delivers it afterwards.
-    if not (slot._queue and slot._queue[0].get("kind")):
+    # USER turn, and that cycle's own flush delivers it afterwards. "Next" is the
+    # entry this drain would start, not the queue head: a held card at the head
+    # is passed by, and the entry behind it decides.
+    next_entry = _next_dispatchable_entry(slot, required_queue_id)
+    if not (next_entry is not None and next_entry.get("kind")):
         try:
             slot.flush_deferred_notes()
         except Exception:
@@ -580,7 +604,10 @@ async def _start_next_queued_turn(
                 exc_info=True,
             )
 
-    if not slot._queue:
+    # Held cards (restored from disk, see `is_held_queue_entry`) are not this
+    # drain's to start: a queue of only those is an empty queue here. A card the
+    # person named (`required_queue_id`) is the one way such an entry runs.
+    if _next_dispatchable_entry(slot, required_queue_id) is None:
         return False
 
     # The promise-only recovery continuation is queue_insert(0)'d at
@@ -637,6 +664,16 @@ async def _start_next_queued_turn(
             if work_ids and await service._cancelled_parked(work_ids) is not None:
                 slot.queue_remove_by_id(item["id"])
                 state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
+    # Again, right before the dequeue: the purges above may have dropped the
+    # only entry the drain owned, and every dequeue below reads from the head.
+    if _next_dispatchable_entry(slot, required_queue_id) is None:
+        return False
+    if not required_queue_id and is_held_queue_entry(slot._queue[0]):
+        # Bring the first entry the drain owns to the head. The held cards keep
+        # their own order behind it.
+        ready = next(item for item in slot._queue if not is_held_queue_entry(item))
+        slot.queue_promote_by_id(ready["id"])
 
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
@@ -1238,7 +1275,12 @@ async def _start_next_queued_turn(
         queued_work,
     )
 
-    with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
+    with (
+        independent_turn(),
+        initiated_by(queued_initiator(consumed)),
+        queued_work(consumed),
+        dispatched_entries(consumed),
+    ):
         task = spawn_guarded_turn(
             state,
             slot,

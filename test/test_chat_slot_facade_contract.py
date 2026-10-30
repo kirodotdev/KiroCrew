@@ -56,6 +56,7 @@ _TO_DICT_KEYS = (
     "preparing",
     "stop_declined",
     "queue_depth",
+    "queue_held_depth",
     "stopping",
     "pending_approval",
     "pending_approval_info",
