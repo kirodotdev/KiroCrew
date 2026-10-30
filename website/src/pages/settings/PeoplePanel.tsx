@@ -3,11 +3,12 @@
  *  and, when the Crew can tell, how much work that person has active and queued.
  *
  *  Access to a Crew is decided by the network and the sign-in in front of it.
- *  The in-Crew controls are the owner's Tailscale invite card
+ *  The in-Crew control is the owner's Tailscale invite card
  *  (`TailscaleInvites.tsx`), which shares this machine through Tailscale and
- *  admits the login that accepted, and the access card (`TailscaleAccess.tsx`),
- *  where, only with local authorization on, the owner approves a person who
- *  is waiting. Otherwise Tailscale access rules alone decide direct-link access.
+ *  admits the login that accepted. Tailscale access rules decide direct-link
+ *  access, and people are managed (and removed) in Tailscale.
+ *  Each section keeps a heading and at most one short line; longer
+ *  explanations sit in the ⓘ beside the heading.
  *  There is no role or admin control, and no
  *  management URL is ever taken from a peer or from config. An enterprise Crew
  *  points to its console only when its capabilities say one is configured.
@@ -18,29 +19,20 @@
  *  who has been seen, each network adapter read-only and Remote Control; a
  *  Console Crew shows read-only Team Access and its Console link only; an
  *  invalid team setup shows an error, never the personal surface. */
-import type { ReactNode } from 'react'
-import { Trans } from 'react-i18next'
-import { ExternalLink, Users } from 'lucide-react'
+import { Users } from 'lucide-react'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, Btn, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
 import { SharedAccessSetup } from './SharedAccessSetup'
-import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TAILSCALE_USERS_URL, TeamConfigInvalid } from './PeopleModes'
+import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TeamConfigInvalid, headingTip } from './PeopleModes'
 import { TailscaleInvites } from './TailscaleInvites'
-import { TailscaleAccess } from './TailscaleAccess'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
 import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { TailnetDirectLink, tailnetDirectActive } from '../../components/TailnetDirectLink'
-import InfoTip from '../../components/InfoTip'
-
-/** The catalog marks the first "tailnet" with `<tip>`; it gets the definition. */
-function TailnetTerm({ children }: { children?: ReactNode }) {
-  return <>{children}<span className="inline-flex align-middle ml-0.5"><InfoTip text={i18nT('sharedCrew.tailnet_definition')} /></span></>
-}
 
 function sourceLabel(source: PeopleSource): string {
   switch (source) {
@@ -131,7 +123,6 @@ function PeopleContent({ capabilities, data, modeData }: {
     return (
       <div className="flex flex-col gap-4" data-testid="people-personal">
         <SharedAccessSetup capabilities={capabilities} />
-        <TailscaleAccess />
         <TailscaleInvites />
         <RemoteControlCard />
       </div>
@@ -164,14 +155,13 @@ function PeopleContent({ capabilities, data, modeData }: {
   const networkExtras = (
     <>
       {tailnetDirectActive(direct) && (
-        <SettingsSection title={i18nT('sharedCrew.direct_share_title')}>
+        <SettingsSection title={i18nT('sharedCrew.direct_share_title')} badge={headingTip(i18nT('sharedCrew.direct_link_note'), 'direct-share-tip')}>
           <SettingsCard>
             {/* No hand-off: the invite form below holds unsaved emails, name, picture and API key. */}
-            <TailnetDirectLink direct={direct} askAgent={false} />
+            <TailnetDirectLink direct={direct} askAgent={false} showNote={false} />
           </SettingsCard>
         </SettingsSection>
       )}
-      <TailscaleAccess />
       <TailscaleInvites />
       <RemoteControlCard />
     </>
@@ -197,55 +187,41 @@ function PeopleContent({ capabilities, data, modeData }: {
   }
   const usageAvailable = !!data.usage_available
   const directoryOn = capabilityUsable(data.directory.state) && capabilityUsable(capabilities.authoritative_directory)
+  const directoryPeople = directoryOn ? (data.directory.people ?? []) : []
+  // The section's longer notes, in the ⓘ beside its heading.
+  const seenTip = [
+    i18nT('sharedCrew.people_seen_note'),
+    !usageAvailable && i18nT('sharedCrew.usage_unavailable'),
+    capabilities.attribution_via === 'tailscale_direct' && i18nT('sharedCrew.people_direct_caveat'),
+    attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),
+  ].filter(Boolean).join(' ')
   return (
     <div className="flex flex-col gap-4" data-testid="people-panel">
       {adaptersSection}
-      <SettingsSection title={i18nT('sharedCrew.people_seen_title')}>
+      <SettingsSection title={i18nT('sharedCrew.people_seen_title')} badge={headingTip(seenTip, 'people-seen-tip')}>
         <SettingsCard>
-          <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_note')}</p>
           {data.people.length === 0 ? (
-            <p className="text-[13px] text-muted pt-2">{i18nT('sharedCrew.people_seen_empty')}</p>
+            <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_empty')}</p>
           ) : (
             <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.people_seen_title')}>
               {data.people.map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={usageAvailable} />)}
             </ul>
-          )}
-          {!usageAvailable && <p className="text-[12px] text-muted pt-2">{i18nT('sharedCrew.usage_unavailable')}</p>}
-          {capabilities.attribution_via === 'tailscale_direct' && (
-            <p className="text-[12px] text-muted pt-2" data-testid="people-direct-caveat">{i18nT('sharedCrew.people_direct_caveat')}</p>
-          )}
-          {attributionReason === 'daemon_not_found' && (
-            <p className="text-[12px] text-muted pt-2" data-testid="people-daemon-not-found">{i18nT('sharedCrew.people_daemon_not_found')}</p>
-          )}
-        </SettingsCard>
-      </SettingsSection>
-      <SettingsSection title={i18nT('sharedCrew.directory_title')}>
-        <SettingsCard>
-          {directoryOn && (data.directory.people?.length ?? 0) > 0 ? (
-            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.directory_title')}>
-              {(data.directory.people ?? []).map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={usageAvailable} />)}
-            </ul>
-          ) : (
-            <p className="text-[13px] text-muted">{i18nT('sharedCrew.directory_unavailable')}</p>
-          )}
-        </SettingsCard>
-      </SettingsSection>
-      <SettingsSection title={i18nT('sharedCrew.access_title')}>
-        <SettingsCard>
-          <p className="text-[13px] text-muted" data-testid="access-tailscale">
-            <Trans i18nKey="sharedCrew.access_tailscale" components={{ tip: <TailnetTerm /> }} />
-          </p>
-          {pointer === 'tailscale_admin' && (
-            <a className="inline-flex items-center gap-1 text-[13px] text-accent pt-1" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="tailscale-admin-link">
-              {i18nT('sharedCrew.access_tailscale_link')}
-              <ExternalLink size={12} className="lucide-inline" aria-hidden />
-            </a>
           )}
           {pointer === 'console' && (
             <p className="text-[13px] text-muted pt-1" data-testid="console-pointer">{i18nT('sharedCrew.access_console')}</p>
           )}
         </SettingsCard>
       </SettingsSection>
+      {/* Shown only when the directory has people: an empty one says nothing useful. */}
+      {directoryPeople.length > 0 && (
+        <SettingsSection title={i18nT('sharedCrew.directory_title')}>
+          <SettingsCard>
+            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.directory_title')}>
+              {directoryPeople.map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={usageAvailable} />)}
+            </ul>
+          </SettingsCard>
+        </SettingsSection>
+      )}
       {networkExtras}
     </div>
   )

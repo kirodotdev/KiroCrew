@@ -58,8 +58,10 @@ function CopyUrl({ url, askAgent }: { url: string; askAgent: boolean }) {
 }
 
 /** `askAgent` offers the agent hand-off on a copy failure. A host that keeps
- *  unsaved drafts beside the link passes false, since the hand-off leaves it. */
-export function TailnetDirectLink({ direct, askAgent = true }: { direct: TailnetDirect | undefined; askAgent?: boolean }) {
+ *  unsaved drafts beside the link passes false, since the hand-off leaves it.
+ *  `showNote` false leaves out the who-can-open note, for a host that shows it
+ *  in its heading's ⓘ instead. */
+export function TailnetDirectLink({ direct, askAgent = true, showNote = true }: { direct: TailnetDirect | undefined; askAgent?: boolean; showNote?: boolean }) {
   if (!tailnetDirectActive(direct)) return null
   const [primary, ...fallbacks] = direct.urls
   return (
@@ -77,7 +79,7 @@ export function TailnetDirectLink({ direct, askAgent = true }: { direct: Tailnet
           </div>
         </details>
       )}
-      <p className="text-[12px] text-muted">{i18nT('sharedCrew.direct_link_note')}</p>
+      {showNote && <p className="text-[12px] text-muted">{i18nT('sharedCrew.direct_link_note')}</p>}
     </div>
   )
 }

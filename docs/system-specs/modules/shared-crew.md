@@ -1367,18 +1367,31 @@ A source answers from state it already holds; it does no I/O on the request path
   `unknown`), from `host_power.note_host`, which `host_power.probe_after_start`
   runs in a background task after the listener is up (see Access set, Keep awake).
 
-In network mode the "How people connect" section opens the People page, with the
-Tailscale row first. Its badge reads "Listening on your tailnet" while
-`tailnet_direct.state` is `active`, and the adapter's setup state otherwise; it
-reports the gateway's own listener and never claims the viewer can reach it. Under
-the row a line says the Crew is shared only inside the owner's tailnet (messages
-still go to the model service, so it does not say the data stays on owned
-machines). Next to the sharing docs link sits "Manage people in Tailscale"
+In network mode the People page reads, top to bottom: How people connect, Seen in
+this Crew, Assigned users (only when the directory lists people), Share this Crew
+(only while the direct listener is active), Invite over Tailscale and Remote
+Control. Each section keeps its heading, its controls and links, and at most one
+short line; every longer explanation sits in an `InfoTip` beside the heading
+(`PeopleModes.headingTip`). Seen in this Crew's tip holds the not-a-full-list note,
+the usage, device-owner and daemon notes; Share this Crew's holds who can open the
+link; Invite over Tailscale's holds the invite explanation and, without a key, the
+by-hand share steps; the API key label has its own tip; Remote Control's holds its
+personal-only note.
+
+How people connect lists Tailscale first, then Kiro login (still "Not available in
+this build"). Systems Manager is not listed. The Tailscale row's badge reads
+"Listening on your tailnet" while `tailnet_direct.state` is `active`, and the
+adapter's setup state otherwise; it reports the gateway's own listener and never
+claims the viewer can reach it. Its tip carries what the former "Who can connect"
+section said: who reaches the Crew and that access is changed in Tailscale. Its one
+line says the Crew is shared only inside the owner's tailnet (messages still go to
+the model service, so it does not say the data stays on owned machines); that
+"tailnet" carries a tip defining it as the private network of devices signed in to
+the owner's Tailscale account (the catalog marks the word with `<tip>`, rendered
+through `Trans`). Next to the sharing docs link sits "Manage people in Tailscale"
 (`https://login.tailscale.com/admin/users`, a fixed URL, new tab, `noopener
-noreferrer`): removing a person from this Crew is removing them in Tailscale. In
-"Who can connect", the first "tailnet" carries an `InfoTip` defining it as the
-private network of devices signed in to the owner's Tailscale account (the catalog
-marks the word with `<tip>`, rendered through `Trans`).
+noreferrer`): removing a person from this Crew is removing them in Tailscale. The
+People page has no approval list: who gets in is decided in Tailscale.
 
 The People surface (Settings > People) shows one setup empty state while no setup
 path is `available` and no one but the viewer has been seen: it names the three paths, each with the availability its

@@ -40,6 +40,11 @@ function actionButtons() {
   return screen.queryAllByRole('button').filter(b => b.getAttribute('aria-label') !== 'More information')
 }
 
+/** The text of the ⓘ inside the element with this test id. */
+function tipText(testId: string) {
+  return screen.getByTestId(testId).querySelector('button[aria-label="More information"]')?.getAttribute('title') ?? ''
+}
+
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={qc}><PeoplePanel /></QueryClientProvider>)
@@ -79,8 +84,10 @@ describe('PeoplePanel', () => {
     expect(screen.getByText('Seen connecting')).toBeInTheDocument()
     expect(screen.getByText('Created sessions')).toBeInTheDocument()
     expect(screen.getAllByTestId('person-usage')[0].textContent).toBe('1 running · 2 waiting')
-    expect(screen.getByText(/has no assigned-user directory/)).toBeInTheDocument()
-    expect(screen.getByTestId('tailscale-admin-link')).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
+    // An empty directory renders no section; the Tailscale users link is the row's.
+    expect(screen.queryByText('Assigned users')).toBeNull()
+    expect(screen.getByTestId('adapter-tailscale-manage')).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
+    expect(tipText('people-seen-tip')).toMatch(/not a full list of who can connect/)
     // Nothing on this surface manages membership.
     expect(actionButtons()).toHaveLength(0)
     expect(screen.queryByText(/add|remove|role|admin/i, { selector: 'button' })).toBeNull()
@@ -91,8 +98,7 @@ describe('PeoplePanel', () => {
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
     expect(await screen.findByTestId('console-pointer')).toBeInTheDocument()
-    expect(screen.queryByTestId('tailscale-admin-link')).toBeNull()
-    expect(screen.getByText(/cannot report how much work/)).toBeInTheDocument()
+    expect(tipText('people-seen-tip')).toMatch(/cannot report how much work/)
   })
 
   it('shows a capabilities read failure with agent recovery, never unavailable attribution', async () => {
@@ -135,7 +141,8 @@ describe('PeoplePanel', () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'degraded', reasons: { attribution: 'daemon_not_found' } })
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
-    expect(await screen.findByTestId('people-daemon-not-found')).toBeInTheDocument()
+    await screen.findByTestId('people-seen-tip')
+    expect(tipText('people-seen-tip')).toMatch(/not running/i)
     expect(screen.getByTestId('people-panel')).toBeInTheDocument()
   })
 
@@ -229,10 +236,9 @@ describe('PeoplePanel modes', () => {
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
     expect(screen.getByTestId('adapter-tailscale')).toHaveAttribute('data-state', 'available')
     expect(screen.getByTestId('adapter-tailscale-docs')).toHaveAttribute('href', 'https://tailscale.com/kb/1084/sharing')
-    expect(screen.getByTestId('adapter-systems_manager').textContent).toMatch(/IAM and Session Manager/)
-    expect(screen.getByTestId('adapter-systems_manager').textContent).toMatch(/credited to whoever runs this Crew/)
-    expect(screen.getByTestId('adapter-systems_manager').textContent).not.toMatch(/Unattributed/)
-    expect(screen.getByTestId('adapter-ssm-docs')).toHaveAttribute('href', expect.stringContaining('session-manager'))
+    // Systems Manager is not offered on this surface.
+    expect(screen.queryByTestId('adapter-systems_manager')).toBeNull()
+    expect(tipText('remote-control-tip')).toMatch(/for you only/)
     expect(screen.getByTestId('adapter-kiro_login').textContent).toContain('Not available in this build')
     expect(screen.getByTestId('remote-control-setup')).toBeInTheDocument()
     expect(await screen.findByTestId('remote-control-unavailable')).toBeInTheDocument()
@@ -330,10 +336,11 @@ describe('PeoplePanel direct tailnet link', () => {
     const field = link.querySelector('input') as HTMLInputElement
     expect(field.value).toBe('http://crew.tail1234.ts.net:5476/')
     expect(field.value).not.toMatch(/token/)
-    expect(link).toHaveTextContent('By default, anyone allowed by Tailscale access rules')
-    expect(link).toHaveTextContent('With local authorization on')
+    // The who-can-open note sits in the section heading's ⓘ, not under the link.
+    expect(link).not.toHaveTextContent('By default, anyone allowed by Tailscale access rules')
+    expect(tipText('direct-share-tip')).toMatch(/By default, anyone allowed by Tailscale access rules/)
     expect(screen.getAllByRole('button', { name: 'Copy' }).length).toBeGreaterThan(0)
-    expect(screen.getByTestId('people-direct-caveat').textContent).toMatch(/owns each device/)
+    expect(tipText('people-seen-tip')).toMatch(/owns each device/)
   })
 
   it('shows no link when the direct listener is not active', async () => {
@@ -343,7 +350,7 @@ describe('PeoplePanel direct tailnet link', () => {
     mount()
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
     expect(screen.queryByTestId('tailnet-direct-link')).toBeNull()
-    expect(screen.queryByTestId('people-direct-caveat')).toBeNull()
+    expect(tipText('people-seen-tip')).not.toMatch(/owns each device/)
   })
 
   it('points the macOS empty state at the direct link', async () => {
@@ -397,15 +404,17 @@ describe('PeoplePanel Tailscale row', () => {
     expect(screen.getByTestId('adapter-tailscale')).toHaveTextContent('Available')
   })
 
-  it('defines tailnet with a help tip on its first use under Who can connect', async () => {
+  it('defines tailnet in the row line and folds who-can-connect into the row tip', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    const access = await screen.findByTestId('access-tailscale')
-    expect(access).toHaveTextContent(/^People on your tailnet reach this Crew/)
-    const tip = access.querySelector('button[aria-label="More information"]')
-    expect(tip).toHaveAttribute('title', 'Your tailnet is the private network of devices signed in to your Tailscale account.')
-    expect(access.textContent).not.toContain('<tip>')
+    const scope = await screen.findByTestId('adapter-tailscale-scope')
+    expect(scope).toHaveTextContent('Shared only inside your own tailnet.')
+    expect(scope.textContent).not.toContain('<tip>')
+    expect(tipText('adapter-tailscale-scope')).toBe('Your tailnet is the private network of devices signed in to your Tailscale account.')
+    expect(tipText('adapter-tailscale-tip')).toMatch(/To change who can connect, manage people and access rules in Tailscale/)
+    expect(screen.queryByText('Who can connect')).toBeNull()
+    expect(screen.queryByText('Who can open this Crew')).toBeNull()
   })
 })

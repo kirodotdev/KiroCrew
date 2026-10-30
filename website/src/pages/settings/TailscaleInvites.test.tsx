@@ -57,8 +57,10 @@ describe('TailscaleInvites', () => {
     read.mockResolvedValue(status({ connected: false }))
     mount()
     expect(await screen.findByTestId('invite-connect')).toBeInTheDocument()
-    expect(screen.getByTestId('invite-connect')).toHaveTextContent('For the direct link, Tailscale access rules apply.')
-    expect(screen.getByTestId('invite-connect')).toHaveTextContent('If local authorization is on')
+    // The by-hand explanation and the key help sit in ⓘ tips; the links stay visible.
+    const tip = (id: string) => screen.getByTestId(id).querySelector('button[aria-label="More information"]')?.getAttribute('title') ?? ''
+    expect(tip('invite-tip')).toContain('For the direct link, Tailscale access rules apply.')
+    expect(tip('invite-key-tip')).toMatch(/expires/)
     expect(screen.getByTestId('invite-admin-share')).toHaveAttribute('href', 'https://login.tailscale.com/admin/machines')
     expect(screen.getByTestId('invite-admin-keys')).toHaveAttribute('href', 'https://login.tailscale.com/admin/settings/keys')
     const input = screen.getByTestId('invite-key-input')

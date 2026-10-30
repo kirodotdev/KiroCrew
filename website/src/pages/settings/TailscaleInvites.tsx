@@ -28,6 +28,7 @@ import {
   type TailscaleInvitesStatus,
 } from '../../api/sharedCrewInvites'
 import { SettingsCard, SettingsSection } from '../../components/settings'
+import { headingTip } from './PeopleModes'
 import { Badge, Btn, Input, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -106,11 +107,12 @@ function ConnectForm() {
   const valid = looksLikeApiKey(key)
   return (
     <div className="flex flex-col gap-3 min-w-0" data-testid="invite-connect">
-      <p className="text-[13px] text-muted">{i18nT('sharedCrew.invite_manual_body')}</p>
       <ExtLink href={TAILSCALE_ADMIN_MACHINES_URL} label={i18nT('sharedCrew.invite_manual_link')} testId="invite-admin-share" />
       <div className="flex flex-col gap-1.5 pt-2 border-t border-border min-w-0">
-        <label htmlFor="tailscale-api-key" className="text-sm font-medium text-text-strong">{i18nT('sharedCrew.invite_key_label')}</label>
-        <p className="text-[12px] text-muted">{i18nT('sharedCrew.invite_key_help')}</p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <label htmlFor="tailscale-api-key" className="text-sm font-medium text-text-strong">{i18nT('sharedCrew.invite_key_label')}</label>
+          {headingTip(i18nT('sharedCrew.invite_key_help'), 'invite-key-tip')}
+        </div>
         <ExtLink href={TAILSCALE_ADMIN_KEYS_URL} label={i18nT('sharedCrew.invite_key_link')} testId="invite-admin-keys" />
         <form
           className="flex flex-wrap gap-2 items-center min-w-0"
@@ -372,7 +374,12 @@ export function TailscaleInvites() {
   // Missing routes and an initial owner-only refusal intentionally hide the card.
   if (!status && (!query.isError || code === 'owner_only')) return null
   return (
-    <SettingsSection title={i18nT('sharedCrew.invite_title')}>
+    // The explanation sits in the heading's ⓘ; without a key it also says how to
+    // share this machine by hand.
+    <SettingsSection
+      title={i18nT('sharedCrew.invite_title')}
+      badge={headingTip(status && !status.connected ? `${i18nT('sharedCrew.invite_body')} ${i18nT('sharedCrew.invite_manual_body')}` : i18nT('sharedCrew.invite_body'), 'invite-tip')}
+    >
       {query.isError && (
         <div>
           {/* No hand-off: cached content holds the unsaved key or invite emails, name and picture. */}
@@ -382,7 +389,6 @@ export function TailscaleInvites() {
       )}
       {status && <SettingsCard>
         <div className="flex flex-col gap-2 min-w-0" data-testid="tailscale-invites">
-          <p className="text-[13px] text-muted">{i18nT('sharedCrew.invite_body')}</p>
           {status.connected ? <Connected status={status} /> : <ConnectForm />}
         </div>
       </SettingsCard>}
