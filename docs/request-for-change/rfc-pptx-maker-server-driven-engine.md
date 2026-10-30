@@ -3,9 +3,9 @@ title: "PPTX Maker: follow SDPM v0.10"
 status: draft
 author: sktok
 created: 2026-09-30
-last-audited: 2026-09-30
-audited-at: ad5b1e670
-doc-pr: 15308
+last-audited: 2026-10-30
+audited-at: fe535ad137
+doc-pr: 22323
 implementation-prs: [15394]
 tracking-issues: []
 supersedes: []
@@ -17,28 +17,27 @@ superseded-by: []
 PPTX Maker (`src/kiro_crew/apps/builtins/pptx_maker/`, opt-in builtin) wraps the
 public [spec-driven-presentation-maker](https://github.com/aws-samples/sample-spec-driven-presentation-maker)
 engine (SDPM) at a pinned release. It is pinned at v0.3.8; the engine is at
-v0.10.1. This RFC proposes following v0.10.1, and records the app changes that
-following requires, because two of them replace user-facing capabilities and
+v0.10.4. This RFC proposes following v0.10.4, and records the app changes that
+following requires, because one of them replaces a user-facing capability and
 the First Principles lane reads that decision off the base branch.
 
 ## Summary
 
 Following SDPM v0.10 cannot be a pin bump: the engine moved its layout, removed
 tools the app's agents call, and moved each role's procedure from client prompts
-into the server. The app therefore changes in two ways that follow from the
-engine, and one that does not:
+into the server. The app therefore changes in two ways, both following from the
+engine:
 
-- **Required by the engine**
-  1. The four app agents (`pptx-maker-spec`, `-vibe`, `-style`, `-composer`) are
-     replaced by one `pptx-maker` agent with no prompt of its own, the shape SDPM
-     prescribes for Kiro CLI. The old names are removed without an alias.
-  2. After a Kiro Crew update moves the pin, deck chats stay disabled until the
-     user clicks Update on the page. Nothing is fetched automatically.
-- **Decided at the same time, independent of the engine**
-  3. "Start a deck" opens the chat inside the PPTX Maker page, beside the deck
-     preview, instead of navigating to `/chat`.
+1. The four app agents (`pptx-maker-spec`, `-vibe`, `-style`, `-composer`) are
+   replaced by one `pptx-maker` agent with no prompt of its own, the shape SDPM
+   prescribes for Kiro CLI. The old names are removed without an alias.
+2. After a Kiro Crew update moves the pin, the user installs the new engine
+   with the page's existing button. Nothing is fetched automatically. The agent
+   is registered again after provisioning and after a deck-root change.
 
-Existing users keep their decks, styles, templates and pinned items.
+Existing users keep their decks, styles, templates and pinned items. Where
+"Start a deck" opens the chat is unchanged; moving it is deferred to a separate
+change.
 
 ## Motivation: what v0.10 breaks
 
@@ -57,15 +56,17 @@ release.
 
 ## Goals
 
-- Run SDPM v0.10.1 through its documented client contract.
+- Run SDPM v0.10.4 through its documented client contract.
 - Keep existing users' decks, styles, templates and pins, with no manual step
-  beyond one Update click.
-- Keep the deck preview on screen while the agent works (decision 3).
+  beyond one Install click.
 
 ## Non-goals
 
 - Outline editing, a translation entry point, PPTX import/sync UI, richer slide
   animation — each is a separate change.
+- Changing where "Start a deck" opens the chat. The mode buttons keep navigating
+  to `/chat`; showing the chat beside the deck preview is deferred to a separate
+  change with its own decision record.
 - Automatic engine updates.
 - Resuming chats opened on the removed agents.
 
@@ -88,8 +89,23 @@ one-shot silent slot context (`POST /api/chat/slots/{slot}/context`, as Papyrus
 does), using the line SDPM's orchestrator reads (`Interaction mode: dialogue` /
 `fast`).
 
-Four thin agents would also work, but each would hold the same server and tools
-and differ in one sentence — the per-mode client wiring the engine moved out.
+Keeping four agents is possible, but it does not avoid rewriting them. SDPM
+v0.10.4 has no `mcp-local/acp-agent-prompts/` (every agent's `prompt`) and no
+`skill/references/workflows/` (their `resources`), and its local server
+(`servers/local/server_acp.py`) no longer registers 8 of the 19 MCP tools the
+spec, vibe and composer agents are granted: `read_workflows`,
+`init_presentation`, `pptx_to_json`, `measure_slides`, `list_asset_sources`,
+`list_guides`, `list_workflows` and `read_examples`. Each agent's prompt and tool
+list is rewritten either way.
+
+v0.10's design removes the reason to keep separate agents. One engine switches
+modes itself: the MCP prompts `sdpm-spec`, `sdpm-vibe` and `sdpm-style`
+(`sdpm/sdpm/tools/prompts.py`) each name an entry tool, and `start_presentation`,
+`start_composing` and `start_style` (`sdpm/sdpm/entry.py`) return the role
+document from `sdpm/references/workflows/`. `orchestrator.md` there accepts any
+sub-agent that has the sdpm tools as a composer, including a copy of itself.
+Four agents would hold the same server and tools and differ in one sentence each,
+and users would see four PPTX Maker agents where one does the job.
 
 SDPM's web-only `hearing` tool is not mounted; `@kirocrew-core/ask_question`
 gives native question cards. No `autoApprove` / `allowedTools`, as today.
@@ -101,44 +117,30 @@ in the deck directory, not the conversation: a new chat resumes any deck through
 `start_composing`. An old slot fails on its next turn with the standard
 "Crew Member … is unavailable" error.
 
-#### 2. Explicit engine update gate
+#### 2. Explicit engine update, re-registered agent
 
-Engine code is fetched on a user click only, as today. What is new is the
-window between a Kiro Crew update and that click, in which the installed engine
-is v0.3.8 and the shipped agent expects v0.10.1:
+Engine code is fetched on a user click only, as today. Between a Kiro Crew
+update and that click, the installed engine is v0.3.8 and the shipped agent
+expects v0.10.4. The page treats that window like a first install: the source
+marker no longer matches the pin, so `/engine` reports the engine as not ready
+and the banner offers Install. There is no deferred registration and no
+update-specific display.
 
-- The agent is not registered while the installed engine does not match the pin.
-- `/engine` reports `installedTag`, `updateRequired` and `agentReady`; the page
-  shows "the engine needs to be updated (v0.3.8 → v0.10.1)" and disables the mode
-  buttons until engine and agent are both ready.
-- Provisioning reports `done` only after it registered the agent under the app
-  lifecycle lock.
-- Deck browsing and the user's own Library keep working before the update.
+- Provisioning reports `done` only after it registered the agent again under
+  the app lifecycle lock, and a successful `PUT /config` does the same. v0.10
+  confines attachments and deck writes to `SDPM_DECK_ROOT`, which is rendered
+  into the agent config at registration, and both first-run seeding and the
+  Settings page change the deck root.
+- Deck browsing keeps working before the update.
 
 The update took about 20 s end to end on a v0.3.8 install.
 
-### Decided at the same time
-
-#### 3. Chat beside the deck
-
-`docs/system-specs/modules/pptx-maker.md` gives the page's purpose as showing
-"every deliverable appearing as it is written", but `PptxMakerPage.tsx`
-`startChat` navigates to `/chat`, so the preview is off screen for the whole
-build. The mode buttons instead render `components/ChatPane` — the native pane
-the Crew Members page embeds — beside the deck viewer. It is resizable, the slot
-is kept in the URL (`?chat=`), and "open in full chat" goes to `/chat` on request.
-Native follow-ups, question cards, approvals and tool groups are unchanged
-because the pane is the same surface, not a reduced embed.
-
-This is bundled because the page's start flow is rewritten for decision 1
-anyway. It can be split out if reviewers prefer; decisions 1 and 2 do not depend
-on it.
-
 ## Backward compatibility
 
-Breaking: the four agent names. Writers on main at `ad5b1e670`: the app's agent
-templates, `PptxMakerPage.tsx`, `test_pptx_maker_agents.py` and the app spec, all
-changed in the implementation PR.
+Breaking: the four agent names. Writers on main at `fe535ad137`: the app's agent
+templates and `app.json`, `backend/routes.py`, `PptxMakerPage.tsx`, the
+`pptx-maker` skill, the app spec and their tests, all changed in the
+implementation PR.
 
 Compatible: SDPM's user config (`config.json`, `state.json`, `styles/`,
 `templates/`) and the deck root are read unchanged. Verified on a v0.3.8 install
@@ -149,9 +151,8 @@ decks are listed. A pinned built-in style that SDPM removed is ignored by SDPM.
 
 Unchanged: sha256-pinned archive and safe extraction, per-action tool mounts
 with no pre-approval, path containment and redaction on served artifacts, SVG
-sanitising. New page surfaces (outline storyboard, deck name from the outline,
-layout regions) go through the existing readers and render agent text only as
-text nodes.
+sanitising. The deck name taken from the outline goes through the existing
+readers and is rendered only as text.
 
 ## Alternatives considered
 
@@ -167,6 +168,4 @@ text nodes.
 
 ## Open questions
 
-- Should decision 3 ship in the same PR, or separately? The implementation
-  ([#15394](https://github.com/kirodotdev/KiroCrew/pull/15394)) includes it;
-  splitting it is mechanical.
+None.
