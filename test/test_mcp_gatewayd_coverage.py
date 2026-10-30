@@ -1390,11 +1390,23 @@ class TestMain:
 
 class TestMetricEmitters:
     def test_backend_acquire_metric_carries_the_warm_attribute(self, monkeypatch):
-        rec = MagicMock()
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+        from kiro_crew.metrics.recorder import MetricsRecorder
+
+        reader = InMemoryMetricReader()
+        rec = MetricsRecorder(MeterProvider(metric_readers=[reader]).get_meter("test"))
         monkeypatch.setattr(gw, "get_recorder", lambda: rec)
         gw._emit_backend_acquire_metric(12.5, warm=True)
-        assert rec.histogram.call_args.args[0] == "kirocrew.mcp.backend.acquire.duration"
-        assert rec.histogram.call_args.kwargs["attrs"] == {"warm": True}
+        points = [
+            (metric.name, dict(dp.attributes), dp.sum)
+            for rm in reader.get_metrics_data().resource_metrics
+            for sm in rm.scope_metrics
+            for metric in sm.metrics
+            for dp in metric.data.data_points
+        ]
+        assert points == [("kirocrew.mcp.backend.acquire.duration", {"warm": True}, 12.5)]
 
     def test_lazy_load_metrics_also_emit_the_acquire_histogram(self, monkeypatch):
         rec = MagicMock()
