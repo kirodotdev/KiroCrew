@@ -73,19 +73,22 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
       // one card named exactly like this (artifacts.list).
       {...guidePick(a.name, setNodeRef)}
       {...listeners}
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(a.slug)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(a.slug)
-        }
-      }}
       style={{ opacity: isDragging ? 0.4 : 1 }}
-      className="mb-3 mr-3 rounded-lg border border-border bg-card overflow-hidden hover:border-border-strong hover:shadow-md transition-all cursor-pointer"
+      className="relative mb-3 mr-3 rounded-lg border border-border bg-card overflow-hidden hover:border-border-strong hover:shadow-md transition-all cursor-pointer"
     >
-      {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
+      {/* The card is a plain container. Opening it is this button, laid over
+        * the whole card so a click anywhere still opens it; the star / pop-out
+        * / delete buttons are its siblings and sit above it. They used to be
+        * nested inside a role="button" card whose key handler took their
+        * Enter/Space and opened the artifact instead. The ring is inset and
+        * rounded like the card, because the card clips its overflow. */}
+      <button
+        type="button"
+        onClick={() => onOpen(a.slug)}
+        aria-label={a.name}
+        className="absolute inset-0 rounded-lg cursor-pointer bg-transparent border-none p-0 focus-visible:-outline-offset-2"
+      />
+      {/* Preview is non-interactive so clicks fall through to the open button. */}
       <div className="pointer-events-none">
         {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} goalReport={a.goal_report === true} /> : <ContentThumb content={content} kind={a.kind} />}
       </div>
@@ -117,17 +120,18 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
         )}
         <div className="flex items-center justify-between mt-2">
           <span className="text-[11px] text-muted">{i18nT('pages.artifactsPage.v')}{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
-          <div className="flex items-center gap-1">
+          {/* `relative` lifts the actions above the card's open button. */}
+          <div className="relative flex items-center gap-1">
             {/* Star sits FIRST: it is persistent state (and the retention
               * control that exempts an auto-registered widget from
               * prune_auto_widgets), so it reads apart from the one-shot
               * pop-out / delete actions that follow. Not overlaid on the
               * thumbnail — that layer is pointer-events-none so clicks fall
-              * through to the card's onClick. */}
+              * through to the card's open button. */}
             <button
               type="button"
               disabled={pinningSlug === a.slug}
-              onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
+              onClick={() => onTogglePin(a)}
               className={`p-1 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted hover:text-accent'}`}
               title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
               aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
@@ -139,7 +143,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             </button>
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
+              onClick={() => openPopout(a.slug, a.name)}
               className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
               title={i18nT('pages.artifactsPage.pop_out_into_its_own_window')}
               aria-label={i18nT('pages.artifactsPage.pop_out_to_window')}
@@ -149,7 +153,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             <button
               type="button"
               disabled={deleting}
-              onClick={(e) => { e.stopPropagation(); onDelete(a) }}
+              onClick={() => onDelete(a)}
               className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
               title={i18nT('pages.artifactsPage.remove_from_library')}
               aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}

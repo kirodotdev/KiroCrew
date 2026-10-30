@@ -74,9 +74,9 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
   const stats = folderSubtreeStats(folders, folder.id)
   const renaming = actions.renamingId === folder.id
   const preview = previewArtifacts.slice(0, 3)
-  const cardRef = useRef<HTMLDivElement | null>(null)
+  const openRef = useRef<HTMLButtonElement | null>(null)
   const restoreCardFocus = (reason: 'enter' | 'escape' | 'blur') => {
-    if (reason !== 'blur') requestAnimationFrame(() => cardRef.current?.focus({ preventScroll: true }))
+    if (reason !== 'blur') requestAnimationFrame(() => openRef.current?.focus({ preventScroll: true }))
   }
   return (
     <DndDroppable id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
@@ -84,14 +84,9 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
         <DndDraggable id={`folder:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
           {({ setNodeRef: setDragRef, listeners, isDragging }) => (
             <div
-              ref={(el) => { setDropRef(el); setDragRef(el); cardRef.current = el }}
+              ref={(el) => { setDropRef(el); setDragRef(el) }}
               {...(renaming ? {} : listeners)}
-              onClick={() => { if (!renaming) actions.onOpen(folder.id) }}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (!renaming && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.onOpen(folder.id) } }}
-              aria-label={i18nT('pages.artifactsPage.open_folder', { name: folder.name })}
-              className={`group mb-3 rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-border-strong hover:shadow-md ${
+              className={`group relative mb-3 rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-border-strong hover:shadow-md ${
                 isOver ? 'border-accent ring-2 ring-accent/40 bg-accent/5' : 'border-border'
               }`}
               style={{
@@ -99,8 +94,26 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
                 ...(folder.color && !isOver ? { borderLeft: `3px solid ${folder.color}` } : {}),
               }}
             >
-              {/* Content glimpse: up to three mini previews of what's inside. */}
-              <div className={`grid gap-1.5 mb-2.5 ${preview.length === 3 ? 'grid-cols-3' : preview.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {/* The card is a plain container. Entering the folder is this
+                * button, laid over the whole card so a click anywhere still
+                * enters it; the ⋯ menu and the rename field are its siblings
+                * and sit above it. The menu used to be nested inside a
+                * role="button" card whose key handler took its Enter/Space and
+                * entered the folder instead of opening the menu. Disabled while
+                * renaming, so a click on the card does not enter the folder
+                * mid-rename. */}
+              <button
+                ref={openRef}
+                type="button"
+                disabled={renaming}
+                onClick={() => actions.onOpen(folder.id)}
+                aria-label={i18nT('pages.artifactsPage.open_folder', { name: folder.name })}
+                className="absolute inset-0 rounded-lg cursor-pointer bg-transparent border-none p-0 disabled:cursor-default"
+              />
+              {/* Content glimpse: up to three mini previews of what's inside.
+                * Click-through, so its faded and positioned parts cannot sit
+                * above the open button and swallow a click. */}
+              <div className={`pointer-events-none grid gap-1.5 mb-2.5 ${preview.length === 3 ? 'grid-cols-3' : preview.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
                 {preview.length > 0 ? (
                   preview.map((a) => <FolderMiniThumb key={a.slug} a={a} />)
                 ) : (
@@ -110,8 +123,11 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <FolderGlyph folder={folder} size={17} />
-                <div className="min-w-0 flex-1">
+                {/* FolderGlyph is positioned, so it would paint above the open
+                  * button and take its clicks; let them through. */}
+                <span className="flex pointer-events-none shrink-0"><FolderGlyph folder={folder} size={17} /></span>
+                {/* `relative` while renaming lifts the field above the open button. */}
+                <div className={`min-w-0 flex-1${renaming ? ' relative' : ''}`}>
                   {renaming ? (
                     <FolderNameInput
                       initial={folder.name}
@@ -128,7 +144,8 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
                     {stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
                   </div>
                 </div>
-                <div className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity shrink-0">
+                {/* `relative` lifts the menu above the open button. */}
+                <div className="relative opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity shrink-0">
                   <FolderMenu folder={folder} folders={folders} actions={actions} />
                 </div>
               </div>
