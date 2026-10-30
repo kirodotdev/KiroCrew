@@ -500,3 +500,116 @@ class TestSpawnStatusAndListShowAQueuedRun:
         ):
             out = spawn_tools.spawn_list("spawn_list", {})
         assert out.splitlines()[0] == "No subagents running."
+
+
+class TestSpawnSubAgentsReleasesDeferredMembers:
+    """A member settled because a gate deferral holds it is named to the gateway
+    once, before the resume hold, so the parent's wait stops awaiting it. Only a
+    nested parent (``subagent:``) has a wait to release; a chat turn sends none."""
+
+    @staticmethod
+    def _wave(monkeypatch, parent: str, *, release_answers: list[dict] | None = None):
+        class _Time:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                cls.now += 0.001
+                return cls.now
+
+            @staticmethod
+            def sleep(_s: float) -> None:
+                pass
+
+        ids = iter(["a1", "q1"])
+        calls: list[tuple[str, str, object]] = []
+        polls_of_a = {"n": 0}
+        resume = iter([{"known": True, "granted": False}, {"known": True, "granted": True}])
+        releases = iter(release_answers or [])
+
+        def _post(path: str, body: dict, **kw: object) -> dict:
+            calls.append(("POST", path, body))
+            if path == "/api/spawn":
+                aid = next(ids)
+                return {
+                    "id": aid,
+                    **({"status": "queued", "reason": "low_memory"} if aid == "q1" else {}),
+                }
+            if path.endswith("/release-deferred"):
+                assert kw.get("session_key") == parent
+                return next(releases, {"released": body["ids"], "resumed": False})
+            return {}
+
+        def _get(path: str, **_kw: object) -> dict:
+            calls.append(("GET", path, None))
+            if "/resume" in path:
+                return next(resume)
+            aid = path.rsplit("/", 1)[-1]
+            if aid == "a1":
+                polls_of_a["n"] += 1
+                done = polls_of_a["n"] >= 3
+                return {"id": "a1", "done": done, **({"result": "A"} if done else {})}
+            return {
+                "id": "q1",
+                "done": False,
+                "queued": True,
+                "reason": "low_memory",
+                "reason_detail": _DETAIL,
+            }
+
+        monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200")
+        with (
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
+            patch.object(spawn_tools.mcp_core, "time", _Time),
+            patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value=parent),
+            patch("kiro_crew.mcp_core.sel"),
+        ):
+            out = _settle(
+                spawn_tools.spawn_sub_agents(
+                    "spawn_sub_agents",
+                    {"agents": [{"prompt": "a"}, {"prompt": "q"}]},
+                )
+            )
+        return out, calls
+
+    def test_a_deferred_member_is_settled_once_and_released_once(self, monkeypatch) -> None:
+        out, calls = self._wave(monkeypatch, "subagent:p7")
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert releases == [("POST", "/api/spawn/p7/release-deferred", {"ids": ["q1"]})]
+        holds = [i for i, c in enumerate(calls) if "/resume" in c[1]]
+        assert len(holds) == 2, "the call returns once the second probe grants"
+        assert calls.index(releases[0]) < holds[0], "released before the first probe"
+        # q1 was read once in the wait (then settled) and once more in the result.
+        assert [c for c in calls if c[1] == "/api/spawn/q1"] == [("GET", "/api/spawn/q1", None)] * 2
+        records = [json.loads(chunk) for chunk in out.split("\n\n")]
+        assert [r["status"] for r in records if r.get("agent")] == ["completed"]
+        assert [r["agents"] for r in records if r.get("status") == "queued"] == [{"q1": _DETAIL}]
+
+    def test_a_release_that_failed_in_transport_is_sent_again(self, monkeypatch) -> None:
+        _out, calls = self._wave(
+            monkeypatch, "subagent:p7", release_answers=[{"transport_error": True}]
+        )
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert len(releases) == 2, "re-sent on the next probe, then not again"
+
+    def test_a_release_that_got_a_store_outage_is_sent_again(self, monkeypatch) -> None:
+        _out, calls = self._wave(
+            monkeypatch,
+            "subagent:p7",
+            release_answers=[
+                {
+                    "error": "task store unavailable; retry later",
+                    "code": "task_store_unavailable",
+                    "retry": True,
+                }
+            ],
+        )
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert len(releases) == 2, "re-sent after the 503 answer, then not again"
+
+    def test_a_chat_turn_parent_sends_no_release(self, monkeypatch) -> None:
+        out, calls = self._wave(monkeypatch, "chat-1")
+        assert not [c for c in calls if c[1].endswith("/release-deferred")]
+        assert not [c for c in calls if "/resume" in c[1]]
+        assert '"completed"' in out

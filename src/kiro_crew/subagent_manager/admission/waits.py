@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import logging as _logging
 import time as _time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from .._component import ManagerComponent
@@ -451,9 +452,10 @@ class _WaitsMixin(ManagerComponent):
             # the awaited set, so the wake stays "on the LAST child".
             if current is None or current.state != _taskq.WAITING_CHILDREN:
                 return
-            merged = list(current.resume_condition.ids)
-            merged.extend(i for i in outstanding if i not in merged)
-            current.resume_condition.ids = merged
+            # A child the tool released as deferred stays out of this wait.
+            current.resume_condition.ids = self._merge_awaited(
+                parent, list(current.resume_condition.ids), outstanding
+            )
             parent._wait_record = current.to_dict()
             store = self.taskq_store()
             if store is not None:
@@ -464,6 +466,9 @@ class _WaitsMixin(ManagerComponent):
                 except _taskq.TaskStoreUnavailable:
                     _glue_logger.debug("taskq: wait update for %s failed", parent_id, exc_info=True)
             return
+        outstanding = self._unreleased(parent, outstanding)
+        if not outstanding:
+            return
         record = _taskq.WaitRecord.children(
             outstanding,
             since=self._store_now(),
@@ -471,6 +476,35 @@ class _WaitsMixin(ManagerComponent):
             deadline_at=self.taskq_deadline_of(parent_id),
         )
         self.yield_slot(parent, record)
+
+    @staticmethod
+    def _merge_awaited(
+        parent: SubagentInfo, awaited: list[str], outstanding: list[str]
+    ) -> list[str]:
+        """The awaited set after a registration joins *outstanding* into *awaited*.
+
+        Children this run released as deferred are dropped from both lists, not
+        only from the ids being added: a release clears the in-memory record
+        only after its store write lands, so a registration that runs in between
+        still sees a released id there and must not write it back. When every
+        awaited id is released the record is left as it was, because a
+        ``waiting_children`` record names at least one child and the release
+        itself resumes the parent.
+        """
+        released = parent._deferred_released
+        merged = [i for i in awaited if i not in released]
+        merged.extend(i for i in outstanding if i not in merged and i not in released)
+        return merged or list(awaited)
+
+    @staticmethod
+    def _unreleased(parent: SubagentInfo, outstanding: list[str]) -> list[str]:
+        """*outstanding* without children this run has released as deferred.
+
+        A child id belongs to exactly one ``spawn_sub_agents`` call, so a
+        released id cannot belong to a later call and remains released for the
+        life of the run.
+        """
+        return [i for i in outstanding if i not in parent._deferred_released]
 
     async def taskq_child_registered_async(self, child: SubagentInfo) -> None:
         """:meth:`taskq_child_registered` for event-loop callers: the store
@@ -507,9 +541,10 @@ class _WaitsMixin(ManagerComponent):
         if parent._slot_released:
             if current is None or current.state != _taskq.WAITING_CHILDREN:
                 return
-            merged = list(current.resume_condition.ids)
-            merged.extend(i for i in outstanding if i not in merged)
-            current.resume_condition.ids = merged
+            # A child the tool released as deferred stays out of this wait.
+            current.resume_condition.ids = self._merge_awaited(
+                parent, list(current.resume_condition.ids), outstanding
+            )
             parent._wait_record = current.to_dict()
             if store is not None:
                 self._post_store_write(
@@ -521,6 +556,9 @@ class _WaitsMixin(ManagerComponent):
                     generation=parent._taskq_generation or None,
                 )
             return
+        outstanding = self._unreleased(parent, outstanding)
+        if not outstanding:
+            return
         record = _taskq.WaitRecord.children(
             outstanding,
             since=self._store_now(),
@@ -530,6 +568,118 @@ class _WaitsMixin(ManagerComponent):
         # The yield itself is loop bookkeeping; its row write is posted -- by
         # ``yield_slot``, which posts every wait write now.
         self.yield_slot(parent, record)
+
+    async def taskq_release_deferred_async(
+        self, parent_id: str, ids: Sequence[str]
+    ) -> dict[str, Any]:
+        """Stop awaiting the children *ids* that ``spawn_sub_agents`` settled as deferred.
+
+        The blocked tool settles a member a gate deferral holds and does not wait
+        for it; this is how it tells the gateway, so the parent's
+        ``waiting_children`` record stops awaiting it too. The gateway never
+        infers deferral for the awaited set itself. Only a live parent whose
+        slot is released and whose record is ``waiting_children`` is touched,
+        and only ids that are non-terminal children of that parent in the store
+        are dropped. When nothing the record awaits is non-terminal any more,
+        the parent's resume is requested. A store that cannot be read drops
+        nothing and resumes nothing. Idempotent.
+
+        Releases for one parent run one at a time: each reads the awaited set,
+        writes it and decides the resume, so an overlapping release could
+        otherwise write back an id the other one had just dropped.
+        """
+        parent = self._manager._agents.get(parent_id)
+        if parent is None or parent.done or not parent._slot_released:
+            return {"released": [], "resumed": False}
+        lock = getattr(parent, "_deferred_release_lock", None)
+        if lock is None:
+            lock = parent._deferred_release_lock = _asyncio.Lock()
+        async with lock:
+            return await self._release_deferred_locked(parent_id, ids)
+
+    async def _release_deferred_locked(self, parent_id: str, ids: Sequence[str]) -> dict[str, Any]:
+        """:meth:`taskq_release_deferred_async` under the parent's release lock.
+
+        The stored wait record is the one ``WaitLedger.on_child_terminal`` reads,
+        so the release reconciles THAT record on every call, in one
+        read-modify-write on the store's single writer thread, and never trusts
+        the in-memory copy to say what is stored. The requested ids join the
+        run's released set before the store is touched, so every registration
+        from then on leaves them out; one whose write was posted earlier lands
+        before this read, because the writer runs posts in order, and is
+        corrected here. The in-memory record follows only once the write landed.
+        A resend after a failed write therefore corrects the stored record even
+        when memory omits the id.
+        """
+        from kiro_crew import taskq as _taskq
+
+        unchanged: dict[str, Any] = {"released": [], "resumed": False}
+        parent = self._manager._agents.get(parent_id)
+        if parent is None or parent.done or not parent._slot_released:
+            return unchanged
+        current = _taskq.WaitRecord.from_dict(parent._wait_record)
+        if current is None or current.state != _taskq.WAITING_CHILDREN:
+            return unchanged
+        store = self.taskq_store()
+        if store is None:
+            return unchanged
+        wanted = [str(i) for i in dict.fromkeys(ids)]
+        generation = parent._taskq_generation or None
+        ledger = store  # narrowed to a store for the closure
+        added = [i for i in wanted if i not in parent._deferred_released]
+        parent._deferred_released.update(added)
+        released_snapshot = frozenset(parent._deferred_released)
+
+        def _reconcile() -> tuple[bool, list[str], list[str], set[str], set[str]]:
+            children = ledger.children_of(parent_id)
+            live = {c.id for c in children if c.state not in _taskq.TERMINAL}
+            terminal = {c.id for c in children if c.state in _taskq.TERMINAL}
+            row = ledger.get(parent_id)
+            stored = _taskq.WaitRecord.from_dict(row.wait) if row is not None else None
+            if stored is None or stored.state != _taskq.WAITING_CHILDREN:
+                return True, [], [], live, terminal
+            stored_ids = list(stored.resume_condition.ids)
+            # Only a released id that is a live child of this parent leaves the
+            # stored wait; the same test decides what memory drops below.
+            dropped = [i for i in stored_ids if i in released_snapshot and i in live]
+            kept = [i for i in stored_ids if i not in dropped]
+            if kept and kept != stored_ids:
+                # A ``waiting_children`` record names at least one child; when
+                # every awaited id is released the record keeps its ids and the
+                # resume below moves the row out of the wait.
+                stored.resume_condition.ids = kept
+                if not ledger.update_wait(parent_id, stored.to_dict(), generation=generation):
+                    # The generation or state fence refused the write: the
+                    # stored record is unchanged, so nothing is acknowledged.
+                    return False, [], [], live, terminal
+            return True, dropped, kept, live, terminal
+
+        try:
+            written, dropped, stored_kept, live, terminal = await store.run(_reconcile)
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: deferred release for %s failed", parent_id, exc_info=True)
+            return {**unchanged, "retry": True}
+        if not written:
+            _glue_logger.debug("taskq: deferred release write for %s was fenced", parent_id)
+            return {**unchanged, "retry": True}
+        # An id that is not a live child of this parent is not released.
+        parent._deferred_released.difference_update(i for i in added if i not in live)
+        released_now = set(parent._deferred_released)
+        latest = _taskq.WaitRecord.from_dict(parent._wait_record)
+        memory_ids: list[str] = []
+        if latest is not None and latest.state == _taskq.WAITING_CHILDREN:
+            memory_ids = list(latest.resume_condition.ids)
+            mem_kept = [i for i in memory_ids if i not in released_now]
+            if mem_kept and mem_kept != memory_ids:
+                latest.resume_condition.ids = mem_kept
+                parent._wait_record = latest.to_dict()
+        released = [i for i in wanted if i in live and (i in dropped or i in memory_ids)]
+        still_awaited = {i for i in [*stored_kept, *memory_ids] if i not in released_now}
+        waiting = any(i not in terminal for i in still_awaited)
+        resumed = False
+        if not waiting:
+            resumed = self.request_resume(parent, reason="awaited children released as deferred")
+        return {"released": released, "resumed": resumed}
 
     @staticmethod
     def _child_registration_reads(
