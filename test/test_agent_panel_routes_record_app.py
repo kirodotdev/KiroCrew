@@ -400,3 +400,13 @@ async def test_an_append_that_does_not_land_is_reported_as_failed(installed_app,
         assert resp.status == 503, await resp.text()
         assert (await resp.json())["code"] == "append_failed"
         assert not app["state"].broadcasts
+
+
+async def test_an_apps_declared_max_age_lands_on_its_row(installed_app):
+    """The app route checks ``max_age_s`` with the shared body check AND carries it to
+    the append, so its record reads as stale like a cron's does."""
+    async with _app_client() as c:
+        resp = await _post(c, {"type": "scan", "data": {"n": 1}, "max_age_s": 600})
+        assert resp.status == 200, await resp.text()
+    row = _custom_fold()["latest"][f"{APP_KEY}__scan"]
+    assert row["max_age_s"] == 600 and row["stale_after"].endswith("+00:00")

@@ -481,3 +481,126 @@ class TestAWarmV1Turn:
         assert seen == [(SLUG, SLUG)], seen
         assert "Fields on your page that did not resolve: x." in full
         assert "[MEMBER IDENTITY]" not in full
+
+
+class TestAFieldThatNeverResolves:
+    """``fold_unseen`` stays quiet for a fresh page and is named once it persists.
+
+    Nearby inputs: a fresh crewmate with no data (quiet), a custom field whose bound
+    script cron has never run (quiet), one whose bound cron has run but only just now
+    (quiet: the turn reads with no prime wait), the same past five minutes (named), any
+    fold field unseen just under and at the day bound.
+    """
+
+    SLOT = "slot-under-test"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, _floor_monkeypatch):
+        dashboard_agentic._UNSEEN_SINCE.clear()
+        self.ran = False
+        _floor_monkeypatch.setattr(dashboard_agentic, "_bound_cron_has_run", lambda _m: self.ran)
+        yield
+        dashboard_agentic._UNSEEN_SINCE.clear()
+
+    def _manifest(self) -> Any:
+        return _manifest(
+            price={"type": "number", "source": {"fold": "custom", "path": "latest.stock.data.p"}},
+            goals={"type": "number", "source": {"fold": "work", "path": "a.b"}},
+        )
+
+    def _seen_unseen_for(self, name: str, seconds: float) -> None:
+        import time
+
+        slot = dashboard_agentic._UNSEEN_SINCE.setdefault(self.SLOT, {})
+        slot[name] = time.monotonic() - seconds
+
+    def _promote(self) -> dict[str, str]:
+        unresolved = {"price": FOLD_UNSEEN, "goals": FOLD_UNSEEN}
+        dashboard_agentic._promote_unseen(self.SLOT, MEMBER, self._manifest(), unresolved)
+        return unresolved
+
+    def test_a_fresh_crewmate_with_no_data_is_quiet(self) -> None:
+        unresolved = self._promote()
+        assert unresolved == {"price": FOLD_UNSEEN, "goals": FOLD_UNSEEN}
+        assert dashboard_agentic.unresolved_line(self._manifest(), unresolved) == ""
+
+    def test_a_custom_field_whose_bound_cron_never_ran_is_quiet(self) -> None:
+        self._seen_unseen_for("price", 3600)
+        assert self._promote()["price"] == FOLD_UNSEEN
+
+    def test_a_bound_cron_that_ran_just_now_is_not_yet_reported(self) -> None:
+        self.ran = True
+        assert self._promote()["price"] == FOLD_UNSEEN
+
+    def test_a_bound_cron_that_ran_and_landed_nothing_is_reported(self) -> None:
+        self.ran = True
+        self._seen_unseen_for("price", dashboard_agentic.NEVER_RESOLVED_CRON_AFTER_S)
+        unresolved = self._promote()
+        assert unresolved["price"] == dashboard_agentic.NEVER_RESOLVED_CRON
+        assert unresolved["goals"] == FOLD_UNSEEN, "only a custom field waits on a cron"
+        line = dashboard_agentic.unresolved_line(self._manifest(), unresolved)
+        assert "price (a script cron bound to you has run" in line and "goals" not in line
+
+    def test_a_custom_field_with_no_cron_is_reported_at_the_day_bound_and_not_before(
+        self,
+    ) -> None:
+        """No bound cron has run (bound to no crewmate, or none exists): a day empty."""
+        self._seen_unseen_for("price", dashboard_agentic.NEVER_RESOLVED_AFTER_S - 60)
+        assert self._promote()["price"] == FOLD_UNSEEN
+        self._seen_unseen_for("price", dashboard_agentic.NEVER_RESOLVED_AFTER_S)
+        unresolved = self._promote()
+        assert unresolved["price"] == dashboard_agentic.NEVER_RESOLVED
+        line = dashboard_agentic.unresolved_line(self._manifest(), unresolved)
+        assert "price (no record has landed here for a day" in line
+
+    @pytest.mark.parametrize("fold", ["panel", "goal", "waiting", "work"])
+    def test_a_fold_whose_empty_state_is_normal_is_never_promoted(self, fold) -> None:
+        """A never-published panel, no goal yet, nothing waiting: not a bad binding."""
+        manifest = _manifest(
+            note={"type": "string", "source": {"fold": fold, "path": "a.b"}},
+        )
+        _sl = dashboard_agentic._UNSEEN_SINCE.setdefault(self.SLOT, {})
+        import time
+
+        _sl["note"] = time.monotonic() - 10 * dashboard_agentic.NEVER_RESOLVED_AFTER_S
+        self.ran = True
+        unresolved = {"note": FOLD_UNSEEN}
+        dashboard_agentic._promote_unseen(self.SLOT, MEMBER, manifest, unresolved)
+        assert unresolved == {"note": FOLD_UNSEEN}
+
+    def test_a_field_that_resolves_starts_its_wait_again(self) -> None:
+        self._seen_unseen_for("price", dashboard_agentic.NEVER_RESOLVED_AFTER_S)
+        dashboard_agentic._promote_unseen(
+            self.SLOT, MEMBER, self._manifest(), {"goals": FOLD_UNSEEN}
+        )
+        assert self._promote()["price"] == FOLD_UNSEEN
+
+
+def test_bound_script_runs_are_read_off_the_store(tmp_path, monkeypatch) -> None:
+    """Only a SCRIPT job bound to this member that has finished a run counts."""
+    import json
+
+    from kiro_crew import cron
+
+    monkeypatch.setattr(cron, "config_dir", lambda: tmp_path)
+    jobs = [
+        {
+            "id": "a",
+            "script": "s.py:run",
+            "member_id": "m1",
+            "last_run_ts": 5.0,
+            "last_status": "error",
+            "last_error": "crew_log_unavailable",
+        },
+        {"id": "b", "script": "s.py:run", "member_id": "m1", "last_run_ts": None},
+        {"id": "c", "message": "hi", "member_id": "m1", "last_run_ts": 5.0},
+        {"id": "d", "script": "s.py:run", "member_id": "m2", "last_run_ts": 5.0},
+    ]
+    for job in jobs:
+        job.setdefault("name", job["id"])
+        job.setdefault("schedule", {"kind": "every", "every_secs": 60})
+    (tmp_path / "crons.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    runs = cron.bound_script_runs_from_disk("m1")
+    assert [run["id"] for run in runs] == ["a"]
+    assert runs[0]["last_error"] == "crew_log_unavailable"
+    assert cron.bound_script_runs_from_disk("") == []

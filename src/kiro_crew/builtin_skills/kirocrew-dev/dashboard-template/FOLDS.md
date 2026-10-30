@@ -54,7 +54,7 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
 | `goal` | slot | This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
 | `waiting` | slot | What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
-| `custom` | slot | The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it |
+| `custom` | slot | The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since |
 | `workers` | slot | The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
 | `worker` *(internal)* | slot | One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
@@ -387,12 +387,14 @@ Moved by: `dashboard/waiting_changed`.
 
 ## `custom`
 
-The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it.
+The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since.
 
-Moved by: `dashboard/custom_value`.
+Moved by: `dashboard/custom_failed`, `dashboard/custom_value`.
 
 | Field | Type | Optional |
 |---|---|---|
+| `failures` | `array` | no |
+| `failures_omitted` | `number` | no |
 | `latest` | `object` | no |
 | `types_omitted` | `number` | no |
 | `wrote` | `number` | no |

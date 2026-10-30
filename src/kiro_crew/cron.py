@@ -125,6 +125,7 @@ from kiro_crew.cron_service.model import (  # noqa: F401 -- re-exported
 from kiro_crew.cron_service.readers import (  # noqa: F401 -- re-exported
     _SKILL_TOKEN_RE,
     _captured_template_id,
+    bound_script_runs_from_disk,
     dispatched_agents_from_disk,
     enabled_count_from_disk,
     job_agent_names_from_disk,

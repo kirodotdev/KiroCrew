@@ -12,6 +12,7 @@ from typing import Any, Final, cast
 
 from kiro_crew.crew_log.entry_types import (
     CUSTOM_ENTRY_TYPE,
+    CUSTOM_FAILED_ENTRY_TYPE,
     CUSTOM_FOLD_NAME,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_FOLD_NAME,
@@ -745,8 +746,11 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _custom_start,
         _custom_step,
         _custom_render,
-        affects=frozenset({CUSTOM_ENTRY_TYPE}),
+        # A bound cron's FAILED run is folded here too, so its records read as failed
+        # rather than current. Version moved: the stored state gained ``failures``.
+        affects=frozenset({CUSTOM_ENTRY_TYPE, CUSTOM_FAILED_ENTRY_TYPE}),
         count_rows=_custom_rows,
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
     # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
     # and when, under the cap. What each worker is doing is ``worker``, merged in at

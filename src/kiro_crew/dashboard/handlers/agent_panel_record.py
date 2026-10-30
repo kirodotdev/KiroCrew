@@ -43,11 +43,16 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.entry_types import (
     CUSTOM_ENTRY_TYPE,
+    CUSTOM_ERROR_LIMIT,
+    CUSTOM_FAILED_ENTRY_TYPE,
+    CUSTOM_MAX_AGE_MAX_S,
+    CUSTOM_MAX_AGE_MIN_S,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
     CUSTOM_TYPE_NAME_LIMIT,
 )
 from kiro_crew.crew_log.projection_dashboard import (
+    custom_max_age_ok,
     custom_record_depth,
     custom_record_fits,
     custom_type_name_ok,
@@ -169,17 +174,8 @@ async def _resolve_record_writer(
         )
     job_id = session.removeprefix("cron:").split(":")[0]
 
-    def _resolve() -> RecordWriter:
-        from kiro_crew.execution_context import member_config_for_id
-
-        cfg = KiroCrewConfig.load()
-        crew_name, _member = member_config_for_id(cfg, str(member_id))
-        slug = members_mod.member_slug(crew_name, cfg)
-        members_mod.validate_slug(slug)
-        return RecordWriter(f"cron:{job_id}", crew_name, slug, _panel_slot(cfg, crew_name, slug))
-
     try:
-        return await asyncio.to_thread(_resolve), None
+        return await asyncio.to_thread(_cron_writer, job_id, str(member_id)), None
     except MemberSlugError:
         return None, _refuse(
             request, sk, "bad_crew_slug", "this crew's name has no addressable slug", 400
@@ -197,6 +193,62 @@ async def _resolve_record_writer(
             "the crewmate this cron job is bound to could not be resolved",
             409,
         )
+
+
+def _cron_writer(job_id: str, member_id: str) -> RecordWriter:
+    """The writer cron *job_id* bound to *member_id* is, with its crewmate's slot.
+
+    Shared by the record door and :func:`record_cron_failure`, so a record and a
+    failure of one job name the same writer and land in the same slot. Blocking IO;
+    raises what ``member_config_for_id`` and ``validate_slug`` raise.
+    """
+    from kiro_crew.execution_context import member_config_for_id
+
+    cfg = KiroCrewConfig.load()
+    crew_name, _member = member_config_for_id(cfg, member_id)
+    slug = members_mod.member_slug(crew_name, cfg)
+    members_mod.validate_slug(slug)
+    return RecordWriter(f"cron:{job_id}", crew_name, slug, _panel_slot(cfg, crew_name, slug))
+
+
+def record_cron_failure(job_id: str, member_id: str, error: str) -> bool:
+    """Append a ``dashboard/custom_failed`` entry for a bound script cron's failed run.
+
+    Called by the scheduler, never by a route: the job id and member come from the
+    scheduler's own record of the job, so no script can write or forge one. Without it
+    a failed run writes nothing, and a page bound to the job's record keeps showing the
+    last good value as if it were current.
+
+    BEST-EFFORT and TOTAL: the run has already failed, so a crewmate with no crew log
+    yet, the crew panel off, or an append that does not land answers ``False`` and
+    changes nothing else. The error is scrubbed like a record and cut to
+    :data:`CUSTOM_ERROR_LIMIT`. Blocking IO.
+    """
+    if not job_id or not member_id:
+        return False
+    try:
+        if not crew_log_emit.enabled() or not members_mod.crew_panel_enabled():
+            return False
+        resolved = _cron_writer(job_id, member_id)
+        from kiro_crew.dashboard.handlers.member_dashboard import _newest_unit
+
+        unit = _newest_unit(resolved.slot)
+        if not unit:
+            return False
+        entry: dict[str, Any] = {
+            "writer": resolved.writer,
+            "error": _scrubbed(str(error or ""))[:CUSTOM_ERROR_LIMIT],
+            "member": resolved.slug,
+            "crew_key": agent_panel.crew_key(resolved.crew_name),
+        }
+        if not crew_log_emit.dashboard_entry_fits(CUSTOM_FAILED_ENTRY_TYPE, entry):
+            return False
+        return bool(
+            crew_log_emit.on_dashboard_custom_failed(unit, entry, timeout=_APPEND_FLUSH_SECONDS)
+        )
+    except Exception:
+        logger.debug("dashboard record: cron %s's failure was not recorded", job_id, exc_info=True)
+        return False
 
 
 def _over_quota(writer: str, now: float | None = None) -> bool:
@@ -305,13 +357,22 @@ def _unique_key(out: Mapping[Any, Any], key: Any, suffixes: dict[Any, int]) -> A
 def _record_body_refusal(body: Any) -> tuple[str, str] | None:
     """``(code, error)`` for a body the door refuses, or ``None`` for one it takes.
 
-    Only ``type`` and ``data`` are read. Anything else in the body is ignored rather
-    than refused, so a client that adds a field later is not broken by an older
-    gateway -- but no other key is ever read, which is what keeps ``writer``,
-    ``member`` and ``crew_key`` the gateway's alone.
+    Only ``type``, ``data`` and the optional ``max_age_s`` are read. Anything else in
+    the body is ignored rather than refused, so a client that adds a field later is not
+    broken by an older gateway -- but no other key is ever read, which is what keeps
+    ``writer``, ``member`` and ``crew_key`` the gateway's alone.
     """
     if not isinstance(body, dict):
         return "invalid_body", "body must be a JSON object"
+    if body.get("max_age_s") is not None and not custom_max_age_ok(body.get("max_age_s")):
+        # Refused rather than dropped: a script that asked for staleness and got none
+        # would draw a record that never reads as stale, the failure this field exists
+        # to prevent.
+        return (
+            "bad_max_age",
+            f"max_age_s must be a whole number of seconds from {CUSTOM_MAX_AGE_MIN_S} to "
+            f"{CUSTOM_MAX_AGE_MAX_S}",
+        )
     name = body.get("type")
     if not isinstance(name, str) or not custom_type_name_ok(name):
         return (
@@ -413,7 +474,9 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     if bad is not None:
         code, error = bad
         return web.json_response({"error": error, "code": code}, status=400)
-    return await record_through_door(request, resolved, body["type"], body["data"])
+    return await record_through_door(
+        request, resolved, body["type"], body["data"], max_age_s=body.get("max_age_s")
+    )
 
 
 async def record_through_door(
@@ -424,6 +487,7 @@ async def record_through_door(
     *,
     caller: str = "",
     operation: str = _OPERATION,
+    max_age_s: int | None = None,
 ) -> web.Response:
     """Steps 3b and 4 of the door, for a caller the route has ALREADY resolved,
     counted against its quota, and whose record has passed :func:`_record_body_refusal`:
@@ -472,6 +536,8 @@ async def record_through_door(
         "member": resolved.slug,
         "crew_key": agent_panel.crew_key(resolved.crew_name),
     }
+    if max_age_s is not None:
+        entry["max_age_s"] = int(max_age_s)
 
     def _append() -> str:
         # The crewmate's LIVE DM unit, the one its page reads. Imported here, not at

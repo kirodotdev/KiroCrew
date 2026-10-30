@@ -319,6 +319,21 @@ class TestCrewLogAppend:
             "token": "signed-run-token",
         }
 
+    def test_a_declared_max_age_rides_in_the_body_and_only_when_given(self, ctx, gateway):
+        """``max_age_s`` is the script's freshness promise; omitted, the body is unchanged."""
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
+
+        ctx.crew_log_append("stock_check", {"price": 1}, max_age_s=600)
+        ctx.crew_log_append("stock_check", {"price": 2})
+
+        first, second = gateway.seen
+        assert json.loads(first.data) == {
+            "type": "stock_check",
+            "data": {"price": 1},
+            "max_age_s": 600,
+        }
+        assert "max_age_s" not in json.loads(second.data)
+
     def test_the_record_is_redacted_like_a_notification(self, ctx, gateway):
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
 
