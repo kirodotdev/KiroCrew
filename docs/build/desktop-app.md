@@ -1077,6 +1077,21 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+**On macOS the band alone cannot keep the bar draggable.** Because the band is
+prepended, every later `no-drag` rectangle that reaches into it wins, including
+ones nobody can see there: a theme pack's decoration iframes (the exemption list
+covers every `iframe`, and a pack's top-bar strip and full-window overlays sit
+at `top: 0`) and transcript content scrolled up under the glass header (inside
+the `tabIndex={-1}` scroller, and taken from layout without clipping to it).
+Either one leaves the bar unable to move or zoom the window. So whenever the
+local header is on screen, docked or peeked in focus mode, `App.tsx` also
+renders `.host-drag-strip` divs over the header's control-free gaps, painted
+after everything else: the gaps come from `computeHeaderDragGaps` in
+[`dragGaps.ts`](../../website/src/lib/dragGaps.ts), which pads every control so
+a strip never covers one, and `observeHeaderLayout` re-measures them on every
+header reflow so a control that appears later is never left under a stale
+strip.
+
 #### Focus mode: verify these seams after an Electron or Radix bump
 
 Focus mode (hide the shell chrome behind hover) rests on five mechanisms that
