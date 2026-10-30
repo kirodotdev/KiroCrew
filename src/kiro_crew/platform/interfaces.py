@@ -1084,6 +1084,8 @@ BUILTIN_PROVISIONER_ID = "aws_ec2"
 from kiro_crew.platform.interfaces_runtime import (  # noqa: E402,F401 - re-exported
     PROVIDER_ACTION_LOGIN,
     AudioChunk,
+    CloudInstancePolicy,
+    CloudInstancePolicyProvider,
     DashboardContributor,
     FeedbackTrackerProvider,
     JailProvider,
