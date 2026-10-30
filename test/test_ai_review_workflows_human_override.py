@@ -1294,6 +1294,20 @@ class TestOverrideHandlerRecordsAClass:
         assert env["ACTOR"] == "${{ github.event.sender.login }}"
         assert env["COMMENT_AUTHOR"] == "${{ github.event.comment.user.login }}"
 
+    def test_the_edited_trigger_is_what_makes_the_sender_author_split_reachable(self) -> None:
+        """`edited` is load-bearing, not a convenience: an edit is the only way `ACTOR`
+        and `COMMENT_AUTHOR` can differ, because on `created` the sender IS the comment
+        author. Drop it and the sender-vs-author comparison, and its refusal notice,
+        become unreachable. Nothing else would say so: the handler still runs, no
+        refusal is posted, and the tests that cover the comparison drive the extracted
+        shell step directly, so they pass with the trigger gone.
+        """
+        wf = load_workflow(WORKFLOWS / "ai-review-human-override.yml")
+        # PyYAML reads the bare key `on` as the boolean True.
+        triggers = wf.get("on") or wf[True]
+
+        assert {"created", "edited"} <= set(triggers["issue_comment"]["types"])
+
     @pytest.mark.parametrize(
         "body",
         [
