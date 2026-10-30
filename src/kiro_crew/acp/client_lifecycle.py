@@ -30,7 +30,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_session_mcp_unhonoured``, ``_spawn_start_token``, ``_spawn_work_dir``,
 ``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
 ``_spec_write_cwd``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``.
+``_stdin_stalled``, ``_unasked_watch``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
@@ -770,6 +770,9 @@ def _reset_state(self: AcpClient) -> None:
     # The next session is opened (or reloaded) on a new process, and which
     # pictures its conversation carries is not known here.
     self._forget_sent_images()
+    # A toolCallId is unique only within one backend session, so an ask the dead
+    # process made must not vouch for a call of the replacement process.
+    self._unasked_watch = {}
     # The launches this record holds died with the process whose harness
     # started them (a backgrounded command or Workflow runs in that
     # process's own tree). Carrying it across a respawn would grant the

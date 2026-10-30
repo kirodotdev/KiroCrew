@@ -459,6 +459,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                     cache_scope=self._session_id,
                     cache_overflow=self._tool_call_cache_overflow_for_wire(),
+                    harness_backend=getattr(self._runtime, "acp_backend", "") or "",
                 )
                 self._note_child_calls(update, "kas-child")
                 self._release_settled_tool_call(update, self._session_id)

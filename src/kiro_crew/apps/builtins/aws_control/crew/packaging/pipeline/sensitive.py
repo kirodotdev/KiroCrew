@@ -42,6 +42,8 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".config/goose/secrets.yaml",
     ".docker/config.json",
     ".dsh/.credentials.yaml",
+    ".gemini/antigravity-acp/acp_business_token.json",
+    ".gemini/antigravity-acp/acp_token.json",
     ".git-credentials",
     ".gnupg",
     ".gpg",

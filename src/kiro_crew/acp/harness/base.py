@@ -227,6 +227,9 @@ class ProcessSession(Protocol):
     def _copilot_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The Copilot CLI session's ``mcpServers`` entries."""
 
+    def _antigravity_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The Antigravity session's ``mcpServers`` entries."""
+
     def _pi_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The pi session's ``mcpServers`` entries."""
 

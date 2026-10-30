@@ -909,18 +909,30 @@ class TestKasMcpServedIdentity:
         parse_session_update(frame, **caches)
         assert caches["mcp_server_name_cache"]["tc-mcp"] == server
 
-    def test_only_the_kas_channel_bounds_its_halves(self) -> None:
-        """The bound is a property of the KAS channel row (``bounds_names``): its
-        two halves are bounded before retention and goose/kiro-cli/codex -- the
-        first-class channels -- retain a string verbatim as they always did, so no
-        first-class path gains a bound or a refusal (H13)."""
+    def test_only_the_kas_and_antigravity_channels_bound_their_halves(self) -> None:
+        """The bound is a property of a channel row (``bounds_names``): the KAS and
+        Antigravity rows bound both halves before retention, and goose/kiro-cli/
+        codex -- the first-class channels -- retain a string verbatim as they always
+        did, so no first-class path gains a bound or a refusal (H13). Only the KAS
+        row needs its own server field present to answer (``requires_server``)."""
         from kiro_crew.acp._dispatch import (
             _CODEX_MCP_TOOL_CALL_MARKER,
             _MCP_IDENTITY_META_CHANNELS,
             _meta_identity,
         )
 
-        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [True, False, False]
+        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [
+            True,
+            False,
+            False,
+            True,
+        ]
+        assert [c.requires_server for c in _MCP_IDENTITY_META_CHANNELS] == [
+            True,
+            False,
+            False,
+            False,
+        ]
         # A kiro-cli built-in (toolName, no server of either spelling) falls
         # through the KAS row to its own, unbounded.
         builtin = {"_meta": {"kiro": {"toolName": "t" * 600}}}
@@ -936,6 +948,11 @@ class TestKasMcpServedIdentity:
             "_meta": {"goose": {"toolCall": {"extensionName": "ext", "toolName": "ext__tool"}}}
         }
         assert _meta_identity(goose_ok) == ("ext", "tool")
+        antigravity = {"_meta": {"mcp": {"server": huge, "tool": huge}}}
+        assert _meta_identity(antigravity) == ("", "")
+        assert classify_tool_call(antigravity).identity_unreadable is True
+        antigravity_ok = {"_meta": {"mcp": {"server": "srv", "tool": "t" * 512}}}
+        assert _meta_identity(antigravity_ok) == ("srv", "t" * 512)
         codex = {
             "sessionUpdate": "tool_call",
             "toolCallId": "tc-cx",
