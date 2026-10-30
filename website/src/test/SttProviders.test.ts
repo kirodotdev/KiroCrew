@@ -20,6 +20,7 @@ import {
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
   PROVIDER_APPLE,
+  PROVIDER_CODEX,
   PROVIDER_LABEL_KEY,
   PROVIDER_LOCAL,
   PROVIDER_TRANSCRIBE,
@@ -48,7 +49,7 @@ describe('provider labels', () => {
     // it exists to catch — including a retired provider left behind, which would
     // keep offering a label for something the backend refuses.
     expect(Object.keys(PROVIDER_LABEL_KEY).sort()).toEqual(
-      [PROVIDER_APPLE, PROVIDER_LOCAL, 'off', PROVIDER_TRANSCRIBE].sort(),
+      [PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, 'off', PROVIDER_TRANSCRIBE].sort(),
     )
   })
 
@@ -104,6 +105,12 @@ describe('availability reasons', () => {
     expect(Object.keys(UNAVAILABLE_CODE_KEY).sort()).toEqual([
       'stt_apple_needs_toolchain',
       'stt_apple_unsupported',
+      'stt_codex_extra_missing',
+      'stt_codex_failed',
+      'stt_codex_login_required',
+      'stt_codex_missing',
+      'stt_codex_sandbox_unavailable',
+      'stt_codex_voice_unavailable',
       'stt_disabled',
       'stt_extra_missing',
       'stt_import_failed',

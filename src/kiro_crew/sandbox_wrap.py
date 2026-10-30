@@ -515,6 +515,22 @@ def reset_backend() -> None:
     _last_unshare_failure = None
 
 
+def no_backend_refuses_spawn(mode: str = "standard") -> bool:
+    """Whether an ordinary spawn at *mode* could not be confined on this host.
+
+    This is a Settings availability hint only. It covers neither first-party
+    carve-outs nor Kiro CLI delegation, and the spawn itself makes the security
+    decision.
+    """
+    governance_floor = _governance_sandbox_floor()
+    mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    if mode == "off":
+        return True
+    if _inside_kirocrew_sandbox() and _macos_sandbox_state() is not False:
+        return False
+    return detect_backend(config_mode=mode) == "none"
+
+
 def wrap_argv(
     argv: list[str],
     mode: str = "auto",
@@ -533,6 +549,7 @@ def wrap_argv(
     exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
+    require_confinement: bool = False,
 ) -> tuple[list[str], str | None]:
     """Wrap a command argv with OS-level sandbox if available.
 
@@ -580,6 +597,9 @@ def wrap_argv(
             (env-scrubbed, loudly warned, SEL ``outcome="unconfined"``) instead
             of fail-closing. Inert whenever a backend exists or
             ``sandbox_allow_unsandboxed_exec`` is set.
+        require_confinement: Require Kiro Crew's operating-system sandbox for
+            this spawn. Kiro CLI delegation and every unconfined fallback are
+            refused. A child already inside Kiro Crew's sandbox remains allowed.
 
     Returns:
         (wrapped_argv, cleanup_path_or_None).
@@ -615,6 +635,9 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    effective_is_kiro_cli = False if require_confinement else is_kiro_cli
+    if mode == "off" and require_confinement:
+        raise RuntimeError("OS-level sandbox confinement is required, but sandbox mode is off")
     # The caller resolved the SSH forward against its own floor read. Re-judge
     # it against the tier this wrap applies, so a floor raised in between can
     # only drop the socket. Never turns a False into True.
@@ -631,7 +654,9 @@ def wrap_argv(
         # but the old early return never checked. Now we verify the delegation
         # on macOS kiro-cli spawns; on Linux (where kiro's internal sandbox
         # doesn't apply) or non-kiro spawns, "off" means genuinely unconfined.
-        kiro_spawn_off = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
+        kiro_spawn_off = (
+            _spawns_kiro_cli(argv) if effective_is_kiro_cli is None else effective_is_kiro_cli
+        )
         if sys.platform == "darwin" and kiro_spawn_off and kiro_internal_sandbox_enabled():
             # Delegation is valid: kiro-cli's sandbox IS active. Apply env scrub
             # (same as _delegate_to_kiro_internal_sandbox) but WITHOUT the
@@ -868,10 +893,10 @@ def wrap_argv(
     # no-backend fail-closed path. Checked before backend detection so this is a
     # deterministic capability decision, never a fallback after a probe failure.
     # Linux namespace isolation is unaffected.
-    kiro_spawn = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
+    kiro_spawn = _spawns_kiro_cli(argv) if effective_is_kiro_cli is None else effective_is_kiro_cli
     delegate_to_kiro = (
         sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()
-    ) or (sys.platform == "win32" and is_kiro_cli is True)
+    ) or (sys.platform == "win32" and effective_is_kiro_cli is True)
     if delegate_to_kiro:
         # ``extra_private_dirs`` is deliberately NOT in this test: a private
         # window only RELAXES a mask owned by Kiro Crew (the scratch root) for the
@@ -1033,7 +1058,7 @@ def wrap_argv(
         # and via ``_floor_mandates_sandbox`` rather than raw truthiness, because
         # a pinned floor of the loosest tier requires nothing and must not deny.
         floor_mandates_sandbox = _floor_mandates_sandbox(governance_floor)
-        if floor_mandates_sandbox or not opted_in:
+        if require_confinement or (floor_mandates_sandbox or not opted_in):
             # ONE read of the pair: a concurrent re-probe swaps the whole tuple,
             # so failure and remedy can never come from different probes.
             transient, probe_reason, probe_remedy = _last_unshare_failure or (
@@ -1057,7 +1082,8 @@ def wrap_argv(
             #     two checks cannot disagree; a governed host keeps fail-closing
             #     for first-party spawns too.
             if (
-                first_party_fixed_argv
+                not require_confinement
+                and first_party_fixed_argv
                 and _classify_unavailable(transient) == "no_backend"
                 and not governance_floor
             ):
@@ -1168,7 +1194,14 @@ def wrap_argv(
             # deliberately powerless here, so naming it would send them down a
             # dead end.  Replace the remedy rather than appending to it.
             policy_overrode_opt_in = floor_mandates_sandbox and opted_in
-            if policy_overrode_opt_in:
+            if require_confinement:
+                guidance = (
+                    "This spawn requires operating-system confinement; operator and "
+                    "platform permissions for unsandboxed execution do not apply."
+                )
+                sel_reason = "Required sandbox confinement is unavailable"
+                refusal = "Required sandbox confinement is unavailable. "
+            elif policy_overrode_opt_in:
                 guidance = (
                     "This host is GOVERNED: an enterprise policy pins "
                     f"sandbox.min_level={governance_floor!r}, which forbids "

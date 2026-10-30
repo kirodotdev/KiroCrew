@@ -800,6 +800,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _warm_thread,
         _warn_no_isolation,
         detect_backend,
+        no_backend_refuses_spawn,
         prewarm_backend,
         remedy_guidance,
         reset_backend,

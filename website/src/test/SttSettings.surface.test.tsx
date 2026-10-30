@@ -470,6 +470,19 @@ describe('Voice panel keeps only the necessary decisions on its surface', () => 
     expect(screen.queryByText('Shortcut key')).toBeNull()
   })
 
+  it('offers Codex with hosted-audio disclosure and no ineffective language or model picker', async () => {
+    mountPanel({
+      provider: 'codex',
+      providers: ['local', 'codex'],
+      streaming_providers: ['local', 'codex'],
+    })
+    await waitFor(() => expect(screen.getByTestId('stt-retention-note').textContent).toContain('OpenAI'))
+    expect(screen.getByRole('combobox', { name: /provider/i }).textContent).toContain('Codex')
+    expect(screen.queryByRole('combobox', { name: /^language$/i })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /model/i })).toBeNull()
+    expect(screen.queryByText('Transcribe (AWS)')).toBeNull()
+  })
+
   it('offers no millisecond dial anywhere, on the surface or under it', async () => {
     mountPanel()
     await waitFor(() => expect(screen.getByRole('button', { name: /fine-tuning/i })).toBeTruthy())

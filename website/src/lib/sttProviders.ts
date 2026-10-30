@@ -18,6 +18,8 @@ export const PROVIDER_LOCAL = 'local'
 export const PROVIDER_APPLE = 'apple'
 /** AWS Transcribe: off-host and paid, behind the AWS consent gate. */
 export const PROVIDER_TRANSCRIBE = 'transcribe'
+/** Codex's experimental hosted voice transport, using its own ChatGPT login. */
+export const PROVIDER_CODEX = 'codex'
 
 /**
  * What the picker offers when the backend serves no provider list. `local` and
@@ -37,6 +39,7 @@ export const FALLBACK_STREAMING_PROVIDERS = [
   PROVIDER_LOCAL,
   PROVIDER_APPLE,
   PROVIDER_TRANSCRIBE,
+  PROVIDER_CODEX,
 ]
 
 /**
@@ -71,6 +74,7 @@ export const PROVIDER_LABEL_KEY: Record<string, string> = {
   local: 'pages.settings.sttSettings.provider_local',
   apple: 'pages.settings.sttSettings.provider_apple',
   transcribe: 'pages.settings.sttSettings.provider_transcribe',
+  codex: 'pages.settings.sttSettings.provider_codex',
   // No recogniser; also where the backend lands an unknown stored provider.
   off: 'pages.settings.sttSettings.provider_off',
 }
@@ -107,6 +111,12 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
   stt_model_missing: 'pages.settings.sttSettings.unavailable_model_missing',
   stt_apple_unsupported: 'pages.settings.sttSettings.unavailable_apple_unsupported',
   stt_apple_needs_toolchain: 'pages.settings.sttSettings.unavailable_apple_needs_toolchain',
+  stt_codex_missing: 'pages.settings.sttSettings.unavailable_codex_missing',
+  stt_codex_extra_missing: 'pages.settings.sttSettings.unavailable_codex_extra',
+  stt_codex_login_required: 'pages.settings.sttSettings.unavailable_codex_login',
+  stt_codex_voice_unavailable: 'pages.settings.sttSettings.unavailable_codex_voice',
+  stt_codex_failed: 'pages.settings.sttSettings.unavailable_codex_failed',
+  stt_codex_sandbox_unavailable: 'pages.settings.sttSettings.unavailable_codex_sandbox',
 }
 
 /**
@@ -124,6 +134,10 @@ export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
   'stt_unsupported_cpu',
   'stt_load_crashed',
   'stt_native_probe_crashed',
+  'stt_codex_login_required',
+  'stt_codex_voice_unavailable',
+  'stt_codex_failed',
+  'stt_codex_sandbox_unavailable',
 ])
 
 /**
@@ -167,6 +181,12 @@ const MODAL_SAFE_UNAVAILABLE_CODES = new Set([
   'stt_import_failed',
   'stt_apple_unsupported',
   'stt_apple_needs_toolchain',
+  'stt_codex_missing',
+  'stt_codex_extra_missing',
+  'stt_codex_login_required',
+  'stt_codex_voice_unavailable',
+  'stt_codex_failed',
+  'stt_codex_sandbox_unavailable',
 ])
 
 export function modalUnavailableMessage(code: string): string {

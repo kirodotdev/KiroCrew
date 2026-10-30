@@ -497,19 +497,21 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT"
 
-  # The voice extras, in TWO steps.
+  # Each voice provider's dependencies install separately so a recogniser
+  # resolution failure cannot omit the independent cloud transports.
   #
   # They have to be in the bundle at all because `local` is the default
   # speech-to-text provider and nothing in the app can install it later: the
   # pip-invoking endpoint was deliberately removed, so a bundle without them
   # reports the default provider as unavailable with no in-app way to fix it.
   #
-  # Two steps because pip resolves an extra ATOMICALLY, and this bundle is
+  # Separate steps because pip resolves an extra ATOMICALLY, and this bundle is
   # UNIVERSAL on macOS where Intel has no published pywhispercpp wheel. A single
   # `[voice]` install there fails as a whole and omits boto3 and amazon-transcribe
   # with it, taking the `transcribe` provider down alongside the `local` one it has
-  # nothing to do with. So the cloud half goes in first and unconditionally, then
-  # the recogniser is attempted on its own.
+  # nothing to do with. The cloud transports go in unconditionally, then
+  # the recogniser is attempted on its own. Codex remains opt-in and its media
+  # packages load only when selected; a sealed bundle cannot pip-install later.
   #
   # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
@@ -519,6 +521,10 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
     "$ROOT[voice-aws]"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check \
+    "$ROOT[voice-codex]"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -724,7 +730,7 @@ build_backend_windows() {
   root_uri="$(cd "$ROOT" && "$out/python.exe" -c \
     'import sys; from pathlib import Path; sys.stdout.write(Path.cwd().as_uri())')"
 
-  # The voice extras, in two steps so an independent AWS-provider dependency
+  # The voice providers install separately so independent cloud dependencies
   # cannot be omitted by recogniser resolution. Windows is a supported local-
   # dictation target, so the recogniser is a hard gate. Model weights remain an
   # explicit one-click download after installation.

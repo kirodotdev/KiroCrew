@@ -21,7 +21,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -170,9 +170,130 @@ class TestSandboxOffLoopCancellation:
         assert worker_threads and worker_threads[0] != loop_thread
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("require_confinement", "expected"),
+        [(False, {}), (True, {"require_confinement": True})],
+    )
+    async def test_sandboxed_spawn_async_forwards_required_confinement_only_when_true(
+        self, require_confinement, expected
+    ):
+        captured = {}
+
+        def _fake(argv, **options):
+            captured.update(options)
+            return argv, {}, None
+
+        await sandboxed_spawn_argv_async(
+            ["/bin/true"],
+            require_confinement=require_confinement,
+            _prepare=_fake,
+        )
+
+        assert captured == expected
+
+    @pytest.mark.asyncio
     async def test_sync_wrap_rejects_event_loop(self):
         with pytest.raises(RuntimeError, match="await wrap_argv_async"):
             wrap_argv(["/bin/true"], mode="off")
+
+
+class TestRequiredConfinement:
+    @pytest.fixture
+    def sandbox_module(self, monkeypatch):
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "")
+        monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
+        monkeypatch.setattr(sandbox, "_warn_aliased_strict_leaves", lambda: None)
+        monkeypatch.setattr(sandbox, "enterprise_policy_cache_view", lambda *args: ())
+        return sandbox
+
+    def test_no_backend_opt_in_is_refused(self, sandbox_module, monkeypatch):
+        monkeypatch.setattr(sandbox_module, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_module, "_allow_unsandboxed_exec", lambda: True)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(RuntimeError, match="Required sandbox confinement"):
+                wrap_argv(["/bin/true"], require_confinement=True)
+
+    def test_mode_off_is_refused(self, sandbox_module):
+        with pytest.raises(RuntimeError, match="sandbox mode is off"):
+            wrap_argv(["/bin/true"], mode="off", require_confinement=True)
+
+    def test_first_party_carve_out_is_refused(self, sandbox_module, monkeypatch):
+        monkeypatch.setattr(sandbox_module, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_module, "_allow_unsandboxed_exec", lambda: False)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(RuntimeError, match="Required sandbox confinement"):
+                wrap_argv(
+                    ["/bin/true"],
+                    first_party_fixed_argv=True,
+                    require_confinement=True,
+                )
+
+    def test_kiro_basename_uses_crew_sandbox_instead_of_delegation(
+        self, sandbox_module, monkeypatch
+    ):
+        delegated = MagicMock()
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(sandbox_module, "kiro_internal_sandbox_enabled", lambda: True)
+        monkeypatch.setattr(sandbox_module, "_delegate_to_kiro_internal_sandbox", delegated)
+        monkeypatch.setattr(
+            sandbox_module, "detect_backend", lambda config_mode="auto": "sandbox-exec"
+        )
+        monkeypatch.setattr(
+            sandbox_module,
+            "sandbox_exec_argv",
+            lambda argv, level, **kwargs: (["crew-sandbox", *argv], None),
+        )
+
+        result = wrap_argv(
+            ["/opt/bin/kiro-cli", "acp"],
+            require_confinement=True,
+        )
+
+        assert result == (["crew-sandbox", "/opt/bin/kiro-cli", "acp"], None)
+        delegated.assert_not_called()
+
+    def test_explicit_kiro_classification_does_not_delegate_on_windows(
+        self, sandbox_module, monkeypatch
+    ):
+        delegated = MagicMock()
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_module, "_delegate_to_kiro_internal_sandbox", delegated)
+        monkeypatch.setattr(sandbox_module, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_module, "_allow_unsandboxed_exec", lambda: False)
+
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(RuntimeError, match="Required sandbox confinement"):
+                sandbox_module.wrap_argv(
+                    ["C:/Kiro/kiro-cli.exe", "acp"],
+                    is_kiro_cli=True,
+                    require_confinement=True,
+                )
+
+        delegated.assert_not_called()
+
+    def test_existing_crew_sandbox_passthrough_remains_allowed(self, sandbox_module, monkeypatch):
+        monkeypatch.setattr(sandbox_module, "_inside_kirocrew_sandbox", lambda: True)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            assert wrap_argv(["/bin/true"], require_confinement=True) == (["/bin/true"], None)
+
+    def test_sync_chokepoint_forwards_only_true(self, sandbox_module, monkeypatch):
+        calls = []
+
+        def record(argv, mode="auto", **kwargs):
+            calls.append(kwargs)
+            return list(argv), None
+
+        monkeypatch.setattr(sandbox_module, "wrap_argv", record)
+        monkeypatch.setattr(sandbox_module, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(sandbox_module, "cgroup_scope_bus_env", lambda env: (env, ()))
+        sandbox_module.sandboxed_spawn_argv(["/bin/true"])
+        sandbox_module.sandboxed_spawn_argv(["/bin/true"], require_confinement=True)
+
+        assert "require_confinement" not in calls[0]
+        assert calls[1]["require_confinement"] is True
 
 
 class TestNoBareSandboxedSpawnArgvHops:
