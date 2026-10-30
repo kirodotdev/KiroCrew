@@ -343,7 +343,9 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # ``AcpSessionHandle.prompt`` sends the verb for a KAS ``/compact``, and the
 # outcome arrives as a compaction status inside that turn. KAS stays in
 # :data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` too: membership here opens the
-# MANUAL command, and the threshold still leaves KAS to its own summarization.
+# MANUAL command, and the global threshold still leaves KAS to its own
+# summarization. An explicit threshold (the slider or an agent's ``autocompact_pct``)
+# is served through the same verb, because KAS is a member here.
 # Re-driven on KAS 0.66.43 (kiro-cli 2.32.0) and committed:
 # ``test/fixtures/acp_frames/kas/compact-live.jsonl``. After three turns read
 # 6.31% -> 8.64% -> 10.76%, the verb answered ``{"success": true}`` after ~12s with
@@ -395,8 +397,10 @@ ACP_BACKENDS_COMPACT = frozenset(
 # This is the set that makes a decline HONEST. A backend outside
 # :data:`ACP_BACKENDS_COMPACT` cannot be handed a ``/compact`` prompt, and the
 # question that remains is what happens instead. A member of this set is also
-# left alone at ``session.autocompact_pct`` when it IS in that set, which is
-# KAS's case: its manual ``/compact`` is served, and its threshold is its own.
+# left alone at the global ``session.autocompact_pct`` when it IS in that set, which
+# is KAS's case: its manual ``/compact`` is served, and by default its threshold is
+# its own. A threshold set for the session or its agent is Crew's to honour, so Crew
+# compacts it there.
 # A member answers the question: KAS runs
 # auto-summarization and emits ``summarization_started`` /
 # ``summarization_completed``, which ``acp.kas_wire`` maps to a compaction status and

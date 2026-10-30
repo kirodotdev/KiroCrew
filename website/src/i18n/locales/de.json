@@ -6665,7 +6665,7 @@
       "reset_to_agent_default": "Auf den Standard des Agenten <agent/> zurücksetzen ({{pct}} %)",
       "following_agent_default": "Folgt dem Standard des Agenten <agent/> ({{pct}} %)",
       "agent_default_source": "Pro Agent in config.json festgelegt (agents.{{agent}}.autocompact_pct). Mit dem Schieberegler überschreibst du den Wert für diese Sitzung.",
-      "harness_managed_note": "Dieser Chat läuft auf {{backend}}, das selbst verdichtet. Dieser Schwellenwert gilt hier nicht.",
+      "harness_managed_note": "Dieser Chat läuft auf {{backend}}, das selbst verdichtet. Lege hier einen Schwellenwert fest, um früher zu verdichten.",
       "sketch": "Skizze",
       "sketch_desc": "Auf einem Whiteboard zeichnen und als Bild senden",
       "optimize_failed": "Der Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde wiederhergestellt.",

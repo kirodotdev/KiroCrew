@@ -6500,7 +6500,7 @@
       "reset_to_agent_default": "重置为智能体 <agent/> 的默认值 ({{pct}}%)",
       "following_agent_default": "跟随智能体 <agent/> 的默认值 ({{pct}}%)",
       "agent_default_source": "在 config.json 中按智能体设置（agents.{{agent}}.autocompact_pct）。拖动滑块会在本会话中覆盖该值。",
-      "harness_managed_note": "此聊天运行在 {{backend}} 上，它会自行压缩。此阈值在这里不适用。",
+      "harness_managed_note": "此聊天运行在 {{backend}} 上，它会自行压缩。在这里设置阈值，即可更早压缩。",
       "sketch": "草图",
       "sketch_desc": "在白板上画图，以图片发送",
       "optimize_failed": "无法优化提示词。已恢复原始文本。",

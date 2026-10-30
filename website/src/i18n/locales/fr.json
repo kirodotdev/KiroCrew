@@ -6830,7 +6830,7 @@
       "reset_to_agent_default": "Rétablir la valeur par défaut de l’agent <agent/> ({{pct}} %)",
       "following_agent_default": "Suit la valeur par défaut de l’agent <agent/> ({{pct}} %)",
       "agent_default_source": "Défini par agent dans config.json (agents.{{agent}}.autocompact_pct). Déplacer le curseur le remplace pour cette session.",
-      "harness_managed_note": "Ce chat s'exécute sur {{backend}}, qui compacte de lui-même. Ce seuil ne s'applique pas ici.",
+      "harness_managed_note": "Ce chat s'exécute sur {{backend}}, qui compacte de lui-même. Définis un seuil ici pour compacter plus tôt.",
       "sketch": "Croquis",
       "sketch_desc": "Dessine sur un tableau blanc, envoie-le en image",
       "optimize_failed": "Impossible d'optimiser le prompt. Ton texte d'origine a été restauré.",
