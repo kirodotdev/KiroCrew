@@ -230,6 +230,8 @@ async def _inject_with_retry(
     msg: str,
     parent_key: str,
     label: str,
+    *,
+    delivery: dict[str, Any] | None = None,
 ) -> str | None:
     """Retry stream_and_collect up to 3 times on AcpError.
 
@@ -238,6 +240,13 @@ async def _inject_with_retry(
     that lost the parent's session is answered once by a reset and a
     fresh claim, which re-loads the same backend id; the caller's
     single ``release(parent_key)`` balances against that claim.
+
+    *delivery* is the caller's record of this injection attempt, shared so its
+    timeout handler sees the provider that holds the prompt. A reload replaces
+    the provider, so it rewrites ``client`` and the ``written_before`` count
+    baseline there. When ``full_msg`` is set, *msg* is a note that leans on
+    backend session ``sent_to_session`` already holding the full report; a
+    reload onto any other session has never seen it and is sent ``full_msg``.
     """
     _snf_reloaded = False
     attempt = 0
@@ -356,6 +365,15 @@ async def _inject_with_retry(
                 settle_turn(self.sessions, parent_key)
                 await self.sessions.reset(parent_key)
                 client, _is_new, _resumed = await self.sessions.get_or_create(parent_key)
+                if delivery is not None:
+                    full_msg = delivery.get("full_msg")
+                    if isinstance(full_msg, str) and getattr(
+                        client, "session_id", ""
+                    ) != delivery.get("sent_to_session"):
+                        msg = full_msg
+                    delivery["client"] = client
+                    count = getattr(client, "prompts_written", None)
+                    delivery["written_before"] = count if isinstance(count, int) else None
                 continue
             if attempt == 2:
                 raise

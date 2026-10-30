@@ -469,6 +469,17 @@ class AcpProvider(LLMProvider):
         return str(getattr(self._client, "agent_version", "") or "")
 
     @property
+    def prompts_written(self) -> int | None:
+        """Prompts this session's turns have written to the backend, or ``None``.
+
+        Forwarded from ``AcpSessionProvider``; a raw ``AcpClient`` keeps no such
+        count, and ``None`` tells a caller that it cannot know whether a turn's
+        prompt went out.
+        """
+        value = getattr(self._client, "prompts_written", None)
+        return value if isinstance(value, int) else None
+
+    @property
     def steer_upgrade_notice(self) -> str:
         """The notice when this session's adapter cannot steer, else ``""``.
 

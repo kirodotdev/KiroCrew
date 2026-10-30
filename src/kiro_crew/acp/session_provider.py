@@ -84,6 +84,15 @@ from kiro_crew.trust_patterns import GrantDeadline
 logger = logging.getLogger(__name__)
 
 
+def _prompts_since(turn: tuple[Any, Any]) -> int:
+    """Prompts written on *turn*'s handle since the turn began, or 0 when unknown."""
+    handle, before = turn
+    after = getattr(handle, "prompts_written", 0)
+    if isinstance(before, int) and isinstance(after, int):
+        return max(0, after - before)
+    return 0
+
+
 class AcpSessionProvider(LLMProvider):
     """LLMProvider adapter over an AcpSessionHandle on a shared runtime.
 
@@ -99,6 +108,11 @@ class AcpSessionProvider(LLMProvider):
     """
 
     approval_withdrawable = True
+    # Class defaults, so a provider built without ``__init__`` (``__new__`` in
+    # tests, a copy) still counts from zero; ``stream`` sets the instance values.
+    _prompts_written: int = 0
+    # The open turn's handle and that handle's count when the turn began.
+    _open_turn_count: tuple[Any, Any] | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -741,6 +755,15 @@ class AcpSessionProvider(LLMProvider):
             send = functools.partial(send, allow_image=False)
         if timeout is not None:
             send = functools.partial(send, timeout=timeout)
+        # The handle this turn writes through, read after the reinjection above
+        # may have replaced it, so its count is the one this turn moves.
+        handle = self._handle
+        # A turn whose generator was abandoned without being closed still holds
+        # the live slot; settle it before this turn takes the slot.
+        if self._open_turn_count is not None:
+            self._settle_turn_count(self._open_turn_count)
+        open_turn = (handle, getattr(handle, "prompts_written", 0))
+        self._open_turn_count = open_turn
         emitted = False
         try:
             async with aclosing(
@@ -780,6 +803,7 @@ class AcpSessionProvider(LLMProvider):
             # it instead of hitting its generic `except Exception`.
             raise AcpError(str(exc)) from exc
         finally:
+            self._settle_turn_count(open_turn)
             # End the shared turn FIRST so the tenancy release is never delayed
             # or skipped, then record any child this turn forked while the
             # leader is still alive (it stays alive past the turn), so a leader
@@ -789,6 +813,30 @@ class AcpSessionProvider(LLMProvider):
             # that release off the record's cancel path.
             await self._end_shared_turn(claim)
             await record_live_children_after_turn(self)
+
+    def _settle_turn_count(self, turn: tuple[Any, Any]) -> None:
+        """Fold *turn*'s prompts into the settled count, once, and free the slot."""
+        if self._open_turn_count is not turn:
+            return
+        self._open_turn_count = None
+        self._prompts_written += _prompts_since(turn)
+
+    @property
+    def prompts_written(self) -> int:
+        """Prompts this provider's turns have written to the backend.
+
+        A turn counts once its prompt request is written, whether or not it then
+        finishes. A caller whose turn timed out compares this against a snapshot
+        taken before the turn to tell a prompt the backend received from one that
+        never left, and so avoids sending the same prompt twice.
+
+        The open turn is read live off its handle. A caller cancelled while it
+        awaits something other than the next event leaves this generator
+        suspended at a ``yield`` and unclosed, so its cleanup has not run yet
+        when that caller reads the count.
+        """
+        turn = self._open_turn_count
+        return self._prompts_written + (_prompts_since(turn) if turn is not None else 0)
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""

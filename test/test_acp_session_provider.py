@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -264,6 +265,65 @@ class TestAcpSessionProviderStream:
 
         assert [event.kind for event in events] == [EVENT_COMPLETE]
         assert seen == [("long run", 21660.0)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("writes", [True, False])
+    async def test_prompts_written_counts_a_turn_cancelled_after_its_write(self, writes):
+        """A caller's timeout cancels the turn mid-stream; a prompt that already
+        went out is still counted, and one that never left is not."""
+        handle = _make_handle()
+        handle.prompts_written = 3
+        never = asyncio.Event()
+
+        async def mock_prompt(message):
+            if writes:
+                handle.prompts_written += 1
+            await never.wait()
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        handle.prompt = mock_prompt
+        provider = AcpSessionProvider(handle, _make_runtime())
+
+        async def consume() -> None:
+            async for _ in provider.stream("report"):
+                pass
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(consume(), timeout=0.05)
+
+        assert provider.prompts_written == (1 if writes else 0)
+
+    @pytest.mark.asyncio
+    async def test_prompts_written_counts_a_turn_whose_stream_was_never_closed(self):
+        """A caller cancelled while it awaits its own work (a permission answer)
+        leaves the stream suspended at a ``yield``. The exception it is handling
+        still references that frame, so nothing has closed the stream when it
+        reads the count; a prompt already written must show anyway."""
+        handle = _make_handle()
+        handle.prompts_written = 0
+
+        async def mock_prompt(message):
+            handle.prompts_written += 1
+            yield AcpEvent(kind="permission_request", text="run tool?")
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        handle.prompt = mock_prompt
+        provider = AcpSessionProvider(handle, _make_runtime())
+        stream = provider.stream("report")
+        never = asyncio.Event()
+
+        async def consume() -> None:
+            async for _ in stream:
+                await never.wait()
+
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(consume(), timeout=0.05)
+
+            assert provider.prompts_written == 1
+        finally:
+            await stream.aclose()
+        assert provider.prompts_written == 1
 
     @pytest.mark.asyncio
     async def test_stream_command_routes_through_handle_stream_command(self):

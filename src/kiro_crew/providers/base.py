@@ -508,6 +508,17 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def prompts_written(self) -> int | None:
+        """Prompts this provider's turns have written to the backend, or ``None``.
+
+        A caller whose turn timed out compares it against a reading taken before
+        the turn to learn whether the prompt went out. Default ``None``: this
+        provider keeps no count, so the caller cannot tell and must assume the
+        prompt never left.
+        """
+        return None
+
+    @property
     def model_pin_refused(self) -> str:
         """The pinned model the backend refused at session start, or ``""``.
 
