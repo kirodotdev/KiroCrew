@@ -657,6 +657,19 @@ def _save_lessons(
         )
         raw = raw[:max_lessons]
 
+    # Local, like this module's other late imports: a top-level import here would
+    # become a name the ``history_consolidation`` facade serves.
+    from kiro_crew.lesson_events import (
+        LESSON_SOURCE_CONSOLIDATION,
+        emit_lessons_changed,
+        lesson_write_action,
+    )
+
+    # Rows this pass changed, by kind, announced once it ends and only when the
+    # stores are this consolidator's own global handles: a silo's lessons are not
+    # what an app token's read returns (``kiro_crew.lesson_events``).
+    changes: dict[str, int] = {}
+
     # Prefer vector store (dedup-aware) over JSONL
     if vector_store:
         count = 0
@@ -689,8 +702,15 @@ def _save_lessons(
                         publication.mark_committed()
                 if ok:
                     count += 1
+                    outcome_word = getattr(getattr(ok, "outcome", None), "value", "inserted")
+                    change = lesson_write_action(str(outcome_word), False)
+                    if change is not None:
+                        changes[change] = changes.get(change, 0) + 1
         if count:
             self._logger.info("Extracted %d lesson(s) from chat (vector store)", count)
+        if vector_store is self._vector_store:
+            for action, n in changes.items():
+                emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
         return
 
     if not lesson_store:
@@ -724,8 +744,14 @@ def _save_lessons(
                     publication.mark_committed()
             if outcome != "refused":
                 count += 1
+                change = lesson_write_action(str(outcome), False)
+                if change is not None:
+                    changes[change] = changes.get(change, 0) + 1
     if count:
         self._logger.info("Extracted %d lesson(s) from chat", count)
+    if lesson_store is self._lesson_store:
+        for action, n in changes.items():
+            emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
 
 
 def _write_structured_memory(
