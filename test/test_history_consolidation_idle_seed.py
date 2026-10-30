@@ -224,6 +224,8 @@ async def test_session_end_does_not_start_a_second_run_under_the_live_key(tmp_pa
         consolidator.consolidate_session("dashboard:chat-left-behind")
         consolidator.maybe_consolidate("dashboard:chat-left-behind")
 
+    assert consolidator._running == {STEM}
+    assert not consolidator._tasks
     run.assert_not_called()
 
 
