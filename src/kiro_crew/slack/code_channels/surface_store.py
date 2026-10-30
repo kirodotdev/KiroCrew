@@ -3,7 +3,8 @@
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
 Kiro Crew data home, keyed by channel id. It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
-the command set last registered, and which message is the current wrap-up. The
+the command set last registered, which message is the current wrap-up, and the
+pinned work board's ts, digest and already-sent alert tokens. The
 wrap-up and archive STAMPS live on the binding (``Binding.wrapped_up_at`` /
 ``archived_at``), not here. Never message
 content beyond the agent's short context-bar labels.
@@ -66,6 +67,15 @@ class SurfaceRecord:
     summary_ts: str = ""
     #: The session the wrap-up was posted for; a replaced session's button is stale.
     summary_session_key: str = ""
+    #: The pinned work-board message (``""`` before one), the digest of what it
+    #: last showed, whether it is pinned, and the needs-you alerts already sent
+    #: (``<item_id>:<report stamp>``, newest last, bounded).
+    board_ts: str = ""
+    board_digest: str = ""
+    board_pinned: bool = False
+    board_alerts: tuple[str, ...] = ()
+    #: Worker sessions already filed into the channel's folder once.
+    board_filed: tuple[str, ...] = ()
     updated_at: float = field(default=0.0)
 
 
@@ -89,6 +99,11 @@ def _from_dict(raw: Any) -> SurfaceRecord | None:
         for item in (bar if isinstance(bar, list) else [])
         if isinstance(item, dict)
     )
+    for name in ("board_alerts", "board_filed"):
+        values = data.get(name)
+        data[name] = tuple(
+            str(a) for a in (values if isinstance(values, list) else []) if isinstance(a, str)
+        )
     try:
         return SurfaceRecord(**data)
     except TypeError:
@@ -145,6 +160,9 @@ class SurfaceStore:
             raise TypeError(f"unknown surface fields: {sorted(unknown)}")
         if "context_bar" in changes:
             changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
+        for name in ("board_alerts", "board_filed"):
+            if name in changes:
+                changes[name] = tuple(str(a) for a in changes[name])
         with self._lock:
             self._ensure_loaded()
             current = self._records.get(channel_id) or SurfaceRecord(channel_id=channel_id)

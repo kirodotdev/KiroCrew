@@ -80,22 +80,9 @@ def _utf8(data: bytes) -> bytes:
     return data.decode("utf-8", "replace").encode("utf-8")
 
 
-def assemble(
-    tracked: bytes,
-    *,
-    tracked_truncated: bool,
-    untracked: list[bytes],
-    untracked_truncated: bool,
-    limit: int = MAX_VIEW_BYTES,
-) -> BuiltDiff:
-    """Join tracked and new-file sections under ``limit`` bytes.
-
-    ``tracked_truncated`` / ``untracked_truncated`` say an upstream read already
-    lost data (git output overflowed its cap, a new file could not be shown),
-    which marks the result truncated even when what survived happens to fit.
-    """
-    budget = limit - _NOTE_RESERVE
-    truncated = tracked_truncated or untracked_truncated
+def _join(tracked: bytes, untracked: list[bytes], budget: int) -> tuple[bytes, bool]:
+    """Tracked then new-file sections within *budget* bytes; ``(bytes, cut)``."""
+    truncated = False
     tracked = _utf8(tracked)
     body = _cut_to_fit(tracked, budget)
     if len(body) < len(tracked):
@@ -111,7 +98,26 @@ def assemble(
             break
         parts.append(chunk)
         used += len(chunk)
-    joined = b"".join(parts)
+    return b"".join(parts), truncated
+
+
+def assemble(
+    tracked: bytes,
+    *,
+    tracked_truncated: bool,
+    untracked: list[bytes],
+    untracked_truncated: bool,
+    limit: int = MAX_VIEW_BYTES,
+) -> BuiltDiff:
+    """Join tracked and new-file sections under ``limit`` bytes.
+
+    ``tracked_truncated`` / ``untracked_truncated`` say an upstream read already
+    lost data (git output overflowed its cap, a new file could not be shown),
+    which marks the result truncated even when what survived happens to fit.
+    """
+    budget = limit - _NOTE_RESERVE
+    joined, cut = _join(tracked, untracked, budget)
+    truncated = tracked_truncated or untracked_truncated or cut
     files = _count_files(joined)
     if not joined:
         if truncated:
@@ -359,6 +365,72 @@ def screen_tracked(
         else:
             kept.append(screened)
     return b"".join(kept), omitted
+
+
+@dataclass(frozen=True)
+class DiffGroup:
+    """One owner's share of a combined diff: the channel's branch, or one worker's.
+
+    ``header`` is ONE plain-text line set before the group's file sections (git
+    itself puts prose before ``diff --git`` in a patch), so the Code tab reads as
+    "this worker changed these files". It is made safe by :func:`group_header`.
+    """
+
+    header: str
+    tracked: bytes
+    tracked_truncated: bool = False
+    untracked: tuple[bytes, ...] = ()
+    untracked_truncated: bool = False
+
+
+_HEADER_RULE = "=" * 4
+_HEADER_MAX = 300
+
+
+def group_header(text: str) -> str:
+    """A group's header line: one line, no diff marker it could be mistaken for."""
+    flat = " ".join(text.split())[:_HEADER_MAX]
+    return f"{_HEADER_RULE} {flat} {_HEADER_RULE}"
+
+
+def assemble_groups(groups: list[DiffGroup], *, limit: int = MAX_VIEW_BYTES) -> BuiltDiff:
+    """Every group's changes under its header, all within ``limit`` bytes.
+
+    Groups are laid out in order and share one budget: a group that does not fit
+    in what is left is cut at a file boundary, and the groups after it are left
+    out -- the truncation note then says so, as for a single diff. A group with
+    no changes is omitted, header and all.
+    """
+    budget = limit - _NOTE_RESERVE
+    parts: list[bytes] = []
+    used = 0
+    truncated = False
+    for group in groups:
+        head = (group_header(group.header) + "\n").encode("utf-8")
+        if parts:
+            head = b"\n" + head
+        room = budget - used - len(head)
+        if room <= 0:
+            truncated = True
+            break
+        body, cut = _join(group.tracked, list(group.untracked), room)
+        lost = cut or group.tracked_truncated or group.untracked_truncated
+        if not body:
+            if lost:
+                truncated = True
+            continue
+        truncated = truncated or lost
+        parts.append(head + body)
+        used += len(head) + len(body)
+    joined = b"".join(parts)
+    # Every group opens with its header line, so each file section follows a newline.
+    files = joined.count(b"\n" + _FILE_HEADER)
+    if not joined:
+        return BuiltDiff(truncation_note(0), True, 0) if truncated else BuiltDiff("", False, 0)
+    text = joined.decode("utf-8")
+    if truncated:
+        text = truncation_note(files) + "\n" + text
+    return BuiltDiff(text, truncated, files)
 
 
 def _safe_rel(rel: str) -> bool:
