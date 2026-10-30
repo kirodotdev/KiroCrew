@@ -6609,7 +6609,10 @@
       "move_panel_to_bottom": "Переместить панель вниз",
       "more_actions": "Другие действия",
       "close_failed": "Не удалось остановить оболочку этого терминала на сервере. Она будет очищена автоматически.",
-      "closing_terminal": "Закрытие терминала…"
+      "closing_terminal": "Закрытие терминала…",
+      "fullscreen": "Полный экран",
+      "exit_fullscreen": "Выйти из полноэкранного режима",
+      "find": "Найти"
     },
     "tabCloseMenu": {
       "close_all_terminals": "Закрыть все терминалы",
@@ -10698,6 +10701,16 @@
         "tool_search_label": "Поиск инструментов",
         "tool_search_description": "Загружать отложенные спецификации инструментов MCP по требованию."
       }
+    },
+    "terminalFindBar": {
+      "find": "Найти",
+      "search_scrollback": "Поиск в буфере прокрутки терминала",
+      "no_results": "Нет результатов",
+      "match_count": "{{index}} из {{total}}",
+      "match_overflow": "{{total}} совпадений",
+      "previous_match": "Предыдущее совпадение",
+      "next_match": "Следующее совпадение",
+      "close_search": "Закрыть поиск"
     }
   },
   "hooks": {

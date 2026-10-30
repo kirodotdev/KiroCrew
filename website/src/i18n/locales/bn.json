@@ -6389,7 +6389,10 @@
       "move_panel_to_bottom": "প্যানেল নিচে সরান",
       "more_actions": "আরও অ্যাকশন",
       "close_failed": "সার্ভারে এই টার্মিনালের শেল বন্ধ করা যায়নি। এটি স্বয়ংক্রিয়ভাবে পরিষ্কার হয়ে যাবে।",
-      "closing_terminal": "টার্মিনাল বন্ধ হচ্ছে…"
+      "closing_terminal": "টার্মিনাল বন্ধ হচ্ছে…",
+      "fullscreen": "পূর্ণ স্ক্রিন",
+      "exit_fullscreen": "পূর্ণ স্ক্রিন থেকে বের হন",
+      "find": "খুঁজুন"
     },
     "tabCloseMenu": {
       "close_all_terminals": "সব টার্মিনাল বন্ধ করো",
@@ -10406,6 +10409,16 @@
         "tool_search_label": "সরঞ্জাম অনুসন্ধান",
         "tool_search_description": "চাহিদা অনুযায়ী বিলম্বিত MCP সরঞ্জাম স্পেসিফিকেশন লোড করো।"
       }
+    },
+    "terminalFindBar": {
+      "find": "খুঁজুন",
+      "search_scrollback": "টার্মিনাল স্ক্রলব্যাক অনুসন্ধান করো",
+      "no_results": "কোনো ফলাফল নেই",
+      "match_count": "{{total}}-এর {{index}}",
+      "match_overflow": "{{total}}টি মিল",
+      "previous_match": "পূর্ববর্তী মিল",
+      "next_match": "পরবর্তী মিল",
+      "close_search": "অনুসন্ধান বন্ধ করো"
     }
   },
   "hooks": {

@@ -56,12 +56,13 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
-import { toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { toggleBottomTerminal, useTerminalFullscreen } from './hooks/useBottomTerminal'
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
 import { TerminalHostContext } from './hooks/useTerminalCommand'
 // Side effect: closes a terminal tab when its shell exits (main window and popout).
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
+import { mainStackingClass } from './utils/terminalFullscreen'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
@@ -317,6 +318,12 @@ export default function App() {
   } = shell
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
+  // The dock terminal fills the content area only while maximized, so <main>
+  // becomes its own stacking context ONLY then — confining the fullscreen panel
+  // above the in-content chat layers it covers. Docked or closed, <main> creates
+  // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
+  // still paints over the dock as it does elsewhere.
+  const terminalFullscreen = useTerminalFullscreen()
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -769,12 +776,12 @@ export default function App() {
           }
           : { gridArea: 'content' }}
       >
-        <div className={`flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
+        <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way
             the tabIndex={-1} page headings do. */}
-        <main id="main-content" tabIndex={-1} className={`outline-hidden flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        <main id="main-content" tabIndex={-1} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands

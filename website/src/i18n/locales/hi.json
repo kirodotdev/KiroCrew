@@ -6389,7 +6389,10 @@
       "move_panel_to_bottom": "पैनल को नीचे ले जाएँ",
       "more_actions": "और कार्रवाइयां",
       "close_failed": "सर्वर पर इस टर्मिनल का शेल बंद नहीं किया जा सका। यह स्वतः साफ़ हो जाएगा।",
-      "closing_terminal": "टर्मिनल बंद हो रहा है…"
+      "closing_terminal": "टर्मिनल बंद हो रहा है…",
+      "fullscreen": "पूर्ण स्क्रीन",
+      "exit_fullscreen": "पूर्ण स्क्रीन से बाहर निकलें",
+      "find": "खोजें"
     },
     "tabCloseMenu": {
       "close_all_terminals": "सभी टर्मिनल बंद करो",
@@ -10406,6 +10409,16 @@
         "tool_search_label": "उपकरण खोज",
         "tool_search_description": "माँग पर स्थगित MCP उपकरण विनिर्देश लोड करें।"
       }
+    },
+    "terminalFindBar": {
+      "find": "खोजें",
+      "search_scrollback": "टर्मिनल स्क्रॉलबैक खोजें",
+      "no_results": "कोई परिणाम नहीं",
+      "match_count": "{{total}} में से {{index}}",
+      "match_overflow": "{{total}} मिलान",
+      "previous_match": "पिछला मिलान",
+      "next_match": "अगला मिलान",
+      "close_search": "खोज बंद करो"
     }
   },
   "hooks": {

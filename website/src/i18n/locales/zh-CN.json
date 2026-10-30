@@ -6279,7 +6279,10 @@
       "move_panel_to_bottom": "将面板移至底部",
       "more_actions": "更多操作",
       "close_failed": "无法在服务器上停止此终端的 shell。它会被自动清理。",
-      "closing_terminal": "正在关闭终端…"
+      "closing_terminal": "正在关闭终端…",
+      "fullscreen": "全屏",
+      "exit_fullscreen": "退出全屏",
+      "find": "查找"
     },
     "tabCloseMenu": {
       "close_all_terminals": "关闭所有终端",
@@ -10260,6 +10263,16 @@
         "tool_search_label": "工具搜索",
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
+    },
+    "terminalFindBar": {
+      "find": "查找",
+      "search_scrollback": "搜索终端回滚缓冲区",
+      "no_results": "无结果",
+      "match_count": "第 {{index}} / {{total}} 项",
+      "match_overflow": "{{total}} 个匹配项",
+      "previous_match": "上一个匹配项",
+      "next_match": "下一个匹配项",
+      "close_search": "关闭搜索"
     }
   },
   "hooks": {

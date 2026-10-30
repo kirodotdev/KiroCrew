@@ -6279,7 +6279,10 @@
       "move_panel_to_bottom": "パネルを下に移動",
       "more_actions": "その他の操作",
       "close_failed": "サーバー上でこのターミナルのシェルを停止できませんでした。自動的にクリーンアップされます。",
-      "closing_terminal": "ターミナルを閉じています…"
+      "closing_terminal": "ターミナルを閉じています…",
+      "fullscreen": "全画面",
+      "exit_fullscreen": "全画面を終了",
+      "find": "検索"
     },
     "tabCloseMenu": {
       "close_all_terminals": "すべてのターミナルを閉じる",
@@ -10260,6 +10263,16 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "terminalFindBar": {
+      "find": "検索",
+      "search_scrollback": "ターミナルのスクロールバックを検索",
+      "no_results": "結果なし",
+      "match_count": "{{total}} 件中 {{index}} 件目",
+      "match_overflow": "{{total}} 件の一致",
+      "previous_match": "前の一致",
+      "next_match": "次の一致",
+      "close_search": "検索を閉じる"
     }
   },
   "hooks": {

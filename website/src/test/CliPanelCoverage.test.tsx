@@ -112,12 +112,21 @@ const xt = vi.hoisted(() => {
       FakeWebLinksAddon.instances.push(this)
     }
   }
-  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon }
+  class FakeSearchAddon {
+    static instances: FakeSearchAddon[] = []
+    findNext = vi.fn()
+    findPrevious = vi.fn()
+    clearDecorations = vi.fn()
+    onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }))
+    constructor() { FakeSearchAddon.instances.push(this) }
+  }
+  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon, FakeSearchAddon }
 })
 
 vi.mock('@xterm/xterm', () => ({ Terminal: xt.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: xt.FakeFitAddon }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: xt.FakeWebLinksAddon }))
+vi.mock('@xterm/addon-search', () => ({ SearchAddon: xt.FakeSearchAddon }))
 
 const registry = vi.hoisted(() => ({
   ensureTerminalConnection: vi.fn(),
@@ -305,6 +314,7 @@ beforeEach(() => {
   registry.wrongMachine.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
+  xt.FakeSearchAddon.instances = []
   touch.value = false
   stubLayout()
   setClipboard({ writeText: vi.fn(() => Promise.resolve()) })
@@ -342,9 +352,11 @@ describe('CliPanel mount', () => {
     expect(term.fontFamilyWrites).toEqual([])
   })
 
-  it('loads the fit and web-links addons and seeds the theme from CSS custom properties', () => {
+  it('loads the fit, web-links, and search addons and seeds the theme from CSS custom properties', () => {
     const { term } = mount()
-    expect(term.addons).toHaveLength(2)
+    // fit + web-links + search (#10176 scrollback find).
+    expect(term.addons).toHaveLength(3)
+    expect(xt.FakeSearchAddon.instances.length).toBeGreaterThan(0)
     // No custom properties are set in the test document, so every slot falls
     // back to its hard-coded default rather than an empty string. The 16 ANSI
     // entries are asserted here only as wiring — that the palette reaches
