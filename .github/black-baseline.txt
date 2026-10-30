@@ -248,7 +248,6 @@ test/metrics/test_watchdog_metrics.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
-test/test_acp_tool_search.py
 test/test_acp_true_provider_error.py
 test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py

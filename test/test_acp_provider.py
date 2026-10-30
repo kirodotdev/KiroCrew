@@ -1415,6 +1415,9 @@ class TestFixBDeadRuntimeRespawn:
         ):
             await provider._start_kiro_runtime()
 
+        # The provider now serves the fresh session on the respawned runtime.
+        assert provider._client._runtime is new_runtime
+        assert provider._client._handle is new_handle
         # The dead runtime was killed
         dead_runtime.kill.assert_awaited_once()
         # The new runtime was spawned
