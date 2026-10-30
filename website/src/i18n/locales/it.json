@@ -12733,18 +12733,6 @@
         "outcome_closed": "Anteprima finita. Ora questa è la pagina live.",
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
       },
-      "messageReactionBar": {
-        "react": "Le tue reazioni",
-        "reaction_placed": "Hai reagito con {{emoji}}",
-        "remove_reaction": "Rimuovi la reazione {{emoji}}",
-        "react_with": "Reagisci con {{emoji}}",
-        "reaction_failed": "Impossibile aggiungere la reazione. Apri il pulsante delle reazioni e sceglila di nuovo.",
-        "reaction_failed_emoji": "Impossibile aggiungere {{emoji}}. Apri il pulsante delle reazioni e sceglila di nuovo.",
-        "unreaction_failed": "Impossibile rimuovere {{emoji}}. Apri il pulsante delle reazioni e scegli di nuovo «Rimuovi la reazione {{emoji}}».",
-        "reaction_limit_reached": "Questa chat ha raggiunto il limite di reazioni, contando tutti i messaggi, anche quelli fuori vista. Rimuovine una per aggiungerne un'altra.",
-        "reaction_limit_reached_count": "Questa chat ha raggiunto il limite di {{limit}} reazioni, contando tutti i messaggi, anche quelli fuori vista. Rimuovine una per aggiungerne un'altra.",
-        "reactions_load_failed": "Impossibile caricare le reazioni per questa chat. Nuovo tentativo automatico."
-      },
       "elicitationCard": {
         "answer_failed": "Impossibile inviare la risposta. Riprova.",
         "choose": "Scegli…",

@@ -76,7 +76,6 @@ vi.mock('../api/client', () => ({
   },
   SEARCH_MIN_CHARS: 2,
 }))
-vi.mock('../api/reactions', async () => await import('./__mocks__/reactionsApi')) // empty reactions, so no extra load-failure alert
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))

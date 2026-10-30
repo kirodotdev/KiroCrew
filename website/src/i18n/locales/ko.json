@@ -12363,18 +12363,6 @@
         "outcome_closed": "미리보기가 끝났어요. 이제 이게 라이브 페이지예요.",
         "outcome_undo": "되돌리려면 {{name}}에게 이전 대시보드로 되돌려 달라고 해요."
       },
-      "messageReactionBar": {
-        "react": "내 반응",
-        "reaction_placed": "{{emoji}}(으)로 반응했어요",
-        "remove_reaction": "{{emoji}} 반응 제거",
-        "react_with": "{{emoji}}(으)로 반응",
-        "reaction_failed": "반응을 추가하지 못했어요. 반응 버튼을 열어 다시 선택해 줘.",
-        "reaction_failed_emoji": "{{emoji}}을(를) 추가하지 못했어요. 반응 버튼을 열어 다시 선택해 줘.",
-        "unreaction_failed": "{{emoji}}을(를) 제거하지 못했어요. 반응 버튼을 열어 '{{emoji}} 반응 제거'를 다시 선택해 줘.",
-        "reaction_limit_reached": "이 채팅은 반응 한도에 도달했어요. 스크롤해서 안 보이는 메시지까지 모든 메시지를 합친 수예요. 다른 반응을 추가하려면 하나를 제거해 줘.",
-        "reaction_limit_reached_count": "이 채팅은 반응 한도({{limit}}개)에 도달했어요. 스크롤해서 안 보이는 메시지까지 모든 메시지를 합친 수예요. 다른 반응을 추가하려면 하나를 제거해 줘.",
-        "reactions_load_failed": "이 채팅의 반응을 불러오지 못했어. 자동으로 다시 시도할게."
-      },
       "elicitationCard": {
         "answer_failed": "답변을 보낼 수 없었습니다. 다시 시도하세요.",
         "choose": "선택…",

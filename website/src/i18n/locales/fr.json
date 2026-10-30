@@ -12733,18 +12733,6 @@
         "outcome_closed": "Aperçu terminé. C’est maintenant la page en ligne.",
         "outcome_undo": "Pour annuler, demande à {{name}} de remettre le tableau de bord précédent."
       },
-      "messageReactionBar": {
-        "react": "Tes réactions",
-        "reaction_placed": "Tu as réagi avec {{emoji}}",
-        "remove_reaction": "Retirer la réaction {{emoji}}",
-        "react_with": "Réagir avec {{emoji}}",
-        "reaction_failed": "Impossible d'ajouter la réaction. Ouvre le bouton des réactions et choisis-la de nouveau.",
-        "reaction_failed_emoji": "Impossible d'ajouter {{emoji}}. Ouvre le bouton des réactions et choisis-la de nouveau.",
-        "unreaction_failed": "Impossible de retirer {{emoji}}. Ouvre le bouton des réactions et choisis « Retirer la réaction {{emoji}} » de nouveau.",
-        "reaction_limit_reached": "Cette conversation a atteint sa limite de réactions, en comptant tous les messages, y compris ceux hors de vue. Retire-en une pour en ajouter une autre.",
-        "reaction_limit_reached_count": "Cette conversation a atteint sa limite de {{limit}} réactions, en comptant tous les messages, y compris ceux hors de vue. Retire-en une pour en ajouter une autre.",
-        "reactions_load_failed": "Impossible de charger les réactions de cette conversation. Nouvelle tentative automatique."
-      },
       "elicitationCard": {
         "answer_failed": "Ta réponse n'a pas pu être envoyée. Réessaie.",
         "choose": "Choisir…",

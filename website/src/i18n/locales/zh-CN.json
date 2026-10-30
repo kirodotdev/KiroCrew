@@ -12363,18 +12363,6 @@
         "outcome_closed": "预览已结束。现在这就是正式页面。",
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
       },
-      "messageReactionBar": {
-        "react": "你的回应",
-        "reaction_placed": "你用 {{emoji}} 回应了",
-        "remove_reaction": "移除 {{emoji}} 回应",
-        "react_with": "用 {{emoji}} 回应",
-        "reaction_failed": "无法添加回应。打开回应按钮重新选择。",
-        "reaction_failed_emoji": "无法添加 {{emoji}}。打开回应按钮重新选择。",
-        "unreaction_failed": "无法移除 {{emoji}}。打开回应按钮再次选择“移除 {{emoji}} 回应”。",
-        "reaction_limit_reached": "此对话的表情数量已达上限，统计范围包括所有消息，包括已滚出视野的消息。移除一个才能再添加。",
-        "reaction_limit_reached_count": "此对话的表情数量已达上限（{{limit}} 个），统计范围包括所有消息，包括已滚出视野的消息。移除一个才能再添加。",
-        "reactions_load_failed": "无法加载这个对话的回应，正在自动重试。"
-      },
       "elicitationCard": {
         "answer_failed": "回答没有发送成功，请重试。",
         "choose": "请选择…",

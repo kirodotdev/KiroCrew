@@ -12548,18 +12548,6 @@
         "outcome_closed": "Vorschau beendet. Das ist jetzt die Live-Seite.",
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
       },
-      "messageReactionBar": {
-        "react": "Deine Reaktionen",
-        "reaction_placed": "Du hast mit {{emoji}} reagiert",
-        "remove_reaction": "{{emoji}}-Reaktion entfernen",
-        "react_with": "Mit {{emoji}} reagieren",
-        "reaction_failed": "Die Reaktion konnte nicht hinzugefügt werden. Öffne die Reaktionsschaltfläche und wähl sie noch mal.",
-        "reaction_failed_emoji": "{{emoji}} konnte nicht hinzugefügt werden. Öffne die Reaktionsschaltfläche und wähl es noch mal.",
-        "unreaction_failed": "{{emoji}} konnte nicht entfernt werden. Öffne die Reaktionsschaltfläche und wähl „{{emoji}}-Reaktion entfernen“ noch mal.",
-        "reaction_limit_reached": "Dieser Chat hat sein Reaktionslimit erreicht – gezählt über alle Nachrichten, auch die weggescrollten. Entferne eine, um eine weitere hinzuzufügen.",
-        "reaction_limit_reached_count": "Dieser Chat hat sein Limit von {{limit}} Reaktionen erreicht – gezählt über alle Nachrichten, auch die weggescrollten. Entferne eine, um eine weitere hinzuzufügen.",
-        "reactions_load_failed": "Die Reaktionen für diesen Chat konnten nicht geladen werden. Es wird automatisch erneut versucht."
-      },
       "elicitationCard": {
         "answer_failed": "Deine Antwort konnte nicht gesendet werden. Versuche es erneut.",
         "choose": "Auswählen…",
