@@ -1532,6 +1532,25 @@ losing a pathological key beats leaking the secret.
 malformed value becomes `None` ("no override") and can never widen or remove a
 run's ceiling.
 
+When the originating chat slot is gone at delivery (the common case for a
+webhook-driven run, whose ephemeral session is destroyed when its turn ends),
+`inject_workflow_result` falls back to a dedicated `workflow-<run_id>` slot
+instead, titled `Workflow: <name or run_id>` and unfiled. `workflow_run` takes
+two optional arguments that apply ONLY to that fallback slot: `title` sets its
+title (so many runs of one workflow are told apart) and `folder` files it under
+an EXISTING sidebar folder (id or `/`-path, like session_create's `folder`). The
+folder is resolved to an id server-side in the `/api/workflows/run` handler,
+AFTER the run body validates and BEFORE the run starts, through the one
+read-only resolver (`_resolve_chat_folder_id`) — NOTHING is created, and a
+folder that does not exist or is ambiguous rejects the run with a 400 the caller
+sees rather than being silently dropped. The fallback slot is filed under that
+id only if it still exists at delivery; a folder deleted meanwhile leaves the
+slot unfiled. The retained `title`/`folder_id` on the run handle are
+length-bounded on every construction path, so a direct POST cannot store an
+unbounded value. With neither argument the default title and unfiled placement
+are unchanged. A live originating session is never titled or filed by these
+arguments, and incognito/temporary runs still get no fallback slot.
+
 Live progress reaches the browser as a `workflow_run_event` WS broadcast carrying
 the redacted event plus the run's `session_key`, and the frontend
 (`website/src/apps/workflows/runModel.ts`) folds the stream into a phase tree and a

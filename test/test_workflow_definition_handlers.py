@@ -158,6 +158,8 @@ async def test_definition_update_returns_conflict_and_run_maps_input() -> None:
             "expected_store": None,
             "budget_total": None,
             "timeout_secs": None,
+            "fallback_title": "",
+            "fallback_folder_id": "",
         },
     )
 

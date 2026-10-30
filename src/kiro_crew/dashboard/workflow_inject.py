@@ -204,7 +204,53 @@ def inject_workflow_result(
                 from kiro_crew.dashboard.transcript_binding import bind_transcript
 
                 bind_transcript(state, slot)
-            slot.title = f"Workflow: {snapshot.get('name') or run_id}"
+            # Opt-in per-run title for the fallback slot: a webhook-driven run
+            # whose originating chat is always gone can name its own slot so many
+            # runs of one workflow are told apart. The default holds when the
+            # caller gives none. Clean the title HERE, at the one point every
+            # run path (the three HTTP handlers and the MCP tool) converges on
+            # applying it to a slot, with the same display-text cleaner a
+            # caller-explicit session title gets (redact, single line, bounded).
+            from kiro_crew.dashboard.chat_cards import _clean as _clean_display_text
+            from kiro_crew.workflows.registry import FALLBACK_TITLE_MAX
+
+            fallback_title = _clean_display_text(
+                snapshot.get("fallback_title") or "", FALLBACK_TITLE_MAX
+            )
+            if fallback_title:
+                slot.title = fallback_title
+                # A caller-explicit title is pinned exactly as slot_create pins
+                # one: mark it user-origin and bump the epoch, so a follow-up
+                # turn's background auto-titling stands down instead of silently
+                # replacing the caller's chosen name. The DEFAULT title below is
+                # left un-pinned, keeping today's behaviour for a run that named
+                # no title.
+                slot._titled = True
+                slot._title_origin = "user"
+                slot._title_epoch += 1
+            else:
+                slot.title = f"Workflow: {snapshot.get('name') or run_id}"
+            # Opt-in filing: the folder id was resolved server-side by the run
+            # handler to an EXISTING folder. File the fallback slot under it only
+            # when that folder still exists at delivery (the same existence check
+            # slot_create makes); a folder deleted meanwhile leaves the slot
+            # unfiled, and nothing is recreated. Re-check mate-home ownership
+            # against the slot's REAL store here, where it is known: the run
+            # handler refused on the caller's principal before admission, and
+            # this confirms against the run's own store before filing. A folder
+            # that now sits in another member's home leaves the slot unfiled —
+            # fail-safe, no error — the same decision cron_inject makes.
+            from kiro_crew.dashboard.cron_inject import chat_folder_refuses_store
+
+            fallback_folder_id = (snapshot.get("fallback_folder_id") or "").strip()
+            if (
+                fallback_folder_id
+                and any(f.get("id") == fallback_folder_id for f in getattr(state, "_folders", []))
+                and not chat_folder_refuses_store(
+                    state, fallback_folder_id, getattr(slot, "memory_store", "")
+                )
+            ):
+                slot.folder_id = fallback_folder_id
 
         # Dedup: don't double-inject the same result on a re-fire.
         already = any(m.get("content") == msg for m in getattr(slot, "messages", []))

@@ -1095,6 +1095,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Launch a background run that AUTHORS its own script from ``intent``.
 
@@ -1158,6 +1160,8 @@ class WorkflowService:
             budget_total=budget_total,
             intent=intent,
             author_fn=_author_fn,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1179,6 +1183,8 @@ class WorkflowService:
         workflow_id: str = "",
         workflow_slug: str = "",
         workflow_revision: int = 0,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
@@ -1228,6 +1234,8 @@ class WorkflowService:
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1443,6 +1451,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
         from kiro_crew.workflow_memory import capture_admission_execution
@@ -1499,6 +1509,8 @@ class WorkflowService:
             workflow_id=str(definition["id"]),
             workflow_slug=str(definition["slug"]),
             workflow_revision=int(definition["revision"]),
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if "run_id" in started:
             started.update(
