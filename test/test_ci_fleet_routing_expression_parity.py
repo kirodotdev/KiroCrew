@@ -90,7 +90,7 @@ _CANONICAL_BASE_ONLY_PR_EXPR = (
     + _ACTOR_PREDICATE
     + " && github.event.pull_request.head.repo.full_name == github.repository && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # PR Readiness runs only default-branch code too. Only its pull_request_target
 # runs use the fleet: workflow_run carries the in_progress merge-guard hold,
