@@ -129,17 +129,23 @@ def _attach_live(request: web.Request, body: dict[str, Any], rows: list[dict[str
     state = request.app.get("state")
     if state is None:
         return
+    from kiro_crew.history_files import transcript_stem as canon
     live = presence_for(state).live_by_principal()
-    titles = {str(r.get("key") or ""): str(r.get("title") or "") for r in rows}
+    titles = {canon(str(r.get("key") or "")): str(r.get("title") or "") for r in rows}
     for row in body.get("people") or []:
         hit = live.get(str((row.get("principal") or {}).get("id") or ""))
         if hit is None:
             continue
         activity, session_key = hit
+        # A dashboard tab reports its slot key; the catalog keys that session
+        # as ``dashboard:<slot>``, both compared as transcript file stems.
+        catalog_key = next(
+            (k for k in (canon(session_key), canon(f"dashboard:{session_key}")) if k in titles), ""
+        )
         row["live"] = {
             "activity": activity.value,
-            "session_key": session_key if session_key in titles else "",
-            "session_title": titles.get(session_key, ""),
+            "session_key": session_key if catalog_key else "",
+            "session_title": titles.get(catalog_key, ""),
         }
 
 

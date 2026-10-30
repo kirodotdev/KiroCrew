@@ -182,3 +182,22 @@ def test_people_rows_carry_the_user_id_and_the_display_record() -> None:
     assert first["tailscale_user_id"] == "4102"
     assert first["member"]["alias"] == "Riley"
     assert "tailscale_user_id" not in second and "member" not in second
+
+
+def test_people_rows_say_who_is_here_and_where_by_the_tab_slot_key() -> None:
+    from kiro_crew.shared_crew.collab import Activity
+    from kiro_crew.shared_crew.presence import presence_for
+    from kiro_crew.shared_crew.routes_identity import _attach_live
+
+    state = SimpleNamespace()
+    presence_for(state).report("c1", BOB, "Release_plan", Activity.TYPING)
+    request = SimpleNamespace(app={"state": state})
+    body = {"people": [{"principal": BOB.to_public_dict()}, {"principal": {"id": "p_gone"}}]}
+    # The catalog lists the session under its file-stem key.
+    rows = [{"key": "dashboard_Release_plan", "title": "Release plan"}]
+    _attach_live(request, body, rows)  # type: ignore[arg-type]
+    here, gone = body["people"]
+    assert here["live"] == {
+        "activity": "typing", "session_key": "Release_plan", "session_title": "Release plan"
+    }
+    assert "live" not in gone
