@@ -7,12 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
-from source_providers_helpers import _app, _rollup_reply
+from source_providers_helpers import _ISSUE_URL, _app, _rollup_reply
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.dashboard.source_providers import cache as cache_source
 from kiro_crew.dashboard.source_providers import github as github_source
 
 
@@ -697,3 +698,105 @@ async def test_capacity_error_audits_its_own_reason(monkeypatch, _mock_source_se
 async def test_capacity_error_remains_a_source_provider_error() -> None:
     """Every existing ``except SourceProviderError`` site must still catch it."""
     assert issubclass(source.SourceCapacityError, source.SourceProviderError)
+
+
+def _future_on_a_closed_loop() -> source.asyncio.Future:
+    """A pending future whose loop is gone, so its done callbacks can never run."""
+    other = source.asyncio.new_event_loop()
+    try:
+        return other.create_future()
+    finally:
+        other.close()
+
+
+_PR_URL = "https://github.com/acme/repo/pull/7"
+
+
+async def _fetch_pr(monkeypatch) -> object:
+    async def fetch(ref, generation, *, refresh=False):
+        return {"url": ref.url}
+
+    monkeypatch.setattr(cache_source, "_fetch_pull_request_uncached", fetch)
+    return await cache_source.fetch_pull_request(_PR_URL, refresh=True)
+
+
+async def _fetch_checks(monkeypatch) -> object:
+    async def fetch(ref):
+        return [{"url": ref.url}]
+
+    monkeypatch.setattr(cache_source, "_fetch_pull_request_checks_uncached", fetch)
+    return await cache_source.fetch_pull_request_checks(_PR_URL)
+
+
+async def _fetch_issue(monkeypatch) -> object:
+    async def fetch(ref):
+        return {"url": ref.url}
+
+    monkeypatch.setattr(cache_source, "_fetch_issue_uncached", fetch)
+    return await cache_source.fetch_issue(_ISSUE_URL, refresh=True)
+
+
+async def _fetch_contributors(monkeypatch) -> object:
+    async def fetch(ref, key):
+        return [{"login": key}]
+
+    monkeypatch.setattr(cache_source, "_fetch_github_contributors", fetch)
+    return await cache_source.fetch_app_contributors("https://github.com/acme/repo", refresh=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("store", "key", "fetch", "expected"),
+    [
+        ("_FULL_FETCH_INFLIGHT", _PR_URL, _fetch_pr, {"url": _PR_URL}),
+        ("_CHECKS_FETCH_INFLIGHT", _PR_URL, _fetch_checks, [{"url": _PR_URL}]),
+        ("_ISSUE_FETCH_INFLIGHT", _ISSUE_URL, _fetch_issue, {"url": _ISSUE_URL}),
+        (
+            "_contributors_inflight",
+            "github.com/acme/repo",
+            _fetch_contributors,
+            [{"login": "github.com/acme/repo"}],
+        ),
+    ],
+)
+async def test_a_fetch_left_by_a_torn_down_loop_is_not_reused(
+    monkeypatch, store, key, fetch, expected
+) -> None:
+    """A shared fetch whose loop is gone never runs its cleanup, so its entry
+    stays; the next request for that URL must start its own fetch, not await it."""
+    _reset_direct_fetch_state()
+    cache_source._contributors_cache.clear()
+    cache_source._contributors_inflight.clear()
+    getattr(cache_source, store)[key] = _future_on_a_closed_loop()
+    # Gathered so a reused dead entry shows up as a wrong answer, not a crash.
+    assert await source.asyncio.gather(fetch(monkeypatch), return_exceptions=True) == [expected]
+    await source.asyncio.sleep(0)
+    assert key not in getattr(cache_source, store)
+    _reset_direct_fetch_state()
+    cache_source._contributors_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_fetches_left_by_a_torn_down_loop_do_not_hold_capacity(monkeypatch) -> None:
+    """Dead tasks, their leases and their capacity waiters are not counted.
+
+    Without the prune every slot stays taken forever and a fresh request waits
+    out its whole budget and is refused.
+    """
+    _reset_direct_fetch_state()
+    for i in range(source._DIRECT_FETCH_PENDING_MAX):
+        url = f"https://github.com/acme/repo/pull/{100 + i}"
+        dead = _future_on_a_closed_loop()
+        source._FULL_FETCH_TASKS[url] = {dead}
+        source._FULL_FETCH_GENERATIONS[url] = 1
+        source._DIRECT_FETCH_RESERVATIONS[dead] = source._FULL_FETCH_RESERVATION_BYTES
+    source._DIRECT_FETCH_WAITERS.append(_future_on_a_closed_loop())
+    monkeypatch.setattr(cache_source, "_DIRECT_FETCH_WAIT_SECS", 0.0)
+    outcome = await source.asyncio.gather(_fetch_pr(monkeypatch), return_exceptions=True)
+    assert outcome == [{"url": _PR_URL}]
+    await source.asyncio.sleep(0)
+    assert not source._FULL_FETCH_TASKS
+    assert not source._FULL_FETCH_GENERATIONS
+    assert not source._DIRECT_FETCH_RESERVATIONS
+    assert not source._DIRECT_FETCH_WAITERS
+    _reset_direct_fetch_state()

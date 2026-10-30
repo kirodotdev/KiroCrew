@@ -104,15 +104,26 @@ def _app(
     return app
 
 
+def _clear_fetch_collections() -> None:
+    source._ISSUE_CACHE.clear()
+    source._ISSUE_FETCH_INFLIGHT.clear()
+    source._ISSUE_FETCH_TASKS.clear()
+    source._FULL_FETCH_INFLIGHT.clear()
+    source._FULL_FETCH_TASKS.clear()
+    source._FULL_FETCH_GENERATIONS.clear()
+    source._CHECKS_FETCH_INFLIGHT.clear()
+    source._contributors_inflight.clear()
+    source._DIRECT_FETCH_RESERVATIONS.clear()
+    source._DIRECT_FETCH_WAITERS.clear()
+
+
 @pytest.fixture(autouse=True)
-def _clear_issue_cache():
-    source._ISSUE_CACHE.clear()
-    source._ISSUE_FETCH_INFLIGHT.clear()
-    source._ISSUE_FETCH_TASKS.clear()
+def _clear_shared_fetch_state():
+    # The shared-fetch tasks, leases and waiters are module globals that outlive
+    # each test's loop; the issue cache is cleared with them.
+    _clear_fetch_collections()
     yield
-    source._ISSUE_CACHE.clear()
-    source._ISSUE_FETCH_INFLIGHT.clear()
-    source._ISSUE_FETCH_TASKS.clear()
+    _clear_fetch_collections()
 
 
 # An issue URL: every pull-request-only entry point must refuse it.
