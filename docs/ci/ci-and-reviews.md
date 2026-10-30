@@ -1088,8 +1088,12 @@ The sites that target the group with `group:` are, by workflow:
   `first-principles-review`, `design-review`, `ux-review`
 - `codeql.yml`
 - `docker-smoke.yml`, both jobs
-- `release.yml`: `version`, `resolve-promotion`, `stable-gate`,
-  `github-release`, `record-promotion`
+- `release.yml`: `version`, `resolve-promotion`, `release-candidate-tests`,
+  `stable-gate`, `github-release`, `record-promotion`,
+  `record-stable-promotion`
+- `publish-installer.yml`'s `publish-installer`
+- `publish-linux.yml`'s `publish-linux`
+- `publish-windows.yml`'s `publish-windows`
 - the fork helpers: `fork-internal-content-scan`, `fork-pr-description`'s
   `describe`, and `fork-workflow-guard`'s `guard` and `strip-stale-override`
 
@@ -1105,8 +1109,27 @@ lands on the shared standard pool, and the tagger rotates with the on-call;
 `version` is the job every other release job `needs`, so its queue is the whole
 release's queue. The group makes that time independent of who cut the release.
 Widening the actor list is not the alternative: the AWS webhook's actor
-admission is a security boundary, and routing is not. These jobs run on a tag,
-never on `pull_request`, so they add nothing to the group's PR-time occupancy.
+admission is a security boundary, and routing is not. The three publish jobs
+are here for the same reason: `release.yml` calls `publish-linux` and
+`publish-windows` on every release, and `publish-installer` publishes `cli.sh`.
+None of these jobs fires on `pull_request` -- `release.yml` runs on a `v*` tag,
+`nightly.yml` (the other caller of `publish-linux` and `publish-windows`) on its
+schedule or a manual dispatch, and `publish-installer.yml` on a push to `main`
+that touches `cli.sh` or a manual dispatch -- so they add nothing to the
+group's PR-time occupancy.
+
+The publish jobs meet the admission test below in two different ways.
+`publish-installer` passes it outright: its job-level
+`if: github.repository == 'kirodotdev/KiroCrew'` is false inside a fork.
+`publish-linux` and `publish-windows` carry no repository check, and
+`nightly.yml` calls them with no repository guard, so a fork running its own
+nightly reaches them. What skips them there is their job-level
+`vars.CLI_DIST_BUCKET != '' && vars.CLI_CDN_BASE != ''` condition, which is
+false wherever those variables are unset. That vars-based guard is what admits
+the `group:` form, and it is weaker than a repository check: a fork that
+defines both variables starts them, and they queue until the timeout. The other
+two publish jobs reach the group by label; see **The publish lanes reach the
+group by LABEL** below.
 
 **Why the fork helpers.** They carry the fork review lanes' obstruction below:
 fork work cannot reach the CodeBuild fleet, so the shared standard pool is the
@@ -1365,6 +1388,25 @@ Unlike the three `_CANONICAL_PUSH_EXPR` sites, this policy has one site, so the
 revert is per site and per policy at once. `test_readiness_route_truth_table`
 pins all three destinations as literals rather than reading them off the
 expression, so the revert has to edit the expectation on purpose.
+
+**The publish lanes reach the group by LABEL, because a fork's nightly starts
+them.** `publish-cli.yml`'s `publish-cli` and `publish-docker.yml`'s
+`publish-docker` use
+`runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
+rather than `group:`. Both are `workflow_call` only, called by `release.yml` and
+`nightly.yml`, and `nightly.yml` calls them with no repository guard.
+`publish-cli` has no job-level condition at all and `publish-docker` checks only
+`inputs.publish`, so neither has the vars-based skip that admits
+`publish-linux` and `publish-windows` to the `group:` form. A fork running its
+own nightly therefore starts both, and there an organization runner group is
+unreachable: a job asking for a label no runner it can see carries waits out
+GitHub's pending limit before being cancelled, so the `ubuntu-latest` branch is
+load-bearing rather than defensive. Neither fires on `pull_request`, so like the
+release jobs they add nothing to the group's PR-time occupancy. The rename
+exposure that group targeting avoids applies to these two lines: rename the
+definition and they must move with it. Rollback is the plain whole-line
+replacement, since these two carry no fleet route to preserve: restore
+`runs-on: ubuntu-latest` on the affected line.
 
 **The PR-time sites reach the group by LABEL instead, because they can execute
 somewhere the group does not exist.** `client-py.yml`'s `test`,

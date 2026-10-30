@@ -131,7 +131,11 @@ jobs:
     name: Test Release Candidate SHA
     if: needs.version.outputs.channel == 'insider'
     needs: version
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Match ci.yml's whole-file split so every runner carries a bounded part of
     # the exact-SHA gate while the matrix still covers the full test population.
     timeout-minutes: 60
@@ -1663,7 +1667,11 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' &&
           needs.github-release.result == 'success' }}
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     # Editing a release needs contents:write, and this job holds nothing else:
     # no AWS identity, no package scope. Same least-privilege split as

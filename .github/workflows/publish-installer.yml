@@ -50,7 +50,11 @@ permissions:
 jobs:
   publish-installer:
     name: Publish cli.sh
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 30
     # Upstream only. Forks pushing to their own main have no publish role and
     # nothing to publish to; skipping at the JOB level (rather than gating each
