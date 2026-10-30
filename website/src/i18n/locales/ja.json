@@ -12824,6 +12824,7 @@
       "folder_order_reorder_note": "フォルダーをドラッグで並べ替えられるのはカスタム順のときだけです",
       "folder_order_switch_custom": "カスタムに切り替える",
       "folder_order_unstamped_note": "日付の記録が始まる前に作成したフォルダーには日付がなく、カスタム順で最後に表示されます",
+      "unfiled_sessions_above_folders": "未分類のセッションをフォルダーの上に表示",
       "sort_sessions_by": "セッションの並べ替え",
       "sort_newest": "新しい順",
       "sort_oldest": "古い順",

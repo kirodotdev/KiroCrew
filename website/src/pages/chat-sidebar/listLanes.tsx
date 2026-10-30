@@ -76,7 +76,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
-    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders, pinnedBandCaption } = shell
+    subagentApprovalCounts, unfiledAboveFolders, ungroupedSlots, unreadSet, visibleRootFolders, pinnedBandCaption } = shell
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -96,6 +96,44 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
   // True while dragging a folder that currently has a parent — the only case
   // where "drop on the root lane to move to top level" applies.
   const draggingNestedFolder = activeDrag?.type === 'folder' && !!folders.find(f => f.id === activeDrag.id)?.parent_id
+  /** The ring classes of a null-folder drop target (the ungrouped bucket, the
+   *  lane tail) while it is hovered by a drag that ungrouping applies to. */
+  const rootDropRing = (isOver: boolean) => (isOver && (draggingFolderedSession || draggingNestedFolder) ? 'ring-1 ring-accent' : '')
+  /** The ungrouped bucket's rows: the fresh unfiled rows with their pinned
+   *  dividers, then the dormant section. Call it from inside the bucket's render
+   *  prop in both layouts. The rows then take their paint-order stamps at the
+   *  bucket's position among the folder rows. */
+  const renderRootBucketRows = (): React.ReactNode => {
+    const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
+    const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(sectionRows(freshRootRaw, sidebarRows.isPinned, kindSections), 'list', 'tree:root', undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
+    const rootHeaders = sectionHeaders(freshRoot, sidebarRows.isPinned, kindSections)
+    return (
+      <>
+        {/* Caption header before the pinned band when a property filter narrows the list. */}
+        {pinnedBandCaption && freshRoot.length > 0 && sidebarRows.isPinned(freshRoot[0]) && (
+          <PinnedSessionDivider caption={pinnedBandCaption} />
+        )}
+        {freshRoot.map((s, i) => {
+          const nextIsActive = isActiveRow(freshRoot[i + 1])
+          const isActive = isActiveRow(s)
+          const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
+            && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1]
+          const kindHeader = rootHeaders[i]
+          return (
+            <Fragment key={sessionRowIdentity(s)}>
+              {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
+              {kindHeader && <KindSectionHeader kind={kindHeader} />}
+              {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
+            </Fragment>
+          )
+        })}
+        {!searchRanked && staleExpanded.has('root')
+          && staleRoot.length > 0 && freshRoot.length > 0
+          && sidebarRows.isPinned(freshRoot[freshRoot.length - 1]) && <PinnedSessionDivider />}
+        {renderStaleSection('root', staleRoot, 0)}
+      </>
+    )
+  }
   // Droppable rects are normally snapshotted once at drag-start, but these
   // lanes ANIMATE during drags (the dragged folder's body collapses over 150ms;
   // hovered collapsed folders auto-expand; the chat-pane zone mounts mid-drag),
@@ -466,6 +504,20 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
                     {localGroupHeader}
+                    {/* Unfiled sessions ABOVE the folders (dashboard.unfiled_sessions_above_folders).
+                     *  The bucket renders first, at natural height, and only when it has
+                     *  rows. The lane tail below the folders is then the whole-lower-area
+                     *  drop target and carries the drop hints, so nothing above the
+                     *  pointer moves when a drag starts. */}
+                    {unfiledAboveFolders && ungroupedSlots.length > 0 && (
+                      <DndDroppable id="root-group" data={{ type: 'folder-drop', folderId: null }}>
+                        {({ setNodeRef: setRootGroupRef, isOver }) => (
+                          <div ref={setRootGroupRef} data-testid="root-group" className={`flex flex-col rounded-md transition-all ${rootDropRing(isOver)}`}>
+                            {renderRootBucketRows()}
+                          </div>
+                        )}
+                      </DndDroppable>
+                    )}
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
                       {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>
@@ -493,60 +545,47 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                     {laneSlots.length === 0 && shownCrewRowCount === 0 && listNarrowed && (
                       <div className="px-3 py-4 text-[12px] text-muted">{i18nT(folderNameMatchIds ? 'pages.chatSidebar.no_sessions_match_folders' : 'pages.chatSidebar.no_sessions_match')}</div>
                     )}
-                    {/* Ungrouped sessions live in a headerless droppable bucket
-                     *  (folderId: null) that fills the remaining height below the
-                     *  folders, so the whole empty lower area is a drop target —
-                     *  dropping a session here ungroups it. The ring only lights up
-                     *  while dragging a foldered session (when ungrouping applies). */}
-                    {(rootFolders.length > 0 || ungroupedSlots.length > 0 || shownCrewGroups.length > 0) && (
-                      <DndDroppable id="root-group" data={{ type: 'folder-drop', folderId: null }}>
-                        {({ setNodeRef: setRootGroupRef, isOver }) => (
-                          <div ref={setRootGroupRef} className={`flex flex-col flex-1 min-h-0 rounded-md transition-all ${isOver && (draggingFolderedSession || draggingNestedFolder) ? 'ring-1 ring-accent' : ''}`}>
-                            {/* Explicit un-nest target while dragging a subfolder —
-                             *  same escape hatch (and wording) as the session zone
-                             *  below, always reachable even when the root lane has
-                             *  no empty space. */}
-                            {draggingNestedFolder && <RootDropHint />}
-                            {(() => {
-                              const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
-                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(sectionRows(freshRootRaw, sidebarRows.isPinned, kindSections), 'list', 'tree:root', undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
-                              const rootHeaders = sectionHeaders(freshRoot, sidebarRows.isPinned, kindSections)
-                              return (
-                                <>
-                                  {/* Caption header before the pinned band when a property filter narrows the list. */}
-                                  {pinnedBandCaption && freshRoot.length > 0 && sidebarRows.isPinned(freshRoot[0]) && (
-                                    <PinnedSessionDivider caption={pinnedBandCaption} />
-                                  )}
-                                  {freshRoot.map((s, i) => {
-                                    const nextIsActive = isActiveRow(freshRoot[i + 1])
-                                    const isActive = isActiveRow(s)
-                                    const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-                                      && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1]
-                                    const kindHeader = rootHeaders[i]
-                                    return (
-                                      <Fragment key={sessionRowIdentity(s)}>
-                                        {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
-                                        {kindHeader && <KindSectionHeader kind={kindHeader} />}
-                                        {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
-                                      </Fragment>
-                                    )
-                                  })}
-                                  {!searchRanked && staleExpanded.has('root')
-                                    && staleRoot.length > 0 && freshRoot.length > 0
-                                    && sidebarRows.isPinned(freshRoot[freshRoot.length - 1]) && <PinnedSessionDivider />}
-                                  {renderStaleSection('root', staleRoot, 0)}
-                                  {/* After the dormant expander, so it stays the
-                                   *  lane's last line even when rows are folded. */}
-                                  {renderOlderSessionsHint('root')}
-                                  {renderCrewGroups()}
-                                </>
-                              )
-                            })()}
-                            {ungroupedSlots.length === 0 && draggingFolderedSession && <RootDropHint />}
-                          </div>
-                        )}
-                      </DndDroppable>
-                    )}
+                    {/* The space below the folders fills the remaining height. The
+                     *  whole empty lower area is a drop target (folderId: null), and
+                     *  dropping a session there ungroups it. The ring lights up only
+                     *  while a foldered session or a nested folder drags, when
+                     *  ungrouping applies. With unfiled sessions below the folders
+                     *  this is the ungrouped bucket itself: a headerless droppable
+                     *  that holds the rows and the lane's tail. With them above, the
+                     *  bucket sits at the top and this is the lane tail: a droppable
+                     *  of its own that holds the tail alone. */}
+                    {(rootFolders.length > 0 || ungroupedSlots.length > 0 || shownCrewGroups.length > 0) && (unfiledAboveFolders
+                      ? (
+                        <DndDroppable id="root-lane-tail" data={{ type: 'folder-drop', folderId: null }}>
+                          {({ setNodeRef: setLaneTailRef, isOver }) => (
+                            <div ref={setLaneTailRef} data-testid="root-lane-tail" className={`flex flex-col flex-1 min-h-0 rounded-md transition-all ${rootDropRing(isOver)}`}>
+                              {draggingNestedFolder && <RootDropHint />}
+                              {renderOlderSessionsHint('root')}
+                              {renderCrewGroups()}
+                              {ungroupedSlots.length === 0 && draggingFolderedSession && <RootDropHint />}
+                            </div>
+                          )}
+                        </DndDroppable>
+                      )
+                      : (
+                        <DndDroppable id="root-group" data={{ type: 'folder-drop', folderId: null }}>
+                          {({ setNodeRef: setRootGroupRef, isOver }) => (
+                            <div ref={setRootGroupRef} className={`flex flex-col flex-1 min-h-0 rounded-md transition-all ${rootDropRing(isOver)}`}>
+                              {/* Explicit un-nest target while dragging a subfolder —
+                               *  same escape hatch (and wording) as the session zone
+                               *  below, always reachable even when the root lane has
+                               *  no empty space. */}
+                              {draggingNestedFolder && <RootDropHint />}
+                              {renderRootBucketRows()}
+                              {/* After the dormant expander, so it stays the
+                               *  lane's last line even when rows are folded. */}
+                              {renderOlderSessionsHint('root')}
+                              {renderCrewGroups()}
+                              {ungroupedSlots.length === 0 && draggingFolderedSession && <RootDropHint />}
+                            </div>
+                          )}
+                        </DndDroppable>
+                      ))}
                   </div>
                 )}
               </DndDroppable>

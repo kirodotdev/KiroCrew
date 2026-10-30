@@ -46,7 +46,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     renameCommit, renderFolderCreateError, renderFolderMenuItems, renderSessionRow, reorderColumnsMutation, reportDndActive,
     revealFlash, rootFolders, setBoardError, setColumnEditId, setDerivedHintCol, setEditName, setEditScope,
     setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders,
-    startsAutomaticSection, stripEdges, tagById, toggleColumnCollapse,
+    startsAutomaticSection, stripEdges, tagById, toggleColumnCollapse, unfiledAboveFolders,
     updateColumnMutation } = shell
   // Does any descendant (direct or nested) of `folderId` contain a slot from `slots`?
   function descendantMatch(fs: ChatFolder[], folderId: string, slots: Slot[], visited = new Set<string>()): boolean {
@@ -701,8 +701,24 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       // empty — folder structure alone must not suppress the
                       // "no sessions" notice.
                       const hasAny = colSlots.length > 0 || (!flatView && folders.length > 0)
+                      // Unfiled sessions above the folder blocks when the setting is on.
+                      // Inert in flat view, which renders no folder block to swap past.
+                      const unfiledFirst = unfiledAboveFolders && !flatView
+                      const ungroupedRows = ungrouped.map((s, i) => {
+                        const isActive = isActiveRow(s)
+                        const nextIsActive = isActiveRow(ungrouped[i + 1])
+                        const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
+                          && !startsAutomaticSection(ungrouped, i + 1)
+                        return (
+                          <Fragment key={sessionRowIdentity(s)}>
+                            {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
+                            {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
+                          </Fragment>
+                        )
+                      })
                       return (
                         <>
+                          {unfiledFirst && ungroupedRows}
                           {/* Folder reorder in board view: one DndContext per
                            *  column (folder ids stay unique within it) + the
                            *  header as drag handle. Reorders flow through the
@@ -736,18 +752,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                             }</OverlayPortal>
                           </DndContext>
                           )}
-                          {ungrouped.map((s, i) => {
-                            const isActive = isActiveRow(s)
-                            const nextIsActive = isActiveRow(ungrouped[i + 1])
-                            const showDivider = i < ungrouped.length - 1 && !isActive && !nextIsActive
-                              && !startsAutomaticSection(ungrouped, i + 1)
-                            return (
-                              <Fragment key={sessionRowIdentity(s)}>
-                                {startsAutomaticSection(ungrouped, i) && <PinnedSessionDivider />}
-                                {renderSessionRow(s, 0, showDivider, colLaneScope, colLaneScope, colHoldContainer)}
-                              </Fragment>
-                            )
-                          })}
+                          {!unfiledFirst && ungroupedRows}
                           {!hasAny && <div className="text-muted text-[12px] text-center py-4">{i18nT('pages.chatSidebar.no_sessions')}</div>}
                         </>
                       )
