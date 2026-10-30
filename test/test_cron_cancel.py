@@ -1139,14 +1139,17 @@ _CANCEL_REPORTS: dict[str | None, tuple[str, str | None, tuple[str, bool, bool] 
     # A pause saved before the cancel is in the frozen record and on disk: the saved
     # store shows the job paused, so the busy store is not a pause left unsaved.
     "paused_before_cancel_then_busy": _paused(_BUSY, "at"),
-    "pause_unsaved_then_busy": (_held(_BUSY)[0], _HELD_MESSAGE, ("at", False, True)),
+    # The pause whose save failed is rolled back with a reload, which re-applies
+    # the cancel's held settlement, so the job stays held for a later write.
+    "pause_unsaved_then_busy": _held_for_retry(_BUSY),
     "newer_run_here_then_busy": _on_schedule(_BUSY),
     # The settlement is held before the merge, so the tick in the gap keeps the
     # job off the schedule through its reload and its save lands the park.
     "reloaded_then_busy": _paused(_BUSY, "at"),
     # A failed park answers success only when the saved store shows the job cannot
-    # run again: a pause or a removal this process could not save is not proof.
-    "pause_unsaved_then_write_error": (_held(_ENOSPC)[0], _HELD_MESSAGE, ("at", False, True)),
+    # run again: a pause this process could not save is rolled back, so the job is
+    # held by the cancel's own settlement until a later write saves it.
+    "pause_unsaved_then_write_error": _held_for_retry(_ENOSPC),
     "paused_here_then_write_error": _paused(_ENOSPC, "at"),
     "removed_unsaved_then_busy": (_held(_BUSY)[0], _HELD_MESSAGE, None),
     "paused_here_then_unreadable": (_UNREAD_NOTE, _HELD_MESSAGE, ("at", False, True)),
