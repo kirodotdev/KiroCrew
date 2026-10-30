@@ -93,4 +93,9 @@ def install(slack_provider: Any) -> None:
     from kiro_crew.slack.code_channels.workspace import core as workspace
 
     workspace.install(slack_provider)
+    # After the workspace: its turn-start hook makes the worktree the command set
+    # (/create-pr) is judged on.
+    from kiro_crew.slack.code_channels import surface
+
+    surface.install(slack_provider)
     _INSTALLED = True

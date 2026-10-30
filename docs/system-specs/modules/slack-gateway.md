@@ -1994,6 +1994,84 @@ gateway behaves as it does without it.
   worktree keeps the channel's folder, the session already pointed and its open
   tab.
 
+## Code-channel agent surface
+
+`slack/code_channels/surface.py` wires what a code channel's bound agent and its
+people can do beyond chatting: tools (`tools.py`), runtime slash commands
+(`commands.py`) and the wrap-up / archive (`wrapup.py`). Gate: the same
+`binding.code_channels_on` the core uses (toggle on AND the install can run code
+channels); while it is shut the tools refuse, the slash and button handlers return
+"not mine" so `events._handle_slash` and `interactions.dispatch` run unchanged,
+the hooks never fire, and `kirocrew-core` lists none of the tools.
+
+- **Tools are pinned to the caller's own channel.** `code_channel_set_view`,
+  `code_channel_publish_plan_canvas`, `code_channel_set_context_bar`,
+  `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
+  (`mcp_tools/code_channels.py`) resolve the caller through
+  `require_strict_session_key` (no `/proc` walk, so a sub-agent never resolves to
+  its parent) and POST to the STRICT route `POST /api/slack/code-channel/tool`.
+  The route refuses unless the transport attests the `X-Session-Key`
+  (`session_key_is_attested`), maps it to its dashboard slot
+  (`caller_access.caller_slot_key`) and takes the binding whose `session_key` is
+  that slot AND whose Slack link still resolves to it (a replaced session loses
+  its channel). No argument can name a channel: `channel`, `channel_id`,
+  `team_id` and friends are refused before anything else; the plan tab comes only with the
+  channel's own plan canvas. An archived channel, or one whose
+  turn Slack's Stop silenced (`agent_sessions.fence`), is left alone. Every call
+  writes one `slack.code_channel.tool` SEL row (allowed / denied / error), and
+  every Slack write first passes the `channels` outbound ceiling. There is no tool to create a channel, archive one, or reach another.
+- **Content rules.** Agent-authored text passes every redaction pass
+  (exfiltration URLs and credentials), a context-bar link redaction would change
+  is refused, and broadcast and user-group mentions are neutralized. HTML views are sent with no
+  `csp` resource domains (self-contained only); Block Kit views are display-only (there is no canvas `set_view`)
+  (an allowlist of section / header / divider / context / rich_text / markdown
+  blocks, no accessories or `action_id` elements, no remote media); the diff tab stays the workspace's. `conversations.canvases.create`
+  answered `channel_canvas_already_exists` is never retried and never adopted (a
+  canvas this gateway did not create may be a shared document).
+- **Context bar.** The workspace is the one publisher. The agent's items
+  (`<config dir>/routing/slack-code-channel-surface.json`, beside the core's
+  binding record inside the already-fenced `routing` directory, written before it is adopted
+  in memory, always off the event loop) are merged after its
+  repo / branch / PR / CI items by `agent_bar.merge` inside
+  `WorkspaceService._publish_bar` (five items, keys unique, the workspace's keys
+  reserved); `republish_bar` publishes at once when the agent changes them.
+  Action items are not offered: Slack's `code_channel_action` click event has no
+  documented payload and the manifest does not subscribe to it.
+- **Status.** `code_channel_set_status("suspended")` holds through the turn end
+  (`status.hold_after_turn`); the next turn start clears it.
+- **Commands.** At each turn start (off the turn's path) `commands.sync_commands`
+  registers `/summarize` and `/wrap-up`, plus `/create-pr` only while
+  `pr_capability` holds (a worktree, a GitHub remote this install may reach, `gh`
+  signed in for that host, checked through the source-provider runner and cached),
+  sending `agents.conversations.setCommands` only when the set changed. A
+  disabling answer (`no_actions_url`, `missing_scope`, `not_agent_channel`...)
+  stops registration for the channel. An invocation arrives over Socket Mode
+  (`slash_commands`); a repeat of the same `trigger_id` is dropped; the sender is
+  authorized like a message in the channel (allowed user, origin still admits the
+  bot) after the `channels` inbound ceiling; each command becomes a prompt
+  delivered through `routing.deliver_directed`, and a `/wrap-up` that never
+  reached the session is disarmed. SEL: `slack.code_channel.command`.
+- **Wrap-up and archive.** `code_channel_wrap_up` (asked for by `/wrap-up`, or by
+  the turn-end fallback when that turn ends without the call) posts the summary,
+  the facts the gateway knows (branch, PR, CI, changes, uncommitted work) and an
+  **Archive channel** button, records it as `code_channel.summary_message`, sets
+  `Binding.wrapped_up_at`; an older wrap-up's button goes stale. A click is
+  authorized like a message (allowed user, origin admits the bot) and must come
+  from the CURRENT wrap-up; under a per-channel lock the button is retired first,
+  then `agents.conversations.archive(summary_message_ts=…)` (an
+  `already_archived` answer counts as done), then
+  `cleanup.release_channel_workspace`, under the workspace's channel lock with
+  no bind in flight: the workspace record is first checked against the gateway's
+  own facts (`git_ops.is_channel_worktree`, the sealed binding's repository, no
+  sensitive path), the tree is kept when it holds uncommitted, untracked or
+  ignored files or is off its channel branch, the removal is a non-forced
+  `git worktree remove`, and the branch is deleted only when its tip is already
+  on the repository's default branch (resolved from the repository, never the
+  record), so commits always stay reachable. A kept tree is reported to the
+  dashboard. An archived channel's turns fire no hooks. A second click finds the channel archived
+  and archives nothing. SEL: `slack.code_channel.wrap_up`,
+  `slack.code_channel.archive`.
+
 ## Dependencies
 
 Versions are owned by `setup.cfg` `install_requires`.

@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 _ATTR = "code_channel_status"
 
 _slack_provider: Callable[[], Any] | None = None
+#: A status the agent chose for after its turn (``suspended``: it asked a question
+#: and waits on the people in the channel); the turn end shows it instead of
+#: ``active``. Cleared when the next turn starts.
+_held: dict[str, str] = {}
+
+
+def hold_after_turn(channel_id: str, status: str | None) -> None:
+    """Show *status* when the current turn ends (``None`` = the usual ``active``)."""
+    if status:
+        _held[channel_id] = status
+    else:
+        _held.pop(channel_id, None)
 
 
 def _gate() -> bool:
@@ -84,11 +96,12 @@ async def settle_after_stop(channel_id: str) -> None:
 
 
 async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
+    _held.pop(binding.channel_id, None)
     await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
-    await set_status(binding.channel_id, SESSION_STATUS_ACTIVE)
+    await set_status(binding.channel_id, _held.pop(binding.channel_id, SESSION_STATUS_ACTIVE))
 
 
 def install(slack_provider: Callable[[], Any]) -> None:
