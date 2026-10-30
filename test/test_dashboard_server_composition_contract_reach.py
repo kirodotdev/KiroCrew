@@ -1096,7 +1096,7 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
 _MCP_TABLE_ROWS = 322
-_MCP_TABLE_DIGEST = "d8c4ee9b8d6be63ebfb86cc4a9b5f60dfe35486c8cc5a3afca72bf2086e3a4a7"
+_MCP_TABLE_DIGEST = "33e6009eda001008cadb3b660cf68af737869b4ab8673a0e200779f0def9c60f"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

@@ -462,7 +462,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 109
+    assert len(expected) == 110
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
