@@ -440,6 +440,7 @@ class TestAdvertisedSet:
             "session_retry",
             "session_continue",
             "session_set_model",
+            "session_set_backend",
             "session_set_color",
             "session_reload",
             "session_rename",

@@ -500,6 +500,7 @@ PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     # Settings' "follow the default" press: a person's choice for their own chats.
     # A crew's slot is app-owned, so the press never counts or clears it.
     ("dashboard/chat_follow_default.py", "_clear_loaded"): ("pick", 1),
+    ("dashboard/chat_handlers.py", "switch_slot_backend"): ("pick", 1),
     ("dashboard/session_control_parts/session_create.py", "create_session"): ("pick", 1),
     # A person's harness pick for a crewmate clears its DM chat's model pick.
     ("dashboard/agent_admin/crew_update.py", "_reload"): ("pick", 1),

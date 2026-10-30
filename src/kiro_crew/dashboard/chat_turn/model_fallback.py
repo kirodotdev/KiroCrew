@@ -81,6 +81,7 @@ async def _inherited_default_model(
     *,
     agent: str | None,
     crew_agent: str,
+    backend_override: str | None = None,
 ) -> str:
     """The model the session layer would start a new session for *slot* on, or ``""``.
 
@@ -90,8 +91,8 @@ async def _inherited_default_model(
     inheriting slot asks ``get_or_create`` for no model, and the allocation
     resolves the ladder itself. The answer comes from that same resolver,
     ``session._session_model``, over the session manager's own config (kept
-    current by the config watcher), with the inputs the allocation is given, so
-    the two cannot disagree.
+    current by the config watcher), with the inputs the allocation is given
+    (*backend_override* is the chat's backend pick), so the two cannot disagree.
 
     ``""`` when every tier defers to the backend, when the session manager holds
     no config, or when the resolver fails (it logs and answers ``None``; it
@@ -112,6 +113,7 @@ async def _inherited_default_model(
         crew_agent=crew_agent,
         app_name=app_name if isinstance(app_name, str) else "",
         session_key=session_key,
+        backend_override=backend_override,
     )
     return resolved or ""
 
@@ -751,8 +753,14 @@ async def _settle_session_model(
         # for the boundary. Backfilling the served (old) model here would
         # overwrite that "" and the boundary would then apply the old model,
         # silently undoing the pick — the same guard the completion backfill
-        # carries (``turn_stats``).
-        if crew_model and not slot._deferred_model_switch_key:
+        # carries (``turn_stats``). A backend switch clears ``slot.model`` and
+        # queues ``_pending_reset_history_key`` the same way, so it is held
+        # off too: the served model belongs to the backend being left.
+        if (
+            crew_model
+            and not slot._deferred_model_switch_key
+            and not slot._pending_reset_history_key
+        ):
             slot.model = _backfill_canonical_model(client, provider_name) or slot.model
     elif is_new or resumed:
         # Record the verdict for BOTH answers, not only the withhold: it is

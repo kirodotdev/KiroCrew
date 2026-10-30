@@ -55,6 +55,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_retry": {"target": "chat-2"},
     "session_continue": {"target": "chat-2"},
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
+    "session_set_backend": {"target": "chat-2", "backend": "codex"},
     "session_reload": {"target": "chat-2"},
     "session_set_color": {"target": "chat-2", "color": "1"},
     "session_rename": {"target": "chat-2", "title": "Worker"},

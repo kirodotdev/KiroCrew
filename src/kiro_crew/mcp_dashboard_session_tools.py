@@ -31,6 +31,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_retry,
     _run_session_revive,
     _run_session_send,
+    _run_session_set_backend,
     _run_session_set_color,
     _run_session_set_model,
     _run_session_status,
@@ -385,6 +386,39 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_set_model,
             identity="strict",
             routes=("POST /api/session-control/set-model",),
+        ),
+        Tool(
+            name="session_set_backend",
+            description=(
+                "Pick the backend (agent harness) a chat you created runs on, e.g. "
+                "'kiro', 'claude' or 'codex'; pass '' to go back to the gateway default. "
+                "Any other chat is refused (not_creator): moving its transcript to "
+                "another provider is the person's choice. "
+                "The backend is fixed when a session starts, so the swap happens "
+                "between turns: the chat's next turn starts fresh on the new backend, "
+                "and a turn already running finishes on the old one. The new backend "
+                "is sent the chat's transcript (replayed, as after a model switch), "
+                "so the conversation goes to that backend's provider. A backend that "
+                "is not allowed or not installed is refused with the backends that "
+                "can start."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Slot key, or its 'dashboard:<slot>' session key.",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": "Backend id, or '' for the gateway default.",
+                    },
+                },
+                "required": ["target", "backend"],
+            },
+            run=_run_session_set_backend,
+            identity="strict",
+            routes=("POST /api/session-control/set-backend",),
         ),
         Tool(
             name="session_reload",

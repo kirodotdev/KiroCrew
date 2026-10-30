@@ -38,6 +38,7 @@ from kiro_crew.dashboard.session_directive_apply import (
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
+from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
 if TYPE_CHECKING:
@@ -379,6 +380,20 @@ def _mark_turn_end(slot: _ChatSlot) -> None:
     so a repeated boundary is harmless.
     """
     slot.push_wire_frame(TURN_END_WIRE_CLS, "")
+    _flush_held_backend_notice(slot)
+
+
+def _flush_held_backend_notice(slot: _ChatSlot) -> None:
+    """Post a backend-switch notice held while a turn streamed.
+
+    ``switch_slot_backend`` holds it so it does not split the reply's chunk
+    rows. It is owed to the turn the switch applies to, so it is posted at the
+    ending turn's boundary and again before any successor's first row: a queued
+    turn started from the tail never reaches the cycle's end."""
+    held = slot._held_backend_notice
+    if held:
+        slot._held_backend_notice = ""
+        slot.append("assistant", held, "msg msg-a", meta={"kind": SESSION_RELOAD_KIND})
 
 
 _RECOVERY_TURN_META_KEY = "recoveryTurnId"
@@ -749,6 +764,9 @@ async def _start_next_queued_turn(
     # retried, so its reply belongs before the boundary.
     if not turn_ended and not _is_own_recovery(consumed, predecessor_actor, predecessor_turn_id):
         _mark_turn_end(slot)
+    # A turn's own recovery skips the boundary above but still starts on the
+    # switched backend once its reset runs.
+    _flush_held_backend_notice(slot)
     directive_user_origin = bool(consumed) and all(
         item.get("_directive_user_origin") is True for item in consumed
     )

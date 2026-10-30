@@ -291,7 +291,9 @@ def _arm_turn(state, monkeypatch, *, answer: str, backend: str = ACP_BACKEND_KIR
     monkeypatch.setattr(
         chat_threads.KiroCrewConfig,
         "load",
-        classmethod(lambda cls: MagicMock(agent=MagicMock(acp_backend=backend))),
+        classmethod(
+            lambda cls: MagicMock(agent=MagicMock(acp_backend=backend, member_acp_backend=backend))
+        ),
     )
     monkeypatch.setattr(chat_threads, "warm_project_agent_names", AsyncMock())
 
@@ -1473,6 +1475,11 @@ async def test_turn_without_tools_uses_reject_all_and_the_no_tools_boundary(tmp_
     state = _make_state(tmp_path)
     slot, mid = _member_slot(state)
     calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    # A member DM's thread follows the member route through the selection
+    # gate; let the gate keep the unknown harness so the no-tools shape shows.
+    from kiro_crew import acp_backends
+
+    monkeypatch.setattr(acp_backends, "resolve_selected_backend", lambda value: value)
     assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
     await _run_thread_turn(
         state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
@@ -1503,6 +1510,38 @@ async def test_a_claude_turn_runs_read_only_on_a_confined_session(tmp_path, monk
     assert acquired["side_read_only"] is True
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
     assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_dm_thread_is_postured_for_the_backend_its_own_key_allocates(
+    tmp_path, monkeypatch
+):
+    """A crewmate DM's thread is postured for the backend the factory starts
+    its session on. The thread's key is not a member key, so on a Kiro gateway
+    with a Claude member backend the thread runs Kiro and must get Kiro's
+    read-only shape, not Claude's (which would leave Kiro on REJECT_ALL)."""
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend=ACP_BACKEND_KIRO)
+    monkeypatch.setattr(
+        chat_threads.KiroCrewConfig,
+        "load",
+        classmethod(
+            lambda cls: MagicMock(
+                agent=MagicMock(acp_backend=ACP_BACKEND_KIRO, member_acp_backend="claude")
+            )
+        ),
+    )
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: True)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["key"] == thread_session_key(slot.key, mid)
+    assert acquired["agent"] == "kirocrew--readonly"
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
 
 
 @pytest.mark.asyncio
@@ -1557,6 +1596,67 @@ async def test_a_claude_turn_on_an_unverified_adapter_runs_no_tools(tmp_path, mo
     assert "side_read_only" not in acquired
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
     assert THREAD_BOUNDARY_PROMPT_NO_TOOLS in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_turn_follows_the_chats_backend_pick(tmp_path, monkeypatch):
+    # The gateway runs a harness without read-only tools, but the chat picked
+    # Kiro: the reply runs on Kiro and gets Kiro's read-only tools.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "kiro"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["backend_override"] == ACP_BACKEND_KIRO
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+
+
+@pytest.mark.asyncio
+async def test_a_switch_mid_turn_does_not_move_the_thread_off_its_posture(tmp_path, monkeypatch):
+    # The posture is built for the pick read at the start of the turn; a switch
+    # that lands during the turn's awaits must not change the allocated backend.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "kiro"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+
+    async def _switch(*_a, **_kw):
+        slot.backend = "claude"
+
+    monkeypatch.setattr(chat_threads, "warm_project_agent_names", _switch)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["backend_override"] == ACP_BACKEND_KIRO
+
+
+@pytest.mark.asyncio
+async def test_a_pick_governance_no_longer_allows_gets_no_claude_posture(tmp_path, monkeypatch):
+    # The chat picked claude, but governance has since taken it out of the
+    # selectable set, so the session degrades: the posture must not be claude's.
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.backend = "claude"
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    monkeypatch.setattr(chat_threads, "claude_adapter_honours_session_options", lambda: True)
+    from kiro_crew import members
+
+    monkeypatch.setattr(members, "select_provider_backend", lambda *a: "other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert "side_read_only" not in acquired
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
 
 
 @pytest.mark.asyncio

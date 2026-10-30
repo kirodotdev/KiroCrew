@@ -80,6 +80,9 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
+        "backend",
+        "_held_backend_notice",
+        "_degraded_pick_noticed",
         "autocompact_pct",
         "turn_timeout_secs",
         "_turn_timeout_hydrated",
@@ -398,6 +401,9 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
+    backend: str
+    _held_backend_notice: str
+    _degraded_pick_noticed: str
     autocompact_pct: float | None
     turn_timeout_secs: int | None
     _turn_timeout_hydrated: bool

@@ -375,6 +375,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         end_wait_target,
         reload_target,
         retry_target,
+        set_backend_target,
         stop_target,
     )
 

@@ -494,6 +494,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_set_model"),
     )
     app.router.add_post(
+        "/api/session-control/set-backend",
+        _deferred("session_control", "api_session_control_set_backend"),
+    )
+    app.router.add_post(
         "/api/session-control/set-color",
         _deferred("session_control", "api_session_control_set_color"),
     )

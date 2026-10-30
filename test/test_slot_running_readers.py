@@ -248,6 +248,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             site: execution
             for site in {
                 ("channel_slots.py", "_window_refresh_is_safe"),
+                # A backend switch holds its notice while a reply streams: a
+                # reservation has no chunk rows to split yet.
+                ("chat_handlers.py", "switch_slot_backend"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a
                 # running TURN, not a reservation, is what it must not overlap.

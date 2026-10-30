@@ -344,6 +344,29 @@ def allocation_requested_model(self: SessionManager, key: str) -> str:
     return session.requested_model if session is not None else ""
 
 
+def allocation_backend_override(self: SessionManager, key: str) -> str | None:
+    """Return the ``backend_override`` *key*'s live session started with, or ``None``.
+
+    ``None`` for an unknown key and for a session on the factory's default
+    backend. A dashboard chat reads it to tell a session started on a backend
+    pick from one following the gateway default.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    return session.backend_override if session is not None else None
+
+
+def record_backend_override(self: SessionManager, key: str, override: str | None) -> None:
+    """Record *override* as the backend pick *key*'s live session runs on.
+
+    For a pick that resolves to the backend the session already runs, so it
+    is kept without a reset: its sub-agents and successors read the pick from
+    this record. ``None`` drops it. No-op if *key* is unknown.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is not None:
+        session.backend_override = override
+
+
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
     """Record *level*, picked on *key*'s live session, as its effort override.
 

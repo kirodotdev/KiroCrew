@@ -797,7 +797,7 @@ slot_guards | _slot_replaced_while_queued | function | (state: 'DashboardState',
 slot_guards | _switch_target_busy | function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', provider: 'object', *, own_turn: 'bool' = False) -> 'bool'
 slot_guards | _subagents_attached_response | async function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', operation: 'str') -> 'web.Response | None'
 slot_guards | _reset_slot_session_or_warn | async function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', *, switch_kind: 'str') -> 'bool | None'
-slot_model | _model_rejected_reason | function | (model_name: 'str', backend: 'str | None' = None, *, session_keys: 'Iterable[str | None] | None' = None) -> 'str | None'
+slot_model | _model_rejected_reason | function | (model_name: 'str', backend: 'str | None' = None, *, session_keys: 'Iterable[str | None] | None' = None, pick: 'str | None' = None) -> 'str | None'
 slot_model | _is_jev_route_pick | function | (raw: 'object') -> 'bool'
 slot_model | _wire_model_id | function | (provider: 'AcpProvider', model_name: 'str') -> 'str'
 slot_model | _reapply_effort_after_live_switch | async function | (name: 'str', slot: '_ChatSlot', provider: 'AcpProvider') -> 'bool'

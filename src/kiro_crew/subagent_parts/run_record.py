@@ -412,6 +412,11 @@ class SubagentInfo:
     # own id. Like ``model``, a value forces the dedicated-process path -- the
     # shared runtime is the PARENT's process, on the parent's backend.
     backend: str | None = None
+    # The parent chat's backend pick a run that named no ``backend`` started
+    # on. A continuation returns to it, since the conversation lives there even
+    # after the parent switches. Kept apart from ``backend`` because that field
+    # forces the dedicated-process path.
+    inherited_backend: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):

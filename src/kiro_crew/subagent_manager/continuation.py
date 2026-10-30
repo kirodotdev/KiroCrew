@@ -716,6 +716,18 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if not isinstance(backend, str):
             backend = None
+        if backend is None:
+            # A run that named no backend started on its parent chat's pick
+            # at the time; the parent may have switched since.
+            inherited = (
+                original.inherited_backend
+                if original is not None
+                else (
+                    (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
+                ).get("inherited_backend")
+            )
+            if isinstance(inherited, str):
+                backend = inherited
         # Another turn of the same run sits at the same place in its tree.
         # Admission keeps the deeper of this and what the parent proves now,
         # so a run whose parent's record is gone cannot restart the count.

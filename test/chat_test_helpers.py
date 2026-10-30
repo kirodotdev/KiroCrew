@@ -213,6 +213,8 @@ def _make_state(tmp_path, **kwargs):
     sessions.aflush = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     # No live provider by default, and a destroy that can be awaited: the side
     # turn asks ``get_provider`` whether a session is retained and destroys a
     # stale one. A bare MagicMock answers "yes" to the first and cannot be

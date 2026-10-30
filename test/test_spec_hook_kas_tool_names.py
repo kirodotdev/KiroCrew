@@ -365,6 +365,8 @@ def _blocking_runner(monkeypatch) -> list:
 
 def _turn_state(tmp_path, backend: str):
     sessions = MagicMock(count=0)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.get_pid = MagicMock(return_value=None)
     client = AsyncMock()
     client.capabilities = capabilities_for(backend)

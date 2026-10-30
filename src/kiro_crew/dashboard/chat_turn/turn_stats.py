@@ -835,8 +835,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
             if _canonical:
                 # Same rule as the pre-turn backfill: a slot that
                 # inherits (no crew pin either) is recorded but
-                # never pinned.
-                if agent_model:
+                # never pinned. Nor is a chat whose backend switch
+                # queued a reset: the served model is the old backend's.
+                if agent_model and not slot._pending_reset_history_key:
                     slot.model = _canonical
                 _record_model = _canonical
         await asyncio.shield(

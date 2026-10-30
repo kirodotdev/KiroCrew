@@ -360,7 +360,14 @@ class TestManager:
 # ── The run hands it to the factory ───────────────────────────────────────────
 
 
-def _run(backend: str | None) -> tuple[dict, AsyncMock]:
+def _run(
+    backend: str | None,
+    *,
+    parent_pick: str | None = None,
+    model: str = "",
+    conversation_key: str = "",
+    served: str | None = None,
+) -> tuple[dict, AsyncMock]:
     from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
     from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
     from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -370,6 +377,7 @@ def _run(backend: str | None) -> tuple[dict, AsyncMock]:
     sessions.get_approval_policy = MagicMock(return_value="")
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    sessions.allocation_backend_override = MagicMock(return_value=parent_pick)
     ctx_builder = MagicMock()
     ctx_builder.build_message = MagicMock(return_value=("msg", None))
     ctx_builder.hooks.auto_approve_subagent_tools = False
@@ -385,6 +393,10 @@ def _run(backend: str | None) -> tuple[dict, AsyncMock]:
 
     sessions.get_or_create = fake_get_or_create
     client.stream = fake_stream
+    if served is not None:
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        client.capabilities = capabilities_for(served)
     cfg = KiroCrewConfig(agent=AgentConfig(session_sharing=True))
     runner = SubagentManager(sessions=sessions, ctx_builder=ctx_builder)
     shared = AsyncMock(side_effect=AssertionError("shared runtime used for a per-spawn backend"))
@@ -394,14 +406,24 @@ def _run(backend: str | None) -> tuple[dict, AsyncMock]:
         task="test",
         parent_session_key="parent-key",
         backend=backend,
+        model=model,
+        conversation_key=conversation_key,
     )
     runner._log_spawned(info)
     sessions.is_session_sharing_eligible = MagicMock(return_value=True)
     with (
         patch.object(runner, "_create_shared_session", shared),
         patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+        patch("kiro_crew.subagent_persistence.tighten_run_memory_mode", lambda _id, mode: mode),
     ):
-        asyncio.run(runner._run_inner(info, "subagent:sub1"))
+        try:
+            asyncio.run(runner._run_inner(info, "subagent:sub1"))
+        except RuntimeError as exc:
+            # The fake session restores nothing, so a continuation stops at
+            # resume; what reached the factory is already captured.
+            if not (conversation_key and "resume_failed" in str(exc)):
+                raise
+    captured["_info"] = info
     return captured, shared
 
 
@@ -417,6 +439,39 @@ class TestRun:
     def test_no_backend_passes_nothing(self):
         captured, _ = _run(None)
         assert "backend_override" not in captured
+
+    def test_a_dedicated_child_defaults_to_its_parents_backend_pick(self):
+        # A model pin forces a process of its own; it still starts on the
+        # parent chat's pick, as a shared child (in the parent's process) does.
+        captured, _ = _run(None, parent_pick="codex", model="some-model")
+        assert captured["backend_override"] == "codex"
+
+    def test_an_inherited_pick_is_recorded_on_the_run(self):
+        # Recorded apart from ``backend`` (which would force a dedicated
+        # process), so a continuation can return to it after the parent moves.
+        captured, _ = _run(None, parent_pick="codex", model="some-model")
+        assert captured["_info"].inherited_backend == "codex"
+        assert captured["_info"].backend is None
+
+    def test_the_recorded_pick_is_the_backend_that_served_the_run(self):
+        # A pick the backend policy denies runs on the fallback;
+        # the record must name where the conversation lives, or a later
+        # continuation resumes on the pick and fails.
+        captured, _ = _run(None, parent_pick="claude", model="some-model", served="")
+        assert captured["backend_override"] == "claude"
+        assert captured["_info"].inherited_backend == ""
+
+    def test_a_continuation_does_not_take_the_parents_current_pick(self):
+        # A run that started with no pick lives on the gateway default; a
+        # continuation of it must stay there after the parent switches, or the
+        # retained conversation cannot be resumed (resume_failed).
+        captured, _ = _run(None, parent_pick="claude", conversation_key="subagent:conv1")
+        assert "backend_override" not in captured
+        assert captured["_info"].inherited_backend is None
+
+    def test_a_per_spawn_backend_beats_the_parents_pick(self):
+        captured, _ = _run("claude", parent_pick="codex")
+        assert captured["backend_override"] == "claude"
 
     def test_sharing_is_ruled_out_by_a_backend(self):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
@@ -632,6 +687,28 @@ class TestFollowUps:
             mgr._continuation._persistence, "read_run_app", lambda _id: "", raising=True
         )
         assert self._continue(mgr, monkeypatch, "gone")["backend"] == "claude"
+
+    def test_a_continuation_keeps_the_backend_it_inherited_from_its_parent(self, monkeypatch):
+        # The run named no backend and started on its parent chat's pick. The
+        # parent has since switched: the conversation still lives on the pick
+        # the run started on, so the follow-up must go there, not to the
+        # parent's current pick.
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = _mgr()
+        mgr._agents["conv3"] = SubagentInfo(id="conv3", task="t", inherited_backend="claude")
+        assert self._continue(mgr, monkeypatch, "conv3")["backend"] == "claude"
+
+    def test_a_continuation_after_a_restart_reads_the_inherited_backend(self, monkeypatch):
+        mgr = _mgr()
+        monkeypatch.setattr(
+            "kiro_crew.subagent.read_state", lambda _id: {"inherited_backend": "claude"}
+        )
+        monkeypatch.setattr(mgr, "_inherited_memory_store", lambda _id: "")
+        monkeypatch.setattr(
+            mgr._continuation._persistence, "read_run_app", lambda _id: "", raising=True
+        )
+        assert self._continue(mgr, monkeypatch, "gone2")["backend"] == "claude"
 
     def test_a_run_predating_the_field_continues_on_the_default(self, monkeypatch):
         from kiro_crew.subagent import SubagentInfo

@@ -617,6 +617,88 @@ async def reload_target(
     return out
 
 
+async def set_backend_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    backend: str,
+) -> dict[str, Any]:
+    """Pick the backend *target* runs on.
+
+    The switch itself (validation, locks, and the reset queued for the next
+    turn start) is ``chat_handlers.switch_slot_backend``. This verb runs
+    :func:`authorize_target` in front of it and again after each lock await,
+    and each refusal is recorded in the SEL. Every caller is held to the
+    creator fence: a switch sends the chat's transcript to another provider,
+    which is a person's decision for any chat an agent did not create.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import switch_slot_backend
+
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the switch
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+
+    def _gate(target_name: str, *, first: bool = False) -> "_ChatSlot":
+        return authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=target_name,
+            operation="set_backend",
+            skip_enabled_check=not first,
+            precomputed_ownership_fenced=True,
+        )
+
+    slot = _gate(target, first=True)
+    slot_key = slot.key
+
+    gate_refusals: list[SessionControlError] = []
+
+    def _still_ours() -> bool:
+        try:
+            return state._slots.get(slot_key) is slot and _gate(slot_key) is slot
+        except SessionControlError as exc:
+            gate_refusals.append(exc)
+            raise
+
+    # A gate refusal raised from `_still_ours` is already recorded by
+    # `authorize_target`; only the switch's own refusals are audited here.
+    try:
+        body = await switch_slot_backend(
+            state,
+            slot,
+            slot_key,
+            backend,
+            still_ours=_still_ours,
+            requested_by=caller_key,
+        )
+    except SessionControlError as exc:
+        if exc in gate_refusals:
+            raise
+        with _audit_denials(
+            caller_session_key=caller_session_key, operation="set_backend", slot_key=slot_key
+        ):
+            raise
+    # The switch itself appended the notice naming the caller.
+    changed = body.get("changed", True) is not False
+    detail: dict[str, Any] = {"backend": body.get("backend", ""), "changed": changed}
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="set_backend",
+        slot_key=slot_key,
+        outcome="allowed",
+        detail=detail,
+    )
+    out: dict[str, Any] = {"ok": True, "target": slot_key, "backend": body.get("backend", "")}
+    if not changed:
+        out["changed"] = False
+    return out
+
+
 async def close_target(
     state: "DashboardState",
     *,

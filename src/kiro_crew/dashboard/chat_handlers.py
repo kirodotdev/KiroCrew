@@ -1261,3 +1261,182 @@ _facade_compose(
 # client has read the buffer down by about 48 KiB, so a reader that is merely
 # slow (a few hundred bytes a second) finishes every write well inside this.
 _SSE_WRITE_DEADLINE_SECS = 120.0
+
+
+def _switch_refusal(response: web.Response) -> Any:
+    """A shared refusal helper's response as the verb's ``SessionControlError``."""
+    from kiro_crew.dashboard.session_control import SessionControlError
+
+    body = json.loads(response.text or "{}")
+    return SessionControlError(
+        str(body.get("error") or "backend not changed"),
+        status=response.status,
+        code=str(body.get("code") or "set_backend_failed"),
+    )
+
+
+def _switch_error(message: str, *, status: int, code: str) -> Any:
+    from kiro_crew.dashboard.session_control import SessionControlError
+
+    return SessionControlError(message, status=status, code=code)
+
+
+def _target_replaced() -> Any:
+    return _switch_error(
+        "the target session was replaced during the switch", status=404, code="target_replaced"
+    )
+
+
+async def _runs_on_same_backend(slot: _ChatSlot, current: str, pick: str) -> bool:
+    """Whether *pick* and the stored *current* pick resolve to one backend, through the one gate.
+
+    Judged pick against pick, not against the live session: a switch reverted
+    before the next turn is still a change. A live session left off its pick
+    is the turn start's to reset (``_arm_reset_off_backend_pick``).
+    """
+    from kiro_crew.dashboard.chat_runner import backend_override_for, slot_backend
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    member, default = config.agent.member_acp_backend, config.agent.acp_backend
+    picked = slot_backend(slot, member, default, picked=backend_override_for(pick), config=config)
+    return (
+        slot_backend(slot, member, default, picked=backend_override_for(current), config=config)
+        == picked
+    )
+
+
+async def _recorded_as_worker(slot: _ChatSlot) -> bool:
+    """Whether *slot*'s durable execution record names it a crewmate's worker.
+
+    The in-memory worker set is filled only when a record is read, so after a
+    gateway restart a worker not yet re-read is missing from it. The record on
+    disk is the identity; an unreadable record answers True (refuse).
+    """
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.mate_worker import is_own_worker_execution
+
+    try:
+        execution = await asyncio.to_thread(read_session_execution, slot_history_key(slot))
+    except Exception:  # noqa: BLE001 - an unreadable record fails closed
+        logger.warning("slot %s: execution record unreadable; refusing a backend pick", slot.key)
+        return True
+    return is_own_worker_execution(execution)
+
+
+async def switch_slot_backend(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    pick: str,
+    *,
+    still_ours: Callable[[], bool],
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Set *slot*'s backend to *pick*; the next turn starts its session on it.
+
+    A switch that changes the backend appends one notice to the chat, naming
+    *requested_by* when given. The new backend's cold start replays the
+    conversation, as it does after a model switch.
+
+    The caller supplies its authorization as ``still_ours()``, re-run after
+    each await before anything changes (False refuses with ``target_replaced``).
+    A refusal raises the verb's ``SessionControlError``; success returns the body.
+
+    Validated by the resolver ``spawn_run(backend=...)`` uses, with its refusal
+    codes. A backend is fixed when the session starts, so the swap happens
+    between turns: the pick is stored and a reset is queued, which the next
+    turn start runs before acquiring a session. The transcript is kept, and
+    the model is cleared to the new backend's default. A turn in flight is
+    never cut; it finishes on the old backend.
+    """
+    from kiro_crew.dashboard.handlers.messaging import _requested_backend
+    from kiro_crew.dashboard.session_control import arm_model_switch_reset
+    from kiro_crew.members import is_crewmate_worker_session, is_member_session_key
+
+    _, refused = await _requested_backend(pick)
+    if refused is not None:
+        raise _switch_refusal(refused)
+    refusal = relay_archive_refusal(slot)
+    if refusal is not None:
+        raise _switch_refusal(refusal)
+    _key = effective_session_key(slot)
+    if (
+        is_member_session_key(_key)
+        or is_crewmate_worker_session(_key)
+        or await _recorded_as_worker(slot)
+    ):
+        # A crewmate DM or worker runs on agent.member_acp_backend, which a
+        # chat pick would override; the design keeps those out of scope.
+        raise _switch_error(
+            "a crewmate direct-message or worker session follows agent.member_acp_backend",
+            status=409,
+            code="member_session",
+        )
+    # A lazily restored chat reads its transcript on first access; load it off
+    # the loop now, so the notice below appends to the whole window.
+    await load_window_off_loop(slot)
+    # The workspace handler's locks and re-checks, in the same order.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if not still_ours():
+            raise _target_replaced()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        # The switch clears the pending model pick, so it holds the pick lock
+        # (inner, the documented order) like the model handlers do.
+        await _stack.enter_async_context(slot._model_pick_lock)
+        if not still_ours():
+            raise _target_replaced()
+        if slot.backend == pick:
+            return {"ok": True, "backend": pick, "changed": False}
+        same = await _runs_on_same_backend(slot, slot.backend, pick)
+        # The probe awaited: re-run the caller's gate before anything changes.
+        if not still_ours():
+            raise _target_replaced()
+        slot.backend = pick
+        slot._dirty = True
+        if same:
+            # ``""`` and ``"kiro"`` on a Kiro gateway: same backend, so the
+            # model is kept and nothing is announced. The live session keeps
+            # running, so it takes the pick as its own record: its sub-agents
+            # and successors stay on the pick if the gateway default moves.
+            from kiro_crew.dashboard.chat_runner import backend_override_for
+
+            state.sessions.record_backend_override(
+                session_key, backend_override_for(pick).get("backend_override")
+            )
+            return {"ok": True, "backend": pick, "changed": False}
+        # A model id belongs to one backend, so a switch clears it, and any
+        # pending pick, to the new backend's default, as a provider switch does
+        # (config_watch).
+        slot.model = ""
+        slot.jev_route = False
+        slot._pending_model_pick = None
+        slot._model_pick_gen += 1
+        # The swap happens between turns: the next turn start tears the live
+        # session down before acquiring one (the reset a model pick queues),
+        # and get_or_create starts on the pick. A turn or sub-agents in flight
+        # are left alone; the reset waits for them. A session that comes up on
+        # the old backend anyway (a hard Stop's respawn) is caught by the same
+        # turn start, which compares the live backend with the pick.
+        arm_model_switch_reset(state, slot)
+        logger.info("Slot %s backend set to %r for its next turn", name, pick or "default")
+        # The new backend gets the conversation replayed on its cold start, as a
+        # model switch does.
+        notice = (
+            f"Backend switched to {f'`{pick}`' if pick else 'the gateway default'} "
+            "from the next turn; the model was reset to that backend's default, "
+            "and this conversation is replayed to it."
+            + (f" Requested by session `{requested_by}`." if requested_by else "")
+        )
+        if slot.turn_running:
+            # Appended between a streaming reply's chunk rows, the notice would
+            # stop the segment flush's walk-back and strand the earlier chunks;
+            # the turn's cycle end posts it after the reply (queue_cycle).
+            slot._held_backend_notice = notice
+        else:
+            # Appended under the locks, so no turn lands before it.
+            slot._held_backend_notice = ""
+            slot.append("assistant", notice, "msg msg-a", meta={"kind": SESSION_RELOAD_KIND})
+    state.push_slots_update()
+    return {"ok": True, "backend": pick}

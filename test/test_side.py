@@ -509,6 +509,108 @@ async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
     ), f"side session created without the slot's project cwd: {captured.get('cwd')!r}"
 
 
+def _picked_side_parent(state, backend: str):
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "default"
+    parent.backend = backend
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+    return parent
+
+
+def _arm_picked_side(state, monkeypatch, captured: dict[str, Any]) -> AsyncMock:
+    async def _fake_get_or_create(key, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    # The gateway itself runs Kiro, the backend Side Chat gives read-only tools.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load",
+        lambda: MagicMock(agent=MagicMock(acp_backend="")),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
+        lambda cfg, agent, project_dir=None: MagicMock(kiro_agent="kirocrew"),
+    )
+    # The installed Claude adapter must not decide the posture under test.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.claude_adapter_honours_session_options",
+        lambda: False,
+    )
+    stream = AsyncMock(return_value="ok")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream)
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_side_turn_takes_its_tool_posture_from_the_chats_backend_pick(tmp_path, monkeypatch):
+    """A Kiro gateway's read-only allowance never reaches a chat picked onto Claude."""
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _picked_side_parent(state, "claude")
+    captured: dict[str, Any] = {}
+    stream = _arm_picked_side(state, monkeypatch, captured)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    assert captured["backend_override"] == "claude"
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    assert stream.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.REJECT_ALL
+
+
+@pytest.mark.asyncio
+async def test_a_pick_governance_no_longer_allows_decides_no_side_posture(tmp_path, monkeypatch):
+    """The posture is chosen from the gated pick, the backend the session will really get."""
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _picked_side_parent(state, "claude")
+    captured: dict[str, Any] = {}
+    _arm_picked_side(state, monkeypatch, captured)
+    # Governance has since taken claude out of the selectable set.
+    monkeypatch.setattr("kiro_crew.members.select_provider_backend", lambda *a, **_k: "other")
+    decided: list[Any] = []
+
+    async def _posture(side_backend):
+        decided.append(side_backend)
+        return False
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._side_read_only_tools", _posture)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    assert decided == ["other"]
+    assert "side_read_only" not in captured
+
+
+@pytest.mark.asyncio
+async def test_side_turn_rebinds_a_retained_session_after_a_backend_switch(tmp_path, monkeypatch):
+    """Claude and Codex share a posture, so only the pick in the binding tells them apart."""
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = _picked_side_parent(state, "claude")
+    captured: dict[str, Any] = {}
+    _arm_picked_side(state, monkeypatch, captured)
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+    claude_binding = parent._side.binding
+
+    parent.backend = "codex"
+    parent._side.append_user("q2")
+    parent._side.last_run_id = "run-2"
+    parent._side.is_complete = False
+    state.sessions.get_provider = MagicMock(return_value=MagicMock(name="retained claude session"))
+    state.sessions.destroy = AsyncMock()
+    await _run_side_turn(state, parent, "run-2", "q2", is_first_turn=False)
+
+    state.sessions.destroy.assert_awaited_once()
+    assert parent._side.binding != claude_binding
+    assert captured["backend_override"] == "codex"
+
+
 @pytest.mark.asyncio
 async def test_side_turn_agent_resolution_falls_back_on_error(tmp_path, monkeypatch):
     """If binding resolution raises, fall back to the raw slot.agent rather

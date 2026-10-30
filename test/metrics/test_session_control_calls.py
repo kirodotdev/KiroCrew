@@ -134,8 +134,8 @@ class _State:
 
 
 class TestOpEnum:
-    def test_the_closed_list_is_the_rfcs_nineteen(self):
-        assert len(scc.SESSION_CONTROL_OPS) == 19
+    def test_the_closed_list_is_the_twenty_verbs(self):
+        assert len(scc.SESSION_CONTROL_OPS) == 20
 
     @pytest.mark.parametrize("op", sorted(scc.SESSION_CONTROL_OPS))
     def test_a_named_op_passes_through(self, op):
@@ -290,7 +290,7 @@ class TestExactlyOnce:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("op", sorted(scc.SESSION_CONTROL_OPS))
     async def test_one_completed_call_is_one_count(self, rec, op):
-        """Every one of the nineteen ops, end to end through the real wrapper."""
+        """Every one of the twenty ops, end to end through the real wrapper."""
 
         @handler._counted(op)
         async def route(_request):
@@ -440,6 +440,7 @@ class TestRouteOps:
             "/api/session-control/retry": "retry",
             "/api/session-control/continue": "continue",
             "/api/session-control/set-model": "set_model",
+            "/api/session-control/set-backend": "set_backend",
             "/api/session-control/reload": "reload",
             "/api/session-control/rename": "rename",
             "/api/session-control/generate-title": "generate_title",
@@ -459,7 +460,7 @@ class TestRouteOps:
 
     @pytest.mark.asyncio
     async def test_every_named_op_is_reachable_from_a_real_route(self, rec):
-        """The nineteen ops are the routes' own verbs, not an aspiration.
+        """The twenty ops are the routes' own verbs, not an aspiration.
 
         Reds if an op is named in the enum but no route ever emits it -- a value
         the dashboard would wait for forever.
@@ -516,7 +517,7 @@ class TestPrivacy:
     def test_the_whole_series_space_is_bounded_and_small(self):
         """20 ops (19 named plus ``other``) x 18 caller kinds x 2 outcomes."""
         space = (len(scc.SESSION_CONTROL_OPS) + 1) * len(scc.SESSION_CONTROL_CALLER_KINDS) * 2
-        assert space <= 720
+        assert space <= 756
 
 
 class TestTelemetryOff:

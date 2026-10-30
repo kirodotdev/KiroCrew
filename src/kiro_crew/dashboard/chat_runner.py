@@ -516,6 +516,70 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     synthesis_fire_verdict,
 )
 
+
+def backend_override_for(pick: str) -> dict[str, Any]:
+    """The ``backend_override`` keyword a backend pick adds to allocation.
+
+    Empty for no pick, so an unpicked chat allocates with exactly the keywords
+    it always did. A pick is a governance policy id (``"kiro"``, ``"codex"``);
+    the factory takes the backend id, where Kiro's is ``""``. An unknown id is
+    passed as written and the factory's gate degrades it to Kiro with the
+    reason in the log.
+    """
+    from kiro_crew.dashboard.handlers.messaging import backend_id_for_policy_id
+
+    if not pick:
+        return {}
+    backend = backend_id_for_policy_id(pick)
+    return {"backend_override": pick if backend is None else backend}
+
+
+def slot_backend_override(slot: Any) -> dict[str, Any]:
+    """:func:`backend_override_for` the slot's own backend pick."""
+    return backend_override_for(getattr(slot, "backend", "") or "")
+
+
+def slot_backend(
+    slot: Any,
+    member_backend: str,
+    default_backend: str,
+    session_key: str | None = None,
+    picked: dict[str, Any] | None = None,
+    *,
+    config: Any,
+) -> str:
+    """The backend *slot* runs on: its own pick, then a crewmate's harness pin,
+    then the member route, then the default.
+
+    The one place a chat's backend is resolved before its session exists,
+    through the same gate the session's allocation crosses. *session_key*
+    defaults to the slot's effective key. *picked* is a
+    :func:`slot_backend_override` value the caller already read, for a caller
+    that must decide and allocate on the same reading. *config* reads the
+    crewmate pin, which raises
+    :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` for a
+    harness this gateway cannot start.
+    """
+    from kiro_crew import members
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+
+    if picked is None:
+        picked = slot_backend_override(slot)
+    key = session_key if session_key is not None else effective_session_key(slot)
+    override = picked.get("backend_override")
+    return members.select_provider_backend(
+        key,
+        member_backend,
+        default_backend,
+        override,
+        crew_backend=(
+            (crewmate_backend_pin(config, key) if config is not None else None)
+            if override is None
+            else None
+        ),
+    )
+
+
 # Consumption contract carried inside every pending-context frame, between the
 # opening delimiter and the injected content. One sentence, imperative, because
 # it is re-sent on every turn that drains context: it must be cheap and it must

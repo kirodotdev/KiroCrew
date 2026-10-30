@@ -682,7 +682,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_slot_binding",
             "function",
-            "(slot: \"'_ChatSlot'\") -> 'tuple[str, str, str, str, str, str]'",
+            "(slot: \"'_ChatSlot'\") -> 'tuple[str, str, str, str, str, str, str]'",
         ),
         (
             "_eager_spawn",
@@ -822,7 +822,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_slash_command_backend",
             "async function",
-            "(state: 'DashboardState', session_key: 'str') -> 'str'",
+            "(state: 'DashboardState', session_key: 'str', slot: 'Any' = None) -> 'str'",
         ),
         (
             "_answer_slash_without_channel",
@@ -861,7 +861,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_app_agent_turn_backend",
             "async function",
-            "(state: \"'DashboardState'\", session_key: 'str', cfg: \"'KiroCrewConfig | None'\") -> 'str | None'",
+            "(state: \"'DashboardState'\", session_key: 'str', cfg: \"'KiroCrewConfig | None'\", slot: 'Any' = None) -> 'str | None'",
         ),
     ),
     "queue_cycle": (

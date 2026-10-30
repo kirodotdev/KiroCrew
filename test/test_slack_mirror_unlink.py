@@ -36,6 +36,8 @@ def _make_context_builder():
 def _make_state(tmp_path, session_map):
     """DashboardState wired for _run_chat with a REAL SessionMap."""
     sessions = MagicMock(count=0)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
     # Route the slack-link reads/writes the mirror gate uses through the real map.
@@ -111,9 +113,7 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)
@@ -152,7 +152,9 @@ class TestMirrorSuppressionAfterUnlink:
         # ── Unlinked turn: NO mirror calls ──
         await _run_chat(state, slot, "second message")
         assert state.slack_client.post_message.await_count == 0, "unlinked turn must NOT mirror"
-        assert state.slack_client.start_stream.await_count == 0, "unlinked turn must NOT open a stream"
+        assert (
+            state.slack_client.start_stream.await_count == 0
+        ), "unlinked turn must NOT open a stream"
 
     @pytest.mark.asyncio
     async def test_dual_key_inheritance_does_not_resurrect_link(self, tmp_path, monkeypatch):
@@ -172,13 +174,11 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)  # "dashboard:s1"
-        raw_key = session_key[len("dashboard:"):]   # "s1"
+        raw_key = session_key[len("dashboard:") :]  # "s1"
 
         # Simulate the dual-key state: link on the dashboard:-prefixed key AND
         # the raw key (the runner's inheritance copy at chat_runner.py:807-817).

@@ -76,9 +76,10 @@ def _register_config_watch(
             if DEGRADED_WHOLE_CONFIG not in degraded and "agent" not in degraded:
                 cfg = snap
         await state.sessions.reload_provider_factory(cfg=cfg)
-        # Clear model on all slots -- aliases are provider-specific.
+        # Clear model on all slots -- aliases are provider-specific. A chat
+        # pinned to a backend keeps its model: its backend did not change.
         for slot in state._slots.values():
-            if slot.model:
+            if slot.model and not slot.backend:
                 slot.model = ""
                 # Deliberate model change: bump the pick generation so the
                 # fallback restore probe drops any sticky state instead of

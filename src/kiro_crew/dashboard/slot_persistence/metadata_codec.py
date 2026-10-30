@@ -500,6 +500,15 @@ def _read_app_agent_owner(r: _Read) -> None:
         r.slot.app_agent_owner = owner
 
 
+def _read_backend(r: _Read) -> None:
+    # Only a string is taken back. The value is still gated where it is used:
+    # ``select_provider_backend`` resolves it through the governance check, so a
+    # hand-edited line cannot reach a backend governance does not allow.
+    raw = r.meta.get("backend")
+    if isinstance(raw, str):
+        r.slot.backend = raw
+
+
 def _read_project(r: _Read) -> None:
     from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
 
@@ -828,6 +837,14 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.reasoning_effort),
         merge=_or_cleared(lambda s: s.reasoning_effort, ""),
         why="restored with the model",
+    ),
+    Field(
+        "backend",
+        _ALL,
+        attr="backend",
+        line=_truthy(lambda s: s.backend),
+        merge=_always(lambda s: s.backend),
+        read=_read_backend,
     ),
     Field(
         "autocompact_pct",
@@ -1296,6 +1313,7 @@ LINE_ORDER: tuple[str, ...] = (
     "agent",
     "model",
     "reasoning_effort",
+    "backend",
     "autocompact_pct",
     "turn_timeout_secs",
     "dismissed_source_links",
@@ -1353,6 +1371,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "color_theme",
     "memory_mode",
     "model",
+    "backend",
     "queued_prompts",
     "autocompact_pct",
     "turn_timeout_secs",

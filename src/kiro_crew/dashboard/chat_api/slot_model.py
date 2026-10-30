@@ -57,6 +57,7 @@ def _model_rejected_reason(
     backend: str | None = None,
     *,
     session_keys: Iterable[str | None] | None = None,
+    pick: str | None = None,
 ) -> str | None:
     """Reason to reject ``model_name`` for the harness that will run it, or None.
 
@@ -84,7 +85,8 @@ def _model_rejected_reason(
     canonical key, the one value whose answer depends on it. *session_keys*
     then names the sessions the pick lands on, each routed through the same
     member-aware gate the provider factory uses; the key must pass on every one
-    of them. With neither, the configured default harness decides.
+    of them. *pick* is the chat's own backend pick, which the gate honours as
+    allocation does. With neither, the configured default harness decides.
     """
     if not model_name or model_name == "auto":
         return None
@@ -111,7 +113,12 @@ def _model_rejected_reason(
                         k,
                         member_backend,
                         default_backend,
-                        crew_backend=crewmate_backend_pin(cfg, k) if cfg is not None else None,
+                        pick,
+                        crew_backend=(
+                            (crewmate_backend_pin(cfg, k) if cfg is not None else None)
+                            if pick is None
+                            else None
+                        ),
                     )
                     for k in keys
                 ]
@@ -401,8 +408,15 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         )
         return _owner_denial_response(request, "arming Jev routing is owner-only")
     model_name = "auto" if jev_route else _normalize_model(body.get("model", ""))
-    # Judged on THIS slot's harness: a member DM runs on agent.member_acp_backend.
-    reason = _model_rejected_reason(model_name, session_keys=(effective_session_key(slot),))
+    from kiro_crew.dashboard.chat_runner import slot_backend_override
+
+    # Judged on THIS slot's harness: a member DM runs on agent.member_acp_backend,
+    # and a chat's own backend pick takes precedence.
+    reason = _model_rejected_reason(
+        model_name,
+        session_keys=(effective_session_key(slot),),
+        pick=slot_backend_override(slot).get("backend_override"),
+    )
     if reason:
         logger.warning("Slot %s model rejected: %s", name, reason)
         return web.json_response({"error": reason}, status=400)
@@ -476,6 +490,17 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_model", session_key)
         if denied is not None:
             return denied
+        # Checked again under the locks: a backend switch holding them may have
+        # moved the chat to a backend that cannot run this model while the
+        # request waited.
+        reason = _model_rejected_reason(
+            model_name,
+            session_keys=(session_key,),
+            pick=slot_backend_override(slot).get("backend_override"),
+        )
+        if reason:
+            logger.warning("Slot %s model rejected: %s", name, reason)
+            return web.json_response({"error": reason, "code": "model_rejected"}, status=400)
         # The routing flag is committed on each SUCCESS path and nowhere else -- see
         # the two writes below. Nothing is written here, because the busy check
         # between this line and the transaction answers 409 without a rollback: a
@@ -689,8 +714,13 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # the pop: the switch is committed, the response carries an advisory
         # warning (agent-handler precedent via _reset_slot_session_or_warn).
         teardown_incomplete = False
+        # A backend switch queued a reset: the live session is retiring and
+        # may not serve this model, so the reset path applies it instead.
+        retiring = bool(getattr(slot, "_pending_reset_history_key", None))
         try:
-            went_live = await _try_live_model_switch(name, slot, provider, model_name)
+            went_live = await _try_live_model_switch(
+                name, slot, None if retiring else provider, model_name
+            )
         except AcpModelUnavailable as exc:
             # The live session refused the pick as unavailable to this account.
             # Roll the slot back so the picker keeps showing what is actually
@@ -915,9 +945,15 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     model_name = _normalize_model(body.get("model", ""))
-    # One pick lands on every slot, so it must pass on every slot's harness.
-    reason = _model_rejected_reason(
-        model_name, session_keys=[effective_session_key(s) for s in list(state._slots.values())]
+    from kiro_crew.dashboard.chat_runner import slot_backend_override
+
+    # One pick lands on every slot, so it must pass on every unpinned slot's
+    # harness. A chat pinned to its own backend is judged on that pick below,
+    # so one pin never refuses the whole request.
+    slots = list(state._slots.values())
+    unpinned = [effective_session_key(s) for s in slots if not s.backend]
+    reason = (
+        _model_rejected_reason(model_name, session_keys=unpinned) if unpinned or not slots else None
     )
     if reason:
         return web.json_response({"error": reason}, status=400)
@@ -1001,6 +1037,17 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
                 # session (the cancel routes' second condition): an app caller
                 # does not get to switch the model a channel thread runs on.
                 # Skipped silently, like every other slot the app does not own.
+                continue
+            if _model_rejected_reason(
+                model_name,
+                session_keys=(session_key,),
+                pick=slot_backend_override(slot).get("backend_override"),
+            ):
+                # Judged here, under the locks, on the backend the chat runs on
+                # NOW: a pin can change while an earlier slot's reset awaits.
+                # A chat whose backend does not run the model keeps its model,
+                # reported with the slots this pick left as they were.
+                unchanged.append(name)
                 continue
             if slot.model == model_name:
                 # The MODEL is unchanged; the routing choice may not be. A slot
