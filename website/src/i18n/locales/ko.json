@@ -16728,6 +16728,8 @@
         "summarize_each_session_by_intent_hint": "각 세션을 의도별로 요약합니다.",
         "summarize_each_session_by_intent_in_the_right_pa": "세션을 변경하는 턴에서는 토큰을 사용합니다.",
         "tail_only_fork": "끝부분만 포크",
+        "pin_forks_of_pinned_sessions": "고정된 세션의 포크도 고정",
+        "pin_forks_of_pinned_sessions_desc": "고정된 세션의 포크도 고정되어 원래 세션 옆에 유지됩니다.",
         "tail_preserve_end_final_summary": "끝부분(끝 / 최종 요약 유지)",
         "technical_comfort": "기술 이해 수준",
         "text_streaming_style": "텍스트 스트리밍 방식",

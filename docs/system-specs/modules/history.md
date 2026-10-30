@@ -1343,6 +1343,10 @@ no longer destroy older turns.
   beside the plain entry: the plain entry sends `direction="tail"` and this one
   sends `direction="head"`. With the gate off the plain entry already forks with
   history, so the menu lists no second entry.
+- **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
+  stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
+  (default true) gates this; when it is false the fork starts unpinned. Agent
+  `session_fork` children are never pinned either way.
 - **Fork inherits `memory_mode`, and never loosens it**: an incognito or
   temporary session forks like a persistent one, and the child is born with the
   parent's mode -- passed to `get_or_create_slot` at creation so the child's

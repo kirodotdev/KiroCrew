@@ -17601,6 +17601,8 @@
         "summarize_each_session_by_intent_hint": "Сводит каждую сессию по намерению.",
         "summarize_each_session_by_intent_in_the_right_pa": "Расходует токены на ходах, изменяющих сессию.",
         "tail_only_fork": "Ответвление только с хвоста",
+        "pin_forks_of_pinned_sessions": "Закреплять ответвления закреплённых сессий",
+        "pin_forks_of_pinned_sessions_desc": "Ответвление закреплённой сессии тоже закрепляется и остаётся рядом с исходной.",
         "tail_preserve_end_final_summary": "Конец (сохранить конец / итоговую сводку)",
         "technical_comfort": "Уровень технической подготовки",
         "text_streaming_style": "Стиль потоковой печати текста",

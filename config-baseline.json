@@ -8101,6 +8101,7 @@
         "verbosity": "answer_only",
         "link_previews": false,
         "tail_fork_enabled": false,
+        "fork_inherits_pin": true,
         "auto_open_browser": true,
         "prevent_sleep": false,
         "quick_send": false,
@@ -8980,6 +8981,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.fork_inherits_pin",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pin forks of pinned sessions",
+      "help": "A fork of a pinned session is pinned too, so it stays beside the original. When off, forks start unpinned.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.auto_open_browser",

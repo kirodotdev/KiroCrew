@@ -17019,6 +17019,8 @@
         "summarize_each_session_by_intent_hint": "Fasst jede Sitzung nach Absicht zusammen.",
         "summarize_each_session_by_intent_in_the_right_pa": "Verbraucht Tokens bei Zügen, die die Sitzung ändern.",
         "tail_only_fork": "Verzweigung nur mit Nachlauf",
+        "pin_forks_of_pinned_sessions": "Verzweigungen angepinnter Sitzungen anpinnen",
+        "pin_forks_of_pinned_sessions_desc": "Eine Verzweigung einer angepinnten Sitzung wird ebenfalls angepinnt und bleibt so neben dem Original.",
         "tail_preserve_end_final_summary": "Ende (Schluss / Abschlusszusammenfassung erhalten)",
         "technical_comfort": "Technische Vertrautheit",
         "text_streaming_style": "Stil des Text-Streamings",

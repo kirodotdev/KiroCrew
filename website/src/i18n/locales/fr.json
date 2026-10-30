@@ -17310,6 +17310,8 @@
         "summarize_each_session_by_intent_hint": "Résume chaque session par intention.",
         "summarize_each_session_by_intent_in_the_right_pa": "Consomme des tokens lors des tours qui modifient la session.",
         "tail_only_fork": "Bifurcation en fin seulement",
+        "pin_forks_of_pinned_sessions": "Épingler les bifurcations des sessions épinglées",
+        "pin_forks_of_pinned_sessions_desc": "La bifurcation d’une session épinglée est aussi épinglée, pour rester à côté de l’originale.",
         "tail_preserve_end_final_summary": "Fin (conserver la fin / le résumé final)",
         "technical_comfort": "Aisance technique",
         "text_streaming_style": "Style de streaming du texte",

@@ -17310,6 +17310,8 @@
         "summarize_each_session_by_intent_hint": "Riepiloga ogni sessione per intento.",
         "summarize_each_session_by_intent_in_the_right_pa": "Consuma token nei turni che modificano la sessione.",
         "tail_only_fork": "Diramazione solo della parte finale",
+        "pin_forks_of_pinned_sessions": "Fissa le diramazioni delle sessioni fissate",
+        "pin_forks_of_pinned_sessions_desc": "Anche la diramazione di una sessione fissata viene fissata, così resta accanto all’originale.",
         "tail_preserve_end_final_summary": "Fine (conserva la parte finale / il riepilogo conclusivo)",
         "technical_comfort": "Dimestichezza tecnica",
         "text_streaming_style": "Stile dello streaming del testo",
