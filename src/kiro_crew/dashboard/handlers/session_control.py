@@ -371,6 +371,8 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             # Typed by `create_session`, which refuses a non-number (a bool
             # included) with `invalid_field_type`.
             autocompact_pct=body.get("autocompact_pct"),
+            # Typed by `create_session`, which refuses a non-boolean.
+            allow_git_writes=body.get("allow_git_writes", False),
             dry_run=dry_run,
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as

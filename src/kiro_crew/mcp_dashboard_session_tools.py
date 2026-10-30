@@ -145,6 +145,20 @@ def _session_tools() -> tuple[Tool, ...]:
                             "still change or reset it later."
                         ),
                     },
+                    "allow_git_writes": {
+                        "type": "boolean",
+                        "description": (
+                            "Let the NEW session run git commands that are not known reads "
+                            "(commit, merge, rebase, reset, push, fetch, checkout and the rest) "
+                            "without an approval card. "
+                            "With hooks.confirm_git_writes on (the default) every such "
+                            "command otherwise asks the person, even under trust or YOLO. "
+                            "Pass true only when the work item you are dispatching has to "
+                            "commit. Recorded in the audit log and shown on the session; "
+                            "ends when its approval mode is set to Normal or the gateway "
+                            "restarts. A session opened with it cannot pass it on."
+                        ),
+                    },
                 },
                 "required": [],
             },

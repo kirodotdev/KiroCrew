@@ -43,6 +43,8 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create, has_create_budget
+from kiro_crew.dashboard.git_write_grant import BY_SESSION_CREATE as GIT_WRITES_BY_SESSION_CREATE
+from kiro_crew.dashboard.git_write_grant import allow_git_writes as allow_git_writes_on
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
@@ -122,6 +124,7 @@ async def create_session(
     model: str = "",
     reasoning_effort: str | None = None,
     autocompact_pct: float | None = None,
+    allow_git_writes: bool = False,
     caller_fenced: bool | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -638,6 +641,21 @@ async def create_session(
             pct_override = parse_autocompact_pct(autocompact_pct, name="autocompact_pct")
         except AutocompactPctError as exc:
             raise SessionControlError(str(exc), code=exc.code) from None
+
+    # The per-session allow for git history writes, set on the child at birth.
+    # Checked here, before anything is allocated, for the same reason the model
+    # is. A session that holds the allow only because it was opened with it does
+    # not pass it on: the allow is set by the person or by the session that
+    # dispatched the work, one step, never relayed down a chain of children.
+    if not isinstance(allow_git_writes, bool):
+        raise SessionControlError("allow_git_writes must be a boolean", code="invalid_field_type")
+    if allow_git_writes and str(getattr(caller_slot, "_git_writes_by", "") or "").startswith(
+        GIT_WRITES_BY_SESSION_CREATE
+    ):
+        raise SessionControlError(
+            "a session opened with allow_git_writes cannot open another one with it",
+            code="git_writes_not_delegable",
+        )
 
     # Capture the child route once. Inherited member/store identity survives
     # renamed aliases or changed config; an explicit member selection is resolved
@@ -1172,6 +1190,16 @@ async def create_session(
             inherit_posture(slot, live_caller)
         inherited_trust = bool(slot._trust)
         inherited_trust_reads = bool(slot._trust_reads)
+        # The per-session allow for git history writes is NOT posture and never
+        # transfers on its own: the child holds it only when this call asked for
+        # it (checked above, before allocation). The record is the SEL row, the
+        # create audit's `allow_git_writes` and the slot's `git_writes_allowed`.
+        if allow_git_writes:
+            allow_git_writes_on(
+                slot,
+                by=f"{GIT_WRITES_BY_SESSION_CREATE}{caller_key}",
+                caller=f"session:{caller_key}",
+            )
         # The agent's memory silo, from the bindings already resolved above. Held
         # on the slot so every later save can name it: `memory_store` is
         # slot-owned metadata, so a save that could not read it would drop the
@@ -1451,6 +1479,9 @@ async def create_session(
             # Always present: "false" is the record that the grant did not transfer.
             "inherited_trust": "true" if inherited_trust else "false",
             "inherited_trust_reads": "true" if inherited_trust_reads else "false",
+            # Whether the child may write git history without a card, and that
+            # this call (not inheritance) set it.
+            "allow_git_writes": "true" if allow_git_writes else "false",
             # Whether the creating edge reached the creator's crew log. "false" means
             # the child nests from this process's witness alone and would float at top
             # level after a restart. The audit log is this fact's durable home -- the

@@ -6380,6 +6380,7 @@
       "transcribing_please_wait": "文字起こし中、お待ちください…",
       "tree_drop_folder_refused": "このフォルダーは追加できません：パスにスペースまたは @ が含まれています。ファイルを1つずつ追加してください。",
       "trust_reads": "読み取り専用コマンドを信頼",
+      "allow_git_writes": "このセッションで git の書き込みを許可",
       "turn_interrupted_press_resume": "前のターンが中断されました — 「再開」を押すか、そのまま入力できます",
       "upload_file": "ファイルをアップロード",
       "use_a_skill": "スキルを使用",

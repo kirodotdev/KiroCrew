@@ -124,6 +124,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** Server mark that this card is a git history write the session confirms
+   *  (`hooks.confirm_git_writes`). The only card that offers the per-session
+   *  "Allow git writes" tier; the route refuses that decision on any other. */
+  const approvalGitWrite = approvalMeta?.git_write === '1'
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -277,7 +281,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       setApprovalNoticeKind('error')
       setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
     }
-    if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
+    if (['trust_command', 'trust_base', 'trust', 'trust_reads', 'git_writes'].includes(decision) && activeSlot) {
       // Defence in depth: the Trust controls are not rendered for unattended
       // sources, but never let a trust grant be applied on their behalf. The
       // grant would land on THIS slot (api.approveChatSlot is slot-scoped),
@@ -301,7 +305,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalGitWrite, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }

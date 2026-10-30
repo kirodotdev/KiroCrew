@@ -434,6 +434,12 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.create_rate_limit import WINDOW_SECS  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import allow_create  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import has_create_budget  # noqa: F401
+    from kiro_crew.dashboard.git_write_grant import (  # noqa: F401
+        BY_SESSION_CREATE as GIT_WRITES_BY_SESSION_CREATE,
+    )
+    from kiro_crew.dashboard.git_write_grant import (  # noqa: F401
+        allow_git_writes as allow_git_writes_on,
+    )
     from kiro_crew.dashboard.handlers._shared import _scrub_text  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_ERROR  # noqa: F401

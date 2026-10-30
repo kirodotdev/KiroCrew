@@ -579,6 +579,7 @@ class HookManager:
             "subagent_tools": (
                 before.auto_approve_subagent_tools != after.auto_approve_subagent_tools
             ),
+            "confirm_git_writes": (before.confirm_git_writes != after.confirm_git_writes),
         }
         flipped = sorted(k for k, v in flags.items() if v)
         # Removing a ``confirm_tools`` pattern widens too: the gate stops asking
@@ -619,6 +620,10 @@ class HookManager:
     @property
     def auto_approve_subagent_tools(self) -> bool:
         return self._config.auto_approve_subagent_tools
+
+    @property
+    def confirm_git_writes(self) -> bool:
+        return self._config.confirm_git_writes
 
     # ── Message hooks ──
 

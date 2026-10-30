@@ -82,6 +82,7 @@ _TO_DICT_KEYS = (
     "trust_scope",
     "trust_reads",
     "trusted_patterns_count",
+    "git_writes_allowed",
     "slack_linked",
     "slack_channel",
     "slack_thread_ts",

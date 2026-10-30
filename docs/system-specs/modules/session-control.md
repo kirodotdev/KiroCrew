@@ -703,6 +703,24 @@ slider's per-transcript `_autocompact_txn_lock`, so a slider move on the newborn
 orders after them. Omitted, the child follows its agent's default, else the
 global `session.autocompact_pct`.
 
+`session_create` also takes an optional boolean `allow_git_writes`. With
+`hooks.confirm_git_writes` on (the default), a dashboard shell call that runs
+git in any way other than a known read asks the person even under session trust, YOLO, a native crew or a
+pattern grant (see [security](security.md), "Git commands other than known reads ask"). `true`
+sets the per-session allow on the child at birth (`slot._git_writes_allowed`,
+`_git_writes_by = "session_create:<caller slot>"`), so a dispatched worker whose
+task is to commit can do so without a card. It is never inherited: a child made
+without it starts asking whatever the caller holds. A caller that itself holds
+the allow only because `session_create` gave it is refused
+`git_writes_not_delegable`, so the allow is one step from a person or the session
+that dispatched the work, never relayed down a chain. That mark stays for the
+session's life: ending the allow (switching to Normal) or granting it again on a
+card does not lift it. A non-boolean is refused
+`invalid_field_type` before anything is allocated. The grant is written to the
+SEL (`git_writes:allow`), recorded in the create audit (`allow_git_writes`) and
+projected on the slot (`git_writes_allowed`); it is in memory only, so a restart
+returns the child to asking, and setting its approval mode to Normal ends it.
+
 ### `session_fork`: a created child that carries a transcript
 
 `session_create` opens an empty session, and the case it cannot serve is the

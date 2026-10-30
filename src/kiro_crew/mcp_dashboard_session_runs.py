@@ -299,6 +299,8 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
         # Set before the folder preflight below, so its dry-run probe carries the
         # value and a refused threshold creates no folder.
         payload["autocompact_pct"] = args["autocompact_pct"]
+    if args.get("allow_git_writes") is True:
+        payload["allow_git_writes"] = True
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(

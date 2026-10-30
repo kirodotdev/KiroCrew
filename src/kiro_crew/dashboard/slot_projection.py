@@ -538,6 +538,7 @@ class SlotProjection:
             "trust_scope": live_trust_scope(slot),
             "trust_reads": slot._trust_reads,
             "trusted_patterns_count": len(slot._trusted_patterns),
+            "git_writes_allowed": bool(getattr(slot, "_git_writes_allowed", False)),
             "slack_linked": slot._slack_linked,
             "slack_channel": slot._slack_channel,
             "slack_thread_ts": slot._slack_thread_ts,
