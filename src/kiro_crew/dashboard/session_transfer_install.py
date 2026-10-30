@@ -31,6 +31,7 @@ from kiro_crew.dashboard.arrival_folders import (
     arrival_folder_id,
     discard_arrival_folders,
     mark_arrival_folder_shared,
+    store_folder_name,
 )
 from kiro_crew.dashboard.chat_persistence import (
     _build_message_entry_uncached,
@@ -273,6 +274,12 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
     agent = body.get("agent", "")
     if not isinstance(agent, str):
         return {}, _reject("agent must be a string", "transfer_bad_agent")
+    # A filing hint, not content: a malformed one is dropped rather than refusing
+    # a transcript that is otherwise valid -- the same stance the importer takes
+    # on an ``agent`` this instance does not have.
+    folder = body.get("folder", "")
+    if not isinstance(folder, str):
+        folder = ""
 
     validated: dict[str, Any] = {
         # The sender's explicit "I had context but withheld it" signal, coerced
@@ -284,6 +291,7 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         "title": title[:_MAX_TITLE_CHARS],
         "origin": origin[:_MAX_TITLE_CHARS],
         "agent": agent,
+        "folder": store_folder_name(folder),
         "messages": messages,
     }
 
@@ -449,6 +457,11 @@ async def _install_arrived_bundle(
     origin = bundle["origin"]
     origin, _ = redact_exfiltration_urls(origin)
     origin, _ = redact_credentials(origin)
+    # Redacted on the way IN too, like origin: the sender is not trusted to have
+    # scrubbed it. A bundle validated before this field existed has no key.
+    arrival_folder_name = bundle.get("folder", "") or ""
+    arrival_folder_name, _ = redact_exfiltration_urls(arrival_folder_name)
+    arrival_folder_name, _ = redact_credentials(arrival_folder_name)
     suffix = f" (from {origin})" if origin else ""
 
     # Normalise the bundle turns to the row shape the materialiser hydrates from.
@@ -632,7 +645,9 @@ async def _install_arrived_bundle(
         # refusal (app-scoped caller, ceiling reached, store write failure) and
         # the session then lands unfiled, exactly as it did before this shipped.
         # The transcript is the payload; the grouping is convenience.
-        filing = await arrival_folder_id(state, origin=origin, request_app=folder_app)
+        filing = await arrival_folder_id(
+            state, origin=origin, request_app=folder_app, folder=arrival_folder_name
+        )
         arrival_folder = filing.folder_id
         # Rows this filing CREATED, for the failure paths below. Held in the
         # handler's own scope rather than re-derived: after a failure the store no
