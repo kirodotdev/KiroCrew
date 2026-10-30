@@ -241,10 +241,10 @@ class AgentConfig:
     member_acp_backend: str = field(
         default="kas",
         metadata=_meta(
-            "Crew member ACP backend",
+            "Bot ACP backend",
             "Backend for crew-member DM sessions: 'kas' (default when omitted or '') "
             "or another dispatch-capable backend (claude, codex, opencode, goose). "
-            "Crewmates run on KAS as their Kiro backend, so 'kiro' here also "
+            "Bots run on KAS as their Kiro backend, so 'kiro' here also "
             "selects KAS. Members dispatch work into worker sessions through "
             "session-control tools mounted per session over the wire.",
             # Same no-enum reasoning as acp_backend above: the live selectable
@@ -1232,11 +1232,11 @@ class AgentConfig:
             "config: the tools come from the kirocrew-dashboard MCP server, so an "
             "agent that does not mount it never has them, exactly like any other "
             "MCP server. Turn this off to withdraw the capability from every agent "
-            "at once without editing each spec, except crew member DM sessions and "
+            "at once without editing each spec, except Bot DM sessions and "
             "the Conductor in your own dashboard tab, which keep dispatching "
             "workers unless Member Dispatch is also off. Sessions can only reach "
             "peers in the same workspace; incognito, app-scoped and scheduled "
-            "sessions are never addressable, and a crew member, a scheduled run, "
+            "sessions are never addressable, and a Bot, a scheduled run, "
             "or a Conductor admitted with this off reaches only sessions it "
             "created itself.",
         ),
@@ -1255,7 +1255,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Member Dispatch",
-            "Let a crew member's DM session, and the Conductor in your own "
+            "Let a Bot's DM session, and the Conductor in your own "
             "dashboard tab, open and drive worker sessions they create, even when "
             "Session Control is off. On by default, because dispatching work into "
             "workers is the crew-member operating model, not an opt-in: this is "
@@ -1271,7 +1271,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Crew Dashboard",
-            "Let a crew member publish its own webview, shown in that member's "
+            "Let a Bot publish its own webview, shown in that member's "
             "drawer on the Crew page. A member sends a JSON object and names a "
             "template that renders it, so a long-running crew can say what it is "
             "holding, which worker is stuck and what needs a decision, to someone "

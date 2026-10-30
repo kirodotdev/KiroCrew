@@ -529,7 +529,7 @@ def _note_member_remap(stored: object, used: str) -> None:
         return
     _member_remap_logged = True
     logger.info(
-        "agent.member_acp_backend is stored as %r; crewmate DMs run on %r, the Kiro "
+        "agent.member_acp_backend is stored as %r; Bot DMs run on %r, the Kiro "
         "backend that carries their dispatch tools (config.json is left as it is)",
         stored,
         used,

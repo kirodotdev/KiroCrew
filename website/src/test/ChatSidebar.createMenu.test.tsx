@@ -248,7 +248,7 @@ describe('create-button caret menu', () => {
     await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('open-crew-members')).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /^Mates\b/ })).toBeNull()
-    expect(screen.queryByText(/Opens the Mates page/)).toBeNull()
+    expect(screen.queryByText(/Opens the Bots page/)).toBeNull()
     expect(screen.queryByText(/Opens Settings first/)).toBeNull()
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()

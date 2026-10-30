@@ -378,6 +378,7 @@ const LEGACY: readonly Legacy[] = [
     token: 'channel_message_not_run',
   },
   { re: /^This thread's crew name cannot be dispatched\. Rename or recreate the Crew Member\.$/u, token: 'crew_name_undispatchable' },
+  { re: /^This thread's crew name cannot be dispatched\. Rename or recreate the Bot\.$/u, token: 'crew_name_undispatchable' },
   {
     re: /^This chat ran on a remote crew and is read-only now\. Open the crew's own session to keep going\.$/u,
     token: 'remote_crew_read_only',

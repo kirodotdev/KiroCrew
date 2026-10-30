@@ -739,11 +739,11 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_member_mode": (
-        "89e48fe11084555b3db2a9eaf6fddbf49bf48fddd458e9d4a07f943c1be92150",
+        "ed6df2b66be4315ed1914aeba0f5674bf60d5817cc2db223a1625d84b60da5d8",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
-            ("surface", 1687),
+            ("surface", 1679),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("memory_tools", 425),

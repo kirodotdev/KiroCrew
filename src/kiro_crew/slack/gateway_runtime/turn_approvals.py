@@ -414,7 +414,7 @@ def _interactive_approval(
                         ).get(approval_slot, ("", False))[0]
                     )
             except Exception:
-                logger.debug("crew member check failed for %s", approval_slot, exc_info=True)
+                logger.debug("Bot check failed for %s", approval_slot, exc_info=True)
         if self.slack and self._owner_id and not _crew_member:
             try:
                 # Resolve parent thread context for threaded approval prompts

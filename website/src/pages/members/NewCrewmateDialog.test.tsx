@@ -354,7 +354,7 @@ describe('NewCrewmateDialog', () => {
         fireEvent.click(toggle())
         await screen.findByTestId('crewmate-create-advanced')
       }
-      const creates = within(region).getAllByRole('button', { name: 'Create mate' })
+      const creates = within(region).getAllByRole('button', { name: 'Create Bot' })
       expect(creates).toHaveLength(1)
       const footer = screen.getByTestId('crewmate-create-footer')
       expect(footer).toContainElement(creates[0])

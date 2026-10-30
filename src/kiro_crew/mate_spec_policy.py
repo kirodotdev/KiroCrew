@@ -68,7 +68,7 @@ class SpecPolicyUncarried(WorkerKitUnreadable):
     def __init__(self, fields: list[str], why: str = "") -> None:
         self.fields = list(dict.fromkeys(fields))
         detail = why or "they cannot be applied exactly"
-        super().__init__(f"the crewmate's {', '.join(self.fields)} cannot be carried: {detail}")
+        super().__init__(f"the Bot's {', '.join(self.fields)} cannot be carried: {detail}")
 
 
 def uncarried(fields: list[str], why: str = "") -> SpecPolicyUncarried:
@@ -291,6 +291,6 @@ def backend_refusal(policy: dict[str, Any], backend: str) -> str | None:
     from kiro_crew.acp_backends import backend_to_stored
 
     return (
-        f"the crewmate's {', '.join(sorted(policy))} cannot be applied on "
-        f"{backend_to_stored(backend)}; run the crewmate on kas"
+        f"the Bot's {', '.join(sorted(policy))} cannot be applied on "
+        f"{backend_to_stored(backend)}; run the Bot on kas"
     )
