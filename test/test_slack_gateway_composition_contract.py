@@ -529,7 +529,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, watchdog: 'asyncio.Future | None' = None) -> 'None'",
         ),
+        ("_park_if_force_exit_claimed", "async method", "(self) -> 'None'"),
         ("_MARKER_WRITE_WAIT_SECS", "value", "'float'"),
+        ("_FORCE_EXIT_DEADLINE_SECS", "value", "'float'"),
     ),
     "process_entry": (
         ("_live_session_work_dirs", "function", "(sessions: 'Any') -> 'list[str]'"),
