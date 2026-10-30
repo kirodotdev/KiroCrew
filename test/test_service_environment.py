@@ -22,8 +22,64 @@ from kiro_crew.service import common
 from kiro_crew.service.common import kirocrew_bin, service_environment
 
 
+@pytest.fixture
+def _interpreter_without_console_script(monkeypatch, tmp_path):
+    """Run a test under an interpreter whose ``bin/`` holds no kirocrew.
+
+    The resolver prefers the console script beside ``sys.executable``, and
+    the test venv's own ``bin/kirocrew`` would otherwise answer every test
+    that is about the PATH and argv fallbacks.
+    """
+    interp = tmp_path / "interp" / "bin"
+    interp.mkdir(parents=True)
+    monkeypatch.setattr(common.sys, "executable", str(interp / "python3"))
+
+
+@pytest.mark.usefixtures("_interpreter_without_console_script")
 class TestKirocrewBinOverride:
-    @pytest.mark.parametrize("source", ["which", "argv"])
+    @staticmethod
+    def _console_script(bin_dir):
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        script = bin_dir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)  # fmt: skip
+        return script
+
+    def test_running_install_wins_over_a_shared_launcher_on_path(self, monkeypatch, tmp_path):
+        """A launcher another install repointed must not become the service.
+
+        ``~/.local/bin/kirocrew`` is first on PATH and points at a source
+        clone; the install running ``service install`` is a different one. The
+        persisted path must name the running install, so repointing the shared
+        launcher later cannot move the service.
+        """
+        mine = self._console_script(tmp_path / "crew-venv" / "bin")
+        clone = self._console_script(tmp_path / "clone" / ".venv" / "bin")
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+        monkeypatch.setattr(common.shutil, "which", lambda _name: str(clone))
+
+        assert kirocrew_bin() == str(mine)
+
+    def test_running_install_in_a_linked_worktree_falls_back_to_path(self, monkeypatch, tmp_path):
+        """A linked worktree is reaped later, so it is never persisted."""
+        worktree = tmp_path / "wt"
+        mine = self._console_script(worktree / ".venv" / "bin")
+        (worktree / ".git").write_text("gitdir: /repo/.git/worktrees/wt\n", encoding="utf-8")
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+        monkeypatch.setattr(common.shutil, "which", lambda _name: "/usr/local/bin/kirocrew")
+
+        assert kirocrew_bin() == "/usr/local/bin/kirocrew"
+
+    def test_service_bin_override_wins_over_the_running_install(self, monkeypatch, tmp_path):
+        mine = self._console_script(tmp_path / "crew-venv" / "bin")
+        monkeypatch.setattr(common.sys, "executable", str(mine.parent / "python3"))
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/wrapper/kirocrew")
+
+        assert kirocrew_bin() == os.path.abspath("/opt/wrapper/kirocrew")
+
+    @pytest.mark.parametrize("source", ["running", "which", "argv"])
     def test_managed_tree_launch_path_is_persisted_through_the_stable_link(
         self, source, monkeypatch, tmp_path
     ):
@@ -33,6 +89,9 @@ class TestKirocrewBinOverride:
         binary = tree / "bin" / "kirocrew"
         binary.parent.mkdir(parents=True)
         binary.touch()
+        if source == "running":
+            binary.chmod(0o755)  # fmt: skip
+            monkeypatch.setattr(common.sys, "executable", str(binary.parent / "python3"))
         (tree / tree_liveness.TREE_MARKER).write_text("layout\n", encoding="utf-8")
         stable = str(tmp_path / "crew-venv-current" / "bin" / "kirocrew")
         rewrite = MagicMock(return_value=stable)

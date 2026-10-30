@@ -2507,9 +2507,15 @@ pins the contract.
   message pointing to manual setup.
 
 Persisted service launch paths follow the managed-venv stable link: the shared
-`service.common.kirocrew_bin` resolver rewrites both its PATH hit and its
-`sys.argv[0]` fallback through `tree_liveness.through_stable_link`. The explicit
-`KIROCREW_SERVICE_BIN` override remains operator-owned and is only made absolute.
+`service.common.kirocrew_bin` resolver rewrites every automatic answer through
+`tree_liveness.through_stable_link`. The explicit `KIROCREW_SERVICE_BIN` override
+remains operator-owned and is only made absolute. Without it the resolver names
+the console script beside the running interpreter — the install performing the
+`service install` — before it consults PATH, because `~/.local/bin/kirocrew` is
+shared and any other install may repoint it later; a service persisting it would
+silently start that other install on its next restart. A script in a linked git
+worktree or an AppImage mount is skipped, since either is reaped from under a
+persisted path; PATH and then `sys.argv[0]` remain the fallbacks.
 The macOS missing-launcher repair uses that override or the console script beside
 the running interpreter, with the same stable-link rewrite for the latter; it
 never consults PATH.
