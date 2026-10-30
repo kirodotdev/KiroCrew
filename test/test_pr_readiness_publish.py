@@ -53,9 +53,13 @@ GH_STUB = r"""#!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >> "$FIXTURES/calls.txt"
 
-# gh pr view <PR> --repo <REPO> --json headRefOid --jq .headRefOid
+# gh pr view <PR> --repo <REPO> --json headRefOid|baseRefName --jq .<field>
 if [ "$1 ${2:-}" = "pr view" ]; then
-  cat "$FIXTURES/head_sha.txt"
+  case "$*" in
+    *"--json baseRefName"*) cat "$FIXTURES/head_base.txt" ;;
+    *"--json headRefOid"*) cat "$FIXTURES/head_sha.txt" ;;
+    *) echo "gh stub: unhandled pr view: $*" >&2; exit 90 ;;
+  esac
   exit 0
 fi
 
@@ -238,6 +242,7 @@ class Runner:
             "REPO": "kirodotdev/KiroCrew",
             "PR": "2064",
             "SHA": SHA,
+            "BASE_REF": "main",
             "URL": "https://github.com/kirodotdev/KiroCrew/actions/runs/1",
             "RUNNER_TEMP": str(self.tmp),
             "GITHUB_STEP_SUMMARY": str(self.summary),
@@ -257,11 +262,13 @@ class Runner:
             "readiness: passed",
         ),
         head_sha: str = SHA,
+        head_base: str = "main",
         fail_label_delete: bool = False,
         fail_label_create: bool = False,
         fail_status: bool = False,
     ) -> Result:
         (self.fixtures / "head_sha.txt").write_text(head_sha + "\n")
+        (self.fixtures / "head_base.txt").write_text(head_base + "\n")
         (self.fixtures / "pr_labels.txt").write_text("\n".join(pr_labels) + "\n")
         (self.fixtures / "repo_labels.txt").write_text("\n".join(repo_labels) + "\n")
         for name, on in (
@@ -325,6 +332,33 @@ def test_a_stale_revision_publishes_nothing(runner: Runner) -> None:
     assert result.published is None
     assert result.deleted == []
     assert result.added == ""
+
+
+def test_a_verdict_scored_for_an_older_base_publishes_nothing(runner: Runner) -> None:
+    """A success scored while the base was main never lands once the base changed."""
+    result = runner.run(head_base="release/0.9.0")
+    assert result.ok, result.proc.stderr
+    assert result.published is None
+    assert result.deleted == []
+    assert result.added == ""
+    assert "Ignoring publish for stale base main" in result.proc.stdout
+
+
+def test_the_base_is_read_after_every_re_check_read_and_before_the_post(
+    runner: Runner,
+) -> None:
+    """A base change during the success re-check reads is still caught."""
+    result = runner.run()
+    assert result.ok, result.proc.stderr
+    calls = result.calls
+    base_reads = [i for i, c in enumerate(calls) if "--json baseRefName" in c]
+    runs_reads = [i for i, c in enumerate(calls) if "/actions/runs?" in c]
+    posts = [i for i, c in enumerate(calls) if "/statuses/" in c]
+    assert len(base_reads) == 1, calls
+    assert runs_reads and posts, calls
+    assert max(runs_reads) < base_reads[0], calls
+    # Nothing at all is read between the base read and the POST.
+    assert posts[0] == base_reads[0] + 1, calls
 
 
 # ── Losing a label race must not withhold the verdict ────────────────────────

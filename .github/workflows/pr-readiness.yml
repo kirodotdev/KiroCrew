@@ -2019,6 +2019,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
+          BASE_REF: ${{ steps.context.outputs.base }}
           URL: ${{ steps.context.outputs.url }}
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
@@ -2333,6 +2334,19 @@ jobs:
           # next monitored-workflow event) re-evaluates and republishes,
           # and no verdict is ever silently overwritten. The POST is
           # bounded (gh applies no HTTP timeout of its own).
+          #
+          # The verdict was scored for one base as well as one head: the base
+          # decides which lanes are owed and whether a fork PR is held for a
+          # maintainer. A base change keeps the SHA, so a verdict for the old
+          # base would land on the status that gates the PR. Read the base
+          # after every other read in this step, right before the POST; a run
+          # that evaluated an older base publishes nothing, and the run for
+          # the base change publishes instead.
+          current_base="$(gh_retry gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')"
+          if [ "$current_base" != "$BASE_REF" ]; then
+            echo "Ignoring publish for stale base $BASE_REF; PR #$PR now targets $current_base."
+            exit 0
+          fi
           jq -n \
             --arg state "$STATUS_STATE" \
             --arg target_url "$URL" \
