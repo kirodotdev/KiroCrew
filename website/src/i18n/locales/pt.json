@@ -17431,6 +17431,7 @@
       },
       "crewmatesSection": {
         "title": "Membros da equipe",
+        "description": "Configurações do servidor para os membros da equipe, não prévias. Ficam salvas no servidor, então valem em todos os dispositivos.",
         "reply_threads": "Tópicos de resposta nas mensagens do chat de um membro",
         "reply_threads_desc": "Deixa qualquer mensagem do chat de um membro da equipe ter seu próprio tópico de resposta, aberto no painel lateral enquanto o chat continua visível. Desligado, Responder no tópico não aparece e os tópicos existentes ficam ocultos, não apagados.",
         "failed_to_save": "Não foi possível salvar a configuração da equipe. Tente de novo.",

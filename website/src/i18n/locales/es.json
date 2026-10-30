@@ -17431,6 +17431,7 @@
       },
       "crewmatesSection": {
         "title": "Miembros del equipo",
+        "description": "Ajustes del servidor para los miembros del equipo, no vistas previas. Se guardan en el servidor, así que se aplican en todos los dispositivos.",
         "reply_threads": "Hilos de respuesta en los mensajes del chat de un miembro",
         "reply_threads_desc": "Permite que cualquier mensaje del chat de un miembro del equipo tenga su propio hilo de respuesta, abierto en el panel lateral mientras el chat sigue visible. Desactivado, no se ofrece Responder en el hilo y los hilos existentes quedan ocultos, no borrados.",
         "failed_to_save": "No se pudo guardar el ajuste del equipo. Inténtalo de nuevo.",

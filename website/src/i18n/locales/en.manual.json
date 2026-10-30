@@ -7873,6 +7873,7 @@
       },
       "crewmatesSection": {
         "title": "Mates",
+        "description": "Server settings for mates, not previews. They're saved on the server, so they apply on every device.",
         "reply_threads": "Reply threads on mate chat messages",
         "reply_threads_desc": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
         "failed_to_save": "Couldn't save the mate setting. Try again.",

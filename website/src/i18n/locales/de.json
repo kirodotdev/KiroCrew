@@ -17136,6 +17136,7 @@
       },
       "crewmatesSection": {
         "title": "Crew-Mitglieder",
+        "description": "Server-Einstellungen für Crew-Mitglieder, keine Vorschauen. Gespeichert auf dem Server, deshalb gelten sie auf jedem Gerät.",
         "reply_threads": "Antwort-Threads auf Nachrichten im Chat eines Crew-Mitglieds",
         "reply_threads_desc": "Jede Nachricht im Chat eines Crew-Mitglieds kann einen eigenen Antwort-Thread tragen, der im Seitenbereich aufgeht, während der Chat sichtbar bleibt. Aus: „Im Thread antworten“ wird nicht angeboten, und vorhandene Threads sind ausgeblendet, nicht gelöscht.",
         "failed_to_save": "Die Crew-Einstellung konnte nicht gespeichert werden. Versuch es noch einmal.",

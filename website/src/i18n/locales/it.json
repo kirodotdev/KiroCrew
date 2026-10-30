@@ -17431,6 +17431,7 @@
       },
       "crewmatesSection": {
         "title": "Membri della crew",
+        "description": "Impostazioni del server per i membri della crew, non anteprime. Sono salvate sul server, quindi valgono su ogni dispositivo.",
         "reply_threads": "Thread di risposta sui messaggi della chat di un membro",
         "reply_threads_desc": "Consenti a qualsiasi messaggio nella chat di un membro della crew di avere il proprio thread di risposta, aperto nel pannello laterale mentre la chat resta visibile. Disattivato, Rispondi nel thread non viene offerto e i thread esistenti sono nascosti, non eliminati.",
         "failed_to_save": "Impossibile salvare l'impostazione della crew. Riprova.",

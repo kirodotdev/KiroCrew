@@ -17431,6 +17431,7 @@
       },
       "crewmatesSection": {
         "title": "Membres de l'équipe",
+        "description": "Réglages serveur des membres de l'équipe, pas des aperçus. Ils sont enregistrés sur le serveur et s'appliquent donc à tous les appareils.",
         "reply_threads": "Fils de réponse sur les messages du chat d'un membre",
         "reply_threads_desc": "Permet à tout message du chat d'un membre de l'équipe d'avoir son propre fil de réponse, ouvert dans le panneau latéral pendant que le chat reste visible. Désactivé, Répondre dans le fil n'est pas proposé et les fils existants sont masqués, pas supprimés.",
         "failed_to_save": "Impossible d'enregistrer le réglage de l'équipe. Réessaie.",
