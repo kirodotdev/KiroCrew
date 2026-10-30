@@ -635,7 +635,18 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 348, from 33,723 for ``shell_normalizer_ssh_options``: the
+#: reader that hands the command bodies an ssh-family program runs locally (ssh
+#: ``*Command`` options with their double-quote-stripped keyword and full
+#: whitespace/``=`` separator run, rsync ``-e``/``--rsh``, ``sftp -D``, a leading
+#: ``GIT_SSH_COMMAND=`` / ``RSYNC_RSH=``) to the nested-payload walk, its option-end
+#: walk (``--`` and ssh's remote command), the fold-ambiguity-safe short-flag cluster
+#: split that reads a valueless flag bundled before the value-taking one (scp ``-Oo``,
+#: rsync ``-aEe``, a glued ``-e=``), and the consumer check for a leading assignment
+#: (split on shell separators), plus its call in ``_nested_shell_payloads``. It only
+#: adds payloads; the ssh value-letter table moved down into it from ``argv_floor_ssh``
+#: rather than being copied, so the facade names it from that new home.
+_PACKAGE_LINE_BUDGET = 34_071
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
