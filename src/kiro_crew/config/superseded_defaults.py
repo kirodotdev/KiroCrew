@@ -554,6 +554,18 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default="auto",
         changed_in="#17055",
     ),
+    # The embedding model's idle unload went from an hour to ten minutes. A stored
+    # 3600 is not broken, only expensive: the gateway holds the loaded model (about
+    # 1.5 GB on macOS) for an hour after the last search instead of ten minutes.
+    #
+    # REPORT-ONLY: an operator who searches in long bursts raises this on purpose to
+    # avoid the reload wait, so 3600 is an ordinary deliberate value.
+    SupersededDefault(
+        dotted_key="memory.embedding_idle_evict_secs",
+        old_default=3600,
+        new_default=600,
+        changed_in="#26319",
+    ),
 )
 
 

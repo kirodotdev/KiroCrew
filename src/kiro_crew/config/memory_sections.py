@@ -96,7 +96,7 @@ class MemoryConfig:
         ),
     )
     embedding_idle_evict_secs: int = field(
-        default=3600,
+        default=600,
         metadata=_meta(
             "Unload Embedding Model When Idle (seconds)",
             "Seconds without any embedding before the embedding model is unloaded "

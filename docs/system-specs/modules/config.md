@@ -741,6 +741,7 @@ names that test; every other report-only row gives its plain reason:
 | `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
 | `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
 | `agent.session_start_concurrency` | 2 -> "auto", #17055 | reports | the knob to lower when the host or provider is the bottleneck; holding 2 only serialises a burst of starts |
+| `memory.embedding_idle_evict_secs` | 3600 -> 600, #26319 | reports | the knob to raise when searches come in long bursts; holding 3600 keeps the loaded model resident an hour after the last search |
 
 A row whose old value is a supported configuration is not stale noise, whatever
 its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
