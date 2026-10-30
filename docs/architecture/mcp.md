@@ -2230,7 +2230,11 @@ only `request_server` raises it (see *Asking for an MCP server mid-chat*).
 `setting.change` takes a Settings-registry `setting_id` (found with
 `find_setting(query)`, which returns up to ten matches with `writable`,
 the current value and the allowed values, never a credential value) or a raw
-config `path`. The write target is resolved from data: the dashboard-config
+config `path`. `find_setting` matches a query word at the start of a word in a
+setting's id, label, help or config key, after dropping question words such as
+`how`, `do` and `I` (kept when nothing else is left); a setting ranks by the
+words it holds, a word in its id or label counting three times, and a word found
+on many settings counting for little. The write target is resolved from data: the dashboard-config
 controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
