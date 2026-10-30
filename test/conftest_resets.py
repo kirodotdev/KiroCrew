@@ -298,6 +298,21 @@ def _forget_enterprise_profile_pin():
 
 
 @pytest.fixture(autouse=True)
+def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
+    """Forget which roots the legacy auth-store temp sweep has found clean.
+
+    ``sandbox_staging._LEGACY_AUTH_SWEEP_CLEAN`` remembers, for the process lifetime, a
+    root a sweep listed and found no legacy temp in, so later spawns skip the listing.
+    Each test's data home is a fresh path, so a stale entry cannot match today; a fresh
+    dict per test keeps that true for a test that reuses a fixed path, which would
+    otherwise find its planted orphan skipped by an earlier test's clean pass.
+    """
+    from kiro_crew import sandbox_staging
+
+    _floor_monkeypatch.setattr(sandbox_staging, "_LEGACY_AUTH_SWEEP_CLEAN", {})
+
+
+@pytest.fixture(autouse=True)
 def _forget_sandbox_launch_mark():
     """Forget that an entry point saw the sandbox marker.
 
