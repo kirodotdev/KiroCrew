@@ -39,7 +39,7 @@ from kiro_crew.apps.bridges_sources import (
     _registration_source,
     _safe_link_name,
 )
-from kiro_crew.apps.manager import get_app, get_app_manifest, list_apps
+from kiro_crew.apps.manager import app_enabled_state, get_app, get_app_manifest, list_apps
 from kiro_crew.apps.manifest import (
     AppManifest,
     Containment,
@@ -305,6 +305,53 @@ def refresh_app_agents(app_name: str, io_failures: list[str] | None = None) -> l
         _deregister_agents(app_name)
         return []
     return _register_agents(app_name, manifest, app_root, io_failures=io_failures)
+
+
+def refresh_enabled_app_agents() -> int:
+    """Re-materialize the agent configs of every ENABLED app; the count rewritten.
+
+    For a host-wide input an app agent's config is derived from, when that input
+    changes at runtime. The computer-use keystone is one: a materialized app agent
+    carries ``kirocrew-computer`` only while that server's ``spec_gate`` is open, so
+    an enable flip must rewrite these configs as well as the host spec, or the app
+    agents keep the server set from before the flip until the next gateway start.
+
+    Each app goes through :func:`refresh_app_agents`, so the self-managed and
+    admission-denied guards hold. One app's failure is logged and the rest continue.
+    Blocking: call it off the event loop.
+
+    Enablement is read again right before and right after each app's rewrite, not
+    taken from the ``list_apps`` snapshot. ``disable_app`` can land between the two,
+    from the dashboard or from the CLI in another process, so no lock is shared with
+    it; this is the before/after check ``backend_runtime.registration`` uses for the
+    same race. An app found disabled before the rewrite is skipped. An app found
+    disabled after it has its agents removed again (``_deregister_agents``, exactly
+    what the rewrite wrote), so a disable that wins the race cannot leave its agents
+    dispatchable. An UNREADABLE state is skipped before and left alone after: deleting
+    on a transient read fault would destroy the user's agent edits.
+    """
+    try:
+        apps = list_apps()
+    except Exception as exc:  # noqa: BLE001 — a caller's save must not fail on this
+        logger.warning("App agent refresh skipped: cannot list apps: %s", exc)
+        return 0
+    rewritten = 0
+    for info in apps:
+        name = info.get("name") or ""
+        if not name or not info.get("enabled"):
+            continue
+        try:
+            if app_enabled_state(name) is not True:
+                continue
+            written = refresh_app_agents(name)
+            if app_enabled_state(name) is False:
+                _deregister_agents(name)
+                logger.info("App %s was disabled during its agent refresh; removed them", name)
+                continue
+            rewritten += len(written)
+        except Exception as exc:  # noqa: BLE001 — one bad app must not stop the rest
+            logger.warning("App agent refresh failed for %s: %s", name, exc)
+    return rewritten
 
 
 def reconcile_enabled_app_resources() -> dict[str, int]:

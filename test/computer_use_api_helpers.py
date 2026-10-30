@@ -85,8 +85,12 @@ def no_agent_spec_rewrite(monkeypatch):
     ``monkeypatch.setattr`` overrides this one and both unwind at teardown.
     """
     import kiro_crew.agent as agent_mod
+    from kiro_crew.apps import bridges
 
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", lambda **_: Path("/dev/null"))
+    # The enable flip also rewrites enabled apps' agent configs; stubbed for the same
+    # reason. Tests that assert on that call re-patch it with their own recorder.
+    monkeypatch.setattr(bridges, "refresh_enabled_app_agents", lambda: 0)
 
 
 @pytest.fixture(autouse=True)

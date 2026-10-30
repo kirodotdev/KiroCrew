@@ -1680,7 +1680,12 @@ An app agent that references a host-managed server (`@kirocrew-core`,
 `_materialize_managed_refs()`. kiro-cli resolves a `@server` ref against the
 agent's own `mcpServers` plus the global `mcp.json`, and managed specs live in
 the host agent's config only, so without that copy the ref dangles and the tool
-silently never mounts.
+silently never mounts. The copy comes from `managed_mcp_spec_entry(name,
+include_opt_in=True)`: the ref is an explicit grant, so an `opt_in` server is
+copied, but a server whose `spec_gate` is closed (`kirocrew-computer` while
+computer use is off or unsupported) is not. Its ref stays dangling, as on the
+host agent, so kiro-cli never spawns a backend that advertises no tools and
+stalls KAS readiness.
 
 Containment for app agents has three layers:
 
