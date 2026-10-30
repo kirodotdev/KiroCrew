@@ -108,6 +108,16 @@ describe('Slack Code payload', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: 'claude-x', reasoning_effort: null } }))
     expect(slackCodePayload({ ...saved, model: 'auto' }, saved)).toEqual({ code_channel_defaults: { model: null } })
   })
+
+  it('reads an unset or unknown approval mode as Ask and stores Ask as unset', () => {
+    expect(slackCodeDraftFrom(config()).approval).toBe('ask')
+    expect(slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, approval_mode: 'yolo' } })).approval).toBe('ask')
+    const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, approval_mode: 'trust_reads' } }))
+    expect(saved.approval).toBe('trust_reads')
+    expect(slackCodePayload(saved, saved)).toEqual({})
+    expect(slackCodePayload({ ...saved, approval: 'trust' }, saved)).toEqual({ code_channel_defaults: { approval_mode: 'trust' } })
+    expect(slackCodePayload({ ...saved, approval: 'ask' }, saved)).toEqual({ code_channel_defaults: { approval_mode: null } })
+  })
 })
 
 describe('Agent sessions switch', () => {
@@ -356,6 +366,41 @@ describe('Code channels card', () => {
       code_channel_warnings: ['agent_missing'],
     })
     expect(await screen.findByText(/“ghost” is no longer installed/)).toBeInTheDocument()
+  })
+
+  it('picks an approval mode, warns on Trust, previews it and saves it', async () => {
+    const { save } = seed({ code_channels: true })
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).toHaveTextContent('Approvals')
+    expect(preview).toHaveTextContent('Normal')
+    expect(screen.queryByTestId('slack-code-approval-warning')).toBeNull()
+
+    await userEvent.click(within(card).getByLabelText('Approval mode'))
+    await userEvent.click(await screen.findByRole('option', { name: 'Reads' }))
+    expect(preview).toHaveTextContent('Reads')
+    // Reads only runs read-only commands: no warning.
+    expect(screen.queryByTestId('slack-code-approval-warning')).toBeNull()
+
+    await userEvent.click(within(card).getByLabelText('Approval mode'))
+    await userEvent.click(await screen.findByRole('option', { name: 'Trust' }))
+    const warning = screen.getByTestId('slack-code-approval-warning')
+    expect(warning).toHaveTextContent('anyone allowed to talk to the bot in this channel')
+    expect(warning).toHaveTextContent('sessions it starts inherit that')
+    expect(preview).toHaveTextContent('Trust')
+    expect(preview).toHaveTextContent('Set here')
+
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { approval_mode: 'trust' } })
+  })
+
+  it('shows the Trust warning for a saved Trust default', async () => {
+    seed({
+      code_channels: true,
+      code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, approval_mode: 'trust' },
+    })
+    expect(await screen.findByTestId('slack-code-approval-warning', {}, CHAINED)).toBeInTheDocument()
   })
 })
 

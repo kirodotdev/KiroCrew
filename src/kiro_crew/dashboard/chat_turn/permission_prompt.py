@@ -25,11 +25,14 @@ if TYPE_CHECKING:
         _validate_tool_name,
         approval_command,
         approval_display_command,
+        code_channel_post_thread,
         command_invokes_git,
         crew_log_emit,
+        finish_worker_approval,
         format_approval_no_budget_card,
         format_approval_timeout_card,
         is_read_only_bash,
+        keep_code_channel_card,
         logger,
         pin_human_approval,
         post_linked_approval,
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
         resolve_linked_approval,
         sel,
         slack_mirror_is_paused,
+        start_worker_approval_relay,
         tool_approval_timeout_secs,
         unsafe_bash_reason,
     )
@@ -313,14 +317,20 @@ async def _on_permission_prompt(
         and not slack_mirror_is_paused(state, session_key)
     ):
         try:
+            # A Slack Code channel's own session posts top-level,
+            # where its replies go (the mirror's own rule, read
+            # from the same helper); every other linked thread
+            # keeps threading under ``_slack_thread_ts``.
+            _approval_thread = code_channel_post_thread(slot._slack_channel, slot._slack_thread_ts)
             _slack_approval_ts = await post_linked_approval(
                 state.slack_client,
                 slot._slack_channel,
-                slot._slack_thread_ts,
+                _approval_thread,
                 event.request_id,
                 session_key,
                 (f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title),
                 event.tool_input or "",
+                channel_trust=_approval_thread is None,
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole
@@ -371,6 +381,21 @@ async def _on_permission_prompt(
                 fut.set_result("rejected")
                 _host_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
                 _host_deny_reason = "the approval prompt could not be delivered to Slack"
+    # A worker that a Slack Code channel's session created asks in that
+    # channel too (top-level, owner-only); the dashboard prompt stays.
+    # Started, not awaited: nothing here may await before the `try`.
+    _worker_relay = start_worker_approval_relay(
+        state,
+        slot,
+        session_key,
+        event.request_id,
+        # The same title the linked card carries, warning included.
+        (f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title),
+        event.tool_input or "",
+        fut,
+        perm_meta=perm_meta,
+        linked_ts=_slack_approval_ts,
+    )
     # Pre-seeded so the `finally` backstop below is total over EVERY
     # exit from the await — including CancelledError, which slot
     # deletion / cleanup endpoints raise by cancelling slot.task.
@@ -634,13 +659,24 @@ async def _on_permission_prompt(
         if _slack_approval_ts is not None:
             try:
                 resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
-                if state.slack_client:
+                # A code-channel card its Trust answered says so in
+                # place; every other card goes once decided.
+                if state.slack_client and not keep_code_channel_card(
+                    slot._slack_channel, _slack_approval_ts
+                ):
                     await state.slack_client.delete_message(slot._slack_channel, _slack_approval_ts)
             except Exception:
                 logger.debug(
                     "Failed to clean up linked Slack approval message",
                     exc_info=True,
                 )
+        # A relayed worker card says how it was answered (never raises).
+        await finish_worker_approval(
+            _worker_relay,
+            outcome,
+            deny_cause=_host_deny_cause,
+            host_ended=bool(_host_cancelled or _host_stopped),
+        )
     if outcome == "approved_trust_reads":
         slot._trust_reads = True
         outcome = "approved"

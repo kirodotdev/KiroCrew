@@ -124,20 +124,41 @@ def _option(name: str) -> dict[str, Any]:
 
 
 def kickoff_blocks(
-    text: str, agents: list[str] | None, selected: str, note: str = ""
+    text: str,
+    agents: list[str] | None,
+    selected: str,
+    note: str = "",
+    *,
+    approval_mode: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The kickoff message: its text, then the agent picker (when agents listed).
+    """The kickoff message: its text, the agent picker (when agents listed), then
+    the Approval mode select (when *approval_mode* is given), then *note*.
 
     *selected* is the agent the session runs; it is the select's initial option
     when it is one of *agents*. Past Slack's option cap the list is cut, keeping
-    *selected* in it.
+    *selected* in it. *approval_mode* is the mode the session holds
+    (:mod:`.approval_picker`).
     """
     blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
-    if not agents:
-        return blocks
-    names = [n for n in dict.fromkeys(agents) if 0 < len(n) <= _OPTION_VALUE_MAX]
-    if not names:
-        return blocks
+    names = [n for n in dict.fromkeys(agents or ()) if 0 < len(n) <= _OPTION_VALUE_MAX]
+    if names:
+        blocks.append(_agent_block(names, selected))
+    if approval_mode is not None:
+        from kiro_crew.slack.code_channels.approval_picker import approval_block, yolo_note
+
+        blocks.append(approval_block(approval_mode))
+        if yolo_note():
+            # The select has no YOLO state: say so, or it reads Normal under YOLO.
+            blocks.append(
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": yolo_note()}]}
+            )
+    if note and len(blocks) > 1:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+    return blocks
+
+
+def _agent_block(names: list[str], selected: str) -> dict[str, Any]:
+    """The kickoff's agent ``static_select`` section."""
     if len(names) > MAX_OPTIONS:
         head = names[:MAX_OPTIONS]
         if selected in names and selected not in head:
@@ -151,21 +172,17 @@ def kickoff_blocks(
     }
     if selected in names:
         select["initial_option"] = _option(selected)
-    blocks.append(
-        {
-            "type": "section",
-            "block_id": f"{AGENT_BLOCK_PREFIX}{time.time_ns()}",
-            "text": {"type": "mrkdwn", "text": PICKER_LABEL},
-            "accessory": select,
-        }
-    )
-    if note:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
-    return blocks
+    return {
+        "type": "section",
+        "block_id": f"{AGENT_BLOCK_PREFIX}{time.time_ns()}",
+        "text": {"type": "mrkdwn", "text": PICKER_LABEL},
+        "accessory": select,
+    }
 
 
 async def refresh_kickoff(binding: Binding, *, note: str = "") -> None:
-    """Re-draw *binding*'s kickoff from the session's real agent (never raises)."""
+    """Re-draw *binding*'s kickoff from the session's real agent and approval
+    mode (never raises)."""
     try:
         slack = surface.slack()
         state = surface.dashboard_state()
@@ -178,7 +195,15 @@ async def refresh_kickoff(binding: Binding, *, note: str = "") -> None:
 
         text = _kickoff_text(binding.title, state, str(getattr(slot, "folder_id", "") or ""))
         agents = await agent_choices(getattr(slot, "project", None) or binding.project_dir or None)
-        blocks = kickoff_blocks(text, agents, str(getattr(slot, "agent", "") or ""), note)
+        from kiro_crew.slack.code_channels.approval_picker import current_mode
+
+        blocks = kickoff_blocks(
+            text,
+            agents,
+            str(getattr(slot, "agent", "") or ""),
+            note,
+            approval_mode=current_mode(slot),
+        )
         await slack.update_message(binding.channel_id, binding.anchor_ts, text=text, blocks=blocks)
     except Exception:
         logger.info("code channel %s: kickoff not updated", binding.channel_id, exc_info=True)
@@ -313,33 +338,43 @@ async def switch_channel_agent(
 
 
 async def authorize(
-    orch: Any, binding: Binding, user: str, team: str, resources: str
+    orch: Any,
+    binding: Binding,
+    user: str,
+    team: str,
+    resources: str,
+    *,
+    audit: Callable[[str, str, str], None] | None = None,
+    not_allowed: str = NOT_ALLOWED_TEXT,
 ) -> str | None:
-    """None when *user* may change *binding*'s agent; else the refusal to show.
+    """None when *user* may change *binding*'s settings; else the refusal to show.
 
     The gates every code-channel command applies, in its order, each refusal
     SEL-audited: the workspace, the owner, the code channel and its origin both
-    still admitting the bot, an archived channel.
+    still admitting the bot, an archived channel. The channel's other owner-only
+    controls (:mod:`.approval_picker`, :mod:`.worker_approvals`) share these
+    gates, passing their own *audit* row writer and *not_allowed* text.
     """
+    write = audit or _audit
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_allowed_user
 
     if not surface.workspace_admitted(team):
-        _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
+        write("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return ""
     if not is_allowed_user(user):
-        _audit("denied", resources, "unauthorized user")
-        return NOT_ALLOWED_TEXT
+        write("denied", resources, "unauthorized user")
+        return not_allowed
     origin = _origin_of(binding.channel_id, binding, None)
     if not channel_and_origin_permit(live_config(orch), binding.channel_id, origin):
-        _audit(
+        write(
             "denied",
             f"{resources} origin={origin}",
             "the code channel or its origin does not admit the bot",
         )
-        return NOT_ALLOWED_TEXT
+        return not_allowed
     if await surface.is_archived(binding):
-        _audit("denied", resources, "archived")
+        write("denied", resources, "archived")
         from kiro_crew.slack.code_channels.commands import ARCHIVED_TEXT
 
         return ARCHIVED_TEXT

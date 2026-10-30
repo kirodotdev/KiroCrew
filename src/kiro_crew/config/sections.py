@@ -342,6 +342,8 @@ from kiro_crew.config.sections_slack import (  # noqa: F401
     ACTIVATION_OBSERVE,
     ACTIVATION_OFF,
     ACTIVATION_REVIEW,
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
     CODE_CHANNEL_DEFAULT_MAX,
     ChannelConfig,
     CodeChannelDefaultsConfig,

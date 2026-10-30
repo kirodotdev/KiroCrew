@@ -378,8 +378,8 @@ To update an existing app:
 If the panel reads **Workspace not enabled**, the app has the scopes but Slack has not
 turned code channels on for your workspace; a workspace admin has to enable it.
 
-For code channels you can also set a default folder, agent, model and reasoning effort for
-new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
+For code channels you can also set a default folder, agent, model, reasoning effort and
+approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
 With nothing set, code channels go into a **Code channels** sidebar folder, created the first
 time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
 choose **New folder…** in the folder list to create one there.
@@ -409,6 +409,91 @@ If a turn is running when you pick, nothing changes and you get a message asking
 try again when the turn ends. Only the owner can change a channel's agent. Anyone else gets
 a message only they can see, and nothing changes. Each change, and each refused one, is
 recorded in the security event log.
+
+### Approval mode for code channels
+
+A code channel is driven from Slack, where nobody may be watching the dashboard to answer
+an approval prompt. **Approval mode** on the Code channels card
+(`slack.code_channel_defaults.approval_mode`) picks the mode each new code channel's
+session starts in:
+
+| Picker | Config value | A new code channel's session |
+|---|---|---|
+| Normal (default) | `ask` (or unset) | asks before every tool call, as before |
+| Reads | `trust_reads` | runs read-only shell commands without asking; asks for everything else |
+| Trust | `trust` | runs every tool without asking |
+
+> **Trust is a real grant.** With Trust, anyone allowed to talk to the bot in that channel
+> drives an agent whose tools run without prompts, and sessions the agent spawns inherit
+> that posture. Pick it only for channels whose members you would hand a shell.
+
+The mode is applied once, when the code channel's dashboard session is created, through
+the same per-session approval the dashboard's approval picker sets, and is recorded in the
+security event log as `mode_change:<mode>` by `slack:code_channel`. It never turns on
+YOLO and never ends a YOLO grant. After that the session is an ordinary one: change its
+mode in the session's own approval picker at any time. Like every session's approval mode
+it is held in memory, so after a gateway restart the session asks again until someone
+picks a mode on it. A change to this setting applies to the next new code channel;
+existing ones keep the mode they have.
+
+There is no per-channel override hook: Crew's script hooks (`AgentSpawn`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) run once a turn is under way
+and can only add context or decide one tool call, not choose a session's approval mode.
+To keep one channel on Normal, change the mode on that channel's session. If that session
+is closed, the channel's next message opens a new session, which starts in the configured
+mode again.
+
+**Changing it from the channel.** Only you (the bot's owner) can change a channel's mode
+from Slack, two ways, using the dashboard's own mode names:
+
+- **The picker in the first message.** Below **Agent for this channel**, the kickoff has an
+  **Approval mode** menu (Normal / Reads / Trust), showing the session's mode as of the
+  last time the message was drawn: a change made on the dashboard, or a gateway restart,
+  does not redraw it. Pick another and the session switches; the message then shows the
+  new mode and who set it, until the next change to either menu.
+- **`/<command> trust ask|reads|all`** (code channels only). `ask` sets Normal, `reads`
+  Reads, `all` Trust. `/<command> trust` with nothing after it shows the channel's current
+  mode. Outside a code channel it is not a command (you get the help list).
+
+Both go through the same audited change as the session's own approval picker on the
+dashboard. Switching to Trust either way posts a warning line in the channel. Normal also
+ends a YOLO grant if one is on, as Normal does on the dashboard; YOLO covers every
+session, so the reply says so, and while YOLO is on the first message carries a line
+saying tools run without asking whatever the menu shows. Anyone else gets a message only
+they can see, and nothing changes.
+
+**Approval prompts in the channel.** When a code channel's session needs an approval, the
+**Tool approval requested** card is posted in the channel itself, where the agent's
+replies go, not in a thread. Besides **Approve** and **Reject** it has **Trust this
+channel**: only you (the bot's owner) can use it, and it approves that call and puts the
+channel's session on Trust, through the same audited change as the dashboard's Trust
+button. The channel then gets a one-line warning that tools run without asking, for the
+agent's workers too, including ones already running. Anyone else who clicks it is told
+they can't, and nothing changes. A card answered by a switch to Trust (yours or a
+worker's) changes in place to say it ran under Trust. The card shows a command once: the
+command line, plus the other arguments only when there are any.
+
+**Workers follow the channel's mode.** Changing the channel's approval mode from the first
+message, `/<command> trust ask|reads|all` or a **Trust this channel** button changes it
+for the workers the channel's agent is already running as well, raising or lowering it
+the same way, each
+change recorded like the dashboard's. Lowering the channel also lowers anything those
+workers started in turn, since a session starts with its creator's mode; nothing below
+the agent's own workers is ever raised. If a worker can't be changed, the reply names it.
+A session whose creator has already closed is no longer counted as under the channel, so
+a lowering doesn't reach it; change its mode from the dashboard. Raising to Trust also answers their waiting tool
+prompts, as switching a session to Trust does on the dashboard. A person-only question
+from a worker is never answered for you. Sessions the agent did not start are left alone.
+
+**Workers ask in the channel too.** When the channel's agent starts worker sessions, a
+worker's approval prompt is also posted in the channel, headed with the worker's title
+(for example **Worker: Fix #21964** wants to run:). The card shows the tool and its
+arguments, with secrets and suspicious links redacted, and nothing from the worker's
+conversation. Only you can answer it: **Approve** and **Reject** answer the worker's
+prompt exactly as the dashboard's buttons do, and **Trust this channel** approves it and
+puts the whole channel on Trust, this worker and its siblings included. If the prompt is
+answered in the dashboard or nobody answers in time, the card changes to say so and its
+buttons go.
 
 ---
 
@@ -548,6 +633,7 @@ The slash command name is configurable via `slack.command` in config (default: `
 | `/<command> yolo` | Toggle auto-approve all tool calls |
 | `/<command> agent` | Show agent selector dropdown |
 | `/<command> agent <name>` | Switch to a named agent (in a code channel: switch that channel's agent) |
+| `/<command> trust ask\|reads\|all` | Code channels only: set that channel's approval mode (Normal / Reads / Trust) |
 | `/<command> voice` | Configure TTS voice settings |
 | `/<command> config` | Manage tracked channels (owner-only; multi-user access is disabled) |
 | `/<command> users` | Report that multi-user access is disabled |

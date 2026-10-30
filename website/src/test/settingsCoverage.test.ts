@@ -303,9 +303,9 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'the settings search box itself',
   },
   'SlackCodePanel.tsx': {
-    counts: { SimpleSelect: 3 },
+    counts: { SimpleSelect: 4 },
     reason:
-      'the code-channel default folder, agent and effort pickers: one nested ' +
+      'the code-channel default folder, agent, effort and approval-mode pickers: one nested ' +
       'slack.code_channel_defaults object, reached through the Code channels switch the ' +
       'extractor indexes (channels.code-channels-slack), which reveals them',
   },

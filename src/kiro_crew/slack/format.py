@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import unicodedata
 from functools import partial
 from typing import Callable, NamedTuple
 
@@ -250,6 +252,56 @@ def escape_mrkdwn(text: str) -> str:
     copy the agent reads back.
     """
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+#: What a code channel's approval card shows for a literal ```, which would
+#: otherwise close the card's code block (U+02CB MODIFIER LETTER GRAVE ACCENT).
+CODE_FENCE_STAND_IN = "\u02cb\u02cb\u02cb"
+
+
+def _has_hidden_chars(text: str) -> bool:
+    """Control (other than newline/tab) or format characters: bidi overrides,
+    zero-width joiners and the like, which can reorder or hide text on screen."""
+    return any(unicodedata.category(ch) in ("Cc", "Cf") and ch not in "\n\t" for ch in text)
+
+
+def command_and_rest(tool_input: str) -> tuple[str | None, str | None]:
+    """How a code channel's approval card shows a tool's input: the command once.
+
+    ``(command, the other arguments as JSON or None)`` when *tool_input* is a JSON
+    object with a string ``command``; ``(None, None)`` otherwise, and the caller
+    shows the input as it came. Also ``(None, None)`` when decoding would turn an
+    escape into a live hidden character (a bidi override, a zero-width space):
+    the raw input keeps it visible as ``\\uXXXX``. The caller redacts each part
+    again, since decoding can also undo an escape the redactors could not read.
+    """
+    try:
+        data = json.loads(tool_input)
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(data, dict) or not isinstance(data.get("command"), str):
+        return None, None
+    rest = {k: v for k, v in data.items() if k != "command" and v not in (None, "", [], {})}
+    extra = json.dumps(rest, indent=2, ensure_ascii=False) if rest else None
+    if _has_hidden_chars(data["command"]) or (extra is not None and _has_hidden_chars(extra)):
+        return None, None
+    return data["command"], extra
+
+
+def title_restates_command(title: str, command: str) -> bool:
+    """Whether a tool title only repeats *command* (``Running: git status``).
+
+    A title carrying anything else -- an ``UNVERIFIED`` warning above all -- is
+    not a restatement and stays on the card.
+    """
+    if "UNVERIFIED" in title:
+        return False
+    shown = title.strip()
+    if shown.startswith("Running: "):
+        shown = shown[len("Running: ") :]
+    shown = shown.rstrip("…").rstrip(".").strip()
+    cmd = command.strip()
+    return bool(shown) and bool(cmd) and cmd.startswith(shown)
 
 
 def build_options_selected_blocks(
