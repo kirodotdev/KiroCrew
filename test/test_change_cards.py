@@ -131,6 +131,53 @@ def test_a_capabilities_card_that_defines_a_server_shows_its_launch_line_as_code
     assert {"label": "helper", "after": "sh -c 'echo hi'"} in preview["changes"]
 
 
+_SKILL_DRAFT = {
+    "member": "mate",
+    "draft": {"operations": [{"section": "skills", "id": "s", "action": "set", "value": "s"}]},
+}
+_SKILL_IMPACT = [{"section": "skills", "id": "s", "change": "added"}]
+
+
+@pytest.mark.parametrize(
+    ("worker_kit", "title"),
+    [
+        (True, "Change what “Mate”’s worker can use"),
+        (False, "Change tools for “Mate”"),
+    ],
+)
+def test_a_capabilities_card_title_names_the_worker_only_for_a_crewmates_own_file(
+    worker_kit, title
+):
+    """A crewmate's file extends its worker, not the chat the card is raised in."""
+    p = catalog.validate_params("crewmate.capabilities", _SKILL_DRAFT)
+    context = {"impact": _SKILL_IMPACT, "label": "Mate", "worker_kit": worker_kit}
+    preview = catalog.build_preview("crewmate.capabilities", p, {"revision": "r1"}, context)
+    assert preview["title"] == title
+    assert preview["scope"] == {"members": ["Mate"], "count": 1, "only_this_member": True}
+
+
+@pytest.mark.parametrize(("mode", "worker_kit"), [("mate", True), ("inherited", False)])
+def test_a_capabilities_card_context_carries_whether_the_edit_is_the_workers(
+    monkeypatch, mode, worker_kit
+):
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import change_cards_readers as readers
+    from kiro_crew.dashboard.handlers import member_capability_catalog
+
+    service = SimpleNamespace(
+        preview=lambda member, body: {"mode": mode, "impact": _SKILL_IMPACT, "rows": []}
+    )
+    monkeypatch.setattr(readers, "_capability_service", lambda app: service)
+    monkeypatch.setattr(readers, "_crewmate_label", lambda key: "Mate")
+    monkeypatch.setattr(member_capability_catalog, "gateway_matches", lambda p: set())
+    p = catalog.validate_params("crewmate.capabilities", _SKILL_DRAFT)
+    ctx = asyncio.run(
+        readers.read_context("crewmate.capabilities", p, {"revision": "r1"}, state=None, app=None)
+    )
+    assert ctx["worker_kit"] is worker_kit
+
+
 def test_a_trust_card_names_the_repository_it_sends():
     p = catalog.validate_params(
         "trust.app", {"name": "radar", "repository": "github.com/acme/radar"}
