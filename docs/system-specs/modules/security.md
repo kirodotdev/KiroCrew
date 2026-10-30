@@ -3974,7 +3974,7 @@ apply on every surface.
 
 All outbox downloads include:
 - `Content-Type`: from `mimetypes.guess_type()` or `application/octet-stream`
-- `Content-Disposition`: `inline` for media, `attachment` for others
+- `Content-Disposition`: `inline` for media, `attachment` for others. On `GET /api/outbox/{filename}`, `?download=1` forces `attachment` for every type; it can only narrow, never make a type inline, and every check above still runs first. The file card's Save uses it, because a browser that ignores the `download` attribute follows this header
 - `X-Content-Type-Options: nosniff`: prevents MIME sniffing attacks
 
 #### Invariants

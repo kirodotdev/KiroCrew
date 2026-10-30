@@ -360,7 +360,8 @@ as usual.
 
 A file the agent sends with `file_send` appears in the transcript as the same
 card the main chat shows: a download card, or an inline player or image for
-audio, video and pictures. The card links to `/api/outbox/<filename>` as an
+audio, video and pictures. The card links to `/api/outbox/<filename>` (its
+Save adds `?download=1`, which the gateway answers as an attachment) as an
 ordinary same-origin URL, so the browser fetches it with the viewer's dashboard
 sign-in and the gateway's own download checks apply. It does not go through
 `useAppApi`, so the app needs no `allowedApiPaths` entry for it. A `file` row

@@ -319,6 +319,13 @@ set.
 surface without the wrapper keeps each message's own set. A preview that fails
 to load becomes an inline `ErrorNotice` and is no longer a control.
 
+Every Save on a `FileCard` links to `/api/outbox/<filename>?download=1`, which
+the gateway answers with `Content-Disposition: attachment`. The `download`
+attribute alone is not enough: a browser that ignores it follows the header,
+and the outbox serves a PDF `inline`, so Save would open a viewer instead of
+saving. Players and previews keep the plain URL. A non-media file, a PDF
+included, keeps the whole card as its Save link.
+
 ## Host-mediated chat launch and cron toggles
 
 `useChatLauncher().openChat` accepts `slotKey` and `autoSend`. Without a target,

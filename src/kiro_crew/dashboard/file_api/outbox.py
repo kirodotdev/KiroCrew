@@ -406,6 +406,12 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     # Text files always attachment — prevents content injection via crafted filenames
     if is_text:
         disposition = "attachment"
+    # ``?download=1`` is the file card's Save: a browser that ignores the link's
+    # ``download`` attribute follows this header instead, so an inline type (a PDF)
+    # would open in a viewer rather than save. The flag can only turn inline into
+    # attachment, never the reverse, and it is read after every check above.
+    if request.query.get("download") == "1":
+        disposition = "attachment"
     _sel().log_tool_invocation(
         session_key="api",
         source="api",
