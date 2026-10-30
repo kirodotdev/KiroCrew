@@ -17942,13 +17942,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",
         "recordMetricsDescription": "Raccogli le metriche di prestazione su questa macchina.",
-        "recordMetricsDescriptionExporting": "Raccogli le metriche di prestazione e inviale al collector configurato nel file config.json.",
+        "recordMetricsDescriptionExporting": "Raccogli le metriche di prestazione e inviale ai collector configurati.",
         "recordMetricsSaveFailed": "Impossibile modificare questa impostazione. Riprova.",
-        "recordMetricsSaveRefusedEgress": "Registrazione non attivata: telemetry.otlp_endpoint è impostato, quindi attivarla qui inizierebbe a inviare le metriche fuori da questa macchina. Attivala invece nel file config.json.",
+        "recordMetricsSaveRefusedEgress": "Registrazione non attivata: sono configurati dei collector, quindi attivarla qui inizierebbe a inviare le metriche fuori da questa macchina. Attivala invece nel file config.json.",
         "recordMetricsEnvPinned": "La variabile d’ambiente {{envVar}} sta fissando questa impostazione: rimuovila dall’ambiente per modificarla qui.",
         "recordMetricsOverlayPinned": "Una voce in config.local.json sta fissando questa impostazione: rimuovila per modificarla qui.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint è impostato, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
-        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, al collector indicato da telemetry.otlp_endpoint.",
+        "recordMetricsEgressOff": "Sono configurati dei collector, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
+        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, ai collector elencati sotto.",
+        "recordMetricsEgressDestinations": "Collector: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (incluso in questa build; disattivare «Registra le metriche» ferma anche questo)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (incluso in questa build)",
+        "recordMetricsEgressLegacyName": "Il tuo collector (config.json)",
         "recordMetricsStatusUnavailable": "Impossibile caricare l'impostazione di registrazione delle metriche. L'interruttore resta bloccato finché non viene caricata."
       },
       "postureDisclosure": {

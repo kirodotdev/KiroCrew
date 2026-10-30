@@ -578,22 +578,19 @@ class DefaultTelemetryProvider:
         return None
 
     def otlp_destinations(self, cfg: Any) -> "tuple[OtlpDestination, ...]":
-        # Byte-identical to the endpoint-only OTLP exporter this seam replaced:
-        # ONE destination when telemetry.otlp_endpoint is a non-empty string,
-        # NONE otherwise — so egress stays off by default and the standalone
-        # build reaches exactly the collector it reached before. Read with
-        # getattr so any telemetry-config shape works, and never logged here:
-        # the value can carry credentials in userinfo or query parameters.
-        endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
-        if not endpoint:
-            return ()
-        return (
-            OtlpDestination(
-                name="telemetry.otlp_endpoint",
-                endpoint=endpoint,
-                signals=frozenset({"metrics"}),
-            ),
-        )
+        # One destination per configured entry, NONE when nothing is set -- so
+        # egress stays off by default. telemetry.otlp_endpoint, when it is a
+        # non-empty string, is the FIRST entry and is byte-identical to the one
+        # destination this method returned before the list existed (no
+        # narrowing). Each enabled telemetry.otlp_endpoints entry follows. Read
+        # with getattr so any telemetry-config shape works, and never logged
+        # here: an endpoint can carry credentials in userinfo or query
+        # parameters.
+        # circular import: this module loads during ``platform`` package init,
+        # and the parser reaches ``metrics`` (which imports ``platform``).
+        from kiro_crew.metrics import otlp_endpoints
+
+        return otlp_endpoints.config_destinations(cfg)
 
 
 class DefaultMemoryFilesProvider:

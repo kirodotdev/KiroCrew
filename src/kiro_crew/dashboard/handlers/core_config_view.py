@@ -113,6 +113,17 @@ def _mask_agent_free_text(value: object) -> object:
     return value
 
 
+def _mask_strings(value: object) -> object:
+    """*value* with every non-empty string inside it masked; structure kept."""
+    if isinstance(value, dict):
+        return {key: _mask_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_strings(item) for item in value]
+    if isinstance(value, str) and value:
+        return _SENSITIVE_MASK
+    return value
+
+
 def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     """Return ``cfg.to_dict()`` with sensitive string values masked.
 
@@ -181,9 +192,16 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     sub = entries
                 if not isinstance(sub, dict):
                     continue
+                sensitive = sub.get("x-meta", {}).get("sensitive", False)
                 if isinstance(val, (dict, list)):
-                    _walk(val, sub)
-                elif isinstance(val, str) and val and sub.get("x-meta", {}).get("sensitive", False):
+                    # A container marked sensitive (``telemetry.otlp_endpoints``)
+                    # masks every string under it: its items have no schema of
+                    # their own to mark which value is the secret.
+                    if sensitive:
+                        node[key] = _mask_strings(val)
+                    else:
+                        _walk(val, sub)
+                elif isinstance(val, str) and val and sensitive:
                     node[key] = _SENSITIVE_MASK
         elif isinstance(node, list):
             items = schema.get("items")

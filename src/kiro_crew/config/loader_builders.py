@@ -990,6 +990,21 @@ def _build_session_config(session_data: dict) -> SessionConfig:
     )
 
 
+def _otlp_endpoint_rows(value: object, default: list) -> list:
+    """``telemetry.otlp_endpoints`` as a list, dict rows copied, else *default*.
+
+    Every row is kept, malformed ones too: ``metrics.otlp_endpoints`` warns about
+    each one under its real index, and dropping one here would hide it and
+    renumber the rows after it. A ``config.json`` value that is not a list never
+    reaches this: the schema check on load warns about it by path and drops it,
+    as for any mistyped field, so *default* here only covers a caller that builds
+    the section from a raw dict.
+    """
+    if not isinstance(value, list):
+        return default
+    return [dict(row) if isinstance(row, dict) else row for row in value]
+
+
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
     return TelemetryConfig(
@@ -999,6 +1014,10 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         retention_days=section.read("retention_days", _safe_int),
         max_total_mb=section.read("max_total_mb", _safe_int),
         otlp_endpoint=str(section.get("otlp_endpoint")),
+        # Shape only: a list of objects, else the field default. Each entry is
+        # checked where destinations are resolved (metrics/otlp_endpoints.py),
+        # which skips a bad one with a warning rather than failing the load.
+        otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

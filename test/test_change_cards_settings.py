@@ -530,6 +530,26 @@ def test_diagnose_never_returns_a_credential_value(diagnosed):
         assert rows[key]["default"] == {"set": False}
 
 
+def test_diagnose_withholds_a_schema_sensitive_field_whatever_its_key_name(diagnosed):
+    """A field the schema marks sensitive is withheld even when no key name in it
+    looks like a credential: an endpoint URL with userinfo, and a list whose
+    entries carry values under ordinary names."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    loaded = KiroCrewConfig.load()
+    loaded.telemetry.otlp_endpoint = f"https://user:{SECRET_VALUE}@collector.example/v1/metrics"
+    loaded.telemetry.otlp_endpoints = [
+        {"name": "ops", "endpoint": f"https://collector.example/v1/metrics?k={SECRET_VALUE}"}
+    ]
+    result = cards.diagnose_settings()
+    assert SECRET_VALUE not in json.dumps(result)
+    assert "collector.example" not in json.dumps(result)
+    rows = {r["key"]: r for r in result["non_default"]}
+    for key in ("telemetry.otlp_endpoint", "telemetry.otlp_endpoints"):
+        assert rows[key]["current"] == {"set": True}
+        assert rows[key]["default"] == {"set": False}
+
+
 def test_diagnose_scrubs_credential_keys_nested_in_a_reported_value():
     out = cards._scrub({"name": "a", "env": {"API_TOKEN": SECRET_VALUE, "REGION": "x"}})
     assert out == {"name": "a", "env": {"API_TOKEN": {"set": True}, "REGION": "x"}}

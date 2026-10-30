@@ -17942,13 +17942,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",
         "recordMetricsDescription": "Recopila métricas de rendimiento en esta computadora.",
-        "recordMetricsDescriptionExporting": "Recopila métricas de rendimiento y las envía al recolector configurado en config.json.",
+        "recordMetricsDescriptionExporting": "Recopila métricas de rendimiento y las envía a los recolectores configurados.",
         "recordMetricsSaveFailed": "No se pudo cambiar este ajuste. Inténtalo de nuevo.",
         "recordMetricsEnvPinned": "La variable de entorno {{envVar}} está fijando este ajuste — quítala del entorno para poder cambiarlo aquí.",
         "recordMetricsOverlayPinned": "Una entrada de config.local.json está fijando este ajuste — elimínala para poder cambiarlo aquí.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint está definido, así que registrar las métricas también las enviaría fuera de esta computadora. Actívalo en config.json si eso es lo que quieres.",
-        "recordMetricsEgressOn": "Las métricas se están enviando fuera de esta computadora, al recolector en telemetry.otlp_endpoint.",
-        "recordMetricsSaveRefusedEgress": "El registro no se activó: telemetry.otlp_endpoint está definido, así que activarlo aquí empezaría a enviar métricas fuera de esta computadora. Actívalo en config.json en su lugar.",
+        "recordMetricsEgressOff": "Hay recolectores configurados, así que registrar las métricas también las enviaría fuera de esta computadora. Actívalo en config.json si eso es lo que quieres.",
+        "recordMetricsEgressOn": "Las métricas se están enviando fuera de esta computadora, a los recolectores que se indican abajo.",
+        "recordMetricsEgressDestinations": "Recolectores: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (incluido en esta compilación; desactivar «Registrar métricas» también lo detiene)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (incluido en esta compilación)",
+        "recordMetricsEgressLegacyName": "Tu recolector (config.json)",
+        "recordMetricsSaveRefusedEgress": "El registro no se activó: hay recolectores configurados, así que activarlo aquí empezaría a enviar métricas fuera de esta computadora. Actívalo en config.json en su lugar.",
         "recordMetricsStatusUnavailable": "No se pudo cargar el ajuste de registro de métricas. El interruptor queda bloqueado hasta que se cargue."
       },
       "postureDisclosure": {
