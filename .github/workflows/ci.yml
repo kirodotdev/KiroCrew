@@ -686,16 +686,52 @@ jobs:
       matrix:
         python-version: ["3.12"]
     steps:
-      # Full history so the black gate can compute THIS change's own diff. A
-      # shallow clone truncates parent info and leaves no base ref, and the gate
-      # then falls back to judging the whole tree -- which reddens the PR for
-      # files the base branch merged after the baseline was taken. depth 2 was
-      # tried first and was not enough; the gate now prints which scope it used,
-      # so a regression here is visible in the log instead of silent.
+      # Depth 2 keeps HEAD^1 -- the base commit the merge ref was computed
+      # against -- which is the only commit the baselined gates below diff
+      # against. Depth 2 ALONE is not enough, and the step after this one is
+      # why: see its comment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 2
+
+      # scripts/ratchet_scope.py scopes every baselined gate in this job to THIS
+      # change, and it gets there by ANCESTRY, not by having the base commit:
+      # `merge-base --is-ancestor HEAD^1 origin/main` is what confirms HEAD^1 is
+      # a base commit rather than the feature tip of a local merge, and only then
+      # does it diff HEAD^1..HEAD. A depth-2 clone has no ancestry and no
+      # origin/main at all, so the probe says no, the scope falls back to the
+      # whole tree, and the gate fails this change for files the base branch
+      # merged after the baseline was taken. That is the regression the previous
+      # `fetch-depth: 0` existed to avoid, and fetching the base SHA alone does
+      # NOT fix it: the merge ref is recomputed when the base moves, so HEAD^1 is
+      # routinely NEWER than the event's base.sha and `--is-ancestor` against
+      # that single commit correctly says no. What restores the probe is a
+      # bounded deepening of the base BRANCH, which is also what the three-dot
+      # fallback inside ratchet_scope needs. `main` and not base.ref because
+      # origin/main is the literal ref ratchet_scope looks for.
+      #
+      # If the base has moved further than the window, unshallow instead of
+      # accepting the whole-tree fallback, so this job is never WORSE than the
+      # full-history checkout it replaces -- it just stops paying for one in the
+      # common case. Measured on this repo: 537 MiB of pack for full history
+      # against ~296 MiB for depth 2 plus a 50-commit base, and a live PR's
+      # merge ref sat 8 commits behind main.
+      - name: Give the baselined gates their diff base (bounded)
+        run: |
+          # Nothing happens on a complete repository, and that is a guard, not
+          # an optimisation: a `--depth` fetch TRUNCATES a complete clone to
+          # that depth, so an unguarded deepening would destroy the ancestry it
+          # exists to provide -- and would truncate a real object store if these
+          # lines are ever run outside a fresh CI checkout (#17146). A complete
+          # clone already has what the gates need.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --depth=50 origin main
+            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
+              echo "::notice::the base moved past the 50-commit window; unshallowing so the gates stay diff-scoped."
+              git fetch --no-tags --quiet --unshallow origin main
+            fi
+          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -2841,13 +2877,37 @@ jobs:
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
-      # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      # Full history so the file line cap below can compute THIS change's scope:
-      # Backend Lint, its other home, is skipped on a frontend-only diff.
+      # persist-credentials retained: the i18n and phantom-classes gates below
+      # run `git fetch origin` against the same remote, through the shared
+      # diff-base resolver script.
+      # Depth 2 keeps HEAD^1 for the file line cap below, which is the only gate
+      # here that needs a diff base it cannot fetch for itself; the step after
+      # this one is what makes depth 2 sufficient.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
+
+      # Same reasoning as Backend Lint's copy of this step, for the same shared
+      # scope resolver: `Check file line cap` reaches scripts/ratchet_scope.py,
+      # which confirms HEAD^1 is a base commit by ANCESTRY before it will diff
+      # HEAD^1..HEAD, and a depth-2 clone has neither ancestry nor origin/main.
+      # Without this the cap gate judges the whole tree and fails a frontend diff
+      # for an over-cap file the base branch merged. This job is the cap gate's
+      # only home on a frontend-only diff, because Backend Lint is skipped there.
+      # The i18n and phantom-classes gates are unaffected either way: both take
+      # an explicit base.sha and already fetch that one commit themselves.
+      - name: Give the file line cap its diff base (bounded)
+        run: |
+          # Same shape and same guard as Backend Lint's copy: a `--depth` fetch
+          # truncates a COMPLETE clone, so the deepening only runs on a clone
+          # that is already shallow.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --depth=50 origin main
+            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
+              echo "::notice::the base moved past the 50-commit window; unshallowing so the cap gate stays diff-scoped."
+              git fetch --no-tags --quiet --unshallow origin main
+            fi
+          fi
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
