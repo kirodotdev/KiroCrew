@@ -309,6 +309,142 @@ class TestSpawnEndpoint:
         assert "kas" not in payload["backends"]
 
 
+# ── Spawn-time failover (RFC Phase 1) ─────────────────────────────────────────
+
+
+class TestSpawnFailover:
+    """An unavailable chosen backend fails over to the next available chain
+    member, when the operator's ``agent.acp_failover`` policy is on. The
+    failover is an input to the SAME admission probe, so an exhausted or
+    disabled chain falls through to the usual typed refusal — never a silent
+    Kiro swap."""
+
+    def _failover(self, monkeypatch, cfg):
+        """Make the endpoint read *cfg* as ``agent.acp_failover`` without
+        disturbing the rest of config, which the real manager also loads.
+
+        The endpoint reads the policy with its own ``KiroCrewConfig.load()``
+        call; wrap that call so the loaded config's ``agent.acp_failover`` is
+        *cfg* and every other field is the real one.
+        """
+        from kiro_crew.config import KiroCrewConfig
+
+        real_load = KiroCrewConfig.load.__func__  # type: ignore[attr-defined]
+
+        def _load(c):
+            loaded = real_load(c)
+            loaded.agent.acp_failover = cfg
+            return loaded
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+
+    @pytest.mark.asyncio
+    async def test_an_uninstalled_backend_fails_over_to_the_next_available(
+        self, selectable, monkeypatch
+    ):
+        # pi is allowed but not installed; the chain ["pi", "claude"] hops to
+        # claude, which is installed, and the run starts on it.
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+        self._failover(
+            monkeypatch,
+            AcpFailoverConfig(
+                enabled=True,
+                chain=("pi", "claude"),
+                triggers=frozenset({"backend_not_installed"}),
+            ),
+        )
+        request, mgr = _real_request({"task": "x", "backend": "pi"})
+        resp = await api_spawn(request)
+        assert resp.status == 200, resp.text
+        assert mgr.get(json.loads(resp.text)["id"]).backend == "claude"
+
+    @pytest.mark.asyncio
+    async def test_a_restart_required_backend_fails_over(self, selectable, monkeypatch):
+        # kas was installed after the gateway started; the chain hops past it.
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+        self._failover(
+            monkeypatch,
+            AcpFailoverConfig(
+                enabled=True,
+                chain=("kas", "claude"),
+                triggers=frozenset({"backend_restart_required"}),
+            ),
+        )
+        request, mgr = _real_request({"task": "x", "backend": "kas"})
+        resp = await api_spawn(request)
+        assert resp.status == 200, resp.text
+        assert mgr.get(json.loads(resp.text)["id"]).backend == "claude"
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_policy_does_not_fail_over(self, selectable, monkeypatch):
+        import json
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+        self._failover(
+            monkeypatch,
+            AcpFailoverConfig(enabled=False, chain=("pi", "claude"), triggers=frozenset()),
+        )
+        request, mgr = _request({"task": "x", "backend": "pi"})
+        resp = await api_spawn(request)
+        assert resp.status == 400
+        mgr.spawn.assert_not_called()
+        assert json.loads(resp.body)["code"] == "backend_not_installed"
+
+    @pytest.mark.asyncio
+    async def test_an_exhausted_chain_refuses_without_degrading_to_kiro(
+        self, selectable, monkeypatch
+    ):
+        # Both chain members are unavailable (pi missing, kas restart-required):
+        # the spawn is refused with the usual typed code, never silently Kiro.
+        import json
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+        self._failover(
+            monkeypatch,
+            AcpFailoverConfig(
+                enabled=True,
+                chain=("pi", "kas"),
+                triggers=frozenset({"backend_not_installed", "backend_restart_required"}),
+            ),
+        )
+        request, mgr = _request({"task": "x", "backend": "pi"})
+        resp = await api_spawn(request)
+        assert resp.status == 400
+        mgr.spawn.assert_not_called()
+        assert json.loads(resp.body)["code"] == "backend_not_installed"
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_the_policy_omits_does_not_fail_over(self, selectable, monkeypatch):
+        # pi is refused as backend_not_installed, but the policy only lists
+        # backend_restart_required, so no hop happens.
+        import json
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+        self._failover(
+            monkeypatch,
+            AcpFailoverConfig(
+                enabled=True,
+                chain=("pi", "claude"),
+                triggers=frozenset({"backend_restart_required"}),
+            ),
+        )
+        request, mgr = _request({"task": "x", "backend": "pi"})
+        resp = await api_spawn(request)
+        assert resp.status == 400
+        mgr.spawn.assert_not_called()
+        assert json.loads(resp.body)["code"] == "backend_not_installed"
+
+
 # ── The manager ───────────────────────────────────────────────────────────────
 
 

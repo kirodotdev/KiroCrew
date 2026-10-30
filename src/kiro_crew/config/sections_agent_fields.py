@@ -15,7 +15,7 @@ import unicodedata as _unicodedata
 from typing import TYPE_CHECKING
 
 from kiro_crew import model_registry
-from kiro_crew.acp_backends import resolve_selected_backend
+from kiro_crew.acp_backends import resolve_selected_backend, selectable_backend_values
 from kiro_crew.appearance_packs import safe_pack_id as _safe_pack_id
 from kiro_crew.config.fields import _safe_color
 from kiro_crew.config.sections_defaults import DEFAULT_MODEL
@@ -24,6 +24,7 @@ from kiro_crew.terminal_safe import _is_invisible
 
 if TYPE_CHECKING:
     from kiro_crew.config.sections_session import KiroCrewAgentConfig
+    from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -767,3 +768,33 @@ def _normalize_acp_backend(value: object) -> str:
     module) that the old local import of ``acp.types`` existed to dodge.
     """
     return resolve_selected_backend(value)
+
+
+def normalize_acp_failover(value: object) -> "AcpFailoverConfig":
+    """Coerce a persisted ``agent.acp_failover`` block to an :class:`AcpFailoverConfig`.
+
+    Shape and trigger-set validation live in :meth:`AcpFailoverConfig.from_raw`
+    (a pure leaf with no registry import); this adds the one check that needs the
+    registry: every chain id must be a currently SELECTABLE backend. A chain
+    naming an unknown or denied backend fails the config load with a named error
+    rather than silently never failing over to a backend that cannot run.
+
+    Backend-id SPELLING is not re-checked with a regex: membership in
+    ``selectable_backend_values()`` is strictly stronger (a selectable id already
+    matches ``^[a-z0-9][a-z0-9_-]*$``), so a separate pattern would be a second,
+    weaker gate. Returns the disabled config for an absent block; raises
+    ``ValueError`` for any invalid shape, trigger, or non-selectable chain id.
+    """
+    from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+    parsed = AcpFailoverConfig.from_raw(value)
+    if not parsed.chain:
+        return parsed
+    selectable = set(selectable_backend_values())
+    unknown = [b for b in parsed.chain if b not in selectable]
+    if unknown:
+        raise ValueError(
+            "agent.acp_failover.chain may only name selectable backends "
+            f"{sorted(selectable)}; rejected {unknown}"
+        )
+    return parsed
