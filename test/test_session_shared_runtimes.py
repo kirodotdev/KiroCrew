@@ -737,17 +737,23 @@ class TestRetireStaleBackendBgRuntime:
         """refresh_defaults() re-reads config, so any invocation of it (and any
         future agent.acp_backend edit surface routed through it) must also run
         the retirement check."""
+        cfg.agent.acp_backend = ACP_BACKEND_KAS
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        rt = self._runtime(backend=ACP_BACKEND_KIRO, busy=False)
+        mgr._bg_runtime = rt
 
         with (
             patch.object(mgr, "start_pool", AsyncMock()),
-            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()) as retire,
+            patch.object(
+                mgr, "_retire_stale_backend_bg_runtime", wraps=mgr._retire_stale_backend_bg_runtime
+            ) as retire,
             patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
             patch("kiro_crew.session.KiroCrewConfig.load", return_value=cfg),
         ):
             await mgr.refresh_defaults()
 
         retire.assert_awaited_once()
+        assert mgr._bg_runtime is None, "the stale-backend runtime was retired"
         await mgr.close_all()
 
     @pytest.mark.asyncio

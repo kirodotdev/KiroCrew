@@ -52,7 +52,7 @@ def test_the_real_wiring_prunes_an_aged_mapping_and_keeps_a_fresh_one() -> None:
         fresh.unlink(missing_ok=True)
 
 
-def test_a_failing_prune_does_not_break_the_tick() -> None:
+def test_a_failing_prune_does_not_break_the_tick(caplog: pytest.LogCaptureFixture) -> None:
     """The step is fail-open like its siblings: a raise is logged, not propagated."""
     from kiro_crew.session_cleanup import SessionCleanup
 
@@ -66,11 +66,14 @@ def test_a_failing_prune_does_not_break_the_tick() -> None:
         logger=logging.getLogger("test.session_token_sweep"),
     )
     try:
-        asyncio.run(
-            SessionCleanup._sweep_session_token_mappings(cast(Any, SimpleNamespace(_deps=deps)))
-        )
+        with caplog.at_level(logging.DEBUG, logger="test.session_token_sweep"):
+            asyncio.run(
+                SessionCleanup._sweep_session_token_mappings(cast(Any, SimpleNamespace(_deps=deps)))
+            )
     finally:
         pool.shutdown(wait=True)
+    own = [r.getMessage() for r in caplog.records if r.name == "test.session_token_sweep"]
+    assert own == ["session token mapping sweep failed: OSError"]
 
 
 def test_the_prune_reads_age_and_unlinks_under_the_publication_lock(
