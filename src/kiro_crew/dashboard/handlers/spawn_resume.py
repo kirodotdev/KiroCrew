@@ -1,4 +1,4 @@
-"""``/api/spawn/{agent_id}/resume`` and ``/api/spawn/lanes`` (RFC overload-resilience §6, §14.3).
+"""``/api/spawn/{agent_id}/resume``, ``.../release-deferred`` and ``/api/spawn/lanes`` (RFC §6, §14.3).
 
 The blocking ``spawn_sub_agents`` tool holds its result until the PARENT run
 holds an execution slot again: its children finishing wakes the parent in the
@@ -18,6 +18,7 @@ force (:func:`throttle_view`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Mapping
@@ -27,6 +28,8 @@ from aiohttp import web
 
 from kiro_crew import resource_status
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.subagent_manager.admission.types import TASK_STORE_UNAVAILABLE_CODE
+from kiro_crew.validation_parts.core_agent_schemas import SPAWN_BATCH_MEMBERS_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,105 @@ async def api_spawn_resume(request: web.Request) -> web.Response:
             "done": bool(live is None or live.done),
         }
     )
+
+
+#: A release body that is not ``{"ids": [<non-empty string>, ...]}``.
+INVALID_RELEASE_CODE = "invalid_release_ids"
+
+
+def _release_ids(body: object) -> list[str] | None:
+    """The ids of a release body, or ``None`` when the body is malformed."""
+    if not isinstance(body, dict):
+        return None
+    ids = body.get("ids")
+    if not isinstance(ids, list) or len(ids) > SPAWN_BATCH_MEMBERS_MAX:
+        return None
+    if not all(isinstance(i, str) and i.strip() for i in ids):
+        return None
+    return [i.strip() for i in ids]
+
+
+def _release_caller_owns(request: web.Request, agent_id: str) -> bool:
+    """Whether this request comes from run *agent_id* itself, attested.
+
+    A run may release only its OWN wait. The caller must be internal, declare
+    ``X-Session-Key: subagent:<agent_id>`` exactly, and have the transport
+    attest that key (``session_key_is_attested``). The dashboard owner's
+    cookie surface does not qualify: the tool is the only caller.
+    """
+    if request.get("internal_auth") is not True:
+        return False
+    caller = request.headers.get("X-Session-Key", "")
+    if not isinstance(caller, str) or caller != f"subagent:{agent_id}":
+        return False
+    from kiro_crew.member_memory_auth import session_key_is_attested
+
+    try:
+        return session_key_is_attested(request, caller)
+    except Exception:  # noqa: BLE001 - an attestation that cannot be read refuses
+        logger.debug("release-deferred attestation failed for %s", agent_id, exc_info=True)
+        return False
+
+
+async def api_spawn_release_deferred(request: web.Request) -> web.Response:
+    """POST /api/spawn/{agent_id}/release-deferred -- stop awaiting deferral-held children.
+
+    Body ``{"ids": [...]}``: the members the run's blocked ``spawn_sub_agents``
+    settled because a gate deferral holds them. The gateway drops those ids from
+    the run's ``waiting_children`` record and resumes the run when nothing it
+    awaits is left; it never infers deferral itself. Only the run itself may
+    call this. Any other caller, and a run this gateway does not hold, answers
+    404 with the shape the resume route uses for an unknown run.
+    """
+    state: DashboardState = request.app["state"]
+    manager = state.subagents
+    agent_id = request.match_info["agent_id"]
+    not_found = web.json_response(
+        {
+            "id": agent_id,
+            "known": False,
+            "granted": True,
+            "slot_released": False,
+            "error": "no such run",
+            "code": "task_scope_denied",
+        },
+        status=404,
+    )
+    if not await asyncio.to_thread(_release_caller_owns, request, agent_id):
+        return not_found
+    if not manager:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"}, status=503
+        )
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - any unparsable body is the caller's 400
+        body = None
+    ids = _release_ids(body)
+    if ids is None:
+        return web.json_response(
+            {
+                "error": (
+                    "ids must be a list of at most " f"{SPAWN_BATCH_MEMBERS_MAX} non-empty strings"
+                ),
+                "code": INVALID_RELEASE_CODE,
+            },
+            status=400,
+        )
+    info = manager._agents.get(agent_id)
+    if info is None or info.done:
+        return not_found
+    result = await manager._admission.taskq_release_deferred_async(agent_id, ids)
+    if result.get("retry") is True:
+        return web.json_response(
+            {
+                "error": "task store unavailable; retry later",
+                "code": TASK_STORE_UNAVAILABLE_CODE,
+                "retry": True,
+            },
+            status=503,
+        )
+    return web.json_response({"id": agent_id, **result})
 
 
 async def api_spawn_adaptive(request: web.Request) -> web.Response:
@@ -210,9 +312,10 @@ async def api_spawn_lanes(request: web.Request) -> web.Response:
 
 
 def setup_spawn_resume_routes(app: web.Application) -> None:
-    """Register the resume-hold, lanes and adaptive routes (under ``/api/spawn``)."""
+    """Register the resume-hold, deferred-release, lanes and adaptive routes (under ``/api/spawn``)."""
     # ``lanes`` and ``adaptive`` are literal segments; the caller registers these
     # BEFORE the ``/api/spawn/{agent_id}`` route so neither is read as a run id.
     app.router.add_get("/api/spawn/lanes", api_spawn_lanes)
     app.router.add_get("/api/spawn/adaptive", api_spawn_adaptive)
     app.router.add_get("/api/spawn/{agent_id}/resume", api_spawn_resume)
+    app.router.add_post("/api/spawn/{agent_id}/release-deferred", api_spawn_release_deferred)

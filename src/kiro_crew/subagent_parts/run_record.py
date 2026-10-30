@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker
 
 if TYPE_CHECKING:
+    import asyncio
+
     from kiro_crew.subagent import (
         CONTEXT_GROUP_LESSONS,
         CONTEXT_GROUP_MEMORY,
@@ -664,6 +666,15 @@ class SubagentInfo:
     # Set when the run's lane slot was yielded for a wait and a resume entry
     # is queued in admission; cleared when the slot is granted back.
     _resume_pending: bool = False
+    # Children this run has released from ``waiting_children`` as deferral-held
+    # (``taskq_release_deferred_async``). A child id belongs to exactly one
+    # ``spawn_sub_agents`` call, so released ids stay excluded for the life of
+    # the run. The set is bounded by the run's own children.
+    _deferred_released: set[str] = field(default_factory=set)
+    # Serializes this run's deferred releases: each one reads the wait, writes
+    # it and decides the resume, so two releases must not interleave. Created
+    # on first use, on the event loop.
+    _deferred_release_lock: asyncio.Lock | None = None
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
     # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).
