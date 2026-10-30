@@ -688,6 +688,15 @@ function createGatewaySupervisor({
   // snapshot and so is every other Electron path API; there is nothing newer to
   // read.
   function spawnGateway(resolve) {
+    // Every spawn passes through here: the first start, the start that follows a
+    // takeover, and the stale-bundle respawn. Once the app has begun to quit, a
+    // start whose port probes were still in flight must not launch a backend,
+    // because the quit's stop has already run and nothing would stop it.
+    if (quitting()) {
+      glog(`not starting a gateway on :${PORT}: the app is quitting`);
+      resolve(false);
+      return;
+    }
     // The gateway owns its data root. Create it before deriving the redirected
     // bytecode cache, honoring an explicit KIROCREW_HOME without touching the
     // deprecated legacy directory on a clean install.
