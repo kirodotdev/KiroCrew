@@ -252,6 +252,10 @@ _CANONICAL_BOOT_MATRIX_EXPR = (
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-lint"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    # Default Linux, not large: black is the only backend gate that needs the
+    # large fleet for its process pool, and it runs in backend-lint.
+    ("ci.yml", "backend-ratchets"): _CANONICAL_CONSUMER_EXPR,
+    ("ci.yml", "frontend-ratchets"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "backend-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "backend-test-windows-fail-closed"): _CANONICAL_WINDOWS_CONSUMER_EXPR,

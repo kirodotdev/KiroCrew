@@ -196,7 +196,7 @@ class TestWorkflowWiring:
         jobs = _workflow("ci.yml")["jobs"]
         step = next(
             s
-            for s in jobs["frontend-lint"]["steps"]
+            for s in jobs["frontend-ratchets"]["steps"]
             if s.get("name") == "Check the find_ui location index is fresh"
         )
         assert ".github/scripts/ui_index_freshness.py" in step["run"]

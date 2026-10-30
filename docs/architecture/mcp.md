@@ -3162,7 +3162,7 @@ the committed index's own content (never a clock or a git hash), so an edit to a
 input that changes nothing in the index, such as a label no location uses, leaves
 the committed file byte-identical and does not stale it. `npm run gen:ui -- --check` regenerates in memory and
 byte-compares the COMMITTED index (generated and curated tiers only; the auto
-tier below is never compared); it runs in `frontend-lint` and as the first step
+tier below is never compared); it runs in `frontend-ratchets` and as the first step
 of `npm run build`, the build every packaging path (`make frontend`,
 `build-wheel.yml`) runs. Only a release build and a PR that made a fresh base
 stale fail on it; everywhere else a stale index warns. See "The find_ui index
@@ -3609,7 +3609,7 @@ goldens never read a built dashboard: `test/test_find_ui_auto.py` pins the
 loader on synthetic file pairs, and runs the real generator with `--out` and
 `--auto-out` into `tmp_path` when node and `website/node_modules` are present
 (otherwise those tests skip). The backend CI lanes have neither, so CI's
-`frontend-lint` job, which has both, runs exactly those two tests after
+`frontend-ratchets` job, which has both, runs exactly those two tests after
 `gen:ui --check`, with `KIROCREW_UI_GENERATOR_REQUIRED=1` turning the skip into a
 failure. The other `test_find_ui*.py` files point
 `AUTO_INDEX_PATH` at a missing file, so they test the committed tiers whatever
