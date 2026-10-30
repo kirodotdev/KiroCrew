@@ -70,13 +70,25 @@ NO_SESSION_TEXT = "This channel's session isn't open right now. Try again in a m
 SAME_AGENT_TEXT = "ℹ️ This channel already runs `{agent}`."
 SWITCHED_TEXT = "✅ This channel now runs `{agent}`."
 BUSY_TEXT = "⏳ A turn is running. Try again to switch to `{agent}` when this turn ends."
+SUBAGENTS_BUSY_TEXT = (
+    "⏳ Sub-agents are running. Try again to switch to `{agent}` when they finish."
+)
 FAILED_TEXT = "⚠️ Could not switch to `{agent}`: {reason}"
+SWITCH_FAILED_REASON = "the switch failed"
+STALE_PICKER_TEXT = (
+    "This picker is out of date. Use the channel's latest kickoff message or "
+    "`/{command} agent <name>`."
+)
 CURRENT_TEXT = "This channel runs `{agent}`. Agents you can pick: {names}\nSwitch with `/{command} agent <name>`."
 NOT_ALLOWED_TEXT = "⛔ You can't change this channel's agent."
 
 #: The code from ``switch_slot_agent`` that means "a turn holds the session right
 #: now": the pick is refused with :data:`BUSY_TEXT`, for the person to retry.
 TURN_IN_FLIGHT = "turn_in_flight"
+#: The code for "sub-agents still hold the session": also a "try again".
+SUBAGENTS_RUNNING = "slot_subagents_running"
+#: The code for "a gate closed before the commit" (``still_permitted`` said no).
+CALLER_NOT_PERMITTED = "caller_not_permitted"
 
 
 def _audit(outcome: str, resources: str, error: str = "") -> None:
@@ -179,8 +191,14 @@ async def refresh_kickoff(binding: Binding, *, note: str = "") -> None:
 # ── The switch ────────────────────────────────────────────────────────────
 
 
-async def _switch(state: Any, slot: Any, agent: str) -> tuple[bool, dict[str, Any]]:
-    """The dashboard's agent-switch transaction, as a permitted (non-owner) user."""
+async def _switch(
+    state: Any, slot: Any, agent: str, still_permitted: Callable[[], bool]
+) -> tuple[bool, dict[str, Any]]:
+    """The dashboard's agent-switch transaction, as a permitted (non-owner) user.
+
+    *still_permitted* is checked at its commit, so a code-channel gate that
+    closes during the transaction's own awaits refuses the switch.
+    """
     from kiro_crew.dashboard.chat_handlers import (
         SlotAgentSwitchCaller,
         agent_switch_outcome,
@@ -195,20 +213,45 @@ async def _switch(state: Any, slot: Any, agent: str) -> tuple[bool, dict[str, An
         remote=AUDIT_CALLER,
         owner=False,
         notice=False,
+        still_permitted=still_permitted,
     )
     resp = await switch_slot_agent(state, slot, slot.key, agent, "template", caller)
     return agent_switch_outcome(resp)
 
 
-def _announce(state: Any, slot: Any, agent: str, warning: str) -> None:
+async def _load_window(slot: Any) -> bool:
+    """Load a restored slot's pending transcript window with its reads off the loop.
+
+    Every read of the slot's rows on this path (the switch transaction's own
+    ``messages`` checks, :func:`_announce`'s append) runs on the gateway loop. A
+    restored row that was never opened still has its window on disk, and this is
+    not a per-slot route that loads it first, so it is loaded here, as the
+    built-in notice that :func:`_switch` turns off would have. False when the load
+    failed (the window stays pending).
+    """
+    from kiro_crew.dashboard.state import load_window_off_loop
+
+    try:
+        await load_window_off_loop(slot)
+    except Exception:
+        logger.warning("code channel: transcript window could not be loaded", exc_info=True)
+        return False
+    return True
+
+
+async def _announce(state: Any, slot: Any, agent: str, warning: str) -> None:
     """The dashboard transcript line and live chip update a switch gets.
 
     The only switch row: :func:`_switch` turns the built-in notice off. It also
-    marks a pick made before the first message, which that notice skips.
+    marks a pick made before the first message, which that notice skips. The
+    window is loaded off the loop first (a no-op when it already is); a failed
+    load omits the row, never the committed switch.
     """
     from kiro_crew.agent_switch_command import switch_announcement
     from kiro_crew.security import redact
 
+    if not await _load_window(slot):
+        return
     try:
         append = getattr(slot, "append", None)
         if callable(append):
@@ -238,16 +281,80 @@ class SwitchResult:
         return self.result in ("switched", "unchanged")
 
 
-async def switch_channel_agent(
-    binding: Binding, agent: str, user: str, *, via: str
-) -> SwitchResult:
-    """Move *binding*'s session to *agent* for *user*.
+#: What the audit row and reply show for a typed name that can't be an agent name.
+INVALID_NAME = "<invalid>"
+#: The re-check's reason when the channel was rebound to a new session meanwhile.
+REBOUND = "session rebound"
 
-    The caller has already authorized *user* (see :func:`authorize`). Refuses an
-    agent the picker would not list, and a pick while a turn runs.
+
+def shown_name(agent: str) -> str:
+    """*agent* as an audit row or reply may show it: the name, or a placeholder.
+
+    A typed or selected value is free text. Only a string the agent-name
+    grammar admits (:func:`~kiro_crew.validation.is_registered_agent_name`: no
+    spaces, backticks, ``=`` or markup) is written into a SEL ``key=value`` row
+    or echoed back, so it can't forge ``result=`` tokens or Slack markup.
     """
-    channel = binding.channel_id
-    resources = f"channel={channel} user={user} agent={agent} via={via}"
+    from kiro_crew.validation import is_registered_agent_name
+
+    return agent if is_registered_agent_name(agent) else INVALID_NAME
+
+
+#: The re-check's reason when a gate closed after :func:`authorize`.
+NO_LONGER_ADMITTED = "the code channel no longer admits the bot"
+
+
+def _sync_gates(orch: Any, binding: Binding, user: str, team: str) -> bool:
+    """The synchronous code-channel gates: workspace, owner, archive fence,
+    feature, the channel and its origin. No await, no disk read, so it can run
+    inside the switch transaction's commit section (``still_permitted``)."""
+    from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
+    from kiro_crew.slack.handler import is_allowed_user
+
+    cfg = live_config(orch)
+    return bool(
+        surface.workspace_admitted(team)
+        and is_allowed_user(user)
+        and binding.channel_id not in surface._archived_here
+        and code_channels_on(cfg)
+        and channel_and_origin_permit(
+            cfg, binding.channel_id, _origin_of(binding.channel_id, binding, None)
+        )
+    )
+
+
+async def _still_admitted(orch: Any, binding: Binding, user: str, team: str) -> str | None:
+    """The gates again, after the pre-commit awaits; the refusal reason, or None.
+
+    :func:`authorize` ran before the awaits in :func:`_prepare_switch` (agent
+    discovery, the off-loop window load); meanwhile the operator may have
+    removed the owner, turned the channel, its origin or the feature off,
+    denied Slack, archived the channel, or rebound it. The two checks that need
+    an await (the stored binding, then the Slack policy) run here last; the
+    synchronous ones run here and AGAIN at the switch's commit
+    (:func:`_sync_gates` as ``still_permitted``), past every await of its own.
+    """
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+
+    current = await asyncio.to_thread(store().get_binding, binding.channel_id)
+    if current is None or current.session_key != binding.session_key:
+        return REBOUND
+    if current.archived_at or not await channel_inbound_permitted("slack"):
+        return NO_LONGER_ADMITTED
+    return None if _sync_gates(orch, binding, user, team) else NO_LONGER_ADMITTED
+
+
+async def _prepare_switch(
+    binding: Binding,
+    agent: str,
+    shown: str,
+    resources: str,
+    *,
+    user: str,
+    team: str,
+    orch: Any,
+) -> SwitchResult | tuple[Any, Any]:
+    """Everything before the commit: an answer, or ``(state, slot)`` to switch."""
     state = surface.dashboard_state()
     slot = bound_slot(state, binding)
     if slot is None:
@@ -260,23 +367,88 @@ async def switch_channel_agent(
     if agent not in names:
         _audit("denied", resources, "unknown agent")
         return SwitchResult(
-            "unknown_agent", UNKNOWN_AGENT_TEXT.format(agent=agent, names=_names_line(names))
+            "unknown_agent", UNKNOWN_AGENT_TEXT.format(agent=shown, names=_names_line(names))
         )
     if str(getattr(slot, "agent", "") or "") == agent:
         _audit("allowed", f"{resources} result=unchanged")
         return SwitchResult("unchanged", SAME_AGENT_TEXT.format(agent=agent))
-    ok, body = await _switch(state, slot, agent)
+    # The switch transaction reads the slot's rows on the loop: load a restored
+    # slot's window off it first. Nothing is committed yet, so a failed load is
+    # a plain "try again" (the select redraws for "unavailable").
+    if not await _load_window(slot):
+        _audit("error", resources, "transcript window could not be loaded")
+        return SwitchResult("unavailable", NO_SESSION_TEXT)
+    refused = await _still_admitted(orch, binding, user, team)
+    if refused == REBOUND:
+        # The captured slot is stale; the new kickoff already shows its agent.
+        _audit("denied", resources, REBOUND)
+        return SwitchResult("refused", STALE_PICKER_TEXT.format(command=_command_name(orch)))
+    if refused is not None:
+        _audit("denied", resources, refused)
+        await refresh_kickoff(binding)
+        return SwitchResult("refused", NOT_ALLOWED_TEXT)
+    return state, slot
+
+
+async def switch_channel_agent(
+    binding: Binding, agent: str, user: str, *, via: str, team: str, orch: Any
+) -> SwitchResult:
+    """Move *binding*'s session to *agent* for *user*.
+
+    The caller has already authorized *user* (see :func:`authorize`). Refuses an
+    agent the picker would not list, and a pick while a turn runs.
+    """
+    channel = binding.channel_id
+    shown = shown_name(agent)
+    resources = f"channel={channel} user={user} agent={shown} via={via}"
+    try:
+        prepared = await _prepare_switch(
+            binding, agent, shown, resources, user=user, team=team, orch=orch
+        )
+    except asyncio.CancelledError:
+        # Nothing committed: put the select back before unwinding.
+        await asyncio.shield(refresh_kickoff(binding))
+        raise
+    if isinstance(prepared, SwitchResult):
+        return prepared
+    state, slot = prepared
+    try:
+        # The synchronous gates run again inside the transaction, at its commit.
+        ok, body = await _switch(state, slot, agent, lambda: _sync_gates(orch, binding, user, team))
+    except asyncio.CancelledError:
+        # Put the select back on the agent the session runs before unwinding.
+        await asyncio.shield(refresh_kickoff(binding))
+        raise
+    except Exception:
+        # switch_slot_agent rolls its own commit back and re-raises (e.g. a
+        # failed session reset): answer, audit and redraw instead of leaving
+        # the select on a pick that did not happen.
+        logger.warning("code channel %s: agent switch raised", channel, exc_info=True)
+        _audit("error", f"{resources} result=failed", "switch raised")
+        await refresh_kickoff(binding)
+        return SwitchResult("refused", FAILED_TEXT.format(agent=agent, reason=SWITCH_FAILED_REASON))
     if ok:
         _audit("allowed", f"{resources} result=switched")
-        _announce(state, slot, agent, str(body.get("warning") or ""))
+        await _announce(state, slot, agent, str(body.get("warning") or ""))
         await refresh_kickoff(binding, note=SWITCHED_NOTE.format(agent=agent, user=user))
         return SwitchResult("switched", SWITCHED_TEXT.format(agent=agent))
+    from kiro_crew.security import redact
+
     code = str(body.get("code") or "")
-    reason = str(body.get("error") or "the switch was refused")
+    if code == CALLER_NOT_PERMITTED:
+        # A gate closed during the transaction's own awaits (_sync_gates).
+        _audit("denied", f"{resources} result=refused code={code}", NO_LONGER_ADMITTED)
+        await refresh_kickoff(binding)
+        return SwitchResult("refused", NOT_ALLOWED_TEXT)
+    # The dashboard's error text can carry raw exception text: redact it before
+    # it leaves the host for Slack (as _announce does).
+    reason = redact(str(body.get("error") or "the switch was refused"))
     _audit("error", f"{resources} result=refused code={code}", reason)
     await refresh_kickoff(binding)
     if code == TURN_IN_FLIGHT:
         return SwitchResult("busy", BUSY_TEXT.format(agent=agent))
+    if code == SUBAGENTS_RUNNING:
+        return SwitchResult("busy", SUBAGENTS_BUSY_TEXT.format(agent=agent))
     return SwitchResult("refused", FAILED_TEXT.format(agent=agent, reason=reason))
 
 
@@ -345,9 +517,13 @@ def audit_refused_pick(payload: dict[str, Any], reason: str) -> None:
     channel, user, msg_ts, _team, agent = _pick_ids(payload)
     _audit(
         "denied",
-        f"channel={channel} user={user} agent={agent} via=select message={msg_ts}",
+        f"channel={channel} user={user} agent={shown_name(agent)} via=select message={msg_ts}",
         reason,
     )
+
+
+def _command_name(orch: Any) -> str:
+    return str(getattr(orch, "slack_command", "") or "kirocrew")
 
 
 async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:
@@ -355,11 +531,20 @@ async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:
     if not code_channels_on(live_config(orch)):
         return False
     channel, user, msg_ts, team, agent = _pick_ids(payload)
-    resources = f"channel={channel} user={user} agent={agent} via=select"
+    resources = f"channel={channel} user={user} agent={shown_name(agent)} via=select"
+    # The workspace first, before any side effect (as wrapup's archive click).
+    if not surface.workspace_admitted(team):
+        _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
+        return True
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    if binding is None or not msg_ts or msg_ts != binding.anchor_ts:
+    if binding is None or not msg_ts:
         _audit("denied", f"{resources} message={msg_ts}", "not a code channel kickoff")
         await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+        return True
+    if msg_ts != binding.anchor_ts:
+        # A kickoff a rebind replaced: point at the live one.
+        _audit("denied", f"{resources} message={msg_ts}", "stale kickoff")
+        await _ephemeral(channel, user, STALE_PICKER_TEXT.format(command=_command_name(orch)))
         return True
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
@@ -371,7 +556,7 @@ async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:
     if not agent:
         _audit("denied", resources, "no agent chosen")
         return True
-    outcome = await switch_channel_agent(binding, agent, user, via="select")
+    outcome = await switch_channel_agent(binding, agent, user, via="select", team=team, orch=orch)
     if not outcome.shown_on_kickoff:
         # The kickoff shows a switch; anything else is said here.
         await _ephemeral(channel, user, outcome.text)
@@ -386,9 +571,11 @@ async def handle_command(
     user: str,
     arg: str,
     respond: Callable[[str], Awaitable[None]],
+    *,
+    team: str,
 ) -> None:
     """``/kirocrew agent [<name>]`` in an authorized code channel."""
-    command = str(getattr(orch, "slack_command", "") or "kirocrew")
+    command = _command_name(orch)
     name = arg.strip()
     if not name:
         slot = bound_slot(surface.dashboard_state(), binding)
@@ -408,4 +595,5 @@ async def handle_command(
             )
         )
         return
-    await respond((await switch_channel_agent(binding, name, user, via="command")).text)
+    outcome = await switch_channel_agent(binding, name, user, via="command", team=team, orch=orch)
+    await respond(outcome.text)

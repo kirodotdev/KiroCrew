@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -45,6 +46,8 @@ class Switches:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.answers: list[tuple[int, dict[str, Any]]] = []
+        #: Runs inside the transaction, before its commit (a gate closing there).
+        self.before_commit: Any = None
 
     async def __call__(
         self, state: Any, slot: Any, name: str, agent: Any, kind: Any, caller: Any
@@ -52,8 +55,14 @@ class Switches:
         self.calls.append(
             {"slot": slot, "name": name, "agent": agent, "kind": kind, "caller": caller}
         )
+        if self.before_commit is not None:
+            self.before_commit()
+        still_permitted = getattr(caller, "still_permitted", None)
         if self.answers:
             status, body = self.answers.pop(0)
+        elif still_permitted is not None and not still_permitted():
+            # The real transaction's commit-point check of the caller's gates.
+            status, body = 403, {"error": "not permitted", "code": "caller_not_permitted"}
         elif getattr(slot, "running", False):
             # The real transaction's guard: never under an in-flight turn.
             status, body = 409, {"error": "a turn is in flight", "code": "turn_in_flight"}
@@ -318,7 +327,69 @@ def test_a_pick_on_a_message_that_is_not_the_kickoff_is_refused(env: Env) -> Non
     _bind(env)
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder", ts="999.000001")))
     assert env.switches.calls == []
-    assert _rows(env, "denied")[0]["error"] == "not a code channel kickoff"
+    assert _rows(env, "denied")[0]["error"] == "stale kickoff"
+    # A kickoff a rebind replaced points at the live one, not "you can't".
+    assert env.slack.ephemerals == [
+        (CH, OWNER, agent_picker.STALE_PICKER_TEXT.format(command="kirocrew"))
+    ]
+
+
+def test_a_pick_from_a_workspace_not_admitted_posts_nothing(env: Env) -> None:
+    _bind(env)
+    # A stale picker: no live kickoff to check first, so the workspace must be.
+    payload = _pick("builder", ts="999.000001")
+    payload["team"] = {"id": "T-OTHER"}
+    payload["user"]["team_id"] = "T-OTHER"
+    assert asyncio.run(agent_picker.handle_select(env.orch, payload))
+    assert env.switches.calls == [] and env.slack.ephemerals == []
+    assert _rows(env, "denied")[0]["error"] == "enterprise_origin_mismatch"
+
+
+def test_a_switch_that_raises_is_answered_audited_and_redrawn(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """switch_slot_agent rolls back and re-raises (e.g. a failed session reset)."""
+    slot = _bind(env)
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("session reset failed")
+
+    monkeypatch.setattr(chat_handlers, "switch_slot_agent", boom)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [
+        (
+            CH,
+            OWNER,
+            agent_picker.FAILED_TEXT.format(
+                agent="builder", reason=agent_picker.SWITCH_FAILED_REASON
+            ),
+        )
+    ]
+    [row] = _rows(env, "error")
+    assert "result=failed" in row["resources"] and row["error"] == "switch raised"
+    # The select is put back on the agent the session runs.
+    assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
+    # The command door answers too, instead of raising into the slash handler.
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == [
+        agent_picker.FAILED_TEXT.format(agent="builder", reason=agent_picker.SWITCH_FAILED_REASON)
+    ]
+
+
+def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bind(env)
+    monkeypatch.setattr(
+        "kiro_crew.security.redact", lambda text: text.replace("SECRET", "[REDACTED]")
+    )
+    env.switches.answers.append(
+        (503, {"error": "memory store unavailable: SECRET", "code": "store_unavailable"})
+    )
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    [(_, _, text)] = env.slack.ephemerals
+    assert "SECRET" not in text and "[REDACTED]" in text
 
 
 def test_a_pick_during_a_turn_is_refused_with_try_again(env: Env) -> None:
@@ -485,8 +556,10 @@ def test_running_sub_agents_refuse_the_pick(env: Env) -> None:
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     assert slot.agent == "kirocrew-conductor"
-    [(_, _, text)] = env.slack.ephemerals
-    assert "sub-agents are running" in text
+    # A "try again", like a turn in flight -- not a failure.
+    assert env.slack.ephemerals == [
+        (CH, OWNER, agent_picker.SUBAGENTS_BUSY_TEXT.format(agent="builder"))
+    ]
 
 
 def test_an_app_slot_is_switched_in_its_own_app_scope(env: Env) -> None:
@@ -514,3 +587,204 @@ def test_the_code_channels_own_activation_refuses_every_door(env: Env, mode: str
     assert handled and replies == [agent_picker.NOT_ALLOWED_TEXT]
     assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
     assert env.slack.ephemerals == [(CH, OWNER, agent_picker.NOT_ALLOWED_TEXT)]
+
+
+def _pending_window(env: Env, slot: Any) -> list[str]:
+    """Make *slot* a restored row whose window is still on disk.
+
+    Records each window read with the thread it ran on, and fails a test
+    whenever the switch path reads the rows while the window is pending (the
+    real ``messages`` would then read the transcript inline on the loop).
+    """
+    import threading
+
+    reads: list[str] = []
+    loop_thread = threading.get_ident()
+
+    def read(_slot: Any) -> tuple[list[Any], int]:
+        reads.append("loop" if threading.get_ident() == loop_thread else "worker")
+        return ([], 0)
+
+    def load_window(*_prefetched: Any) -> None:
+        slot.window_pending = False
+
+    slot.window_pending = True
+    slot._lazy_window = SimpleNamespace(read=read)
+    slot.load_window = load_window
+    original = env.switches.__call__
+
+    async def guarded(*args: Any) -> Any:
+        assert slot.window_pending is False, "switch read rows with the window pending"
+        return await original(*args)
+
+    real_append = slot.append
+
+    def append(role: str, text: str, cls: str) -> None:
+        assert slot.window_pending is False, "announcement appended with the window pending"
+        real_append(role, text, cls)
+
+    slot.append = append
+    env.guarded = guarded
+    return reads
+
+
+def test_a_restored_slots_window_is_loaded_off_the_loop_before_the_switch(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """notice=False skips the built-in notice's off-loop load, so the picker loads it."""
+    slot = _bind(env)
+    reads = _pending_window(env, slot)
+    monkeypatch.setattr(chat_handlers, "switch_slot_agent", env.guarded)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "builder"
+    assert reads == ["worker"]
+    assert env.transcript and "builder" in env.transcript[-1]
+
+
+def test_a_window_that_cannot_be_loaded_refuses_before_switching(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _bind(env)
+    _pending_window(env, slot)
+
+    def broken(_slot: Any) -> Any:
+        raise OSError("disk gone")
+
+    slot._lazy_window = SimpleNamespace(read=broken)
+    monkeypatch.setattr(chat_handlers, "switch_slot_agent", env.guarded)
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == [agent_picker.NO_SESSION_TEXT]
+    assert slot.agent == "kirocrew-conductor" and env.transcript == []
+    assert _rows(env, "error")[0]["error"] == "transcript window could not be loaded"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "activation_off",
+        "activation_review",
+        "archived",
+        "stored_archived",
+        "slack_denied",
+        "feature_off",
+        "owner_removed",
+        "workspace_denied",
+    ],
+)
+def test_a_gate_that_closes_while_the_window_loads_refuses_the_commit(
+    env: Env, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """authorize ran before the awaits; the gates are checked again before the commit."""
+    from kiro_crew.config.loader import ACTIVATION_OFF, ACTIVATION_REVIEW
+    from kiro_crew.messaging import identity
+
+    slot = _bind(env)
+
+    async def load_and_close(_slot: Any) -> None:
+        if change == "activation_off":
+            env.activation[CH] = ACTIVATION_OFF
+        elif change == "activation_review":
+            env.activation[CH] = ACTIVATION_REVIEW
+        elif change == "archived":
+            surface._archived_here.add(CH)
+        elif change == "stored_archived":
+            env.store.update_binding(CH, archived_at=1.0)
+        elif change == "feature_off":
+            env.on = False
+        elif change == "owner_removed":
+            env.allowed.discard(OWNER)
+        elif change == "workspace_denied":
+            monkeypatch.setattr(surface, "workspace_admitted", lambda team: False)
+        else:
+
+            async def denied(_channel: str) -> bool:
+                return False
+
+            monkeypatch.setattr(identity, "channel_inbound_permitted", denied)
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.load_window_off_loop", load_and_close)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [(CH, OWNER, agent_picker.NOT_ALLOWED_TEXT)]
+    assert _rows(env, "denied")[-1]["error"] == "the code channel no longer admits the bot"
+
+
+def test_a_cancel_before_the_commit_puts_the_select_back(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bind(env)
+
+    async def cancelled(_slot: Any) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.load_window_off_loop", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert env.switches.calls == []
+    assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
+
+
+def test_a_typed_name_that_cannot_be_an_agent_is_not_echoed_or_audited(env: Env) -> None:
+    _bind(env)
+    handled, replies = _command(env, "agent foo=x`bar")
+    assert handled and len(replies) == 1
+    assert "foo=x" not in replies[0] and agent_picker.INVALID_NAME in replies[0]
+    [row] = _rows(env, "denied")
+    assert "foo=x" not in row["resources"]
+    assert f"agent={agent_picker.INVALID_NAME}" in row["resources"]
+
+
+def test_a_rebind_while_the_window_loads_points_at_the_live_kickoff(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _bind(env)
+
+    async def load_and_rebind(_slot: Any) -> None:
+        current = env.store.get_binding(CH)
+        assert current is not None
+        env.store.replace_binding(replace(current, session_key="chat-other-1", anchor_ts="2.0"))
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.load_window_off_loop", load_and_rebind)
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == [agent_picker.STALE_PICKER_TEXT.format(command="kirocrew")]
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+    assert _rows(env, "denied")[-1]["error"] == agent_picker.REBOUND
+
+
+def test_an_agent_name_with_an_underscore_is_audited_by_name(env: Env) -> None:
+    _bind(env)
+    handled, replies = _command(env, "agent code_reviewr")
+    assert handled and "`code_reviewr`" in replies[0]
+    assert "agent=code_reviewr" in _rows(env, "denied")[-1]["resources"]
+
+
+@pytest.mark.parametrize(
+    "change", ["activation_off", "archived", "feature_off", "owner_removed", "workspace_denied"]
+)
+def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
+    env: Env, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """The synchronous gates ride into switch_slot_agent as still_permitted."""
+    from kiro_crew.config.loader import ACTIVATION_OFF
+
+    slot = _bind(env)
+
+    def close() -> None:
+        if change == "activation_off":
+            env.activation[CH] = ACTIVATION_OFF
+        elif change == "archived":
+            surface._archived_here.add(CH)
+        elif change == "feature_off":
+            env.on = False
+        elif change == "owner_removed":
+            env.allowed.discard(OWNER)
+        else:
+            monkeypatch.setattr(surface, "workspace_admitted", lambda team: False)
+
+    env.switches.before_commit = close
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [(CH, OWNER, agent_picker.NOT_ALLOWED_TEXT)]
+    row = _rows(env, "denied")[-1]
+    assert "code=caller_not_permitted" in row["resources"]
+    assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"

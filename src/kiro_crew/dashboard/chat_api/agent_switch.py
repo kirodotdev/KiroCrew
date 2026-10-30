@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from aiohttp import web
@@ -150,6 +150,13 @@ class SlotAgentSwitchCaller(NamedTuple):
     #: Append the session-switch boundary row on commit. Off for a caller that
     #: writes its own ``/agent`` announcement line, so the switch is marked once.
     notice: bool = True
+    #: The caller's own admission, re-checked at the commit (synchronous, in the
+    #: no-await section before the selection is published). A channel caller
+    #: whose gates can close during the awaits above (an operator turning the
+    #: channel off, archiving it, removing the user) passes it, so a closed gate
+    #: refuses the switch instead of committing it. None for the dashboard's
+    #: own doors, whose per-request checks already ran.
+    still_permitted: Callable[[], bool] | None = None
 
     @classmethod
     def for_request(cls, request: web.Request) -> SlotAgentSwitchCaller:
@@ -684,6 +691,12 @@ async def switch_slot_agent(
             return web.json_response(
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
+            )
+        # The caller's own gates, at the commit: nothing above re-checks them.
+        if caller.still_permitted is not None and not caller.still_permitted():
+            return web.json_response(
+                {"error": "the caller is no longer permitted", "code": "caller_not_permitted"},
+                status=403,
             )
         slot.agent = _CommitToken(agent_name)
         slot.agent_kind = _CommitToken(new_agent_kind)

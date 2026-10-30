@@ -354,7 +354,7 @@ async def handle_slash(
                 await respond(refusal)
             return True
         surface.audit(user, operation, "allowed", resources)
-        await agent_picker.handle_command(orch, binding, user, text, respond)
+        await agent_picker.handle_command(orch, binding, user, text, respond, team=team)
         return True
     from kiro_crew.slack.code_channels.routing import (
         Gate,
