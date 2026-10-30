@@ -8,7 +8,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
-import { resolveDefaultColor } from '../../utils/sessionColors'
+import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
@@ -120,7 +120,11 @@ export const createSlot = createAsyncThunk<
         throw err
       }
     } else {
-      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(dashState.sessionDefaultColor, dashState.slots.length)
+      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(
+        dashState.sessionDefaultColor,
+        dashState.slots.length,
+        paletteSize(dashState.sessionColorsPalette),
+      )
       if (ci != null) {
         slot.color_index = ci
         if (explicitColor != null) {

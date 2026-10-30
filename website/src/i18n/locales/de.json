@@ -17293,6 +17293,7 @@
         "no_color": "Keine Farbe",
         "none_auto_cycle_or_pick_a_fixed_color": "Keine, automatisch wechseln oder eine feste Farbe wählen.",
         "palette": "Palette",
+        "palette_categorical": "Kategorisch",
         "select_a_theme_for_the_dashboard": "Wählen Sie ein Theme für das Dashboard",
         "sidebar_colors": "Seitenleistenfarben",
         "terminal": "Terminal",

@@ -17589,6 +17589,7 @@
         "no_color": "Nessun colore",
         "none_auto_cycle_or_pick_a_fixed_color": "Nessuno, ciclo automatico oppure scegli un colore fisso.",
         "palette": "Palette",
+        "palette_categorical": "Categoriale",
         "select_a_theme_for_the_dashboard": "Seleziona un tema per la dashboard",
         "sidebar_colors": "Colori della barra laterale",
         "terminal": "Terminale",

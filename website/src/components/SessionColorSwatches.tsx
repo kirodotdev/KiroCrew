@@ -4,7 +4,7 @@ import { store, useAppDispatch } from '../store'
 import { sseSlotColor } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
-import { colorName } from '../utils/sessionColors'
+import { colorName, paletteSlot } from '../utils/sessionColors'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -42,6 +42,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   const ime = useImeGuard()
   const dispatch = useAppDispatch()
   const { paletteColors } = useSessionPalette()
+  // The stored index wraps into the active palette, as the row and headers show it.
+  const selected = paletteSlot(colorIndex, paletteColors.length)
   const [customOpen, setCustomOpen] = useState(false)
   const [draft, setDraft] = useState(colorHex || '#4f8ef7')
   const lastValidRef = useRef(HEX_RE.test(draft) ? draft : '#4f8ef7')
@@ -147,7 +149,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       <div className="flex items-center gap-1.5 px-3 py-1.5">
         <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
         {paletteColors.map((c, i) => (
-          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${selected === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
         ))}
         <button
           type="button"

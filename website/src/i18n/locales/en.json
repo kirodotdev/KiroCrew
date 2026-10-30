@@ -9755,6 +9755,7 @@
         "no_color": "No color",
         "none_auto_cycle_or_pick_a_fixed_color": "None, auto-cycle, or pick a fixed color.",
         "palette": "Palette",
+        "palette_categorical": "Categorical",
         "select_a_theme_for_the_dashboard": "Select a theme for the dashboard",
         "sidebar_colors": "Sidebar Colors",
         "theme": "Theme",

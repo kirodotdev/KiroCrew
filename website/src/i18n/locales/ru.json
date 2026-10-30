@@ -17885,6 +17885,7 @@
         "no_color": "Без цвета",
         "none_auto_cycle_or_pick_a_fixed_color": "Нет, автоперебор или фиксированный цвет.",
         "palette": "Палитра",
+        "palette_categorical": "Категориальная",
         "select_a_theme_for_the_dashboard": "Выберите тему для панели управления",
         "sidebar_colors": "Цвета боковой панели",
         "terminal": "Терминал",

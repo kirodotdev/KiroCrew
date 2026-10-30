@@ -168,6 +168,26 @@
 }
 .session-row.session-colored{--muted:var(--session-muted)}
 
+/* Session colour on the open thread's header (style="--session-color:#hex").
+   The tint is a background-image so it composites over the header's own
+   background (bg-bg on the main route, bg-card on split panes). */
+.chat-header-colored{
+  background-image:linear-gradient(
+    color-mix(in srgb,var(--session-color) var(--session-band-pct,18%),transparent),
+    color-mix(in srgb,var(--session-color) var(--session-band-pct,18%),transparent)
+  );
+  border-bottom:1px solid color-mix(in srgb,var(--session-color) var(--session-band-edge-pct,45%),transparent);
+}
+.chat-header-dot{
+  display:inline-block;
+  width:8px;height:8px;
+  border-radius:50%;
+  flex-shrink:0;
+  background:var(--session-color);
+  /* Mixing toward --text darkens the ring on light themes and lightens it on dark ones. */
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--session-color) 55%,var(--text));
+}
+
 /* lucide-react icons — inline sizing to match surrounding text */
 .lucide-inline { display: inline-block; width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 

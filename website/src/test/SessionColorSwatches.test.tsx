@@ -24,8 +24,10 @@ vi.mock('../api/client', () => ({
 }))
 // useSessionPalette reads CSS vars via useTheme (needs a ThemeProvider) — mock it
 // to a fixed palette so this stays a focused unit test of the swatch behaviour.
+const DEFAULT_PALETTE = ['#ff0000', '#00ff00', '#0000ff']
+const palette = vi.hoisted(() => ({ colors: [] as string[] }))
 vi.mock('../hooks/useSessionPalette', () => ({
-  useSessionPalette: () => ({ paletteColors: ['#ff0000', '#00ff00', '#0000ff'] }),
+  useSessionPalette: () => ({ paletteColors: palette.colors }),
 }))
 
 import { store } from '../store'
@@ -39,6 +41,7 @@ const wrap = (ui: ReactNode) => {
 }
 
 beforeEach(() => {
+  palette.colors = DEFAULT_PALETTE
   mocks.setSlotColor.mockResolvedValue({})
   mocks.setSlotColorHex.mockResolvedValue({})
   mocks.clearSlotColor.mockResolvedValue({})
@@ -112,6 +115,16 @@ describe('SessionColorSwatches', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('marks the wrapped swatch selected when the stored index exceeds the palette size', () => {
+    palette.colors = ['#100000', '#200000', '#300000', '#400000', '#500000', '#600000', '#700000']
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={10} />)
+    // [0] is No color, then the 7 swatches, then the custom cell.
+    const swatches = screen.getAllByRole('button').slice(1, 8)
+    const marked = swatches.flatMap((b, i) => (b.className.includes('border-text-strong') ? [i] : []))
+    expect(marked).toEqual([3])
+    expect(screen.getByLabelText('No color').className).toContain('border-transparent')
   })
 
   it('marks the custom cell active when a colorHex is set', () => {

@@ -17,6 +17,7 @@ import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from
 import { slotIsRemoteBound } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
+import { resolveSessionColor } from '../../utils/sessionColors'
 import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
 import { IconButton, IconButtonGroup } from '../../components/ui'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -750,7 +751,6 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           : snapshotOnlyLiveWork
             ? snapshotLiveWorkLabel
             : (s.last_message || '')
-    const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     // The row's ONE status marker and the words beside it, resolved together: the
     // glyph is built INSIDE the branch's `subtitle`, immediately in front of the
     // label that names it, so a branch cannot ship a glyph without its phrase or a
@@ -1153,29 +1153,19 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
     // same APCA boost via boostFor.
-    const customHex = typeof s.color_hex === 'string' && s.color_hex ? s.color_hex : null
-    // Agent default color, resolved at RENDER time (not creation): a session
-    // with no explicit per-session color inherits its agent's session_color.
-    // Deriving it here rather than persisting at creation means it applies to
-    // EVERY origin (dashboard, channel, cron, subagent — anything with s.agent),
-    // needs no event-loop config I/O, and re-tints live when the agent's color
-    // is edited. An explicit per-session color_hex/color_index still wins.
-    const agentHex = (!customHex && ci == null && s.agent)
-      ? (() => {
-          const c = installedAgents.find(a => a.name === s.agent)?.session_color
-          return typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c) ? c : null
-        })()
-      : null
-    const frozenHex = customHex ?? agentHex
-    const rowColor = frozenHex ?? (ci != null ? paletteColors[ci] : null)
+    // The agent default color is resolved at RENDER time (not creation): a
+    // session with no explicit per-session color inherits its agent's
+    // session_color. Deriving it here rather than persisting at creation means
+    // it applies to EVERY origin (dashboard, channel, cron, subagent — anything
+    // with s.agent), needs no event-loop config I/O, and re-tints live when the
+    // agent's color is edited.
+    const resolvedColor = resolveSessionColor(s, paletteColors, s.agent ? installedAgents.find(a => a.name === s.agent)?.session_color : null)
+    const rowColor = resolvedColor?.hex ?? null
     const boostStyle: Record<string, string> = {}
-    if (frozenHex) {
-      boostStyle['--session-color'] = frozenHex
-      const cb = boostFor(frozenHex)
-      if (cb.mutedColors[0]) boostStyle['--session-muted'] = cb.mutedColors[0]
-    } else if (rowColor && ci != null) {
-      boostStyle['--session-color'] = rowColor
-      if (boost.mutedColors[ci]) boostStyle['--session-muted'] = boost.mutedColors[ci]
+    if (resolvedColor) {
+      boostStyle['--session-color'] = resolvedColor.hex
+      const muted = resolvedColor.index != null ? boost.mutedColors[resolvedColor.index] : boostFor(resolvedColor.hex).mutedColors[0]
+      if (muted) boostStyle['--session-muted'] = muted
     }
     if (recent) boostStyle.boxShadow = recencyTintShadow(recent, recentTintCount)
     // A session that's open in its own window is dimmed here so the main

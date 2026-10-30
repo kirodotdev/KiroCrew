@@ -51,6 +51,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'chat-1-loader'
 
@@ -84,9 +85,11 @@ function mount(slotState: string, messages: Msg[], slotRunning?: boolean) {
   return render(
     <Provider store={makeStore(slotState, messages, slotRunning)}>
       <QueryClientProvider client={qc}>
+        <ThemeProvider>
         <MemoryRouter>
           <ChatPane slotKey={SLOT} />
         </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>,
   )

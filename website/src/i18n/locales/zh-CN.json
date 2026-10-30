@@ -16997,6 +16997,7 @@
         "no_color": "无颜色",
         "none_auto_cycle_or_pick_a_fixed_color": "无、自动轮换，或选择固定颜色。",
         "palette": "调色板",
+        "palette_categorical": "分类",
         "select_a_theme_for_the_dashboard": "为仪表板选择主题",
         "sidebar_colors": "侧栏颜色",
         "terminal": "终端",
