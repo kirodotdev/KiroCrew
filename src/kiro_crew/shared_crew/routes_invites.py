@@ -19,7 +19,8 @@ import binascii
 import functools
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiohttp import web
 
@@ -28,6 +29,7 @@ from kiro_crew.shared_crew import tailscale_invite_store as store
 from kiro_crew.shared_crew import tailscale_invites as invites
 from kiro_crew.shared_crew.contracts import Provenance
 from kiro_crew.shared_crew.identity import PROVIDER_TAILSCALE, viewer_principal
+from kiro_crew.shared_crew.preview import preview_only
 from kiro_crew.shared_crew.tailscale_api import CODE_RATE_LIMITED, TailscaleApiError
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,34 @@ _TAILNET_PROVENANCE = frozenset(
         Provenance.TAILSCALE_LISTENER.value,
     }
 )
+
+
+def governance_pinned(*, audit_tool: str = "") -> bool:
+    """Whether an enterprise ceiling pins ``capabilities.tailnet_origin`` off.
+
+    Invites share this machine over Tailscale, so they follow the same pin as
+    the direct tailnet listener. Pass ``audit_tool`` from a site that acts on
+    the answer; a capability read passes none.
+    """
+    from kiro_crew.dashboard import tailnet
+
+    return tailnet.is_governance_pinned_off(audit_tool=audit_tool)
+
+
+def governed(
+    handler: Callable[[web.Request], Awaitable[Any]],
+) -> Callable[[web.Request], Awaitable[Any]]:
+    """404 while governance pins tailnet access off, as if the route did not exist."""
+
+    @functools.wraps(handler)
+    async def gated(request: web.Request) -> Any:
+        # The status read is refetched, so only a route that acts is audited.
+        tool = "" if request.method == "GET" else f"shared_crew_invites_{handler.__name__}"
+        if await asyncio.to_thread(governance_pinned, audit_tool=tool):
+            raise web.HTTPNotFound()
+        return await handler(request)
+
+    return gated
 
 
 def _error(status: int, code: str, *, retry_after: float = 0.0) -> web.Response:
@@ -152,28 +182,8 @@ async def _json(request: web.Request) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
-Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
-
-
-def preview_only(handler: Handler) -> Handler:
-    """404 while the Shared Crew preview is off (``KIROCREW_SHARED_CREW_PREVIEW``).
-
-    The route answers as if it did not exist, so nothing here can be used, or
-    turned on, by accident before the owner ships Shared Crew.
-    """
-
-    @functools.wraps(handler)
-    async def gated(request: web.Request) -> web.StreamResponse:
-        from kiro_crew.shared_crew.preview import preview_enabled
-
-        if not preview_enabled():
-            raise web.HTTPNotFound()
-        return await handler(request)
-
-    return gated
-
-
 @preview_only
+@governed
 async def api_status(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -194,6 +204,7 @@ async def api_status(request: web.Request) -> web.Response:
 
 
 @preview_only
+@governed
 async def api_connect(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -210,6 +221,7 @@ async def api_connect(request: web.Request) -> web.Response:
 
 
 @preview_only
+@governed
 async def api_disconnect(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -219,6 +231,7 @@ async def api_disconnect(request: web.Request) -> web.Response:
 
 
 @preview_only
+@governed
 async def api_create(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -247,6 +260,7 @@ async def api_create(request: web.Request) -> web.Response:
 
 
 @preview_only
+@governed
 async def api_resend(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -259,6 +273,7 @@ async def api_resend(request: web.Request) -> web.Response:
 
 
 @preview_only
+@governed
 async def api_revoke(request: web.Request) -> web.Response:
     refused = await _owner_refusal(request)
     if refused is not None:
@@ -370,23 +385,54 @@ async def api_avatar(request: web.Request) -> web.Response:
 
 
 def decorate_people(body: dict[str, Any]) -> dict[str, Any]:
-    """Attach the alias and avatar bound to each tailnet row's verified login.
+    """Attach the name and picture bound to each tailnet row's verified login.
 
     Only a row whose provenance is a daemon-verified tailnet peer is matched, so a
     session creator read back from stored attribution never borrows an alias.
+    A row whose stable user id is known carries it as ``tailscale_user_id`` (the
+    key the display route edits). A display record anyone set wins over the
+    alias and picture an accepted invite carried. A local operator row is the
+    person who runs this Crew, so it carries this machine's own Tailscale user
+    id when the daemon reported it, and can be named like anyone else.
     """
+    from kiro_crew.dashboard import tailnet_live_allowlist
+
     members = invites.members_by_login()
+    display = store.display_overrides()
+    display_by_login = {
+        str(d.get("login") or "").strip().lower(): uid for uid, d in display.items()
+    }
+    owner_id = access_set.owner_user_id()
     for row in body.get("people") or []:
+        if row.get("provenance") == Provenance.LOCAL_OPERATOR.value:
+            shown = display.get(owner_id) if owner_id else None
+            if owner_id:
+                row["tailscale_user_id"] = owner_id
+            if shown:
+                row["member"] = {
+                    "alias": shown.get("alias") or "",
+                    "avatar_id": shown.get("avatar_id") or "",
+                    "profile_pic_url": "",
+                }
+            continue
         if row.get("provenance") not in _TAILNET_PROVENANCE:
             continue
         principal = row.get("principal") or {}
         login = str((principal.get("display") or {}).get("login") or "").strip().lower()
         member = members.get(login)
-        if member:
+        user_id = (
+            str((member or {}).get("user_id") or "")
+            or tailnet_live_allowlist.user_id_for(login)
+            or display_by_login.get(login, "")
+        )
+        if user_id:
+            row["tailscale_user_id"] = user_id
+        shown = display.get(user_id) if user_id else None
+        if member or shown:
             row["member"] = {
-                "alias": member["alias"],
-                "avatar_id": member["avatar_id"],
-                "profile_pic_url": member["profile_pic_url"],
+                "alias": (shown or member or {}).get("alias") or "",
+                "avatar_id": (shown or member or {}).get("avatar_id") or "",
+                "profile_pic_url": (member or {}).get("profile_pic_url") or "",
             }
     return body
 
@@ -396,6 +442,9 @@ async def _start_poller(app: web.Application) -> None:
 
     if not preview_enabled():
         # The invite routes answer 404 without the preview; nothing reads Tailscale.
+        return
+    if await asyncio.to_thread(governance_pinned, audit_tool="shared_crew_invite_poller"):
+        # Governance pins tailnet access off: no invite can be accepted here.
         return
     app[_POLLER_KEY] = asyncio.create_task(invites.poll_forever())
 

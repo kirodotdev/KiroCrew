@@ -1,5 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom'
-import { useId, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useId, useMemo, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
@@ -7,7 +7,7 @@ import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '.
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from '../../../components/crew/CrewWorkerComposerGate'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
-import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
+import { Composer, useComposerDraftText, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { QuoteFlight } from '../../../chat-core/composer/selectionActions'
@@ -50,6 +50,7 @@ import { ProjectAwsProfileSection } from '../../../components/ProjectAwsProfile'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
 import ChatInput from '../../../components/ChatInput'
 import { useStableCallbackProps } from '../useStableCallbackProps'
+import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { pinIsWithheld } from '../../../lib/model'
@@ -76,7 +77,10 @@ import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
  * nothing the composer shows.
  */
 function StableChatInput(props: React.ComponentProps<typeof ChatInput>) {
-  return <ChatInput {...useStableCallbackProps(props)} />
+  // Recovery changes the draft store without a user edit. Carry its text across
+  // the memo boundary as a prop, so the editor cannot retain the cleared value.
+  const value = useComposerDraftText() ?? props.value
+  return <ChatInput {...useStableCallbackProps(props)} value={value} />
 }
 
 interface ComposerDockViewProps {
@@ -263,6 +267,8 @@ interface ComposerDockViewProps {
   showComposerMemoryChip: boolean
   switchMemoryMode: (newMode: MemoryMode) => Promise<void>
   composerAbove: JSX.Element
+  /** Someone else typing in this shared session: the composer is read-only. */
+  typingLock?: ComposerTypingLock | null
   composerSessionControls: ReturnType<typeof useSessionControlChips>
   /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its switch on. */
   crewModeOffered: boolean
@@ -313,12 +319,17 @@ export default function ComposerDockView({
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
-  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
+  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
   composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // Someone else holds the typing lock: no dictation may start into the draft.
+  const voiceOptions = useMemo(
+    () => (typingLock ? { ...composerVoiceOptions, startBlocked: true } : composerVoiceOptions),
+    [typingLock, composerVoiceOptions],
+  )
   // Disabled while a reply runs (the agent switch refuses mid-turn): the
   // composer's own turn state, which a send sets at once, as well as the listed
   // slot's, which follows the server.
@@ -563,12 +574,12 @@ export default function ComposerDockView({
                 slotKey={activeSlot}
                 draft={composerDraft}
                 onChange={composerRootChange}
-                voice={composerVoiceOptions}
+                voice={voiceOptions}
                 pastes={pasteSlice}
               >
               <StableChatInput
               aboveComposer={composerAbove}
-              // No `value`: ChatInput reads the text from the root's `draft` store.
+              // StableChatInput carries the root's draft snapshot to the memoized editor.
               // `composerUserEdit` is what ChatInput calls for the user's own edits
               // (typing, paste, undo, picker inserts), never for a parent-driven
               // seed -- so it is the signal that arms the prefill hint's expiry.
@@ -587,6 +598,7 @@ export default function ComposerDockView({
               jevAutoAvailable={jevAutoConsented && !!slotRunning}
               onFollowUpSend={(text?: string) => { if (!steerRootClosed) send(text) }}
               // Streaming, compaction and stopping keep the input interactive (api_chat queues on slot.running and stop preserves the
+              typingLock={typingLock}
               // queue, so Enter queues a follow-up during the stop window). A memory-mode switch locks it, the reason as placeholder; a
               // worker of a closed conductor too, its reason said once by the gate's line above the composer. The Crew Mode
               // switch locks it the same way for its one round-trip: a send that reached the server first would start the

@@ -10,6 +10,12 @@ holds the session's composer typing lease (the ``shared_crew.typing_lease``
 frame body).
 Every one is a read of in-memory state for dashboard users; the existing auth
 middleware has already admitted the caller, and an app token is refused.
+
+``POST /api/shared-crew/typing-lease/takeover`` (body ``{"session_key"}``) is
+the one write: the caller takes the session's typing lease over
+(:meth:`~kiro_crew.shared_crew.typing_lease.TypingLeaseRegistry.take_over`) and
+gets the new lease state back. It answers 404 unless
+``KIROCREW_SHARED_CREW_PREVIEW=1``.
 """
 
 from __future__ import annotations
@@ -21,9 +27,11 @@ from aiohttp import web
 from kiro_crew.shared_crew.codec import SCHEMA_VERSION
 from kiro_crew.shared_crew.collab import presence_frame
 from kiro_crew.shared_crew.decisions import decisions_for
+from kiro_crew.shared_crew.identity import actor_of
 from kiro_crew.shared_crew.presence import MAX_SESSION_KEY_LEN, presence_for
+from kiro_crew.shared_crew.preview import preview_only
 from kiro_crew.shared_crew.send_race import send_race_for
-from kiro_crew.shared_crew.typing_lease import typing_lease_for
+from kiro_crew.shared_crew.typing_lease import can_hold, take_over, typing_lease_for
 
 
 def _session_read(body: Callable[[Any, str], dict[str, Any]]) -> Callable[[web.Request], Any]:
@@ -58,9 +66,46 @@ api_shared_crew_send_state = _session_read(lambda state, key: send_race_for(stat
 api_shared_crew_typing_lease = _session_read(lambda state, key: typing_lease_for(state).state(key))
 
 
+def _error(status: int, code: str, message: str) -> web.Response:
+    return web.json_response({"error": message, "code": code}, status=status)
+
+
+@preview_only
+async def api_shared_crew_typing_lease_takeover(request: web.Request) -> web.Response:
+    """Take the session's typing lease from whoever holds it.
+
+    The caller holds it as if they had just typed. A free lease, or one the
+    caller already holds, answers the current state with nothing changed.
+    """
+    if not request.get("is_dashboard_user", False):
+        return _error(403, "forbidden", "dashboard users only")
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    session_key = body.get("session_key") if isinstance(body, dict) else None
+    if (
+        not isinstance(session_key, str)
+        or not session_key
+        or len(session_key) > MAX_SESSION_KEY_LEN
+    ):
+        return _error(400, "invalid_session_key", "session_key is required")
+    state = request.app["state"]
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict) or session_key not in slots:
+        return _error(404, "unknown_session", "no such open session")
+    principal = actor_of(request).principal
+    if not can_hold(principal):
+        return _error(403, "not_admitted", "only a signed-in person can take over typing")
+    return web.json_response(take_over(state, session_key, principal))
+
+
 def register(app: web.Application) -> None:
     """Mount the collaboration reads. F adds this to ``routes._REGISTRARS``."""
     app.router.add_get("/api/shared-crew/presence", api_shared_crew_presence)
     app.router.add_get("/api/shared-crew/decisions", api_shared_crew_decisions)
     app.router.add_get("/api/shared-crew/send-state", api_shared_crew_send_state)
     app.router.add_get("/api/shared-crew/typing-lease", api_shared_crew_typing_lease)
+    app.router.add_post(
+        "/api/shared-crew/typing-lease/takeover", api_shared_crew_typing_lease_takeover
+    )

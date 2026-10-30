@@ -38,7 +38,7 @@ import type { ComposerPasteSlice } from './composerPastes'
 
 /** Host-supplied dictation behaviour the Voice atom cannot know on its own.
  *  Everything is optional; a per-slot composer (a pane) passes nothing. */
-export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk'> & {
+export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk' | 'startBlocked'> & {
   /** Where the "voice needs setting up" modal sends the user. Defaults to Settings → Voice. */
   settingsRoute?: string
   /** Host-owned caret refs, when the host also reads them (ChatPage's resources
@@ -269,6 +269,7 @@ function VoiceAtomInner({ ctx }: { ctx: ComposerContextValue }) {
     deliverOffScreen: voiceOptions.deliverOffScreen,
     onAutoSubmit: voiceOptions.onAutoSubmit,
     pushToTalk: voiceOptions.pushToTalk,
+    startBlocked: voiceOptions.startBlocked,
     caretRef: voiceOptions.caretRef,
     pendingCaretRef: voiceOptions.pendingCaretRef,
   })

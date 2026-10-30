@@ -56,6 +56,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/shared-crew/decisions", routes_collab.api_shared_crew_decisions)
     app.router.add_get("/api/shared-crew/send-state", routes_collab.api_shared_crew_send_state)
     app.router.add_get("/api/shared-crew/typing-lease", routes_collab.api_shared_crew_typing_lease)
+    app.router.add_post(
+        "/api/shared-crew/typing-lease/takeover",
+        routes_collab.api_shared_crew_typing_lease_takeover,
+    )
     app.router.add_get(
         "/api/shared-crew/capabilities", routes_capabilities.api_shared_crew_capabilities
     )
@@ -93,4 +97,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/shared-crew/access", _preview_only("routes_access", "api_access"))
     app.router.add_post(
         "/api/shared-crew/access/first-share/ack", _preview_only("routes_access", "api_ack")
+    )
+    app.router.add_put(
+        "/api/shared-crew/people/{user_id}/display",
+        _preview_only("routes_people", "api_set_display"),
     )

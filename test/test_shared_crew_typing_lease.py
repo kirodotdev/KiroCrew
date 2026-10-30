@@ -37,11 +37,13 @@ from kiro_crew.shared_crew.presence import (
     handle_activity_frame,
     release_connection,
 )
+from kiro_crew.shared_crew.preview import PREVIEW_ENV
 from kiro_crew.shared_crew.typing_lease import (
     END_CLEARED,
     END_DISCONNECTED,
     END_IDLE,
     END_SENT,
+    END_TAKEN_OVER,
     TypingLeaseRegistry,
 )
 from kiro_crew.testing.wait import await_until
@@ -458,3 +460,182 @@ async def test_after_the_idle_window_the_send_race_is_the_backstop(dash_state):
             client, "bob", {"slot": "s1", "message": "x", "base_revision": 0}
         )
     assert status == 409 and body["code"] == "send_race"
+
+
+# -- takeover ---------------------------------------------------------------------------
+
+
+def test_a_takeover_moves_the_lease_and_names_who_had_it():
+    clock = _Clock()
+    reg = _registry(clock)
+    reg.typed("s1", "ws:a", ALICE)
+    change = reg.take_over("s1", typing_lease.takeover_conn_id(BOB), BOB)
+    assert change.sessions == {"s1": END_TAKEN_OVER}
+    assert change.taken_over_from == {"s1": ALICE}
+    assert reg.holder("s1") == BOB
+    # Alice is now the locked one; Bob's send passes.
+    assert reg.blocks("s1", ALICE) == BOB and reg.blocks("s1", BOB) is None
+    # Her typing reports never take it back, and her old tab is not drafting for the lease.
+    assert reg.typed("s1", "ws:a", ALICE).sessions == {}
+    assert reg.cleared("s1", "ws:a").sessions == {}
+    assert reg.holder("s1") == BOB
+
+
+def test_a_taken_over_lease_is_held_as_if_the_taker_typed():
+    clock = _Clock()
+    reg = _registry(clock)
+    reg.typed("s1", "ws:a", ALICE)
+    clock.now += 8
+    reg.take_over("s1", typing_lease.takeover_conn_id(BOB), BOB)
+    # A fresh idle window from the takeover, not from Alice's last report.
+    clock.now += 9
+    assert reg.holder("s1") == BOB
+    assert reg.state("s1")["expires_at"] == pytest.approx(clock.now + 1)
+    clock.now += 1
+    assert reg.sweep().sessions == {"s1": END_IDLE}
+
+
+def test_the_takers_own_tab_then_stands_for_the_takeover():
+    clock = _Clock()
+    reg = _registry(clock)
+    reg.typed("s1", "ws:a", ALICE)
+    reg.take_over("s1", typing_lease.takeover_conn_id(BOB), BOB)
+    reg.typed("s1", "ws:b", BOB)
+    # Clearing the draft in that tab ends the lease at once, like any holder's.
+    assert reg.cleared("s1", "ws:b").sessions == {"s1": END_CLEARED}
+    assert reg.holder("s1") is None
+
+
+def test_a_takeover_of_a_free_or_own_lease_changes_nothing():
+    clock = _Clock()
+    reg = _registry(clock)
+    assert reg.take_over("s1", "takeover:x", BOB) == typing_lease.LeaseChange()
+    assert reg.holder("s1") is None
+    reg.typed("s1", "ws:b", BOB)
+    assert reg.take_over("s1", "takeover:x", BOB).sessions == {}
+    # An expired lease is free: the takeover only reports the idle end.
+    clock.now += 10
+    assert reg.take_over("s1", "takeover:x", ALICE).sessions == {"s1": END_IDLE}
+    assert reg.holder("s1") is None
+
+
+def test_unknown_and_system_principals_never_take_over():
+    clock = _Clock()
+    reg = _registry(clock)
+    reg.typed("s1", "ws:a", ALICE)
+    assert reg.take_over("s1", "takeover:x", Principal.unknown()).sessions == {}
+    assert reg.holder("s1") == ALICE
+
+
+def test_only_the_takeover_frame_names_the_previous_holder():
+    clock = _Clock()
+    state = _State(clock)
+    handle_activity_frame(state, "ws:a", ALICE, _frame("typing"), dashboard_user=True)
+    assert all("taken_over_from" not in f for f in state.lease_frames())
+    body = typing_lease.take_over(state, "s1", BOB)
+    frame = state.lease_frames()[-1]
+    assert frame["holder"]["id"] == BOB.id and frame["ended"] == END_TAKEN_OVER
+    assert frame["taken_over_from"] == ALICE.to_public_dict()
+    assert ALICE.id in frame["taken_over_from_ids"]
+    assert body["taken_over_from"] == ALICE.to_public_dict()
+    # The read a reconnecting tab makes carries no takeover.
+    assert "taken_over_from" not in state._shared_crew_typing_lease.state("s1")
+
+
+def _takeover_client(state) -> TestClient:
+    from kiro_crew.shared_crew import routes_collab
+
+    app = web.Application(middlewares=[_actor_middleware()])
+    app["state"] = state
+    routes_collab.register(app)
+    return TestClient(TestServer(app))
+
+
+async def _takeover(client, who: str, body: object):
+    resp = await client.post(
+        "/api/shared-crew/typing-lease/takeover", json=body, headers={"X-Test-Actor": who}
+    )
+    return resp.status, (await resp.json() if resp.content_type == "application/json" else None)
+
+
+@pytest.mark.asyncio
+async def test_the_takeover_route_moves_the_lease_with_the_preview_on(monkeypatch):
+    monkeypatch.setenv(PREVIEW_ENV, "1")
+    state = _State(_Clock())
+    state._shared_crew_typing_lease.typed("s1", "ws:a", ALICE)
+    async with _takeover_client(state) as client:
+        status, body = await _takeover(client, "bob", {"session_key": "s1"})
+        assert status == 200
+        assert body["holder"]["id"] == BOB.id
+        assert body["taken_over_from"]["id"] == ALICE.id
+        frame = state.lease_frames()[-1]
+        assert frame["ended"] == END_TAKEN_OVER and frame["taken_over_from"]["id"] == ALICE.id
+        # Taking over your own lease again is a no-op success: no frame.
+        sent = len(state.frames)
+        status, body = await _takeover(client, "bob", {"session_key": "s1"})
+        assert status == 200 and body["holder"]["id"] == BOB.id
+        assert "taken_over_from" not in body and len(state.frames) == sent
+        # A bad key and a session the gateway has not opened are refused.
+        assert (await _takeover(client, "alice", {}))[0] == 400
+        assert (await _takeover(client, "alice", {"session_key": "nope"}))[0] == 404
+
+
+@pytest.mark.asyncio
+async def test_the_takeover_route_on_a_free_lease_is_a_no_op(monkeypatch):
+    monkeypatch.setenv(PREVIEW_ENV, "1")
+    state = _State(_Clock())
+    async with _takeover_client(state) as client:
+        status, body = await _takeover(client, "bob", {"session_key": "s1"})
+    assert status == 200 and body["holder"] is None
+    assert state._shared_crew_typing_lease.holder("s1") is None
+    assert state.lease_frames() == []
+
+
+@pytest.mark.asyncio
+async def test_the_takeover_route_refuses_a_caller_who_is_not_admitted(monkeypatch):
+    monkeypatch.setenv(PREVIEW_ENV, "1")
+    state = _State(_Clock())
+    state._shared_crew_typing_lease.typed("s1", "ws:a", ALICE)
+    PEOPLE["nobody"] = Principal.unknown()
+    try:
+        async with _takeover_client(state) as client:
+            status, body = await _takeover(client, "nobody", {"session_key": "s1"})
+    finally:
+        del PEOPLE["nobody"]
+    assert status == 403 and body["code"] == "not_admitted"
+    assert state._shared_crew_typing_lease.holder("s1") == ALICE
+
+    @web.middleware
+    async def app_token(request: web.Request, handler):
+        request["is_dashboard_user"] = False
+        return await handler(request)
+
+    from kiro_crew.shared_crew.routes_collab import api_shared_crew_typing_lease_takeover
+
+    app = web.Application(middlewares=[app_token])
+    app["state"] = state
+    app.router.add_post(
+        "/api/shared-crew/typing-lease/takeover", api_shared_crew_typing_lease_takeover
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/shared-crew/typing-lease/takeover", json={"session_key": "s1"}
+        )
+        assert resp.status == 403
+    assert state._shared_crew_typing_lease.holder("s1") == ALICE
+
+
+@pytest.mark.asyncio
+async def test_the_takeover_route_is_absent_without_the_preview(monkeypatch):
+    monkeypatch.delenv(PREVIEW_ENV, raising=False)
+    state = _State(_Clock())
+    state._shared_crew_typing_lease.typed("s1", "ws:a", ALICE)
+    async with _takeover_client(state) as client:
+        status, _ = await _takeover(client, "bob", {"session_key": "s1"})
+        # The read stays, and carries no takeover field.
+        got = await client.get("/api/shared-crew/typing-lease?session_key=s1")
+        read = await got.json()
+    assert status == 404
+    assert state._shared_crew_typing_lease.holder("s1") == ALICE
+    assert read["holder"]["id"] == ALICE.id and "taken_over_from" not in read
+    assert all("taken_over_from" not in f for f in state.lease_frames())

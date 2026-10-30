@@ -1,6 +1,7 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
 import type { SessionLink, SourceProviderId } from '../../types'
+import type { SessionAttribution } from '../../api/sharedCrew'
 
 export interface Slot {
   key: string
@@ -118,6 +119,8 @@ export interface Slot {
   executor?: 'local' | 'remote'
   instance_id?: string
   created?: string
+  /** Shared Crew creator, when the gateway records one. Display only. */
+  attribution?: SessionAttribution | null
   last_ts?: string
   // Settled activity instant: the last prompt or turn completion, NOT every
   // streamed row. What the list is ordered, segmented and labelled by — see

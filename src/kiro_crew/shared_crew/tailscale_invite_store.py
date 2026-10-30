@@ -12,6 +12,9 @@ a fake accepted invite, or swap a teammate's avatar:
 * ``invites.json`` holds the device id, the key's expiry, each invite Crew made
   and each person who accepted one, keyed by Tailscale's stable user id;
 * ``avatars/`` holds uploaded avatar images, named by content digest.
+* ``invites.json``'s ``display`` map holds the name and picture any admitted
+  person gave someone, keyed by the same stable user id. It is display only:
+  nothing that decides access reads it.
 
 The key is never written to ``invites.json``, never logged and never returned
 by any route; :func:`credential_present` is all a status read learns.
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -38,6 +42,11 @@ SCHEMA = 1
 
 #: Avatar uploads: small, and only formats a browser renders as an image.
 MAX_AVATAR_BYTES = 256 * 1024
+#: At most this many avatar files (128 MiB at the byte cap). A full folder first
+#: drops pictures no record shows, then refuses a new upload with ``avatar_limit``.
+MAX_AVATAR_FILES = 512
+#: An unused upload younger than this is kept: a draft may still save it.
+AVATAR_PRUNE_GRACE_SECS = 3600
 _AVATAR_MAGIC: tuple[tuple[bytes, str, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", "png", "image/png"),
     (b"\xff\xd8\xff", "jpg", "image/jpeg"),
@@ -110,6 +119,7 @@ def _empty() -> dict[str, Any]:
         "invites": {},
         "members": {},
         "revoked_invite_ids": [],
+        "display": {},
         "backoff_until": 0.0,
         "backoff_secs": 0.0,
         "last_sync_at": 0.0,
@@ -117,16 +127,22 @@ def _empty() -> dict[str, Any]:
 
 
 def load_state() -> dict[str, Any]:
+    state = _read_state()
+    return _empty() if state is None else state
+
+
+def _read_state() -> dict[str, Any] | None:
+    """The stored state, or ``None`` when the file is missing, unreadable or invalid."""
     path = root() / STATE_FILE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return _empty()
+        return None
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        return _empty()
+        return None
     out = _empty()
     out.update({k: v for k, v in data.items() if k in out})
-    for key in ("invites", "members"):
+    for key in ("invites", "members", "display"):
         if not isinstance(out[key], dict):
             out[key] = {}
     revoked = out["revoked_invite_ids"]
@@ -162,6 +178,68 @@ def clean_alias(raw: object, limit: int = MAX_ALIAS_CHARS) -> str:
     return text[:limit]
 
 
+#: A Tailscale stable user id: the daemon's numeric ``UserProfile.ID``, as text.
+_USER_ID_RE = re.compile(r"\A[0-9A-Za-z_-]{1,64}\Z")
+
+
+def valid_user_id(user_id: object) -> bool:
+    return isinstance(user_id, str) and bool(_USER_ID_RE.match(user_id))
+
+
+def display_overrides() -> dict[str, dict[str, Any]]:
+    """Each display record, keyed by stable user id."""
+    return {
+        uid: row
+        for uid, row in (load_state().get("display") or {}).items()
+        if isinstance(row, dict) and valid_user_id(uid)
+    }
+
+
+def set_display(
+    user_id: str, *, login: str, alias: str, avatar_id: str | None, actor: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Store *user_id*'s display name and picture; return ``(old, new)``.
+
+    The old values are what the People page showed: this record, else the
+    member record an accepted invite wrote. ``avatar_id=None`` keeps that
+    picture; it is read under the same lock as the write, so a concurrent
+    picture save is never reverted. Display only, never an identity.
+    """
+    before: dict[str, str] = {}
+    after: dict[str, str] = {}
+
+    def _mutate(s: dict[str, Any]) -> None:
+        prior = s["display"].get(user_id)
+        if not isinstance(prior, dict):
+            member = s["members"].get(user_id)
+            prior = member if isinstance(member, dict) else {}
+        before.update(
+            alias=str(prior.get("alias") or ""), avatar_id=str(prior.get("avatar_id") or "")
+        )
+        picture = before["avatar_id"] if avatar_id is None else avatar_id
+        after.update(alias=alias, avatar_id=picture)
+        s["display"][user_id] = {
+            "login": login,
+            "alias": alias,
+            "avatar_id": picture,
+            "updated_at": now(),
+            "updated_by": actor,
+        }
+
+    update_state(_mutate)
+    return before, after
+
+
+def _avatars_in_use(state: dict[str, Any]) -> set[str]:
+    """Every avatar id an invite, member or display record still shows."""
+    return {
+        str(row.get("avatar_id"))
+        for key in ("invites", "members", "display")
+        for row in (state.get(key) or {}).values()
+        if isinstance(row, dict) and row.get("avatar_id")
+    }
+
+
 def email_hash(email: str) -> str:
     """The audit form of an email: a short digest, never the address."""
     return hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
@@ -191,9 +269,43 @@ def save_avatar(data: bytes) -> str:
     folder = ensure_root() / AVATAR_DIR
     mkdirs_owner_only(folder)
     target = folder / avatar_id
-    if not target.exists():
+    with _LOCK:
+        if target.exists():
+            # A fresh upload of the same bytes restarts its grace period.
+            os.utime(target)
+            return avatar_id
+        files = [p for p in folder.iterdir() if valid_avatar_id(p.name)]
+        if len(files) >= MAX_AVATAR_FILES:
+            files = _prune_unused_avatars(files)
+        if len(files) >= MAX_AVATAR_FILES:
+            raise ValueError("avatar_limit")
         atomic_write(target, data)
     return avatar_id
+
+
+def _prune_unused_avatars(files: list[Path]) -> list[Path]:
+    """Delete avatars no record shows that are past the grace period; return the rest.
+
+    Runs under ``_LOCK``, only when the folder is full. The grace period keeps an
+    upload that an invite draft or a display edit has not saved yet. Without a
+    state file read cleanly, no file can be proved unused, so none is deleted.
+    """
+    state = _read_state()
+    if state is None:
+        return files
+    in_use = _avatars_in_use(state)
+    cutoff = time.time() - AVATAR_PRUNE_GRACE_SECS
+    kept: list[Path] = []
+    for path in files:
+        try:
+            unused = path.name not in in_use and path.stat().st_mtime < cutoff
+            if unused:
+                path.unlink()
+                continue
+        except OSError:
+            pass
+        kept.append(path)
+    return kept
 
 
 def valid_avatar_id(avatar_id: object) -> bool:

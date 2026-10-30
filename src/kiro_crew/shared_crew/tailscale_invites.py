@@ -71,6 +71,15 @@ CODE_DEVICE_NOT_FOUND = "device_not_found"
 CODE_DAEMON = "daemon_unavailable"
 CODE_BAD_EMAIL = "invalid_email"
 CODE_BACKING_OFF = "backing_off"
+#: An enterprise ceiling pins ``capabilities.tailnet_origin`` off.
+CODE_GOVERNANCE_PINNED = "governance_pinned_off"
+
+
+def _governance_pinned(*, audit_tool: str = "") -> bool:
+    """The tailnet governance pin, read again for each sync and each admission."""
+    from kiro_crew.dashboard import tailnet
+
+    return tailnet.is_governance_pinned_off(audit_tool=audit_tool)
 
 
 class InviteError(Exception):
@@ -427,7 +436,13 @@ def _unrecorded_accepts(
 
 
 async def sync(*, actor: str = "crew", force: bool = False) -> dict[str, Any]:
-    """Read invites back from Tailscale and admit each newly accepted person."""
+    """Read invites back from Tailscale and admit each newly accepted person.
+
+    A policy refresh can pin tailnet access off while the poller runs, so the
+    pin is read again here and once more, audited, just before admitting.
+    """
+    if await asyncio.to_thread(_governance_pinned):
+        raise InviteError(CODE_GOVERNANCE_PINNED, POLL_MAX_SECS)
     api, device_id = await asyncio.to_thread(_api)
     state = await asyncio.to_thread(store.load_state)
     now = store.now()
@@ -448,6 +463,8 @@ async def sync(*, actor: str = "crew", force: bool = False) -> dict[str, Any]:
         raise
     known = _known_invite_ids(state)
     async with _commit_lock():
+        if await asyncio.to_thread(_governance_pinned, audit_tool="shared_crew_invite_admission"):
+            raise InviteError(CODE_GOVERNANCE_PINNED, POLL_MAX_SECS)
         return await _commit_accepts(invites, known, actor)
 
 

@@ -91,6 +91,7 @@ def audit_principal(principal: Principal | None) -> dict[str, Any] | None:
 EXTRA_WORKLOAD_REF = "workload_identity_ref"
 EXTRA_TRIGGER = "trigger"
 EXTRA_MEMORY_CHANGE = "memory_change"
+EXTRA_DISPLAY_CHANGE = "display_change"
 
 
 def _unattended_trigger(initiator: Principal, session_key: str) -> dict[str, Any] | None:
@@ -171,6 +172,11 @@ def security_event(record: ActionRecord) -> Any:
             **(
                 {EXTRA_MEMORY_CHANGE: record.extra[EXTRA_MEMORY_CHANGE]}
                 if EXTRA_MEMORY_CHANGE in record.extra
+                else {}
+            ),
+            **(
+                {EXTRA_DISPLAY_CHANGE: record.extra[EXTRA_DISPLAY_CHANGE]}
+                if EXTRA_DISPLAY_CHANGE in record.extra
                 else {}
             ),
         },

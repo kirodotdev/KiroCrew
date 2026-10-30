@@ -91,6 +91,9 @@ export interface ComposerVoiceHost {
   onAutoSubmit?: () => void
   /** Own the document-wide push-to-talk key binding. Default false. */
   pushToTalk?: boolean
+  /** No new capture may start (someone else holds this chat's typing lock).
+   *  A capture already underway can still stop, cancel and deliver. */
+  startBlocked?: boolean
   /** Host-owned caret refs (a host that also reads them, e.g. to splice a picked
    *  file token at the caret). Omit and the hook creates its own. */
   caretRef?: React.MutableRefObject<{ start: number; end: number } | null>
@@ -742,6 +745,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // startup) cannot release ownership while the first start is still pending
   // and let another composer capture concurrently.
   const startingRef = useRef(false)
+  const startBlockedRef = useRef(false)
+  startBlockedRef.current = !!host.startBlocked
   const startGenRef = useRef(0)
   // Release when THIS instance's capture and transcription are both over. Runs
   // every render on purpose: a start that fails (permission denied) never flips
@@ -789,6 +794,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
    * itself.
    */
   const startVoice = useCallback((opts?: { silent?: boolean }): Promise<void> | void => {
+    // A typing-locked composer takes no dictation: the transcript would edit a
+    // read-only draft. The mic button and the push-to-talk key both come here.
+    if (startBlockedRef.current) return
     // Starting a recording while server-side STT is disabled would capture
     // audio that never gets transcribed. Point the user at the enable setting
     // instead — unless this came from the keyboard (see `silent`).

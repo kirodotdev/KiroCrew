@@ -80,6 +80,8 @@ import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
+import { TypingLockBanner, typingLockLabel } from './chat-input/TypingLockBanner'
+import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
 
@@ -205,6 +207,7 @@ function ChatInput({
   jevAutoAvailable = false,
   busyMode = 'split',
   disabled: disabledProp = false,
+  typingLock = null,
   placeholder = '',
   lockedPlaceholder,
   prefillHint,
@@ -366,6 +369,10 @@ function ChatInput({
   } = composerVoice?.inputProps ?? NO_VOICE
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
+  // Someone else holds this session's typing lease: read-only, not disabled, so
+  // the draft stays legible, the caret keeps its focus, and the box unlocks in
+  // place the moment the lease ends.
+  const typingLocked = !!typingLock
   // A peer session's folder is another machine's: only the chip shows it.
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
@@ -557,6 +564,9 @@ function ChatInput({
   // All terminal draft sends enter here before agent routing or prompt-length
   // confirmation. A terminal draft never queues or steers.
   const fireComposer = useCallback((alternate?: unknown) => {
+    // A locked composer sends nothing, except into a running turn (the busy
+    // controls' steer), which the lease never holds.
+    if (typingLocked && !isRunning) return
     if (terminal.active) {
       if (!disabled && !voiceTranscribing && connected && !optimizingRef.current) {
         composerVoice?.controls?.disarmForSend()
@@ -565,7 +575,7 @@ function ChatInput({
       return
     }
     fireAgentComposer(alternate)
-  }, [terminal.active, disabled, voiceTranscribing, connected, composerVoice, runTerminalCommand, fireAgentComposer])
+  }, [typingLocked, isRunning, terminal.active, disabled, voiceTranscribing, connected, composerVoice, runTerminalCommand, fireAgentComposer])
   const fireFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     // Both chat parents consume the current draft for missing or empty text.
     if (!text && terminal.active) {
@@ -693,7 +703,7 @@ function ChatInput({
   const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands, optimizerMentionGuard,
-    composerDisabled: disabled,
+    composerDisabled: disabled || typingLocked,
   })
   useEffect(() => { onOptimizingChange?.(optimizing) }, [optimizing, onOptimizingChange])
   // A locked composer (a memory-mode switch is moving its draft) must not
@@ -702,8 +712,11 @@ function ChatInput({
   const optimizeUnlessLocked = useCallback(() => { if (!disabled) optimizePrompt() }, [disabled, optimizePrompt])
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
+  // A typing-locked composer takes no drop at all: a tree row, a folder path
+  // or a file would each change the kept draft, and `readOnly` stops none of
+  // those programmatic edits.
   const treeDrop = useComposerTreeDrop({
-    enabled: !disabled && !optimizing,
+    enabled: !disabled && !optimizing && !typingLocked,
     project: project ?? '',
     onTreeEntryDrop,
     clampDropOffset,
@@ -711,7 +724,7 @@ function ChatInput({
     containerRef: wrapperRef,
     onDragOver,
     onDragLeave,
-    onDrop,
+    onDrop: typingLocked ? undefined : onDrop,
   })
   const {
     mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef, noteKeyDown,
@@ -754,6 +767,10 @@ function ChatInput({
     if (target?.tagName === 'TEXTAREA') return 'pass'
     return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
   }, ESCAPE_PRIORITY.composer)
+  const lockedKeyDown = useTypingLockKeys({
+    lockedRich: typingLocked && lexicalComposer && !lexicalLoadFailed,
+    isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
+  })
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
     fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
@@ -919,7 +936,7 @@ function ChatInput({
     return () => ro.disconnect()
   }, [inlineToolbarWhileFits, showGhost, composerCollapsed])
   const sizerPinned = inlineToolbarWhileFits && manualHeight === null && box !== null
-  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder
+  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? typingLockLabel(typingLock) : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder
   // The sigil hint is a label and may be cut to one line. Every other
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
@@ -1496,7 +1513,7 @@ function ChatInput({
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
                 disabled={disabled}
-                readOnly={optimizing}
+                readOnly={optimizing || typingLocked}
                 sendOnEnter={sendOnEnter}
                 spellCheck={spellCheck}
                 inlineMarkdown={inlineMarkdown}
@@ -1537,15 +1554,21 @@ function ChatInput({
           placeholder={activePlaceholder}
           // A disabled composer takes no keystrokes either: `pointer-events-none`
           // alone still lets a focused textarea be typed into.
-          readOnly={optimizing || disabled}
+          readOnly={optimizing || disabled || typingLocked}
           aria-disabled={disabled || undefined}
+          aria-readonly={typingLocked || undefined}
+          data-typing-locked={typingLocked ? '' : undefined}
           rows={1}
           value={value}
           onDragOver={e => { e.preventDefault(); treeDrop.onDragOver(e); e.stopPropagation() }}
           onDragLeave={e => { treeDrop.onDragLeave(e); e.stopPropagation() }}
           onDrop={e => { e.preventDefault(); treeDrop.onDrop(e); e.stopPropagation() }}
           onChange={handleTextareaChange}
-          onKeyDown={e => { noteKeyDown(e); listContinuation.onKeyDown(e); handleKeyDown(e) }}
+          // Locked, no key reaches the composer's own handlers (send, history
+          // recall, list continuation): the box only reads, selects and copies.
+          // A running turn keeps its two keys, Escape to stop and the send key
+          // to steer, as the busy buttons do.
+          onKeyDown={e => { if (typingLocked) { lockedKeyDown(e); return } noteKeyDown(e); listContinuation.onKeyDown(e); handleKeyDown(e) }}
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
             // in the binding itself, so these handlers only carry what is local here.
@@ -1556,9 +1579,9 @@ function ChatInput({
             },
             onBlur: e => { if (!listHintDismissRef.current || e.relatedTarget !== listHintDismissRef.current) setTextareaFocused(false); if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
-          onPaste={disabled ? e => e.preventDefault() : handlePaste}
+          onPaste={disabled || typingLocked ? e => e.preventDefault() : handlePaste}
           onCopy={handleCopy}
-          onCut={handleCut}
+          onCut={typingLocked ? handleCopy : handleCut}
           onClick={handleTextareaClick}
           onMouseUp={handleSelectSnap}
           onSelect={handleSelectSnap}
@@ -1621,7 +1644,8 @@ function ChatInput({
             is bottom-aligned, so while its height animates the buttons hold
             still and the text column opens above them. */}
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
-          <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}`}>
+          {typingLock && <TypingLockBanner lock={typingLock} />}
+          <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}${typingLocked ? ' hidden' : ''}`}>
             <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
@@ -1729,7 +1753,7 @@ function ChatInput({
             )}
           </div>
           <div ref={rightClusterRef} className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full justify-end [&>button]:shrink-0' : ''}${inlineToolbar ? ' order-last pr-1.5' : ''}`}>
-            {onVoiceToggle && (
+            {onVoiceToggle && !typingLocked && (
               <MicButton voiceHoldMode={voiceHoldMode} voiceRecording={voiceRecording} micIsModeSwitch={micIsModeSwitch} transcribeInFlight={transcribeInFlight} micHeldElsewhere={micHeldElsewhere} micBlocked={micBlocked} toggleVoiceMode={toggleVoiceMode} onVoiceToggle={onVoiceToggle} onVoicePrewarm={onVoicePrewarm} disabled={disabled} optimizing={optimizing} micLabel={micLabel} micKeyShortcuts={micKeyShortcuts} />
             )}
             {/* The busy branch is reachable with EITHER a stop affordance or a
@@ -1760,7 +1784,7 @@ function ChatInput({
               // returns -- never the steer/queue split -- and the gateway
               // decides how that send reaches the running turn.
               <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={false} composerHasDraft={false} canSteer={false} steerOnly={false} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={false} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
-            ) : !terminal.active && (<>
+            ) : !terminal.active && !typingLocked && (<>
               {optimizeButton}
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               {/*

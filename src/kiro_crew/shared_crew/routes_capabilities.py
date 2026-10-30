@@ -7,11 +7,12 @@ reference a provider holds. The gateway's route table mounts :func:`register`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
 
-from kiro_crew.shared_crew.capabilities import aggregate_capabilities
+from kiro_crew.shared_crew.capabilities import aggregate_capabilities, invites_capability
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,9 @@ CAPABILITIES_PATH = "/api/shared-crew/capabilities"
 
 async def api_shared_crew_capabilities(request: web.Request) -> web.Response:
     report = aggregate_capabilities()
-    return web.json_response(report.to_dict(), headers={"Cache-Control": "no-store"})
+    # The governance probe evaluates policy and walks the profile directory.
+    invites = await asyncio.to_thread(invites_capability)
+    return web.json_response(report.to_dict(invites=invites), headers={"Cache-Control": "no-store"})
 
 
 def register(app: web.Application) -> None:
