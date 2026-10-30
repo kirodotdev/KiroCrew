@@ -153,6 +153,8 @@
     "apps.specBuilder.components.specDetail.cancel": "Dismiss the delete-spec confirmation without removing the spec. The verb on a dialog button, not the noun 'a cancellation'.",
     "apps.specBuilder.components.taskList.run": "Verb on the button beside ONE task in Spec Builder's task list: have the agent do that single task and then stop. NOT the noun (\"a run\"), which several locales translate differently, and not \"start the whole build\" — the sibling \"Start building\" works the entire list.",
     "apps.workflows.workflowsPage.run": "Verb on a button: execute this job/workflow now. NOT the noun (\"a run\"), which several locales translate differently.",
+    "apps.workflows.workflowsPage.view_author": "Tab in the Workflows page's two-way switch that opens the editor where the user writes a workflow script. Means 'write / create', NOT the noun 'author' (a person).",
+    "apps.workflows.workflowsPage.view_runs": "Tab in the Workflows page's two-way switch, beside 'Author', that opens the list of past and running workflow runs. A plural NOUN ('the runs'), NOT the verb 'run'.",
     "autoImprovement.prTitlePrefix": "\"PR\" = pull request, prefixing a generated pull-request title. Keep the abbreviation the target language's developers actually use; do not expand it if that would break the layout.",
     "components.appstore.appListRow.github_stars": "aria-label on the star icon beside a third-party app's abbreviated GitHub stargazer count in the Discover list row. \"Stars\" as in GitHub repository stars (a popularity count), not a rating the user gives.",
     "components.appstore.featuredSpotlight.get": "Verb on an App Store button: install this app. Not the sense of obtain or receive.",

@@ -5139,7 +5139,9 @@
         "rerunning": "আবার চালানো হচ্ছে…",
         "started_run": "রান শুরু হয়েছে",
         "view_source": "সোর্স দেখুন",
-        "workflow_source_for": "{{runId}}-এর ওয়ার্কফ্লো সোর্স"
+        "workflow_source_for": "{{runId}}-এর ওয়ার্কফ্লো সোর্স",
+        "lines_one": "{{count}}টি লাইন",
+        "lines_other": "{{count}}টি লাইন"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "ডায়নামিক ওয়ার্কফ্লো লিখুন, চালান ও পর্যবেক্ষণ করুন",
@@ -5154,20 +5156,25 @@
         "validate": "যাচাই করুন",
         "workflow_script_python": "ওয়ার্কফ্লো স্ক্রিপ্ট (Python)",
         "workflow_source": "ওয়ার্কফ্লো সোর্স",
-        "workflows": "ওয়ার্কফ্লো"
+        "workflows": "ওয়ার্কফ্লো",
+        "view_author": "লিখুন",
+        "view_runs": "রান"
       },
       "workflowsRuns": {
         "budget": "বাজেট",
         "cancel": "বাতিল",
         "cancelling": "বাতিল করা হচ্ছে…",
         "could_not_load_runs": "রান লোড করা যায়নি:",
-        "events": "ইভেন্ট",
         "no_background_runs_yet_runs_started_in_the_backg": "এখনও কোনো ব্যাকগ্রাউন্ড রান নেই। ব্যাকগ্রাউন্ডে শুরু হওয়া রান এখানে দেখা যাবে।",
         "run_detail": "রানের বিবরণ",
         "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।",
         "unknown": "অজানা",
         "view_graph": "গ্রাফ",
-        "view_tree": "ট্রি"
+        "view_tree": "ট্রি",
+        "agents_one": "{{count}}টি এজেন্ট",
+        "agents_other": "{{count}}টি এজেন্ট",
+        "events_one": "{{count}}টি ইভেন্ট",
+        "events_other": "{{count}}টি ইভেন্ট"
       }
     },
     "commandBar": {

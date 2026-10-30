@@ -5228,7 +5228,9 @@
         "rerunning": "Wird neu ausgeführt…",
         "started_run": "Ausführung gestartet",
         "view_source": "Quelle anzeigen",
-        "workflow_source_for": "Workflow-Quelle für {{runId}}"
+        "workflow_source_for": "Workflow-Quelle für {{runId}}",
+        "lines_one": "{{count}} Zeile",
+        "lines_other": "{{count}} Zeilen"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Dynamische Workflows erstellen, ausführen und beobachten",
@@ -5243,20 +5245,25 @@
         "validate": "Validieren",
         "workflow_script_python": "Workflow-Skript (Python)",
         "workflow_source": "Workflow-Quelle",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "view_author": "Erstellen",
+        "view_runs": "Ausführungen"
       },
       "workflowsRuns": {
         "budget": "Budget",
         "cancel": "Abbrechen",
         "cancelling": "Wird abgebrochen…",
         "could_not_load_runs": "Ausführungen konnten nicht geladen werden:",
-        "events": "Ereignisse",
         "no_background_runs_yet_runs_started_in_the_backg": "Noch keine Hintergrundausführungen. Im Hintergrund gestartete Ausführungen erscheinen hier.",
         "run_detail": "Ausführungsdetails",
         "select_a_run_to_see_its_phases_agents_and_result": "Wählen Sie eine Ausführung, um ihre Phasen, Agenten und Ergebnisse zu sehen.",
         "unknown": "Unbekannt",
         "view_graph": "Graph",
-        "view_tree": "Baum"
+        "view_tree": "Baum",
+        "agents_one": "{{count}} Agent",
+        "agents_other": "{{count}} Agenten",
+        "events_one": "{{count}} Ereignis",
+        "events_other": "{{count}} Ereignisse"
       }
     },
     "awsControl": {

@@ -5230,7 +5230,10 @@
         "rerunning": "Volviendo a ejecutar…",
         "started_run": "Ejecución iniciada",
         "view_source": "Ver el código fuente",
-        "workflow_source_for": "código fuente del flujo de trabajo de {{runId}}"
+        "workflow_source_for": "código fuente del flujo de trabajo de {{runId}}",
+        "lines_one": "{{count}} línea",
+        "lines_many": "{{count}} líneas",
+        "lines_other": "{{count}} líneas"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, ejecuta y observa flujos de trabajo dinámicos",
@@ -5245,20 +5248,27 @@
         "validate": "Validar",
         "workflow_script_python": "Script del flujo de trabajo (Python)",
         "workflow_source": "código fuente del flujo de trabajo",
-        "workflows": "Flujos de trabajo"
+        "workflows": "Flujos de trabajo",
+        "view_author": "Crear",
+        "view_runs": "Ejecuciones"
       },
       "workflowsRuns": {
         "budget": "presupuesto",
         "cancel": "Cancelar",
         "cancelling": "Cancelando…",
         "could_not_load_runs": "No se pudieron cargar las ejecuciones:",
-        "events": "eventos",
         "no_background_runs_yet_runs_started_in_the_backg": "Aún no hay ejecuciones en segundo plano. Las ejecuciones iniciadas en segundo plano aparecen aquí.",
         "run_detail": "Detalle de la ejecución",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecciona una ejecución para ver sus fases, agentes y resultado.",
         "unknown": "Desconocido",
         "view_graph": "Grafo",
-        "view_tree": "Árbol"
+        "view_tree": "Árbol",
+        "agents_one": "{{count}} agente",
+        "agents_many": "{{count}} agentes",
+        "agents_other": "{{count}} agentes",
+        "events_one": "{{count}} evento",
+        "events_many": "{{count}} eventos",
+        "events_other": "{{count}} eventos"
       }
     },
     "commandBar": {

@@ -5230,7 +5230,10 @@
         "rerunning": "Riesecuzione in corso…",
         "started_run": "Esecuzione avviata",
         "view_source": "Visualizza l'origine",
-        "workflow_source_for": "origine del workflow per {{runId}}"
+        "workflow_source_for": "origine del workflow per {{runId}}",
+        "lines_one": "{{count}} riga",
+        "lines_many": "{{count}} righe",
+        "lines_other": "{{count}} righe"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, esegui e osserva workflow dinamici",
@@ -5245,20 +5248,27 @@
         "validate": "Convalida",
         "workflow_script_python": "Script del workflow (Python)",
         "workflow_source": "origine del workflow",
-        "workflows": "Workflow"
+        "workflows": "Workflow",
+        "view_author": "Crea",
+        "view_runs": "Esecuzioni"
       },
       "workflowsRuns": {
         "budget": "budget",
         "cancel": "Annulla",
         "cancelling": "Annullamento in corso…",
         "could_not_load_runs": "Impossibile caricare le esecuzioni:",
-        "events": "eventi",
         "no_background_runs_yet_runs_started_in_the_backg": "Ancora nessuna esecuzione in background. Le esecuzioni avviate in background appaiono qui.",
         "run_detail": "Dettaglio dell'esecuzione",
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato.",
         "unknown": "Sconosciuto",
         "view_graph": "Grafo",
-        "view_tree": "Albero"
+        "view_tree": "Albero",
+        "agents_one": "{{count}} agente",
+        "agents_many": "{{count}} agenti",
+        "agents_other": "{{count}} agenti",
+        "events_one": "{{count}} evento",
+        "events_many": "{{count}} eventi",
+        "events_other": "{{count}} eventi"
       }
     },
     "commandBar": {
