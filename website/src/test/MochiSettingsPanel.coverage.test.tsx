@@ -26,6 +26,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import type { AppConfig } from '../apps/mochi/src/shared/config'
 import type { CompanionStats, McpServerInfo } from '../apps/mochi/src/shared/types'
@@ -637,6 +638,26 @@ describe('SettingsPanel MCP section', () => {
     expect(saveButton().disabled).toBe(false)
   })
 
+  it.each(['{Enter}', ' '])('revokes a server from the keyboard (%s) without expanding its row', async (key) => {
+    api.getConfig.mockResolvedValue(makeConfig({
+      mochi: { extraMcpServers: [{ name: 'extra-b', agents: ['chat'], autoApprove: [], disabledTools: [] }] },
+    }))
+    api.getMcpServers.mockResolvedValue([makeServer({ name: 'extra-b' })])
+    const user = userEvent.setup()
+    await mount()
+    openSection('MCP Servers')
+
+    const remove = await screen.findByRole('button', { name: 'Remove extra-b' })
+    remove.focus()
+    await user.keyboard(key)
+    // The row used to be a role="button" whose key handler took this keystroke
+    // and expanded the row instead of removing the server.
+    expect(await screen.findByRole('button', { name: /Add/ })).toBeTruthy()
+    expect(api.discoverMcpTools).not.toHaveBeenCalled()
+    // Remove must not sit inside another control.
+    expect(remove.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
   it('discovers tools on first expand and groups them by effective policy', async () => {
     api.getConfig.mockResolvedValue(makeConfig({
       mochi: { extraMcpServers: [{ name: 'extra-b', agents: ['chat'], autoApprove: [], disabledTools: [] }] },
@@ -674,14 +695,19 @@ describe('SettingsPanel MCP section', () => {
     await mount()
     openSection('MCP Servers')
 
+    const user = userEvent.setup()
     const row = await screen.findByRole('button', { expanded: false })
-    fireEvent.keyDown(row, { key: 'x' })
+    row.focus()
+    await user.keyboard('x')
     expect(screen.getByRole('button', { expanded: false })).toBeTruthy()
 
-    fireEvent.keyDown(row, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     expect(await screen.findByText('Refresh Tools')).toBeTruthy()
     // A core server has no per-agent toggles — its grant is not negotiable here.
     expect(screen.queryByText('Apply to Chat')).toBeNull()
+
+    await user.keyboard(' ')
+    expect(screen.queryByText('Refresh Tools')).toBeNull()
   })
 
   it('shows the per-agent policy for the selected tab', async () => {
