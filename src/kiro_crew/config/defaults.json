@@ -62,7 +62,8 @@
     "@kirocrew-mate/offer_dashboard_page",
     "@kirocrew-mate/key_result_progress",
     "@kirocrew-mate/save_goal_report",
-    "@kirocrew-mate/save_notes"
+    "@kirocrew-mate/save_notes",
+    "@kirocrew-mate/message_mate"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

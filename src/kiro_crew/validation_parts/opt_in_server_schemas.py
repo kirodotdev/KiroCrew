@@ -730,4 +730,13 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
         tool_name="save_notes",
         fields=[FieldSpec("text", str, required=True, max_len=_goals.NOTES_MAX_CHARS)],
     ),
+    # The gateway holds the real rules (``dashboard.mate_peer_messages``); the
+    # caps here only bound the envelope.
+    "message_mate": ToolSchema(
+        tool_name="message_mate",
+        fields=[
+            FieldSpec("to", str, required=True, max_len=MAX_SHORT_STRING),
+            FieldSpec("text", str, required=True, max_len=4000),
+        ],
+    ),
 }
