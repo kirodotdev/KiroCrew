@@ -1774,7 +1774,14 @@ to this kind would store content no reader can parse.
   and `window.open`, into a `kirocrew-dashboard:open` message, and
   `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
   against its origin, only on a real click in
-  that frame, once per click, with no dialog. The shim decides a click after
+  that frame, once per click, with no dialog. A page of this dashboard that
+  `utils/internalNav.ts` accepts (an explicit list of destinations, each with
+  the query parameters it may carry, on the dashboard's own origin or the exact
+  origin of `dashboard.url` or the tunnel) opens in place through the main
+  window's router and leave check (`openInternalLink`); anything else opens in a
+  new tab. A link in a window with no in-app navigator (a popout or embed) keeps
+  its previous behavior. The shim posts a middle or modified click with `tab: true`, and the host
+  then opens even a dashboard page in a new tab. The shim decides a click after
   the page's own handlers, so a click the page cancels posts nothing. The host
   opens at once only when it can tie the click to the asking frame
   (`tiedToFrame`): focus came into that frame straight from the dashboard (the
@@ -1783,12 +1790,18 @@ to this kind would store content no reader can parse.
   between frames fires nothing, so the entry is checked whenever the dashboard
   hears anything and every 200 ms); the pointer is not over another frame, and no click or key in the dashboard or reported by another
   bridged frame (`kirocrew-dashboard:input`) is within an activation's lifespan
-  (5 s). Otherwise it does not open: an "Open <host>" button
+  (5 s). An in-place dashboard page (`openInternalLink`) is also tied
+  (`pointerTiedToFrame`) when that dashboard click or key came before the
+  pointer entered the asking frame and the pointer is still over it, so a page
+  link clicked just after opening the page or its tab opens on the first click;
+  a sibling frame's reported input still refuses it. Otherwise it does not open: an "Open <host>" button
   (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
   right corner and takes focus, and the person's click on it opens the link.
   It has no timer, so a slow reader does not lose it. It goes on the next click
-  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a link on a click
-  made in the dashboard or in another frame. Each web link gets its resolved URL
+  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
+  made in the dashboard or in another frame. Under the pointer tie it can, right after a dashboard click and with no click in the
+  frame, move this window to a listed dashboard page, behind that page's leave check and within the activation's lifespan: the
+  residual `rfc-in-app-dashboard-links.md` §3.4 and §4 accept. Each web link gets its resolved URL
   as a hover title, so the URL shows before the click, as it does for a link in a
   session. A `<form>` in the page submits nowhere, whatever its `target`
   (`_blank` included): the frames grant no `allow-forms` and the policy sets
