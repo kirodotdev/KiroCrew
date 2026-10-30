@@ -178,6 +178,82 @@ class TestSwitches:
         assert not env["cfg"].exists()
 
 
+class TestDispatchSubToggle:
+    """``slack.code_channel_dispatch``: its own opt-in under Code channels."""
+
+    def test_reads_off_and_turning_code_channels_on_does_not_save_it_on(self, env: dict) -> None:
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is False
+        status, _ = _call(env, "PUT", {"code_channels": True})
+        assert status == 200
+        assert "code_channel_dispatch" not in _stored(env)
+        _, body = _call(env, "GET")
+        assert body["code_channels"] is True and body["code_channel_dispatch"] is False
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_saves_hot_and_reads_back(self, env: dict, on: bool) -> None:
+        _call(env, "PUT", {"code_channel_dispatch": not on})
+        status, res = _call(env, "PUT", {"code_channel_dispatch": on})
+        assert status == 200 and res["restart_required"] is False
+        assert _stored(env)["code_channel_dispatch"] is on
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is on
+
+    def test_turning_code_channels_off_leaves_it_as_saved(self, env: dict) -> None:
+        _call(env, "PUT", {"code_channels": True, "code_channel_dispatch": True})
+        _call(env, "PUT", {"code_channels": False})
+        assert _stored(env)["code_channel_dispatch"] is True
+
+    @pytest.mark.parametrize("bad", ["true", 1, None])
+    def test_must_be_a_boolean(self, env: dict, bad: object) -> None:
+        status, res = _call(env, "PUT", {"code_channel_dispatch": bad})
+        assert status == 400 and "boolean" in res["error"]
+        assert not env["cfg"].exists()
+
+    def test_an_overlay_pin_refuses_the_save_instead_of_acknowledging_it(self, env: dict) -> None:
+        """config.local.json wins over the base file the save writes, so a withdrawal
+        saved there would read 'saved' while dispatch stayed granted (security review)."""
+        # The isolated test home's own overlay path, unpatched: the loader and
+        # ``overlay_pins`` both resolve it there.
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(json.dumps({"slack": {"code_channel_dispatch": True}}), encoding="utf-8")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_dispatch"] is True
+            assert body["code_channel_dispatch_overlay"] is True
+            assert body["code_channel_dispatch_overlay_state"] == "pinned"
+            assert body["code_channel_dispatch_overlay_path"].endswith("config.local.json")
+            status, res = _call(env, "PUT", {"code_channel_dispatch": False})
+            assert status == 409 and "config.local.json" in res["error"]
+            assert res["error"].startswith("Hand-off is set in config.local.json (slack.")
+            base = json.loads(env["cfg"].read_text(encoding="utf-8")) if env["cfg"].exists() else {}
+            assert "code_channel_dispatch" not in (base.get("slack") or {}), "nothing staged"
+            # Other Slack Code fields still save.
+            assert _call(env, "PUT", {"code_channels": True})[0] == 200
+            overlay.write_text("{ torn", encoding="utf-8")
+            _, body = _call(env, "GET")
+            assert body["code_channel_dispatch_overlay_state"] == "unreadable"
+        finally:
+            overlay.unlink(missing_ok=True)
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch_overlay"] is False
+        assert body["code_channel_dispatch_overlay_state"] == "absent"
+
+    @pytest.mark.parametrize("text", ["{ torn", "[1]", '{"slack": "on"}', '{"slack": null}'])
+    def test_an_unreadable_overlay_refuses_the_save(self, env: dict, text: str) -> None:
+        """An overlay that cannot be read may hold the winning value; the save is not
+        taken as uncontested (verifier: overlay_pins fails open)."""
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(text, encoding="utf-8")
+        try:
+            status, res = _call(env, "PUT", {"code_channel_dispatch": False})
+        finally:
+            overlay.unlink(missing_ok=True)
+        assert status == 409 and "cannot be read" in res["error"]
+
+
 class TestDefaults:
     def test_folder_path_is_stored_by_id(self, env: dict) -> None:
         status, _ = _call(env, "PUT", {"code_channel_defaults": {"folder": "dev / slack code"}})

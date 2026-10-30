@@ -226,6 +226,45 @@ async def dispatch(payload: dict) -> None:
     if await dispatch_card_click(_orch, payload, action_id):
         return
 
+    # ── Slack Code channel: the hand-off notice's Turn-on button ──
+    # Owner-only, SEL-audited; writes slack.code_channel_dispatch through the
+    # Settings card's audited save. Falls through when code channels are off.
+    from kiro_crew.slack.code_channels.handoff import HANDOFF_ACTION_ID, handle_handoff_click
+
+    if action_id == HANDOFF_ACTION_ID:
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack code channel hand-off dropped: denied by channels governance policy")
+            return
+        if await handle_handoff_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the restart notice's Resume button ──
+    # Prefix-dispatched like the session-resume buttons below; owner-only and
+    # SEL-audited, it continues the channel's own interrupted work.
+    from kiro_crew.slack.code_channels.resume import (
+        RESUME_ACTION_PREFIX,
+        STOP_ACTION_PREFIX,
+        handle_resume_click,
+        handle_stop_click,
+    )
+
+    if action_id.startswith(RESUME_ACTION_PREFIX):
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack code channel resume dropped: denied by channels governance policy")
+            return
+        if await handle_resume_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the automatic-resume notice's Stop button ──
+    # Owner-only and SEL-audited; stops what the restart resumed, as the
+    # dashboard's Stop control does.
+    if action_id.startswith(STOP_ACTION_PREFIX):
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack code channel stop dropped: denied by channels governance policy")
+            return
+        if await handle_stop_click(_orch, payload):
+            return
+
     # ── OPTIONS Send / legacy choice buttons ──
     # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
     # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that

@@ -69,6 +69,31 @@ def _redact_all(value: str) -> str:
     return value
 
 
+def _reserved_action_refusal(blocks: Any) -> "web.Response | None":
+    """400 when agent-supplied blocks wear a gateway-reserved action id.
+
+    The code-channel buttons (Archive, Turn on hand-off) act on the owner's click;
+    a button an agent posted -- or edited onto a gateway message -- with one of
+    those ids would turn that click into consent to text the agent wrote. Both
+    agent block paths (send and update) refuse it, as they refuse remote media.
+    """
+    from kiro_crew.slack.client import BLOCKS_RESERVED_ACTION_ERROR, blocks_use_reserved_action
+
+    if not isinstance(blocks, list) or not blocks_use_reserved_action(blocks):
+        return None
+    return web.json_response(
+        {
+            "error": (
+                "agent-supplied Block Kit cannot use an action_id or block_id "
+                "starting with kc_code_channel_: those belong to the gateway's own "
+                "code-channel buttons"
+            ),
+            "code": BLOCKS_RESERVED_ACTION_ERROR,
+        },
+        status=400,
+    )
+
+
 def _sanitize_blocks(
     blocks: list[dict],
     *redactors: Any,
@@ -391,6 +416,8 @@ async def api_update_message(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
     if not text and not blocks:
         return web.json_response(
             {"error": "text or blocks required", "code": "content_required"}, status=400
@@ -535,6 +562,8 @@ async def _read_send_message(
             },
             status=400,
         )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
 
     # ── Channel-addressed leg ──
     # Handled before the Slack-shaped validation below, because a Webex room id is

@@ -748,7 +748,7 @@ def _caller_reaches_a_channel(request: web.Request, caller_key: str) -> bool:
     a ``channel:`` key (an agent spawned for a channel thread, which
     ``is_channel_session_key`` does not name) and a channel-born slot
     (``session_control._channel_link_of``). The ledger's entry gate covers a
-    channel-born caller through ``_caller_admission``; this endpoint has no
+    channel-born caller through ``caller_admission_with_route``; this endpoint has no
     such gate, so it reads the slot's link here, on the slot found by the
     ledger's normalisation of the key (``session_ledger.ledger_key``).
     """

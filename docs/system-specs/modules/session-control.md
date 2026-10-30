@@ -1821,6 +1821,139 @@ opener is pinned in `test/test_discord_mirroring.py` and `test/test_telegram_lin
 followed by a `work_ledger_record` write against the real writer lands, and the
 resumed-session path opens nothing.
 
+### Code-channel conductor callers: the second exemption
+
+A Slack code channel runs in ONE dashboard slot the code-channel runtime created and
+recorded in `slack-code-channels.json`. Its turns are mirrored into the channel, so every
+caller-side channel refusal above (`mirrored_caller`) and the work-ledger gate
+(`channel_session`) refuse it, and its default agent -- a conductor, which writes nothing
+itself -- could do nothing there. `session_control_parts/code_channel_exemption.py`
+(`judge_code_channel`) is the second exemption beside owner-DM, consulted by the same three
+gates (`_refuse_ineligible_creator`, `refuse_caller_surface`, `handlers/work_ledger.caller_admission_with_route`
+and its post-read re-check) only after owner-DM refused, and only for a slot whose identity
+is a code channel's. Every other caller meets exactly the refusals above.
+
+**Clauses** (positive facts, first failure is the refusal, one SEL row
+`code_channel_dispatch_exemption` per judgement naming `channel=<id>`):
+
+- *identity* -- `caller_access.code_channel_binding_of`: the store's in-memory binding names
+  the slot key, `get_linked_slot(anchor)` IS the slot, and the slot's `_slack_channel` names
+  the binding's channel (an unloaded store is "not a code channel");
+- *switch* -- `slack.code_channels` on and capable, and `slack.code_channel_dispatch is True`
+  (opt-in, default `false`; a missing, non-boolean or dropped value reads `false`), and no config
+  file or `slack` section this process failed to read whole (`degraded_sections` on the snapshot
+  or the sticky `observed_degraded_sections`, which the live watcher's torn-file probe and an
+  overlay path that is not a readable file both record);
+- *channel state* -- not archived or Stop-fenced, workspace admitted, and confirmed not shared
+  outside the workspace from a `conversations.info` reading at most five minutes old
+  (`slack/code_channels/audience.py`; missing, stale or failed readings refuse and start one
+  background re-read);
+- *audience* -- ONE `_read_mirror_binding` names only the channel's own room; that read is the
+  recorded admission the publisher judges against;
+- *verb* -- `status`, `send`, `close`, `stop`, `end_wait`, `create` (not `fork`) and the ledger;
+  `send` starts a turn on the conductor's OWN worker, which is the point of dispatch; never
+  `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
+- *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
+  the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
+  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
+  is bounded by reach, not by authorship.
+
+**Reach.** Admission binds the call to the creator fence (`_code_channel_admitted(deny)`, and
+`_caller_is_ownership_fenced` is true for the slot by identity); `_delegation_lineage_fenced`
+roots at it, so no private-member workers. `create_session` files a worker in the conductor's
+own folder, beside its session, so the sidebar's lineage lane nests it under the conductor;
+any other folder, a new one inside it, or a folder-walk preflight is refused
+(`code_channel_folder`). The conductor is told this, and to answer status questions from
+`session_status`, in `CONDUCTOR_GUIDANCE` (seeded by `routing._seed_framing`, repeated on its
+`session_create` replies). The same text governs a `reason=stall` ledger wake: before nudging,
+the conductor checks the worker's `session_status`, its item (`work_ledger_read`) and its PR
+and CI on the forge (`gh pr list --head <branch>`, or `--state all --search` by issue or title
+when no branch is known, then `gh pr checks`), then states what it found; `last_status=(none
+yet)` or an empty `pr`/`branch` only means no report arrived, and a quiet worker may have
+finished and failed to report. It never claims a worker "stopped
+without telling me why", nor "PR: none yet" unless `gh` found none. The checks use only verbs
+the exemption admits; `read`/`summary` stay refused.
+A worker is one level deep: `code_channel_root` reads the worker record `create_session`
+writes into the code-channel store at birth -- for the resolved slot AND every live slot that
+answers to the same caller key (`_slots_sharing_identity`), since `caller_slot_key` takes the
+first match -- then the worker's `_created_by` against every
+session key a channel ever ran in (current and retired, never evicted), from the loaded
+snapshot only (the async entry points load it off the loop first; an unloaded, unreadable or
+malformed store refuses an agent-created caller). A single binding row that does not read back
+whole fences only its own channel (`CodeChannelStore.is_quarantined`): the channel is not
+routed or bound again, every write carries the row back unchanged, and a `session_key` the row
+still names stays among the channel session keys; worker records are unaffected.
+Refusals: `code_channel_worker_caller` on
+create, `depth_exceeded` on a ledger goal/create; the channel's own ledger opens at
+`MAX_DEPTH - 1`. The same record keeps a worker creator-fenced
+(`_caller_is_ownership_fenced`) when its transcript `created_by` has been edited away.
+
+**Opt-in.** `slack.code_channel_dispatch` defaults off, matching the base RFC's "every switch
+defaults off": a fresh or upgraded install's code-channel conductor cannot hand off work until
+the owner turns on **Let the conductor hand off work** under Code channels on the Slack Code
+card (hot-applied). Turning Code channels on never saves it on. With the default off, any
+lost value reads off; the degradation clause covers the remaining case, an unreadable file that
+held an opt-out shadowing an opt-in in the other file (either file as a directory or a dangling
+symlink counts as unreadable, not absent, and is fingerprinted apart from a missing file). When
+`config.local.json` sets the key, or cannot be read, the card disables the toggle and says so,
+and the save answers 409 rather than writing a base value the overlay may override.
+
+**Switched off, in the channel.** The refusal (`DISPATCH_OFF_REFUSAL`) names the control a
+person uses -- Settings → Channels → Slack → Code channels → "Let the conductor hand off work"
+-- and the key only in parentheses, since the agent relays it as is. The judgement also asks
+`slack/code_channels/handoff.notice_soon` for ONE fixed-text notice in the channel with a
+**Turn on hand-off for code channels** button, deduplicated per channel until the switch is
+next judged on (`forget`); memory only, no disk access. The button (`handle_handoff_click`,
+action `kc_code_channel_enable_handoff`) is the owner's alone (`is_owner`; anyone else gets an
+ephemeral refusal), bound to its channel, gated like the wrap-up's Archive button (workspace,
+channel and origin admission, channels governance), and confirmed once by Slack's own dialog.
+It writes the switch through `messaging_api/slack_settings.save_code_channel_dispatch`, the
+card's save path (config lock, `validate_code_settings` with its overlay 409s,
+`_LockedSectionWrite` under `live.hold()`, SEL `slack.config.update` with `source=slack`, hot
+apply), then edits the notice to "Hand-off is on. Send your request again." It never re-runs the
+refused call; the conductor's next turn dispatches.
+
+**What reaches the channel.** Ledger reads and record replies for an exempt caller are the
+published-fields projection only: the goal's first line (`published_goal`, at most 200
+characters) and per item `published_item_fields` -- title, derived state, the worker's report
+summary's first line (at most 140), `branch`, PR, CI verdict, item and worker handles -- with
+mention markup removed and outbound redaction applied last. Never acceptance, decisions,
+events, other artifacts or transcripts. A reader outside the channel's turn (the work board)
+uses the same projection; its "is this the channel's conductor, and is that its worker"
+predicate ships with that reader, not here.
+
+**Its workers' state, and a link to each.** `session_status` (admitted, creator-fenced) lists
+only the workers this conductor created, each with its state -- `working` / `queued` / `idle` /
+`pending_approval` (+ the redacted tool name) / `closed` / `lost` -- and, for a code channel's
+conductor only (other callers' rows are unchanged), `last_activity_at` /
+`since_activity_s`: the newest transcript row's timestamp, never its text, read from the
+restore tail for a row whose window is not loaded. For that conductor each live row, and the `session_create` reply, also carries `dashboard_link`
+(`worker_dashboard_link`): built server-side from the gateway's own origin (dashboard URL, or
+the tunnel when `slack.use_tunnel_url` opts in), a path link with no sign-in token, passed
+through the outbound credential/exfiltration filter and dropped whole if anything
+credential-shaped remains. Transcript verbs (`read`, `summary`) stay refused; their refusal
+names `session_status` and, for its own worker only, that link (`transcript_read_hint`).
+
+**Restart resume** (`slack/code_channels/resume.py`). After the memory barrier, once Slack is
+connected, each bound, live, not archived and not wrapped-up code channel's interrupted work
+is continued through `continue_slot_turn(require_interrupted=True)` -- the channel's session
+and its own workers (store worker records plus the crew-log tree), nothing else. The
+interrupted turn (its opening row's ts) is recorded in the code-channel store's `resume` table
+before the continue; a recorded turn is never auto-resumed again. The stale status is settled
+(`status.settle_after_stop`) before the conductor's turn is continued, and one top-level
+notice follows; anything held back gets an owner-only Resume
+button (`kc_code_channel_resume_<hash>`) honoured only on the recorded notice ts and claimed by
+compare-and-set; it resumes what is interrupted in the channel now (identity and admission
+re-checked under the lock) and is given back when nothing could be resumed.
+`resume.subscribe` hands each channel's report to the work board.
+
+**Agents cannot wear the gateway's buttons.** Agent-supplied Block Kit on both the send and
+the edit path is refused (`blocks_reserved_action`) when an `action_id` or `block_id` starts
+with `kc_code_channel_`, so an agent cannot post, or edit onto a gateway message, a copy of
+the Archive or Turn-on-hand-off button. The hand-off button also counts only on the notice
+this process registered, once.
+
 ## The wait → read poll loop
 
 `session_read_message` is the observation half, and polling is the supported

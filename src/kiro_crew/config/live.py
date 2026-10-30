@@ -622,6 +622,12 @@ class ConfigWatch:
             fingerprint = await asyncio.to_thread(self._current_fingerprint)
             cfg = await asyncio.to_thread(self._load)
             self.prime(cfg, fingerprint)
+        # The torn / not-a-file record before the first cycle runs (one poll
+        # interval away): the dispatch switch reads it from the first request.
+        try:
+            await asyncio.to_thread(self._document_is_torn)
+        except Exception:  # noqa: BLE001 - the first cycle takes it again
+            logger.debug("config watch: initial file probe failed", exc_info=True)
         self._task = loop.create_task(self._run(), name="config-watch")
         self._task.add_done_callback(self._on_task_done)
 
@@ -907,19 +913,75 @@ class ConfigWatch:
         The loader answers such a file with defaults and a degradation flag that
         stays for the life of the process, so the flag cannot say whether THIS
         read hit a torn file; the file can. Missing files are not torn.
+
+        The answer is also added, per file, to :func:`torn_config_files`, which
+        keeps it until restart. Nothing here touches the loader's process-wide
+        degradation record, so no gate that reads that record moves on a tear.
+
+        A ``config.local.json`` that exists but is not a regular file (a directory,
+        or a symlink whose target is gone -- an unmounted share) is listed there
+        too: the loader reads it as absent, yet it can stand where an opt-out was.
+        It is NOT reported as torn, so the watcher still adopts the load and every
+        other setting reloads as before; only the dispatch switch reads the list.
         """
+        import os
+
         from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
-        for path in (config_path(), config_local_path()):
+        torn: set[str] = set()
+        unknown: set[str] = set()
+        local = config_local_path()
+        try:
+            if os.path.lexists(local) and not local.is_file():
+                unknown.add(str(local))
+        except OSError:  # EIO/ESTALE on a broken mount: what it holds is unknown
+            unknown.add(str(local))
+        for path in (config_path(), local):
             try:
                 if not path.exists():
                     continue
                 data = json.loads(read_config_text(path))
             except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
-                return True
+                torn.add(str(path))
+                continue
             if not isinstance(data, dict):
-                return True
-        return False
+                torn.add(str(path))
+        _set_torn_files(torn | unknown)
+        return bool(torn)
+
+
+# ── the last probe's torn files ──────────────────────────────────────
+
+#: Every config file a watcher probe has found torn since the gateway started (see
+#: :meth:`ConfigWatch._document_is_torn`). Sticky until restart, on purpose: a
+#: later probe that reads the files whole does not mean the watcher adopted them
+#: (a held settings transaction can discard that result), so the snapshot it kept
+#: may still predate an opt-out written during the tear. Read only by the
+#: code-channel dispatch opt-in; the loader's degradation record is untouched.
+_TORN_FILES: frozenset[str] = frozenset()
+
+
+def _set_torn_files(paths: Iterable[str]) -> None:
+    global _TORN_FILES
+    _TORN_FILES = _TORN_FILES | frozenset(paths)
+
+
+def _clear_torn_files() -> None:
+    """Forget every tear (a fresh process; tests)."""
+    global _TORN_FILES
+    _TORN_FILES = frozenset()
+
+
+def torn_config_files() -> frozenset[str]:
+    """Every config file the live watcher has found torn since start, as path strings.
+
+    While a tear is unresolved the watcher keeps the snapshot from before it
+    (:func:`_keep_last_valid`), and a later whole read is not proof that snapshot
+    was replaced, so a file stays listed until the gateway restarts. Read by an
+    opt-in that must not treat a kept snapshot as the owner's current choice (the
+    Slack code-channel dispatch switch); no I/O.
+    """
+    return _TORN_FILES
 
 
 # ── process singleton ────────────────────────────────────────────────
@@ -1030,6 +1092,7 @@ def reset_for_tests() -> None:
         _WATCH = None
     if w is not None and w._task is not None:
         w._task.cancel()
+    _clear_torn_files()
 
 
 __all__ = [
@@ -1047,5 +1110,6 @@ __all__ = [
     "reset_for_tests",
     "snapshot",
     "subscribe",
+    "torn_config_files",
     "watch",
 ]

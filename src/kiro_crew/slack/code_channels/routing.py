@@ -239,6 +239,17 @@ async def _inbound_gate(
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
+    if binding is None and store().is_quarantined(channel):
+        # Its binding row could not be read: the channel is fenced, so nothing in
+        # it reaches a session (the kickoff thread's link included) until repaired.
+        _audit(
+            sender_id,
+            "slack.code_channel.message",
+            "denied",
+            f"channel={channel}",
+            "the channel's binding row could not be read",
+        )
+        return DROP
     if binding is not None:
         # A bound channel answers to its stored origin before anything else:
         # every path that passes from here (a trusted bot, a failed lookup)
@@ -609,6 +620,10 @@ async def _bind_channel(
     existing = store().get_binding(channel)
     if existing is not None and not replace:
         return existing
+    if store().is_quarantined(channel):
+        # Its binding row could not be read: the channel stays fenced until the
+        # file is repaired, rather than gaining a new session over that row.
+        raise BindingUnavailable("the channel's binding row could not be read")
     state = _dashboard_state()
     if state is None:
         raise BindingUnavailable("no dashboard")
@@ -916,11 +931,20 @@ SEED_CONTEXT_SOURCE = "slack-code-channel"
 
 
 def _seed_framing(origin_channel: str, context: str) -> str:
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+        CONDUCTOR_GUIDANCE,
+        _switch_refusal,
+    )
+
     lines = [
         "[Slack code channel]",
         f"This session is a Slack code channel opened from a thread in <#{origin_channel}>. "
         "Your replies are posted to this code channel.",
     ]
+    # Only while hand-off is on: with the switch off (its default) the guidance
+    # would steer the conductor into a call that is refused.
+    if not _switch_refusal():
+        lines.append(CONDUCTOR_GUIDANCE)
     if context:
         lines.extend(
             [

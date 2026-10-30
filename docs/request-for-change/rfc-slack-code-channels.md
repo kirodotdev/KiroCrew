@@ -372,6 +372,32 @@ Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
   reply on the origin message.
 * **Status.** The channel's session status follows the same lifecycle as an agent
   session (§2), with no `thread_ts`.
+* **Restart resume.** A code channel's binding survives a gateway restart, so its
+  next message reaches the same session; a turn that was running does not. Once
+  per gateway start, after Slack connects, the gateway continues each interrupted
+  turn of a code channel's own session and of that session's own workers, and
+  nothing else. This is the owner's ask ("Yes, add the Resume button after
+  restarts, Auto-resume without asking").
+  * **Whose work.** Only a channel admitted right now (bound, not archived,
+    wrapped up, stopped or fenced, in an admitted workspace, let in by channels
+    governance), its session by strict identity (binding, Slack link and slot
+    agree), and that session's own workers: those the store recorded as its
+    workers at birth or the crew log lists under it, whose live creator still
+    names it and which are linked to no channel. Identity and admission are
+    re-checked under the slot lock right before each continuation.
+  * **At most once per turn.** The interrupted turn is recorded in the
+    write-protected code-channel store before it is continued, and a recorded
+    turn is never continued automatically again, so a turn that takes the
+    gateway down cannot loop. A turn whose identity cannot be proven, or whose
+    record cannot be saved, is not continued automatically.
+  * **One notice.** The channel gets one top-level notice: "picking up where I
+    left off" with an owner-only Stop for what was resumed, or the reason the
+    work is paused with an owner-only Resume. Stop reaches only the sessions that
+    notice resumed, at the turn it resumed them. Resume re-runs every identity and
+    admission check, and is given back when nothing could run. In a Trust channel
+    the notice says the resumed work acts without asking first.
+  * **Switch.** Restart resume is part of code channels and runs only while they
+    are on; it has no switch of its own.
 
 ## Migration plan
 

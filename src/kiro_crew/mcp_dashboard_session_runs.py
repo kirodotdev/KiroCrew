@@ -250,8 +250,16 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
+    opened = f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
+    guidance = str(resp.get("guidance") or "")
+    if guidance:
+        # A code channel's conductor: it cannot read the worker's transcript, so
+        # it is told what it CAN do (the state read and the worker's link).
+        link = str(resp.get("dashboard_link") or "")
+        link_line = f" Dashboard: {link}" if link else ""
+        return redact(f"{opened}{guidance}{link_line}" + reply_line(resp))
     return redact(
-        f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
+        f"{opened}"
         "It is empty and waiting in the user's sidebar; watch it with "
         "session_read_message." + reply_line(resp)
     )
@@ -804,13 +812,14 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             )
             continue
         mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+        extra = _status_activity_suffix(row)
         if row.get("pending_approval"):
             status_lines.append(
                 f"  \u270b `{target}` ({title}) — {status}, "
-                f"{_pending_approval_phrase(row)}{queued}"
+                f"{_pending_approval_phrase(row)}{queued}{extra}"
             )
             continue
-        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
+        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{extra}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
 
@@ -852,6 +861,29 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
         f"\U0001f513 Released `{target}` from `{previous}` — it stands on its own "
         "in the sidebar again, keeping whatever it opened under itself."
     )
+
+
+def _status_activity_suffix(row: dict[str, Any]) -> str:
+    """``, last activity 40s ago — <link>`` from a live status row's own fields.
+
+    Both are state, never transcript text: the server stamps the newest row's
+    age, and attaches a credential-free dashboard link only for a code channel's
+    conductor. Absent fields add nothing, so ordinary rows read as before.
+    """
+    parts = ""
+    since = row.get("since_activity_s")
+    if isinstance(since, int) and not isinstance(since, bool) and since >= 0:
+        if since < 120:
+            age = f"{since}s"
+        elif since < 7200:
+            age = f"{since // 60}m"
+        else:
+            age = f"{since // 3600}h"
+        parts += f", last activity {age} ago"
+    link = row.get("dashboard_link")
+    if isinstance(link, str) and link:
+        parts += f" — {link}"
+    return parts
 
 
 def _pending_approval_phrase(resp: dict[str, Any]) -> str:

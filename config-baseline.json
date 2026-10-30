@@ -5422,6 +5422,7 @@
         "session_folder": "",
         "auto_link_sessions": false,
         "agent_sessions": false,
+        "code_channel_dispatch": false,
         "code_channels": false,
         "code_channel_defaults": {
           "folder": null,
@@ -5780,6 +5781,22 @@
       ],
       "label": "Agent Sessions",
       "help": "Run Slack threads as Slack agent sessions: threads show a live status and title, and Slack's native Stop button cancels the turn. Adds the agent view (features.agent_view), the assistant:write scope and the agent-session events to the generated app manifest; an installed app needs that manifest update and a reinstall before it takes effect, and until then Slack behaves as before. Slack cannot switch an app back from agent_view to assistant_view. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channel_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channel Dispatch",
+      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; turning that on does not turn this on. Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off by default, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
