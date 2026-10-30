@@ -301,6 +301,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
     )
+    from kiro_crew.embeddings_blas import (  # noqa: F401
+        blas_safe_ubatch,
+        runtime_has_blas_backend,
+    )
     from kiro_crew.embeddings_child import (  # noqa: F401
         ChildLlama,
         is_vendored_llama_class,
