@@ -167,7 +167,10 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-All nine backends carry a live capture reaching all seven required classes.
+The ten backends carry live evidence for their handshakes and transports. Antigravity's
+`turn-synthesized.jsonl` is the one synthesized required-class carrier: its live
+handshake and stdio MCP mount were captured on Google Antigravity ACP 1.4.4, but a
+completed model turn requires an authenticated Google account.
 `codex/` also keeps a synthesized `session.jsonl`. Stated plainly because it
 bounds what the corpus proves: a synthesized fixture locks the dispatch layer's
 behaviour against refactoring, which is what it was built for, and it does

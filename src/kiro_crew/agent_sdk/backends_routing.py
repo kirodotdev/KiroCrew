@@ -24,6 +24,7 @@ from enum import Enum
 from typing import FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -354,7 +355,13 @@ ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
 #: :data:`kiro_crew.acp.harness_tool_names.STRANDS_TOOL_IDS_BY_KIRO_TOOL`, for a
 #: call the gate proved is that built-in only.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_STRANDS,
+    }
 )
 
 #: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn
@@ -520,6 +527,7 @@ ACP_BACKEND_ROUTING: dict = {
     # pi's and deepseek's member. Live capture:
     # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
     ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
+    ACP_BACKEND_ANTIGRAVITY: Routing.SESSION_CONFIG,
 }
 
 
@@ -545,6 +553,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
     # the session's directory run without asking, which is the same residual Codex
     # has and the same OS credential mask compensates for.
     ACP_BACKEND_COPILOT: ("allow_all", "off"),
+    ACP_BACKEND_ANTIGRAVITY: ("mode", "default"),
 }
 
 
@@ -662,6 +671,10 @@ ACP_BACKEND_GATE_READBACK: dict = {
 #: ``allow_all`` write at session start (``ACP_BACKEND_PERMISSION_CONFIG``) is the
 #: other half: it is what undoes a value a restored session was left in.
 ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST: dict = {
+    # Antigravity's /plan and /usage are read-only session commands. /logout
+    # clears the operator's credential, so a command-shaped prompt from a channel
+    # or subagent must not reach it.
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"plan", "usage"}),
     ACP_BACKEND_COPILOT: frozenset(
         {
             "compact",
@@ -693,6 +706,22 @@ ACP_BACKEND_FORBIDDEN_MODES: dict = {
     ACP_BACKEND_COPILOT: frozenset(
         {"https://agentclientprotocol.com/protocol/session-modes#autopilot"}
     ),
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"auto_edit", "yolo"}),
+}
+
+#: Harness id -> the tool-call kinds that must raise ``session/request_permission``
+#: before they run. A member's tool call of one of these kinds that reports
+#: ``completed`` with no request for its ``toolCallId`` ran without Crew's gate, so
+#: the harness is stopped (``AcpClient._tripwire_unasked_call``). ``"mcp"`` stands
+#: for a call the harness marks as an MCP call (``_meta.is_mcp_tool_call`` or
+#: ``_meta.mcp``), whatever its ``kind``. Read-only kinds are left out on purpose:
+#: Antigravity 1.4.4's ``default`` mode is described only as the "Default
+#: permission prompt flow", no signed-in capture shows which kinds it asks for, and
+#: a read that runs unasked must not end a healthy session. ``execute`` and the
+#: MCP call are pinned by ``test/fixtures/acp_frames/antigravity/turn-synthesized.jsonl``;
+#: the rest are inferred, so this is the one row to change when a capture lands.
+ACP_BACKEND_MUST_ASK_TOOL_KINDS: dict = {
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"execute", "edit", "delete", "move", "fetch", "mcp"}),
 }
 
 

@@ -10,8 +10,11 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
@@ -35,8 +38,11 @@ def _read(name: str) -> str:
         (ACP_BACKEND_GOOSE, Disposition.TRANSLATED),
         (ACP_BACKEND_OPENCODE, Disposition.TRANSLATED),
         (ACP_BACKEND_STRANDS, Disposition.TRANSLATED),
+        (ACP_BACKEND_ANTIGRAVITY, Disposition.TRANSLATED),
         (ACP_BACKEND_CLAUDE, Disposition.NO_CHANNEL),
         (ACP_BACKEND_CODEX, Disposition.NO_CHANNEL),
+        (ACP_BACKEND_COPILOT, Disposition.WITHHELD),
+        (ACP_BACKEND_DEEPSEEK, Disposition.WITHHELD),
     ],
 )
 def test_hooks_disposition_per_mirror_matches_the_spec_fields_page(backend, disposition):
@@ -44,9 +50,22 @@ def test_hooks_disposition_per_mirror_matches_the_spec_fields_page(backend, disp
     doc = _read("agent-spec-fields.md")
     assert "`hooks` is `no-channel` on all four" not in doc
     assert (
-        "`hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires\n"
-        "  it, and `no-channel` on `claude` and `codex`." in doc
+        "`hooks` is `translated` on `goose`, `opencode`, `strands` and `antigravity`, where\n"
+        "  Crew's turn loop fires it; it is `no-channel` on `claude` and `codex` and withheld\n"
+        "  on `deepseek` and `copilot`." in doc
     )
+
+
+def test_deepseek_mirror_table_tracks_its_projection():
+    doc = _read("agent-spec-fields.md")
+    deepseek = mirror_for(ACP_BACKEND_DEEPSEEK).rulings()
+    assert deepseek[Concern.MCP_SERVERS].disposition is Disposition.DELIVERED
+    assert deepseek[Concern.TOOL_ALLOWLIST].disposition is Disposition.TRANSLATED
+    assert deepseek[Concern.DENIED_TOOLS].disposition is Disposition.TRANSLATED
+    assert deepseek[Concern.MODEL].disposition is Disposition.DELIVERED
+    assert "| `deepseek` | `deepseek.py` | `mcpServers`" in doc
+    assert "`MIRRORS` contains\n  the eight harnesses" in doc
+    assert "| `deepseek` | none |" not in doc
 
 
 def test_thread_agent_examples_use_the_bare_name_form():

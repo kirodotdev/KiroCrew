@@ -1064,6 +1064,20 @@ def _copilot_session_mcp_servers(self: AcpClient) -> list:
     return self._session_mcp_servers()
 
 
+def _antigravity_session_mcp_servers(self: AcpClient) -> list:
+    """MCP server array passed to an antigravity ``session/new`` / ``session/load``.
+
+    The antigravity twin of :meth:`_copilot_session_mcp_servers`: the member's
+    projected servers, unchanged. A named seam rather than a bare
+    :meth:`_session_mcp_servers` call at the splice, so the wire composition keeps
+    one gated per-harness hook per harness (an edition can override this one
+    alone, and harness-parity H6 sees it). In-memory only, so this accessor adds
+    no scheduling or failure point to a call site shared with kiro-cli
+    (harness-parity H13).
+    """
+    return self._session_mcp_servers()
+
+
 def _pi_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a pi ``session/new`` / ``session/load``.
 

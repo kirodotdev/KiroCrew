@@ -28,7 +28,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_session_mcp_unhonoured``, ``_spawn_start_token``, ``_spawn_work_dir``,
 ``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
 ``_spec_write_cwd``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``.
+``_stdin_stalled``, ``_unasked_watch``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
@@ -691,6 +691,9 @@ def _reset_state(self: AcpClient) -> None:
     # replacement process, so release it with the oracle it sampled into.
     self._retire_liveness_state()
     self._session_id = None
+    # A toolCallId is unique only within one backend session, so an ask the dead
+    # process made must not vouch for a call of the replacement process.
+    self._unasked_watch = {}
     # The launches this record holds died with the process whose harness
     # started them (a backgrounded command or Workflow runs in that
     # process's own tree). Carrying it across a respawn would grant the
