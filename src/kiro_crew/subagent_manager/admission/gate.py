@@ -334,7 +334,12 @@ class _GateMixin(ManagerComponent):
                 and (getattr(a, "conversation_key", "") or f"subagent:{a.id}") == parent_session_key
             )
         ]
-        _proven_depth = max(_parent_depths) + 1 if _parent_depths else (2 if _is_child else 1)
+        if _parent_depths:
+            _proven_depth = max(_parent_depths) + 1
+        elif _is_child:
+            _proven_depth = 2
+        else:
+            _proven_depth = 1
         _carried_depth = _depth if type(_depth) is int else 0
         _depth = max(_carried_depth, _proven_depth)
         # The second half of a claimed dispatch is never refused for depth: its
