@@ -592,7 +592,17 @@ def _url_payload_command(n: int) -> str:
 #: bare-secret pass: the closed ``_ELB_TARGET_GROUP_ARN_RE`` shape, its two span
 #: helpers, the lazy lookup in pass 3 that honours ``judged_sri_values``, and their
 #: comments; the exemption only narrows what pass 3 redacts.
-_PACKAGE_LINE_BUDGET = 32_970
+#: Raised again, from 32,970, for the self-protection-kill refusal diagnostic: the
+#: ``self-protection-kill`` floor reports the matched kill TARGET's offsets
+#: instead of the whole command. ``_is_self_kill`` is a boolean wrapper over a
+#: span-returning ``_self_kill_span`` (one walk, so verdict and span cannot
+#: disagree) with a local ``_locate`` closure that anchors the span on the product
+#: NAME inside the matched token -- best-effort location, so it points at the name
+#: only in an unquoted, single-occurrence, at/after-verb command and returns the
+#: whole command otherwise; ``deny_gate`` forwards it behind a length-preserving
+#: guard. No matcher, rule, threshold or verdict moved -- the decision is
+#: byte-identical and the change is diagnostics-only.
+_PACKAGE_LINE_BUDGET = 33_054
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
