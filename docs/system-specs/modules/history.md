@@ -1506,6 +1506,10 @@ no longer destroy older turns.
   meanwhile it stays an ordinary fork. Until a pick the child runs on the parent's
   model and effort, and a pick on a child with copied history appends the usual
   model-switch notice row. The agent `session_fork` path is unchanged.
+- **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
+  stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
+  (default true) gates this; when it is false the fork starts unpinned. Agent
+  `session_fork` children are never pinned either way.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
