@@ -110,13 +110,14 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
     def test_api_request_does_not_proxy_the_secret(self, monkeypatch, listeners):
         monkeypatch.setattr(review_driver, "_gateway_base", lambda: listeners["gateway_base"])
         monkeypatch.setattr(review_driver, "_local_secret", lambda *_a: CANARY)
-        # The peer proof wraps the send; here the stand-in gateway is not a
-        # resolvable recorded peer, so stub the proof to delegate to the same
-        # no-proxy loopback opener. The proxy-bypass assertion below is unchanged:
-        # the real send still happens and must reach the gateway, not the proxy.
+        # The peer proof wraps the send; here the stand-in gateway answers no
+        # challenge and is not a resolvable recorded peer, so stub the proof to
+        # delegate to the same no-proxy loopback opener. The proxy-bypass assertion
+        # below is unchanged: the real send still happens and must reach the
+        # gateway, not the proxy.
         monkeypatch.setattr(
             review_driver,
-            "_owner_verified_secret_urlopen",
+            "_verified_urlopen",
             lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
             raising=False,
         )
@@ -132,7 +133,7 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
         """The multiplied site: one miss per candidate port, each a full send."""
         monkeypatch.setattr(
             review_driver,
-            "_owner_verified_secret_urlopen",
+            "_verified_urlopen",
             lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
             raising=False,
         )

@@ -1,8 +1,10 @@
 """The Code Review Sage app sender proves the gateway peer before it writes the
-internal secret, reusing the same connection-bound proof the CLI internal-secret
-senders use (``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``). An
-unproven peer -- a foreign process that grabbed the loopback port -- receives
-nothing.
+internal secret. With the gateway's dashboard socket present it reuses the same
+connection-bound proof the CLI internal-secret senders use
+(``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``); these cases pin
+that arm. An unproven peer -- a foreign process that grabbed the loopback port --
+receives nothing. The TCP-only arm is covered in
+``test_sage_tcp_peer_challenge.py``.
 """
 
 from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
@@ -38,6 +40,7 @@ class _RecordingProof:
 
 def _pin_gateway(monkeypatch, proof):
     monkeypatch.setattr(review_driver, "_owner_verified_secret_urlopen", proof, raising=False)
+    monkeypatch.setattr(review_driver, "_existing_dashboard_socket", lambda port: "/run/d.sock")
     monkeypatch.setattr(review_driver, "_gateway_base", lambda: "http://127.0.0.1:41234")
     monkeypatch.setattr(review_driver, "_local_secret", lambda port: "s3cr3t")
 
@@ -63,47 +66,11 @@ class TestSageApiRequestProvesThePeer:
 
     def test_a_refusal_keeps_the_proofs_own_reason(self, monkeypatch):
         _pin_gateway(monkeypatch, _RecordingProof(refuse=True))
-        monkeypatch.setattr(review_driver, "_sandboxed_tcp_only", lambda port: False)
         out = review_driver._api_request("GET", "/api/spawn")
         assert out["error"] == (
             "gateway peer not verified; request not sent: "
             "connected peer is not this install's gateway"
         )
-
-    def test_a_sandboxed_tcp_only_refusal_adds_the_socket_remedy(self, monkeypatch):
-        # A TCP-only gateway cannot be proven from the Linux sandbox, so the error
-        # adds how to get the owner-only socket back after the proof's own reason.
-        _pin_gateway(monkeypatch, _RecordingProof(refuse=True))
-        monkeypatch.setattr(review_driver, "_sandboxed_tcp_only", lambda port: True)
-        out = review_driver._api_request("GET", "/api/spawn")
-        assert "connected peer is not this install's gateway" in out["error"]
-        assert "shorter data home" in out["error"]
-
-
-class TestSandboxedTcpOnly:
-    def _setup(self, monkeypatch, *, platform, sandboxed, socket_path):
-        monkeypatch.setattr(review_driver.sys, "platform", platform)
-        if sandboxed:
-            monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
-        else:
-            monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
-        monkeypatch.setattr(review_driver, "_existing_dashboard_socket", lambda port: socket_path)
-
-    def test_linux_sandbox_without_a_socket_is_the_case(self, monkeypatch):
-        self._setup(monkeypatch, platform="linux", sandboxed=True, socket_path="")
-        assert review_driver._sandboxed_tcp_only(41234) is True
-
-    def test_a_socket_present_is_not_the_case(self, monkeypatch):
-        self._setup(monkeypatch, platform="linux", sandboxed=True, socket_path="/run/d.sock")
-        assert review_driver._sandboxed_tcp_only(41234) is False
-
-    def test_outside_the_sandbox_is_not_the_case(self, monkeypatch):
-        self._setup(monkeypatch, platform="linux", sandboxed=False, socket_path="")
-        assert review_driver._sandboxed_tcp_only(41234) is False
-
-    def test_windows_without_a_socket_is_not_the_case(self, monkeypatch):
-        self._setup(monkeypatch, platform="win32", sandboxed=True, socket_path="")
-        assert review_driver._sandboxed_tcp_only(41234) is False
 
 
 class TestSageProbeProvesThePeer:

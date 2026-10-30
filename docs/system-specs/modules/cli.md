@@ -1767,12 +1767,31 @@ refused.
   connection is still in the accept queue. That pid must equal the recorded
   pid and be owned by this account: uid on POSIX, access-token owner SID on
   Windows. Every other outcome, including any exception, is `MISMATCH`.
-  Inside the Linux agent sandbox the TCP arm does not reach `MATCH` (the
-  in-sandbox TCP-only case in `test/test_sage_sender_proves_peer_in_sandbox.py`
-  pins this), so a sandboxed sender (the Code Review Sage backend) proves its
-  gateway only over the unix arm. Against a TCP-only gateway it is refused, and
-  Sage's `_api_request` error names the remedy: a data home short enough for
-  the socket path to fit the AF_UNIX limit.
+  Inside the Linux agent sandbox the TCP arm does not reach `MATCH`: the child
+  cannot read the gateway's `/proc/<pid>/fd` links, so the peer pid does not
+  resolve. A sandboxed sender (the Code Review Sage backend) therefore proves a
+  TCP-only gateway with the challenge-response in
+  `kiro_crew.loopback_peer_challenge` instead (see "Gateway peer challenge"
+  below).
+
+**Gateway peer challenge (TCP-only, sandboxed senders).** On the connected
+socket, before any credential byte, the sender sends `GET /api/health` with a
+fresh 256-bit nonce in `X-Gateway-Peer-Challenge` and no credential. The gateway
+answers a direct-local TCP caller with a served `Host` (the same `check_host`
+gate as the identity fields, so a DNS-rebound page gets no proof) with
+`X-Gateway-Peer-Proof`: HMAC-SHA256 keyed
+with its internal secret over a domain tag, the nonce, and the connection's two
+endpoints as the gateway's kernel reports them (its own local address, then the
+caller's). The sender recomputes the HMAC with the secret it would send and its
+own view of the same connection, compares in constant time, and writes the
+secret-bearing request on that same connection only on an exact match. A
+listener without the secret cannot produce the proof; one that relays the
+challenge to the real gateway gets a proof over its own connection's endpoints,
+which do not match the sender's; the nonce prevents replay. Any other answer
+(non-200, missing or wrong proof, `Connection: close`, non-`Content-Length`
+framing, oversized, extra bytes, or no answer within 5 s) refuses with a SEL
+`denied` event, exactly like the arms above. The challenge reads no `/proc`
+entry and no `run/` file beyond the internal secret the sender already reads.
 
 **Refusal on mismatch.** A failed proof emits a SEL `denied` event and raises
 `_GatewayPeerRefused` before the secret is written; a passed proof emits SEL

@@ -75,37 +75,21 @@ except ImportError:  # pragma: no cover - standalone fallback
 # Every loopback call carries X-Internal-Secret, which must reach ONLY this
 # install's own gateway (``sage_lib.loopback`` keeps the opener proxy- and
 # redirect-disabled). A plain loopback send writes it to whatever process
-# currently holds the port, so every
-# credential-bearing call proves the connected peer IS this install's recorded
-# gateway before the first byte, reusing the gateway's own connection-bound proof
-# (``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``). An unproven peer
-# raises ``_GatewayPeerRefused`` and nothing is sent. The standalone path (run with
-# no ``kiro_crew`` importable) keeps that proxy/redirect-disabled opener: it
-# runs outside an install and has no recorded gateway to prove against.
+# currently holds the port, so every credential-bearing call proves the connected
+# peer IS this install's gateway before the first byte. An unproven peer raises
+# ``_GatewayPeerRefused`` and nothing is sent. The standalone path (run with no
+# ``kiro_crew`` importable) keeps that proxy/redirect-disabled opener: it runs
+# outside an install and has no gateway to prove against.
 #
-# The Sage backend runs inside the agent sandbox, and on Linux that sandbox can
-# prove the gateway only over its owner-only unix socket: the TCP arm's peer
-# verdict does not resolve from inside the child user namespace. A gateway that
-# degraded to TCP-only (its socket path too long for AF_UNIX) is therefore
-# refused, and the error says how to restore the socket rather than sending
-# unproven.
-_TCP_ONLY_REMEDY = (
-    "the gateway has no dashboard socket (TCP-only), and the sandboxed Sage backend "
-    "can prove its gateway only over that socket; use a shorter data home so the "
-    "socket path fits the AF_UNIX limit, then restart the gateway"
-)
-
-
-def _sandboxed_tcp_only(port: int) -> bool:
-    """True for the one refusal the remedy above fixes: this process runs inside
-    the Linux agent sandbox (the launcher sets ``KIROCREW_SANDBOX_ACTIVE``) and
-    the gateway has no dashboard socket. Native Windows has no socket either, so
-    the platform is part of the test, not just the missing file."""
-    return (
-        sys.platform == "linux"
-        and os.environ.get("KIROCREW_SANDBOX_ACTIVE") == "1"
-        and not _existing_dashboard_socket(port)
-    )
+# Which proof depends on the transport the gateway offers:
+# * its owner-only dashboard socket exists: the gateway's own connection-bound
+#   proof (``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``), which
+#   checks the socket's peer credentials against the recorded gateway;
+# * TCP-only (no socket, e.g. a data home too long for the AF_UNIX limit): the
+#   challenge-response in ``sage_lib.loopback.challenge_verified_urlopen``. This
+#   backend runs inside the agent sandbox, where the gateway's ``/proc/<pid>``
+#   entries cannot be read, so the TCP proof is keyed on the internal secret this
+#   backend already holds and bound to the connection's endpoints instead.
 
 
 try:
@@ -130,7 +114,9 @@ else:
     def _verified_urlopen(
         req: urllib.request.Request, port: int, timeout: float, *, operation: str
     ):
-        return _owner_verified_secret_urlopen(req, port, timeout, operation=operation)
+        if _existing_dashboard_socket(port):
+            return _owner_verified_secret_urlopen(req, port, timeout, operation=operation)
+        return challenge_verified_urlopen(req, port, timeout, operation=operation)
 
 
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -149,7 +135,7 @@ from sage_lib import (  # noqa: E402
 )
 
 # Re-exported: tests and callers keep using `review_driver.<name>` for these.
-from sage_lib.loopback import loopback_urlopen  # noqa: E402,F401
+from sage_lib.loopback import challenge_verified_urlopen, loopback_urlopen  # noqa: E402,F401
 from sage_lib.worker_response import (  # noqa: E402,F401
     _MAX_ENVELOPE_CANDIDATES,
     _MAX_RESPONSE_BYTES,
@@ -205,10 +191,7 @@ def _api_request(method: str, path: str, body: dict | None = None, timeout: int 
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except _GatewayPeerRefused as exc:
-        error = f"gateway peer not verified; request not sent: {exc}"
-        if _sandboxed_tcp_only(base_port):
-            error += "; " + _TCP_ONLY_REMEDY
-        return {"error": error}
+        return {"error": f"gateway peer not verified; request not sent: {exc}"}
     except Exception as e:
         return {"error": str(e)}
 

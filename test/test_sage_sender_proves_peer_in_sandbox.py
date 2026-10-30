@@ -17,10 +17,14 @@ matches it -- then run the proof in a child confined by the real ``standard``
 sandbox, against the real primitive, and assert the proof returns the gateway's
 response (a live ``MATCH``), not ``_GatewayPeerRefused``.
 
-The Linux TCP-only case plays a gateway that degraded to loopback TCP (no dashboard
-socket, as when the socket path exceeds the AF_UNIX limit). Its proof takes the TCP
-arm, which does not reach MATCH from inside the child's user namespace, so that case
-pins the fail-closed refusal and reports each input of the TCP verdict.
+The TCP-only cases play a gateway that degraded to loopback TCP (no dashboard
+socket, as when the socket path exceeds the AF_UNIX limit): the REAL ``/api/health``
+handler served over 127.0.0.1, with its internal secret published in ``run/`` the
+way the gateway publishes it. The child runs the Sage sender itself
+(``review_driver._local_secret`` then ``review_driver._verified_urlopen``), which
+takes the challenge-response arm, and the case asserts the gateway received the
+request. Another case puts an impostor on the port and asserts the sandboxed
+sender refuses it and the impostor received no secret.
 
 The child also reports evidence that it really ran confined, so a run that never
 entered the sandbox fails loudly instead of passing on the host's own view.
@@ -44,10 +48,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import warnings
 from pathlib import Path
 
 import pytest
+from sage_tcp_gateway_helpers import RawListener, RealTcpGateway, http_response
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import sandbox
@@ -61,13 +65,62 @@ pytestmark = pytest.mark.skipif(
 )
 
 #: A port number used only to name the run marker and the socket in the unix-socket
-#: cases; nothing binds TCP there. The TCP-only case binds an ephemeral port instead.
+#: cases; nothing binds TCP there. The TCP-only cases bind an ephemeral port instead.
 _PORT = 48137
+
+#: The TCP-only gateway's internal secret, published in ``run/`` for the child.
+_TCP_SECRET = "5ec7e75ec7e75ec7e75ec7e75ec7e75e"
 
 #: ``sun_path`` capacity: 108 bytes on Linux, 104 on macOS.
 _SUN_PATH_MAX = 104 if sys.platform == "darwin" else 108
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+# The TCP-only cases' child: the Sage sender itself, under the real sandbox. It reads
+# the per-port secret the way the backend does (through the sandbox's view of
+# ``run/``) and sends a secret-bearing request through ``_verified_urlopen``, which
+# takes the challenge arm because no dashboard socket exists.
+_SAGE_TCP_CHILD = r"""
+import json, os, sys, urllib.request
+
+port = int(sys.argv[1])
+from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
+from kiro_crew.cli_server_peer import _GatewayPeerRefused
+from kiro_crew.dashboard.urls import dashboard_socket_path
+
+def proof():
+    secret = review_driver._local_secret(port)
+    if not secret:
+        return {"outcome": "error", "detail": "the sandboxed sender could not read the secret"}
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/api/spawn" % port, headers={"X-Internal-Secret": secret}
+    )
+    try:
+        with review_driver._verified_urlopen(req, port, 10, operation="sage_api") as resp:
+            return {"outcome": "match", "status": resp.status, "body": resp.read().decode()}
+    except _GatewayPeerRefused as exc:
+        return {"outcome": "refused", "detail": str(exc)}
+    except Exception as exc:
+        return {"outcome": "error", "detail": "%s: %s" % (type(exc).__name__, exc)}
+
+def confinement():
+    if sys.platform == "darwin":
+        import ctypes
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        check = libsystem.sandbox_check
+        check.restype = ctypes.c_int
+        check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        return {"sandbox_check": check(os.getpid(), None, 0)}
+    return {"mnt_ns": os.readlink("/proc/self/ns/mnt")}
+
+report = {
+    "marker": os.environ.get("KIROCREW_SANDBOX_ACTIVE"),
+    "confinement": confinement(),
+    "socket_present": dashboard_socket_path(port).exists(),
+    "proof": proof(),
+}
+print("REPORT " + json.dumps(report), flush=True)
+"""
 
 # The agent's side, run under the real sandbox. It runs the UNMONKEYPATCHED proof and
 # reports the outcome: a response body is a live MATCH; ``_GatewayPeerRefused`` is a
@@ -105,33 +158,10 @@ def confinement():
         return {"sandbox_check": check(os.getpid(), None, 0)}
     return {"mnt_ns": os.readlink("/proc/self/ns/mnt")}
 
-def tcp_stages():
-    # Each input of the TCP arm's verdict, read on a connection of this process's
-    # own, so a refusal names the stage that failed. ``argv[2]`` is the gateway's
-    # pid; the stages are reported, not asserted, by the caller.
-    if len(sys.argv) < 3:
-        return None
-    import socket
-    from kiro_crew import cli_server_peer, platform_compat
-
-    out = {"gateway_pid": int(sys.argv[2]), "own_uid": os.getuid()}
-    fd_dir = "/proc/%s/fd" % sys.argv[2]
-    try:
-        os.readlink(os.path.join(fd_dir, sorted(os.listdir(fd_dir), key=int)[0]))
-        out["fd_readlink"] = "ok"
-    except OSError as exc:
-        out["fd_readlink"] = "%s: %s" % (type(exc).__name__, exc.strerror)
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-        out["peer_pid"] = cli_server_peer._connected_tcp_peer_pid(sock)
-    out["recorded_pid"] = cli_server_peer._recorded_gateway_pid(port)
-    out["owner_uid"] = platform_compat.process_owner_uid(int(sys.argv[2]))
-    return out
-
 report = {
     "marker": os.environ.get("KIROCREW_SANDBOX_ACTIVE"),
     "confinement": confinement(),
     "socket_present": dashboard_socket_path(port).exists(),
-    "tcp_stages": tcp_stages(),
     "proof": proof(),
 }
 print("REPORT " + json.dumps(report), flush=True)
@@ -224,38 +254,67 @@ def gateway(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def tcp_only_gateway(tmp_path, monkeypatch):
-    """This process as a TCP-only gateway: a loopback listener, no dashboard socket.
-
-    This is the configuration the listener degrades to when the unix socket cannot
-    be bound (for example a data home longer than the AF_UNIX limit), so the proof
-    takes its TCP arm and must resolve the gateway from the connection's 4-tuple.
-    Yields the bound port.
-    """
+def tcp_only_home(monkeypatch):
+    """A short data home for a TCP-only gateway: no dashboard socket anywhere in it."""
     short = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX, dir=short_tmp_base()))
     monkeypatch.setenv("KIROCREW_HOME", str(short))
     monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
     sandbox.reset_backend()
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind(("127.0.0.1", 0))
-    port = srv.getsockname()[1]
-    run_marker.write_marker(port)
-    assert not dashboard_socket_path(port).exists()
-    server = _HTTPGateway(srv)
-    server.start()
     try:
-        yield port
+        yield short
     finally:
-        server.stop()
         sandbox.reset_backend()
         shutil.rmtree(short, ignore_errors=True)
 
 
-def _child_argv(port: int = _PORT, gateway_pid: int | None = None) -> list[str]:
-    argv = [sys.executable, "-c", _CHILD, str(port)]
-    if gateway_pid is not None:
-        argv.append(str(gateway_pid))
-    return argv
+def _publish_secret(port: int, secret: str) -> None:
+    """Publish *secret* for *port* in ``run/`` the way the gateway does (0600)."""
+    path = run_marker.secret_path(port)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(secret)
+
+
+@pytest.fixture
+def tcp_only_gateway(tcp_only_home):
+    """This process as a TCP-only gateway: the real ``/api/health`` over loopback TCP.
+
+    The configuration the listener degrades to when the unix socket cannot be
+    bound (for example a data home longer than the AF_UNIX limit). Yields the
+    running gateway, which records the secret each request carried.
+    """
+    gw = RealTcpGateway(_TCP_SECRET).start()
+    _publish_secret(gw.port, _TCP_SECRET)
+    assert not dashboard_socket_path(gw.port).exists()
+    try:
+        yield gw
+    finally:
+        gw.stop()
+
+
+@pytest.fixture
+def tcp_only_impostor(tcp_only_home):
+    """A listener on a port a TCP-only gateway published a secret for.
+
+    It answers ``/api/health`` without a proof and keeps every byte it is sent.
+    """
+
+    def respond(lst, conn):
+        lst.recv_head(conn)
+        conn.sendall(http_response({"Content-Type": "application/json"}, b'{"ok": true}'))
+        lst.drain(conn)
+
+    lst = RawListener(respond).start()
+    _publish_secret(lst.port, _TCP_SECRET)
+    try:
+        yield lst
+    finally:
+        lst.stop()
+
+
+def _child_argv(port: int = _PORT, *, child: str = _CHILD) -> list[str]:
+    return [sys.executable, "-c", child, str(port)]
 
 
 def _run(wrapped: list[str]) -> tuple[dict, str]:
@@ -302,26 +361,39 @@ def test_sage_peer_proof_reaches_match_inside_the_sandbox(gateway):
     reason="this host cannot build the namespace sandbox (no unprivileged user and mount "
     "namespaces); the namespace-sandbox CI job provides them and asserts userns_available()",
 )
-def test_a_tcp_only_gateway_is_refused_inside_the_sandbox(tcp_only_gateway):
-    """With a TCP-only gateway, the proof run from inside the sandbox fails closed.
+def test_a_tcp_only_gateway_is_proven_inside_the_sandbox(tcp_only_gateway):
+    """The sandboxed Sage sender proves a TCP-only gateway and its request arrives.
 
-    No dashboard socket exists, so the proof takes its TCP arm, which names the
-    gateway's pid from the connection's 4-tuple (``/proc/net/tcp`` and the owner's
-    ``/proc/<pid>/fd`` links), then checks it against the recorded pid and uid.
-    From inside the Linux namespace sandbox that verdict is not reached, so the
-    proof refuses before any byte is sent. This pins that documented limit: the
-    sandboxed Sage backend proves its gateway only over the unix socket, and
-    ``review_driver`` reports the shorter-data-home remedy for this case. The
-    child reports each input of the verdict (``tcp_stages``), so the failure
-    output names the stage that did not resolve.
+    No dashboard socket exists, so the sender takes the challenge arm. It needs
+    only the per-port secret (read through the sandbox's view of ``run/``) and the
+    connection itself, none of the ``/proc/<pid>`` entries the namespace hides.
     """
-    port = tcp_only_gateway
-    report, output = _run(sandbox.namespace_argv(_child_argv(port, os.getpid()), "standard"))
-    # Surfaced in pytest's warnings summary, which a passing -q run still prints.
-    warnings.warn("TCP_STAGES " + json.dumps(report["tcp_stages"]), stacklevel=1)
+    gw = tcp_only_gateway
+    argv = _child_argv(gw.port, child=_SAGE_TCP_CHILD)
+    report, output = _run(sandbox.namespace_argv(argv, "standard"))
     assert report["confinement"]["mnt_ns"] != os.readlink("/proc/self/ns/mnt"), output
     assert report["socket_present"] is False, output
-    assert report["proof"]["outcome"] == "refused", output
+    assert report["proof"]["outcome"] == "match", report["proof"]
+    assert json.loads(report["proof"]["body"]) == {"spawned": True}
+    assert gw.received_secrets == [_TCP_SECRET]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only")
+@pytest.mark.skipif(
+    not userns_available(),
+    reason="this host cannot build the namespace sandbox (no unprivileged user and mount "
+    "namespaces); the namespace-sandbox CI job provides them and asserts userns_available()",
+)
+def test_an_impostor_on_a_tcp_only_port_is_refused_inside_the_sandbox(tcp_only_impostor):
+    """From inside the sandbox, a listener without the gateway's proof gets nothing."""
+    lst = tcp_only_impostor
+    argv = _child_argv(lst.port, child=_SAGE_TCP_CHILD)
+    report, output = _run(sandbox.namespace_argv(argv, "standard"))
+    lst.stop()
+    assert report["confinement"]["mnt_ns"] != os.readlink("/proc/self/ns/mnt"), output
+    assert report["proof"]["outcome"] == "refused", report["proof"]
+    assert _TCP_SECRET.encode() not in lst.received
+    assert b"x-internal-secret" not in lst.received.lower()
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS-only")
@@ -349,3 +421,25 @@ def test_sage_peer_proof_reaches_match_inside_seatbelt(gateway):
     # The kernel reports the child as running under a sandbox profile.
     assert report["confinement"]["sandbox_check"] != 0, output
     assert report["proof"]["outcome"] == "match", report["proof"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS-only")
+@pytest.mark.skipif(
+    not os.path.exists(_SANDBOX_EXEC),
+    reason=f"{_SANDBOX_EXEC} is absent on this host, so no Seatbelt profile can be applied",
+)
+def test_a_tcp_only_gateway_is_proven_inside_seatbelt(tcp_only_gateway):
+    """The TCP-only case under the standard Seatbelt profile."""
+    gw = tcp_only_gateway
+    wrapped, cleanup = sandbox.wrap_argv(
+        _child_argv(gw.port, child=_SAGE_TCP_CHILD), mode="standard"
+    )
+    try:
+        assert any(os.path.basename(a) == "sandbox-exec" for a in wrapped), wrapped
+        report, output = _run(wrapped)
+    finally:
+        if cleanup:
+            Path(cleanup).unlink(missing_ok=True)
+    assert report["confinement"]["sandbox_check"] != 0, output
+    assert report["proof"]["outcome"] == "match", report["proof"]
+    assert gw.received_secrets == [_TCP_SECRET]
