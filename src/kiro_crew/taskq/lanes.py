@@ -20,6 +20,16 @@ that session), so the same round-robin is fair across people instead of
 across sessions, and one person's many sessions share one lane. A key the
 resolver does not know keeps its session lane.
 
+Above the weights sits a strict PRIORITY tier per lane (``low`` / ``medium`` /
+``high``, set per chat by the person). A pick only considers the contending
+lanes of the highest tier present; the weighted round-robin runs inside that
+tier. A lane with no stated tier is ``medium``, so with nothing set the
+behaviour is exactly the plain weighted round-robin above. The tier reorders
+picks for a free ROOT slot only: a pick under the child reserve passes
+``tiered=False``, because the reserve is what lets a tree already in flight
+finish and no tier may withhold it. The tier belongs to the lane, so with
+the resolver installed one person's sessions share one lane and one tier.
+
 Everything else here is pure: no store, no clock, no manager.
 """
 
@@ -27,6 +37,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
+
+from ..queue_priority import (  # noqa: F401  (re-exported for the dispatcher)
+    DEFAULT_PRIORITY_RANK,
+    priority_rank,
+)
 
 #: Lane shared by every non-interactive root (cron jobs, hooks, heartbeat,
 #: background workers). Weight ``agent.lane_weights["system"]`` (default 1).
@@ -51,16 +66,30 @@ T = TypeVar("T")
 PRINCIPAL_LANE_PREFIX = "principal:"
 
 _LANE_RESOLVER: Callable[[str], str | None] | None = None
+#: The lane automation is charged to while the resolver is installed (the
+#: automation principal's), which every cron job and hook shares.
+_AUTOMATION_LANE: str | None = None
 
 
-def set_lane_resolver(resolver: Callable[[str], str | None] | None) -> None:
+def set_lane_resolver(
+    resolver: Callable[[str], str | None] | None,
+    *,
+    automation_principal: str | None = None,
+) -> None:
     """Install (or with None remove) the root-session-to-principal lane lookup.
 
     The resolver must be an in-memory read: it runs on the gateway loop inside
-    every pick. It returns a principal id or None.
+    every pick. It returns a principal id or None. *automation_principal* is
+    the principal unattributed automation is charged to; its lane is untiered
+    like :data:`SYSTEM_LANE` (:func:`is_untiered_lane`).
     """
-    global _LANE_RESOLVER
+    global _LANE_RESOLVER, _AUTOMATION_LANE
     _LANE_RESOLVER = resolver
+    _AUTOMATION_LANE = (
+        PRINCIPAL_LANE_PREFIX + automation_principal
+        if resolver is not None and automation_principal
+        else None
+    )
 
 
 def lane_key_for(session_key: str | None) -> str:
@@ -81,13 +110,33 @@ def lane_key_for(session_key: str | None) -> str:
             principal = None
         if principal:
             return PRINCIPAL_LANE_PREFIX + principal
-    if not key or key in _SYSTEM_KEYS or key.startswith(_SYSTEM_PREFIXES):
+    if is_automation_key(key):
         return SYSTEM_LANE
     return key
 
 
+def is_automation_key(session_key: str | None) -> bool:
+    """Whether *session_key* is automation (cron, hook, heartbeat, background, empty).
+
+    Read from the key alone, before any lane resolver: once Shared Crew binds an
+    automation session its lane is the automation principal's, which every cron
+    job and hook shares just as they share :data:`SYSTEM_LANE`.
+    """
+    key = str(session_key or "")
+    return not key or key in _SYSTEM_KEYS or key.startswith(_SYSTEM_PREFIXES)
+
+
 def is_system_lane(lane: str) -> bool:
     return lane == SYSTEM_LANE
+
+
+def is_untiered_lane(lane: str) -> bool:
+    """Whether *lane* carries automation, which no chat tier ranks or filters out.
+
+    :data:`SYSTEM_LANE`, and while Shared Crew's resolver is installed the
+    automation principal's lane, where it files the same cron and hook roots.
+    """
+    return lane == SYSTEM_LANE or (_AUTOMATION_LANE is not None and lane == _AUTOMATION_LANE)
 
 
 def clamp_weight(value: object, default: int = DEFAULT_WEIGHT) -> int:
@@ -126,12 +175,30 @@ class LaneScheduler:
     weights: Mapping[str, object] = field(default_factory=dict)
     system_weight: int = DEFAULT_WEIGHT
     credit: dict[str, int] = field(default_factory=dict)
+    #: Lane -> priority rank (see :func:`priority_rank`). A lane absent from
+    #: the map is medium. Replaced wholesale by the owner, never mutated.
+    priorities: Mapping[str, int] = field(default_factory=dict)
 
     def weight_of(self, lane: str) -> int:
         return lane_weight(lane, weights=self.weights, system_weight=self.system_weight)
 
-    def pick(self, contending: Iterable[str]) -> str | None:
+    def rank_of(self, lane: str) -> int:
+        return int(self.priorities.get(lane, DEFAULT_PRIORITY_RANK))
+
+    def pick(self, contending: Iterable[str], *, tiered: bool = True) -> str | None:
         """Choose the next lane among *contending* (lanes with pending rows).
+
+        By default only the lanes of the highest priority tier present take
+        part, plus the system lane whatever the tier; the rest neither win nor
+        accrue credit this pick.
+
+        ``tiered=False`` ignores the tiers and runs the plain weighted
+        round-robin over every contending lane. That is what a pick under the
+        CHILD RESERVE passes: the reserve is capacity a tree already in flight
+        depends on to finish, so a tier may reorder new work but must never
+        withhold the reserve from another chat's running tree -- a `high` chat
+        with a nested spawn always queued would otherwise leave a `medium`
+        tree waiting on its own child for as long as that lasts.
 
         *contending* is read in order and a tie on credit goes to the lane
         listed first, so callers pass lanes oldest-head-first: the lane whose
@@ -144,6 +211,14 @@ class LaneScheduler:
                 lanes.append(lane)
         if not lanes:
             return None
+        if tiered and self.priorities:
+            # An untiered lane (cron, hooks, heartbeat) is never filtered out by
+            # a tier: it has no chat to raise, so a High chat that keeps
+            # spawning would otherwise hold automation back with no bound. It
+            # keeps its weighted share among the top tier's lanes instead, and
+            # still ranks as medium against a lower tier.
+            top = max(self.rank_of(lane) for lane in lanes)
+            lanes = [lane for lane in lanes if self.rank_of(lane) == top or is_untiered_lane(lane)]
         total = 0
         for lane in lanes:
             w = self.weight_of(lane)
@@ -191,11 +266,14 @@ class LaneScheduler:
         *,
         lane_of: Callable[[T], str],
         eligible: Callable[[T], bool] | None = None,
+        tiered: bool = True,
     ) -> int | None:
         """Index of the next entry to take from an in-memory FIFO window.
 
         The window is one list in arrival order; each lane's oldest eligible
         entry is its head, and the weighted round-robin picks which head goes.
+        ``tiered=False`` passes through to :meth:`pick`, for a caller picking
+        under the child reserve rather than for a free root slot.
         """
         heads: dict[str, int] = {}
         for idx, entry in enumerate(entries):
@@ -204,7 +282,7 @@ class LaneScheduler:
             heads.setdefault(lane_of(entry), idx)
         # Insertion order is arrival order: the lane with the oldest head is
         # listed first and wins a tie.
-        chosen = self.pick(heads)
+        chosen = self.pick(heads, tiered=tiered)
         if chosen is None:
             return None
         return heads[chosen]

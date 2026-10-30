@@ -43,6 +43,8 @@ class _MemoryWakeMixin(ManagerComponent):
 
         def lane_scheduler(self) -> "_lanes.LaneScheduler": ...
 
+        def lane_priorities(self) -> dict[str, int]: ...
+
         def taskq_store(self) -> "_taskq.TaskStore | None": ...
 
         def _post_store_write(
@@ -134,14 +136,31 @@ class _MemoryWakeMixin(ManagerComponent):
         those with a dedicated child running or a start waiting. The starved
         lane is by construction never held (its count is below its share), so
         the hold cannot deadlock: it only decides which lane the memory goes to
-        next.
+        next. Only a waiting lane on the same or a higher queue priority
+        (:meth:`lane_priorities`), or the untiered system lane, can hold a
+        start back.
         """
         from kiro_crew.subagent import _holds_dedicated_runtime
 
         mgr = self._manager
+        from kiro_crew.taskq import lanes as _lanes
+
         lane = self.lane_for_session(parent_session_key)
         waits = getattr(mgr, "_memory_waits", None) or {}
         waiting = {wait.lane for aid, wait in waits.items() if aid != agent_id} - {lane}
+        if waiting:
+            # A start is never held for a lane on a lower queue priority, so
+            # a High chat's start does not give way to a Low chat's wait. The
+            # system lane (cron, hooks) has no tier and always counts, the way
+            # the tiered pick always keeps it, so a High chat cannot starve it.
+            ranks = self.lane_priorities()
+            mine_rank = ranks.get(lane, _lanes.DEFAULT_PRIORITY_RANK)
+            waiting = {
+                key
+                for key in waiting
+                if _lanes.is_untiered_lane(key)
+                or ranks.get(key, _lanes.DEFAULT_PRIORITY_RANK) >= mine_rank
+            }
         if not waiting:
             return False
         running: dict[str, int] = {}
@@ -294,6 +313,11 @@ class _MemoryWakeMixin(ManagerComponent):
         wanted = {aid for aid in ids if aid in waits}
         if not wanted or getattr(mgr, "_shutting_down", False):
             return
+        # These now fit the floor, so a window refill must not treat them as
+        # roots that cannot start (``_refill_held_roots``).
+        fit = getattr(mgr, "_floor_fit_ids", None)
+        if fit is not None:
+            fit.update(wanted)
         now = _time.monotonic()
         for params in mgr._queue:
             aid = str(params.get("_preassigned_id") or "")

@@ -715,6 +715,139 @@ def get_or_create_slot(
     return slot
 
 
+def queue_lane_of(slot: Any) -> str:
+    """The subagent-dispatch lane *slot*'s spawns queue in.
+
+    The dispatcher files a root spawn under
+    ``lanes.lane_key_for(parent_session_key)``, and a chat's spawns carry the
+    session its turns run on (:func:`chat_utils.effective_session_key`, so a
+    channel-born slot answers for its channel key). Every slot on one session
+    therefore maps to one lane, and a cron- or hook-bound chat maps to the
+    shared ``system`` lane.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    # Lazy: kiro_crew.taskq must not load on a dashboard import
+    # (test_dashboard_handlers_lazy_tasks).
+    from kiro_crew.taskq import lanes as _lanes
+
+    return _lanes.lane_key_for(effective_session_key(slot))
+
+
+def queue_tier_exempt(slot: Any) -> bool:
+    """Whether *slot* is a cron- or hook-bound chat, which has no tier of its own.
+
+    Read from the session key alone. Under Shared Crew a person's chat can be
+    charged to the automation principal for one turn (a sub-agent completion
+    runs as automation), and that must not take its tier away; see
+    :func:`lane_queue_priorities` for how the tier waits out such a turn.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.taskq import lanes as _lanes
+
+    return _lanes.is_automation_key(effective_session_key(slot))
+
+
+def _live_session_lanes(self: DashboardState) -> dict[str, str]:
+    """``{session key: lane}`` for every live slot a tier may apply to."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    out: dict[str, str] = {}
+    for slot in list(getattr(self, "_slots", {}).values()):
+        if not queue_tier_exempt(slot):
+            out[effective_session_key(slot)] = queue_lane_of(slot)
+    return out
+
+
+def lane_queue_priorities(self: DashboardState) -> dict[str, str]:
+    """``{lane: priority}`` for every lane with a non-default tier that a
+    live slot still maps to.
+
+    The tier is stored per session (``_session_queue_priority``) and mapped to
+    the session's CURRENT lane here, so a session Shared Crew binds to a
+    principal after the pick keeps its tier. When several sessions map to one
+    lane, the most recently set tier wins: a write re-inserts its key, so the
+    map's order is write order. A session whose current lane is untiered (its
+    latest turn was charged to the automation principal) keeps its stored tier
+    but adds nothing here, because that lane is shared by all automation; the
+    tier applies again once the person's next turn binds the session back.
+
+    The subagent dispatcher's lane priority source. An entry whose session
+    has no live slot left is not reported, so a closed chat stops ranking.
+    May run on the task store's writer thread, so it reads only ``list()``
+    snapshots and never mutates the map.
+    """
+    stored = list(dict(getattr(self, "_session_queue_priority", {})).items())
+    if not stored:
+        return {}
+    live = _live_session_lanes(self)
+    from kiro_crew.taskq import lanes as _lanes
+
+    out: dict[str, str] = {}
+    for session, tier in stored:
+        lane = live.get(session)
+        if lane is not None and not _lanes.is_untiered_lane(lane):
+            out[lane] = tier
+    return {lane: tier for lane, tier in out.items() if tier != "medium"}
+
+
+def queue_priority_of(self: DashboardState, slot: Any) -> str | None:
+    """The agent-queue tier *slot* runs at: ``"low"``, ``"medium"`` or ``"high"``.
+
+    ``None`` for a cron- or hook-bound chat: they share one lane, so no one
+    chat's tier may apply to it. A chat whose latest turn was charged to
+    automation reports its own stored tier. Every slot on one lane reads the
+    lane's tier (:func:`lane_queue_priorities`), including one that joined
+    after the pick.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.taskq import lanes as _lanes
+
+    if queue_tier_exempt(slot):
+        return None
+    lane = queue_lane_of(slot)
+    if _lanes.is_untiered_lane(lane):
+        return getattr(self, "_session_queue_priority", {}).get(
+            effective_session_key(slot), "medium"
+        )
+    return lane_queue_priorities(self).get(lane, "medium")
+
+
+def set_queue_priority(self: DashboardState, slot: Any, tier: str) -> bool:
+    """Set the tier of *slot*'s lane to *tier*; True when the lane's tier changed.
+
+    Writes the tier for every live session on the lane, so they agree, and
+    drops the entries of sessions with no live slot left, so the map never
+    holds more entries than there are live slots. ``medium`` is stored as an
+    entry too, so it outranks an older tier of a session that joins the lane
+    later; :func:`lane_queue_priorities` leaves it out of what it reports.
+    The caller has already refused an exempt slot.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    store: dict[str, str] | None = getattr(self, "_session_queue_priority", None)
+    if store is None:  # a __new__-built state (tests) never ran __init__
+        store = self._session_queue_priority = {}
+    old = queue_priority_of(self, slot)
+    lane = queue_lane_of(slot)
+    live = _live_session_lanes(self)
+    own = effective_session_key(slot)
+    from kiro_crew.taskq import lanes as _lanes
+
+    # An untiered lane is shared by every session charged to automation, so a
+    # pick there is this session's own and waits until it is bound back.
+    if _lanes.is_untiered_lane(lane):
+        members = {own}
+    else:
+        members = {session for session, other in live.items() if other == lane} | {own}
+    for stale in [key for key in store if key not in live and key != own]:
+        del store[stale]
+    for session in members:
+        store.pop(session, None)
+        store[session] = tier
+    return old != tier
+
+
 def live_slot_count(self: DashboardState) -> int:
     """Count published and allocated-but-unpublished slots."""
     return _registry_for(self).live_slot_count(self)

@@ -58,7 +58,9 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 #: full frame. The sub-agent counts (``subagents_running`` / ``subagents_queued``)
 #: are deliberately NOT here: they are derived from the sub-agent manager rather
 #: than the slot row, so ``push_subagent_patch`` re-states them on lifecycle flushes.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset(
+    {"pinned", "mutes_opened", "muted", "title", "folder_id", "queue_priority"}
+)
 
 
 def _new_card_store(state: Any) -> Any:

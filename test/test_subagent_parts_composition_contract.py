@@ -930,6 +930,10 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "method",
         "(self, listener: 'Callable[[], object] | None') -> 'None'",
     ),
+    "set_lane_priority_source": (
+        "method",
+        "(self, source: 'Callable[[], Mapping[str, str]] | None') -> 'None'",
+    ),
     "set_effective_cap": ("method", "(self, cap: 'int | None') -> 'int'"),
     "settle_before_delete": (
         "async method",

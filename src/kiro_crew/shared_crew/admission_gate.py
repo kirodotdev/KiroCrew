@@ -1707,7 +1707,8 @@ def install_service(service: AdmissionService | None) -> None:
         _containment.publish_report(None)
         return
     _containment.publish_report(service.published_report())
-    lanes.set_lane_resolver(service.budget_for_session if service.enabled else None)
+    resolver = service.budget_for_session if service.enabled else None
+    lanes.set_lane_resolver(resolver, automation_principal=AUTOMATION_PRINCIPAL.id)
     _containment.install_slice_manager(
         service._slices if service.enabled and service.limits.containment_enabled else None
     )

@@ -8464,6 +8464,17 @@
       "select_one_rule": "Choisis une option. Choisis-la de nouveau pour l’effacer.",
       "select_many_rule": "Choisis une ou plusieurs options."
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Priorité des sous-agents",
+      "caption": "Les sous-agents en attente des discussions plus prioritaires démarrent en premier. Revient à Moyenne au redémarrage de la passerelle.",
+      "change_failed": "Impossible de modifier la priorité des sous-agents",
+      "change_failed_retry": "La priorité n’a pas été enregistrée. Réessaie.",
+      "change_unconfirmed": "La passerelle n’a pas répondu. Choisis à nouveau la priorité pour t’assurer qu’elle est enregistrée.",
+      "change_unconfirmed_title": "Priorité non confirmée",
+      "high": "Haute",
+      "low": "Basse",
+      "medium_default": "Moyenne (par défaut)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Annuler et revenir à la saisie",
       "cancel_queued_message": "Annuler le message en file d'attente",

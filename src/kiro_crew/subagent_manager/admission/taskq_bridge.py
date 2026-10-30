@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
 
     from ...subagent import SubagentInfo, asyncio
+    from .types import CapacityView
 
 
 class _TaskqBridgeMixin(ManagerComponent):
@@ -80,6 +81,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         def entry_is_child(params: Mapping[str, Any]) -> bool: ...
 
         def fairness_settings(self) -> FairnessSettings: ...
+
+        def lane_priorities(self) -> dict[str, int]: ...
+
+        def capacity_view(self) -> CapacityView: ...
 
         def lane_of_entry(
             self, params: Mapping[str, Any], resolved: Mapping[str, str] | None = None
@@ -788,6 +793,8 @@ class _TaskqBridgeMixin(ManagerComponent):
     taskq_refill_window_async = _window.taskq_refill_window_async
     _refill_absent = _window._refill_absent
     _refill_make_room = _window._refill_make_room
+    _refill_evict_ceiling = _window._refill_evict_ceiling
+    _refill_held_roots = _window._refill_held_roots
     _refill_fetch = _window._refill_fetch
     _refill_fetch_retiring = _window._refill_fetch_retiring
     _retire_legacy_stage_rows = staticmethod(_window._retire_legacy_stage_rows)

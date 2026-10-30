@@ -5,7 +5,7 @@
  * drop-to-column, and the board columns.
  */
 
-import type { AgentTagPolicy, SessionLaneKey } from '../../types'
+import type { AgentTagPolicy, QueuePriority, SessionLaneKey } from '../../types'
 import type { ClientTransport } from './transport'
 
 /** One moved conversation, as `POST /api/channel-folders/backfill` reports it. */
@@ -123,6 +123,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
      *  order and its revision. */
     setManualOrder: (body: ManualOrderWrite) => post('/api/chat/manual-order', body)
       .then(j) as Promise<{ ok: boolean; order: string[]; rev: number }>,
+    /** Set the chat's agent-queue priority tier. Owner-only on the gateway. */
+    setSlotQueuePriority: (slot: string, priority: QueuePriority) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue-priority', { priority }).then(j),
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

@@ -8464,6 +8464,17 @@
       "select_one_rule": "Scegli un’opzione. Sceglila di nuovo per annullarla.",
       "select_many_rule": "Scegli una o più opzioni."
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Priorità dei subagenti",
+      "caption": "I subagenti in attesa delle chat con priorità più alta partono per primi. Torna a Media al riavvio del gateway.",
+      "change_failed": "Non è stato possibile modificare la priorità dei subagenti",
+      "change_failed_retry": "La priorità non è stata salvata. Riprova.",
+      "change_unconfirmed": "Il gateway non ha risposto. Scegli di nuovo la priorità per assicurarti che sia salvata.",
+      "change_unconfirmed_title": "Priorità non confermata",
+      "high": "Alta",
+      "low": "Bassa",
+      "medium_default": "Media (predefinita)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Annulla e torna all'input",
       "cancel_queued_message": "Annulla il messaggio in coda",

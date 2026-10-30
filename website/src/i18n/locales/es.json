@@ -8464,6 +8464,17 @@
       "select_one_rule": "Elige una opción. Vuelve a elegirla para borrarla.",
       "select_many_rule": "Elige una o más opciones."
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Prioridad de subagentes",
+      "caption": "Los subagentes en espera de los chats con más prioridad empiezan primero. Vuelve a Media al reiniciar la pasarela.",
+      "change_failed": "No se pudo cambiar la prioridad de los subagentes",
+      "change_failed_retry": "No se guardó la prioridad. Inténtalo de nuevo.",
+      "change_unconfirmed": "La pasarela no respondió. Vuelve a elegir la prioridad para asegurarte de que se guarde.",
+      "change_unconfirmed_title": "Prioridad sin confirmar",
+      "high": "Alta",
+      "low": "Baja",
+      "medium_default": "Media (predeterminada)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Cancelar y volver al cuadro de entrada",
       "cancel_queued_message": "Cancelar el mensaje en cola",

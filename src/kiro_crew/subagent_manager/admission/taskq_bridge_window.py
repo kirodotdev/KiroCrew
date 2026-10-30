@@ -14,7 +14,7 @@ reaches every call made through ``self`` or the class. ``_retire_legacy_stage_ro
 
 The manager fields this module uses. Writes: ``_lane_refill_scheduler``,
 ``_overdue_wake_warned_at``, ``_queue``. Reads: ``_floor_deferred_ids``,
-``_held_approval_modes``, ``_sessions``, ``_stopping_parents``.
+``_floor_fit_ids``, ``_held_approval_modes``, ``_sessions``, ``_stopping_parents``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import asyncio as _asyncio
 import functools as _functools
 import logging as _logging
 import time as _time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from .types import MEMORY_WAIT_UNTIL_KEY, MIN_RECHECK_DELAY_SECS, WINDOW_ENTRY_RECOVERING
 
@@ -113,11 +113,15 @@ def taskq_refill_window(self: _TaskqBridgeMixin, *, children_only: bool = False)
     # what runs whenever capacity moves.
     self.taskq_expire_waits()
     rows: list[_taskq.TaskRecord] = []
+    tiered = not children_only or self.capacity_view().root_slot
+    priorities = self.lane_priorities() if tiered else {}
     try:
         absent, lanes = self._refill_absent(store, children_only)
-        room, want = self._refill_make_room(store, absent, lanes)
+        room, want = self._refill_make_room(
+            store, absent, lanes, priorities=priorities, children_only=children_only
+        )
         rows, retired, stranded = self._refill_fetch_retiring(
-            store, absent, room, want, children_only
+            store, absent, room, want, children_only, priorities
         )
         self._report_retired_stage_rows(store, retired, stranded)
         self._refill_apply(rows)
@@ -142,11 +146,19 @@ async def taskq_refill_window_async(self: _TaskqBridgeMixin, *, children_only: b
     if store is None:
         return 0
     rows: list[_taskq.TaskRecord] = []
+    # One tier snapshot for the whole pass, read on the loop: the eviction
+    # ceiling, the eviction and the hydrating fetch must not see different
+    # tiers. The child reserve's refill is untiered only when capacity is
+    # reserve-only; while a root slot is free a tier still decides who starts.
+    tiered = not children_only or self.capacity_view().root_slot
+    priorities = self.lane_priorities() if tiered else {}
     try:
         absent, lanes = await store.run(self._refill_absent, store, children_only)
-        room, want = self._refill_make_room(store, absent, lanes)
+        room, want = self._refill_make_room(
+            store, absent, lanes, priorities=priorities, children_only=children_only
+        )
         rows, retired, stranded = await store.run(
-            self._refill_fetch_retiring, store, absent, room, want, children_only
+            self._refill_fetch_retiring, store, absent, room, want, children_only, priorities
         )
         self._report_retired_stage_rows(store, retired, stranded)
         self._refill_apply(rows)
@@ -193,20 +205,79 @@ def _refill_make_room(
     store: "_taskq.TaskStore",
     absent: list[str],
     lanes: "Mapping[str, str] | None" = None,
+    *,
+    priorities: "Mapping[str, int] | None" = None,
+    children_only: bool = False,
 ) -> tuple[int, int]:
     """Loop step: every lane with a store row waiting must have its head in
     the window, or the pick cannot take turns with it. A window full of
     one lane makes room by dropping that lane's YOUNGEST entries back to
     store-only (they are queued rows; the refill brings them back in FIFO
     order); a window with no lane to spare gives up one head instead of
-    making no room at all (:meth:`_evict_for_lanes`)."""
+    making no room at all (:meth:`_evict_for_lanes`).
+
+    A ROOT refill never evicts an entry of a higher priority tier than the
+    best absent lane: that lane could not win a tiered pick against the
+    entry, so dropping the entry would only let the lower tier start first
+    once the higher one has left the window.
+
+    *priorities* is the pass's one tier snapshot (``None`` reads it here). An
+    empty mapping is an untiered refill: the child reserve's own top-up when
+    capacity is reserve-only, untiered like its pick.
+
+    A child-only refill does not keep a root entry that cannot start now (the
+    memory-pressure hold is in force, or the entry waits on the floor): the
+    ceiling would keep a running tree's nested child out of a window full of
+    held higher-tier roots, and the tree would wait on its own child."""
+    if priorities is None:
+        priorities = self.lane_priorities()
     queue = self._manager._queue
     # Restricted entries have no durable copy and are outside its window.
     windowed = sum(p.get("_memory_mode", "persistent") == "persistent" for p in queue)
     want = min(len(absent), store.window) if absent else 0
     if absent:
-        windowed -= self._evict_for_lanes(want - (store.window - windowed), lanes)
+        windowed -= self._evict_for_lanes(
+            want - (store.window - windowed),
+            lanes,
+            max_rank=self._refill_evict_ceiling(absent, priorities),
+            priorities=priorities,
+            held=self._refill_held_roots() if children_only else None,
+        )
     return max(0, store.window - windowed), want
+
+
+def _refill_held_roots(self: _TaskqBridgeMixin) -> "Callable[[Mapping[str, Any]], bool]":
+    """Predicate for a child-only refill: True for a window ROOT entry that
+    cannot start now, so the tier ceiling does not keep it. Reads the
+    memory-pressure hold once; any hold level counts as holding every root.
+    A floor-deferred root counts only until the memory wake finds it fitting
+    (``_floor_fit_ids``): from then on it can start, and keeps its tier."""
+    mgr = self._manager
+    hold = getattr(mgr, "_memory_pressure_hold", None)
+    level = hold() if callable(hold) else None
+    deferred = set(getattr(mgr, "_floor_deferred_ids", None) or ())
+    deferred -= set(getattr(mgr, "_floor_fit_ids", None) or ())
+
+    def held(params: "Mapping[str, Any]") -> bool:
+        if self.entry_is_child(params):
+            return False
+        return level is not None or str(params.get("_preassigned_id") or "") in deferred
+
+    return held
+
+
+def _refill_evict_ceiling(
+    self: _TaskqBridgeMixin, absent: list[str], priorities: "Mapping[str, int]"
+) -> int | None:
+    """Highest priority rank an entry may hold and still be evicted for
+    *absent*: the best absent lane's rank. ``None`` (no ceiling) when no
+    tier is set or a system lane is absent, because the system lane takes
+    part in every tiered pick whatever the tier."""
+    from kiro_crew.taskq import lanes as _lanes
+
+    if not priorities or any(_lanes.is_untiered_lane(lane) for lane in absent):
+        return None
+    return max(priorities.get(lane, _lanes.DEFAULT_PRIORITY_RANK) for lane in absent)
 
 
 def _refill_fetch(
@@ -216,18 +287,22 @@ def _refill_fetch(
     room: int,
     want: int,
     children_only: bool,
+    priorities: "Mapping[str, int] | None" = None,
 ) -> list["_taskq.TaskRecord"]:
-    """Store read: the absent lanes' heads first, then whatever room is left."""
+    """Store read: the absent lanes' heads first, then whatever room is left.
+
+    *priorities* is the pass's tier snapshot (see :func:`lane_refill_scheduler`)."""
     from kiro_crew import taskq as _taskq
 
     exclude = self.taskq_dispatch_excluded_ids()
+    sched = self.lane_refill_scheduler(priorities=priorities)
     rows: list[_taskq.TaskRecord] = []
     if absent and room > 0:
         rows.extend(
             store.fetch_dispatchable_fair(
                 _taskq.KIND_SUBAGENT,
                 limit=min(room, want),
-                scheduler=self.lane_refill_scheduler(),
+                scheduler=sched,
                 exclude_ids=exclude,
                 children_only=children_only,
                 lanes=absent,
@@ -241,7 +316,7 @@ def _refill_fetch(
             store.fetch_dispatchable_fair(
                 _taskq.KIND_SUBAGENT,
                 limit=room,
-                scheduler=self.lane_refill_scheduler(),
+                scheduler=sched,
                 exclude_ids=exclude,
                 children_only=children_only,
             )
@@ -453,7 +528,13 @@ def _window_entry(rec: "_taskq.TaskRecord") -> dict[str, Any]:
 
 
 def _evict_for_lanes(
-    self: _TaskqBridgeMixin, count: int, lanes: "Mapping[str, str] | None" = None
+    self: _TaskqBridgeMixin,
+    count: int,
+    lanes: "Mapping[str, str] | None" = None,
+    *,
+    max_rank: int | None = None,
+    priorities: "Mapping[str, int] | None" = None,
+    held: "Callable[[Mapping[str, Any]], bool] | None" = None,
 ) -> int:
     """Drop up to *count* window entries back to store-only to make room.
 
@@ -472,8 +553,21 @@ def _evict_for_lanes(
     *lanes* answers the lane of an entry that names none from
     :meth:`_refill_absent`'s off-loop resolution, so this loop step takes no
     store read of its own.
+
+    *max_rank* keeps every entry of a lane whose priority rank is above it
+    (see :meth:`_refill_make_room`); ``None`` considers every lane. The ranks
+    come from *priorities*, the refill pass's snapshot, or are read here when
+    a ceiling is given without one. An entry *held* answers True for is
+    evictable whatever its rank: it cannot start now, so keeping it protects
+    no tier.
     """
+    from kiro_crew.taskq import lanes as _lanes
+
     queue = self._manager._queue
+    if max_rank is None:
+        priorities = {}
+    elif priorities is None:
+        priorities = self.lane_priorities()
     evicted = 0
     head_dropped = False
     while evicted < count:
@@ -485,7 +579,14 @@ def _evict_for_lanes(
                 or params.get("_memory_mode", "persistent") != "persistent"
             ):
                 continue
-            by_lane.setdefault(self.lane_of_entry(params, lanes), []).append(idx)
+            lane = self.lane_of_entry(params, lanes)
+            if (
+                max_rank is not None
+                and priorities.get(lane, _lanes.DEFAULT_PRIORITY_RANK) > max_rank
+                and not (held is not None and held(params))
+            ):
+                continue
+            by_lane.setdefault(lane, []).append(idx)
         spare = [(len(ids), ids[-1]) for ids in by_lane.values() if len(ids) > 1]
         if spare:
             _, victim = max(spare)
@@ -499,9 +600,21 @@ def _evict_for_lanes(
     return evicted
 
 
-def lane_refill_scheduler(self: _TaskqBridgeMixin) -> "_lanes.LaneScheduler":
+def lane_refill_scheduler(
+    self: _TaskqBridgeMixin, *, priorities: "Mapping[str, int] | None" = None
+) -> "_lanes.LaneScheduler":
     """A second balance for the store->window refill, so filling the window
-    does not spend the credit the drain picks with."""
+    does not spend the credit the drain picks with.
+
+    *priorities* is the refill pass's tier snapshot (``None`` reads it now).
+    An empty mapping clears the tiers on it for this caller, which is how
+    the ``children_only`` refill hydrates rows when capacity is reserve-only:
+    the store reader drives :meth:`LaneScheduler.interleave` itself, so the
+    exemption is expressed on the scheduler handed to it rather than as an
+    argument. A tier there would hydrate one chat's queued children pass
+    after pass and leave another chat's in-flight tree with no head in the
+    window for the reserve to start.
+    """
     from kiro_crew.taskq import lanes as _lanes
 
     scheduler = getattr(self._manager, "_lane_refill_scheduler", None)
@@ -511,4 +624,5 @@ def lane_refill_scheduler(self: _TaskqBridgeMixin) -> "_lanes.LaneScheduler":
         setattr(self._manager, "_lane_refill_scheduler", scheduler)
     else:
         scheduler.weights = settings.lane_weights
+    scheduler.priorities = dict(self.lane_priorities() if priorities is None else priorities)
     return scheduler

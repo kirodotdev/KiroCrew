@@ -8330,6 +8330,17 @@
       "select_one_rule": "Wähle eine Option. Wähle sie erneut, um die Auswahl aufzuheben.",
       "select_many_rule": "Wähle eine oder mehrere Optionen."
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Subagenten-Priorität",
+      "caption": "Wartende Subagenten aus Chats mit höherer Priorität starten zuerst. Beim Neustart des Gateways wieder Mittel.",
+      "change_failed": "Subagenten-Priorität konnte nicht geändert werden",
+      "change_failed_retry": "Die Priorität wurde nicht gespeichert. Versuche es erneut.",
+      "change_unconfirmed": "Das Gateway hat nicht geantwortet. Wähle die Priorität erneut, damit sie sicher gespeichert ist.",
+      "change_unconfirmed_title": "Priorität nicht bestätigt",
+      "high": "Hoch",
+      "low": "Niedrig",
+      "medium_default": "Mittel (Standard)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Abbrechen und zur Eingabe zurückkehren",
       "cancel_queued_message": "Wartende Nachricht abbrechen",

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
+import QueuePrioritySubmenu from './QueuePrioritySubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -161,7 +162,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, setQueuePriority, queuePriorityError, copyLink, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -540,6 +541,21 @@ export default function SessionActionsMenu({
     // data-[disabled]:pointer-events-none, so a hover `title` can never fire
     // there and the grey row would otherwise explain nothing.
     [
+      // Which tier this chat's waiting sub-agent spawns queue in: another
+      // setting for how this session's agent runs, so it sits above Turn time
+      // limit. A null tier is a cron- or hook-bound chat, which runs in the
+      // shared automation lane and has none; undefined still reads as Medium.
+      slot?.queue_priority !== null && (
+        <QueuePrioritySubmenu
+          key="queue-priority"
+          variant={variant}
+          current={slot?.queue_priority}
+          error={queuePriorityError?.key === slotKey ? queuePriorityError.message : null}
+          errorTitle={queuePriorityError?.key === slotKey ? queuePriorityError.title : undefined}
+          errorReport={queuePriorityError?.key === slotKey ? queuePriorityError.report : undefined}
+          onPick={(priority) => setQueuePriority(slotKey, priority)}
+        />
+      ),
       // This session's own turn time limit: how long one of its turns may run
       // before it is stopped, instead of the global Settings value. Beside
       // Reload because both are about how this session's agent runs.

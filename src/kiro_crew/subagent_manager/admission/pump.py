@@ -1019,7 +1019,11 @@ class _PumpMixin(ManagerComponent):
         params.pop(self.MEMORY_WAIT_UNTIL_KEY, None)
         # The floor mark is one-shot: the gate re-checks the floor now and sets
         # it again if the row is deferred on it again.
-        self._manager._floor_deferred_ids.discard(str(params.get("_preassigned_id") or ""))
+        picked_id = str(params.get("_preassigned_id") or "")
+        self._manager._floor_deferred_ids.discard(picked_id)
+        fit = getattr(self._manager, "_floor_fit_ids", None)
+        if fit is not None:
+            fit.discard(picked_id)
         # A run can be cancelled WHILE it waits here — a user stop, or a session
         # deleted out from under it. Starting it anyway would execute tools for
         # work already reported as stopped, so skip it and drain the next one

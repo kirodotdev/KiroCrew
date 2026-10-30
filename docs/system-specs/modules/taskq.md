@@ -1084,6 +1084,66 @@ starts even and is never owed a burst. Inside a lane the order is FIFO by
 Weights use `agent.lane_weights{lane: w}` (1..64), including `system`.
 Every unlisted lane has weight 1.
 
+Above the weights sits a strict **priority tier** per lane: `low`, `medium`
+(the default) or `high`. `LaneScheduler.priorities` maps a lane to its rank,
+and a pick considers only the contending lanes of the highest tier present;
+the weighted round-robin runs inside that tier, and a lower tier neither wins
+nor accrues credit while a higher one has work. With every lane `medium` the
+order is exactly the weighted round-robin above. The tiers come from the
+manager's lane priority source (`SubagentManager.set_lane_priority_source`),
+which the dashboard installs as `DashboardState.lane_queue_priorities`. The
+owner sets a chat's tier through `PATCH /api/chat/slots/{slot}/queue-priority`,
+and the dashboard stores it once per lane, in
+`DashboardState._session_queue_priority` (lane = `lane_key_for` of the session
+the chat's turns run on; `medium` has no entry). Every slot on that lane reads
+the one entry when it is serialized (`queue_priority_of`), so tabs sharing a
+session cannot disagree and a slot that joins the session later reports its
+tier with no extra step; the route patches every live slot on the lane. A
+chat bound to the `system` lane (a cron- or hook-linked chat) has no tier:
+the route answers 409 `queue_priority_system_lane`, the slot serializes
+`queue_priority: null`, and the menu hides the picker.
+`lane_queue_priorities` reports only lanes that a live slot still maps to, so
+a closed chat's entry stops ranking; it never mutates the map, because it runs
+on the task store's writer thread. The tier
+lives in gateway memory only and every chat starts at `medium` after a restart:
+transcript metadata is agent-writable, so a tier restored from it would let an
+agent move its own chat past the owner-only route. The
+source is asked on every pick and every refill (both balances), so a change
+reaches the next dispatch; a failing source reads as all-`medium`. **The tier
+applies to picks for a free ROOT slot only.** A pick under the child reserve
+(`tiered=False`, and the `children_only` refill, which is handed a scheduler
+with the tiers cleared) is the plain weighted round-robin: the reserve is the
+capacity a tree already in flight depends on to finish, so a `high` chat that
+keeps a nested spawn queued cannot hold it pass after pass and leave another
+chat's running tree waiting on its own child. Strict
+tiers can starve a lower tier while a higher one keeps spawning, which is the
+point of choosing `low`. The `system` lane (cron, hooks, heartbeat) has no
+chat to raise, so the tier filter never drops it: it takes part in every
+tiered pick and keeps its weighted share beside the top tier's lanes, so a
+`high` chat that keeps spawning cannot hold automation back indefinitely.
+The delay is not one round in general: `system` carries its credit across
+picks, so after it last won against a heavy lane (weight 64) a weight-1 `high`
+lane can take 17 starts before the next automation grant. Against `low` chats
+alone the `system` lane still ranks `medium`.
+
+The bounded dispatch window respects the tier too. A root refill that makes
+room for lanes waiting only in the store (`_refill_make_room`) never evicts a
+window entry whose lane ranks above the best absent lane
+(`_refill_evict_ceiling`; no ceiling when a `system` lane is absent), and the
+tiered refill scheduler hydrates the highest absent tier first. Without that,
+a window of 1 holding a `high` entry would drop it for a `low` head from the
+store and the pick would start `low` first. The `children_only` refill uses
+the same ceiling and tiered fetch while a root slot is free, because the pump
+runs it before every pick and an untiered one would evict the `high` root
+entry for a `low` child. It is untiered only when capacity is reserve-only,
+like the reserve pick. Its ceiling never keeps a root entry that cannot start
+now (`_refill_held_roots`: the memory-pressure hold is in force, or the entry
+waits on the floor and the memory wake has not yet found it fitting,
+`_floor_fit_ids`), so a window full of held `high` roots still lets a running
+tree's nested child in, and a `high` root keeps its tier once memory recovers. Each refill pass reads `lane_priorities()` once, on the
+loop, and hands that one mapping to the ceiling, the eviction and the fetch's
+scheduler, so the steps of one pass never see different tiers.
+
 Two store readers serve the dispatcher: `pending_lanes(kind, exclude_ids,
 children_only)` → `{lane: eligible count}`, and `fetch_dispatchable_fair(kind,
 limit, scheduler, exclude_ids, children_only, lanes, per_lane_limit)` — each

@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         ContextBuilder,
         KiroCrewConfig,
         LLMEvent,
+        Mapping,
         MemoryWait,
         ProcessHandle,
         PublishedQueueDepths,
@@ -217,6 +218,9 @@ class SubagentManager:
         #: workflow ``ctx.agent()`` calls). Registered by the gateway through
         #: :meth:`set_cap_raise_listener`; None everywhere else.
         self._cap_raise_listener: Callable[[], object] | None = None
+        #: Returns ``{lane: "low"|"high"}`` for lanes whose owner set a queue
+        #: priority; see :meth:`set_lane_priority_source`. None: all medium.
+        self._lane_priority_source: Callable[[], Mapping[str, str]] | None = None
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
         # A positive value pins the window; 0 derives it from the budget.
@@ -436,6 +440,12 @@ class SubagentManager:
         # leaves it to the gate, which re-checks the floor before the pressure
         # hold. Process-local, as the hold's own clocks are.
         self._floor_deferred_ids: set[str] = set()
+        # The floor-deferred rows the memory wake has since found fitting
+        # (``_release_memory_waits``): they can start now, so a child-only
+        # refill's tier ceiling keeps protecting them (``_refill_held_roots``).
+        # Cleared when the gate defers the row on the floor again, or the start
+        # leaves the window.
+        self._floor_fit_ids: set[str] = set()
         # The starts this process holds back for memory, from their first
         # deferral to their admission, start or end (subagent.md, *Memory
         # waits: event wake and the per-lane share*): what the event wake
@@ -885,6 +895,7 @@ class SubagentManager:
     release_orphan_notices = _config_surface.release_orphan_notices
     _clamp_effective_cap = _config_surface._clamp_effective_cap
     set_cap_raise_listener = _config_surface.set_cap_raise_listener
+    set_lane_priority_source = _config_surface.set_lane_priority_source
     _notify_cap_raised = _config_surface._notify_cap_raised
     set_effective_cap = _config_surface.set_effective_cap
 

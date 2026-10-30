@@ -15,9 +15,13 @@ import type { ReactNode } from 'react'
 const apiMock = vi.hoisted(() => ({
   forkChatSlot: vi.fn(),
   setSlotPin: vi.fn(),
+  setSlotQueuePriority: vi.fn(),
   chatSlots: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: apiMock }))
+vi.mock('../api/client', async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import('../api/client')>()).ApiError,
+  api: apiMock,
+}))
 
 const copySessionLink = vi.hoisted(() => vi.fn())
 vi.mock('../utils/shareUrl', () => ({ copySessionLink }))
@@ -37,7 +41,7 @@ vi.mock('../store/chatSlice', async (importOriginal) => ({
 }))
 
 import { store } from '../store'
-import { sseSlots, markSlotUnread, markSlotRead, setSidebarOrder, updateSlot, updateSlotPin } from '../store/dashboardSlice'
+import { sseSlotPatch, sseSlots, markSlotUnread, markSlotRead, setSidebarOrder, updateSlot, updateSlotPin } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { pinMutationKeysInFlight, useSessionActions } from './useSessionActions'
 
@@ -65,6 +69,7 @@ beforeEach(() => {
   localStorage.clear()
   apiMock.forkChatSlot.mockReset().mockResolvedValue({ ok: true, key: 'zzq-forked' })
   apiMock.setSlotPin.mockReset().mockResolvedValue({ ok: true })
+  apiMock.setSlotQueuePriority.mockReset().mockResolvedValue({ ok: true })
   apiMock.chatSlots.mockReset().mockImplementation(async () => store.getState().dashboard.slots)
   copySessionLink.mockClear()
   moveSlotToFolder.mockClear()
@@ -455,6 +460,174 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(slot()?.pinned).toBe(true))
   })
+describe('setQueuePriority', () => {
+  it('sends the tier and leaves the row to the gateway slot patch', async () => {
+    slots({ queue_priority: 'low' })
+    const { result } = harness()
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledWith(KEY, 'high'))
+    expect(slot()?.queue_priority).toBe('low')
+    act(() => store.dispatch(sseSlotPatch({ slots: [{ key: KEY, queue_priority: 'high' }] })))
+    expect(slot()?.queue_priority).toBe('high')
+  })
+
+  it('shows the localized retry line, not the gateway text, and leaves the row', async () => {
+    const { ApiError } = await import('../api/client')
+    apiMock.setSlotQueuePriority.mockRejectedValue(new ApiError(503, 'zzq failed to save agent-queue priority', '{}'))
+    slots({ queue_priority: 'low' })
+    const { result } = harness()
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    expect(slot()?.queue_priority).toBe('low')
+    expect(result.current.queuePriorityError?.message).not.toMatch(/zzq|agent-queue/)
+    expect(result.current.queuePriorityError?.message).toMatch(/Try again/)
+  })
+
+  it('reports a transport failure unconfirmed, in localized lines', async () => {
+    apiMock.setSlotQueuePriority.mockRejectedValue(new TypeError('Failed to fetch'))
+    slots({ queue_priority: 'low' })
+    const { result } = harness()
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    expect(result.current.queuePriorityError?.title).toBe('Priority not confirmed')
+    expect(result.current.queuePriorityError?.message).toBe(
+      "The gateway didn't answer. Pick the priority again to make sure it's saved.",
+    )
+    expect(result.current.queuePriorityError?.message).not.toMatch(/Failed to fetch/)
+    expect(apiMock.chatSlots).not.toHaveBeenCalled()
+  })
+
+  it('keeps another dashboard\'s slot patch when a pick is refused', async () => {
+    // Starting at Medium, a Low pick's refusal is delayed; meanwhile another
+    // dashboard saves High and its slot patch reaches this row.
+    const { ApiError } = await import('../api/client')
+    let rejectLow: (reason?: unknown) => void = () => undefined
+    apiMock.setSlotQueuePriority.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectLow = reject }))
+    slots({ queue_priority: 'medium' })
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'low'))
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(1))
+    act(() => store.dispatch(sseSlotPatch({ slots: [{ key: KEY, queue_priority: 'high' }] })))
+    await act(async () => { rejectLow(new ApiError(403, 'zzq expired', '')); await Promise.resolve() })
+
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    expect(slot()?.queue_priority).toBe('high')
+  })
+
+  it('keeps a saved tier when a later pick is refused after a lost answer', async () => {
+    // High commits but loses its answer, Low saves, Medium is refused: the row
+    // stays on Low, the tier the gateway's last slot patch reported.
+    const { ApiError } = await import('../api/client')
+    apiMock.setSlotQueuePriority
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ ok: true, queue_priority: 'low', changed: true })
+      .mockRejectedValueOnce(new ApiError(403, 'zzq expired', ''))
+    slots({ queue_priority: 'medium' })
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    act(() => store.dispatch(sseSlotPatch({ slots: [{ key: KEY, queue_priority: 'high' }] })))
+    act(() => result.current.setQueuePriority(KEY, 'low'))
+    act(() => store.dispatch(sseSlotPatch({ slots: [{ key: KEY, queue_priority: 'low' }] })))
+    act(() => result.current.setQueuePriority(KEY, 'medium'))
+
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(result.current.queuePriorityError?.title).toBe("Couldn't change the sub-agent priority"))
+    expect(slot()?.queue_priority).toBe('low')
+  })
+
+  it('an older failure says nothing once a newer pick is in flight', async () => {
+    let rejectHigh: (reason?: unknown) => void = () => undefined
+    apiMock.setSlotQueuePriority
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectHigh = reject }))
+      .mockResolvedValueOnce({ ok: true, queue_priority: 'low', changed: true })
+    slots({ queue_priority: 'medium' })
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    act(() => result.current.setQueuePriority(KEY, 'low'))
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(1))
+    await act(async () => { rejectHigh(new TypeError('Failed to fetch')); await Promise.resolve() })
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(2))
+
+    expect(result.current.queuePriorityError).toBeNull()
+  })
+
+  it('says the tier was not saved when the server refused it', async () => {
+    const { ApiError } = await import('../api/client')
+    apiMock.setSlotQueuePriority.mockRejectedValue(new ApiError(403, 'refused', ''))
+    slots({ queue_priority: 'low' })
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    expect(result.current.queuePriorityError?.title).toBe("Couldn't change the sub-agent priority")
+    expect(result.current.queuePriorityError?.message).toBe("The priority wasn't saved. Try again.")
+    expect(slot()?.queue_priority).toBe('low')
+  })
+
+  it('keeps the refusal report for the agent hand-off', async () => {
+    const { ApiError } = await import('../api/client')
+    const { attachReport } = await import('../utils/errorReport')
+    const report = {
+      id: 'zzq-r1',
+      at: 0,
+      source: 'api' as const,
+      message: 'zzq refused',
+      status: 409,
+      code: 'queue_priority_system_lane',
+      endpoint: `/api/chat/slots/${KEY}/queue-priority`,
+    }
+    apiMock.setSlotQueuePriority.mockRejectedValue(
+      attachReport(new ApiError(409, 'zzq refused', ''), report),
+    )
+    slots({ queue_priority: 'low' })
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    // The shown line is localized, so only the stored report still names the
+    // endpoint, status and backend code.
+    expect(result.current.queuePriorityError?.message).not.toMatch(/zzq/)
+    expect(result.current.queuePriorityError?.report).toBe(report)
+  })
+
+  it('sends rapid picks in invocation order', async () => {
+    let resolveFirst: (value: { ok: boolean }) => void = () => undefined
+    apiMock.setSlotQueuePriority
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ ok: true })
+    slots({})
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    act(() => result.current.setQueuePriority(KEY, 'low'))
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(1))
+    expect(apiMock.setSlotQueuePriority).toHaveBeenNthCalledWith(1, KEY, 'high')
+
+    await act(async () => { resolveFirst({ ok: true }); await Promise.resolve() })
+    await waitFor(() => expect(apiMock.setSlotQueuePriority).toHaveBeenCalledTimes(2))
+    expect(apiMock.setSlotQueuePriority).toHaveBeenNthCalledWith(2, KEY, 'low')
+  })
+
+  it('clears a slot failure after its next successful pick', async () => {
+    apiMock.setSlotQueuePriority
+      .mockRejectedValueOnce(new Error('zzq offline'))
+      .mockResolvedValueOnce({ ok: true })
+    slots({})
+    const { result } = harness()
+
+    act(() => result.current.setQueuePriority(KEY, 'high'))
+    await waitFor(() => expect(result.current.queuePriorityError?.key).toBe(KEY))
+    act(() => result.current.setQueuePriority(KEY, 'low'))
+
+    await waitFor(() => expect(result.current.queuePriorityError).toBeNull())
+  })
+})
+
 describe('copyLink', () => {
   it('copies the link with the slot title and the caller mode', () => {
     slots({ title: 'zzq title' })

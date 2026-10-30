@@ -27,11 +27,14 @@ from overload_fakes import Clock, ManagerHarness, open_task_store
 from kiro_crew import mcp_shared
 from kiro_crew.dashboard.handlers import spawn_resume
 from kiro_crew.mcp_tools import spawn as spawn_tools
+from kiro_crew.queue_priority import normalize_queue_priority
 from kiro_crew.subagent import SubagentInfo
 from kiro_crew.subagent_manager.admission import (
     CapacityView,
     FairnessSettings,
+    SpawnAdmissionCoordinator,
 )
+from kiro_crew.subagent_manager.admission.types import MemoryWait
 from kiro_crew.taskq import lanes, model
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitRecord
@@ -105,6 +108,141 @@ def test_pick_index_honours_eligibility() -> None:
     idx = s.pick_index(entries, lane_of=lambda e: e["lane"], eligible=lambda e: e["child"])
     assert idx == 1
     assert s.pick_index(entries, lane_of=lambda e: e["lane"], eligible=lambda e: False) is None
+
+
+@pytest.mark.parametrize(
+    "value,name,rank",
+    [
+        ("low", "low", 0),
+        ("medium", "medium", 1),
+        ("high", "high", 2),
+        (" HIGH ", "high", 2),
+        ("urgent", "medium", 1),
+        ("", "medium", 1),
+        (None, "medium", 1),
+        (3, "medium", 1),
+    ],
+)
+def test_queue_priority_normalizes_unknown_to_medium(value, name, rank) -> None:
+    assert normalize_queue_priority(value) == name
+    assert lanes.priority_rank(value) == rank
+
+
+def test_pick_serves_the_highest_priority_tier_first() -> None:
+    s = lanes.LaneScheduler(priorities={"hi": 2, "lo": 0})
+    # "mid" is absent from the map, so it is medium.
+    picks = [s.pick(["lo", "mid", "hi"]) for _ in range(3)]
+    assert picks == ["hi", "hi", "hi"]
+    # Lower tiers accrue no credit while a higher tier contends, so they do
+    # not come back owed a burst.
+    assert "lo" not in s.credit and "mid" not in s.credit
+    assert [s.pick(["lo", "mid"]) for _ in range(2)] == ["mid", "mid"]
+    assert s.pick(["lo"]) == "lo"
+
+
+def test_weighted_round_robin_still_runs_inside_a_tier() -> None:
+    s = lanes.LaneScheduler(weights={"a": 3}, priorities={"a": 2, "b": 2, "c": 0})
+    picks = [s.pick(["a", "b", "c"]) for _ in range(8)]
+    assert picks.count("a") == 6 and picks.count("b") == 2 and "c" not in picks
+
+
+def test_a_high_chat_never_holds_the_system_lane_back() -> None:
+    # Cron, hook and heartbeat spawns have no chat to raise. A High chat that
+    # keeps spawning must not hold them back without bound: the system lane
+    # keeps its weighted share inside the top tier, so it waits at most one
+    # round, while a Medium and a Low chat still wait.
+    s = lanes.LaneScheduler(priorities={"hi": 2, "lo": 0})
+    picks = [s.pick(["hi", "mid", "lo", lanes.SYSTEM_LANE]) for _ in range(4)]
+    assert picks.count(lanes.SYSTEM_LANE) == 2 and picks.count("hi") == 2
+    assert "mid" not in picks and "lo" not in picks
+
+
+def test_a_high_chat_never_holds_the_shared_crew_automation_lane_back(monkeypatch) -> None:
+    # With Shared Crew on, cron and hook roots are filed under the automation
+    # principal's lane rather than ``system``; that lane is untiered just the same.
+    from kiro_crew.shared_crew.admission_gate import AUTOMATION_PRINCIPAL
+
+    monkeypatch.setattr(lanes, "_LANE_RESOLVER", None)
+    monkeypatch.setattr(lanes, "_AUTOMATION_LANE", None)
+    lanes.set_lane_resolver(lambda key: None, automation_principal=AUTOMATION_PRINCIPAL.id)
+    automation = lanes.PRINCIPAL_LANE_PREFIX + AUTOMATION_PRINCIPAL.id
+    assert lanes.is_untiered_lane(automation) and not lanes.is_system_lane(automation)
+
+    s = lanes.LaneScheduler(priorities={"hi": 2})
+    picks = [s.pick(["hi", "mid", automation]) for _ in range(4)]
+    assert picks.count(automation) == 2 and "mid" not in picks
+
+    lanes.set_lane_resolver(None)
+    assert not lanes.is_untiered_lane(automation)
+
+
+def test_installing_shared_crew_marks_its_automation_lane_untiered(monkeypatch) -> None:
+    from kiro_crew.shared_crew import admission_gate as ag
+
+    monkeypatch.setattr(lanes, "_LANE_RESOLVER", None)
+    monkeypatch.setattr(lanes, "_AUTOMATION_LANE", None)
+    monkeypatch.setattr(ag, "_SERVICE", None)
+    monkeypatch.setattr(ag, "_HOOKS", ag.HostHooks())
+    monkeypatch.setattr(ag._containment, "publish_report", lambda report: None)
+    monkeypatch.setattr(ag._containment, "install_slice_manager", lambda slices: None)
+    service = SimpleNamespace(
+        enabled=True,
+        budget_for_session=lambda key: None,
+        published_report=lambda: None,
+        limits=SimpleNamespace(containment_enabled=False),
+        _slices=None,
+    )
+
+    ag.install_service(service)  # type: ignore[arg-type]
+
+    assert lanes.is_untiered_lane(lanes.PRINCIPAL_LANE_PREFIX + ag.AUTOMATION_PRINCIPAL.id)
+    ag.install_service(None)
+    assert lanes._AUTOMATION_LANE is None
+
+
+def test_the_system_lane_still_ranks_medium_against_a_low_chat() -> None:
+    s = lanes.LaneScheduler(priorities={"lo": 0})
+    assert [s.pick(["lo", lanes.SYSTEM_LANE]) for _ in range(3)] == [lanes.SYSTEM_LANE] * 3
+
+
+def test_no_priorities_is_the_plain_round_robin() -> None:
+    plain, tiered = lanes.LaneScheduler(), lanes.LaneScheduler(priorities={"x": 1})
+    order = ["b", "a", "system"]
+    assert [plain.pick(order) for _ in range(6)] == [tiered.pick(order) for _ in range(6)]
+
+
+def test_interleave_puts_the_high_lane_first_then_fifo() -> None:
+    s = lanes.LaneScheduler(priorities={"hi": 2})
+    out = s.interleave({"a": ["a1", "a2"], "hi": ["h1", "h2"]}, limit=10)
+    assert out == ["h1", "h2", "a1", "a2"]
+
+
+def test_untiered_pick_ignores_priorities_entirely() -> None:
+    """``tiered=False`` is the child reserve's pick: plain weighted round-robin.
+
+    A tier may reorder new work; it must never withhold the reserve from a
+    lane whose tree is already in flight, so the lower tier keeps its turns
+    and its credit.
+    """
+    s = lanes.LaneScheduler(priorities={"hi": 2, "lo": 0})
+    plain = lanes.LaneScheduler()
+    order = ["lo", "mid", "hi"]
+    assert [s.pick(order, tiered=False) for _ in range(6)] == [plain.pick(order) for _ in range(6)]
+    # Weights still apply inside an untiered pick.
+    w = lanes.LaneScheduler(weights={"lo": 3}, priorities={"hi": 2})
+    picks = [w.pick(["lo", "hi"], tiered=False) for _ in range(4)]
+    assert picks.count("lo") == 3 and picks.count("hi") == 1
+
+
+def test_pick_index_untiered_takes_the_oldest_head_not_the_high_lane() -> None:
+    s = lanes.LaneScheduler(priorities={"hi": 2})
+    entries = [{"lane": "mid"}, {"lane": "hi"}]
+
+    def lane_of(entry: dict) -> str:
+        return str(entry["lane"])
+
+    assert s.pick_index(entries, lane_of=lane_of, tiered=False) == 0
+    assert s.pick_index(entries, lane_of=lane_of) == 1
 
 
 # ── store: lane column + fair queries ─────────────────────────────────────────
@@ -562,6 +700,279 @@ async def test_lane_weights_shape_the_share(h) -> None:
     assert sum(1 for g in lanes_started if g in b_ids) == 2
     # FIFO inside each lane.
     assert [g for g in lanes_started if g in a_ids] == [x.id for x in a[:6]]
+
+
+@pytest.mark.asyncio
+async def test_high_priority_chat_jumps_the_queue_and_low_waits(h) -> None:
+    hz = await h(max_concurrent=1)
+    priorities = {"dash:hi": "high", "dash:lo": "low"}
+    hz.mgr.set_lane_priority_source(lambda: dict(priorities))
+    first = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    low = [hz.spawn(f"lo{i}", parent="dash:lo") for i in range(2)]
+    mid = [hz.spawn(f"mid{i}", parent="dash:mid") for i in range(2)]
+    high = [hz.spawn(f"hi{i}", parent="dash:hi") for i in range(2)]
+    got: list[str] = []
+    current = first
+    for _ in range(6):
+        await hz.end(current)
+        new = [i for i in hz.started if i not in got and i != first.id]
+        assert len(new) == 1
+        got.append(new[0])
+        current = hz.mgr._agents[new[0]]
+    # Arrival order was low, medium, high; dispatch order is the reverse tier.
+    assert got == [x.id for x in (*high, *mid, *low)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("high_first", [True, False], ids=["high-windowed", "low-windowed"])
+async def test_a_one_entry_window_never_trades_a_high_spawn_for_a_low_one(h, high_first) -> None:
+    """With ``task_dispatch_window`` 1 only one queued spawn is in memory.
+
+    A refill makes room for every lane waiting in the store. Without a tier
+    ceiling it would evict the windowed High entry for the store-only Low
+    head, and the pick would start Low while High is still eligible. The root
+    refill never evicts above the best absent tier, and the tiered fetch
+    hydrates the highest tier first.
+    """
+    hz = await h(max_concurrent=1)
+    hz.store._window = 1
+    hz.mgr.set_lane_priority_source(lambda: {"dash:hi": "high", "dash:lo": "low"})
+    first = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    order = ("hi", "lo") if high_first else ("lo", "hi")
+    spawned = {
+        lane: [hz.spawn(f"{lane}{i}", parent=f"dash:{lane}") for i in range(2)] for lane in order
+    }
+    windowed = [p for p in hz.mgr._queue if p.get("_memory_mode", "persistent") == "persistent"]
+    assert len(windowed) == 1
+    got: list[str] = []
+    current = first
+    for _ in range(4):
+        await hz.end(current)
+        new = [i for i in hz.started if i not in got and i != first.id]
+        assert len(new) == 1
+        got.append(new[0])
+        current = hz.mgr._agents[new[0]]
+    assert got == [x.id for x in (*spawned["hi"], *spawned["lo"])]
+
+
+@pytest.mark.asyncio
+async def test_a_free_root_slot_keeps_the_tier_through_the_child_refill(
+    h, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With window 1 and a ROOT slot free, the child-only refill is tiered too.
+
+    The High root entry is the one windowed entry; a Low chat's nested spawn
+    waits in the store only. An untiered child-only refill would evict High
+    to hydrate the Low child, and the pick would start Low while a root slot
+    could have taken High. Only reserve-only capacity runs that refill
+    untiered.
+    """
+    # The coroutine pump is the one that runs both refills before its pick.
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    hz = await h(max_concurrent=2, settings=FairnessSettings(child_reserve=0))
+
+    async def pump_idle() -> None:
+        # The pump's store reads hop to the writer thread, so a fixed number
+        # of loop turns is not enough: wait on the drain task itself.
+        for _ in range(10):
+            await hz.settle()
+            task = getattr(hz.mgr, "_drain_task", None)
+            if task is None or task.done():
+                return
+            await asyncio.wait([task], timeout=5)
+        raise AssertionError("the drain pump never went idle")
+
+    hz.store._window = 1
+    hz.mgr.set_lane_priority_source(lambda: {"dash:hi": "high", "dash:lo": "low"})
+    s_lo = hz.spawn("S_LO", parent="dash:lo")
+    warm = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    assert hz.started == [s_lo.id, warm.id]
+    high = hz.spawn("HI", parent="dash:hi")
+    c_lo = hz.child_of(s_lo, "C_LO")
+    await hz.settle()
+    assert [p["_preassigned_id"] for p in hz.mgr._queue] == [high.id]
+    assert hz.state(c_lo) == model.QUEUED
+    # The freed slot is a ROOT slot: there is no reserve.
+    await hz.end(warm)
+    await pump_idle()
+    assert high.id in hz.started, "the Low child took the free root slot first"
+    assert c_lo.id not in hz.started and hz.state(c_lo) == model.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_a_held_high_root_does_not_keep_a_running_trees_child_out(
+    h, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child-only refill's tier ceiling keeps only roots that can start.
+
+    Window 1 holds a High root that the memory-pressure hold keeps from
+    starting, and a Low chat's running tree has a nested child in the store
+    only. Keeping the held High entry would leave the child out of the window
+    and the tree waiting on its own child; the child is hydrated and starts.
+    """
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    hz = await h(max_concurrent=2, settings=FairnessSettings(child_reserve=0))
+
+    async def pump_idle() -> None:
+        for _ in range(10):
+            await hz.settle()
+            task = getattr(hz.mgr, "_drain_task", None)
+            if task is None or task.done():
+                return
+            await asyncio.wait([task], timeout=5)
+        raise AssertionError("the drain pump never went idle")
+
+    hz.store._window = 1
+    hz.mgr.set_lane_priority_source(lambda: {"dash:hi": "high", "dash:lo": "low"})
+    s_lo = hz.spawn("S_LO", parent="dash:lo")
+    warm = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    assert hz.started == [s_lo.id, warm.id]
+    high = hz.spawn("HI", parent="dash:hi")
+    c_lo = hz.child_of(s_lo, "C_LO")
+    await hz.settle()
+    assert [p["_preassigned_id"] for p in hz.mgr._queue] == [high.id]
+    # The pressure hold now keeps every root start out; nested starts pass.
+    monkeypatch.setattr(hz.mgr, "_memory_pressure_hold", lambda: 2)
+    monkeypatch.setattr(hz.mgr, "_memory_pressure_holds", lambda *_a, **_kw: "held")
+    await hz.end(warm)
+    await pump_idle()
+    assert c_lo.id in hz.started, "a held High root kept the running tree's child out"
+    assert high.id not in hz.started
+
+
+@pytest.mark.asyncio
+async def test_a_floor_deferred_root_the_memory_wake_found_fitting_keeps_its_tier(h) -> None:
+    """A floor-deferred root counts as held only until memory recovers.
+
+    The child-only refill may evict a root that cannot start now. Once the
+    memory wake finds a floor-deferred root fitting, it can start, so the
+    refill must not treat it as held, or a Low chat's children could keep
+    taking its window place. A new floor deferral marks it held again.
+    """
+    hz = await h(max_concurrent=2)
+    adm = hz.mgr._admission
+    rid = "zzq-root"
+    root = {"_preassigned_id": rid, "parent_session_key": "dash:hi"}
+    hz.mgr._floor_deferred_ids.add(rid)
+    assert adm._refill_held_roots()(root) is True
+    hz.mgr._memory_waits[rid] = MemoryWait(
+        lane="dash:hi",
+        parent_session_key="dash:hi",
+        since=0.0,
+        start_gb=None,
+        price_gb=None,
+        nested=False,
+        durable=False,
+    )
+    adm._release_memory_waits([rid], "test")
+    assert rid in hz.mgr._floor_fit_ids
+    assert adm._refill_held_roots()(root) is False, "a recovered High root stayed evictable"
+    await hz.settle()
+    hz.mgr._memory_waits.pop(rid, None)
+    hz.mgr._floor_fit_ids.discard(rid)
+    assert adm._refill_held_roots()(root) is True
+
+
+@pytest.mark.asyncio
+async def test_a_high_chat_does_not_hold_cron_spawns_back(h) -> None:
+    """Cron spawns keep their turn while a High chat keeps spawning."""
+    hz = await h(max_concurrent=1)
+    hz.mgr.set_lane_priority_source(lambda: {"dash:hi": "high"})
+    first = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    high = [hz.spawn(f"hi{i}", parent="dash:hi") for i in range(3)]
+    cron = hz.spawn("cron0", parent="cron:0")
+    mid = hz.spawn("mid0", parent="dash:mid")
+    got: list[str] = []
+    current = first
+    for _ in range(5):
+        await hz.end(current)
+        new = [i for i in hz.started if i not in got and i != first.id]
+        assert len(new) == 1
+        got.append(new[0])
+        current = hz.mgr._agents[new[0]]
+    # The cron spawn starts within the first round beside the High chat, not
+    # after the High chat's whole queue; the Medium chat still waits.
+    assert got.index(cron.id) <= 1
+    assert got[-1] == mid.id
+    assert {x.id for x in high} <= set(got)
+
+
+@pytest.mark.asyncio
+async def test_a_high_chat_does_not_take_the_child_reserve_every_pass(h) -> None:
+    """The child reserve ignores the tiers, so a running tree is never starved.
+
+    Both chats have a nested spawn queued and only the reserve is free (a
+    root may not take it). A tiered reserve pick would hand it to the `high`
+    chat pass after pass, and the `medium` chat's in-flight tree would wait on
+    its own child for as long as the high chat keeps one queued. The reserve
+    takes turns instead: the medium child gets the second grant.
+    """
+    hz = await h(max_concurrent=2)
+    hz.mgr.set_lane_priority_source(lambda: {"dash:hi": "high"})
+    s_hi = hz.spawn("S_HI", parent="dash:hi")
+    s_mid = hz.spawn("S_MID", parent="dash:mid")
+    await hz.settle()
+    assert hz.state(s_hi) == model.RUNNING and hz.state(s_mid) == model.RUNNING
+    # S_HI used the NON-blocking spawn path, so it keeps its slot and its
+    # children queue behind the full cap.
+    kids_hi = [hz.child_of(s_hi, f"C_HI{i}") for i in range(3)]
+    await hz.settle()
+    assert all(hz.state(k) == model.QUEUED for k in kids_hi)
+    # S_MID blocks on its own child and yields its slot: the freed slot is the
+    # reserve, and every queued nested row now contends for it.
+    hz.block_in_spawn_sub_agents(s_mid, "call-mid")
+    c_mid = hz.child_of(s_mid, "C_MID")
+    await hz.settle()
+    assert hz.state(s_mid) == model.WAITING_CHILDREN
+    view = hz.mgr._admission.capacity_view()
+    # The slot S_MID freed is reserve-only: roots may fill just one of the two.
+    assert view.reserve_active and view.roots_cap == 1
+    # Grant 1 went to the oldest head (C_HI0) by plain round-robin.
+    assert hz.state(kids_hi[0]) == model.RUNNING and hz.state(c_mid) == model.QUEUED
+    # Grant 2: the medium lane's turn. Under a tiered reserve pick the high
+    # lane would win again and C_MID would never start.
+    await hz.end(kids_hi[0])
+    assert hz.state(c_mid) == model.RUNNING, "the reserve was withheld from a running tree"
+    assert hz.state(kids_hi[1]) == model.QUEUED and hz.state(kids_hi[2]) == model.QUEUED
+    # The medium tree finishes, and the high chat's remaining children carry on.
+    await hz.end(c_mid)
+    await hz.end(s_mid)
+    assert hz.state(kids_hi[1]) == model.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_priority_change_reaches_the_next_pick(h) -> None:
+    hz = await h(max_concurrent=1)
+    priorities: dict[str, str] = {}
+    hz.mgr.set_lane_priority_source(lambda: dict(priorities))
+    first = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    a = hz.spawn("a", parent="dash:a")
+    b = hz.spawn("b", parent="dash:b")
+    priorities["dash:b"] = "high"
+    await hz.end(first)
+    assert b.id in hz.started and a.id not in hz.started
+
+
+@pytest.mark.asyncio
+async def test_a_failing_priority_source_leaves_every_lane_medium(h) -> None:
+    hz = await h(max_concurrent=1)
+
+    def broken() -> dict[str, str]:
+        raise RuntimeError("boom")
+
+    hz.mgr.set_lane_priority_source(broken)
+    first = hz.spawn("warm", parent="dash:z")
+    await hz.settle()
+    a = hz.spawn("a", parent="dash:a")
+    hz.spawn("b", parent="dash:b")
+    await hz.end(first)
+    assert a.id in hz.started, "FIFO across lanes still holds"
 
 
 @pytest.mark.asyncio
@@ -1065,3 +1476,16 @@ async def test_eviction_frees_one_lane_head_per_call_and_never_a_resume(h) -> No
     )
     assert hz.mgr._admission._evict_for_lanes(1) == 1
     assert [p["_preassigned_id"] for p in hz.mgr._queue] == ["res", "a1", "b1"]
+
+
+def test_no_eviction_ceiling_while_the_shared_crew_automation_lane_waits(monkeypatch) -> None:
+    from kiro_crew.subagent_manager.admission.taskq_bridge_window import (
+        _refill_evict_ceiling as ceiling,
+    )
+
+    monkeypatch.setattr(lanes, "_LANE_RESOLVER", None)
+    monkeypatch.setattr(lanes, "_AUTOMATION_LANE", None)
+    lanes.set_lane_resolver(lambda key: None, automation_principal="crew-automation")
+    assert ceiling(None, ["principal:crew-automation"], {"hi": 2}) is None
+    assert ceiling(None, ["principal:alice"], {"hi": 2}) == lanes.DEFAULT_PRIORITY_RANK
+    lanes.set_lane_resolver(None)
