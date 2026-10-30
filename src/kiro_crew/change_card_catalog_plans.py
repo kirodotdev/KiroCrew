@@ -760,7 +760,12 @@ def build_preview(
         if not impact:
             raise _fail("no_change", "these operations change nothing")
         label = str(context.get("label") or p["member"])
-        out["title"] = f"Change tools for “{label}”"
+        # A crewmate's own file extends its worker, not the chat the card is
+        # raised in, so the title says whose tools change.
+        if context.get("worker_kit"):
+            out["title"] = f"Change what “{label}”’s worker can use"
+        else:
+            out["title"] = f"Change tools for “{label}”"
         out["changes"] = _impact_rows(impact)
         launched = _launched_servers(p["draft"])
         for server, spec in launched:

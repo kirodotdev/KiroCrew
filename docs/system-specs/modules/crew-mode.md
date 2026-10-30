@@ -4370,7 +4370,11 @@ grant (`@server`, worded "every tool" with `auto_approve_all` on the addition)
 needs the "runs without asking" checkbox, and each widening `allowedTools` /
 `autoApprove` row stays in the main view rather than under Details. A gateway
 addition with no new approval carries neither flag; a registry install keeps
-both. Pressing it applies through
+both. For a crewmate that owns its file the card's title names the worker
+("Change what “<name>”’s worker can use"), because the edit never reaches the
+conductor the card is raised in; a member on a shared template keeps
+"Change tools for “<name>”", since its own chat runs on what it edits. The
+reader passes the preview's `mode` to the plan as `worker_kit`. Pressing it applies through
 `/api/agents/{name}/capabilities`, which for a crewmate that owns its file is
 `mate_capabilities.put`: the gateway writes `~/.kiro/mates/agents/<id>.json` in
 place under its optimistic lock, never the user's MCP config; neither the
