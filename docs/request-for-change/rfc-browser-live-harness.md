@@ -177,7 +177,7 @@ re-reads `telemetry.py` and `auth.py` before it lands.
 
 ## Design
 
-![Live card while the agent works](assets/browser-live-card.png)
+![Live card while the agent works](https://github.com/user-attachments/assets/07688936-4d8a-4ea5-876e-18a21d0e3175)
 
 ### 1. The driver
 
@@ -303,7 +303,7 @@ fps and recovered on rerun, which is why section 3 carries a watchdog.
 
 ### 4. Takeover
 
-![Takeover: the same card, grown](assets/browser-live-takeover.png)
+![Takeover: the same card, grown](https://github.com/user-attachments/assets/adcc102f-496c-4fb7-8a65-890a99e14aed)
 
 - Clicking the frame posts `POST /api/browser/input/claim`. The route accepts the
   dashboard owner's cookie or token and refuses the internal secret, so an
@@ -326,7 +326,7 @@ fps and recovered on rerun, which is why section 3 carries a watchdog.
 
 ### 5. The card
 
-![Done: the card collapses to one line](assets/browser-live-done.png)
+![Done: the card collapses to one line](https://github.com/user-attachments/assets/4312f36d-9f5a-475b-a864-b8ad72460dc2)
 
 | State | Shows |
 |---|---|
@@ -337,7 +337,7 @@ fps and recovered on rerun, which is why section 3 carries a watchdog.
 | Done | thumbnail, step count, duration, Replay, Last frame, Open in Chrome |
 | Login needed | "Take over to sign in" |
 
-![Waiting for Allow](assets/browser-live-allow.png)
+![Waiting for Allow](https://github.com/user-attachments/assets/053a01cd-33a9-40a0-aeda-29595301a062)
 
 One card per turn, attached to that turn's first browser call. Takeover grows
 the same element (`layoutId`); it never swaps in another component. Replay plays
@@ -380,9 +380,9 @@ rewritten to this one tool. `browser-auth` becomes "take over to sign in".
 First run is a three-step list; once done, or skipped, the page becomes a status
 card.
 
-![First run](assets/browser-settings-first-run.png)
+![First run](https://github.com/user-attachments/assets/51c3253d-aef9-4c45-83c6-b52f8212a16d)
 
-![Status](assets/browser-settings-status.png)
+![Status](https://github.com/user-attachments/assets/428e82fe-1c23-438b-adb5-828e91872ba8)
 
 | Section | Contents |
 |---|---|
@@ -403,7 +403,7 @@ opens only the origins in `dashboard.browser_local_origins`, and answers an
 outside URL with "Open this in your Chrome, or ask Kiro". The agent no longer
 drives it.
 
-![The Preview tab: a local dev server beside the chat](assets/browser-preview-tab.png)
+![The Preview tab: a local dev server beside the chat](https://github.com/user-attachments/assets/2dbff0a3-d49a-4de1-9820-151554c7cd90)
 
 ## Migration plan
 
