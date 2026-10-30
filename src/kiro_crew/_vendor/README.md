@@ -239,6 +239,13 @@ source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
   vectors are unchanged. Unset, the method is upstream's.
   `test/test_embed_bounded_decode.py` runs the shipped method against a fake
   runtime and fails if the divergence goes missing.
+- `llama_cpp/llama.py`, `Llama.__init__` — a `use_extra_bufts` keyword (default
+  `None`) sets the model param that turns off llama.cpp's CPU weight repacking
+  when given. `None` leaves llama.cpp's default, so an unset call is upstream's.
+  `__getstate__` carries the field, so a restored `Llama` keeps the choice.
+  `kiro_crew.embeddings` passes `False` only when `memory.embedding_weight_repack`
+  is `false`. `test/test_embeddings_weight_repack.py` parses this file and fails
+  if the divergence goes missing.
 - `llama_cpp/llama_cpp.py`, module level — the library directory is resolved
   from the process-local seam first (`sys.modules["_kiro_crew_llama_cpp_lib_path"].LIBS_DIR`,
   registered by `kiro_crew.embeddings._publish_lib_path_for_import`), then from

@@ -104,6 +104,16 @@ class MemoryConfig:
             "a few seconds. 0 keeps the model loaded.",
         ),
     )
+    embedding_weight_repack: bool = field(
+        default=True,
+        metadata=_meta(
+            "Repack Embedding Model Weights",
+            "Keep a CPU-optimised second copy of the embedding model's weights, which "
+            "makes background embedding faster. Turning it off saves about 450 MB while "
+            "the model is loaded; background embedding gets slower, and new vectors differ "
+            "very slightly from ones already stored. Applies the next time the model loads.",
+        ),
+    )
     embedding_child_process: bool = field(
         default=False,
         metadata=_meta(

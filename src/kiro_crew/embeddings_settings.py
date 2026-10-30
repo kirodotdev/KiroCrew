@@ -312,6 +312,16 @@ def embedding_idle_evict_secs() -> float:
     return _DEFAULT_IDLE_EVICT_SECS
 
 
+def embedding_weight_repack() -> bool:
+    """Whether llama.cpp keeps its CPU-repacked copy of the embedding weights.
+
+    Raw ``memory`` section, read once per model load. Only an explicit ``false``
+    turns repacking off; anything else keeps llama.cpp's default (on), so vectors
+    stay what they were unless the operator opts out.
+    """
+    return _read_memory_config().get("embedding_weight_repack") is not False
+
+
 def _embed_threads() -> int:
     """Thread count for llama.cpp's embedding compute pools.
 
