@@ -108,6 +108,7 @@ from kiro_crew.subagent_persistence_tombstones import (
     settle_delivered_batch,
     write_finished_result,
     write_tombstone,
+    write_tombstone_if_absent,
 )
 
 #: The one tombstone cause that marks a run whose result reached its parent.
