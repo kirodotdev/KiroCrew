@@ -200,12 +200,16 @@ def __init__(
     self._socket_client = None
     # Slack reconnect state (kiro_crew.slack.reconnect): the boot SeenCache a
     # rebuilt socket keeps using, the workspace published Slack clients belong
-    # to, whether work may already be bound to that workspace, and the one
-    # in-flight attempt.
+    # to, whether work may already be bound to that workspace, the one
+    # in-flight attempt, whether that attempt is running now, whether a failed
+    # one retired a published client, and the pending give-up for held work.
     self._slack_seen = None
     self._slack_team_id = ""
     self._slack_workspace_pinned = False
     self._slack_reconnect_task = None
+    self._slack_reconnecting = False
+    self._slack_client_lost = False
+    self._slack_give_up_task = None
     self._wecom_client = None  # set by maybe_start_wecom
     # Registry-owned live channel handles ({channel_type: client}). The
     # per-channel _<type>_client attributes are legacy mirrors kept in sync

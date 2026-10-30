@@ -3658,15 +3658,32 @@ dashboard token auth.
   Answers `{connected, connect_error}`; the declines are `tokens_missing`,
   `owner_id_missing`, `enterprise_validation_failed`, `denied_by_policy` and
   `workspace_switch_needs_restart`, Slack API codes (`invalid_auth`) pass
-  through. A reconnect never switches workspaces: whenever boot had a bot
-  token it pins that token's `auth.test` team (boot publishes the Web API
-  client whether or not the socket connects; a token Slack rejects as
-  `invalid_auth` and similar releases the pin), a connected reconnect pins its
+  through. A reconnect never switches workspaces: whenever boot published a
+  Web API client it pins that client's `auth.test` team (boot publishes it
+  whether or not the socket connects; a boot with a bot token but no app
+  token publishes none and pins nothing; a boot token Slack rejects as
+  never authenticated (`invalid_auth`, `not_authed`) releases the pin only
+  when no Slack work was admitted: no connected socket and no queued, held or
+  running turn; a revoked or expired token keeps it), a connected reconnect pins its
   own, and a saved bot token for another team (or a pinned team that could
   not be confirmed) leaves
   Slack off until a restart, because queued and in-flight work names the
-  former workspace's channels. Concurrent callers share one attempt; a
-  caller that goes away does not cancel it. 503
+  former workspace's channels. While a reconnect runs with no client
+  published, the Slack queue drains and the inbound route keep their entries
+  queued rather than dispatch them into the cleared client, and a connected
+  reconnect starts them again; an inbound message with attachments waits for
+  the attempt and is fetched with the client it publishes. A reconnect that
+  retires a published client and fails keeps that hold for the next
+  reconnect (the retry) for `HELD_WORK_GIVE_UP_SECS` (300 s); when that
+  window ends with no client, each held message leaves its queue and the
+  owner gets one dashboard notification naming the channel in words (a
+  tracked channel's saved name, "a direct message", else "a Slack
+  channel") and quoting the first 80 characters of the message, or saying
+  it was a voice memo or an attachment; Slack ids stay in its `meta`
+  (`events_queue.give_up_held_slack_work`), and the hold is released. A
+  gateway no reconnect took a client from handles a missing client as it
+  always has. Concurrent
+  callers share one attempt; a caller that goes away does not cancel it. 503
   `slack_reconnect_unavailable` on a server with no socket owner, and until
   boot's own `init_socket_mode` + `_connect_slack` have returned (the gateway
   publishes `DashboardState.slack_reconnect` only then, so a reconnect never

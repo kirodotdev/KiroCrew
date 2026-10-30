@@ -333,7 +333,7 @@ class TestRouteMessageAttachments:
                         # A missing temp path must not raise from the cleanup loop.
                         img.unlink()
                         await ev._route_message(orch, _event(text="", files=files), ev.SeenCache())
-        process.assert_awaited_once_with(orch, files)
+        process.assert_awaited_once_with(orch, files, slack=orch.slack)
         hm.assert_not_called()
         # Bailed before the history push and before any turn was scheduled.
         orch.channel_history.push.assert_not_called()
@@ -378,7 +378,9 @@ class TestRouteMessageTransportPath:
                         await _drain(orch)
                         await _drain(orch)
         transport.assert_awaited_once()
-        dispatch.assert_awaited_once_with(orch, "100.0", "101.0", "next up", {"channel": "C1"})
+        dispatch.assert_awaited_once_with(
+            orch, "100.0", "101.0", "next up", {"channel": "C1"}, slack=orch.slack
+        )
         assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
@@ -411,6 +413,101 @@ class TestRouteMessageTransportPath:
         assert any("_on_transport_done drain failed" in r.message for r in caplog.records)
 
 
+class TestRouteMessageSlackDown:
+    @pytest.mark.parametrize("use_transport", [False, True])
+    @pytest.mark.asyncio
+    async def test_no_published_client_holds_the_message_for_the_reconnect(self, use_transport):
+        # A reconnect clears orch.slack while the route runs: the message waits
+        # in the pre-session queue instead of starting a turn with no client.
+        from kiro_crew.slack import events_queue as eq
+
+        orch = _make_orch(use_transport=use_transport)
+        orch.slack = None
+        orch._slack_reconnecting = True
+        try:
+            with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+                with patch(
+                    "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                ) as native:
+                    with patch(
+                        "kiro_crew.slack.events.handle_message_transport",
+                        new_callable=AsyncMock,
+                    ) as transport:
+                        with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                            await ev._route_message(orch, _event(), ev.SeenCache())
+                            await _drain(orch)
+            native.assert_not_called()
+            transport.assert_not_called()
+            ((ts, _text, kw),) = orch._pending_queue["100.0"]
+            assert ts == "100.0"
+            assert kw["channel"] == "D1"
+            assert kw["image_temp_paths"] == []
+            assert eq._held_while_slack_down[orch] == {"100.0"}
+        finally:
+            eq._held_while_slack_down.pop(orch, None)
+
+    @pytest.mark.asyncio
+    async def test_attachments_wait_for_the_reconnect_and_use_its_client(self, tmp_path):
+        # The message is already marked seen when routing reaches its files, so
+        # skipping them during a reconnect would lose them for good. The route
+        # waits for the attempt and fetches with the client it publishes.
+        orch = _make_orch()
+        new_client = AsyncMock()
+
+        async def _attempt() -> dict:
+            await asyncio.sleep(0)
+            orch.slack = new_client
+            orch._slack_reconnecting = False
+            return {"connected": True, "connect_error": ""}
+
+        async def _reconnect_during_lookup(_sender: str) -> dict:
+            # The operator clicks Reconnect while the sender lookup is in flight.
+            orch.slack = None
+            orch._slack_reconnecting = True
+            orch._slack_reconnect_task = asyncio.create_task(_attempt())
+            return {}
+
+        orch.slack.get_user_info = AsyncMock(side_effect=_reconnect_during_lookup)
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG")
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=([str(img)], []),
+                ) as process:
+                    with patch(
+                        "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                    ) as hm:
+                        with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                            await ev._route_message(
+                                orch, _event(text="look", files=files), ev.SeenCache()
+                            )
+                            await _drain(orch)
+        process.assert_awaited_once_with(orch, files, slack=new_client)
+        hm.assert_awaited_once()
+        assert hm.await_args[0][0] is new_client
+        assert str(img) in hm.await_args[0][3]
+
+    @pytest.mark.asyncio
+    async def test_no_client_outside_a_reconnect_dispatches_as_before(self):
+        # Without a reconnect in progress, a missing client holds nothing.
+        from kiro_crew.slack import events_queue as eq
+
+        orch = _make_orch()
+        orch.slack = None
+        orch._slack_reconnecting = False
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                    await ev._route_message(orch, _event(), ev.SeenCache())
+                    await _drain(orch)
+        hm.assert_awaited_once()
+        assert orch not in eq._held_while_slack_down
+
+
 class TestRouteMessageNativeDrain:
     @pytest.mark.asyncio
     async def test_native_done_callback_drains_session_queue(self):
@@ -425,7 +522,9 @@ class TestRouteMessageNativeDrain:
                     await ev._route_message(orch, _event(), ev.SeenCache())
                     await _drain(orch)
                     await _drain(orch)
-        dispatch.assert_awaited_once_with(orch, "100.0", "101.0", "next up", {"channel": "C1"})
+        dispatch.assert_awaited_once_with(
+            orch, "100.0", "101.0", "next up", {"channel": "C1"}, slack=orch.slack
+        )
         assert queued == []
 
     @pytest.mark.asyncio

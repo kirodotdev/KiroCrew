@@ -856,13 +856,26 @@ async def _route_message(
     # message captured above before transcription and ingestion.
     _spool_text = _gate_text
     _spool_attachments = len(files) if files else 0
+    # Named by the undelivered notice when a held message is given up on.
+    _spool_voice_memos = sum(1 for f in files if is_voice_memo(f)) if files else 0
 
     # ── Transcribe audio files (voice memos) ──
     # Placed after dedup + auth to avoid expensive work on duplicate events
     # or unauthorized users.
     _attachment_temp_paths: list[str] = []
     _had_voice_input = False
-    if files and orch.slack and _user_authorized:
+    if files and orch.slack is None and _user_authorized:
+        # A reconnect clears the client for its window, and this route may
+        # have awaited the sender lookup while it ran. The message is already
+        # marked seen, so the attachments wait for the attempt and are fetched
+        # with the client it publishes instead of being skipped.
+        from kiro_crew.slack.reconnect import wait_for_reconnect
+
+        await wait_for_reconnect(orch)
+    # Read once: voice and file ingestion fetch with this client even if a
+    # later reconnect clears orch.slack while they await.
+    _ingest_slack = orch.slack
+    if files and _ingest_slack and _user_authorized:
         memos = [f for f in files if is_voice_memo(f)]
         if memos:
             transcripts: list[str] = []
@@ -877,7 +890,7 @@ async def _route_message(
             stt_ok = await asyncio.to_thread(stt_available)
             if stt_ok:
                 transcripts = await _transcribe_with_reaction(
-                    orch.slack,
+                    _ingest_slack,
                     channel,
                     msg_ts,
                     orch,
@@ -893,7 +906,7 @@ async def _route_message(
             text = _voice_memo_context(text, len(memos), len(transcripts), available=stt_ok)
 
         # ── Process non-audio files (images, text, opaque files, etc.) ──
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        attachment_paths, text_blocks = await process_slack_files(orch, files, slack=_ingest_slack)
         _attachment_temp_paths = attachment_paths
 
         # Image paths are inlined by ACP; opaque paths remain available to agent tools.
@@ -1299,6 +1312,7 @@ async def _route_message(
             from_trusted_bot=from_trusted_bot,
             spool_text=_spool_text,
             spool_attachments=_spool_attachments,
+            spool_voice_memos=_spool_voice_memos,
             **_queue_tags(sender_id, channel),
         )
         if not _queued:
@@ -1320,6 +1334,7 @@ async def _route_message(
                         from_trusted_bot=from_trusted_bot,
                         spool_text=_spool_text,
                         spool_attachments=_spool_attachments,
+                        spool_voice_memos=_spool_voice_memos,
                         **_queue_tags(sender_id, channel),
                     ),
                 )
@@ -1350,6 +1365,7 @@ async def _route_message(
         from_trusted_bot=from_trusted_bot,
         spool_text=_spool_text,
         spool_attachments=_spool_attachments,
+        spool_voice_memos=_spool_voice_memos,
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
@@ -1361,6 +1377,37 @@ async def _route_message(
         # See the force=True branch above: cleanup is deferred to
         # _dispatch_queued so every queued attachment path remains valid.
         return
+
+    # A reconnect clears orch.slack for its whole window, and this route may
+    # have awaited voice or file work while it ran. While that window is open
+    # with no client published, the message waits in the pre-session queue
+    # (cleanup deferred, as above) and the held drain starts it on the next
+    # published client. Otherwise the client is read once here, in the same
+    # step as the dispatch below.
+    if hold_if_slack_down(orch, session_key):
+        orch._pending_queue.setdefault(session_key, []).append(
+            (
+                msg_ts,
+                clean_text,
+                dict(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    sender_id=sender_id,
+                    team_id=team_id,
+                    agent_override=agent_override,
+                    user_display_name=_sender_display,
+                    image_temp_paths=list(_attachment_temp_paths),
+                    from_trusted_bot=from_trusted_bot,
+                    spool_text=_spool_text,
+                    spool_attachments=_spool_attachments,
+                    spool_voice_memos=_spool_voice_memos,
+                    **_queue_tags(sender_id, channel),
+                ),
+            )
+        )
+        logger.info("Message %s held for session %s until Slack reconnects", msg_ts, session_key)
+        return
+    _slack = orch.slack
 
     # ── New transport path: route to the messaging abstraction ──
     # When messaging.use_transport is True, drive the turn through
@@ -1384,7 +1431,7 @@ async def _route_message(
     if _use_transport:
         t = asyncio.create_task(
             handle_message_transport(
-                orch.slack,  # type: ignore[arg-type]
+                _slack,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 clean_text,
@@ -1445,7 +1492,11 @@ async def _route_message(
             # Mirrors native _on_done so messages queued while this session was
             # busy aren't stranded when the transport path is the active route.
             try:
-                if not _key_busy(orch, session_key) and orch.sessions:
+                if (
+                    not _key_busy(orch, session_key)
+                    and orch.sessions
+                    and not hold_if_slack_down(orch, session_key)
+                ):
                     _next = orch.sessions.dequeue(session_key)
                     # Fall back to orchestrator-level pending queue (pre-session).
                     if not _next:
@@ -1457,7 +1508,9 @@ async def _route_message(
                     if _next:
                         _q_ts, _q_text, _q_kw = _next
                         _q_t = asyncio.ensure_future(
-                            _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
+                            _dispatch_queued(
+                                orch, session_key, _q_ts, _q_text, _q_kw, slack=orch.slack
+                            )
                         )
                         _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                         orch._handler_tasks.add(_q_t)
@@ -1472,7 +1525,7 @@ async def _route_message(
     try:
         t = asyncio.create_task(
             handle_message(
-                orch.slack,  # type: ignore[arg-type]
+                _slack,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 clean_text,
@@ -1511,7 +1564,11 @@ async def _route_message(
         _cleanup_attachment_temps()
         # Drain queue: only if no other task took over this session
         try:
-            if not _key_busy(orch, session_key) and orch.sessions:
+            if (
+                not _key_busy(orch, session_key)
+                and orch.sessions
+                and not hold_if_slack_down(orch, session_key)
+            ):
                 _next = orch.sessions.dequeue(session_key)
                 # Fall back to orchestrator-level pending queue (pre-session messages)
                 if not _next:
@@ -1523,7 +1580,7 @@ async def _route_message(
                 if _next:
                     _q_ts, _q_text, _q_kw = _next
                     _q_t = asyncio.ensure_future(
-                        _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
+                        _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw, slack=orch.slack)
                     )
                     _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                     orch._handler_tasks.add(_q_t)
@@ -1567,6 +1624,7 @@ from kiro_crew.slack.events_queue import _settle_stop_hold  # noqa: E402
 from kiro_crew.slack.events_queue import _StopHold  # noqa: E402
 from kiro_crew.slack.events_queue import _stops_in_flight  # noqa: E402
 from kiro_crew.slack.events_queue import _track_router_task  # noqa: E402
+from kiro_crew.slack.events_queue import hold_if_slack_down  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_restart  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_slash  # noqa: E402
 from kiro_crew.slack.events_slash import _safe_log  # noqa: E402
@@ -1601,11 +1659,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_block_text import _render_rich_text_element  # noqa: F401
     from kiro_crew.slack.events_block_text import _table_row_fragments  # noqa: F401
     from kiro_crew.slack.events_block_text import _until_full  # noqa: F401
+    from kiro_crew.slack.events_queue import _NOTICE_PREVIEW_CHARS  # noqa: F401
+    from kiro_crew.slack.events_queue import _SLACK_MARKUP  # noqa: F401
     from kiro_crew.slack.events_queue import _bg_tasks  # noqa: F401
+    from kiro_crew.slack.events_queue import _held_while_slack_down  # noqa: F401
+    from kiro_crew.slack.events_queue import _notice_channel  # noqa: F401
+    from kiro_crew.slack.events_queue import _notice_subject  # noqa: F401
     from kiro_crew.slack.events_queue import _on_tracked_done  # noqa: F401
     from kiro_crew.slack.events_queue import _router_task_threads  # noqa: F401
     from kiro_crew.slack.events_queue import _spawn_tracked  # noqa: F401
     from kiro_crew.slack.events_queue import router_task_thread  # noqa: F401
+    from kiro_crew.slack.events_queue import _take_queued  # noqa: F401
+    from kiro_crew.slack.events_queue import _unmark  # noqa: F401
+    from kiro_crew.slack.events_queue import give_up_held_slack_work  # noqa: F401
+    from kiro_crew.slack.events_queue import resume_held_slack_drains  # noqa: F401
     from kiro_crew.slack.events_queue import slack_stop_in_flight  # noqa: F401
     from kiro_crew.slack.events_slash import SLASH_REGISTRY  # noqa: F401
     from kiro_crew.slack.events_slash import SlashHandler  # noqa: F401

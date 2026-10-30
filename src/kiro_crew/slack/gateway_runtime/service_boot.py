@@ -1460,17 +1460,15 @@ async def run(self: GatewayOrchestrator) -> None:
     if self.dashboard_state:
         self.dashboard_state.slack_socket_connected = connected
         self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
-    if self._bot_token:
-        # Boot publishes the bot token's Web API client before (and whether or
-        # not) the socket connects, so work can bind to its workspace either
-        # way. Pin it now, so a later reconnect refuses to switch workspaces
-        # in place; the probe names the workspace, or releases the pin when
-        # Slack proves the token belongs to none. Fire-and-forget like the
-        # probe below: boot latency is unaffected.
-        from kiro_crew.slack.reconnect import record_connected_workspace
+    # Pin the workspace of the Web API client boot published (none published,
+    # nothing pinned), so a later reconnect refuses to switch workspaces in
+    # place; the probe names the workspace, or releases the pin when Slack
+    # proves the token belongs to none. Fire-and-forget like the probe below:
+    # boot latency is unaffected.
+    from kiro_crew.slack.reconnect import pin_boot_workspace
 
-        self._slack_workspace_pinned = True
-        _workspace_task = asyncio.create_task(record_connected_workspace(self))
+    _workspace_task = pin_boot_workspace(self)
+    if _workspace_task is not None:
         self._background_tasks.add(_workspace_task)
         _workspace_task.add_done_callback(self._background_tasks.discard)
     if self.dashboard_state and not self._no_dashboard:

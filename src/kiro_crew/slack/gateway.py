@@ -720,6 +720,9 @@ class GatewayOrchestrator:
     _slack_team_id: str
     _slack_workspace_pinned: bool
     _slack_reconnect_task: asyncio.Task[dict[str, Any]] | None
+    _slack_reconnecting: bool
+    _slack_client_lost: bool
+    _slack_give_up_task: asyncio.Task[None] | None
     slack_command: str
     _channel_restart_lock: asyncio.Lock
     _channel_transports_started: bool

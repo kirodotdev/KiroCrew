@@ -25,10 +25,25 @@ current workspace (queued turns, in-flight replies, persisted thread links)
 names that workspace's channels; a restart drops the in-process part of it, a
 reconnect would not. That work can exist as soon as a Slack Web API client
 is published, which boot does before the socket connects. So once a bot
-token's workspace is pinned (at boot whenever a bot token was present, or by
-a connected reconnect), a saved bot token for a different workspace -- or a
-pinned workspace that could not be confirmed -- keeps Slack off with
-``workspace_switch_needs_restart``.
+token's workspace is pinned (at boot whenever boot published a Web API
+client, or by a connected reconnect), a saved bot token for a different
+workspace -- or a pinned workspace that could not be confirmed -- keeps Slack
+off with ``workspace_switch_needs_restart``. A boot that published no client
+(a leftover bot token without its app token) pins nothing: no work can be
+bound to a workspace no client was ever built for.
+
+While a reconnect runs (``_slack_reconnecting``) and no client is published,
+the Slack queue drains hold their entries instead of dispatching them into
+the cleared client (see ``events_queue.hold_if_slack_down``); a connected
+reconnect starts them again. A reconnect that retires a published client and
+fails keeps that hold (``_slack_client_lost``) for the next reconnect, the
+retry, for :data:`HELD_WORK_GIVE_UP_SECS`. When that window ends with no
+client, the hold gives up: each held message is taken out of its queue and
+the owner gets a dashboard notification for it
+(``events_queue.give_up_held_slack_work``). An inbound message with
+attachments waits for the attempt to finish (:func:`wait_for_reconnect`) so
+its files are fetched with the client the reconnect publishes. A gateway no
+reconnect took a client from handles a missing client as it always has.
 
 Concurrent callers share one attempt, so a double click never races two
 handshakes, and a caller that goes away does not cancel the attempt.
@@ -103,27 +118,144 @@ async def probe_workspace(bot_token: str) -> str:
     )
 
 
-#: Slack errors that prove a bot token authenticates to no workspace at all,
-#: so no work can have been bound through a client built from it.
-_UNAUTHENTICATED = frozenset(
-    {"invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"}
-)
+#: Slack errors that say a bot token never authenticated to any workspace. A
+#: revoked, expired or deactivated token did authenticate once, so work may be
+#: bound to its workspace and those errors keep the pin.
+_NEVER_AUTHENTICATED = frozenset({"invalid_auth", "not_authed"})
+
+
+def _slack_work_admitted(orch: GatewayOrchestrator) -> bool:
+    """True when Slack work may already be bound to the boot workspace.
+
+    A connected socket delivers inbound messages, and a queued, held or
+    running turn names that workspace's channels. Each one keeps the pin.
+    """
+    from kiro_crew.slack.events_queue import _held_while_slack_down
+
+    state = orch.dashboard_state
+    if state is not None and getattr(state, "slack_socket_connected", False) is True:
+        return True
+    for name in ("_pending_queue", "_session_tasks"):
+        value = getattr(orch, name, None)
+        if isinstance(value, dict) and value:
+            return True
+    return bool(_held_while_slack_down.get(orch))
+
+
+def reconnect_in_progress(orch: Any) -> bool:
+    """True while a reconnect runs: between its start and its recorded outcome."""
+    return getattr(orch, "_slack_reconnecting", False) is True
+
+
+#: How long Slack work admitted before a failed reconnect stays held for the
+#: next reconnect (the retry) before the hold gives up and notifies.
+HELD_WORK_GIVE_UP_SECS = 300.0
+
+
+def client_lost_to_reconnect(orch: Any) -> bool:
+    """True after a failed reconnect retired a published client, until Slack is back.
+
+    Set when a reconnect closes a published client and ends without a new
+    one; cleared when a reconnect publishes a client or the give-up window
+    ends (:func:`_give_up_after`). A gateway that never published a client,
+    or one no reconnect touched, reads False.
+    """
+    return getattr(orch, "_slack_client_lost", False) is True
+
+
+def _cancel_give_up(orch: Any) -> None:
+    task = getattr(orch, "_slack_give_up_task", None)
+    orch._slack_give_up_task = None
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+
+
+async def _give_up_after(orch: GatewayOrchestrator, delay: float) -> None:
+    """End the held-work window *delay* seconds after a failed reconnect."""
+    from kiro_crew.slack.events_queue import give_up_held_slack_work
+
+    await asyncio.sleep(delay)
+    if orch.slack is not None or reconnect_in_progress(orch):
+        return
+    orch._slack_give_up_task = None
+    orch._slack_client_lost = False
+    noticed = give_up_held_slack_work(orch)
+    logger.warning(
+        "Slack did not reconnect within %.0fs; %d held message(s) were not delivered "
+        "and the owner was notified",
+        delay,
+        noticed,
+    )
+
+
+def _schedule_give_up(orch: GatewayOrchestrator) -> None:
+    _cancel_give_up(orch)
+    task = asyncio.create_task(
+        _give_up_after(orch, HELD_WORK_GIVE_UP_SECS), name="slack-held-work-give-up"
+    )
+    orch._slack_give_up_task = task
+    background = getattr(orch, "_background_tasks", None)
+    if isinstance(background, set):
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+
+async def wait_for_reconnect(orch: Any) -> None:
+    """Wait for the reconnect in progress to finish, without cancelling it.
+
+    Returns at once when none runs. The attempt's own outcome (connected or
+    not) is read from ``orch.slack`` afterwards; its errors are not raised here.
+    """
+    task = getattr(orch, "_slack_reconnect_task", None)
+    if not reconnect_in_progress(orch) or not isinstance(task, asyncio.Task) or task.done():
+        return
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Slack reconnect failed while a message waited for it", exc_info=True)
+
+
+def pin_boot_workspace(orch: GatewayOrchestrator) -> asyncio.Task[None] | None:
+    """Pin the workspace of the Web API client boot published, if it published one.
+
+    Boot publishes ``orch.slack`` before (and whether or not) the socket
+    connects, so work can bind to its workspace either way. A boot that built
+    no client (``orch.slack is None``: a bot token without its app token, say)
+    pins nothing, so a later reconnect may adopt the workspace the user saves.
+    Returns the probe task that names the pinned workspace, or ``None``.
+    The dashboard's copy counts too: boot publishes ``dashboard_state.slack_client``
+    before ``init_socket_mode``, which can clear ``orch.slack`` alone (an
+    enterprise or owner check that fails), and dashboard senders keep posting
+    through that copy.
+    """
+    state = orch.dashboard_state
+    published = orch.slack is not None or (
+        state is not None and getattr(state, "slack_client", None) is not None
+    )
+    if not published:
+        return None
+    orch._slack_workspace_pinned = True
+    return asyncio.create_task(record_connected_workspace(orch))
 
 
 async def record_connected_workspace(orch: GatewayOrchestrator) -> None:
     """Name the workspace boot's Slack clients belong to (best effort).
 
-    Run at boot whenever a bot token was present, with
-    ``_slack_workspace_pinned`` already set: boot publishes that token's Web
-    API client whether or not the socket connects. Slack proving the token
-    belongs to no workspace releases the pin. Any other failure leaves the
-    workspace unconfirmed, and a later reconnect refuses to guess and asks for
-    a restart instead.
+    Run at boot by ``pin_boot_workspace``, with ``_slack_workspace_pinned``
+    already set: boot publishes that token's Web
+    API client whether or not the socket connects. The pin is released only
+    when Slack says the token never authenticated (``invalid_auth``) and no
+    Slack work was admitted (see :func:`_slack_work_admitted`). Any other
+    failure -- a revoked token included -- leaves the workspace pinned and
+    unconfirmed, and a later reconnect refuses to guess and asks for a
+    restart instead.
     """
     try:
         orch._slack_team_id = await probe_workspace(orch._bot_token)
     except Exception as exc:
-        if _slack_error_code(exc) in _UNAUTHENTICATED:
+        if _slack_error_code(exc) in _NEVER_AUTHENTICATED and not _slack_work_admitted(orch):
             orch._slack_workspace_pinned = False
             return
         logger.warning("Could not confirm the Slack workspace", exc_info=True)
@@ -183,7 +315,10 @@ async def _read_credentials() -> dict[str, str]:
             cfg = live.snapshot() or await asyncio.to_thread(KiroCrewConfig.load)
             if cfg is None:
                 raise ValueError("config did not load")
-            creds = dict(await asyncio.to_thread(cfg.load_credentials))
+            # propagate=False: this post-boot read must not write a credential
+            # back into os.environ, where it could undo a removal the live
+            # config watcher applies concurrently.
+            creds = dict(await asyncio.to_thread(cfg.load_credentials, propagate=False))
             missing = [k for k in _SLACK_CREDENTIAL_KEYS if not creds.get(k)]
             if missing:
                 unresolved: bool = await asyncio.to_thread(_unresolved_reference, missing)
@@ -245,23 +380,43 @@ def _record(orch: GatewayOrchestrator, connected: bool, error: str) -> dict[str,
 
 
 async def _reconnect(orch: GatewayOrchestrator) -> dict[str, Any]:
-    creds = await _read_credentials()
-    await _close_socket(orch)
-    _hoist(orch, creds)
+    # The reconnect window: queue drains and inbound routes that find no
+    # published client hold their work while it is open (see
+    # ``events_queue.hold_if_slack_down`` and ``wait_for_reconnect``).
+    orch._slack_reconnecting = True
+    # This attempt is the retry a pending give-up waits for; it schedules a
+    # fresh one if it ends without a client.
+    _cancel_give_up(orch)
     try:
-        return await _bring_up(orch)
-    except Exception as exc:
-        # Whatever failed, Slack ends down and says why; it is never left
-        # half-built behind an error.
-        logger.exception("Slack reconnect failed")
+        creds = await _read_credentials()
+        state = orch.dashboard_state
+        if orch.slack is not None or (
+            state is not None and getattr(state, "slack_client", None) is not None
+        ):
+            # Work admitted through this client stays held until Slack is back
+            # or the give-up window ends (see ``client_lost_to_reconnect``).
+            orch._slack_client_lost = True
         await _close_socket(orch)
-        orch._slack_enabled = False
-        return _record(orch, False, type(exc).__name__)
+        _hoist(orch, creds)
+        try:
+            return await _bring_up(orch)
+        except Exception as exc:
+            # Whatever failed, Slack ends down and says why; it is never left
+            # half-built behind an error.
+            logger.exception("Slack reconnect failed")
+            await _close_socket(orch)
+            orch._slack_enabled = False
+            return _record(orch, False, type(exc).__name__)
+    finally:
+        orch._slack_reconnecting = False
+        if orch.slack is None and client_lost_to_reconnect(orch):
+            _schedule_give_up(orch)
 
 
 async def _bring_up(orch: GatewayOrchestrator) -> dict[str, Any]:
     from kiro_crew.slack.client import RealSlackClient
     from kiro_crew.slack.events import SeenCache, init_socket_mode
+    from kiro_crew.slack.events_queue import resume_held_slack_drains
     from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 
     if not orch._slack_enabled:
@@ -303,10 +458,14 @@ async def _bring_up(orch: GatewayOrchestrator) -> dict[str, Any]:
         return _record(orch, False, error)
 
     orch.slack = client
+    orch._slack_client_lost = False
     orch._slack_workspace_pinned = True
     orch._slack_team_id = team_id
     result = _record(orch, True, "")
     logger.info("Slack reconnected in place (workspace %s)", team_id)
+    # Queue drains that ran while the socket was down held their entries;
+    # start them now that a client is published again.
+    resume_held_slack_drains(orch)
     if orch.slack is not None and orch._tracking_channels:
         # The same tracked-channel readability probe boot runs after connecting.
         probe = asyncio.create_task(
