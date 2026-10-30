@@ -10,7 +10,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { store as reduxStore } from '../store'
 import { cardsApi, type Card } from '../api/cards'
-import { GoalBody } from './kindBodies'
+import { GoalHeartbeatOption as GoalBody } from './kindBodies'
 import { cardChanges } from './cardRegistry'
 import ChangeCard from './ChangeCard'
 
@@ -35,6 +35,7 @@ const goalCard = (over: Partial<Card> = {}): Card => ({
     offerRow(true),
   ],
   scope: { members: ['Scout'], count: 1 },
+  reason: 'You asked me to own the release notes.',
   editable: ['long_term', 'heartbeat'],
   params: { member: 'scout', long_term: 'Ship the docs' },
   plan: { apply: [], undo: null },
@@ -105,6 +106,11 @@ describe('ChangeCard with a goal card', () => {
         </QueryClientProvider>
       </Provider>,
     )
+    // The option of the Set goal press sits after the reason, just above the buttons.
+    const option = screen.getByTestId('change-card-goal-heartbeat')
+    const reason = screen.getByTestId('change-card-reason')
+    expect(reason.compareDocumentPosition(option) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByTestId('change-card-rows').contains(option)).toBe(false)
     fireEvent.click(screen.getByTestId('change-card-goal-heartbeat-box'))
     expect(spy).toHaveBeenCalledTimes(1)
     expect(spy.mock.calls[0][1]).toEqual({ member: 'scout', long_term: 'Ship the docs', heartbeat: false })

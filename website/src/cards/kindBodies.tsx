@@ -5,6 +5,7 @@
  * real next run (or, for a one-shot, the one time it runs), a note that only one crewmate changes.
  */
 import { useId } from 'react'
+import { Checkbox } from '../components/ui'
 import { i18nT } from '../i18n/t'
 import { fmtDateTime, fmtUnit } from '../i18n/format'
 import type { Card, CardChange } from '../api/cards'
@@ -89,40 +90,44 @@ export function OneCrewmateBody({ card }: KindBodyProps) {
 }
 
 /**
- * A goal card: the one-crewmate note, and while the mate's Heartbeat is off
- * and was never declined, a checkbox (checked by default) that turns it on
- * with the goal. Flipping it re-previews the card with `heartbeat`, so the plan
- * the gateway runs is always the one the box shows.
+ * A goal card's Heartbeat option: while the mate's Heartbeat is off and was
+ * never declined, a checkbox (checked by default) that turns it on with the
+ * goal. It is an option of the Set goal press, so the card draws it after the
+ * reason, just above the buttons (`CardKindSpec.Option`). Flipping it
+ * re-previews the card with `heartbeat`, so the plan the gateway runs is always
+ * the one the box shows.
  */
-export function GoalBody({ card, disabled, preview }: KindBodyProps) {
+export function GoalHeartbeatOption({ card, disabled, preview }: KindBodyProps) {
   const id = useId()
   const offer = goalHeartbeatOffer(card)
-  const minutes = typeof offer?.interval === 'number' ? offer.interval : 60
+  if (!offer) return null
+  const minutes = typeof offer.interval === 'number' ? offer.interval : 60
   const editable = card.status === 'pending' || card.status === 'failed'
   return (
-    <>
-      <OneCrewmateBody card={card} disabled={disabled} />
-      {offer && (
-        <div className="py-2" data-testid="change-card-goal-heartbeat">
-          <label htmlFor={`${id}-heartbeat`} className="flex min-h-11 items-center gap-2 cursor-pointer text-[13px] leading-5 text-text">
-            <input
-              id={`${id}-heartbeat`}
-              type="checkbox"
-              data-testid="change-card-goal-heartbeat-box"
-              checked={offer.after === true}
-              disabled={disabled || !editable || !preview}
-              aria-describedby={`${id}-heartbeat-note`}
-              onChange={e => { void preview?.({ ...card.params, heartbeat: e.target.checked }) }}
-              className="h-5 w-5 shrink-0 accent-[var(--accent)]"
-            />
-            {i18nT('components.changeCards.goal_heartbeat_label')}
-          </label>
-          <p id={`${id}-heartbeat-note`} className="m-0 pl-7 text-[12px] leading-5 text-muted" data-testid="change-card-goal-heartbeat-note">
+    <div className="mt-2" data-testid="change-card-goal-heartbeat">
+      {/* One unit, the SettingsToggle label/description pattern: the note sits
+          mt-0.5 under the label text, inside the same 44px tap target. */}
+      <label htmlFor={`${id}-heartbeat`} className="flex min-h-11 items-start gap-2 cursor-pointer text-[13px] leading-5 text-text">
+        {/* The shared Checkbox at its own size, centred on the label's first line. */}
+        <span className="flex h-5 shrink-0 items-center">
+          <Checkbox
+            id={`${id}-heartbeat`}
+            aria-label={i18nT('components.changeCards.goal_heartbeat_label')}
+            data-testid="change-card-goal-heartbeat-box"
+            checked={offer.after === true}
+            disabled={disabled || !editable || !preview}
+            aria-describedby={`${id}-heartbeat-note`}
+            onChange={e => { void preview?.({ ...card.params, heartbeat: e.target.checked }) }}
+          />
+        </span>
+        <span className="min-w-0">
+          <span className="block">{i18nT('components.changeCards.goal_heartbeat_label')}</span>
+          <span id={`${id}-heartbeat-note`} className="mt-0.5 block text-[12px] leading-5 text-muted" data-testid="change-card-goal-heartbeat-note">
             {i18nT('components.changeCards.goal_heartbeat_note', { interval: intervalText(minutes) })}
-          </p>
-        </div>
-      )}
-    </>
+          </span>
+        </span>
+      </label>
+    </div>
   )
 }
 

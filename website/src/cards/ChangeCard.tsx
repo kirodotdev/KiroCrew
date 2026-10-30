@@ -374,7 +374,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                       </>}
                 </CardRow>
               )}
-              {spec && <spec.Body card={card} disabled={busy || expired} preview={preview} />}
+              {spec && <spec.Body card={card} disabled={busy || expired} />}
               <UserInputs fields={fields} values={inputs} disabled={busy || expired} onChange={(f, v) => setInputs(prev => ({ ...prev, [f]: v }))} />
             </div>
 
@@ -384,6 +384,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 <p className="m-0 mt-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-text">{card.reason}</p>
               </div>
             )}
+
+            {spec?.Option && <spec.Option card={card} disabled={busy || expired} preview={preview} />}
 
             {/* No hand-off: a typed secret may be unsaved here. */}
             <ErrorNotice

@@ -10,7 +10,7 @@ import { AlarmClock,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
-import { GOAL_HEARTBEAT_FIELD, GoalBody, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
+import { GOAL_HEARTBEAT_FIELD, GoalHeartbeatOption, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
 import { ImportFilesBody } from './ImportFilesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
@@ -27,6 +27,8 @@ export interface CardKindSpec {
   /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
   riskNote?: () => string
   Body: ComponentType<KindBodyProps>
+  /** An option of the primary press, drawn after the reason, just above the buttons. */
+  Option?: ComponentType<KindBodyProps>
 }
 
 export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
@@ -66,7 +68,8 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.goal': {
     icon: Goal, label: () => i18nT('components.changeCards.kind_crewmate_goal'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_goal'), Body: GoalBody,
+    primary: () => i18nT('components.changeCards.primary_crewmate_goal'), Body: OneCrewmateBody,
+    Option: GoalHeartbeatOption,
   },
   'crewmate.key_results': {
     icon: Gauge, label: () => i18nT('components.changeCards.kind_crewmate_key_results'),

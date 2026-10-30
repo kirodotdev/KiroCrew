@@ -1370,7 +1370,7 @@ def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[s
     """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
 
     Offered while the snapshot reads the Heartbeat off and never declined
-    (:func:`kiro_crew.member_goals.heartbeat_offer_open`). A snapshot taken
+    (the record's ``heartbeat_offer`` is not ``declined``). A snapshot taken
     before the checkbox existed carries no ``heartbeat`` and offers nothing, so a
     stored card rebuilds to the plan it was shown with.
     """

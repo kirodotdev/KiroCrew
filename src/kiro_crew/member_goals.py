@@ -135,7 +135,8 @@ DEFAULT_HEARTBEAT_INTERVAL = 60
 #: The user's answer to the Heartbeat checkbox on a ``crewmate.goal`` card, kept
 #: as the record's ``heartbeat_offer``: a decline is remembered, so no later goal
 #: card offers the Heartbeat again, and either answer tells the goal-setup turn
-#: that the card already settled it (:func:`heartbeat_offer_open`).
+#: that the card already settled it. A goal card offers the Heartbeat while it is
+#: off and this is not ``declined`` (``change_card_catalog_plans._goal_heartbeat_offer``).
 HEARTBEAT_OFFER_ACCEPTED = "accepted"
 HEARTBEAT_OFFER_DECLINED = "declined"
 HEARTBEAT_OFFER_ANSWERS = (HEARTBEAT_OFFER_ACCEPTED, HEARTBEAT_OFFER_DECLINED)
@@ -317,13 +318,6 @@ def empty_record() -> dict[str, Any]:
 def has_goal(rec: dict[str, Any]) -> bool:
     """Whether *rec* holds at least one goal."""
     return bool(rec.get("goals"))
-
-
-def heartbeat_offer_open(rec: dict[str, Any]) -> bool:
-    """Whether a goal card may offer the Heartbeat: it is off and was never declined."""
-    return not (rec.get("schedules") or {}).get(CADENCE_HEARTBEAT) and (
-        rec.get("heartbeat_offer") != HEARTBEAT_OFFER_DECLINED
-    )
 
 
 def goal_ids(rec: dict[str, Any]) -> list[str]:
@@ -1362,6 +1356,7 @@ def set_schedules(
     changes: dict[str, Any],
     *,
     expected: dict[str, Any] | None = None,
+    held_is_done: bool = False,
 ) -> dict[str, Any]:
     """Change the check-in switches and their timing. Returns the record.
 
@@ -1372,7 +1367,9 @@ def set_schedules(
     (``no_goal``). Only the owner's route and an applied card call this, so the
     crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
-    the write lock; omitted fields stay untouched. No expectation keeps the
+    the write lock; omitted fields stay untouched. With *held_is_done* (a goal
+    card's Undo only) a write whose *changes* already hold succeeds without
+    writing even when *expected* does not match. No expectation keeps the
     ordinary owner's partial-update behavior.
     """
     _validate_schedules(changes)
@@ -1386,6 +1383,11 @@ def set_schedules(
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         if expected is not None and any(rec["schedules"].get(k) != v for k, v in expected.items()):
+            if held_is_done and all(rec["schedules"].get(k) == v for k, v in changes.items()):
+                # An Undo turning off a Heartbeat the user turned off since:
+                # nothing to write and nothing to refuse. Never on Apply, where a
+                # no-op success would read as the card having turned it on.
+                return copy.deepcopy(rec)
             raise GoalError("changed_meanwhile", "the check-ins were changed since this was shown")
         if not has_goal(rec) and any(changes.get(c) is True for c in CADENCES):
             raise GoalError("no_goal", "set a goal before turning a check-in on")

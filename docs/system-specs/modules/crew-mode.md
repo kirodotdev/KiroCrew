@@ -2376,7 +2376,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   number is what the tab, the card and the mate's context all show. The
   mate only proposes one (`set_goal` -> a `crewmate.goal` card: add, or a
   new text for one goal by id). While the mate's Heartbeat is off and was never
-  declined (`member_goals.heartbeat_offer_open`, read off the raw record), the goal
+  declined (the raw record's `heartbeat_offer` is not `declined`), the goal
   card also carries a **Heartbeat checkbox**, checked by default: "Keep this
   moving on its own (Heartbeat)", with a note naming the mate's own interval
   ("Runs about every 1 hr", the default 60) and that each run uses credits and can
@@ -2388,7 +2388,11 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   makes (`heartbeat: true`, `expected: {heartbeat: false, interval}`), so the
   Heartbeat turns on through the same hooked route and governance; its Undo turns
   the Heartbeat off first (`expected: {heartbeat: true}`), then takes the goal
-  back. Unchecked, only the goal is written. Either way the goal write carries
+  back. A Heartbeat the user already turned off counts as that step done
+  (`set_schedules(held_is_done=True)`, armed only on a goal card's Undo steps),
+  so the goal still comes back; on Apply the same mismatch stays a 409, so a
+  Heartbeat the user turned on by hand is never recorded as the card's and its
+  Undo never turns it off. Unchecked, only the goal is written. Either way the goal write carries
   `heartbeat_offer` (`accepted` / `declined`), stored as the record's
   `heartbeat_offer` in the same write: a decline means no later goal card shows
   the checkbox, and with the Heartbeat already on there is none either. A
@@ -2396,7 +2400,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   is left out of the goal card's compared snapshot (`comparable_state`), since
   its own step is a compare-and-set; a goal card stored before the checkbox has
   no `heartbeat` in its snapshot, offers nothing, and still rebuilds
-  (`change_cards_records._LEGACY_EDITABLE`). A record written before goals were a list holds
+  (`change_cards_records.rebuild_record` accepts its old `editable` list). A record written before goals were a list holds
   one `long_term` string: it reads as a one-goal list under
   `member_goals.LEGACY_GOAL_ID` and is written in the list shape on its next
   write;

@@ -757,6 +757,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DASHBOARD_LIST_KEYS,
         DASHBOARD_LIST_SETTINGS,
         DASHBOARD_SETTINGS,
+        GOAL_HEARTBEAT_FIELD,
         IMPORT_STEP_CREATE,
         LIST_SETTING_WORDING,
         PATH_FILL_VALUE,

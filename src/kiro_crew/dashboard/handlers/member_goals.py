@@ -46,6 +46,7 @@ Two halves, split the way :mod:`handlers.member_self` is:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import weakref
 from typing import Any
@@ -488,10 +489,22 @@ async def api_member_goals_schedules(request: web.Request) -> web.Response:
     if isinstance(who, web.Response):
         return who
     slug, member, cfg = who
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_RAW_RESTORE
+
+    # Armed only on a goal card's Undo steps: its Heartbeat-off step is done when
+    # the user already turned the Heartbeat off, and the goal Undo goes on.
+    held_is_done = isinstance(request.get(REQ_CARD_RAW_RESTORE), dict)
     async with _schedule_lock(slug):
         try:
             rec = await asyncio.to_thread(
-                member_goals.set_schedules, slug, member, changes, expected=expected
+                functools.partial(
+                    member_goals.set_schedules,
+                    slug,
+                    member,
+                    changes,
+                    expected=expected,
+                    held_is_done=held_is_done,
+                )
             )
         except member_goals.GoalError as exc:
             return _goal_refusal(exc)

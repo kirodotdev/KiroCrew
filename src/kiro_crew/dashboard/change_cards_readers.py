@@ -650,7 +650,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         # and the change line carry it scrubbed.
         out["goals"] = [{"id": g["id"], "text": g["text"]} for g in rec["goals"]]
         # What the card's Heartbeat checkbox needs: whether it may be offered
-        # (``member_goals.heartbeat_offer_open``) and the interval it would run at.
+        # (``change_card_catalog_plans._goal_heartbeat_offer``) and its interval.
         out["heartbeat"] = {
             "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
             "interval": rec["schedules"].get("interval"),

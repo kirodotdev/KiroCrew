@@ -102,6 +102,53 @@ def test_a_checked_goal_card_sets_the_goal_and_turns_the_heartbeat_on(
     assert _schedules(state, slug, "heartbeat") == []
 
 
+def test_undo_still_takes_the_goal_back_after_the_heartbeat_was_turned_off_by_hand(
+    tmp_path: Path, _card_owner
+) -> None:
+    """The Heartbeat step's target already holds: it succeeds and the goal Undo runs."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _CardState(tmp_path)
+    rec = _propose_card(state, KIND, {"member": ORDINARY, "long_term": "Ship the docs"})
+    assert _run_card_plan(state, rec, "apply") == [200, 200]
+    member_goals.set_schedules(slug, ORDINARY, {"heartbeat": False})
+    stored = state._change_card_store.get(rec["id"])
+    assert _run_card_plan(state, stored, "undo") == [200, 200]
+    after = _record(slug)
+    assert after["goals"] == []
+    assert after["schedules"]["heartbeat"] is False
+    # Outside a goal card's Undo a write that already holds is still a conflict.
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    member_goals.set_schedules(slug, ORDINARY, {"heartbeat": True})
+    with pytest.raises(member_goals.GoalError) as exc:
+        member_goals.set_schedules(
+            slug, ORDINARY, {"heartbeat": True}, expected={"heartbeat": False}
+        )
+    assert exc.value.code == "changed_meanwhile"
+
+
+def test_apply_never_claims_a_heartbeat_the_user_turned_on_before_it(
+    tmp_path: Path, _card_owner
+) -> None:
+    """Turned on by hand between preview and Apply: the card's step is refused, so its
+    Undo has no Heartbeat-off step and leaves the user's Heartbeat on."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _CardState(tmp_path)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    rec = _propose_card(state, KIND, {"member": ORDINARY, "long_term": "Hire two people"})
+    assert len(rec["plan"]["apply"]) == 2
+    member_goals.set_schedules(slug, ORDINARY, {"heartbeat": True})
+    assert _run_card_plan(state, rec, "apply") == [200, 409]
+    stored = state._change_card_store.get(rec["id"])
+    undo = (stored.get("plan") or {}).get("undo") or []
+    assert [s["path"] for s in undo] == [f"/api/members/{slug}/goals/long-term"]
+    assert _run_card_plan(state, stored, "undo") == [200]
+    after = _record(slug)
+    assert [g["text"] for g in after["goals"]] == ["Ship"]
+    assert after["schedules"]["heartbeat"] is True
+
+
 def test_an_unchecked_goal_card_sets_only_the_goal_and_is_not_offered_again(
     tmp_path: Path, _card_owner
 ) -> None:
