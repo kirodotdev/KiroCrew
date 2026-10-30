@@ -210,8 +210,8 @@ path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row wor
 | `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv, dist, build, out, target, cdk.out}` | `folder_watcher.py` | Directories never walked |
 | `_LARGE_REBUILD_WARN_THRESHOLD` | `1000` | `watcher.py` | Stale-item count at which the self-heal rebuild logs a prominent WARNING (usually an embedder-sig change invalidating the whole corpus) |
 | `DEFAULT_MAX_FILES` | `5000` | `folder_watcher.py` | Per-source file cap (newest-first) |
-| `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size (words) |
-| `CHUNK_OVERLAP` | `200` | `chunker.py` | Chunk overlap |
+| `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size in estimated tokens (`_word_count`): a space-separated word is 1.3; in a script written without spaces (`_UNSPACED`: CJK, kana, Thai, Lao, Myanmar, Khmer, full-width forms) each character is 1, and other characters in that run about 4 per token. A run with no unspaced script is one word however long. An unspaced run too large for one chunk is cut into slices of the source |
+| `CHUNK_OVERLAP` | `200` | `chunker.py` | Chunk overlap, in the same estimated tokens; an unspaced tail is cut to this budget rather than copied whole |
 | `VECTOR_RRF_WEIGHT` | `2.0` | `retrieval.py` | Weight of the vector leg in RRF fusion |
 | `DEFAULT_MODEL` | `"qwen3-embedding:0.6b"` | `embedder.py` | Embedding model the in-process runtime loads, and the fallback id when the active backend cannot be reached to name itself; the live identity is `get_shared_embedder().model_id` |
 | `TIMEOUT` | `10` | `embedder.py` | Retained for config compatibility (`knowledge.embed_timeout_secs`, positive-only; 0/unset/negative → this default). The in-process runtime has no per-request call for it to bound |
