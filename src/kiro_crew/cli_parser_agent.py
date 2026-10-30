@@ -407,9 +407,10 @@ Examples:
         default=0,
         help="Global timeout in seconds (0 = no limit)",
     )
-    run_parser.add_argument(
-        "--port", type=int, default=DASHBOARD_PORT, help="Dashboard port for status"
-    )
+    # Nothing in `kirocrew run` reads --port: the task runner reports to this
+    # terminal, never to a dashboard. It is still accepted so a script that
+    # passes it keeps parsing, and help does not offer it.
+    run_parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
 
 
 def register_knowledge_parser(sub: _Commands) -> None:
