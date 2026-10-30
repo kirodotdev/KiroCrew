@@ -19819,6 +19819,8 @@
       "goals_linked_milestones": "Jalons de cet objectif",
       "goals_linked_none": "Aucun jalon ne sert encore cet objectif.",
       "dashboard_owner_only": "Seul le propriétaire de ce coéquipier peut voir son tableau de bord.",
+      "dashboard_values_behind_offline": "La connexion a été perdue, ces valeurs ne sont donc peut-être pas à jour.",
+      "dashboard_values_behind_old": "Ces valeurs n’ont pas été mises à jour depuis un moment, elles ne sont donc peut-être pas à jour.",
       "dashboard_values_stale": "Les valeurs en direct ne sont plus mises à jour : voici les dernières reçues.",
       "import_keep_hint": "Décider plus tard laisse cette importation en attente ici jusqu'à son expiration. Ne pas importer la supprime.",
       "import_later": "Décider plus tard",

@@ -19183,6 +19183,8 @@
       "goals_linked_milestones": "この目標のマイルストーン",
       "goals_linked_none": "この目標につながるマイルストーンはまだありません。",
       "dashboard_owner_only": "このクルーメイトのダッシュボードを見られるのはオーナーだけです。",
+      "dashboard_values_behind_offline": "接続が切れたため、これらの値は最新でない可能性があります。",
+      "dashboard_values_behind_old": "これらの値はしばらく更新されていないため、最新でない可能性があります。",
       "dashboard_values_stale": "ライブ値の更新が停止したため、最後に受信した値を表示しています。",
       "import_keep_hint": "「あとで決める」を押すと、このインポートは期限が切れるまでここで待機します。「インポートしない」を押すと破棄されます。",
       "import_later": "あとで決める",

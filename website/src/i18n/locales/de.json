@@ -19501,6 +19501,8 @@
       "goals_linked_milestones": "Meilensteine für dieses Ziel",
       "goals_linked_none": "Noch kein Meilenstein dient diesem Ziel.",
       "dashboard_owner_only": "Nur der Besitzer dieses Crewmates kann sein Dashboard sehen.",
+      "dashboard_values_behind_offline": "Die Verbindung wurde unterbrochen, daher sind diese Werte möglicherweise nicht aktuell.",
+      "dashboard_values_behind_old": "Diese Werte wurden seit einer Weile nicht aktualisiert und sind möglicherweise nicht aktuell.",
       "dashboard_values_stale": "Die Live-Werte werden nicht mehr aktualisiert; dies sind die letzten empfangenen Werte.",
       "import_keep_hint": "Später entscheiden lässt diesen Import hier warten, bis er abläuft. Nicht importieren verwirft ihn.",
       "import_later": "Später entscheiden",

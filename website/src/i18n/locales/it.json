@@ -19819,6 +19819,8 @@
       "goals_linked_milestones": "Traguardi di questo obiettivo",
       "goals_linked_none": "Nessun traguardo serve ancora questo obiettivo.",
       "dashboard_owner_only": "Solo il proprietario di questo compagno può vederne la dashboard.",
+      "dashboard_values_behind_offline": "La connessione si è interrotta, quindi questi valori potrebbero non essere aggiornati.",
+      "dashboard_values_behind_old": "Questi valori non si aggiornano da un po’, quindi potrebbero non essere aggiornati.",
       "dashboard_values_stale": "I valori in tempo reale non si aggiornano più: questi sono gli ultimi ricevuti.",
       "import_keep_hint": "Decidi più tardi lascia questa importazione in attesa qui finché non scade. Non importare la scarta.",
       "import_later": "Decidi più tardi",

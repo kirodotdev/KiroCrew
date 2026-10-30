@@ -19819,6 +19819,8 @@
       "goals_linked_milestones": "Hitos de este objetivo",
       "goals_linked_none": "Aún ningún hito sirve a este objetivo.",
       "dashboard_owner_only": "Solo el propietario de este compañero puede ver su panel.",
+      "dashboard_values_behind_offline": "Se perdió la conexión, así que estos valores pueden estar desactualizados.",
+      "dashboard_values_behind_old": "Estos valores no se actualizan desde hace un rato, así que pueden estar desactualizados.",
       "dashboard_values_stale": "Los valores en vivo dejaron de actualizarse, así que estos son los últimos recibidos.",
       "import_keep_hint": "Decidir más tarde deja esta importación esperando aquí hasta que caduque. No importar la descarta.",
       "import_later": "Decidir más tarde",

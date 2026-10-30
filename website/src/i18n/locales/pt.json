@@ -19819,6 +19819,8 @@
       "goals_linked_milestones": "Marcos desta meta",
       "goals_linked_none": "Nenhum marco serve a esta meta ainda.",
       "dashboard_owner_only": "Só o dono deste colega pode ver o painel dele.",
+      "dashboard_values_behind_offline": "A conexão caiu, então estes valores podem estar desatualizados.",
+      "dashboard_values_behind_old": "Estes valores não são atualizados há algum tempo, então podem estar desatualizados.",
       "dashboard_values_stale": "Os valores ao vivo pararam de atualizar, portanto estes são os últimos recebidos.",
       "import_keep_hint": "Decidir depois deixa esta importação esperando aqui até expirar. Não importar a descarta.",
       "import_later": "Decidir depois",

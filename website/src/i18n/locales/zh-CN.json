@@ -19183,6 +19183,8 @@
       "goals_linked_milestones": "这个目标的里程碑",
       "goals_linked_none": "还没有里程碑服务于这个目标。",
       "dashboard_owner_only": "只有这个助手的所有者才能看到它的仪表板。",
+      "dashboard_values_behind_offline": "连接已断开，这些值可能不是最新的。",
+      "dashboard_values_behind_old": "这些值已有一段时间没有更新，可能不是最新的。",
       "dashboard_values_stale": "实时数据已停止更新，以下是最后收到的数值。",
       "import_keep_hint": "点“稍后决定”，这次导入会在这里等待，直到过期。点“不导入”会丢弃它。",
       "import_later": "稍后决定",

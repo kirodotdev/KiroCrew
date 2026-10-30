@@ -8344,6 +8344,8 @@
       "goals_linked_milestones": "Milestones for this goal",
       "goals_linked_none": "No milestone serves this goal yet.",
       "dashboard_owner_only": "Only this mate's owner can see its dashboard.",
+      "dashboard_values_behind_offline": "The connection dropped, so these values may be behind.",
+      "dashboard_values_behind_old": "These values have not updated in a while, so they may be behind.",
       "dashboard_values_stale": "Live values stopped updating, so these are the last ones received.",
       "export_row": "Export as file",
       "export_row_sub": "Share this mate as a .crewmate file",
