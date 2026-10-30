@@ -283,6 +283,8 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         missing_hint=(
             "Install the official Strands CLI; its default --acp-server profile is "
             "not used, Kiro Crew starts it on a Python project it gates."
+        ),
+    ),
     ACP_BACKEND_VIBE: SelfServedLaunch(
         label="Mistral Vibe",
         binary="vibe-acp",

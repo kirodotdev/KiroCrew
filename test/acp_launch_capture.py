@@ -35,6 +35,7 @@ from kiro_crew.acp.harness import strands as strands_mod
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.skill_projection import NativeSkillProjection
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
