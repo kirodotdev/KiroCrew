@@ -2231,7 +2231,7 @@
         "embedding_threads": 4,
         "embedding_bulk_threads": 1,
         "embedding_bulk_duty": 0.2,
-        "embedding_idle_evict_secs": 3600,
+        "embedding_idle_evict_secs": 600,
         "embedding_child_process": false,
         "embed_model_url": "",
         "embed_model_path": "",
@@ -2346,7 +2346,7 @@
       "help": "Seconds without any embedding before the embedding model is unloaded from memory. The next search or memory write loads it again, which takes a few seconds. 0 keeps the model loaded.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 3600
+      "defaultValue": 600
     },
     {
       "path": "memory.embedding_child_process",
