@@ -320,19 +320,28 @@ def subagent_probe(manager: Any) -> Callable[[str], OperationState | None]:
             if getattr(info, "user_stopped", False):
                 return OperationState.CANCELLED
             return OperationState.FAILED if getattr(info, "error", "") else OperationState.COMPLETED
-        store = None
+        # Absence is proof only after a successful read of an open queue store.
+        # While the store is still opening, failed to open (a retry is armed) or
+        # the read raises, a run it holds may still dispatch: decide later.
+        pending = getattr(manager, "_taskq_init_task", None)
+        if pending is not None and not pending.done():
+            return None
         try:
             store = manager.taskq_store()
         except Exception:
-            store = None
-        if store is not None:
-            try:
-                row = store.get(agent_id)
-            except Exception:
-                row = None
-            if row is not None:
-                mapped = TASKQ_STATE_MAP.get(str(row.state))
-                return mapped if mapped is not None and mapped.value in _TERMINAL_VALUES else None
+            return None
+        if store is None:
+            if getattr(manager, "_taskq_unavailable", None):
+                return None
+            # The durable queue is off: no row can survive a restart to run later.
+            return OperationState.UNKNOWN_OUTCOME
+        try:
+            row = store.get(agent_id)
+        except Exception:
+            return None
+        if row is not None:
+            mapped = TASKQ_STATE_MAP.get(str(row.state))
+            return mapped if mapped is not None and mapped.value in _TERMINAL_VALUES else None
         # Neither the manager nor the queue knows it: it may have run, and is gone.
         return OperationState.UNKNOWN_OUTCOME
 
