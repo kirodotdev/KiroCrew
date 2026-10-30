@@ -669,7 +669,9 @@ def _url_payload_command(n: int) -> str:
 #: fixed bytes in place), and no piece of the link, cut also at each ``%XX`` escape and
 #: decoded per escaped segment, may be a whole key. No pass widened and no threshold
 #: moved.
-_PACKAGE_LINE_BUDGET = 34_312
+#: Raised by one, from 34,312, for the TickTick consent host in ``exfil_oauth``'s
+#: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_313
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
