@@ -12,6 +12,7 @@ across a restart through its transcript metadata, which the factory hands back a
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,6 +57,7 @@ class TestANewKasChatStartsAtTheModelDefault:
         # A brand-new chat: no slot pick, no crew pin, no role or global default.
         provider = _provider(tmp_path, ACP_BACKEND_KAS)
 
+        await provider._recover_effort_overlay()
         assert provider._effort_per_model == {}
         assert provider._resolve_effort() is None
         client = _kas_wire(provider)
@@ -114,14 +116,61 @@ class TestKasLeavesTheSharedFileAlone:
 
 
 class TestKiroCliStillMirrorsTheFileItReads:
-    def test_kiro_cli_reads_the_level_back(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_kiro_cli_reads_the_level_back_when_it_starts(self, tmp_path):
         # kiro-cli applies the file's level at spawn, so the map names that level.
         _write_cli_overlay(tmp_path, MODEL, "max")
         provider = _provider(tmp_path, ACP_BACKEND_KIRO)
+        # Construction runs on the event loop and opens no file.
+        assert provider._effort_per_model == {}
+
+        await provider._recover_effort_overlay()
 
         assert provider._effort_per_model == {MODEL: "max"}
         assert provider._resolve_effort() == "max"
 
-    def test_kiro_cli_writes_its_own_level(self, tmp_path):
-        _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+    @pytest.mark.asyncio
+    async def test_a_caller_supplied_level_wins_over_the_file(self, tmp_path):
+        _write_cli_overlay(tmp_path, MODEL, "max")
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+
+        await provider._recover_effort_overlay()
+
+        assert provider._effort_per_model == {MODEL: "low"}
+
+    @pytest.mark.asyncio
+    async def test_a_restart_does_not_adopt_another_chats_later_pick(self, tmp_path):
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO)
+        await provider._recover_effort_overlay()
+        assert provider._effort_per_model == {}
+        # A sibling chat in the same work dir picks a level after this one started.
+        _write_cli_overlay(tmp_path, MODEL, "max")
+
+        await provider._recover_effort_overlay()
+
+        assert provider._effort_per_model == {}
+
+    @pytest.mark.asyncio
+    async def test_the_recovery_read_runs_off_the_event_loop(self, tmp_path):
+        _write_cli_overlay(tmp_path, MODEL, "max")
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO)
+        loop_thread = threading.get_ident()
+        read_on: list[int] = []
+
+        def _spy(work_dir):
+            read_on.append(threading.get_ident())
+            return _read_cli_overlay(work_dir)
+
+        with patch("kiro_crew.providers.acp_cli_overlay._read_cli_overlay", _spy):
+            await provider._recover_effort_overlay()
+
+        assert read_on
+        assert loop_thread not in read_on
+
+    def test_construction_writes_no_overlay_and_the_apply_does(self, tmp_path):
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+        assert not _overlay(tmp_path).exists()
+
+        assert provider._apply_effort_overlay() is True
+
         assert _read_cli_overlay(tmp_path) == {MODEL: "low"}

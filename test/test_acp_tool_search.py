@@ -10,8 +10,11 @@ AcpProvider application logic (kiro-only, no-op for the Claude backend).
 
 from __future__ import annotations
 
+import contextlib
 import json
-from unittest.mock import MagicMock, patch
+import threading
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -68,10 +71,7 @@ class TestWriteToolSearchOverlay:
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "high")
         _write_tool_search_overlay(tmp_path, True)
         data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-        assert (
-            data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"]
-            == "high"
-        )
+        assert data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"] == "high"
         assert data["toolSearch.enabled"] is True
         assert data["toolSearch.minPct"] == TOOL_SEARCH_DEFAULT_MIN_PCT
 
@@ -81,10 +81,7 @@ class TestWriteToolSearchOverlay:
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "xhigh")
         data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
         assert data["toolSearch.enabled"] is True
-        assert (
-            data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"]
-            == "xhigh"
-        )
+        assert data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"] == "xhigh"
 
     def test_handles_corrupt_existing_json(self, tmp_path):
         cli = _cli_json(tmp_path)
@@ -138,24 +135,94 @@ class TestApplyToolSearchOverlay:
         assert not _cli_json(tmp_path).exists()
 
 
-# ── Constructor wiring ───────────────────────────────────────────────────────
+# ── Constructor and start wiring ─────────────────────────────────────────────
 
 
 class TestInitWiring:
-    @pytest.mark.parametrize(
-        ("backend", "applied"),
-        [
-            pytest.param("", 1, id="kiro_enabled_applies_on_init"),
-            pytest.param(ACP_BACKEND_CLAUDE, 0, id="claude_backend_does_not_apply_on_init"),
-        ],
+    def test_construction_writes_nothing_for_any_backend(self):
+        # The constructor runs on the gateway event loop; ``start()`` owns the file.
+        for backend in ("", ACP_BACKEND_CLAUDE):
+            with (
+                patch("kiro_crew.providers.acp.AcpClient") as mock_client,
+                patch.object(AcpProvider, "_apply_tool_search_overlay") as ats,
+                patch.object(AcpProvider, "_apply_effort_overlay") as aeo,
+            ):
+                mock_client.return_value.backend = backend
+                AcpProvider(acp_backend=backend, tool_search=True)
+            ats.assert_not_called()
+            aeo.assert_not_called()
+
+    def test_construction_opens_no_cli_json(self, tmp_path):
+        _write_tool_search_overlay(tmp_path, True)
+        before = _cli_json(tmp_path).read_bytes()
+        real_open = Path.open
+        opened: list[str] = []
+
+        def _spy(self, *args, **kwargs):
+            if self.name == "cli.json":
+                opened.append(str(self))
+            return real_open(self, *args, **kwargs)
+
+        with patch.object(Path, "open", _spy):
+            AcpProvider(acp_backend="", work_dir=tmp_path, tool_search=False)
+        assert opened == []
+        assert _cli_json(tmp_path).read_bytes() == before
+
+
+def _start_wired(threads: list[int], order: list[str]):
+    """Stub everything ``start()`` does around the overlay, recording the overlay steps."""
+
+    async def _recover(self):
+        order.append("recover")
+
+    def _effort(self, **_kw):
+        order.append("effort")
+        threads.append(threading.get_ident())
+        return True
+
+    def _tool_search(self):
+        order.append("tool_search")
+        threads.append(threading.get_ident())
+
+    return (
+        patch.object(AcpProvider, "_recover_effort_overlay", _recover),
+        patch.object(AcpProvider, "_apply_effort_overlay", _effort),
+        patch.object(AcpProvider, "_apply_tool_search_overlay", _tool_search),
+        patch.object(AcpProvider, "_start_kiro_runtime", AsyncMock()),
+        patch.object(AcpProvider, "_note_zero_tool_servers", AsyncMock()),
+        patch.object(AcpProvider, "_bind_unbound_effort", AsyncMock()),
+        patch.object(AcpProvider, "_apply_initial_effort", AsyncMock()),
     )
-    def test_overlay_on_init(self, backend, applied):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
-            AcpProvider, "_apply_tool_search_overlay"
-        ) as ats:
-            mock_client.return_value.backend = backend
-            AcpProvider(acp_backend=backend, tool_search=True)
-        assert ats.call_count == applied
+
+
+class TestStartWiring:
+    @pytest.mark.asyncio
+    async def test_kiro_start_recovers_then_writes_off_the_event_loop(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+        assert order == ["recover", "effort", "tool_search"]
+        assert threads
+        assert threading.get_ident() not in threads
+
+    @pytest.mark.asyncio
+    async def test_start_reapplies_on_every_restart(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+            await provider.start()
+        assert order.count("tool_search") == 2
+        assert order.count("effort") == 2
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────
@@ -173,12 +240,8 @@ class TestConfigField:
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(
-            json.dumps({"agent": {"tool_search": False}}), encoding="utf-8"
-        )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_path", return_value=cfg_file
-        ):
+        cfg_file.write_text(json.dumps({"agent": {"tool_search": False}}), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg = KiroCrewConfig.load()
         assert cfg.agent.tool_search is False
 
@@ -189,9 +252,7 @@ class TestConfigField:
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"agent": {}}), encoding="utf-8")
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_path", return_value=cfg_file
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg = KiroCrewConfig.load()
         assert cfg.agent.tool_search is True
 
@@ -203,9 +264,7 @@ class TestSchemaEntry:
     def test_tool_search_in_config_schema(self):
         from kiro_crew.config.schema import SCHEMA_REGISTRY
 
-        entry = next(
-            (e for e in SCHEMA_REGISTRY if e.path == "agent.tool_search"), None
-        )
+        entry = next((e for e in SCHEMA_REGISTRY if e.path == "agent.tool_search"), None)
         assert entry is not None, "agent.tool_search missing from config schema"
         assert entry.type == "boolean"
         assert entry.default_value is True
@@ -223,20 +282,19 @@ class TestConfigurableThresholds:
     thresholds to 0 imposed that cost on every install, including ones whose
     specs were nowhere near large enough for deferral to pay for itself."""
 
-    @pytest.mark.parametrize(
-        ("min_pct", "min_tokens"),
-        [
-            pytest.param(12, 1234, id="configured_values_are_written"),
-            # Deliberately supported: an operator who wants unconditional deferral
-            # can still ask for it.
-            pytest.param(0, 0, id="zero_zero_still_defers_always"),
-        ],
-    )
-    def test_thresholds_are_written(self, tmp_path, min_pct, min_tokens):
-        _write_tool_search_overlay(tmp_path, True, min_pct, min_tokens)
+    def test_configured_values_are_written(self, tmp_path):
+        _write_tool_search_overlay(tmp_path, True, 12, 1234)
         data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-        assert data["toolSearch.minPct"] == min_pct
-        assert data["toolSearch.minTokens"] == min_tokens
+        assert data["toolSearch.minPct"] == 12
+        assert data["toolSearch.minTokens"] == 1234
+
+    def test_zero_zero_still_defers_always(self, tmp_path):
+        # Deliberately supported: an operator who wants unconditional deferral
+        # (the previous hard-coded behaviour) can still ask for it.
+        _write_tool_search_overlay(tmp_path, True, 0, 0)
+        data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
+        assert data["toolSearch.minPct"] == 0
+        assert data["toolSearch.minTokens"] == 0
 
     def test_stale_forced_zeros_are_overwritten(self, tmp_path):
         # Migration: machines configured by an earlier build already carry
@@ -295,8 +353,9 @@ class TestConfigurableThresholds:
         assert data["toolSearch.minTokens"] == 4444
 
     def test_constructor_defaults_to_kiro_thresholds(self):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
-            AcpProvider, "_apply_tool_search_overlay"
+        with (
+            patch("kiro_crew.providers.acp.AcpClient") as mock_client,
+            patch.object(AcpProvider, "_apply_tool_search_overlay"),
         ):
             mock_client.return_value.backend = ""
             provider = AcpProvider(acp_backend="", tool_search=True)
@@ -320,14 +379,10 @@ class TestThresholdConfigFields:
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(
-            json.dumps(
-                {"agent": {"tool_search_min_pct": 9, "tool_search_min_tokens": 111}}
-            ),
+            json.dumps({"agent": {"tool_search_min_pct": 9, "tool_search_min_tokens": 111}}),
             encoding="utf-8",
         )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_path", return_value=cfg_file
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg = KiroCrewConfig.load()
         assert cfg.agent.tool_search_min_pct == 9
         assert cfg.agent.tool_search_min_tokens == 111
@@ -341,9 +396,7 @@ class TestThresholdConfigFields:
         cfg_file.write_text(
             json.dumps({"agent": {"tool_search_min_pct": "lots"}}), encoding="utf-8"
         )
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_path", return_value=cfg_file
-        ):
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
             cfg = KiroCrewConfig.load()
         assert cfg.agent.tool_search_min_pct == TOOL_SEARCH_DEFAULT_MIN_PCT
 
