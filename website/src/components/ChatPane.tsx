@@ -17,6 +17,7 @@ import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
+import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
@@ -424,10 +425,11 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(
-    () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
-    [allMessages, busy, pendingQuestion],
-  )
+  // A crewmate chat never offers a chip that asks it for a card (crewmateChips).
+  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(() => {
+    const derived = deriveFollowUpOptions(allMessages, busy, !!pendingQuestion)
+    return crewmate ? crewmateFollowUps(derived) : derived
+  }, [allMessages, busy, pendingQuestion, crewmate])
   // Visual-only highlight state; the composer text is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
   // message) or the pane is re-bound to another slot — both signal a fresh turn.

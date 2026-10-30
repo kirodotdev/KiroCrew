@@ -10553,6 +10553,13 @@
         "tool_search_label": "Busca de ferramentas",
         "tool_search_description": "Carregar sob demanda especificações de ferramentas MCP adiadas."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "Não foi possível copiar, então selecione o comando e copie manualmente.",
+      "no_terminal": "Não dá para executar comandos aqui, então copie para o aplicativo Terminal do seu computador.",
+      "reason": "Eu não posso executar isto, mas você pode.",
+      "run_unanswered": "O terminal não respondeu, então copie para o aplicativo Terminal do seu computador.",
+      "title": "Execute você mesmo"
     }
   },
   "hooks": {

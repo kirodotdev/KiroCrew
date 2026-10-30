@@ -591,6 +591,9 @@ export interface ContentBlock {
   type: BlockType
   content: string
   language?: string
+  /** A code fence's info string after its language tag, trimmed (```lang title="x"
+   *  gives `title="x"`). Absent when the opening line carries only the tag. */
+  info?: string
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number

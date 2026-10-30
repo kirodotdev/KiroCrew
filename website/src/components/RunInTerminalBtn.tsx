@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useContext } from 'react'
+import { useState, useCallback, useRef, useEffect, useContext, type ReactNode } from 'react'
 import { useQuery, QueryClientContext } from '@tanstack/react-query'
 import { SquareTerminal, Check, ClipboardCheck, AlertCircle } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
@@ -39,6 +39,16 @@ function stripPromptChars(code: string): string {
  * opened, which happens after this dialog is confirmed.
  */
 export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: string }) {
+  return <WithTerminalCopySetting>{willCopy => <RunInTerminalBtnInner code={code} lang={lang} willCopy={willCopy} />}</WithTerminalCopySetting>
+}
+
+/**
+ * Hands *children* whether Run in terminal COPIES instead of running
+ * (`dashboard.terminal.reuse_current`). Shared by the icon button and the
+ * run-it-yourself card (`RunYourselfCard`), so both say Copy in the confirm
+ * dialog when the setting is on.
+ */
+export function WithTerminalCopySetting({ children }: { children: (willCopy: boolean) => ReactNode }) {
   // Read the reuse-current setting only when a QueryClient is in scope. Every
   // real mount sits under the app-level provider, but this button is embedded
   // in code blocks that many tests render in isolation without one, and a bare
@@ -47,12 +57,12 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
   // of requiring every embedder to supply a client.
   const hasClient = useContext(QueryClientContext) != null
   return hasClient
-    ? <RunInTerminalBtnWithConfig code={code} lang={lang} />
-    : <RunInTerminalBtnInner code={code} lang={lang} willCopy={false} />
+    ? <TerminalCopySettingWithConfig>{children}</TerminalCopySettingWithConfig>
+    : <>{children(false)}</>
 }
 
 /** Subscribes to the reuse-current setting; only mounted under a QueryClient. */
-function RunInTerminalBtnWithConfig({ code, lang }: { code: string; lang?: string }) {
+function TerminalCopySettingWithConfig({ children }: { children: (willCopy: boolean) => ReactNode }) {
   // The reuse-current path COPIES the command instead of running it, so the
   // confirm dialog must say Copy, not Run. Only a literal `true` counts — the
   // same "one literal decides it" rule ChatPage's handler uses; a pending or
@@ -65,14 +75,34 @@ function RunInTerminalBtnWithConfig({ code, lang }: { code: string; lang?: strin
     staleTime: 30_000,
   })
   const willCopy = terminalCfg?.dashboard?.terminal?.reuse_current === true
-  return <RunInTerminalBtnInner code={code} lang={lang} willCopy={willCopy} />
+  return <>{children(willCopy)}</>
 }
 
-function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }) {
+export type RunInTerminalStatus = 'idle' | 'sent' | 'copied' | 'error'
+
+/**
+ * The Run-in-terminal flow without its trigger: `askToRun` opens the confirm
+ * dialog (`dialog`, which the caller mounts), and only the user's confirm
+ * dispatches `mc:run-in-terminal`. `status` flashes the host's answer.
+ *
+ * `noAnswer` is true only when the LAST run got no answer at all before the
+ * fallback deadline. An explicit `ok: false` is a refusal the host already
+ * explained with its own notice (a chat on a Session Environment, a cwd still
+ * loading), so it leaves `noAnswer` false.
+ */
+export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }): {
+  status: RunInTerminalStatus
+  noAnswer: boolean
+  /** Forget the last unanswered run, so the caller can offer Run again. */
+  clearNoAnswer: () => void
+  askToRun: () => void
+  dialog: ReactNode
+} {
   // The host page that renders this chat; only it answers the request.
   const scope = useContext(RunInTerminalScope)
   const [status, setStatus] = useState<'idle' | 'sent' | 'copied' | 'error'>('idle')
   const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
+  const [noAnswer, setNoAnswer] = useState(false)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const resultTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const resultUnsubRef = useRef<(() => void) | null>(null)
@@ -95,12 +125,13 @@ function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: 
       if ((e as CustomEvent).detail?.reqId !== reqId) return
       resultUnsubRef.current?.()
       const detail = (e as CustomEvent).detail
+      setNoAnswer(false)
       flash(detail.ok ? (detail.copied ? 'copied' : 'sent') : 'error')
     }
     // Single unsub clears both the listener and the fallback timer.
     resultUnsubRef.current?.()
     window.addEventListener('mc:run-in-terminal-result', onResult)
-    resultTimerRef.current = setTimeout(() => { resultUnsubRef.current?.(); flash('error') }, RUN_IN_TERMINAL_RESULT_FALLBACK_MS)
+    resultTimerRef.current = setTimeout(() => { resultUnsubRef.current?.(); setNoAnswer(true); flash('error') }, RUN_IN_TERMINAL_RESULT_FALLBACK_MS)
     resultUnsubRef.current = () => {
       window.removeEventListener('mc:run-in-terminal-result', onResult)
       clearTimeout(resultTimerRef.current)
@@ -125,6 +156,23 @@ function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: 
   }, [pending, execute])
 
   const cancelRun = useCallback(() => setPending(null), [])
+
+  const dialog = (
+    <RunInTerminalConfirm
+      open={!!pending}
+      command={pending?.command ?? ''}
+      warnReason={pending?.warnReason || undefined}
+      willCopy={willCopy}
+      onConfirm={confirmRun}
+      onCancel={cancelRun}
+    />
+  )
+  const clearNoAnswer = useCallback(() => setNoAnswer(false), [])
+  return { status, noAnswer, clearNoAnswer, askToRun, dialog }
+}
+
+function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }) {
+  const { status, askToRun, dialog } = useRunInTerminal({ code, lang, willCopy })
 
   const trigger = (() => {
     if (status === 'copied') {
@@ -163,14 +211,7 @@ function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: 
   return (
     <>
       {trigger}
-      <RunInTerminalConfirm
-        open={!!pending}
-        command={pending?.command ?? ''}
-        warnReason={pending?.warnReason || undefined}
-        willCopy={willCopy}
-        onConfirm={confirmRun}
-        onCancel={cancelRun}
-      />
+      {dialog}
     </>
   )
 }

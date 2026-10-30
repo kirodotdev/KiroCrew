@@ -6127,6 +6127,13 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "runYourselfCard": {
+      "copy_failed": "Couldn't copy, so select the command and copy it by hand.",
+      "no_terminal": "Running commands isn't available here, so copy it into the Terminal app on your computer.",
+      "reason": "I can't run this, but you can.",
+      "run_unanswered": "The terminal didn't respond, so copy it into the Terminal app on your computer.",
+      "title": "Run this yourself"
     }
   },
   "hooks": {

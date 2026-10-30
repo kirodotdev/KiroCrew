@@ -10553,6 +10553,13 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "Copie impossible, alors sélectionne la commande et copie-la à la main.",
+      "no_terminal": "Impossible d'exécuter des commandes ici, alors copie-la dans l'application Terminal de ton ordinateur.",
+      "reason": "Je ne peux pas exécuter ceci, mais toi, tu peux.",
+      "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
+      "title": "À lancer toi-même"
     }
   },
   "hooks": {

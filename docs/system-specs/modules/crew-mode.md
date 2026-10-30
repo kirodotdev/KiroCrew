@@ -1104,7 +1104,10 @@ line pointing at these tools.
 In a dashboard turn, a change to Kiro Crew itself that the user asked for (settings,
 schedules, mates and their capabilities, templates, MCP servers, connections, secrets,
 app trust, denied-command rules) is preferably offered as a change card, which the user
-confirms; a card is never a way around a denial. Cards do not replace the direct tools:
+confirms; a card is never a way around a denial. No kind lifts a built-in denied-command
+rule (`denied_command` adds a user rule or toggles one), so an agent never offers the user
+a card, or a suggested reply asking for one, to run a refused command; a crewmate chat
+drops such a chip ([A mate's chat](#a-mates-chat)). Cards do not replace the direct tools:
 an agent that schedules its own work, a conductor or a scheduled run keeps using
 `cron_add` and the other tools it is granted, under their own approvals. An agent proposes
 one registered kind with `propose_change`, after
@@ -3309,6 +3312,39 @@ own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
 branches under that prefix, to rebase onto the default branch itself when it
 needs that branch's changes, and to check a branch with `git merge-tree` before
 it pushes.
+
+A crewmate promises only what it knows it can do (bug-bash H4: it said "I'll
+install Rust", hit the `pipe-to-shell` rule, then offered the chip "Ask for a
+card to let you install it", which no card kind can raise).
+`conductor.how_you_work` item 1 tells it to hedge an action a safety rule or an
+approval can stop ("I'll try; if a safety rule blocks it I'll give you the
+command"), and when one is blocked to put the exact command in a
+`run-yourself` fence whose info string carries `summary="…"`, one factual line of what it
+installs or does and from where (no persuasion; `worker.principles` asks the worker for the
+same line), never offering to ask for a permission, setting or
+card to get past it. An assistant chat turn draws that fence as the run-it-yourself card
+(`RunYourselfCard`, [learn-cron-dashboard](learn-cron-dashboard.md#direct-terminal-commands-from-the-composer)):
+the command verbatim, the crewmate's summary when given, the fixed line "I can't run this, but you can.", Run in
+terminal through the existing confirm dialog, and Copy, so a new user need not know where a terminal is. Any other surface draws the fence
+as a plain code block, so text from outside the agent cannot pose as its hand-over.
+The `denied_command` change-card kind was not used for this: it adds or toggles a
+user deny rule, a settings change, while this is the person running one command. Item 5 says a suggested reply (an `[OPTIONS:]` chip) offers only
+what the crewmate can then do, never asks it for a card (a card that fits is
+raised directly, since the card is the question), and carries no internal word
+(card, worker, helper, a tool name such as `propose_change`).
+`worker.principles` tells the worker to report a blocked command with the exact
+command in a code block rather than look for a way around it. The refusal
+itself also says this to any session: the `pipe-to-shell` category has its own
+remediation class ([security](security.md), `deny_guidance.DENY_CLASS_REMOTE_SCRIPT`).
+No gate moves. `test_crewmate_prompts.py` pins the wording, and
+`website/src/components/chat/crewmateChips.ts` is the render-time backstop: in a
+crewmate chat (`ChatPane` with `crewmate`) a chip that asks for a card is not
+offered. It matches narrowly: one of our card names after an article ("a change card",
+"an approval card", and the same names per language), `propose_change`, or the H4 shape
+"ask for a card" / "raise a card". A generic verb with a card noun ("Give me the card
+number", "Make the cards bigger", "Change card colors") is the user's own task and is
+kept; the matcher errs toward keeping. It is display only; the
+transcript keeps the reply as written.
 
 `scripts/crewmate_prompt_preview.py --fixture <name> [--piece <p>] [--diff | --write]`
 runs the real assembly over a fixture in a throwaway data home and prints

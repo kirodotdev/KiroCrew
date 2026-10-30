@@ -10407,6 +10407,13 @@
         "tool_search_label": "Werkzeugsuche",
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "Kopieren ging nicht, also markiere den Befehl und kopiere ihn von Hand.",
+      "no_terminal": "Hier lassen sich keine Befehle ausführen, also kopiere ihn in die Terminal-App auf deinem Computer.",
+      "reason": "Ich kann das nicht ausführen, du aber schon.",
+      "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
+      "title": "Selbst ausführen"
     }
   },
   "hooks": {

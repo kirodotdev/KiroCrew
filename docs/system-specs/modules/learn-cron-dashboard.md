@@ -2465,6 +2465,40 @@ Its review button uses “Review and run in terminal” for its tooltip. The vis
 “Review terminal command” label also supplies its accessible name in each
 language. The confirmation dialog's execution button remains “Run”. Code-block triggers keep
 their existing “Run in terminal” label.
+
+In an assistant chat turn, a closed `run-yourself` fence renders as `RunYourselfCard` (a
+fence that never closed, `ContentBlock.unclosed`, stays a plain block: its body may be a
+cut-off command or the rest of the reply)
+instead of a code block. `AssistantMessage` passes MarkdownRenderer `runYourselfCards`,
+which reaches `EditableCodeBlock` as `runYourselfCard`; while streaming it is a plain
+block. Every other MarkdownRenderer surface (issue and PR panels, MCP and skill
+descriptions) leaves the prop off and draws the fence as a plain code block, so text from
+outside the agent cannot pass as the agent's own hand-over. An agent uses the fence for a
+command a safety rule stopped it from running, such as a one-line installer. The card
+shows the command wrapped and verbatim (`overflow-wrap: anywhere`, so a short token is
+never split), above it the agent's one-sentence `summary` when the fence carries one
+(the opening line is `run-yourself` followed by `summary="…"`, read from
+`ContentBlock.info`, the info string after the tag; shown as plain text, cut to 120
+characters, and absent when the agent gave none), then the fixed reason “I can't run this, but you can.”, a
+labelled Run in terminal button and a Copy button, and nothing else in the normal state:
+the confirm dialog already shows the whole command and its own Run or Copy wording, so a
+hint line on the card would only repeat it. Run goes through
+`useRunInTerminal`, the same flow as the code-block icon (`RunInTerminalBtn`): it opens
+`RunInTerminalConfirm` with its sensitive-command warning and, under
+`dashboard.terminal.reuse_current`, its Copy wording, and only the person's confirm
+dispatches `mc:run-in-terminal`. With no dashboard terminal, the card shows only Copy and
+the line "Running commands isn't available here, so copy it into the Terminal app on your computer." An explicit `ok: false` (a chat on a
+Session Environment, a cwd still loading) is a refusal the bridge already explains with
+its own notice, so the card adds nothing and keeps Run; `useRunInTerminal` reports
+`noAnswer` only for the fallback deadline. When a run gets no answer at all, the card
+shows that failure as an inline `ErrorNotice`
+with the `askAgent` hand-off, ("The terminal didn't respond, so copy it into the Terminal app on your computer."); closing it, like closing the copy error, clears the state it reports, so Run comes back, drops the Run button for
+the rest of its life unless the error is closed, and leaves Copy, so it never offers a
+button its own error says will not work. The built-in terminal is called "terminal"
+throughout; the computer's own Terminal app appears only in the two fallback lines. The no-terminal line is plain text, because it is how the host is set up,
+not a failure. A failed copy shows an `ErrorNotice` with the standard `askAgent` hand-off. The card gives an agent no authority a `bash` fence did not
+already give it. The command runs in the person's terminal tab, never through the agent's
+tool gate, and no denied-command rule changes.
 Refusal hints appear eagerly and disable the review action while a refusal
 applies. The terminal-mode region above the editor shows the workspace or
 refusal hint, followed by “Review terminal command” on its own row. Review

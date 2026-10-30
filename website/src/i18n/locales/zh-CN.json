@@ -10261,6 +10261,13 @@
         "tool_search_label": "工具搜索",
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "复制失败，请选中命令手动复制。",
+      "no_terminal": "这里不能运行命令，请把它复制到你电脑上的终端应用里。",
+      "reason": "我不能运行这条命令，但你可以。",
+      "run_unanswered": "终端没有响应，请把它复制到你电脑上的终端应用里。",
+      "title": "请你自己运行"
     }
   },
   "hooks": {

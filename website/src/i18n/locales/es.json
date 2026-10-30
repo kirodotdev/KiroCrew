@@ -10553,6 +10553,13 @@
         "tool_search_label": "Búsqueda de herramientas",
         "tool_search_description": "Cargar especificaciones de herramientas MCP diferidas bajo demanda."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "No se pudo copiar, así que selecciona el comando y cópialo a mano.",
+      "no_terminal": "Aquí no se pueden ejecutar comandos, así que cópialo en la aplicación Terminal de tu ordenador.",
+      "reason": "Yo no puedo ejecutar esto, pero tú sí.",
+      "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
+      "title": "Ejecútalo tú"
     }
   },
   "hooks": {

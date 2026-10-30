@@ -10553,6 +10553,13 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "Copia non riuscita, quindi seleziona il comando e copialo a mano.",
+      "no_terminal": "Qui non si possono eseguire comandi, quindi copialo nell'app Terminale del tuo computer.",
+      "reason": "Io non posso eseguirlo, ma tu sì.",
+      "run_unanswered": "Il terminale non ha risposto, quindi copialo nell'app Terminale del tuo computer.",
+      "title": "Eseguilo tu"
     }
   },
   "hooks": {

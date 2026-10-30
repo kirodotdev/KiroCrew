@@ -10261,6 +10261,13 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "runYourselfCard": {
+      "copy_failed": "복사하지 못했으니 명령을 선택해 직접 복사하세요.",
+      "no_terminal": "여기서는 명령을 실행할 수 없으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
+      "reason": "저는 이걸 실행할 수 없지만, 직접 실행할 수는 있어요.",
+      "run_unanswered": "터미널이 응답하지 않았으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
+      "title": "직접 실행하세요"
     }
   },
   "hooks": {
