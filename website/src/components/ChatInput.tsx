@@ -395,7 +395,7 @@ function ChatInput({
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalGitWrite, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
@@ -1178,13 +1178,14 @@ function ChatInput({
                           Trust + Reject and forbids a fourth), and a read-only
                           scopeless card can offer reads and session trust at
                           once. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
+                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly || approvalGitWrite) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
                             isShell={approvalIsShell && approvalTrustBaseGrantable}
                             hasCommand={approvalTrustCommandGrantable}
                             trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
+                            gitWritesLabelKey={approvalGitWrite ? 'components.chatInput.allow_git_writes' : undefined}
                             showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}
                             className={approvalBtnClass}

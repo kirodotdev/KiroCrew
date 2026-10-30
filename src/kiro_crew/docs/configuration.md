@@ -943,6 +943,48 @@ An in-app restart keeps the environment of the process it replaces, including th
 `.env` values that process loaded, so a `.env` edit only takes effect after the
 gateway is stopped and started; until then the same warning names the edited key.
 
+## Git Writes Ask First
+
+In a dashboard session, a shell command that runs git in any way other than a
+known read shows an approval card, even when the session is trusted, YOLO is
+on, a crew is running or a trusted pattern covers it. Only a short list of reads
+runs without asking: `git status`, `git log`, `git diff`, `git show`,
+`git rev-parse`, `git config --get <key>` / `git config --list`, and `git --version`
+on its own. Every `git branch` command asks. A known read must be the
+whole command, on its own: a git read piped into another command, chained with
+`&&` or `;`, redirected (even to `/dev/null`), wrapped in `env`, `timeout` or a
+group, or holding a `$` expansion, wildcard or backquote asks. Each read also
+accepts only the options listed for it (`--oneline`, `--stat`, `--short` and the
+like, spelled in full): an option that is not listed asks, as do options that
+start another program (`--ext-diff`, `--textconv`, `--show-signature`),
+`--format` and `--pretty`, `git -C <dir>`, `git help`, and `git -p`. Everything else
+asks too: `commit`, `merge`, `rebase`, `reset`, `push`, `pull`, `fetch`,
+`checkout`, `switch`, `add`, `tag`, `stash`, `grep`, `blame`, creating a branch,
+and a repository alias.
+
+The check does not expand anything, so any command that holds an unquoted
+`$`, backquote, wildcard or brace, pipes text through a heredoc (`<<`, `<<-`,
+`<<<`), leaves a quote open, continues a line with a
+trailing backslash, or runs a shell in a command that holds a pipe asks as
+well, even when it runs no git, for
+example `echo $HOME > notes.txt` or `cat <<'EOF' > notes.txt`.
+
+To let one session run them without asking, pick **Allow git writes
+in this session** from the Trust menu on that card. A session that dispatches a
+worker whose task is to commit can open it with
+`session_create(allow_git_writes=true)`. Either one is recorded in the security
+event log, ends when the session's approval mode is set to Normal, and does not
+survive a restart.
+
+To turn the confirm off everywhere:
+
+```bash
+kirocrew config set hooks.confirm_git_writes false
+```
+
+This setting covers dashboard sessions. Slack, other messaging channels,
+`spawn_run` subagents and task runs keep their own approval settings.
+
 ## Denied Commands
 
 The built-in destructive-command deny rules are enforced at Kiro Crew's own

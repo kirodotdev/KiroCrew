@@ -16,11 +16,13 @@ if TYPE_CHECKING:
 
     from kiro_crew.dashboard.chat_handlers import (
         _SLOT_SCOPED_TRUST_MODES,
+        GIT_WRITES_BY_PERSON,
         DashboardState,
         GrantDeadline,
         _ChatSlot,
         _deny_app_yolo,
         _mark_permission_resolved,
+        allow_git_writes,
         approval_mode_permitted,
         base_consent_pattern,
         base_trust_patterns,
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
+        end_git_writes,
         exact_trust_pattern,
         grant_deadline,
         logger,
@@ -580,6 +583,7 @@ async def apply_approval_mode(
                 _sharing._trust = False
                 _sharing._trust_reads = False
                 _sharing._trust_scope = ""
+                end_git_writes(_sharing, caller=audit_caller("dashboard:mode"))
             if _revoked_live:
                 state.sessions.set_approval_policy(_revoked_key, "")
             linked_ch = getattr(slot, "_slack_channel", None)
@@ -598,6 +602,7 @@ async def apply_approval_mode(
                 s._trust = False
                 s._trust_reads = False
                 s._trust_scope = ""
+                end_git_writes(s, caller=audit_caller("dashboard:mode"))
                 state.sessions.set_approval_policy(effective_session_key(s), "")
             if mgr:
                 for ch in mgr._channels.values():
@@ -720,6 +725,13 @@ def _sweep_pending_approvals(
         if aid in _elicitations:
             # A server's own question to the person: a trust tier is
             # not an answer to it, and the card stays open.
+            continue
+        if _get_pattern_from_pending(slot, aid, "git_write") and not getattr(
+            slot, "_git_writes_allowed", False
+        ):
+            # A git history write the session confirms: trust and YOLO
+            # do not answer it (hooks.confirm_git_writes), so it stays
+            # open for the person.
             continue
         if not fut.done():
             fut.set_result("approved")
@@ -876,6 +888,8 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
         "approval_not_slot_owned": "command-scoped trust requires a live slot approval",
         "ttl_unsupported": "only a command or command-family grant can be timed",
         "ttl_invalid": "ttl_seconds must be a whole number of seconds from 1 to 86400",
+        "not_a_git_write": "the pending tool is not a git history write this session confirms",
+        "app_cannot_grant": "an app cannot allow git writes in a session",
     }
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
@@ -1064,7 +1078,9 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # that would approve the tool after skipping every scope check.  Truly
     # missing IDs retain the 404 from the common fallback below; this explicit
     # denial covers a live state owner.
-    if original_action in ("trust", "trust_command", "trust_base") and (not fut or fut.done()):
+    if original_action in ("trust", "trust_command", "trust_base", "git_writes") and (
+        not fut or fut.done()
+    ):
         state_fut = state._approval_futures.get(request_id) if request_id else None
         if state_fut and not state_fut.done():
             return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
@@ -1106,6 +1122,17 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # to prevent the frontend from seeing trust_reads=true while still pending.
     elif action == "trust_reads":
         action = "approved_trust_reads"
+    # Git writes: the per-session allow for git history writes. Bound to a live
+    # card that the server marked as a git-write confirm, and checked before any
+    # side effect, like the session trust grant above.
+    elif action == "git_writes":
+        if request_app:
+            return _deny_trust_pattern(name, request_id, original_action, "app_cannot_grant")
+        if fut and not fut.done():
+            if _get_pattern_from_pending(owner, request_id, "git_write") != "1":
+                return _deny_trust_pattern(name, request_id, original_action, "not_a_git_write")
+            allow_git_writes(owner, by=GIT_WRITES_BY_PERSON, caller=audit_caller())
+        action = "approved"
     # Trust-command: bind the grant to the SERVER-DERIVED pending command.  The
     # client pattern is only proof that the card the user clicked describes the
     # same command; it never supplies authority.
@@ -1262,7 +1289,11 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 else owner.messages
             ),
             request_id,
-            original_action if original_action in ("trust", "trust_reads") else resolved,
+            (
+                original_action
+                if original_action in ("trust", "trust_reads", "git_writes")
+                else resolved
+            ),
         ):
             owner._dirty = True
     # Broadcast first to ensure frontend is unblocked

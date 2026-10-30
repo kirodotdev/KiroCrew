@@ -14,6 +14,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_git_repo_touch_pending``, ``_git_repo_touch_terminal``, ``_git_repo_walk_pending``,
 ``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
+``_git_writes_allowed``, ``_git_writes_by``,
 ``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
@@ -316,6 +317,13 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # In memory only, so a restart drops timed grants along with every other
     # grant on the slot.
     self._trusted_pattern_deadlines = {}
+    # Per-session allow for git history writes (``hooks.confirm_git_writes``).
+    # Set by the person on a git-write card or by ``session_create`` with
+    # ``allow_git_writes``; ``_git_writes_by`` records which ("person" or
+    # "session_create:<caller slot>"). In memory only, like every other grant:
+    # a restart returns the session to asking.
+    self._git_writes_allowed = False
+    self._git_writes_by = ""
     # Depth of the current unbroken Stop-hook continuation run: 0 on a normal
     # turn, incremented on each consecutive hook-continuation turn, reset by
     # any turn that is not a hook continuation. Surfaced to Stop hooks as

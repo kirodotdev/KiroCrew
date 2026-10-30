@@ -478,6 +478,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_git_repos_evicted_overflow": ("value", "0"),
     "_git_repos_incomplete": ("value", "False"),
     "_git_repos_seeded": ("value", "False"),
+    "_git_writes_allowed": ("value", "False"),
+    "_git_writes_by": ("value", "''"),
     "_guarded_history_writes": ("value", "set()"),
     "_has_reader_flag": ("value", "False"),
     "_hook_continuation_depth": ("value", "0"),

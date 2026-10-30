@@ -6608,6 +6608,7 @@
       "transcribing_please_wait": "Transcribiendo, espera un momento…",
       "tree_drop_folder_refused": "No se puede añadir esta carpeta: su ruta contiene un espacio o @. Añade sus archivos uno a uno.",
       "trust_reads": "Confiar en los comandos de solo lectura",
+      "allow_git_writes": "Permitir escrituras de git en esta sesión",
       "turn_interrupted_press_resume": "El último turno se interrumpió — pulsa Reanudar o simplemente escribe",
       "upload_file": "Subir archivo",
       "use_a_skill": "Usar una skill",

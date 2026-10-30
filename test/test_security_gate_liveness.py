@@ -595,7 +595,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 177, from 32,970, for the ``rm`` floor reading each nested-shell payload
 #: through the shared reader, and ``shell_commands.redirect_hidden_payloads``: a redirect
 #: before the ``-c`` operand hides no payload. Deny-only: no allow widened.
-_PACKAGE_LINE_BUDGET = 33_147
+#: Raised by 952, from 33,147, for ``git_write``: the git write classifier
+#: the dashboard approval ladder asks before a trust, YOLO or pattern grant approves
+#: a shell call (``hooks.confirm_git_writes``), with its per-subcommand option
+#: allow-lists and a scan that asks on any shell expansion, heredoc opener,
+#: unclosed quote, backslash line break or shell that may read a pipe. A new
+#: confirm classifier, not a deny tier: no existing floor or pattern changed.
+_PACKAGE_LINE_BUDGET = 34_099
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

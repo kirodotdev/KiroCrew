@@ -4484,6 +4484,7 @@
       "taking_longer_than_expected": "taking longer than expected",
       "total": "Total",
       "trust_reads": "Trust read-only commands",
+      "allow_git_writes": "Allow git writes in this session",
       "turn_interrupted_press_resume": "Last turn was interrupted — press Resume, or just type",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",

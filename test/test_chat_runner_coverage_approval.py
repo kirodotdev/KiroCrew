@@ -634,6 +634,9 @@ class TestRunChatAutoApproveRungs:
         slot = _slot()
         slot._trusted_patterns = {"*"}
         slot._trust = True  # falls through to the trust rung instead
+        # No hook gate here, so a shell call with no readable command would ask
+        # under hooks.confirm_git_writes; the allow keeps this on the trust rung.
+        slot._git_writes_allowed = True
         _set_stream(client, [_permission(tool_input="{}"), _complete()])
 
         with patch.object(chat_runner, "_matches_trusted_pattern") as matcher:

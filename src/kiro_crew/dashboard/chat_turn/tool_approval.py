@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
@@ -30,6 +31,9 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.git_write import GRANT_REQUEST
+from kiro_crew.security.git_write import UNREADABLE as UNREADABLE_GIT_COMMAND
+from kiro_crew.security.git_write import git_history_write
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import GrantEnded, approval_command
@@ -340,6 +344,128 @@ def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
     return _vouched_creator_of(target, slots) == slot.key
 
 
+def _git_write_needing_confirm(state: Any, slot: Any, event: Any) -> str:
+    """Why this shell call needs the person under ``hooks.confirm_git_writes``, or ``""``.
+
+    Non-empty when the call runs git in any way ``security.git_write`` cannot
+    show is a known read (or asks for the allow, or cannot be read). It means
+    every auto-approve rung below the hook gate's deny is
+    skipped for this call -- the hook layer's auto-approve, native crew, session
+    trusted patterns, trust-reads, session trust (``_trust`` and the scoped
+    ``_trust_scope``) and YOLO -- and it goes to the interactive card. A deny
+    still wins: this runs after the gate's ``TOOL_DENY``.
+
+    Empty when ``hooks.confirm_git_writes`` is off, when the slot holds the
+    per-session allow (``slot._git_writes_allowed``, set from the card or by
+    ``session_create(allow_git_writes=True)``), for a non-shell tool that does
+    not ask for ``allow_git_writes``, and for a shell command that writes no
+    history (``security.git_write``). The command is
+    the one the hook gate judged (``event.shell_command``). A low-fidelity child
+    request (arguments absent) counts as a write, and so does a shell call whose
+    command cannot be read when no hook gate ran (the gate refuses it otherwise).
+    """
+    if getattr(slot, "_git_writes_allowed", False):
+        return ""
+    builder = getattr(state, "context_builder", None)
+    hooks = getattr(builder, "hooks", None) if builder else None
+    if hooks is not None and not bool(getattr(hooks, "confirm_git_writes", True)):
+        return ""
+    if getattr(event, "child_low_fidelity", False):
+        # A backend-subagent request whose arguments never reached us: nothing
+        # shows it is not a git history write, so it is put to the person.
+        return UNREADABLE_GIT_COMMAND
+    if not getattr(event, "is_shell", False):
+        if _requests_git_writes_grant(event):
+            return GIT_WRITES_GRANT_REQUEST
+        # A file tool aimed at a git directory or git configuration can move a
+        # ref or name a program git runs later (``.git/config``, ``.git/hooks``,
+        # ``~/.gitconfig``).
+        if _GIT_DIR_PATH_RE.search(getattr(event, "tool_input", "") or "") or any(
+            isinstance(v, str) and _GIT_DIR_PATH_RE.search(v)
+            for v in (getattr(event, "raw_tool_params", None) or {}).values()
+        ):
+            return "file tool on a git directory or git configuration"
+        return ""
+    cmd = shell_command_for_event(event)
+    if not cmd:
+        # With a hook gate, its deny-by-default tier refuses a shell call
+        # whose command cannot be recovered before any grant here. With no
+        # gate, nothing has read the command, so it asks.
+        return "" if builder is not None else UNREADABLE_GIT_COMMAND
+    return git_history_write(cmd)
+
+
+#: The reason for a tool call that asks to open a session holding the allow.
+GIT_WRITES_GRANT_REQUEST = GRANT_REQUEST
+
+#: A path git reads configuration or hooks from, in tool arguments (JSON-escaped
+#: backslashes too): a ``.git`` component or a ``<name>.git`` repository
+#: directory, the user's ``.gitconfig`` (and ``.gitconfig.<name>`` files it
+#: includes), and the ``git/config`` file under the XDG configuration directory.
+#: Case-insensitive, as the Windows and macOS file systems are.
+_GIT_DIR_PATH_RE = re.compile(
+    r"\.git(?:[/\\\"'\s]|$)|\.gitconfig|[/\\]git[/\\]+config(?:[\\\"'\s]|$)", re.I
+)
+
+
+def _requests_git_writes_grant(event: Any) -> bool:
+    """Whether a non-shell call asks for ``allow_git_writes`` (``session_create``).
+
+    Opening a session that may write git history without a card is itself a git
+    write authority, so it gets the same confirm. Read from the structured
+    arguments, never the title; arguments that cannot be parsed but name the
+    field read as a request.
+    """
+    params = getattr(event, "raw_tool_params", None)
+    if isinstance(params, dict) and "allow_git_writes" in params:
+        return params.get("allow_git_writes") is not False
+    raw = getattr(event, "tool_input", "") or ""
+    if "allow_git_writes" not in raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    for container in (data, data.get("arguments"), data.get("input")):
+        if isinstance(container, dict) and "allow_git_writes" in container:
+            return container.get("allow_git_writes") is not False
+    return True
+
+
+def _note_git_write_confirm(
+    *, session_key: str, slot: Any, event: Any, reason: str, notices: dict[str, str]
+) -> None:
+    """Audit that a git history write is being put to the person, and hold the card notice."""
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=event.tool_kind,
+        outcome="auto_approve_declined",
+        request_id=event.request_id,
+        error="git history writes are confirmed in this session",
+        metadata={"reason": "git_write_confirm", "git_write": reason},
+    )
+    notices.setdefault(
+        "git_write_confirm",
+        (
+            (
+                "🛡️ This opens a session that may write git history without asking, so it "
+                "asks even with trust or YOLO on. Approve it once to open that session."
+            )
+            if reason == GIT_WRITES_GRANT_REQUEST
+            else (
+                "🛡️ This git command is not a known read-only one, so it asks even with "
+                "trust or YOLO on. Approve it once, or choose “Allow git writes in this "
+                "session” from Trust."
+            )
+        ),
+    )
+
+
 async def _name_grant_refusal_for(event: object) -> Refusal | None:
     """Why a shell *event* may not be auto-approved by program NAME, or ``None``.
 
@@ -532,6 +658,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         else ""
     )
     turn._child_lf_warning = _child_lf_warning
+    # Read once per request: whether this shell call writes git history that
+    # the person must confirm in this session (hooks.confirm_git_writes). The
+    # card reads it too, to offer the per-session allow.
+    _git_write = _git_write_needing_confirm(state, slot, event)
+    turn._git_write_confirm = _git_write
     if state.context_builder:
         # Pass the raw shell command (not just the display title)
         # so the security gate evaluates what actually executes.
@@ -658,6 +789,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     event.mcp_server_name,
                     event.tool_name,
                 )
+        if _git_write and tool_result.action == TOOL_AUTO_APPROVE:
+            # A git history write is put to the person in this session; the
+            # hook layer's grant becomes a plain allow, so the scripted
+            # PreToolUse hooks below still run before the card.
+            tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook layer granted this by NAME (its
             # `auto_approve_tools` globs, or the read-only allowlist).
@@ -847,6 +983,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             return _Flow.CONTINUE
         _pre_tool_hooks_fired = True
         # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
+    if _git_write:
+        # Every grant below (native crew, trusted patterns, trust-reads,
+        # session trust, YOLO) is skipped: the card asks.
+        _note_git_write_confirm(
+            session_key=session_key,
+            slot=slot,
+            event=event,
+            reason=_git_write,
+            notices=_declined_grant_notices,
+        )
+        return None
     # Native crew auto-approve: when a native subagent (crew pipeline)
     # is active and the session is configured to auto-approve subagent
     # tools, approve immediately to avoid deadlocking the blocked

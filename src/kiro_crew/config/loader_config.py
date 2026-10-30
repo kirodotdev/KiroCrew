@@ -365,6 +365,25 @@ class KiroCrewConfig:
                         "restart": True,
                     },
                 },
+                "confirm_git_writes": {
+                    "type": "boolean",
+                    "default": True,
+                    "x-meta": {
+                        "label": "Confirm git writes",
+                        "help": (
+                            "Ask before a dashboard shell command that runs git in any way "
+                            "other than one of a short list of reads (status, log, diff, "
+                            "show, rev-parse, config --get/--list, each "
+                            "with its listed options only): commit, merge, rebase, push, "
+                            "fetch, checkout, add and everything else, even when session "
+                            "trust, YOLO, a native crew or a pattern grant would approve "
+                            "it. Choose "
+                            "'Allow git writes in this session' on the approval card, or "
+                            "create a session with allow_git_writes, to stop asking in one "
+                            "session. Turn off to restore the plain approval ladder."
+                        ),
+                    },
+                },
             },
         ),
     )

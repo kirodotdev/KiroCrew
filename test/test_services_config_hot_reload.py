@@ -543,6 +543,28 @@ class TestHookManagerWatchConfig:
             manager._on_config_change(_change(cfg, "hooks.auto_replies"))
         sel_obj.log_api_access.assert_not_called()
 
+    def test_turning_off_the_git_confirm_is_sel_audited(self) -> None:
+        """Switching ``confirm_git_writes`` off stops the git confirm, so the reload
+        leaves an audit row naming the flag."""
+        from kiro_crew import hooks as hooks_mod
+
+        manager = hooks_mod.HookManager(hooks_mod.HooksConfig.from_dict({}))
+        assert manager.confirm_git_writes is True
+        manager.watch_config()
+        cfg = KiroCrewConfig()
+        cfg.hooks = {"confirm_git_writes": False}  # type: ignore[assignment]
+        sel_obj = MagicMock()
+        with (
+            patch.object(hooks_mod, "sel", return_value=sel_obj),
+            patch.object(hooks_mod, "load_denied_commands_state", return_value=_keystone_state()),
+        ):
+            manager._on_config_change(_change(cfg, "hooks.confirm_git_writes"))
+        assert manager.confirm_git_writes is False
+        sel_obj.log_api_access.assert_called_once()
+        kw = sel_obj.log_api_access.call_args.kwargs
+        assert kw["outcome"] == "auto_approve_changed"
+        assert "flags=confirm_git_writes" in kw["resources"]
+
 
 # ==================================================================
 # 4. CronHistoryStore

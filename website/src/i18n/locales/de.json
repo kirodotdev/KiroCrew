@@ -6494,6 +6494,7 @@
       "transcribing_please_wait": "Wird transkribiert, bitte warten…",
       "tree_drop_folder_refused": "Dieser Ordner kann nicht hinzugefügt werden: Sein Pfad enthält ein Leerzeichen oder @. Füge stattdessen seine Dateien einzeln hinzu.",
       "trust_reads": "Nur-Lese-Befehlen vertrauen",
+      "allow_git_writes": "Git-Schreibvorgänge in dieser Sitzung erlauben",
       "turn_interrupted_press_resume": "Letzter Zug wurde unterbrochen – „Wieder aufnehmen“ drücken oder einfach tippen",
       "upload_file": "Datei hochladen",
       "use_a_skill": "Einen Skill verwenden",

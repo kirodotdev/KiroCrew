@@ -23,6 +23,7 @@ from kiro_crew.dashboard.turn_dispatch import (
 )
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.git_write import GRANT_REQUEST
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -233,6 +234,16 @@ async def _on_permission_prompt(
     _command_grantable = (
         bool(_full) and bool(_trust_key) and not event.tool_input_redacted and _safe_full == _full
     )
+    # A git command the session must confirm offers its own per-session allow
+    # instead of the command-scoped tiers: a pattern grant does not cover it
+    # here, so offering one would name a grant that changes nothing.
+    _git_confirm_reason = getattr(turn, "_git_write_confirm", "")
+    if _git_confirm_reason:
+        _command_grantable = False
+        # "1" offers the per-session allow on the card; a request to OPEN a
+        # session holding the allow is approved once or rejected, so the click
+        # meant for one child never grants the asking session itself.
+        perm_meta["git_write"] = "request" if _git_confirm_reason == GRANT_REQUEST else "1"
     if _command_grantable:
         perm_meta["full_command"] = _safe_full
         # Authorization authority stays distinct from the
@@ -258,7 +269,11 @@ async def _on_permission_prompt(
     # ``child_unconditional_grant_eligible``, where trust-all is an
     # unconditional grant and only content-matching paths need the
     # canonical command.
-    perm_meta["trust_grantable"] = "1"
+    # A card asking to open a session that holds the git-writes allow is
+    # approved once or rejected: a standing grant clicked here would answer
+    # every later request of the same kind without a card.
+    if perm_meta.get("git_write") != "request":
+        perm_meta["trust_grantable"] = "1"
     _base = _extract_base_command(_trust_key) if event.is_shell else ""
     _safe_base, _ = redact_exfiltration_urls(_base)
     _safe_base, _ = redact_credentials(_safe_base)
