@@ -260,6 +260,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "and a redaction that fails writes the empty string instead of the input.",
     ),
     (
+        "Live browser metadata broadcasts",
+        "browser_harness/live_hub.py",
+        "Every textual value of the browser_live websocket event, including page "
+        "URLs, titles, step labels and nested quick-ask text, passes the platform-aware "
+        "credential and exfiltration-URL redactor at publish time. A scanner failure "
+        "drops the event. The replay routes (handlers/browser_recordings.py) pass "
+        "their turn list and turn detail JSON through the same function. Browser "
+        "state and binary pixel frames are unchanged.",
+    ),
+    (
         "Subagent wait broadcasts",
         "subagent_manager/admission/waits.py",
         "The wait REASON on the `subagent_waiting` frame, which reaches every dashboard "

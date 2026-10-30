@@ -94,6 +94,8 @@ def _refused(code: str) -> dict[str, Any]:
 
 async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any]:
     """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``."""
+    from kiro_crew.dashboard.handlers.browser_ops import committed_url_allowed
+
     try:
         spec = qa.parse_ask(args)
     except qa.AskError as exc:
@@ -114,6 +116,7 @@ async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any
             spec,
             float(getattr(stream, "scale", 1.0) or 1.0),
             getattr(stream, "frames", None),
+            url_allowed=committed_url_allowed,
         )
     except qa.AskError as exc:
         _audit("browser_ask", "refused", exc.code)

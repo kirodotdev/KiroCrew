@@ -114,7 +114,13 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
   const sessionTurns = useBrowserLiveSessionTurns(sessionKey)
   const list = useRecordingList(sessionKey, active)
   const choices = useMemo(() => turnChoices(list.data, sessionTurns), [list.data, sessionTurns])
-  const { recording, loading } = useRecording(sessionKey, turnId, turn, active)
+  const { recording, loading, error: recordingError } = useRecording(sessionKey, turnId, turn, active)
+  const queryErrors = (
+    <>
+      {recordingError && <ErrorNotice variant="inline" message={recordingError.message} askAgent testId="browser-live-stage-recording-error" />}
+      {list.error && <ErrorNotice variant="inline" message={list.error.message} askAgent testId="browser-live-stage-recordings-error" />}
+    </>
+  )
   // A fresh Replay (nonce) or another turn starts from the beginning; a live view
   // parks the head at the end, so the first scrub reads as "look back".
   const restartKey = `${stage.nonce}:${turnId ?? ''}`
@@ -164,6 +170,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
   if (!turn && !recording) {
     return (
       <div className="h-full grid place-items-center p-6 text-center text-[13px] text-muted" data-testid="browser-live-stage-empty">
+        {queryErrors}
         {loading ? null : i18nT('pages.chat.browserLiveStage.nothing_yet')}
       </div>
     )
@@ -268,6 +275,10 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
         {/* Two controls in this row at most (AUTOSDE `max-two-buttons-per-row`):
             Bring back lives on the Preview tab's mode row, the sheet has its own close. */}
       </div>
+
+      {(recordingError || list.error) && (
+        <div className="px-3 py-1.5 border-b border-border shrink-0">{queryErrors}</div>
+      )}
 
       {turn?.controlError && (
         <div className="px-3 py-1.5 border-b border-border shrink-0">

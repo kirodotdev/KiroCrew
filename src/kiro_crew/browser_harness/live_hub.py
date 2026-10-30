@@ -40,6 +40,7 @@ from kiro_crew.browser_harness.takeover import (
     frame_scale,
     parse_input_event,
 )
+from kiro_crew.platform.context import redact_via_context
 
 if TYPE_CHECKING:
     from kiro_crew.browser_harness.recording import LiveRecorder
@@ -256,6 +257,21 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "handback_options": list(sess.handback_options),
         "ask": sess.ask.wire() if sess.ask is not None and not sess.ask.outcome else None,
     }
+
+
+def redact_wire(value: Any) -> Any:
+    """Scrub every outgoing text value without mutating the browser's state.
+
+    Used for the live event and the replay routes' JSON. Keys are the fixed wire schema. A scanner failure drops the publish in
+    ``_emit_now`` rather than sending an unredacted event. Pixel frames are unchanged.
+    """
+    if isinstance(value, str):
+        return redact_via_context(value)
+    if isinstance(value, dict):
+        return {key: redact_wire(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_wire(item) for item in value]
+    return value
 
 
 #: The person's hand-back note: their own words, at most this many characters.
@@ -1154,7 +1170,7 @@ class LiveHub:
         if publish is None or not self._publishable(sess):
             return
         try:
-            await publish(LIVE_EVENT, live_event(sess))
+            await publish(LIVE_EVENT, redact_wire(live_event(sess)))
         except Exception:
             logger.debug("browser_live publish failed", exc_info=True)
 

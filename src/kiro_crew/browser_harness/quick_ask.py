@@ -36,6 +36,7 @@ import asyncio
 import re
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -935,7 +936,13 @@ async def _check_frame(
     return at, float(info.get("vw") or 0), float(info.get("vh") or 0)
 
 
-async def bind_ask(probe: PageProbe, spec: AskSpec, scale: float, frames: Any = None) -> QuickAsk:
+async def bind_ask(
+    probe: PageProbe,
+    spec: AskSpec,
+    scale: float,
+    frames: Any = None,
+    url_allowed: Callable[[str], bool] = lambda _url: True,
+) -> QuickAsk:
     """Bind *spec* to the page as it is now. Raises :class:`AskError` with the refusal code.
 
     *probe* is the stream's session on the tab; *frames* its
@@ -947,10 +954,16 @@ async def bind_ask(probe: PageProbe, spec: AskSpec, scale: float, frames: Any = 
     top_id, top_loader, top_origin = await top.top_frame()
     if not top_id or not top_origin:
         raise AskError("not_web_page")
+    # The same committed-URL gate the ops apply: no value is written into a
+    # document the agent may not open, top frame or child.
+    if not url_allowed(top_origin):
+        raise AskError("frame_unverified")
     top_ctx = await top.world(top_id)
     s = scale if scale > 0 else 1.0
     if spec.sign_in_takeover:
-        return await _bind_sign_in(top, spec, s, top_id, top_loader, top_origin, top_ctx, frames)
+        return await _bind_sign_in(
+            top, spec, s, top_id, top_loader, top_origin, top_ctx, frames, url_allowed
+        )
     order = [role for role, _ in ROLES[spec.kind] if role in spec.targets]
     located = [(role, *await _locate(top, frames, spec.targets[role])) for role in order]
     frame_id = located[0][3] or top_id
@@ -967,6 +980,8 @@ async def bind_ask(probe: PageProbe, spec: AskSpec, scale: float, frames: Any = 
             raise AskError("frame_unverified")
         if not origin:
             raise AskError("not_web_page")
+        if not url_allowed(origin):
+            raise AskError("frame_unverified")
         ctx = await fprobe.world(frame_id)
     bindings: list[Binding] = []
     button = ""
@@ -1034,6 +1049,7 @@ async def _bind_sign_in(
     top_origin: str,
     top_ctx: int,
     frames: Any = None,
+    url_allowed: Callable[[str], bool] = lambda _url: True,
 ) -> QuickAsk:
     """The sign-in walk: bound to an ORIGIN, not to nodes (the fields come screen by screen).
 
@@ -1047,6 +1063,8 @@ async def _bind_sign_in(
     if login is not None:
         origin = login.origin
         mode = "required" if login.user else "none"
+    if not url_allowed(origin):
+        raise AskError("frame_unverified")
     found = await top.evaluate(top_ctx, _REGION_JS)
     if not isinstance(found, dict):
         raise AskError("cdp_failed")

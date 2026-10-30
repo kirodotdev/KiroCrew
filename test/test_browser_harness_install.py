@@ -179,11 +179,16 @@ def test_the_installers_children_get_a_scrubbed_env_and_the_prefix_as_cwd(
 
     seen: dict[str, object] = {}
 
-    def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+    class FakeChild:
+        returncode = 0
 
-    monkeypatch.setattr(install.subprocess, "run", fake_run)
+        def __init__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            seen.update(kwargs)
+
+        def communicate(self, timeout):  # type: ignore[no-untyped-def]
+            return "", ""
+
+    monkeypatch.setattr(install.subprocess, "Popen", FakeChild)
     prefix = tmp_path / install.PREFIX_LEAF
     install._run([sys.executable, "-I", "-c", "pass"], 1.0, cwd=prefix)
     assert seen["cwd"] == str(prefix)

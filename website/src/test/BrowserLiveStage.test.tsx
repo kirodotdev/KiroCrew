@@ -358,3 +358,37 @@ describe('the replay timeline', () => {
     expect(screen.getAllByTestId('browser-replay-step')[1]).toHaveTextContent('click Sign in')
   })
 })
+
+describe('replay request errors', () => {
+  it('shows both query errors while retaining fallback playback', async () => {
+    vi.mocked(api.browserLiveRecording).mockRejectedValue(new Error('Recording index offline'))
+    vi.mocked(api.browserLiveRecordings).mockRejectedValue(new Error('Recording list offline'))
+    act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)); browserLiveStore.applyEvent(ev({ state: 'done' })) })
+    const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
+    render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
+    expect(await screen.findByTestId('browser-live-stage-recording-error')).toHaveTextContent('Recording index offline')
+    expect(await screen.findByTestId('browser-live-stage-recordings-error')).toHaveTextContent('Recording list offline')
+    expect(await screen.findByTestId('browser-replay-canvas')).toBeInTheDocument()
+  })
+
+  it('shows failures even with no local turn or recording', async () => {
+    vi.mocked(api.browserLiveRecording).mockRejectedValue(new Error('Recording index offline'))
+    vi.mocked(api.browserLiveRecordings).mockRejectedValue(new Error('Recording list offline'))
+    const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
+    render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
+    expect(await screen.findByTestId('browser-live-stage-recording-error')).toHaveTextContent('Recording index offline')
+    expect(await screen.findByTestId('browser-live-stage-recordings-error')).toHaveTextContent('Recording list offline')
+  })
+
+  it('treats the intentional missing-recording answer as a quiet fallback', async () => {
+    vi.mocked(api.browserLiveRecording).mockResolvedValue(null)
+    vi.mocked(api.browserLiveRecordings).mockResolvedValue(null)
+    act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)); browserLiveStore.applyEvent(ev({ state: 'done' })) })
+    const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
+    render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
+    expect(await screen.findByTestId('browser-replay-canvas')).toBeInTheDocument()
+    await waitFor(() => expect(qc.isFetching()).toBe(0))
+    expect(screen.queryByTestId('browser-live-stage-recording-error')).toBeNull()
+    expect(screen.queryByTestId('browser-live-stage-recordings-error')).toBeNull()
+  })
+})

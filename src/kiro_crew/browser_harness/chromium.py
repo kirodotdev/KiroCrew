@@ -89,6 +89,10 @@ class ChromiumDownloadError(RuntimeError):
     """No source delivered the pinned build, or the archive did not extract."""
 
 
+class ChromiumDownloadStopped(ChromiumDownloadError):
+    """The install was stopped while the archive was downloading."""
+
+
 @dataclass(frozen=True)
 class ChromiumState:
     """What is on disk for the pinned version."""
@@ -162,6 +166,7 @@ def download_chromium(
     urls: tuple[str, ...] = DOWNLOAD_URLS,
     opener: Callable[[str, float], object] | None = None,
     refresh: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> ChromiumState:
     """Download and extract the pinned build. BLOCKING: run it off the event loop.
 
@@ -191,8 +196,10 @@ def download_chromium(
             url = template.format(version=CHROMIUM_VERSION, platform=key)
             notify(STAGE_DOWNLOADING, url)
             try:
-                _fetch(url, archive, opener)
+                _fetch(url, archive, opener, should_stop)
                 break
+            except ChromiumDownloadStopped:
+                raise
             except Exception as exc:  # noqa: BLE001 - the next source is tried
                 errors.append(f"{url}: {exc}")
                 archive.unlink(missing_ok=True)
@@ -209,10 +216,18 @@ def download_chromium(
     return state
 
 
-def _fetch(url: str, dest: Path, opener: Callable[[str, float], object] | None) -> None:
+def _fetch(
+    url: str,
+    dest: Path,
+    opener: Callable[[str, float], object] | None,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
     open_url = opener or _default_opener
     with open_url(url, _READ_TIMEOUT_SECS) as response, dest.open("wb") as out:  # type: ignore[attr-defined]
         while True:
+            # A stopped install returns within one chunk read, not after the archive.
+            if should_stop is not None and should_stop():
+                raise ChromiumDownloadStopped("install stopped")
             chunk = response.read(_CHUNK_BYTES)
             if not chunk:
                 break

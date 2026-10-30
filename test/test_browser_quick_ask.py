@@ -560,6 +560,21 @@ async def test_a_stale_ref_and_a_non_web_page_are_refused() -> None:
     assert (await browser_ask.run_ask(hub, KEY, dict(CREDS)))["code"] == "not_web_page"
 
 
+async def test_an_ask_on_a_page_the_url_gate_refuses_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard.handlers import browser_ops
+
+    page = FakePage()
+    _login(page)
+    hub, _rec = await _live(page)
+    monkeypatch.setattr(browser_ops, "committed_url_allowed", lambda _url: False)
+    assert (await browser_ask.run_ask(hub, KEY, dict(CREDS)))["code"] == "frame_unverified"
+    signed = {"kind": "credentials", "reason": "Sign in"}
+    assert (await browser_ask.run_ask(hub, KEY, signed))["code"] == "frame_unverified"
+    assert hub.get(KEY).ask is None  # type: ignore[union-attr]
+
+
 async def test_no_live_card_means_no_ask() -> None:
     hub = lh.get_live_hub()
     hub.turn_started(KEY, "t1")

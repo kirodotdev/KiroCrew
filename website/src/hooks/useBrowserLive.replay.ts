@@ -387,6 +387,7 @@ export function useRecordingList(sessionKey: string | null, enabled: boolean) {
 export function useRecording(sessionKey: string | null, turnId: string | null, memory: BrowserLiveTurn | null, enabled: boolean): {
   recording: Recording | null
   loading: boolean
+  error: Error | null
 } {
   const q = useQuery({
     queryKey: recordingQueryKey(sessionKey ?? '', turnId ?? ''),
@@ -403,7 +404,7 @@ export function useRecording(sessionKey: string | null, turnId: string | null, m
   // The ring grows in place, so its length is part of the key.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- ringLength stands for the ring's contents
   const fromMemory = useMemo(() => (memory ? recordingFromMemory(memory) : null), [memory, ringLength])
-  return pickRecording(q.data ?? null, fromMemory, q.isLoading)
+  return { ...pickRecording(q.data ?? null, fromMemory, q.isLoading), error: q.error }
 }
 
 /**

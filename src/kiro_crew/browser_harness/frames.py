@@ -269,6 +269,21 @@ class FrameOps:
         tree = await self._send("Page.getFrameTree", {}, where[0])
         return str(((tree.get("frameTree") or {}).get("frame") or {}).get("url") or "")
 
+    async def url(self, frame_id: str) -> str:
+        """Read only the browser's committed URL, before any frame content is read."""
+        if not frame_id:
+            return ""
+        try:
+            sid = self.registry.session_of(frame_id)
+            if sid:
+                return await self.frame_url(frame_id, (sid, None))
+            return (await self._children()).get(frame_id, "")
+        except Exception:  # noqa: BLE001 - unknown URLs fail the caller's gate closed
+            return ""
+
+    async def url_for_ref(self, tag: int) -> str:
+        return await self.url(self.registry.frame_of(tag))
+
     async def outline(self, frame_id: str, budget: int) -> tuple[int, str, list[Any]] | None:
         """``(tag, url, nodes)`` of one frame, its refs already ``f<tag>``-prefixed."""
         if not frame_id or budget <= 0:

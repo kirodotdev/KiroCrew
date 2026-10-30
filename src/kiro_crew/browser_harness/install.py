@@ -26,11 +26,15 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.browser_harness import HARNESS_VERSION, chromium
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -224,9 +228,26 @@ async def install(
     *progress* is called from that thread with ``(stage, detail)`` and must
     marshal onto the loop itself.
     """
-    return await asyncio.to_thread(
-        install_sync, home, progress, components=components, refresh=refresh
+    stop = threading.Event()
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            install_sync, home, progress, components=components, refresh=refresh, stop=stop
+        )
     )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        stop.set()
+        # Cancellation must settle the owned child before shutdown can finish,
+        # so a repeated cancel waits on as well rather than abandoning the thread.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 - the worker's own error is not this cancel's
+                break
+        raise
 
 
 def install_sync(
@@ -236,16 +257,30 @@ def install_sync(
     components: tuple[str, ...] = COMPONENTS,
     refresh: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    stop: threading.Event | None = None,
 ) -> InstallState:
-    """The blocking body of :func:`install`. *runner* replaces ``subprocess.run`` in tests."""
-    notify = progress or (lambda _stage, _detail: None)
+    """The blocking body; *runner* replaces the owned subprocess in tests."""
+
+    def notify(stage: str, detail: str) -> None:
+        _check_stop(stop, stage)
+        if progress is not None:
+            progress(stage, detail)
+        _check_stop(stop, stage)
+
     prefix = harness_prefix(home)
     notify(STAGE_PREPARING, str(prefix))
     if COMPONENT_HARNESS in components:
-        _install_harness(prefix, notify, runner or functools.partial(_run, cwd=prefix))
+        _install_harness(
+            prefix, notify, runner or functools.partial(_run, cwd=prefix, stop=stop), stop=stop
+        )
     if COMPONENT_CHROMIUM in components:
         try:
-            chromium.download_chromium(prefix, notify, refresh=refresh)
+            chromium.download_chromium(
+                prefix,
+                notify,
+                refresh=refresh,
+                should_stop=stop.is_set if stop is not None else None,
+            )
         except chromium.ChromiumDownloadError as exc:
             raise InstallError(chromium.STAGE_DOWNLOADING, str(exc)) from exc
     notify(STAGE_FINISHING, str(prefix))
@@ -256,6 +291,8 @@ def _install_harness(
     prefix: Path,
     notify: ProgressCallback,
     run: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    stop: threading.Event | None = None,
 ) -> None:
     if sys.version_info < MIN_PYTHON:
         raise InstallError(
@@ -286,6 +323,7 @@ def _install_harness(
         _PIP_TIMEOUT_SECS,
         STAGE_INSTALLING_HARNESS,
     )
+    _check_stop(stop, STAGE_INSTALLING_HARNESS)
     marker = {"version": HARNESS_VERSION, "lock_sha256": lock_digest(), "python": str(python)}
     (prefix / MARKER_FILE).write_text(json.dumps(marker, indent=2), encoding="utf-8")
 
@@ -307,7 +345,14 @@ def _step(
         raise InstallError(stage, output.strip() or f"exit {result.returncode}")
 
 
-def _run(argv: list[str], timeout: float, *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _check_stop(stop: threading.Event | None, stage: str) -> None:
+    if stop is not None and stop.is_set():
+        raise InstallError(stage, "install stopped")
+
+
+def _run(
+    argv: list[str], timeout: float, *, cwd: Path, stop: threading.Event | None = None
+) -> subprocess.CompletedProcess[str]:
     """The installer's one spawn: a fixed argv of our own interpreter and the venv's.
 
     Every token is a constant of this module or a path derived from the data home;
@@ -317,15 +362,42 @@ def _run(argv: list[str], timeout: float, *, cwd: Path) -> subprocess.CompletedP
     interpreter runs isolated (``-I`` in the argv) and the environment is
     :func:`_child_env`: three fences against the same agent-writable cwd.
     """
-    return subprocess.run(
-        argv,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-        cwd=str(cwd),
-        env=_child_env(),
-        **UTF8_TEXT,
-    )
+    _check_stop(stop, STAGE_PREPARING)
+    # Files rather than PIPEs let the shared synchronous tree-stop helper wait
+    # without a child filling a pipe while its TERM handler runs.
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr,
+    ):
+        child = subprocess.Popen(
+            argv,
+            stdout=stdout,
+            stderr=stderr,
+            cwd=str(cwd),
+            env=_child_env(),
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            **UTF8_TEXT,
+        )
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                _check_stop(stop, STAGE_PREPARING)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                try:
+                    child.communicate(timeout=min(0.2, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            _check_stop(stop, STAGE_PREPARING)
+        except BaseException:
+            platform_compat.terminate_and_reap_sync(child, grace=0.5)
+            raise
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(argv, child.returncode, stdout.read(), stderr.read())
 
 
 def _child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:

@@ -30,6 +30,7 @@ import re
 
 from aiohttp import web
 
+from kiro_crew.browser_harness.live_hub import redact_wire
 from kiro_crew.browser_harness.recording import FRAME_NAME_RE, TURN_ID_RE, get_recorder
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import _normalize_slot_key
@@ -106,7 +107,7 @@ async def api_browser_recordings_list(request: web.Request) -> web.Response:
         return refusal
     assert key is not None
     turns = await asyncio.to_thread(get_recorder().store.list_turns, key)
-    return _json({"turns": turns})
+    return _json({"turns": await asyncio.to_thread(redact_wire, turns)})
 
 
 async def api_browser_recording_get(request: web.Request) -> web.Response:
@@ -119,7 +120,10 @@ async def api_browser_recording_get(request: web.Request) -> web.Response:
     if turn_id is None:
         return _not_found()
     detail = await asyncio.to_thread(get_recorder().store.turn_detail, key, turn_id)
-    return _not_found() if detail is None else _json(detail)
+    if detail is None:
+        return _not_found()
+    # Step labels, URLs and titles leave through here as well as the live event.
+    return _json(await asyncio.to_thread(redact_wire, detail))
 
 
 async def api_browser_recording_frame(request: web.Request) -> web.Response:

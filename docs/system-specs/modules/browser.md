@@ -57,7 +57,13 @@ no usable Chrome (`chromium.py`). The prefix is a `READONLY` crew-home leaf, so
 a sandboxed process can neither replace the interpreter nor the browser the
 gateway executes; the install job (`POST /api/browser/install`, one at a time,
 `409` otherwise, `{"components": ["harness"|"chromium"]}` to redo one part) runs
-in the gateway, outside the sandbox.
+in the gateway, outside the sandbox. Each installer subprocess is owned through
+`Popen` in its own process group. Cancelling the install waits for its worker to
+stop the child tree through `platform_compat.terminate_and_reap_sync` (a short TERM
+grace on POSIX, then KILL and reap; tree termination on Windows). The stop flag
+is checked before another stage or subprocess starts and before the marker is
+written. Chromium downloads check it at progress callbacks; an in-flight network
+read still has to return before the worker can settle.
 
 **Startup auto-install.** The owner never has to press Install: at every gateway
 start, in the background task that first reclaims a stray daemon
@@ -406,7 +412,11 @@ too, and the hub ignores an ack for a stream that is no longer the session's. `m
 focused or visible password fields, asked of the page before the frame is sent,
 clipped to the frame (a full-width field must not produce a box the card's
 decoder would refuse) and painted over by the card.
-`detail` rides on a `state: error` event and is rendered verbatim.
+`detail` rides on a `state: error` event and is rendered verbatim. At the hub's
+JSON publish boundary every textual value, including nested quick-ask labels,
+summary and reason, passes the platform-aware credential and exfiltration-URL
+redactor. A redactor failure drops the event rather than sending raw text. This
+changes neither browser state nor pixel frames.
 
 **The hub and the turn.** `live_hub.LiveHub` holds one `LiveSession` per slot
 key: turn id, step strip, state (`waiting_allow | live | in_control | done |
@@ -621,7 +631,9 @@ in the pixels of the frame that is showing; while an action with a point is draw
 the first frame recorded at most 1 s after it is shown (its point belongs to the
 page after the target was scrolled into view). Recordings come from the routes in
 [Turn replay](#turn-replay); with none (an older gateway's 404) the stage plays
-the card's in-memory frames and step log.
+the card's in-memory frames and step log. Recording-index and recording-list
+request failures appear through `ErrorNotice` without disabling that fallback;
+the intentional 404 (no recording) stays quiet.
 
 | State | Shows |
 |---|---|
@@ -833,7 +845,11 @@ and is marked `[covered]`. A cross-origin iframe is a slot the gateway reads
 itself (`browser_harness/frames.py`): an out-of-process one through its child
 session, a same-site one Chrome keeps in the tab's process through the tab's
 session in a fixed isolated world of that frame, in both cases only directly
-under the tab and named `f<tag>e<n>`. The quick ask's hit test at a field in a
+under the tab and named `f<tag>e<n>`. Before reading a child's outline or acting
+on one of its refs, the op applies the same `OpContext.url_allowed` predicate to
+the child's current URL. Refused children stay marked unread; a refused frame-ref
+action answers `redirect_refused` through the existing blank-tab refusal path.
+The quick ask's hit test at a field in a
 frame passes when the browser's topmost node there is the frame's `<iframe>`, or,
 for a same-process frame, a node of that same frame.
 

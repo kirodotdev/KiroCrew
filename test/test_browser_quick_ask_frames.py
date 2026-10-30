@@ -611,6 +611,12 @@ class FakeFrames:
     async def count(self, _method: str) -> int:
         return self._counts
 
+    async def url(self, frame_id: str) -> str:
+        return IDMSA if frame_id == "F2" else ""
+
+    async def url_for_ref(self, tag: int) -> str:
+        return IDMSA if tag == 1 else ""
+
     async def slot_frames(self, n: int) -> list[str]:
         return ["F2"][:n]
 

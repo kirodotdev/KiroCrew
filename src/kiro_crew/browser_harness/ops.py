@@ -301,6 +301,15 @@ class _PageRefused(Exception):
         super().__init__(result["error"])
 
 
+def _frame_document_url(url: str) -> bool:
+    """A child frame the parent wrote itself (``about:blank``, ``srcdoc``): no origin to reach."""
+    return url in ("about:blank", "about:srcdoc")
+
+
+def _frame_url_allowed(ctx: OpContext, url: str) -> bool:
+    return bool(url) and (_frame_document_url(url) or ctx.url_allowed(url))
+
+
 async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
     """Judge the active tab before reading it, including a link's landing."""
     tab = await ctx.helper("current_tab")
@@ -327,11 +336,27 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     framed = split_frame_ref(args[0]) if args else None
     if framed is not None:
         frames = ctx.frames()
+        if frames is not None:
+            url = await frames.url_for_ref(framed[0])
+            if not url:
+                # An unknown or gone frame: nothing of it is read, and the tab stays.
+                return {"ok": False, "code": "ref_stale"}
+            refused = None if _frame_document_url(url) else await _refuse_committed_url(ctx, url)
+            if refused is not None:
+                raise _PageRefused(refused)
         value = (
             await frames.call(framed[0], method, framed[1], *args[1:])
             if frames is not None
             else None
         )
+        if frames is not None:
+            # A frame that navigated during the call is judged again before its answer is kept.
+            url = await frames.url_for_ref(framed[0])
+            if not url:
+                return {"ok": False, "code": "ref_stale"}
+            refused = None if _frame_document_url(url) else await _refuse_committed_url(ctx, url)
+            if refused is not None:
+                raise _PageRefused(refused)
         return value if value is not None else {"ok": False, "code": "ref_stale"}
     rendered = ", ".join(json.dumps(a) for a in args)
     value = await ctx.helper("js", expression=f"{WALKER_SOURCE}.{method}({rendered})")
@@ -539,7 +564,13 @@ async def _with_frames(ctx: OpContext, nodes: list[Any]) -> list[Any]:
             continue
         slot = int(n["slot"])
         frame_id = ids[slot] if slot < len(ids) and slot < FRAME_READ_CAP else ""
-        read = await frames.outline(frame_id, budget) if frames is not None and frame_id else None
+        read = None
+        if frames is not None and frame_id and _frame_url_allowed(ctx, await frames.url(frame_id)):
+            read = await frames.outline(frame_id, budget)
+            # A frame that navigated during the read is judged again; a refused
+            # landing drops what was read.
+            if read is not None and not _frame_url_allowed(ctx, await frames.url(frame_id)):
+                read = None
         head = {k: v for k, v in n.items() if k != "slot"}
         if read is None:
             head["state"] = {"unread": True}
