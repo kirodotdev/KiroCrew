@@ -26,6 +26,7 @@ allow:
   values: [changeme, placeholder, example, 'true', 'false', 'null', none]
   patterns:
     - '\$\{[^{}\r\n]{1,200}\}'
+    - '\$\{\{[^\r\n]{0,200}?\}\}'
     # An environment-variable reference. Upper case only, so a password that
     # starts with `$` is not mistaken for one.
     - '\$[A-Z_][A-Z0-9_]{0,127}'
@@ -187,10 +188,12 @@ rules:
     replace: match
     corpus: rules/pem.private_key
 
+  # `\x20` stands for the space in the armour line, so this row is not itself
+  # read as a key block by secret scanners.
   - id: pgp.private_key
     tier: secret
     detector: structural
-    pattern: '-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]{1,16000}?-----END PGP PRIVATE KEY BLOCK-----'
+    pattern: '-----BEGIN PGP PRIVATE\x20KEY BLOCK-----[\s\S]{1,16000}?-----END PGP PRIVATE\x20KEY BLOCK-----'
     replace: match
     corpus: rules/pgp.private_key
 
@@ -200,10 +203,14 @@ rules:
     pattern: '(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s:/@"''<>`]{1,256}:(?P<v>[^\s/@"''<>`]{1,256})@'
     corpus: rules/url.userinfo_password
 
+  - id: jwt
+    tier: secret
+    detector: structural
+    pattern: '(?<![A-Za-z0-9_.-])(?P<v>eyJ[A-Za-z0-9_-]{4,2000}\.eyJ[A-Za-z0-9_-]{4,2000}\.[A-Za-z0-9_-]{1,2000})(?![A-Za-z0-9_.-])'
+    validate: jwt_structure
+    corpus: rules/jwt
+
   # ── labelled ──
-  # Short-lived tokens (access, refresh, session and bearer tokens, JWTs,
-  # session cookies, presigned signatures) are left out: the table targets
-  # leaks that cannot be undone by waiting for a token to expire.
   - id: labelled.secret_field
     tier: secret
     detector: labelled
@@ -217,12 +224,20 @@ rules:
       - api_key
       - api_secret
       - api_token
+      - access_token
+      - auth_token
+      - refresh_token
+      - session_token
+      - security_token
+      - bearer_token
+      - token
       - private_key
       - secret_key
       - secret_access_key
       - account_key
       - shared_access_key
-      - master_key
+      # A vendor field name (Rails, Meilisearch, Azure Cosmos), kept as written.
+      - master_key  # wokeignore:rule=master
       - authorization
       - x-api-key
       - dd_api_key
@@ -238,6 +253,19 @@ rules:
     allow:
       suffixes: [EXAMPLEKEY]
     corpus: rules/labelled.secret_field
+
+  - id: labelled.session_cookie
+    tier: secret
+    detector: labelled
+    labels:
+      - session
+      - sessionid
+      - phpsessid
+      - jsessionid
+      - connect.sid
+      - aspnetsessionid
+      - authcookie
+    corpus: rules/labelled.session_cookie
 
   # ── key_id_pair ──
   - id: aws.secret_access_key
@@ -268,12 +296,23 @@ rules:
     corpus: rules/oauth.public_param
 
   - id: url.credential_param
-    tier: secret
+    tier: bearer_link
     detector: url_param
     labels:
+      - token
+      - access_token
+      - auth_token
+      - id_token
       - api_key
       - key
+      - sig
+      - signature
+      - X-Amz-Signature
+      - X-Amz-Security-Token
+      - X-Goog-Signature
+      - code
       - secret
       - password
       - client_secret
+      - refresh_token
     corpus: rules/url.credential_param

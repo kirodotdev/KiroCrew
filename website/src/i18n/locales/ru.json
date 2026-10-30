@@ -8707,7 +8707,7 @@
       "cancel": "Отмена",
       "collect_failed": "Не удалось собрать диагностику",
       "collecting": "Сбор…",
-      "create_report": "Создать отчёт",
+      "create_report": "Подготовить issue",
       "diagnostics_ready": "Диагностика готова — скрыто секретов: {{redactions}}, обработано файлов: {{files}}.",
       "done": "Готово",
       "download_zip": "Скачать zip",

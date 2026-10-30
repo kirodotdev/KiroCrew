@@ -8570,7 +8570,7 @@
       "cancel": "Annulla",
       "collect_failed": "Raccolta della diagnostica non riuscita",
       "collecting": "Raccolta in corso…",
-      "create_report": "Crea report",
+      "create_report": "Prepara la issue",
       "diagnostics_ready": "Diagnostica pronta — {{redactions}} segreti oscurati in {{files}} file.",
       "done": "Fatto",
       "download_zip": "Scarica lo zip",

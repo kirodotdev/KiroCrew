@@ -555,7 +555,7 @@ describe('App routing', () => {
 
     fireEvent.click(trigger)
     expect(await screen.findByText('What happened?')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create report/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /prepare issue/i })).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts nav item, without a Knowledge rail item', () => {

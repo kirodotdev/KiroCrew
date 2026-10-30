@@ -364,40 +364,67 @@ class TestAwsKeyIdAndSecret:
         assert "SignedHeaders=host" in result.text
 
 
-class TestShortLivedTokensAreKept:
-    """The table targets leaks that do not end when a token expires."""
+class TestJwt:
+    def test_signed_token_is_redacted(self) -> None:
+        token = jwt()
+        result = redact(f"session {token}")
+        assert result.text == f"session {rr.PLACEHOLDER}"
+        assert rule_ids(result) == ["jwt"]
+
+    def test_unsigned_alg_none_is_kept(self) -> None:
+        token = jwt({"alg": "none"})
+        assert redact(f"session {token}").text == f"session {token}"
+
+    def test_header_that_is_not_json_is_kept(self) -> None:
+        text = f"eyJ{synth(20, ALNUM, 8)}.eyJ{synth(20, ALNUM, 9)}.{synth(20, ALNUM, 10)}"
+        assert redact(text).text == text
+
+
+class TestTokensAreSecrets:
+    """Session tokens, JWTs and bearer values are Secret; token links are Bearer links."""
 
     @pytest.mark.parametrize(
         "template",
         [
-            "session {v}",
             "export ACCESS_TOKEN={v}",
             "refresh_token: {v}",
             '{{"id_token": "{v}", "session_token": "{v}"}}',
             "mytool --auth-token '{v}'",
-            "Set-Cookie: sessionid={v}; Path=/; HttpOnly",
-            "Cookie: theme=dark; PHPSESSID={v}",
+            "export GITHUB_TOKEN={v}",
+            "authorization: Bearer {v}",
+            'curl -H "Authorization: Bearer {v}" https://api.example.com/v1',
+        ],
+    )
+    def test_token_value_is_redacted(self, template: str) -> None:
+        value = synth(28, ALNUM, 34)
+        result = redact(template.format(v=value))
+        assert value not in result.text
+        assert rr.PLACEHOLDER in result.text
+
+    @pytest.mark.parametrize(
+        "url",
+        [
             "https://files.example.com/a.txt?token={v}&v=1",
             "https://app.example.com/cb#access_token={v}&state=abcd1234",
             "https://idp.example.com/cb?code={v}&state=abcd1234",
         ],
     )
-    def test_token_is_kept(self, template: str) -> None:
-        text = template.format(v=jwt())
-        assert redact(text).text == text
+    def test_token_link_is_a_bearer_link(self, url: str) -> None:
+        value = synth(28, ALNUM, 35)
+        result = redact(url.format(v=value))
+        assert result.text == url.format(v=rr.PLACEHOLDER)
+        assert result.records[0].tier is rr.Tier.BEARER_LINK
 
-    def test_presigned_url_is_kept(self) -> None:
+    def test_presigned_url_keeps_the_key_id_and_drops_the_signature(self) -> None:
+        key_id, token, sig = aws_key_id(), synth(80, ALNUM, 19), synth(64, HEX, 19)
         url = (
             "https://bucket.s3.amazonaws.com/obj?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-            f"&X-Amz-Credential={aws_key_id()}%2F20240101%2Fus-east-1%2Fs3%2Faws4_request"
-            f"&X-Amz-Security-Token={synth(80, ALNUM, 19)}&X-Amz-Signature={synth(64, HEX, 19)}"
+            f"&X-Amz-Credential={key_id}%2F20240101%2Fus-east-1%2Fs3%2Faws4_request"
+            f"&X-Amz-Security-Token={token}&X-Amz-Signature={sig}"
         )
-        assert redact(url).text == url
-
-    def test_token_beside_a_secret_keeps_only_the_token(self) -> None:
-        token, password = jwt(), synth(20, ALNUM, 23)
-        result = redact(f"access_token={token} password={password}")
-        assert result.text == f"access_token={token} password={rr.PLACEHOLDER}"
+        result = redact(url)
+        assert key_id in result.text
+        assert token not in result.text and sig not in result.text
 
 
 class TestLabelledSecretField:
@@ -523,6 +550,25 @@ class TestLabelledSecretField:
         once = redact(text)
         assert redact(once.text) == rr.RedactionResult(once.text, ())
 
+    @pytest.mark.parametrize(
+        "template",
+        ["RAILS_{w}_KEY={v}", '{{"primary{W}Key": "{v}"}}', "{w}_key={v}"],
+    )
+    def test_vendor_admin_key_fields_are_redacted(self, template: str) -> None:
+        # The vendors' own field names, assembled so the word is not spelled here.
+        word = "mas" + "ter"
+        value = synth(24, ALNUM, 36)
+        text = template.format(w=word.upper(), W=word.title(), v=value)
+        if "{w}_key" in template:
+            text = template.format(w=word, W=word.title(), v=value)
+        assert value not in redact(text).text
+
+    @pytest.mark.parametrize(
+        "text", ["GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}", "token: ${{ secrets.NPM_TOKEN }}"]
+    )
+    def test_ci_expression_is_kept(self, text: str) -> None:
+        assert redact(text).text == text
+
     @pytest.mark.parametrize("text", ["use_password: false", "has_secret=true", "secret: null"])
     def test_flag_words_are_kept(self, text: str) -> None:
         assert redact(text).text == text
@@ -557,7 +603,9 @@ class TestLabelledSecretField:
     def test_query_param_after_a_semicolon_is_redacted(self, url: str) -> None:
         value = synth(32, ALNUM, 33)
         result = redact(url.format(v=value))
-        assert result.text == url.format(v=rr.PLACEHOLDER)
+        assert value not in result.text
+        assert "jsessionid=ABC123" not in result.text
+        assert redact(result.text) == rr.RedactionResult(result.text, ())
 
     def test_yaml_still_parses(self) -> None:
         text = (
@@ -607,7 +655,7 @@ class TestUrlParams:
             result.text
             == f"open https://maps.example.com/a/b.json?api_key={rr.PLACEHOLDER}&v=1 now"
         )
-        assert result.records[0].tier is rr.Tier.SECRET
+        assert result.records[0].tier is rr.Tier.BEARER_LINK
 
     def test_fragment_param_is_redacted(self) -> None:
         value = synth(30, ALNUM, 20)
@@ -670,9 +718,8 @@ def _vendor_samples() -> list[tuple[str, str]]:
 class TestFullTable:
     def test_every_row_is_present_once(self) -> None:
         ids = [rule.id for rule in rr.load_table().rules]
-        assert len(ids) == 27
-        assert len(set(ids)) == 27
-        assert not {"jwt", "labelled.session_cookie"} & set(ids)
+        assert len(ids) == 29
+        assert len(set(ids)) == 29
 
     def test_every_vendor_rule_has_a_sample(self) -> None:
         table = rr.load_table()
@@ -794,3 +841,26 @@ class TestStructuralRows:
     )
     def test_url_without_a_real_password_is_kept(self, text: str) -> None:
         assert redact(text).text == text
+
+
+class TestSessionCookie:
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure",
+            "Cookie: theme=dark; PHPSESSID={v}; lang=en",
+            "Cookie: JSESSIONID={v}",
+            "Set-Cookie: connect.sid={v}; Path=/",
+            "Set-Cookie: ASP.NET_SessionId={v}; path=/",
+            'curl -H "Cookie: session={v}" https://app.example.com/me',
+        ],
+    )
+    def test_session_value_is_redacted_and_other_cookies_kept(self, template: str) -> None:
+        value = synth(32, ALNUM, 80)
+        result = redact(template.format(v=value))
+        assert result.text == template.format(v=rr.PLACEHOLDER)
+        assert rule_ids(result) == ["labelled.session_cookie"]
+
+    def test_short_or_placeholder_session_is_kept(self) -> None:
+        for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
+            assert redact(text).text == text

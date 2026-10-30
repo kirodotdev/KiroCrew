@@ -750,10 +750,13 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   missing pattern, label list or corpus path, a misplaced `pair_with`, a duplicate id
   and any unbounded regex repeat. No detector fires on a value's shape alone: there is
   no entropy or length-only rule, `key_id_pair` needs an AWS key ID within its window,
-  and `labelled` / `url_param` decide by the field or parameter name. The table
-  targets long-lived secrets (keys, passwords, private keys, webhooks); short-lived
-  tokens (access, refresh, session and bearer tokens, JWTs, session cookies,
-  presigned signatures) have no row and pass through. `labelled` reads
+  and `labelled` / `url_param` decide by the field or parameter name. Tiers follow
+  the recorded decision in
+  `docs/decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md`: keys,
+  passwords, private keys, session tokens, JWTs, bearer values and session cookies
+  are `secret`; webhook URLs and credential URL parameters (`?token=`, presigned
+  signatures) are `bearer_link`; key IDs, account SIDs and public OAuth values are
+  `identifier`. `labelled` reads
   `key <sep> value` in env, INI, YAML, JSON, CLI-flag, HTTP-header and cookie shapes,
   XML elements (`<password>…</password>`) and name/value pairs (`"name": "password",
   "value": …`), strips an auth scheme, ignores values under 4 characters and keys

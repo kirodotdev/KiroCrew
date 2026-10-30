@@ -3718,7 +3718,7 @@
       "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
       "collect_failed": "Failed to collect diagnostics",
       "cancel": "Cancel",
-      "create_report": "Create report",
+      "create_report": "Prepare issue",
       "collecting": "Collecting…",
       "done": "Done",
       "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",

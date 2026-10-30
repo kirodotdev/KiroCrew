@@ -8433,7 +8433,7 @@
       "cancel": "रद्द करें",
       "collect_failed": "डायग्नोस्टिक्स इकट्ठा करना विफल रहा",
       "collecting": "इकट्ठा कर रहे हैं…",
-      "create_report": "रिपोर्ट बनाएँ",
+      "create_report": "issue तैयार करो",
       "diagnostics_ready": "डायग्नोस्टिक्स तैयार — {{files}} फ़ाइल में {{redactions}} सीक्रेट हटाए गए।",
       "done": "पूर्ण",
       "download_zip": "zip डाउनलोड करें",

@@ -8296,7 +8296,7 @@
       "cancel": "취소",
       "collect_failed": "진단 정보를 수집하지 못했습니다",
       "collecting": "수집 중…",
-      "create_report": "보고서 만들기",
+      "create_report": "이슈 준비",
       "diagnostics_ready": "진단 정보 준비 완료 — 파일 {{files}}개에서 시크릿 {{redactions}}개를 가렸습니다.",
       "done": "완료",
       "download_zip": "zip 다운로드",

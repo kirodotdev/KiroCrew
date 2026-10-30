@@ -10,7 +10,10 @@ meant.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import functools
+import json
 import logging
 import re
 import zlib
@@ -109,9 +112,31 @@ def _aws_secret_shape(value: str) -> bool:
     return sum(classes) >= 2
 
 
+def _b64url_json_object(segment: str) -> dict[str, Any] | None:
+    try:
+        raw = base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+        decoded = json.loads(raw.decode("utf-8"))
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _jwt_structure(value: str) -> bool:
+    """Header and payload decode to JSON objects and the header names a real algorithm."""
+    parts = value.split(".")
+    if len(parts) != 3:
+        return False
+    header = _b64url_json_object(parts[0])
+    if header is None or _b64url_json_object(parts[1]) is None:
+        return False
+    alg = header.get("alg")
+    return isinstance(alg, str) and bool(alg) and alg.lower() != "none"
+
+
 VALIDATORS: Mapping[str, Callable[[str], bool]] = {
     "github_crc32": _github_crc32,
     "aws_secret_shape": _aws_secret_shape,
+    "jwt_structure": _jwt_structure,
 }
 
 

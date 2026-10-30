@@ -8433,7 +8433,7 @@
       "cancel": "বাতিল",
       "collect_failed": "ডায়াগনস্টিক সংগ্রহ করা যায়নি",
       "collecting": "সংগ্রহ করা হচ্ছে…",
-      "create_report": "রিপোর্ট তৈরি করুন",
+      "create_report": "issue প্রস্তুত করো",
       "diagnostics_ready": "ডায়াগনস্টিক প্রস্তুত — {{files}} ফাইলে {{redactions}} সিক্রেট সরানো হয়েছে।",
       "done": "সম্পন্ন",
       "download_zip": "zip ডাউনলোড করুন",
