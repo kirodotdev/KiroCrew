@@ -266,8 +266,6 @@ def child_hooks(state: Any) -> tuple[Any, Any]:
     The manager may be built after the hooks are installed; until it exists the
     probe answers "still running" and the stop hook does nothing.
     """
-    import asyncio
-
     from kiro_crew.shared_crew import admission_entry
 
     try:
