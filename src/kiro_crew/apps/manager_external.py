@@ -31,6 +31,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _session_control_widened,
     _write_approved_grants,
     _write_installed,
     app_data_dir,
@@ -43,6 +44,7 @@ from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.manifest import (
     RESERVED_APP_NAME_CODE,
     AppManifest,
+    Permissions,
     app_name_error,
     cron_permission_error,
     is_reserved_app_name,
@@ -252,16 +254,18 @@ def register_external_app(
     # session-approval grant without any user moment -- the same gap
     # ``update_app`` closes with ``widened_session_approval``. Compare against the
     # manifest that was consented to (the persisted one; none for a first
-    # registration) and, if the grant is new, register the app DISABLED so the
-    # user sees it on the detail page and enables it deliberately.
-    requested_session_approval = bool(
-        isinstance(manifest_data, dict)
-        and isinstance(manifest_data.get("permissions"), dict)
-        and manifest_data["permissions"].get("sessionApproval") is True
+    # registration) and, if the grant or its crewmate-thread scope is new,
+    # register the app DISABLED so the user sees it on the detail page and
+    # enables it deliberately.
+    requested_permissions = Permissions.from_dict(
+        manifest_data["permissions"]
+        if isinstance(manifest_data, dict) and isinstance(manifest_data.get("permissions"), dict)
+        else {}
     )
+    requested_session_approval = requested_permissions.sessionApproval
     prior_manifest = get_app_manifest(name) if existing else None
-    widened_session_approval = requested_session_approval and not (
-        prior_manifest and prior_manifest.permissions.sessionApproval
+    widened_session_approval = _session_control_widened(
+        prior_manifest.permissions if prior_manifest else None, requested_permissions
     )
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to

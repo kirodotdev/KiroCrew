@@ -154,6 +154,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _scan_installed_app_config_keys,
         _session_approval_consent_unrecorded,
         _session_approval_save_rule,
+        _session_control_widened,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,
@@ -267,6 +268,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.manifest import (  # noqa: F401
         RESERVED_APP_NAME_CODE,
         AppManifest,
+        Permissions,
         app_name_error,
         contain_command_agents,
         cron_permission_error,

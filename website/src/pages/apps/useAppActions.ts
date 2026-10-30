@@ -66,6 +66,7 @@ export function useAppActions({
       origin: installed.origin,
       _registry: row?._registry,
       sessionApproval: installed.manifest.permissions?.sessionApproval === true,
+      crewmateThreads: installed.manifest.permissions?.crewmateThreads === true,
     }
     if (row) return {
       name: row.name,
@@ -74,6 +75,7 @@ export function useAppActions({
       origin: row.origin,
       _registry: row._registry,
       sessionApproval: row.manifest?.permissions?.sessionApproval === true,
+      crewmateThreads: row.manifest?.permissions?.crewmateThreads === true,
     }
     return { name }
   }

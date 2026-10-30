@@ -596,6 +596,7 @@ export default function AppDetailPage() {
         trustRepository: app.trustRepository,
         origin: app.origin,
         sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+        crewmateThreads: app.manifest?.permissions?.crewmateThreads === true,
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -697,6 +698,7 @@ export default function AppDetailPage() {
           trustRepository: app.trustRepository,
           origin: app.origin,
           sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+          crewmateThreads: app.manifest?.permissions?.crewmateThreads === true,
         })
       } else {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
@@ -1416,12 +1418,18 @@ export default function AppDetailPage() {
                       <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
                       <span>{i18nT('pages.appDetailPage.session_approval_desc')}</span>
                     </div>
+                    {app.manifest.permissions.crewmateThreads && (
+                      <div className="mt-1 text-text">
+                        {i18nT('pages.appDetailPage.session_approval_crewmates')}
+                      </div>
+                    )}
                     <SessionApprovalModes
                       className="mt-1.5 text-[12px]"
                       label={i18nT('pages.appDetailPage.session_approval_modes')}
                     />
                     <div className="mt-1.5 text-[11px] text-muted">
                       {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
+                      {app.manifest.permissions.crewmateThreads && <>, <code>crewmateThreads</code></>}
                     </div>
                   </div>
                 )}

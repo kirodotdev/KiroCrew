@@ -41,6 +41,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are requested by name
     _GRANT,
     _NOT_FOUND,
+    _SCOPE,
     APP,
     _client,
     _persist,
@@ -312,6 +313,73 @@ class TestTheLiveTableRefusesANonOwnerApp:
             async with _sweep_client(state, routes, reached) as client:
                 result = await _call(client, "POST", "/api/chat/slots/c1/approve", APP)
         assert (result, reached) == ((404, _NOT_FOUND), [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", [False, True])
+    async def test_the_grant_reaches_a_crewmate_thread_only_with_the_scope(
+        self, state, sel_spy, scope: bool
+    ) -> None:
+        """A crewmate's pinned DM thread is a user session the grant alone stops at."""
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        reached: list[str] = []
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=True), patch(_SCOPE, return_value=scope):
+            async with _sweep_client(state, routes, reached) as client:
+                result = await _call(client, "POST", "/api/chat/slots/member-mate/approve", APP)
+        if scope:
+            assert (result, reached) == (
+                (200, {"ok": True}),
+                ["POST /api/chat/slots/member-mate/approve"],
+            )
+        else:
+            assert (result, reached) == ((404, _NOT_FOUND), [])
+            assert [d["error"] for d in sel_spy.denials()] == [
+                slot_ownership.SESSION_CONTROL_DENIED
+            ]
+
+    @pytest.mark.asyncio
+    async def test_the_scope_alone_reaches_nothing(self, state, sel_spy) -> None:
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        _seed_family(state)
+        reached: list[str] = []
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=False), patch(_SCOPE, return_value=True):
+            async with _sweep_client(state, routes, reached) as client:
+                for name in ("member-mate", "u1"):
+                    assert await _call(client, "POST", f"/api/chat/slots/{name}/approve", APP) == (
+                        404,
+                        _NOT_FOUND,
+                    )
+        assert reached == []
+
+    @pytest.mark.asyncio
+    async def test_the_scope_is_read_with_the_grant_whatever_the_slot_is(
+        self, state, sel_spy
+    ) -> None:
+        """One scope read per request, like the grant: the cost of a refusal never
+        depends on whether the name addressed a crewmate thread."""
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot("u1", origin=SlotOrigin.USER)
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        scope = MagicMock(return_value=False)
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=True), patch(_SCOPE, scope):
+            async with _sweep_client(state, routes, []) as client:
+                for name in ("absent", "u1", "member-mate"):
+                    scope.reset_mock()
+                    await _call(client, "POST", f"/api/chat/slots/{name}/approve", APP)
+                    assert (name, scope.call_count) == (name, 1)
 
     @pytest.mark.asyncio
     async def test_the_grant_is_read_once_whatever_the_slot_is(self, state, sel_spy) -> None:

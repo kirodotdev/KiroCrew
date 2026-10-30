@@ -93,6 +93,7 @@ interface AppPermissions {
   network?: boolean
   memory?: boolean | string
   sessionApproval?: boolean
+  crewmateThreads?: boolean
   [key: string]: unknown
 }
 

@@ -1,6 +1,7 @@
 """Fixtures and helpers the slot-ownership checkpoint test files share.
 
-``APP``, the app the tests call as, ``_GRANT``, the session-grant check they patch, and
+``APP``, the app the tests call as, ``_GRANT``, the session-grant check they patch,
+``_SCOPE``, its crewmate-thread scope read, and
 ``_NOT_FOUND``, the uniform refusal body; the ``state`` fixture, a dashboard state built
 under the test's ``tmp_path``, and the ``sel_spy`` fixture with the security-event-log
 spy behind it; ``_as``, the token-auth stand-in, and ``_client``, which serves the real
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 APP = "crew-keyboard"
 _GRANT = "kiro_crew.apps.permissions.app_can_manage_session_approvals"
+_SCOPE = "kiro_crew.apps.permissions.app_session_grant_reaches_crewmate_threads"
 _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 
 
