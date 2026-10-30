@@ -370,7 +370,7 @@ async def handle_slash(
         if command == AGENT:
             await agent_picker.handle_command(orch, binding, user, text, respond, team=team)
         else:
-            await approval_picker.handle_command(orch, binding, user, text, respond)
+            await approval_picker.handle_command(orch, binding, user, text, respond, team=team)
         return True
     from kiro_crew.slack.code_channels.routing import (
         Gate,

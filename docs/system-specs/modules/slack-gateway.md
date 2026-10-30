@@ -2125,10 +2125,31 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   either card, the kickoff select or the command) also runs `apply_approval_mode` on
   each of `worker_approvals.live_workers` (the same `_created_by` lineage, direct
   children only, not Slack-linked), raising and lowering, audited per worker
-  (`result=worker_set`); a raise to Trust answers their pending prompts and the
+  (`result=worker_set`); a lowering also reaches every deeper session in the
+  `_created_by` tree (`worker_approvals.descendants`, linked ones included, audited
+  `depth=deeper`), which inherited the grant at creation, and the reply names any
+  worker it could not change (the kickoff select says so ephemerally). Known limit:
+  the walk follows live `_created_by` links, so a session whose creator already
+  closed is orphaned from the tree and keeps its mode. A raise needs the channel
+  open (`_channel_open`: feature on, not fenced, no stored archive stamp); a
+  lowering never waits on it. A raise also re-runs `agent_picker`'s owner gates
+  (`_still_admitted` after the lock, `_sync_gates` at each grant's commit), and every
+  slot's transcript window is loaded off the loop (`agent_picker._load_window`)
+  before its grant, as the agent switch does. Each grant is fenced right before the mutation: the
+  channel not archived here, the feature on, the same channel session, the same
+  worker object; a worker card is relayed only where the channel's own prompt would
+  post (mirror not paused, channel and origin admit the bot, no Slack Stop); a raise to Trust answers their pending prompts and the
   channel's own through that call's slot-scoped sweep, and the cards are re-written in
   place ("Ran under Trust"; the channel's own are kept from `_run_chat`'s delete via
-  `approval_picker.keep_card`). `ask_question` cards wait in `_question_futures`,
+  `approval_picker.keep_card`). Only a card whose exact future (captured before any
+  await) was still waiting at the grant's last fence, and is approved after it, says
+  it ran under Trust, and only those are kept from the runner's delete (added after
+  the sweep, never before the await); a channel card answered another way meanwhile
+  is deleted as usual. A claimed worker card answered elsewhere says only what
+  happened (`worker_approvals.CLAIMED_ENDED`), and one its own click answered keeps
+  that click's line. Every
+  rewrite sends replacement blocks (`approval_picker.settled_blocks`), since
+  `chat.update` keeps a message's buttons when no blocks are sent. `ask_question` cards wait in `_question_futures`,
   which no sweep reads, so they are never answered. A Trust click on either card changes no mode unless the
   card's prompt is still waiting right before the mutation. `_run_chat` starts the
   relay as a task (no await between the future's registration and its `try`) and its

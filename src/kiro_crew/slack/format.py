@@ -254,6 +254,11 @@ def escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+#: What a code channel's approval card shows for a literal ```, which would
+#: otherwise close the card's code block (U+02CB MODIFIER LETTER GRAVE ACCENT).
+CODE_FENCE_STAND_IN = "\u02cb\u02cb\u02cb"
+
+
 def _has_hidden_chars(text: str) -> bool:
     """Control (other than newline/tab) or format characters: bidi overrides,
     zero-width joiners and the like, which can reorder or hide text on screen."""

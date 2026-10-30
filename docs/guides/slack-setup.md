@@ -470,14 +470,19 @@ channel's session on Trust, through the same audited change as the dashboard's T
 button. The channel then gets a one-line warning that tools run without asking, for the
 agent's workers too, including ones already running. Anyone else who clicks it is told
 they can't, and nothing changes. A card answered by a switch to Trust (yours or a
-worker's) changes in place to say it ran under Trust. The card shows a command once: the
+worker's) changes in place to say it ran under Trust, and its buttons go. A card answered
+some other way while the switch was being made never claims that. The card shows a command once: the
 command line, plus the other arguments only when there are any.
 
 **Workers follow the channel's mode.** Changing the channel's approval mode from the first
 message, `/<command> trust ask|reads|all` or a **Trust this channel** button changes it
 for the workers the channel's agent is already running as well, raising or lowering it
 the same way, each
-change recorded like the dashboard's. Raising to Trust also answers their waiting tool
+change recorded like the dashboard's. Lowering the channel also lowers anything those
+workers started in turn, since a session starts with its creator's mode; nothing below
+the agent's own workers is ever raised. If a worker can't be changed, the reply names it.
+A session whose creator has already closed is no longer counted as under the channel, so
+a lowering doesn't reach it; change its mode from the dashboard. Raising to Trust also answers their waiting tool
 prompts, as switching a session to Trust does on the dashboard. A person-only question
 from a worker is never answered for you. Sessions the agent did not start are left alone.
 

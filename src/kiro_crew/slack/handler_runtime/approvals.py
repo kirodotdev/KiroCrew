@@ -417,6 +417,12 @@ def _build_approval_blocks(
             # The input can close the code fence itself, so on a code channel's
             # card its entities are escaped too, not only the footer's.
             part = _esc(part)
+            if channel_trust:
+                # A literal fence in the input would end the code block, and the
+                # rest would render as formatted text styled like the card's own.
+                from kiro_crew.slack.format import CODE_FENCE_STAND_IN
+
+                part = part.replace("```", CODE_FENCE_STAND_IN)
             # Truncate with marker if exceeds Slack limit
             if len(part) > _SLACK_SECTION_TEXT_LIMIT:
                 part = (

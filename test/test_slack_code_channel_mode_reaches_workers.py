@@ -40,7 +40,7 @@ from kiro_crew.slack.handler import post_linked_approval
 def _set(mode: str, via: str = "select") -> Any:
     async def go() -> Any:
         binding = await asyncio.to_thread(store().get_binding, CH)
-        return await approval_picker.set_channel_mode(binding, mode, OWNER, via=via)
+        return await approval_picker.set_channel_mode(binding, mode, OWNER, via=via, team="T1")
 
     return go()
 
@@ -443,7 +443,7 @@ def test_a_claimed_card_rejected_meanwhile_says_so(
 
     card = asyncio.run(go())
     mine = [u for u in relay.slack.updates if u[1] == card.ts]
-    assert len(mine) == 1 and mine[0][2] == wa.ANSWERED_ELSEWHERE["rejected"]
+    assert len(mine) == 1 and mine[0][2] == wa.CLAIMED_ENDED["rejected"]
 
 
 def test_a_colon_prefixed_warning_title_stays() -> None:
@@ -472,5 +472,5 @@ def test_an_origin_card_rejected_during_its_grant_is_settled(
 
     card = asyncio.run(go())
     mine = [u for u in relay.slack.updates if u[1] == card.ts]
-    assert mine and mine[-1][2] == wa.ANSWERED_ELSEWHERE["rejected"]
+    assert mine and mine[-1][2] == wa.CLAIMED_ENDED["rejected"]
     assert all(b.get("type") != "actions" for b in mine[-1][3])
