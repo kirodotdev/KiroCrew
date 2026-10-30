@@ -12,18 +12,19 @@ blinds every tier at once, and no OS sandbox sees shell text, so this layer
 over-approximates on purpose and the tiers above it are where precision belongs.
 Narrowing a matcher means narrowing the site that DECIDES, never this one.
 
-The reader is four modules below this one, and this one keeps attribution -- which
+The reader is five modules below this one, and this one keeps attribution -- which
 program a token reaches, nested shell payloads, local assignments and function
 aliases, the data-consumer exemption, the glob reading of a program name and the
 normalized token view. ``shell_normalizer_walk`` reads characters, quotes, words and
 structure; ``shell_normalizer_redirects`` reads the carriers that bring program text
 outside argv; ``shell_normalizer_escapes`` decodes escapes; ``shell_normalizer_programs``
-holds the program vocabulary. Every name a caller imports from this module still
-resolves here, and a name a test patches lives in the same module as every reader of
-it.
+holds the program vocabulary; ``shell_normalizer_xargs`` reads an ``xargs`` pipeline
+into stages and operand words before the rebuild here attributes it. Every name a
+caller imports from this module still resolves here, and a name a test patches lives
+in the same module as every reader of it.
 
 Imports only ``vocabulary``, the layer below, for the product's own name, and its own
-four owners, which never import it: the tiers depend on the reader, never the reverse.
+five owners, which never import it: the tiers depend on the reader, never the reverse.
 """
 
 from __future__ import annotations
@@ -111,6 +112,18 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _substitution_bodies,
     _substitution_depth_delta,
     _substitution_program,
+)
+from .shell_normalizer_xargs import (  # noqa: F401  (also re-exported for importers)
+    _COMMAND_SEPARATOR_TOKENS,
+    _SHELL_CONTROL_CHARS_RE,
+    _XARGS_AMBIGUOUS_OPTIONS,
+    _XARGS_VALUE_OPTIONS,
+    _flatten_operand_words,
+    _is_top_level_command_boundary,
+    _skip_xargs_options,
+    _split_into_pipeline_stages,
+    _xargs_line_has_ambiguous_construct,
+    _xargs_stage_command,
 )
 from .vocabulary import (
     _KILL_BY_NAME_PROGRAMS,
@@ -819,15 +832,19 @@ def _shell_option_run(
     return end
 
 
-def _xargs_reconstructed_command(tokens: "list[str]") -> str:
-    """The command ``xargs`` will run, rebuilt from its argv plus the piped words.
+def _xargs_first_pipe_rebuild(tokens: "list[str]") -> str:
+    """The broad baseline: the first pipeline's words plus the ``xargs`` argv found by
+    basename anywhere after the first pipe.
 
-    ``xargs`` appends the words it reads on stdin to the command given as its own
-    arguments, so ``echo <verb> | xargs <name>`` executes ``<name> <verb>``.  Neither
-    side contains a space, so the whole-token payload scan cannot see it; rebuilding the
-    effective command line makes it visible to the ordinary argv checks.
+    Finding ``xargs`` by basename is what covers a wrapper in front of it
+    (``timeout 5 xargs``, ``sudo xargs``) that a stage-program walk would miss.  Keeping
+    all the words before the first pipe also preserves a quoted operand such as
+    ``'<name>;'`` that a precise command split might drop, and flattening those words
+    means a chained prefix (``echo x; echo <name> | xargs pkill``) cannot end the rebuilt
+    argv before the name.  The ``xargs`` argv is bounded to its own stage so a later
+    command does not fold into it.
     """
-    pipe = next((i for i, tk in enumerate(tokens) if "|" in tk), -1)
+    pipe = next((i for i, token in enumerate(tokens) if "|" in token), -1)
     if pipe <= 0:
         return ""
     xargs_at = next(
@@ -836,13 +853,153 @@ def _xargs_reconstructed_command(tokens: "list[str]") -> str:
     )
     if xargs_at == -1:
         return ""
-    # Skip xargs' own options; everything after them is the command it runs.
-    command = [tk for tk in tokens[xargs_at + 1 :] if not tk.startswith("-")]
-    # The producer's literal words (its program name is not piped through).
-    piped = [tk for tk in tokens[1:pipe] if not tk.startswith("-")]
+    command = _xargs_stage_command(tokens, xargs_at + 1)
+    producer = [word for token in tokens[1:pipe] for word in _flatten_operand_words(token)]
     if not command:
         return ""
-    return " ".join(command + piped)
+    return " ".join(command + producer)
+
+
+def _xargs_stage_rebuilds(tokens: "list[str]") -> "list[str]":
+    """One rebuild per pipe-fed ``xargs`` stage, from the pipeline's FIRST stage.
+
+    The baseline keys off the FIRST pipe of the line, so it misses an ``xargs`` in a
+    pipeline that follows another command (``echo x | cat; echo <name> | xargs pkill``)
+    or an intermediate ``xargs`` stage (``... | xargs pkill | xargs echo``).  Parsing
+    each command into stages and rebuilding every ``xargs`` stage fed by a pipe (index
+    >= 1) catches both, and inside a group as well (``echo <name> | ( xargs pkill )``),
+    since group punctuation is transparent.  The producer is only the pipeline's FIRST
+    stage, so a middle stage that names the product while EXCLUDING it
+    (``ps | grep -v <name> | xargs killall``) is not pulled into the kill argv.  The
+    ``xargs`` of a stage is its first non-option, non-assignment word, so a literal
+    ``xargs`` among another program's arguments is not mistaken for an invocation and the
+    pass stays linear.
+    """
+    results: list[str] = []
+    for stages in _split_into_pipeline_stages(tokens):
+        if len(stages) < 2:
+            continue
+        producer = [word for token in stages[0] for word in _flatten_operand_words(token)]
+        for stage in stages[1:]:
+            # xargs anywhere in the stage, so a wrapper (``env``/``sudo``/``timeout N``)
+            # before it does not hide the invocation. The first occurrence is enough, so
+            # a literal ``xargs`` among the command's own arguments costs one rebuild, not
+            # a quadratic scan.
+            xargs_at = next(
+                (k for k, word in enumerate(stage) if _program_basename(word) == "xargs"),
+                -1,
+            )
+            if xargs_at < 0:
+                continue
+            after = _skip_xargs_options(stage, xargs_at + 1)
+            command = [w for token in stage[after:] for w in _flatten_operand_words(token)]
+            if command:
+                results.append(" ".join(command + producer))
+    return results
+
+
+#: Kill-family programs for the fail-closed xargs guard: the by-name set plus bare
+#: ``kill`` (xargs can feed it the product name as a target).
+_XARGS_KILL_PROGRAMS = _KILL_BY_NAME_PROGRAMS | frozenset({"kill"})
+
+
+def _xargs_fed_kill_program(tokens: "list[str]") -> str:
+    """The kill-family program a pipe-fed ``xargs`` stage RUNS, or ``""``.
+
+    Only an ``xargs`` whose command (its first word after ``xargs``' own options) is a
+    kill-family program counts -- not a kill in a separate command, nor a kill name that
+    is merely a data operand of another program (``xargs -d ';' echo pkill`` runs
+    ``echo``, so it does not qualify).  This is what ties the fail-closed rule to "xargs
+    FEEDS a kill-family program".
+    """
+    for index, token in enumerate(tokens):
+        if _program_basename(token) != "xargs":
+            continue
+        # Skip xargs' own options over the RAW tokens (not split stages), so a value
+        # that is itself a separator -- ``-d ';'`` -- is consumed rather than read as a
+        # command boundary, and the word after is the program xargs runs.
+        after = _skip_xargs_options(tokens, index + 1)
+        if after < len(tokens) and _program_basename(tokens[after]) in _XARGS_KILL_PROGRAMS:
+            return tokens[after]
+    return ""
+
+
+def _xargs_protected_name(tokens: "list[str]") -> str:
+    """The protected product name as it appears on the line, resolving an empty
+    substitution or default (``kiro$()crew``) and a one-character bracket class the same
+    way the self-kill floor's own argument scan does, or ``""`` if the line names none.
+    """
+    for token in tokens:
+        for view in (
+            token,
+            _debracket(token),
+            _normalize_operand(token),
+            _resolved_word_view(token),
+        ):
+            match = _SELF_NAME_RE.search(view)
+            if match:
+                return match.group(0)
+    return ""
+
+
+def _xargs_fail_closed_refusal(tokens: "list[str]") -> str:
+    """A COMPACT payload the self-kill floor must refuse, emitted when the rule cannot be
+    judged exactly.
+
+    Fail closed on ambiguity: when an ``xargs`` stage runs a kill-family program
+    (:func:`_xargs_fed_kill_program`), the line names a protected target
+    (:func:`_xargs_protected_name`), and an ambiguous construct
+    (:func:`_xargs_line_has_ambiguous_construct`) defeats exact reconstruction, refuse
+    rather than risk a self-kill slipping through a spelling the quote-stripped tokens
+    cannot tell apart.  The payload is just ``<kill> <name>`` -- the two words that make
+    the floor fire -- so it is always SHORTER than the source line it came from and the
+    payload walk (which drops a payload not strictly shorter than its parent) cannot
+    discard it.  Refusing a benign line that meets all three conditions is an accepted
+    safe-side cost; quote-preserving tokenization would remove it later.
+    """
+    kill = _xargs_fed_kill_program(tokens)
+    if not kill:
+        return ""
+    name = _xargs_protected_name(tokens)
+    if not name:
+        return ""
+    if not _xargs_line_has_ambiguous_construct(tokens):
+        return ""
+    kill_word = _flatten_operand_words(kill)
+    if not kill_word:
+        return ""
+    return kill_word[0] + " " + name
+
+
+def _xargs_reconstructed_commands(tokens: "list[str]") -> "list[str]":
+    """Each command ``xargs`` will run, rebuilt from its argv plus the piped words.
+
+    ``xargs`` appends the words it reads on stdin to the command given as its own
+    arguments, so ``echo <verb> | xargs <name>`` executes ``<name> <verb>``.  Neither
+    side contains a space, so the whole-token payload scan cannot see it; rebuilding the
+    effective command line makes it visible to the ordinary argv checks.
+
+    The result is the UNION of three rebuilds: the broad baseline
+    (:func:`_xargs_first_pipe_rebuild`), which keeps a wrapped ``xargs`` and the first
+    pipeline's quoted words in view; a per-stage rebuild
+    (:func:`_xargs_stage_rebuilds`), which adds a pipeline that follows another command,
+    an intermediate ``xargs`` stage, and a grouped ``xargs`` -- each read from its own
+    pipeline's first stage, both bounding the ``xargs`` argv to its stage; and a
+    fail-closed refusal (:func:`_xargs_fail_closed_refusal`) for a kill-feeding ``xargs``
+    on a line that names the product through a spelling the exact rebuilds cannot resolve.
+    """
+    results: list[str] = []
+    seen: set[str] = set()
+    rebuilds = [
+        _xargs_first_pipe_rebuild(tokens),
+        *_xargs_stage_rebuilds(tokens),
+        _xargs_fail_closed_refusal(tokens),
+    ]
+    for payload in rebuilds:
+        if payload and payload not in seen:
+            seen.add(payload)
+            results.append(payload)
+    return results
 
 
 def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
@@ -1566,9 +1723,7 @@ def _nested_shell_payloads(
         # the piped words to its own command.  ``echo <verb> | xargs <name>`` therefore
         # runs ``<name> <verb>`` even though neither half contains a space.  Reconstruct
         # what it will run: the xargs command line plus the producer's literal words.
-        reconstructed = _xargs_reconstructed_command(tokens)
-        if reconstructed:
-            payloads.append(reconstructed)
+        payloads.extend(_xargs_reconstructed_commands(tokens))
     return [p for p in payloads if p.strip()]
 
 

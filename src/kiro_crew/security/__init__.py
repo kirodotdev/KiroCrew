@@ -547,7 +547,7 @@ _EXPORTS: dict[str, str] = {
     "_self_tokens": "shell_normalizer",
     "_shell_payload_walk": "shell_normalizer",
     "_shell_tokens": "shell_normalizer",
-    "_xargs_reconstructed_command": "shell_normalizer",
+    "_xargs_reconstructed_commands": "shell_normalizer",
     "normalize_shell_command": "shell_normalizer",
     # shell_normalizer_escapes
     "_ANSI_C_LITERAL_ESCAPES": "shell_normalizer_escapes",
@@ -1214,7 +1214,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _self_tokens,
         _shell_payload_walk,
         _shell_tokens,
-        _xargs_reconstructed_command,
+        _xargs_reconstructed_commands,
         normalize_shell_command,
     )
     from kiro_crew.security.shell_normalizer_escapes import (  # noqa: F401

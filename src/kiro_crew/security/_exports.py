@@ -507,7 +507,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_valid_oauth_extension_path",
     "_validate_operator_oauth_entries",
     "_vowel_ratio",
-    "_xargs_reconstructed_command",
+    "_xargs_reconstructed_commands",
     "annotate_refusal",
     "annotations",
     "apply_resource_limits",
