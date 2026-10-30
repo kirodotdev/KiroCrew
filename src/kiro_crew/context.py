@@ -1306,20 +1306,17 @@ def _skills_injection_plan(
 
     inherit = provider_type == PROVIDER_ACP
     pinned = pinned_skill_globs(session_key, project_dir=project_dir, inherit_defaults=inherit)
-    globs = (
-        pinned
-        if pinned is not None
-        else (
-            agent_skill_globs(
-                agent,
-                project_dir=project_dir,
-                inherit_defaults=inherit,
-                session_key=session_key or "",
-            )
-            if agent
-            else []
+    if pinned is not None:
+        globs = pinned
+    elif agent:
+        globs = agent_skill_globs(
+            agent,
+            project_dir=project_dir,
+            inherit_defaults=inherit,
+            session_key=session_key or "",
         )
-    )
+    else:
+        globs = []
     is_custom = (
         bool(agent)
         and not is_kirocrew_default_agent(agent)

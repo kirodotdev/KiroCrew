@@ -285,15 +285,12 @@ def pinned_entitlement_backend(
     answers the worker's route (``mate_worker.crewmate_worker_backend``) and any
     other caller gets ``None``, keeping its own rule.
     """
-    pin = (
-        crewmate_pin_for(config, crew)
-        if acp_backend is None
-        else (
-            CrewBackendPin(crew, acp_backend.strip(), _kas_bundle(config))
-            if acp_backend.strip()
-            else None
-        )
-    )
+    if acp_backend is None:
+        pin = crewmate_pin_for(config, crew)
+    elif acp_backend.strip():
+        pin = CrewBackendPin(crew, acp_backend.strip(), _kas_bundle(config))
+    else:
+        pin = None
     if pin is not None:
         return pin.resolve()
     if for_workers:
