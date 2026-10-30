@@ -5018,7 +5018,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Mates",
-      "crews_description": "Your AI teammates",
+      "crews_description": "Always-on AI agents",
       "connections_label": "Connections",
       "connections_description": "Connect official services and manage custom MCP servers",
       "skills_label": "Skills",
