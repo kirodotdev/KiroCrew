@@ -329,21 +329,21 @@ class TestCrewLogAppend:
 
     def test_a_credential_spanning_a_key_and_its_value_still_sends_valid_json(self, ctx, gateway):
         """Redacted string by string, never as one serialized blob: a pattern that
-        matches across ``"authorization": "Bearer ..."`` would otherwise eat the
+        matches across ``"aws_secret_access_key": "..."`` would otherwise eat the
         delimiter and leave text that is not JSON, and the script would crash with a
         decode error instead of sending the record. The shape survives, nested strings
         are still scrubbed, and non-string scalars pass through untouched."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
+        secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
         # The serialized blob of this record is what the redactor turns into non-JSON.
-        blob = json.dumps({"headers": {"authorization": bearer}})
+        blob = json.dumps({"creds": {"aws_secret_access_key": secret}})
         with pytest.raises(json.JSONDecodeError):
             json.loads(cron_script.redact(blob))
 
         ctx.crew_log_append(
             "stock_check",
             {
-                "headers": {"authorization": bearer},
+                "creds": {"aws_secret_access_key": secret},
                 "rows": [{"key": f"found {_FAKE_KEY}"}, 7],
                 "n": 1,
             },
@@ -353,8 +353,9 @@ class TestCrewLogAppend:
         sent = json.loads(req.data)
         assert sent["type"] == "stock_check"
         assert _FAKE_KEY not in req.data.decode()
-        assert set(sent["data"]) == {"headers", "rows", "n"}
-        assert set(sent["data"]["headers"]) == {"authorization"}
+        assert secret not in req.data.decode()
+        assert set(sent["data"]) == {"creds", "rows", "n"}
+        assert set(sent["data"]["creds"]) == {"aws_secret_access_key"}
         assert sent["data"]["rows"][1] == 7 and sent["data"]["n"] == 1
 
     def test_a_credential_that_needs_its_key_to_match_is_still_redacted(self, ctx, gateway):
