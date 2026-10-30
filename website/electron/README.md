@@ -385,6 +385,18 @@ Open via **Connection → Open Config File** or the tray menu.
   "has a dashboard document loaded in this run"; there is one such latch.
   No sandbox switch is ever applied.
 - External links open in your default browser
+- **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
+  accepts exactly three shapes, refusing everything else with a logged reason:
+  `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
+  (open that session; what `kirocrew open` builds) and
+  `kirocrew://apps/detail/<name>` (show that app's detail page, so a companion
+  program can send the user to its app without a walk through the store). The
+  route is rebuilt from the validated pieces, never copied from the URL, and a
+  link only navigates: the detail page takes its install, update and enable
+  trigger from router state, never from a URL, so the click stays the user's.
+  `deep-link-handler.js` holds a link until the dashboard document reports
+  `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
+  the native menu's Settings and About.
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,
   macOS app-bundle, and Windows MSI locations

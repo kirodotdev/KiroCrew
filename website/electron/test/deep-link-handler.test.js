@@ -58,6 +58,16 @@ describe("createDeepLinkHandler", () => {
     assert.deepEqual(calls, ["/chat?sid=b"]);
   });
 
+  it("an app detail link is held and flushed exactly like a session link", () => {
+    const { fn, calls } = fakeDeliver();
+    const h = createDeepLinkHandler({ deliver: fn });
+    assert.equal(h.handleUrl("kirocrew://apps/detail/keeb-crew"), false);
+    assert.equal(h.pending(), "/apps/detail/keeb-crew");
+    assert.equal(h.navigateReady(), true);
+    assert.deepEqual(calls, ["/apps/detail/keeb-crew"]);
+    assert.equal(h.pending(), null);
+  });
+
   it("an acked document that cannot take the route keeps the link held", () => {
     // e.g. the ack came from a page that is not the dashboard origin.
     const accepts = { value: false };
