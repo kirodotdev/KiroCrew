@@ -335,7 +335,7 @@ def _step(
     return result
 
 
-def _explain_registry_refusal(step: dict[str, Any], npm: str, *, public: bool) -> None:
+def _explain_registry_refusal(step: dict[str, Any], npm: str, *, prefix: str, public: bool) -> None:
     """Replace npm's raw refusal text on *step* with a plain message, in place.
 
     npm's own advice for E401 (``npm login``) is wrong for many registries, and
@@ -352,7 +352,7 @@ def _explain_registry_refusal(step: dict[str, Any], npm: str, *, public: bool) -
     registry = (
         npm_registry_auth.PUBLIC_NPM_REGISTRY
         if public
-        else npm_registry_auth.configured_registry(npm, _run)
+        else npm_registry_auth.configured_registry(npm, _run, prefix=prefix)
     )
     step["stderr"] = redact_install_output(
         npm_registry_auth.auth_failure_message(code, registry, public=public)
@@ -527,8 +527,10 @@ def install(
         if public_registry
         else []
     )
+    install_prefix = ""
     try:
         with _pinned_managed_cli_root() as managed_root:
+            install_prefix = str(managed_root)
             steps.append(
                 _step(
                     "npm-install-global",
@@ -537,7 +539,7 @@ def install(
                         "install",
                         "-g",
                         "--prefix",
-                        str(managed_root),
+                        install_prefix,
                         *registry_args,
                         NPM_SPEC,
                     ],
@@ -556,7 +558,7 @@ def install(
         )
         return {"ok": False, "steps": steps}
     if not steps[-1]["ok"]:
-        _explain_registry_refusal(steps[-1], npm, public=public_registry)
+        _explain_registry_refusal(steps[-1], npm, prefix=install_prefix, public=public_registry)
         return {"ok": False, "steps": steps}
 
     try:

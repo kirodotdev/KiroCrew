@@ -163,6 +163,37 @@ class TestARegistryRefusalIsExplained:
         assert step["error_params"]["registry"] == "https://scoped.example.test/"
         assert _REGISTRY not in step["stderr"]
 
+    def test_the_lookup_reads_the_configuration_the_install_reads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project ``.npmrc`` that a global install ignores is not the registry named.
+
+        npm answers the project value unless asked in the install's own global
+        context; the fake models that, so naming the project registry fails here.
+        """
+        _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+        calls: list[list[str]] = []
+        project = "https://project.example.test/"
+
+        def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+            calls.append(list(argv))
+            if argv[:3] == ["/n/npm", "config", "get"]:
+                install_prefix = calls[0][4]
+                global_context = argv[4:] == ["--global", "--prefix", install_prefix]
+                if argv[3] == "@playwright:registry":
+                    return 0, ("undefined\n" if global_context else f"{project}\n"), ""
+                return 0, (f"{_CONFIGURED}\n" if global_context else f"{project}\n"), ""
+            if argv[:2] == ["/n/npm", "install"]:
+                return 1, "", _E401
+            return 0, "", ""
+
+        monkeypatch.setattr(mod, "_run", fake_run)
+
+        step = mod.install()["steps"][-1]
+
+        assert step["error_params"]["registry"] == _REGISTRY
+        assert "project.example.test" not in step["stderr"]
+
 
 class TestAnyOtherNpmFailureKeepsTodaysBehaviour:
     def test_npm_output_is_shown_as_it_was(self, monkeypatch: pytest.MonkeyPatch) -> None:

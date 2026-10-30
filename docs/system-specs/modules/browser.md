@@ -284,7 +284,8 @@ a second tab therefore sees the same operation, engine, stage and elapsed time.
 - **Registry refusals.** When the npm step fails and npm's own first
   `npm error code` line (or `npm ERR! code` on older npm) is `E401` or `E403`,
   the step names the registry npm used for the package (`@playwright:registry`,
-  then `registry`, read with `npm config get`) and replaces npm's text with a
+  then `registry`, read with `npm config get --global --prefix <managed prefix>`
+  so a project `.npmrc` the global install ignores is not read either) and replaces npm's text with a
   plain message; the job reports `registry_auth`. Only the registry's scheme,
   host and port are shown, because a registry URL can carry a token in its user
   info, path or query. Any other npm failure keeps npm's output. The owner of

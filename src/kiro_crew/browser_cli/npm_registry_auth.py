@@ -81,7 +81,7 @@ def display_registry(raw: str) -> str | None:
 
 
 def configured_registry(
-    npm: str, run: Callable[[list[str], float], tuple[int, str, str]]
+    npm: str, run: Callable[[list[str], float], tuple[int, str, str]], *, prefix: str
 ) -> str | None:
     """The registry npm uses for the CLI package, as :func:`display_registry` shows it.
 
@@ -89,12 +89,18 @@ def configured_registry(
     package, exactly as npm resolves it, so it is asked first; npm answers
     ``undefined`` when it is unset, which is not a URL and falls through.
 
+    npm is asked in the same configuration context as the install
+    (``--global --prefix <prefix>``): a global install does not read a project
+    ``.npmrc`` in the working directory, so the lookup must not read it either.
+
     *run* is the installer's own subprocess runner, so this child gets the same
     environment, process group and shutdown handling as the install itself.
     ``None`` when npm cannot answer.
     """
     for key in (f"{_PACKAGE_SCOPE}:registry", "registry"):
-        rc, out, _err = run([npm, "config", "get", key], _CONFIG_GET_TIMEOUT_S)
+        rc, out, _err = run(
+            [npm, "config", "get", key, "--global", "--prefix", prefix], _CONFIG_GET_TIMEOUT_S
+        )
         if rc != 0:
             continue
         lines = [line for line in out.splitlines() if line.strip()]
