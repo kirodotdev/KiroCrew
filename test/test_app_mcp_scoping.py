@@ -289,7 +289,8 @@ class TestRegistrationTarget:
         bridges._register_mcp_servers("mochi", _manifest({"pet": {"command": "x"}}))
 
         cfg = json.loads(bridges._mcp_json_path().read_text())
-        assert cfg["tools"] == ["fs_read"]
+        # The owner's tools survive in order; the app's server is exposed after them.
+        assert cfg["tools"] == ["fs_read", "@mochi:pet"]
         assert cfg["includeMcpJson"] is False
         assert "mochi:pet" in cfg["mcpServers"]
 

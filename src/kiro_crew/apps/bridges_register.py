@@ -28,6 +28,7 @@ from kiro_crew.apps.bridges_mcp import (
 from kiro_crew.apps.bridges_mcp_config import (
     _mcp_lock,
     _read_mcp_json_unlocked,
+    _sync_app_tool_refs,
     _write_mcp_json_unlocked,
 )
 from kiro_crew.apps.bridges_skills import _deregister_skills, _register_skills
@@ -170,6 +171,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
             for k in stale:
                 del servers[k]
             if stale:
+                _sync_app_tool_refs(data, app_name)
                 _write_mcp_json_unlocked(data)
                 logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
 
