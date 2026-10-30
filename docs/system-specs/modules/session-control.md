@@ -966,13 +966,37 @@ handed and cannot fork them or open sessions against the creator's memory.
 The reach moves: once a session is handed on, the giver is refused the widened verbs
 on it. Both sides of a handoff go through `authorize_target` with the `handoff`
 operation, so only the current manager can hand a session on, and the recipient must
-be a session the caller manages too. The verb then holds EVERY caller, fenced or not, to
-that manager rule (403 `not_manager`), so an unfenced agent in one of the person's own
-tabs cannot hand another of the person's tabs, which has no manager, to a fenced
-session. Refusals of its own, all 409: `self_manager` (the
+be a session the caller manages too. A fenced caller that fails either check is
+refused there with 403 `not_creator`, the ownership fence's code, so a fenced caller
+never sees `not_manager`. The verb then holds EVERY caller, fenced or not, to that
+manager rule (403 `not_manager`), and for an unfenced caller this is the only check
+that applies: an unfenced agent in one of the person's own tabs cannot hand another
+of the person's tabs, which has no manager, to a fenced session. Refusals of its own,
+all 409: `self_manager` (the
 recipient is the target), `already_manager`, and `would_cycle` (the target manages the
 recipient, directly or up the line). A write that fails is 500 `handoff_write_failed`
 with nothing changed.
+
+The same reach rule bounds `session_adopt` and sets what a handoff can and cannot
+undo, for a fenced caller (every agent-created session, crewmate, cron and channel
+session). Probed on main `87986c501a` with the real gate:
+
+- `adopt` succeeds only on a session the caller manages: the manager of record (the
+  creator until a handoff names another) and, with the chain switch on, a session
+  above that manager. A third conductor, or a conductor adopting another
+  conductor's worker, gets 403 `not_creator`, with the switch off or on. A session
+  whose manager is no longer open can be adopted by no fenced caller; only an
+  unfenced agent in a person's own tab, or the person, reaches it.
+- There is no hand-back by the new manager. The recipient must be a session the
+  caller manages, and the giver is the caller's own manager, so the call is refused
+  `not_creator` with the switch off or on. With the switch on, the giver can take the
+  session back by handing it to itself while it still manages the new manager; with
+  it off, no agent can.
+- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
+  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
+  giver can still bind. Tracked in #19103.
+- A fenced caller adopting a crewmate's DM slot is refused `not_creator`, since no
+  fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
 The manager lives in `session_managers.json` under the data home's `crew-log` root
 (`src/kiro_crew/dashboard/session_managers.py`), keyed by slot key, holding the manager
