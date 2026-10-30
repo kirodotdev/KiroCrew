@@ -392,6 +392,24 @@ export default function CrewEditorNextDialog({
     discardAsk, setDiscardAsk, discardTakesSheet, askSchedOnly, schedSaving, discardForce, confirmDiscard,
   } = ctl
 
+  // Which single line the model readout shows. A scoped pin the harness serves
+  // under no id stays unsent; a foreign pin can instead resolve to a lower
+  // tier, which the readout must name along with why; only a model chosen
+  // here AND in use is already shown by the picker, so only it gets no line.
+  // Otherwise the line names the model in use without claiming where it came
+  // from (the template the mate runs as can pin one as well as the global
+  // default), or says it is picked automatically when no tier names one --
+  // including a chosen model the harness cannot claim, with nothing below it.
+  const modelLine: 'unserved' | 'instead' | 'uses' | null = !resolved
+    ? null
+    : editModel === editingAgent?.model && resolved.pin_served_as === '' && (!resolved.model || resolved.model === editModel)
+      ? 'unserved'
+      : resolved.pinned && !!resolved.model && resolved.model !== editingAgent?.model
+        ? 'instead'
+        : resolved.pinned && !!resolved.model && resolved.model === editingAgent?.model
+          ? null
+          : 'uses'
+
   // A nested child panel (approvals, a memory doc, the memory records editor)
   // owns its OWN unsaved text; the host cannot discard it on the child's
   // behalf. Switching section/subtab unmounts that panel, which would destroy
@@ -678,25 +696,25 @@ export default function CrewEditorNextDialog({
                       askAgent={false}
                       testId="next-model-resolved-error"
                     />
-                    {resolved && (
+                    {resolved && (modelLine !== null || effortCapable || !editEffort) && (
                       <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                        {/* A scoped pin the harness serves under no id stays unsent. A foreign
-                            pin can instead resolve to a lower tier, which the readout must name. */}
-                        {editModel === editingAgent?.model && resolved.pin_served_as === '' && (!resolved.model || resolved.model === editModel) ? (
+                        {modelLine === 'unserved' && (
                           <div className="text-text" data-testid="next-model-pin-unserved">
                             {i18nT('pages.kiroCrewAgentsPage.pin_unserved_resolves_to', { model: editModel, harness: pinHarness })}
                           </div>
-                        ) : (
-                          <div>
-                            <span className="text-text">
-                              {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
-                            </span>
-                            {' — '}
-                            {resolved.pinned && resolved.model === editingAgent?.model
-                              ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                              : resolved.model
-                                ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
-                                : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                        )}
+                        {modelLine === 'instead' && (
+                          <div className="text-text" data-testid="next-model-runs-instead">
+                            {i18nT('pages.kiroCrewAgentsPage.model_runs_instead', {
+                              harness: pinHarness, picked: editingAgent?.model, model: resolved.model,
+                            })}
+                          </div>
+                        )}
+                        {modelLine === 'uses' && (
+                          <div className="text-text" data-testid="next-model-uses-line">
+                            {resolved.model
+                              ? i18nT('pages.kiroCrewAgentsPage.model_uses', { model: resolved.model })
+                              : i18nT('pages.kiroCrewAgentsPage.model_picked_automatically')}
                           </div>
                         )}
                         {(effortCapable || !editEffort) && (
