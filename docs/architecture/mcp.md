@@ -4071,7 +4071,9 @@ session for as long as the session lives — whether or not that session will ev
 use it. With `agent.tool_search` on (the default), kiro defers MCP specs once they
 cross `agent.tool_search_min_pct` or `agent.tool_search_min_tokens`, and Crew's own
 servers defer like any other when the spawn runs the pinned kiro-cli install or its
-`kiro-cli-chat`, and both are >= 2.27.0. For any other executable (a pod bundle, a `kiro-cli`
+`kiro-cli-chat`, and both are >= 2.27.0. Both the spawned path and the pin are first
+passed through the edition's `agent_executable` resolver, the one the OS sandbox applies
+to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle, a `kiro-cli`
 found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
 "tools list differs" rejection that bricks a session. KAS ignores the toggle and the
