@@ -610,6 +610,23 @@ def _scrub_grant_values(text: str, resolved: dict[str, str]) -> str:
     return text
 
 
+#: The two precheck refusals the operator heals by approving the SAME mapping
+#: again over the job's current code: the stored pin is missing, or it fails to
+#: verify (the script body, message or delivery controls changed, or the epoch
+#: moved). The runner flags a run refused with one of these as ``grant_stale`` so
+#: the scheduler can resurface a pending re-approval request (see
+#: :mod:`kiro_crew.cron_service.grant_resurface`); every other refusal (unreadable
+#: vault, missing secret) is not healed by re-approval and is not flagged.
+GRANT_PIN_MISSING_ERROR = "secret grant has no code pin; re-approve it in the dashboard"
+GRANT_PIN_STALE_ERROR = (
+    "cron code changed (or its delivery session was rewired) since "
+    "its secret grant was approved; secrets were NOT injected. "
+    "Re-approve the grant in the dashboard (Schedule > job > "
+    "Secrets) to run it again."
+)
+GRANT_REAPPROVAL_ERRORS = frozenset({GRANT_PIN_MISSING_ERROR, GRANT_PIN_STALE_ERROR})
+
+
 def _secret_env_precheck(
     secret_env: dict[str, str] | None,
     secret_env_pin: str,
@@ -633,7 +650,7 @@ def _secret_env_precheck(
     if not secret_env:
         return {}, None
     if not secret_env_pin:
-        return {}, "secret grant has no code pin; re-approve it in the dashboard"
+        return {}, GRANT_PIN_MISSING_ERROR
 
     try:
         current = _pin_digest(
@@ -646,12 +663,7 @@ def _secret_env_precheck(
     except ValueError as exc:  # vault store without key — never inject
         return {}, str(exc)
     if not hmac.compare_digest(current, secret_env_pin):
-        return {}, (
-            "cron code changed (or its delivery session was rewired) since "
-            "its secret grant was approved; secrets were NOT injected. "
-            "Re-approve the grant in the dashboard (Schedule > job > "
-            "Secrets) to run it again."
-        )
+        return {}, GRANT_PIN_STALE_ERROR
     try:
         return _resolve_secret_env(secret_env), None
     except ValueError as exc:
