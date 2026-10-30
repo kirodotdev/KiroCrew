@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
 
+from kiro_crew.dashboard.chat_utils_awaits import run_to_completion
 from kiro_crew.loop_lock import LoopBoundLock
 
 FOLDERS_FILE = "folders.json"
@@ -91,8 +92,16 @@ class FolderRepository:
                 return value
             path = path_provider()
             snapshot = [dict(folder) for folder in folders_provider()]
+
+            # The restore covers the write's own failure only: run_to_completion raises
+            # that before any cancellation, and a cancelled-but-landed write is kept.
+            write = asyncio.ensure_future(asyncio.to_thread(write_confirmed, path, snapshot))
             try:
-                await asyncio.to_thread(write_confirmed, path, snapshot)
+                await run_to_completion(write)
+            except asyncio.CancelledError:
+                if not write.cancelled() and on_committed is not None:
+                    on_committed()
+                raise
             except Exception:
                 folders_provider()[:] = before
                 raise
