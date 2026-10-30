@@ -59,7 +59,11 @@ def installed(monkeypatch):
 
 
 def _resume(monkeypatch, cfg, captured, agent_name=AGENT):
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _, *, repair_project=None: captured,
+    )
     return resolve_session_agent_bindings(
         resolve_agent_bindings, cfg, "dashboard:chat-1-1", agent_name, "/tmp"
     )

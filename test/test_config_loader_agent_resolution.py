@@ -616,7 +616,9 @@ class TestAppAgentDispatch(unittest.TestCase):
                 )
                 from kiro_crew import session_agent_selection as sas
 
-                with unittest.mock.patch.object(sas, "read_session_execution", lambda _k: stale):
+                with unittest.mock.patch.object(
+                    sas, "read_session_execution", lambda _k, *, repair_project=None: stale
+                ):
                     session = sas.resolve_session_agent_bindings(
                         loader.resolve_agent_bindings, cfg, "dashboard:chat", None
                     )
@@ -641,7 +643,9 @@ class TestAppAgentDispatch(unittest.TestCase):
                     ).kiro_agent
                     == "KiroPkg-captain"
                 )
-                with unittest.mock.patch.object(sas, "read_session_execution", lambda _k: template):
+                with unittest.mock.patch.object(
+                    sas, "read_session_execution", lambda _k, *, repair_project=None: template
+                ):
                     session = sas.resolve_session_agent_bindings(
                         loader.resolve_agent_bindings, cfg, "dashboard:chat", None
                     )

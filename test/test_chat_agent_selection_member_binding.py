@@ -231,7 +231,9 @@ def test_a_record_less_template_stamp_never_resolves_a_same_named_crewmate(monke
     }
     cfg.default_agent = "default"
     private = provision_member_memory(cfg, "atlas")
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: None)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: None
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name == "atlas" else "",

@@ -1408,6 +1408,7 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("session_tool_policy", "dashboard"),
     ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
+    "kiro_crew/execution_context.py": [("repair_session_execution", "unknown")],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
 }

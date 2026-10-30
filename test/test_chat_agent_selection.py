@@ -64,7 +64,11 @@ def test_global_session_binding_matches_equivalent_alias(monkeypatch):
         "kirocrew",
         selection_name="original",
     )
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _, *, repair_project=None: captured,
+    )
     stored = resolve_session_agent_bindings(
         resolve_agent_bindings, cfg, "dashboard:global-alias", "original"
     )
@@ -108,7 +112,9 @@ def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch, prune
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name == "synced-agent" else "",
@@ -139,7 +145,9 @@ def test_resume_after_crewmate_prune_keeps_refusing_owned_members(
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context, store=store, member_id=member_id)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name == "synced-agent" else "",
@@ -160,7 +168,9 @@ def test_resume_after_crewmate_prune_refuses_uninstalled_agent(monkeypatch, prun
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent", lambda name, project_dir=None: ""
     )
@@ -177,7 +187,11 @@ def _record_store(monkeypatch, record):
     from kiro_crew import session_agent_selection
 
     cell = {"record": record}
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: cell["record"])
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _, *, repair_project=None: cell["record"],
+    )
 
     def _bind(_key, execution, **_kwargs):
         cell["record"] = execution

@@ -404,6 +404,32 @@ archive this one) when the store has an attributed owner, or the legacy store
 repair `kirocrew doctor` names when the start-of-process migration could not
 attribute it. A successful backfill logs one INFO line naming the session.
 
+A persistent fork whose existing template carrier has an empty selection name
+can be repaired during contextual agent binding when it stores a configured
+member alias as the template id. Generic reads decode existing carriers without
+repair. `resolve_session_agent_bindings` explicitly supplies its captured project
+through `read_session_execution(repair_project=...)`. Binding resolution without
+a project argument supplies explicit `None` and admits only an empty durable
+scope. The active and durable project scopes must agree before discovery. Eager
+spawn passes its captured project on both binding-resolution calls. The linked
+parent must be readable, have no carrier, name the same agent, and not be
+explicitly template-stamped. A name that also resolves to a
+materialized template in the child's project scope is ambiguous and is left
+unchanged. Event-loop reads defer repair to an off-loop reader, where template
+discovery can inspect disk instead of treating a cache miss as absence.
+Before a permanent repair, fresh strict reads of the user and recorded project
+template directories must prove the name absent. A failed directory listing or
+spec read/parse defers repair without changing the carrier; a later healthy read
+retries. Existing discovery probes may exclude byte-proven AppleDouble sidecars
+and plain Markdown documents; a filename prefix alone proves nothing.
+The proof is local to the repair and cannot be replaced by resolver
+warm-ups or a stale ready snapshot.
+The member must resolve to the same V1 store the child already names;
+restricted sessions and V2 stores are refused. The repair compares the child's
+carrier, agent, parent link, privacy mode and raw project value before saving only the
+corrected carrier, and reads back a concurrent winner. New forks preserve the
+parent's `agent_kind` on the child so the selected namespace survives persistence.
+
 Persistent sessions serialize this record in their existing owner metadata.
 Incognito and Temporary sessions keep it in live session state only. Their
 TRANSCRIPT is persisted like any other session's -- the user reopens an
