@@ -463,11 +463,19 @@ def test_the_bridge_entry_point_refuses_bad_input_and_a_missing_token(monkeypatc
     assert "the sprite is gone" in err and TOKEN not in err
 
 
-def test_window_size_and_raw_mode_on_a_real_pty():
+def test_window_size_and_raw_mode_on_a_real_pty(monkeypatch):
     import fcntl
     import struct
     import termios
 
+    real_tcsetattr = termios.tcsetattr
+    restores = []
+
+    def recording_tcsetattr(fd, when, attributes):
+        restores.append((fd, [list(a) if isinstance(a, list) else a for a in attributes]))
+        real_tcsetattr(fd, when, attributes)
+
+    monkeypatch.setattr(termios, "tcsetattr", recording_tcsetattr)
     primary, worker = os.openpty()
     try:
         fcntl.ioctl(worker, termios.TIOCSWINSZ, struct.pack("HHHH", 33, 101, 0, 0))
@@ -475,7 +483,15 @@ def test_window_size_and_raw_mode_on_a_real_pty():
         before = termios.tcgetattr(worker)
         with terminal._raw(worker):
             assert termios.tcgetattr(worker) != before
-        assert termios.tcgetattr(worker) == before
+        # _raw hands back exactly what it saved, PENDIN included.
+        assert restores[-1] == (worker, before)
+        after = termios.tcgetattr(worker)
+        # The kernel sets PENDIN on restore when input waits to be reprinted
+        # (macOS does this on a pty); _raw does not control it, so it is masked.
+        pendin = getattr(termios, "PENDIN", 0)
+        after[3] &= ~pendin
+        before[3] &= ~pendin
+        assert after == before
     finally:
         os.close(primary)
         os.close(worker)
