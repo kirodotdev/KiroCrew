@@ -45,6 +45,7 @@ import {
   useRegisterNavigationLeaveGuard,
 } from '../components/NavigationLeaveGuard'
 import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
+import { deferred } from './helpers'
 import { isTrapEntry, routerEntry } from '../lib/routeHistoryPosition'
 
 // Flipped per describe block: the mobile back bar reaches history through
@@ -195,12 +196,6 @@ const pressBack = async (settle: () => void) => {
   await waitFor(settle)
 }
 
-const deferredBoolean = () => {
-  let resolve!: (value: boolean) => void
-  const promise = new Promise<boolean>(finish => { resolve = finish })
-  return { promise, resolve }
-}
-
 const waitForRestoredTrap = () => new Promise<void>(resolve => {
   const onPop = () => {
     if (!isTrapEntry(routerEntry().state)) return
@@ -267,7 +262,7 @@ describe('browser Back navigation leave guard', () => {
   })
 
   it('restores before an async approval and ignores a competing Back', async () => {
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     renderAsyncDashboard(ask)
     await enterCapabilities()
@@ -291,7 +286,7 @@ describe('browser Back navigation leave guard', () => {
   })
 
   it('leaves on an approval that ends editing before the confirmation settles', async () => {
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     let endEditing!: () => void
     const ask = vi.fn((end: () => void) => { endEditing = end; return answer.promise })
     renderAsyncDashboard(ask)
@@ -333,7 +328,7 @@ describe('browser Back navigation leave guard', () => {
   })
 
   it('restores Back without a second confirmation while an in-app exit owns the slot', async () => {
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     renderAsyncDashboard(ask)
     await enterCapabilities()
@@ -351,7 +346,7 @@ describe('browser Back navigation leave guard', () => {
   })
 
   it('keeps the restored trap after an async denial and a competing Back', async () => {
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     renderAsyncDashboard(ask)
     await enterCapabilities()

@@ -3,17 +3,11 @@ import type { Notification } from '../types'
 import { uniqueNotificationTs } from './notificationTs'
 
 /**
- * Surface a short-lived app-wide outcome when no mounted component owns an
- * inline notice. Hook and controller failures use the same notification feed
- * as the dashboard bell, rather than a blocking browser dialog, and are also
- * announced live so the in-app banner shows them where the user is: the banner
- * listens for live arrivals only, never for the store, so a feed entry alone
- * would leave the failure unseen until the user opened the bell.
+ * Reports a failure no mounted component can show inline. It goes to the bell's
+ * feed and is also announced live, because the banner shows live arrivals only.
  *
- * The feed is reached through a sink the store installs when it is created,
- * not through an import. Store-free surfaces (the chat embed's composer) reach
- * this module through the popout controller, and importing the store here
- * would pull the whole Redux store into them.
+ * The store installs the feed sink, so store-free frames that reach this module
+ * through the popout controller do not import the Redux store.
  */
 let feedSink: ((note: Notification) => void) | null = null
 

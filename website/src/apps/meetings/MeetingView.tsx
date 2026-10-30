@@ -57,10 +57,7 @@ interface AttachLinkPromptProps {
   onCloseMenu: () => void
 }
 
-/**
- * This stays below the review-state gate. When review begins, unmounting this
- * host runs useTextPrompt's cleanup and settles any pending request with null.
- */
+/** Unmounted when review begins, which cancels a pending link prompt. */
 function AttachLinkPrompt({ promptRef, onAddAttachment, onCloseMenu }: AttachLinkPromptProps) {
   const { textPrompt, textPromptDialog } = useTextPrompt()
   const promptForLink = useCallback(async () => {

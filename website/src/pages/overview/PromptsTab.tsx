@@ -365,7 +365,7 @@ export default function PromptsTab() {
     cancelLabel: i18nT('components.confirmDialog.keep_editing'),
   }), [confirm])
   useSidePanelLeaveGuard(
-    async () => !editDirty() || await confirmDiscard(),
+    () => !editDirty() || confirmDiscard(),
     editDirty(),
   )
 

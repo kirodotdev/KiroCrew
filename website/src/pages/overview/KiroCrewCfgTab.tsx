@@ -258,7 +258,7 @@ export default function KiroCrewCfgTab() {
     confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
     cancelLabel: i18nT('components.confirmDialog.keep_editing'),
   }), [confirm])
-  useSidePanelLeaveGuard(useCallback(async () => !createDirty || await confirmDiscardCreate(), [createDirty, confirmDiscardCreate]), createDirty)
+  useSidePanelLeaveGuard(useCallback(() => !createDirty || confirmDiscardCreate(), [createDirty, confirmDiscardCreate]), createDirty)
 
   const reqId = useRef(0)
 
@@ -590,7 +590,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   // The drafts live only in local state until Save. On Settings > Agent Harness
   // the backend picker's error notices can hand off to the chat, which unmounts
   // this card; the guard asks before any navigation drops an unsaved draft.
-  useSidePanelLeaveGuard(useCallback(async () => !dirty || await confirm({
+  useSidePanelLeaveGuard(useCallback(() => !dirty || confirm({
     title: i18nT('pages.overview.promptsTab.discard_unsaved_changes'),
     confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
     cancelLabel: i18nT('components.confirmDialog.keep_editing'),

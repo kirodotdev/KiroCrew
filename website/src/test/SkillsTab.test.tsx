@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useNavigate } from 'react-router-dom'
 
@@ -95,27 +96,6 @@ beforeEach(() => {
   Object.values(mockApi).forEach(m => 'mockReset' in m && m.mockReset())
   mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody', hash: 'h-x' })
 })
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
-}
 
 describe('SkillsTab', () => {
   it('renders a row per skill with its loaded_by_agents pill', async () => {

@@ -13,7 +13,8 @@
  * `slice(0, FINDINGS_SHOWN)` would still pass if the notice were deleted.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { within, render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -42,28 +43,6 @@ function mountPage() {
       </MemoryRouter>
     </Provider>,
   )
-}
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  // The answer settles a promise; the page's updates follow it.
-  await act(async () => { fireEvent.click(action) })
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
 }
 
 describe('auto-improvement findings list — the cap is disclosed', () => {

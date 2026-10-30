@@ -134,13 +134,9 @@ describe('NotificationCard is the one rendering for both mac surfaces', () => {
     const failed = { ...note, ts: '1700000000.2', kind: 'error', title: 'Couldn\'t duplicate this session.', body: '' }
     renderWithProviders(<NotificationCard n={failed} />)
     expect(screen.getByText(failed.title).closest('.text-danger')).not.toBeNull()
+    // The status-text shade holds 4.5:1 on the light card.
+    expect(screen.getByText(failed.title)).toHaveClass('text-danger-text')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
-  })
-
-  it('writes an error note in the status-text shade, which holds 4.5:1 on the light card', () => {
-    const failed = { ...note, ts: '1700000000.3', kind: 'error', title: 'Session reload failed.', body: '' }
-    renderWithProviders(<NotificationCard n={failed} />)
-    expect(screen.getByText(failed.title)).toHaveClass('text-danger-text')
   })
 })

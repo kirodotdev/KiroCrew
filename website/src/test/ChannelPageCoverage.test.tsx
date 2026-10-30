@@ -24,6 +24,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
 
 import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import ChannelPage from '../pages/ChannelPage'
 import { renderWithProviders } from './helpers'
@@ -105,27 +106,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApi([channelOf()])
 })
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
-}
 
 describe('ChannelPage — empty states', () => {
   it('shows both empty states when the gateway reports no channels', async () => {

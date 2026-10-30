@@ -27,6 +27,7 @@ import { BrowserRouter, MemoryRouter, Routes, Route, useLocation, useNavigate } 
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
 import { NavigationLeaveGuardProvider, useGuardedLeave, useRegisterNavigationLeaveGuard, useClaimNavigationExitAttempt } from '../components/NavigationLeaveGuard'
 import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
+import { deferred } from './helpers'
 
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
@@ -102,12 +103,6 @@ function Dashboard() {
       <LocationProbe />
     </MemoryRouter>
   )
-}
-
-const deferredBoolean = () => {
-  let resolve!: (value: boolean) => void
-  const promise = new Promise<boolean>(finish => { resolve = finish })
-  return { promise, resolve }
 }
 
 function AsyncExitSource({ ask }: { ask: () => Promise<boolean> }) {
@@ -195,7 +190,7 @@ describe('in-app navigation leave guard', () => {
 
   it('keeps the first of two rapid nav-row attempts and drops the later one', async () => {
     window.history.replaceState(null, '', '/capabilities')
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     render(<NavigationLeaveGuardProvider><AsyncExitDashboard ask={ask} /></NavigationLeaveGuardProvider>)
     click('Chat')
@@ -207,7 +202,7 @@ describe('in-app navigation leave guard', () => {
 
   it('abandons a pending route target when its source route changes', async () => {
     window.history.replaceState(null, '', '/capabilities')
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     render(<NavigationLeaveGuardProvider><AsyncExitDashboard ask={ask} /></NavigationLeaveGuardProvider>)
     click('Chat')
@@ -220,7 +215,7 @@ describe('in-app navigation leave guard', () => {
 
   it('skips a guard that unregistered while an earlier answer was pending', async () => {
     window.history.replaceState(null, '', '/capabilities')
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const first = vi.fn(() => answer.promise)
     const second = vi.fn(() => false)
     function Second() { useRegisterNavigationLeaveGuard(second); return null }
@@ -280,7 +275,7 @@ describe('in-app navigation leave guard', () => {
   })
 
   it('keeps the first of two rapid tab attempts and drops the later tab', async () => {
-    const answer = deferredBoolean()
+    const answer = deferred<boolean>()
     const ask = vi.fn(() => answer.promise)
     render(<NavigationLeaveGuardProvider><AsyncTabsDashboard ask={ask} /></NavigationLeaveGuardProvider>)
     click('Other')

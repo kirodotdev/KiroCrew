@@ -1,10 +1,7 @@
 /**
- * Confirmation for standalone app windows (Mochi, the Crew Companion gallery)
- * that cannot rely on the dashboard stylesheet, so the shared `ConfirmDialog`
- * (Tailwind classes) could render unpositioned there. Styled inline from theme
- * variables only. Same contract: Cancel, Escape, the backdrop, a newer question
- * and unmount all answer `false`; focus stays in the dialog and returns to the
- * opener.
+ * Confirmation for standalone windows (Mochi, the Crew Companion gallery) that
+ * cannot load the dashboard stylesheet `ConfirmDialog` is styled with. Styled
+ * inline from theme variables, with the same answers and focus handling.
  */
 import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { i18nT } from '../i18n/t'
@@ -24,11 +21,9 @@ const btn: React.CSSProperties = { padding: '6px 12px', borderRadius: 6, fontSiz
 function InlineConfirmDialog({ question, settle }: { question: Question; settle: (ok: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const titleId = useId()
-  // Marks the Escape that dismisses this question, so a window-level Escape
-  // handler behind it can tell the key was already answered. Its own "is a
-  // question open" flag cannot: a real key press re-renders between the
-  // capture listener that closes the question and the bubble listener.
-  // A composing Escape is left alone so the IME keeps its default action.
+  // Marks the Escape that answers this question for window-level handlers:
+  // their own "question open" flag is already false when the key reaches them.
+  // A composing Escape is left to the IME.
   useLayoutEffect(() => {
     const mark = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.isComposing) e.preventDefault() }
     window.addEventListener('keydown', mark, true)
@@ -40,7 +35,6 @@ function InlineConfirmDialog({ question, settle }: { question: Question; settle:
   useEffect(() => { ref.current?.focus({ preventScroll: true }) }, [])
   return (
     <>
-      {/* Escape is the keyboard path for the backdrop's click. */}
       <div role="presentation" aria-hidden="true" style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.5)' }} onClick={() => settle(false)} />
       <div style={{ position: 'fixed', inset: 0, zIndex: 1001, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
         <div

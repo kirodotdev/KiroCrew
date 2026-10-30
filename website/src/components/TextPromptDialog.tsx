@@ -44,11 +44,9 @@ function DialogMountSignal({ onMountChange }: { onMountChange: (mounted: boolean
 }
 
 /**
- * The themed, asynchronous replacement for one-line `window.prompt` calls.
- *
- * `textPrompt(opts)` resolves to the submitted text. Cancel, Escape, backdrop
- * dismissal, unmount, and replacement by another prompt all resolve `null`.
- * Render `textPromptDialog` once beside the component that owns the prompt.
+ * `textPrompt(opts)` resolves to the submitted text, or `null` when the prompt
+ * is dismissed, replaced or unmounted. Render `textPromptDialog` once in the
+ * component that owns the prompt.
  */
 export function useTextPrompt(): {
   textPrompt: (opts: TextPromptOptions) => Promise<string | null>

@@ -17,11 +17,9 @@ export type LeaveAnswer = boolean | Promise<boolean> | (() => boolean | Promise<
  * is released (and `onSettled` run) before `perform`, and `perform` runs only
  * when the user agreed and the page that asked is still the one on screen.
  *
- * This is the one copy of that rule; every exit that claims an attempt settles
- * through it. Pass the leave check itself rather than its result: a check that
- * throws or rejects then counts as "stay" and still releases the attempt, which
- * would otherwise refuse every later exit. A `null` attempt is an exit that
- * claimed nothing. `refused` is what the call returns when `perform` does not run.
+ * Pass the leave check itself rather than its result, so a check that throws
+ * or rejects counts as "stay" and still releases the attempt. A `null` attempt
+ * claimed nothing. `refused` is returned when `perform` does not run.
  */
 export function settleNavigationExit(
   attempt: ClaimedNavigationExitAttempt | null,

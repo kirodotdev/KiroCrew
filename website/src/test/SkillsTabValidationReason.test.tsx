@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { within, render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -118,27 +119,6 @@ beforeEach(() => {
   mockApi.skillTree.mockResolvedValue({ tree: [] })
   mockApi.skillPendingDetail.mockResolvedValue(FLAGGED_DETAIL)
 })
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
-}
 
 describe('pending-card script-validation verdict (issue #10861)', () => {
   it('renders a fails-validation badge from the list entry, before any click', async () => {

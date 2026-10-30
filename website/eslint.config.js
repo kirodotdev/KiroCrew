@@ -101,8 +101,8 @@ export default [
       // The dashboard owns these decisions in-app: destructive choices go
       // through useConfirm() / ConfirmDialog, errors and acknowledgements
       // through the in-app notice and status surfaces. The window-qualified
-      // forms (`window.confirm`) reach the same globals, so no-restricted-
-      // properties pairs with no-restricted-globals to cover both spellings.
+      // forms (`window.confirm`, `globalThis.confirm`, `self.confirm`) reach the
+      // same globals, so no-restricted-properties pairs with no-restricted-globals.
       //
       // 'error', not 'warn': like the native-<select> gate above, the renderer is
       // at zero, so a new call fails instead of hiding in the --max-warnings
@@ -111,12 +111,18 @@ export default [
       'no-restricted-globals': ['error',
         { name: 'confirm', message: 'No browser-native confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { name: 'alert', message: 'No browser-native alert() — route through the in-app notice or status surface. See issue #15662.' },
-        { name: 'prompt', message: 'No browser-native prompt() — use the native text-entry dialog. See issue #15662.' },
+        { name: 'prompt', message: 'No browser-native prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
       ],
       'no-restricted-properties': ['error',
         { object: 'window', property: 'confirm', message: 'No window.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'confirm', message: 'No globalThis.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'self', property: 'confirm', message: 'No self.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { object: 'window', property: 'alert', message: 'No window.alert() — route through the in-app notice or status surface. See issue #15662.' },
-        { object: 'window', property: 'prompt', message: 'No window.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'globalThis', property: 'alert', message: 'No globalThis.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'self', property: 'alert', message: 'No self.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'window', property: 'prompt', message: 'No window.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'prompt', message: 'No globalThis.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
+        { object: 'self', property: 'prompt', message: 'No self.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
       ],
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
@@ -140,7 +146,7 @@ export default [
         selector: "CallExpression[callee.name='createPortal'][arguments.1.object.name='document'][arguments.1.property.name='body']",
         message: 'Portal through <OverlayPortal> or useOverlayRoot() (src/components/overlayRoot.tsx), not document.body: a layer on document.body stays on screen over a remote Crew.',
       },
-      // A leave check (`useMayLeaveNow`, `useMayLeaveForNavigation`, a pane's
+      // A leave check (`useMayLeaveNow`, a pane's
       // `mayLeavePane*`) can answer with a Promise while a confirmation is
       // open. `if (!mayLeave()) return` reads that Promise as truthy and runs
       // the exit WITHOUT waiting for the answer, which silently discards the

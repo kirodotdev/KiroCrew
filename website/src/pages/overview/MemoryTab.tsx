@@ -142,7 +142,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
     confirmLabel: i18nT('memoryV2.discard_title'),
     cancelLabel: i18nT('components.confirmDialog.keep_editing'),
   }), [confirm])
-  useSidePanelLeaveGuard(useCallback(async () => !dirty || await confirmDiscard(), [dirty, confirmDiscard]), dirty)
+  useSidePanelLeaveGuard(useCallback(() => !dirty || confirmDiscard(), [dirty, confirmDiscard]), dirty)
   useEffect(() => {
     if (!dirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }

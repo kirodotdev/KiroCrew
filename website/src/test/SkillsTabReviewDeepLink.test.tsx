@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { within, render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
@@ -97,27 +98,6 @@ beforeEach(() => {
     Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [], content_sha256: 'c'.repeat(64) }),
   )
 })
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
-}
 
 describe('?review=<slug> deep link', () => {
   it('expands the linked candidate and only that one', async () => {

@@ -17,7 +17,6 @@ import { i18nT } from '../i18n/t'
  *
  * The confirm button is styled destructively by default, and the cancel label
  * is the shared one unless a caller names what staying means ("Keep editing").
- * Add further knobs only when a caller needs them.
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -28,8 +27,8 @@ export interface ConfirmOptions {
   confirmLabel: string
   /** Names what cancelling keeps ("Keep editing"). Defaults to the shared Cancel. */
   cancelLabel?: string
-  /** Every earlier caller confirms a destructive act, so danger styling is the
-   *  default. Pass `false` for a weighty but non-destructive confirm (a grant). */
+  /** Defaults to destructive styling. Pass `false` for a weighty but
+   *  non-destructive confirm (a grant). */
   danger?: boolean
   /** Paints the confirm button as the page's primary action, for a confirm whose
    *  yes is the next step rather than a risk (an export the user asked for). */

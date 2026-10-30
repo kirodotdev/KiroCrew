@@ -528,18 +528,23 @@ function ExportArtifactButton({ id }: { id: string }) {
       setError(i18nT('apps.autoResearch.researchLabPage.failed_to_export_as_artifact'))
     } finally { setLoading(false) }
   }
-  if (slug) return (
+  const action = slug ? (
+    <span className="flex items-center gap-2">
+      <a href={`/artifacts/${slug}`} target="_blank" rel="noopener noreferrer" className="text-xs text-ok flex items-center gap-1"><FileText size={12} /> {i18nT('apps.autoResearch.researchLabPage.view_report')} <ExternalLink size={10} /></a>
+      <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go} title={i18nT('apps.autoResearch.researchLabPage.regenerate_the_report_updates_the_same_artifact')}>
+        <RefreshCw size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.regenerating') : i18nT('apps.autoResearch.researchLabPage.regenerate')}
+      </button>
+    </span>
+  ) : (
+    <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go}><FileText size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.exporting') : i18nT('apps.autoResearch.researchLabPage.export_as_artifact')}</button>
+  )
+  return (
     <span className="flex flex-col items-start gap-1">
-      <span className="flex items-center gap-2">
-        <a href={`/artifacts/${slug}`} target="_blank" rel="noopener noreferrer" className="text-xs text-ok flex items-center gap-1"><FileText size={12} /> {i18nT('apps.autoResearch.researchLabPage.view_report')} <ExternalLink size={10} /></a>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go} title={i18nT('apps.autoResearch.researchLabPage.regenerate_the_report_updates_the_same_artifact')}>
-          <RefreshCw size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.regenerating') : i18nT('apps.autoResearch.researchLabPage.regenerate')}
-        </button>
-      </span>
-      <ErrorNotice message={error} askAgent variant="inline" />
+      {action}
+      {/* No hand-off: this campaign can retain unsent Nudge or answer text across status changes. */}
+      <ErrorNotice message={error} variant="inline" />
     </span>
   )
-  return <span className="flex flex-col items-start gap-1"><button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go}><FileText size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.exporting') : i18nT('apps.autoResearch.researchLabPage.export_as_artifact')}</button><ErrorNotice message={error} askAgent variant="inline" /></span>
 }
 
 function AddToKnowledgeButton({ id }: { id: string }) {
@@ -570,7 +575,11 @@ function AddToKnowledgeButton({ id }: { id: string }) {
   }
   if (status === 'done') return <span className="text-xs text-ok flex items-center gap-1"><CheckCircle size={12} /> {i18nT('apps.autoResearch.researchLabPage.added_to_knowledge')}</span>
   if (status === 'exists' || kstatus?.in_library) return <span className="text-xs text-muted flex items-center gap-1"><BookOpen size={12} /> {i18nT('apps.autoResearch.researchLabPage.already_in_knowledge')}</span>
-  return <span className="flex flex-col items-start gap-1"><button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={status === 'loading'} onClick={go}><BookOpen size={12} className="inline" /> {status === 'loading' ? i18nT('apps.autoResearch.researchLabPage.adding') : i18nT('apps.autoResearch.researchLabPage.add_to_knowledge')}</button><ErrorNotice message={error} askAgent variant="inline" /></span>
+  return <span className="flex flex-col items-start gap-1">
+    <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={status === 'loading'} onClick={go}><BookOpen size={12} className="inline" /> {status === 'loading' ? i18nT('apps.autoResearch.researchLabPage.adding') : i18nT('apps.autoResearch.researchLabPage.add_to_knowledge')}</button>
+    {/* No hand-off: this campaign can retain unsent Nudge or answer text across status changes. */}
+    <ErrorNotice message={error} variant="inline" />
+  </span>
 }
 
 function splitReportSections(md: string): string[] {

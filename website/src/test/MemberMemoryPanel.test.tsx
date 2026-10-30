@@ -3,6 +3,7 @@
  * store, including the explicit source reads allowed only after choosing copy. */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { renderWithProviders } from './helpers'
 import MemoryTab from '../pages/overview/MemoryTab'
 import MemberMemoryPanel from '../pages/overview/MemberMemoryPanel'
@@ -118,27 +119,6 @@ async function openProfile() {
 async function chooseWriter() {
   fireEvent.click(screen.getByRole('combobox', { name: 'Memory store' }))
   fireEvent.click(await screen.findByRole('option', { name: 'writer · Member memory (V2)' }))
-}
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Keep editing'
-    ? within(dialog).getByRole('button', { name: 'Keep editing' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Native confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected native confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
 }
 
 describe('private member memory lifecycle', () => {

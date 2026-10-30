@@ -374,7 +374,7 @@ export default function AgentTemplatesTab() {
   }), [confirm, dirtyMessage])
   // The rail click belongs to the shell; it consults this guard before
   // unmounting the pane and taking an unsaved draft with it.
-  useSidePanelLeaveGuard(useCallback(async () => !dirty || await confirmDiscard(), [dirty, confirmDiscard]), dirty)
+  useSidePanelLeaveGuard(useCallback(() => !dirty || confirmDiscard(), [dirty, confirmDiscard]), dirty)
   // The layout's guard covers the exits the SHELL owns (rail, sidebar, Back).
   // This tab's own links -- a holder in the usage line, Open crewmate, the
   // refused-delete dialog's Open -- are in-app `navigate()` calls that unmount

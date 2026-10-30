@@ -331,13 +331,9 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
     }
     const attempt = claimExitAttempt()
     if (!attempt) return
-    // The attempt covers the QUESTION only. It is released before `perform`
-    // runs, so a perform that itself leaves through this hook (the guide's
-    // claim, then enter) is not dropped as a competing exit, and a slow
-    // perform does not hold every other exit until its request settles.
-    // `pending` holds only while a confirmation is open: a synchronous answer
-    // clears it before this call returns. A returned promise from `perform` is
-    // not awaited; each handler owns its own async failure path.
+    // The attempt covers the question only and is released before `perform`,
+    // so a perform that leaves through this hook again is not dropped. A
+    // promise from `perform` is not awaited: each handler reports its own failures.
     pending.current = true
     settleNavigationExit(attempt, mayLeaveNow, () => { void perform() }, () => { pending.current = false })
   }, [mayLeaveNow, isCurrentUrl, claimExitAttempt])

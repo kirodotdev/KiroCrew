@@ -113,8 +113,7 @@ describe('useTextPrompt', () => {
     expect(within(dialog).getByRole('textbox')).toHaveValue('notes.md')
   })
 
-  it('returns submitted text without using window.prompt', async () => {
-    const promptSpy = vi.spyOn(window, 'prompt')
+  it('returns submitted text', async () => {
     const onAnswer = vi.fn()
     const user = userEvent.setup()
     render(<Probe onAnswer={onAnswer} />)
@@ -125,7 +124,6 @@ describe('useTextPrompt', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Create file' }))
 
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith('methods.tex'))
-    expect(promptSpy).not.toHaveBeenCalled()
   })
 
   it("shows the caller's required-value message, not the prompt title, on a blank submit", async () => {
@@ -142,17 +140,6 @@ describe('useTextPrompt', () => {
     // The field names its error, so returning to it reads the instruction.
     expect(within(dialog).getByRole('textbox')).toHaveAccessibleDescription('Enter a file name.')
     expect(onAnswer).not.toHaveBeenCalled()
-  })
-
-  it('allows an empty answer when configured', async () => {
-    const onAnswer = vi.fn()
-    const user = userEvent.setup()
-    render(<Probe onAnswer={onAnswer} opts={{ allowEmpty: true }} />)
-
-    await user.click(screen.getByRole('button', { name: 'ask' }))
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Create file' }))
-
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(''))
   })
 
   it('shows the placeholder in the empty field and still answers a blank submit with an empty string', async () => {

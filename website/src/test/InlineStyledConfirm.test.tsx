@@ -49,26 +49,27 @@ describe('useInlineStyledConfirm', () => {
     expect(del.getAttribute('style')).toContain('var(--danger)')
   })
 
-  it('answers true on the confirm button', async () => {
-    const onAnswer = vi.fn()
-    render(<Probe onAnswer={onAnswer} />)
-    await ask()
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Delete' })) })
-    expect(onAnswer).toHaveBeenCalledWith(true)
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
   it.each([
-    ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
-    ['Escape', () => fireEvent.keyDown(window, { key: 'Escape' })],
-    ['the backdrop', () => fireEvent.click(document.querySelector('[aria-hidden="true"]') as HTMLElement)],
-  ])('answers false on %s', async (_name, dismiss) => {
+    ['Cancel', false, () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
+    ['Escape', false, () => fireEvent.keyDown(window, { key: 'Escape' })],
+    ['the backdrop', false, (dialog: HTMLElement) => {
+      // The backdrop is the sibling before the dialog's positioning layer.
+      const backdrop = dialog.parentElement?.previousElementSibling as HTMLElement
+      expect(backdrop).toHaveAttribute('role', 'presentation')
+      fireEvent.click(backdrop)
+    }],
+    ['the confirm button', true, () => fireEvent.click(screen.getByRole('button', { name: 'Delete' }))],
+  ])('answers and returns focus to the opener on %s', async (_name, expected, close) => {
     const onAnswer = vi.fn()
     render(<Probe onAnswer={onAnswer} />)
-    await ask()
-    await act(async () => { dismiss() })
-    expect(onAnswer).toHaveBeenCalledWith(false)
+    const opener = screen.getByRole('button', { name: 'ask' })
+    opener.focus()
+    const dialog = await ask()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    await act(async () => { close(dialog) })
+    expect(onAnswer).toHaveBeenCalledWith(expected)
     expect(screen.queryByRole('dialog')).toBeNull()
+    expect(opener).toHaveFocus()
   })
 
   it('answers false when its owner unmounts mid-question', async () => {
@@ -120,19 +121,5 @@ describe('useInlineStyledConfirm', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Delete' })) })
     expect(answers).toEqual([['A', false], ['B', true]])
     expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it.each([
-    ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
-    ['Escape', () => fireEvent.keyDown(window, { key: 'Escape' })],
-    ['the confirm button', () => fireEvent.click(screen.getByRole('button', { name: 'Delete' }))],
-  ])('returns focus to the opener after %s', async (_name, close) => {
-    render(<Probe onAnswer={() => {}} />)
-    const opener = screen.getByRole('button', { name: 'ask' })
-    opener.focus()
-    const dialog = await ask()
-    expect(dialog.contains(document.activeElement)).toBe(true)
-    await act(async () => { close() })
-    expect(opener).toHaveFocus()
   })
 })

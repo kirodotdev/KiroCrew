@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { within, screen, waitFor, fireEvent } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import DesignTweak from '../apps/design-tweak/DesignTweakPage'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
@@ -128,27 +129,6 @@ function setupHappyPath(opts: {
     status: 'ok',
     dataDir: '/home/user/.kiro/apps/design-tweak',
   })
-}
-
-
-async function confirmAction(name: string | RegExp) {
-  const dialog = await waitFor(() => {
-    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
-      candidate.querySelector('[data-guide-confirm]'),
-    )
-    if (!confirmDialog) throw new Error('Confirmation dialog is not open')
-    return confirmDialog
-  })
-  const action = name === 'Cancel'
-    ? within(dialog).getByRole('button', { name: 'Cancel' })
-    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
-  if (!action) throw new Error('Confirmation action is not rendered')
-  const actionName = action.textContent?.trim() ?? ''
-  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
-    throw new Error(`Unexpected confirmation action: ${actionName}`)
-  }
-  fireEvent.click(action)
-  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
 }
 
 describe('DesignTweakPage — history, archive, states', () => {
