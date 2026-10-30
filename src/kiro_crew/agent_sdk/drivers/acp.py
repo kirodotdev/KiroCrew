@@ -683,8 +683,10 @@ def claude_adapter_honours_session_options() -> bool:
 
     ``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` is where the adapter is verified to
     spread ``_meta.claudeCode.options`` into the session, which the read-only
-    shape of a Side Chat or thread-reply session depends on. A missing adapter, or
-    one whose version cannot be read, answers False. The spawn's own cached
+    shape of a Side Chat or thread-reply session depends on. The version is the
+    adapter's package.json, or for a wrapper script what it reported at its latest
+    handshake (``_claude_adapter_known_version``). A missing adapter, or one whose
+    version is not known, answers False. The spawn's own cached
     resolution is read first, as :func:`claude_adapter_cached_negative` does.
     Blocking (resolves the adapter and reads its package.json); call it off the loop.
     """
@@ -696,7 +698,7 @@ def claude_adapter_honours_session_options() -> bool:
     argv = resolution[0] if isinstance(resolution, tuple) else None
     if not argv:
         return False
-    version = _client._claude_adapter_installed_version(argv)
+    version = _client._claude_adapter_known_version(argv)
     if _client._claude_adapter_honours_setting_sources(version):
         return True
     logger.warning(

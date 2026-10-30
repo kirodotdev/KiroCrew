@@ -248,6 +248,7 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
             "_resolve_claude_acp_bin",
             "_resolve_claude_code_executable",
             "_claude_adapter_installed_version",
+            "_claude_adapter_known_version",
         ),
         "kiro_crew.acp.harness.opencode": (
             "_OPENCODE_LAUNCH",

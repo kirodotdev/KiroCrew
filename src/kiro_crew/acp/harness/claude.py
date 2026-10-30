@@ -78,6 +78,11 @@ _CLAUDE_ACP_DEP_MARKER = launch_mod.ACP_SDK_DEP_MARKER
 # recomputing PATH at the error site could report directories that were never searched.
 _claude_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
+# The ``agentInfo.version`` each adapter argv reported at its latest handshake in this
+# process. A wrapper script has no package.json beside it, so this is the only version
+# a pre-spawn check can read for one (:func:`_claude_adapter_known_version`).
+_claude_adapter_handshake_versions: dict[tuple[str, ...], str] = {}
+
 
 def _resolve_vendored_claude_acp(pkg_dir: Path | None = None) -> str | None:
     """Return the path to a vendored claude-agent-acp entry script, or None.
@@ -181,6 +186,21 @@ def _claude_adapter_installed_version(argv: list[str]) -> str:
     return ""
 
 
+def _claude_adapter_known_version(argv: list[str]) -> str:
+    """The version the claude-agent-acp *argv* runs, as known before a spawn, or ``""``.
+
+    The adapter's own package.json first (:func:`_claude_adapter_installed_version`),
+    so an upgrade is seen at once. When none is found, as for a wrapper script, the
+    ``agentInfo.version`` the same argv reported at its latest handshake in this
+    process, and ``""`` until one has. A stale answer cannot widen a session: its own
+    handshake is checked against the floor again before its first prompt.
+    Blocking (small file reads); callers run it off the loop.
+    """
+    return _claude_adapter_installed_version(argv) or _claude_adapter_handshake_versions.get(
+        tuple(argv), ""
+    )
+
+
 class ClaudeLaunch(ProcessAdapter):
     """claude-agent-acp: a Node adapter, seeded before it starts."""
 
@@ -219,13 +239,14 @@ class ClaudeLaunch(ProcessAdapter):
                 f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
             )
         argv: list[str] = claude_argv
-        # The installed adapter's own version, read BEFORE the seed: the writer
+        # The adapter's version, read BEFORE the seed: the writer
         # applies the settingSources floor with it, so the exclusion is decided
         # before the MCP array below is first resolved and nothing has to be
         # re-resolved on the loop after the handshake. Off-loop: it reads files.
         session._agent_version_read = False
+        session._claude_adapter_argv = tuple(argv)
         session._claude_adapter_disk_version = await asyncio.to_thread(
-            _claude_adapter_installed_version, argv
+            _claude_adapter_known_version, argv
         )
         # Per-session settings seed: permissions.defaultMode, the served ``model``
         # once the advertised cache is warm, and the availableModels allowlist when
