@@ -264,9 +264,17 @@ python -m kiro_crew.frontend stage .
 Then:
 
 ```powershell
+kirocrew kas install   # the built-in KAS engine this release pins (optional)
 kirocrew setup
 kirocrew gateway
 ```
+
+`kirocrew kas install` downloads the KAS engine this release pins into the data
+home, so the built-in engine route (`agent.kas_bundle`, off by default) can be
+turned on with no further download. A source build does not run it for you; the
+desktop installer already carries the engine inside the app. `install.ps1` is
+the cloud path's thin client and runs no gateway on this machine: the instance
+it launches installs with `install.sh`, which downloads the engine by default.
 
 Open the dashboard URL printed by the gateway. On first launch, Kiro Crew checks
 the **Windows gateway host** for a runnable and authenticated Kiro CLI. If it is

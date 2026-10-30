@@ -158,6 +158,16 @@ npm, no local build:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
+Once the wheel is in, the installer runs the new `kirocrew kas install` to
+download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
+for your platform). If that download fails, for example on a host with no
+access to the CDN, the install still succeeds and the installer prints the
+command to retry. Pass `--no-kas` (or set `KIROCREW_INSTALL_KAS=0`) to skip it:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
+```
+
 `stable` is the default channel. Track a faster one, or pin an exact version:
 
 ```bash
@@ -610,9 +620,11 @@ same account store.
 
 The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
 shadow testing: the switch is off by default on every platform and nothing turns
-it on for you. From a source install, `bash install.sh --kas` downloads the
-engine version this release pins; after any other install, `kirocrew kas
-install` does the same. The desktop app ships that engine inside the app
+it on for you. The one-line install (`cli.sh`) and `bash install.sh` download
+the engine version this release pins by default, by running `kirocrew kas
+install` once Kiro Crew is installed; `--no-kas` skips that, and a failed
+download only warns. After any other install, or to retry, run `kirocrew kas
+install` yourself. The desktop app ships that engine inside the app
 (`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
 route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
 Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
