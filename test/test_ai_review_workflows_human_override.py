@@ -1294,6 +1294,21 @@ class TestOverrideHandlerRecordsAClass:
         assert env["ACTOR"] == "${{ github.event.sender.login }}"
         assert env["COMMENT_AUTHOR"] == "${{ github.event.comment.user.login }}"
 
+    def test_an_edited_comment_still_triggers_the_handler_so_the_sender_check_can_fire(
+        self,
+    ) -> None:
+        """``edited`` is the only event where the sender can differ from the author.
+
+        On a ``created``-only trigger the sender is always the comment's author, so
+        the sender-vs-author refusal above becomes unreachable and never posts its
+        notice. The edit test drives the extracted step directly and never reads the
+        trigger, so this pin is what fails when ``edited`` is trimmed away.
+        """
+        workflow = load_workflow(WORKFLOWS / "ai-review-human-override.yml")
+        triggers = workflow.get("on") or workflow[True]
+
+        assert {"created", "edited"} <= set(triggers["issue_comment"]["types"])
+
     @pytest.mark.parametrize(
         "body",
         [
