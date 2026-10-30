@@ -7992,6 +7992,7 @@
       "save_failed_typed": "无法保存此 AWS 配置文件。请检查名称后重试。",
       "applies_next": "选择后不会立即运行任何内容，只会设置此文件夹中新聊天使用的 AWS 配置文件。",
       "read_failed": "无法读取此项目的 AWS 配置文件",
+      "read_unreachable": "网关正忙，没有响应。请稍后再试。",
       "row_title": "{{name}} 的 AWS 配置文件"
     },
     "projectPicker": {

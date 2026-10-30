@@ -171,6 +171,15 @@ Pinned by
 and the legacy importer drops a persisted `auto_approve` for the same reason
 (`migrate.import_legacy`).
 
+### Accepted-work rows (Shared Crew)
+
+`taskq.store_work` adds two tables to the same file: `accepted_work` (one admission
+record per accepted unit of work, unique on its idempotency `scope`, written through
+the writer thread with compare-and-set on `revision`) and `principal_storage` (the
+per-principal byte ledger). Both are created by `apply_schema` with `IF NOT EXISTS`;
+the schema version is unchanged because an older build that does not know the tables
+leaves them in place. `shared_crew.work_store` is their only writer.
+
 ## State machine
 
 Fifteen states, one table (`model.TRANSITIONS`), consulted by every write.
@@ -1095,6 +1104,15 @@ data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-la
 `reserve_active`, `waiting_parents`, `lifted_from`). A closed
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
+
+### Per-person lanes (Shared Crew)
+
+While Shared Crew fair admission is on, the admission gate installs
+`lanes.set_lane_resolver`: a root session whose running work has an initiator maps to
+the lane `principal:<id>`, so the same round-robin is fair across people and one
+person's many sessions share one lane. A key the resolver does not know keeps its
+session lane; children still inherit their root's lane. See
+[shared-crew.md](shared-crew.md) section 4.
 
 ## Deferral (memory pressure)
 

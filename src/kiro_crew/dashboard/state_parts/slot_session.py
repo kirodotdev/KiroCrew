@@ -299,6 +299,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: person's own tab, a fork, a restore. Read by
     #: ``DashboardState.creator_slot_count`` for ``MAX_SLOTS_PER_CREATOR``.
     self._created_by = ""
+    #: Shared Crew creator attribution (``shared_crew.attribution``): ``None``
+    #: until stamped or read back, then write-once. Persisted by the
+    #: metadata codec's ``attribution`` row.
+    self._attribution = None
     #: The ``created_by`` the session's saved metadata line names, read on every
     #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
     #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``). It

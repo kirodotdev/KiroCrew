@@ -484,6 +484,22 @@ async def accept(
         steered = await _steer_first(request, state, slot, turn, message, meta)
         if steered is not None:
             return web.json_response(steered)
+    # Shared Crew: a queued responsive send is admitted and charged to its
+    # sender like any other queued send (``chat_send``'s queue path), and the
+    # server-derived author rides the entry so the drained turn is theirs.
+    from kiro_crew.shared_crew import admission_entry as _sc_entry
+    from kiro_crew.shared_crew.attribution import author_meta
+    from kiro_crew.shared_crew.identity import actor_of
+
+    queued_admission = await _sc_entry.admit_queued_send(
+        request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+    )
+    if queued_admission.rejected:
+        return queued_admission.refusal_response()
+    if queued_admission.replayed:
+        return _sc_entry.chat_replay_response(queued_admission, slot_key=slot.key)
+    if (closed := await _sc_entry.refuse_if_slot_closed(state, slot, queued_admission)) is not None:
+        return closed
     qid = queue_for_next_turn(
         state,
         slot,
@@ -492,7 +508,9 @@ async def accept(
         send_id=normalize_send_id((meta or {}).get("sendId")),
         attachments=attachment_meta(meta),
         quote=quote_meta(meta).get("quote"),
+        author=author_meta(actor_of(request)),
     )
+    _sc_entry.stamp_queued_work(slot, qid, queued_admission)
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True
     entry["_responsive_protected"] = slot.turn_running or slot._turn_admission_reserved

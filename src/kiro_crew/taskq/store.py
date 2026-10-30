@@ -55,6 +55,7 @@ from . import migrate
 from . import store_events as _store_events
 from . import store_reads as _store_reads
 from . import store_waits as _store_waits
+from . import store_work as _store_work
 from .model import ADOPTED_RESUME_EVENT  # noqa: F401
 from .model import RUNNING  # noqa: F401
 from .model import TaskEvent  # noqa: F401
@@ -87,6 +88,7 @@ from .store_vocab import (
     _typed_read,
 )
 from .store_waits import _SQL_WAITING  # noqa: F401
+from .store_work import WorkRow  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,7 @@ _STORE_OWNERS = (
     "kiro_crew.taskq.store_events",
     "kiro_crew.taskq.store_waits",
     "kiro_crew.taskq.store_reads",
+    "kiro_crew.taskq.store_work",
 )
 
 #: Default bound on the in-memory dispatch window (``agent.task_dispatch_window``).
@@ -1425,6 +1428,16 @@ class TaskStore:
     children_of: Callable[..., Any] = _store_waits.children_of
     waiting_rows: Callable[..., Any] = _store_waits.waiting_rows
     orphaned_children: Callable[..., Any] = _store_waits.orphaned_children
+
+    # Accepted-work admission rows: ``kiro_crew.taskq.store_work``.
+    work_insert_or_get = _store_work.work_insert_or_get
+    work_compare_and_set = _store_work.work_compare_and_set
+    work_get: Callable[..., Any] = _store_work.work_get
+    work_by_scope: Callable[..., Any] = _store_work.work_by_scope
+    work_rows: Callable[..., Any] = _store_work.work_rows
+    work_purge = _store_work.work_purge
+    storage_charge = _store_work.storage_charge
+    storage_bytes: Callable[..., Any] = _store_work.storage_bytes
 
     # Row reads, dispatch reads and counts: ``kiro_crew.taskq.store_reads``.
     get: Callable[..., Any] = _store_reads.get

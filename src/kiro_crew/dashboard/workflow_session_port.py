@@ -18,6 +18,10 @@ What this module adds on top, and nothing else:
   own. The target must be a session the launching session created
   (``not_creator``) and hold no scoped grant (``trust_scope_active``); asking for
   the mode it already has changes nothing.
+* **A send reaches only sessions the launcher opened.** ``send_to_session`` runs
+  creator-fenced for every launcher, the owner included, so it is refused
+  ``not_creator`` on the person's own tabs and any session the launching session
+  neither created nor was handed.
 * **A ``workflow-opened`` sidebar label** on every session ``open_session`` makes,
   the way a cron-opened session is labelled by its origin.
 
@@ -296,14 +300,18 @@ class WorkflowSessionPort:
         verb = "send_to_session"
         self._refuse_restricted_run(verb, caller_session_key, run_id, memory_mode, str(slot))
         self._launching_slot(verb, caller_session_key, run_id, str(slot))
-        fenced = await self._scope_fence(verb, caller_session_key, run_id, str(slot))
+        # The scope gate still refuses a member it does not admit, but its verdict is
+        # not the reach: a send always runs creator-fenced, so a model-written
+        # script starts turns only in sessions the launching session opened (or was
+        # handed), never in the person's own tabs, even for an owner launcher.
+        await self._scope_fence(verb, caller_session_key, run_id, str(slot))
         try:
             result = await sc.send_to_target(
                 self._state,
                 caller_session_key=caller_session_key,
                 target=str(slot),
                 message=str(message),
-                caller_fenced=fenced,
+                caller_fenced=True,
                 via=WORKFLOW_SEND_VIA,
             )
         except sc.SessionControlError as exc:

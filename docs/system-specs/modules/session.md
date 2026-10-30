@@ -25,7 +25,11 @@ and publishing `slot.task`, the window that holds the automatic Slack link
 (`chat_slack.maybe_auto_link_slack`, at most `AUTO_LINK_HOLD_SECS`), so a second
 send arriving in that window takes the queue path instead of dispatching a
 second turn; the handler's busy branch reads the same flag, and a `finally`
-clears it on every path out of the window. A Stop pressed in that window has no
+clears it on every path out of the window. With Shared Crew admission on, the
+busy branch and the subagent hold accept the queued message as parked work before
+it enters the queue, so it is bounded and charged to its sender, and a send whose
+`Idempotency-Key` was already accepted is answered from its record before any
+branch writes a row ([shared-crew.md](shared-crew.md) section 4). A Stop pressed in that window has no
 task to cancel, so the handler reads `_stop_generation` across the hold and does
 not dispatch the stopped turn; a send queued behind it in that window starts
 then, as it would at the end of a stopped turn. `test_slot_running_readers.py::test_running_and_turn_running_slot_readers_are_enumerated`
@@ -757,9 +761,9 @@ if needed — no compaction, since background tasks are stateless:
   chat-turn hook and never advances `_bg`), and the log names the backstop rather
   than the percentage that did not trigger it.
 - Process-tree RSS at or over `session.watchdog_rss_max_mb` → recycle. When
-  that knob is 0 (its default, which turns the chat-session sweep off) the
-  ceiling is `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB), so this runtime stays
-  bounded either way.
+  that knob is 0 (which turns the chat-session sweep off) or above
+  `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB, below the 4096 default), the ceiling
+  is that fallback, so this runtime keeps its own lower bound either way.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction, `background_turn()`,
@@ -1925,6 +1929,9 @@ against sweep completeness, and are torn down at `close_all`.
 - <a id="reaping-abandoned-agent-scopes"></a>**Reaping abandoned agent scopes** (`session_scope_reap.py`,
   Linux/systemd only): each agent session runs inside a transient
   `systemd-run --user --scope` under a per-instance child of
+  Under Shared Crew fair admission a runtime spawned for admitted work joins its
+  initiator's per-principal slice beneath the instance slice
+  ([shared-crew.md](shared-crew.md) section 4); the instance slice is the fallback.
   `kirocrew-agents.slice` (`sandbox._agents_slice_name`). `--scope` GCs a
   transient unit only after its process exits, so a hard gateway kill or restart
   strands the whole tree: the leader dies, the `launcher`/`kiro-cli`/
@@ -2041,7 +2048,7 @@ against sweep completeness, and are torn down at `close_all`.
   path — is recorded in
   `../../architecture/design-notes/tool-stall-watchdog-placement.md`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
-  `session.watchdog_rss_max_mb`, default 0 via
+  `session.watchdog_rss_max_mb`, default 4096 via
   `DEFAULT_WATCHDOG_RSS_MAX_MB`; 0 disables): recycles non-busy
   sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
   persistent (`_PERSISTENT_KEYS`) and `channel:`-prefixed keys — the same

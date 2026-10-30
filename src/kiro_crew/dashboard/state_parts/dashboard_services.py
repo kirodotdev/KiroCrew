@@ -655,14 +655,25 @@ async def request_question(
 
 
 def resolve_question(
-    self: DashboardState, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    self: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    *,
+    reason: str | None = None,
+    responder: Any = None,
+    response_id: str = "",
 ) -> bool:
     """Resolve one blocking question future if it is still pending.
 
     ``reason`` says why a ``None`` answer ended the wait (``dismissed``,
     ``composer``, ...); only a blocking MCP ask reports it back to the agent.
+    ``responder`` is the verified Shared Crew principal answering through the
+    dashboard; with it the resolution goes through the shared decision
+    registry (first valid response wins once).
     """
-    return _questions_for(self).resolve(self, ask_id, answers, reason=reason)
+    return _questions_for(self).resolve(
+        self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    )
 
 
 async def open_agent_ask(

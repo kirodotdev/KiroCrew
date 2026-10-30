@@ -144,7 +144,7 @@ async def _nested_with_owner_approval(client, session, nested_source):
                         resolved = await asyncio.to_thread(
                             client.post, f"/api/approvals/spawn:{spawn_id}/approve", {}
                         )
-                        assert resolved == {"ok": True}, "Spawn approval was not accepted"
+                        assert resolved.get("ok") is True, "Spawn approval was not accepted"
                         return
 
                 await finished(approve_once(), "the nested spawn's approval request", timeout=10)

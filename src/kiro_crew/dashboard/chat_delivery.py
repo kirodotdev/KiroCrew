@@ -1158,6 +1158,7 @@ def queue_for_next_turn(
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
     steer_intent: bool = False,
+    author: dict[str, Any] | None = None,
     admission: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
@@ -1258,6 +1259,11 @@ def queue_for_next_turn(
         meta[COMMANDS_OFF_META_KEY] = True
     if steer_intent:
         meta[STEER_INTENT_META] = True
+    if author:
+        # *author* is the server-derived Shared Crew author of a person's send
+        # (``attribution.author_meta``). The drain unions it onto the row and
+        # charges the drained turn to that person.
+        meta["author"] = dict(author)
     qid = slot.queue_append(
         message,
         meta=meta,

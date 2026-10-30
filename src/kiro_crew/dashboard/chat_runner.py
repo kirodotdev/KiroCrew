@@ -182,8 +182,10 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     _turn_record_outcome,
     _TurnExit,
 )
-from kiro_crew.dashboard.chat_turn.queue_drain import (
+from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
+    _RESTORED_DRAIN_IDS,
     _arm_queued_delivery_settlement,
+    _drain_parked_queues,
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
     idle_slot_admits_drain,
@@ -663,7 +665,18 @@ def _hands_off_queue_on_exit(
         closing = False
         setup_failed = False
         try:
-            await fn(state, slot, turn_exit, *args, **kwargs)
+            # Shared Crew fair admission for a turn no admitted work started
+            # (shared_crew.turn_gate); a pass-through when admission is off.
+            from kiro_crew.shared_crew.turn_gate import gate_turn
+
+            await gate_turn(
+                state,
+                slot,
+                args[0] if args else "",
+                kwargs,
+                lambda: fn(state, slot, turn_exit, *args, **kwargs),
+                stop_reason=lambda: turn_exit.stop_reason,
+            )
         except GeneratorExit:
             closing = True
             raise

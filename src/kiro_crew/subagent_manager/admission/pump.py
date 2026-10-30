@@ -1406,7 +1406,11 @@ class _PumpMixin(ManagerComponent):
         # The confirmed-start funnel: recorded only for a start that is
         # actually about to run, never for one refused or ended while waiting.
         self._manager._log_spawned(info)
-        await self._manager._run(info)
+        from kiro_crew.shared_crew.containment import principal_scope, run_principal
+
+        # The child's own admitted budget, not the parent session's next sender.
+        with principal_scope(run_principal(info)):
+            await self._manager._run(info)
 
     async def _admit_released_start_impl(self, info: SubagentInfo) -> str:
         """Wait for the pump to meter *info* -- released from the approval
@@ -1456,6 +1460,13 @@ class _PumpMixin(ManagerComponent):
             "parent_session_key": info.parent_session_key,
             "batch_id": info.batch_id,
         }
+        # Metered in the lane of the person the child was admitted for, not the
+        # parent session's latest sender.
+        from kiro_crew.shared_crew.containment import run_principal
+        from kiro_crew.taskq.lanes import PRINCIPAL_LANE_PREFIX
+
+        if principal := run_principal(info, own_only=True):
+            entry["_lane"] = PRINCIPAL_LANE_PREFIX + principal
         self._manager._queue.append(entry)
         self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
         # The wait is edge-driven (PID / first answer / terminal / stagger

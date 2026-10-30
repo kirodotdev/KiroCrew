@@ -236,3 +236,35 @@ async def test_a_wedged_skill_usage_flush_cannot_hold_the_exit(monkeypatch, seam
         no_exit._exit.assert_called_once_with(0)
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_the_exit_path_releases_shared_crew_slices_a_timed_out_shutdown_skipped(
+    monkeypatch, seams
+) -> None:
+    from kiro_crew.shared_crew import admission_gate
+
+    no_exit = _NoExitOs()
+    monkeypatch.setattr(gw, "os", no_exit)
+    monkeypatch.setattr(gw, "drain_sign_in_refresher", AsyncMock())
+    monkeypatch.setattr(gw, "flush_audit_queue_before_hard_exit", AsyncMock())
+    monkeypatch.setattr(cli_mod, "drain_log_queue_before_hard_exit", AsyncMock())
+    order: list[str] = []
+    seams.cleanup.side_effect = lambda *a, **k: order.append("reap")
+
+    async def release() -> int:
+        order.append("release")
+        return 1
+
+    monkeypatch.setattr(admission_gate, "shutdown_cleanup", release)
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    orch.dashboard_state = None
+    orch._dashboard_port = 0
+    orch._sign_in_refresher_task = None
+    orch._shutdown = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    await orch._shutdown_and_exit()
+
+    # After the runtimes are reaped, before the hard exit.
+    assert order == ["reap", "release"]
+    no_exit._exit.assert_called_once_with(0)

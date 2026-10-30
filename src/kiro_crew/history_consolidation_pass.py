@@ -113,6 +113,7 @@ async def _consolidate(
     """
     # Every store pass below runs on the background memory pool (mc-membg), so a
     # backlog of consolidations never holds an mc-embed worker a turn needs.
+    from kiro_crew.consolidation_gate import consolidation_pass_gate as _consolidation_pass_gate
     from kiro_crew.executors import run_in_memory_background_pool as _run_in_memory_background_pool
 
     # Capture the gateway loop so the thread-offloaded _process_auto_skills
@@ -129,6 +130,7 @@ async def _consolidate(
     lease: str | None = None
     lease_heartbeat: asyncio.Future | None = None
     lease_lost = False
+    gate: asyncio.Semaphore | None = None
     owner = asyncio.current_task()
 
     def _abort_lost_lease() -> None:
@@ -179,6 +181,12 @@ async def _consolidate(
         metadata = await asyncio.to_thread(self._log.get_metadata, key)
         if isinstance(metadata, dict) and is_incognito_transcript(metadata.get("memory_mode")):
             return _CONSOLIDATION_REFUSED
+        # One pass at a time in this process. Queued before the lease, so a
+        # waiting pass holds no cross-process claim and its key stays in
+        # _running, which keeps duplicate triggers for it a no-op.
+        waiting = _consolidation_pass_gate()
+        await waiting.acquire()
+        gate = waiting
         # Acquire before reading the authoritative span: a peer may have
         # completed it since scheduling, and busy callers need no snapshot.
         acquisition = asyncio.create_task(asyncio.to_thread(self._acquire_consolidation_lease, key))
@@ -1261,6 +1269,10 @@ async def _consolidate(
         raise
     finally:
         self._running.discard(key)
+        # First, so a cancellation landing in the awaits below cannot strand
+        # the gate and stop every later pass in this process.
+        if gate is not None:
+            gate.release()
         if lease_heartbeat is not None:
             # The heartbeat stops before the release, so a renewal cannot
             # land after the lease is cleared and race a peer's fresh

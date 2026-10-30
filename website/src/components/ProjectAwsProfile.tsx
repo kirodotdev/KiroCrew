@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type ProjectAwsProfile } from '../api/client'
 import { ApiError } from '../api/apiError'
+import { isDeadlineError } from '../api/queryClient'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
@@ -25,6 +26,19 @@ function useProjectAwsProfile(project: string) {
   })
   const refused = query.error instanceof ApiError && query.error.status === 403
   return { ...query, refused }
+}
+
+/** The headline for a failed read. A timeout, a dropped connection or a proxy's
+ *  502/503/504 means the gateway did not answer, which says nothing about the project's
+ *  AWS profile; saying "could not read the profile" sends the user to fix credentials
+ *  that are fine. A 500 is the handler itself failing to read, so it keeps that text. */
+function readFailureText(error: Error): string {
+  const unreachable = isDeadlineError(error)
+    || error instanceof TypeError
+    || (error instanceof ApiError && [502, 503, 504].includes(error.status))
+  return i18nT(unreachable
+    ? 'components.projectAwsProfile.read_unreachable'
+    : 'components.projectAwsProfile.read_failed')
 }
 
 function statusTitle(data: ProjectAwsProfile, profile: string): string {
@@ -60,7 +74,7 @@ export default function ProjectAwsProfileStatus({ project, shelfCompact }: { pro
           variant="inline"
           className="min-w-0"
           messageClassName="truncate"
-          message={i18nT('components.projectAwsProfile.read_failed')}
+          message={readFailureText(error)}
           messageTooltip={error.message}
         />
       </span>
@@ -132,7 +146,7 @@ export function ProjectAwsProfileSection({ project, errorHandoff = false, onHand
           className="whitespace-normal"
           askAgent={errorHandoff}
           onHandoff={onHandoff}
-          title={i18nT('components.projectAwsProfile.read_failed')}
+          title={readFailureText(error)}
           message={error.message}
         />
       </div>

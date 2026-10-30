@@ -469,6 +469,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.diag.recorder", "_recorder"): "replaced per boot",
     ("kiro_crew.hooks", "_BUILTIN_APP_AGENTS"): "replaced per boot",
     ("kiro_crew.hooks", "_global_script_hook_store"): "replaced per boot",
+    # Shared crew: the boot's admission host hooks; the harness resets them to
+    # a fresh default, a new object every boot.
+    ("kiro_crew.shared_crew.admission_gate", "_HOOKS"): "replaced per boot",
     ("kiro_crew.skill_usage", "_global_skill_read_observer"): "replaced per boot",
     ("kiro_crew.slack.interactions", "_orch"): "replaced per boot",
     ("kiro_crew.slack.interactions_approvals", "_orch"): "replaced per boot",

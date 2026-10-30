@@ -1721,7 +1721,7 @@
         "eager_spawn": true,
         "archive_retention_days": 30,
         "file_changes_keep_turns": 0,
-        "watchdog_rss_max_mb": 0,
+        "watchdog_rss_max_mb": 4096,
         "reconcile_max_kills": 5
       }
     },
@@ -1931,10 +1931,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB. 0 disables (the default); the internal background runtime still recycles at 1536 MiB. Busy sessions (turn in flight) are never recycled.",
+      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 4096
     },
     {
       "path": "session.reconcile_max_kills",
@@ -8577,7 +8577,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Fair Admission",
-      "help": "Not active in this build yet. Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable.",
+      "help": "Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8591,7 +8591,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Active Work Per Person",
-      "help": "Not active in this build yet. Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions.",
+      "help": "Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
@@ -8605,7 +8605,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Active Work Crew-Wide",
-      "help": "Not active in this build yet. Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host.",
+      "help": "Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -8619,7 +8619,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Per-Person Slices",
-      "help": "Not active in this build yet. While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only.",
+      "help": "While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -8633,7 +8633,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Require Enforced Limits",
-      "help": "Not active in this build yet. Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default.",
+      "help": "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8647,7 +8647,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Direct Tailnet Link",
-      "help": "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in the people Tailscale names (all of them, or only those Crew admits when local_authorization is on), without a dashboard token. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off.",
+      "help": "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in the people Tailscale names (all of them, or only those Crew admits when local_authorization is on), without a dashboard token. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -8662,7 +8662,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Approve People In Crew",
-      "help": "Not active in this build yet. Off: Tailscale decides who gets in. Every person Tailscale lets reach this machine is admitted on the direct tailnet link and through tailscale serve, and is still named by Tailscale. On: only you, people who accepted a Crew invite and people you approved on People get in, and People shows Approve, Remove and the waiting list. Tagged nodes are refused unless carried over in both modes. A value that is not true or false reads as on.",
+      "help": "Not active in this build yet. Off: Tailscale decides who gets in. Every person Tailscale lets reach this machine is admitted on the direct tailnet link and through tailscale serve, and is still named by Tailscale. On: only you, people who accepted a Crew invite and people you approved on People get in, and People shows Approve, Remove and the waiting list. Tagged nodes are refused unless carried over in both modes. A value that is not true or false reads as on. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -8677,7 +8677,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Typing Lock Idle Window",
-      "help": "Not active in this build yet. Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60.",
+      "help": "Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10

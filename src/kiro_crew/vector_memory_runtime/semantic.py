@@ -358,11 +358,13 @@ def validate_semantic(
         cat = value.get("category")
         raw_negative = value.get("negative")
         raw_scope = value.get("repo_scope")
+        raw_writer = value.get("written_by")
         if (
-            set(value.keys()) <= {"rule", "category", "negative", "repo_scope"}
+            set(value.keys()) <= {"rule", "category", "negative", "repo_scope", "written_by"}
             and (cat is None or (isinstance(cat, str) and cat in ALLOWED_LESSON_CATEGORIES))
             and (raw_negative is None or isinstance(raw_negative, str))
             and (raw_scope is None or isinstance(raw_scope, str))
+            and (raw_writer is None or isinstance(raw_writer, dict))
         ):
             raw_rule = value["rule"]  # _lesson_fields guarantees a str
             if isinstance(raw_negative, str):
@@ -378,6 +380,10 @@ def validate_semantic(
             # caller with a JSONL fallback reported it saved.
             if isinstance(raw_scope, str):
                 size_basis = f"{size_basis}{_lessons._LESSON_NEGATIVE_SEP}{raw_scope}"
+            # The writer label is measured at its full serialized size, so it is
+            # never an unmeasured byte either.
+            if isinstance(raw_writer, dict):
+                size_basis = f"{size_basis}{json.dumps(raw_writer, ensure_ascii=False)}"
     # json.dumps(..., ensure_ascii=False) accepts a lone surrogate (and so
     # does json.loads, so an LLM payload can carry one), but the result
     # cannot be UTF-8 encoded -- neither here nor by SQLite. Reject it as

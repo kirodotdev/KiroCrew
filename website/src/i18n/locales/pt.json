@@ -8250,6 +8250,7 @@
       "save_failed_typed": "Não foi possível salvar este perfil da AWS. Verifique o nome e tente novamente.",
       "applies_next": "Escolher um não executa nada agora. Só define qual perfil da AWS os novos chats desta pasta usam.",
       "read_failed": "Não foi possível ler o perfil da AWS deste projeto",
+      "read_unreachable": "O gateway está ocupado e não respondeu. Tente novamente em instantes.",
       "row_title": "Perfil da AWS de {{name}}"
     },
     "projectPicker": {

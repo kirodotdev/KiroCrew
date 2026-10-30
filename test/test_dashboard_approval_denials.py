@@ -452,30 +452,40 @@ class TestDenyOnce:
         assert "rejected_once" in repr(log.warning.call_args)
 
     @pytest.mark.asyncio
-    async def test_api_reject_once_maps_to_decision_override(self):
+    async def test_api_reject_once_maps_to_decision_override(self, monkeypatch):
         """The HTTP seam: ``reject_once`` is a valid action and sets the flag.
 
         Pinned at the handler, not in redux: a frontend-only test passes even when
-        the action never reaches ``resolve_approval``, leaving Deny once wired to
-        the plain batch reject in production.
+        the action never reaches the resolver, leaving Deny once wired to the plain
+        batch reject in production. The handler resolves through the Shared Crew
+        decision registry, which is where the flag must arrive.
         """
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
         state = MagicMock()
-        state.resolve_approval.return_value = True
+        seen: list[dict] = []
+
+        def _resolve(_state, _request, approval_id, **kwargs):
+            seen.append({"id": approval_id, **kwargs})
+            return 200, {"ok": True}
+
+        monkeypatch.setattr(shared_decisions, "resolve_approval_by_id", _resolve)
 
         async def _call(action: str):
             request = MagicMock()
             request.get = {"app": ""}.get  # the dashboard user: an empty app claim
             request.app = {"state": state}
             request.match_info = {"id": "req-9", "action": action}
+            request.can_read_body = False
             return await api_approval_resolve(request)
 
         assert (await _call("reject_once")).status == 200
-        assert state.resolve_approval.call_args.args == ("req-9", False)
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is True
+        assert (seen[-1]["id"], seen[-1]["approved"]) == ("req-9", False)
+        assert seen[-1]["rejected_once"] is True
 
         # Plain reject must keep the cascading behavior (no override).
         assert (await _call("reject")).status == 200
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is False
+        assert seen[-1]["rejected_once"] is False
 
         # Unknown actions are still refused.
         assert (await _call("reject_twice")).status == 400

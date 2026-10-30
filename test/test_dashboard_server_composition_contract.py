@@ -418,6 +418,7 @@ _LAZY_IMPORTS = {
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
+    "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
     "kiro_crew.decisions": "impl_systemone local_runtime",
@@ -436,6 +437,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.sel": "sel",
     "kiro_crew.slack.handler": "load_voice_reply_config",
     "kiro_crew.stt": "engine stt_models",
+    "kiro_crew.shared_crew.wiring": "install prepare_gateway",
+    "kiro_crew.shared_crew.host_hooks": "mark_sessions_restored",
     "kiro_crew.subagent": "_available_memory_gb",
     "kiro_crew.transcribe": "_whisper_language",
     "kiro_crew.workflows.service": "WorkflowService",
@@ -458,7 +461,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 105
+    assert len(expected) == 109
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

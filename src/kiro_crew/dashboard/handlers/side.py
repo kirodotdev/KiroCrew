@@ -59,6 +59,8 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.shared_crew.admission_gate import actor_budget
+from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
@@ -116,14 +118,37 @@ def _dispatch_side_turn(
         message_id=message_id,
     )
 
-    task = asyncio.create_task(
-        _run_side_turn(
+    def _refused(reason: object) -> None:
+        # The turn never ran: settle the sidecar as its own ``finally`` would.
+        if side.last_run_id == run_id:
+            side.is_complete = True
+            if side.task is task:
+                side.task = None
+        broadcast_side_result(
             state,
-            slot,
-            run_id,
-            question,
-            is_first_turn=is_first_turn,
-            start_priority=start_priority,
+            slot_key=slot.key,
+            run_id=run_id,
+            role="assistant",
+            content=capacity_note(reason),
+            is_error=True,
+            final=True,
+        )
+
+    # Shared Crew fair admission, charged to the asker (``initiated_by`` at the
+    # handler); a queued question drained later runs as the bounded Unknown.
+    task = asyncio.create_task(
+        run_admitted(
+            _run_side_turn(
+                state,
+                slot,
+                run_id,
+                question,
+                is_first_turn=is_first_turn,
+                start_priority=start_priority,
+            ),
+            session_key=_side_session_key(slot.key),
+            text=question,
+            refused=_refused,
         )
     )
     # Store the handle on the sidecar so ``api_side_stop`` can cancel this turn
@@ -164,7 +189,7 @@ def _requeue_unconsumed_side_steers(
         side.steer_mark(entry["id"], STEER_REQUEUED)
     for entry in reversed(orphaned):
         message = entry["text"]
-        qid = side.queue_insert_front(message, steer_id=entry["id"])
+        qid = side.queue_insert_front(message, steer_id=entry["id"], budget=entry.get("budget", ""))
         if qid is None:
             # Acceptance reserves a slot per in-flight steer, so this should be
             # unreachable. Log loudly rather than broadcasting a null id: a
@@ -225,7 +250,11 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
         depth=len(side.queue),
     )
     try:
-        _dispatch_side_turn(state, slot, entry["content"])
+        from kiro_crew.shared_crew.turn_gate import independent_turn
+
+        # The successor is the queued sender's turn, charged to their budget.
+        with independent_turn(), initiated_by(entry.get("budget", "")):
+            _dispatch_side_turn(state, slot, entry["content"])
     except Exception:
         # The card is already retired on the client, so put the text back at the
         # head rather than only reporting the failure: "a submit is never
@@ -234,7 +263,9 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
         # Room is guaranteed here: this path just popped the entry it is putting
         # back. Still handled, so a future change cannot silently broadcast null.
         steer_id = entry.get("steer_id", "")
-        qid = side.queue_insert_front(entry["content"], steer_id=steer_id)
+        qid = side.queue_insert_front(
+            entry["content"], steer_id=steer_id, budget=entry.get("budget", "")
+        )
         if qid is None:
             logger.error("Side re-insert found no room: slot=%s", slot.key)
             return
@@ -259,7 +290,9 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
         )
 
 
-async def _try_side_steer(state: DashboardState, slot, question: str) -> str | None:
+async def _try_side_steer(
+    state: DashboardState, slot, question: str, *, budget: str = ""
+) -> str | None:
     """Inject *question* into the side turn already streaming on this slot.
 
     Returns the ledger id the attempt was recorded under, or None when it was
@@ -299,7 +332,7 @@ async def _try_side_steer(state: DashboardState, slot, question: str) -> str | N
         # delivered. Decline here instead: the caller falls through to the queue,
         # which either takes it or answers 429 — both visible, both recoverable.
         return None
-    steer_id = side.steer_register(question)
+    steer_id = side.steer_register(question, budget=budget)
     if steer_id is None:
         # Every ledger slot is an in-flight steer. Fall through to the queue
         # rather than accept a steer whose outcome we could not record.
@@ -1159,7 +1192,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
         side_before = slot._side
         run_before = side_before.last_run_id
         if body.get("steer"):
-            steer_id = await _try_side_steer(state, slot, question)
+            steer_id = await _try_side_steer(state, slot, question, budget=actor_budget(request))
             # Identity is checked on BOTH outcomes: a close+reopen during the RPC
             # leaves ``slot._side`` pointing at a fresh, also-``open`` sidecar, and
             # queueing this question onto it would put it in a side conversation
@@ -1247,7 +1280,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
                 {"error": "side conversation is not open", "code": "side_not_open"},
                 status=409,
             )
-        qid = side.queue_append(question)
+        qid = side.queue_append(question, budget=actor_budget(request))
         if qid is None:
             sel().log_api_access(
                 caller=request.get("app", "") or "dashboard",
@@ -1314,7 +1347,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
         # this state. Dispatching now would run the newest question first and leave
         # the earlier ones behind it, so join the tail and let the head go next.
         # This is also what restarts a held queue: the drain below moves it.
-        qid = idle_side.queue_append(question)
+        qid = idle_side.queue_append(question, budget=actor_budget(request))
         if qid is None:
             return web.json_response(
                 {
@@ -1348,9 +1381,10 @@ async def api_side_turn(request: web.Request) -> web.Response:
 
     # The owner asking is waiting on the panel; an app token is not. A queued
     # question drains BACKGROUND, onto the side session the turn before it warmed.
-    run_id = _dispatch_side_turn(
-        state, slot, question, start_priority=owner_start_priority(request)
-    )
+    with initiated_by(actor_budget(request)):
+        run_id = _dispatch_side_turn(
+            state, slot, question, start_priority=owner_start_priority(request)
+        )
 
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",

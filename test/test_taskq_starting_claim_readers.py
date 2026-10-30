@@ -51,6 +51,9 @@ STARTING = frozenset(
 
 #: ``(path under src/kiro_crew, qualname)`` of the readers that consult them.
 CONSULTS: dict[tuple[str, str], str] = {
+    ("shared_crew/admission_entry.py", "subagent_cancel.stop_child"): (
+        "stops an admitted child through manager.cancel when starting_claim_of names its run"
+    ),
     ("subagent_manager/cancellation.py", "CancellationCoordinator.cancel_impl"): (
         "a single stop joins the start (starting_claim_of), then reaps what registered"
     ),

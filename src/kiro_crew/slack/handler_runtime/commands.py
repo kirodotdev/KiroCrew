@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _get_default_agent,
         _hydrate_thread_overrides,
         _hydrated_sessions,
+        _is_bang_command,
         _is_slack_restricted,
         _list_all_agent_names,
         _mark_titled,
@@ -1459,7 +1460,7 @@ async def _route_bang_command(
         return True
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
-    if cmd_text.startswith("!"):
+    if _is_bang_command(cmd_text):
         # !dashboard and !stop are available to any allowed user
         _cmd_word = cmd_text.split()[0]
         if _cmd_word in ("!dashboard", "!stop", "!title"):

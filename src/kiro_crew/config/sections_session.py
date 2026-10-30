@@ -184,8 +184,8 @@ class SessionConfig:
         metadata=_meta(
             "Watchdog RSS Limit (MiB)",
             "Recycle a session when its process tree resident memory exceeds "
-            "this many MiB. 0 disables (the default); the internal background "
-            "runtime still recycles at 1536 MiB. Busy sessions (turn in "
+            "this many MiB (default 4096). 0 disables; the internal background "
+            "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
             "flight) are never recycled.",
         ),
     )

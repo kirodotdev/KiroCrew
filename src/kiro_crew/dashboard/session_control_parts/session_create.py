@@ -1008,6 +1008,23 @@ async def create_session(
             code="create_rate_limited",
             status=429,
         )
+    if not dry_run:
+        # Shared Crew: an agent's create is charged to the person whose work runs in
+        # the calling session, so one person's agents share that person's rate. The
+        # installed service is read synchronously: nothing may suspend between
+        # the eligibility gate above and the allocation below.
+        from kiro_crew.shared_crew import admission_gate
+
+        service = admission_gate.installed_service()
+        budget = (
+            service.budget_for_session(caller_key) if service is not None else None
+        ) or admission_gate.AUTOMATION_PRINCIPAL.id
+        if service is not None and service.check_session_create(budget) is not None:
+            raise SessionControlError(
+                "too many sessions created recently; retry shortly",
+                code="session_create_rate",
+                status=429,
+            )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",

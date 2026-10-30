@@ -45,6 +45,7 @@ _TO_DICT_KEYS = (
     "artifact",
     "messages",
     "running",
+    "admission_queued",
     "wake_starting",
     # Turn identity beside `running`: the slot's monotonic turn counter and the
     # gateway process generation it is comparable within. The dashboard uses the
@@ -102,6 +103,7 @@ _TO_DICT_KEYS = (
     "origin",
     "created_by",
     "lineage_minted",
+    "attribution",
 )
 
 

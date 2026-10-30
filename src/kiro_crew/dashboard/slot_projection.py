@@ -10,6 +10,14 @@ from typing import Any
 from kiro_crew.dashboard.slot_preparing import is_preparing
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
+from kiro_crew.shared_crew.attribution import public_attribution_of_slot
+
+
+def _admission_queued(slot_key: str) -> bool:
+    """Whether *slot_key*'s dispatched turn still waits in fair admission. In memory."""
+    from kiro_crew.shared_crew.admission_entry import admission_pending
+
+    return admission_pending(slot_key)
 
 
 def summary_rows(slot: Any) -> list[Any]:
@@ -468,7 +476,10 @@ class SlotProjection:
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             "messages": len(rows),
+            # A turn waiting in fair admission is still in flight, so Stop
+            # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,
+            "admission_queued": _admission_queued(slot.key),
             # A loop wake is opening this running turn and its row is not in the
             # transcript yet: a structured monitor writes that row only once the
             # runner accepts the turn. Rides the same frame as `running`, so a
@@ -563,4 +574,7 @@ class SlotProjection:
             # a join that trusted the claim alone would nest a session under
             # whoever a transcript happened to name.
             "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
+            # Shared Crew creator (``shared_crew.attribution``), public shape:
+            # no issuer or subject. Legacy and unstamped slots read as Unknown.
+            "attribution": public_attribution_of_slot(slot),
         }

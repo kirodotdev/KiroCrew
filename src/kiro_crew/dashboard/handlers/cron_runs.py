@@ -184,6 +184,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # in practice -- it is here so that EVERY assignment site reaches the
                 # recorder and the derived pin needs no exception for this one.
                 note_crew_log_class(state, slot)
+                from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+                bind_transcript(state, slot)
                 hydrate_slot_from_history(slot, history)
                 # Mark dismissed-UNHYDRATED before the off-loop read: the slot is
                 # now bound + dirty with an empty in-memory set, and a periodic

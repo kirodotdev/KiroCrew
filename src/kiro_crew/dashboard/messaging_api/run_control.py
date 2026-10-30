@@ -545,8 +545,17 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # Fair admission (Shared Crew), as for spawn and continue: the retry is a new
+    # child run charged to the parent session's initiator.
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
     try:
-        return await _retry_failed_run(state, agent_id, old)
+        # Inside the claim-settling ``finally``: an admission that raises (an
+        # unreadable task store) started nothing, so the claim is released.
+        child_admission = await admit_subagent(request, state, old.parent_session_key or "")
+        if child_admission.rejected:
+            return child_admission.refusal_response()
+        return await _retry_failed_run(state, agent_id, old, admission=child_admission)
     finally:
         # Releases a claim still pending: every path that started nothing. A
         # landed start was settled with its id, and a spawn that raised with
@@ -554,78 +563,107 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         state.subagents.settle_retry(old, None)
 
 
-async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) -> web.Response:
-    """Start the replacement run for a failed *old*; the checks are the caller's."""
-    assert state.subagents is not None
-    execution = old.execution_context
-    if execution is None:
-        from kiro_crew.subagent_persistence import read_run_execution
+async def _retry_failed_run(
+    state: "DashboardState", agent_id: str, old: Any, *, admission: Any = None
+) -> web.Response:
+    """Start the replacement run for a failed *old*; the checks are the caller's.
+
+    *admission* is the retry's Shared Crew child admission: attached to the
+    replacement run when one starts, given back otherwise.
+    """
+    started: list[str] = []
+
+    async def _start() -> web.Response:
+        assert state.subagents is not None
+        execution = old.execution_context
+        if execution is None:
+            from kiro_crew.subagent_persistence import read_run_execution
+
+            try:
+                execution = await asyncio.to_thread(read_run_execution, old.id)
+            except (OSError, ValueError) as exc:
+                return web.json_response(
+                    {"error": f"memory_unavailable: {exc}", "code": "memory_unavailable"},
+                    status=400,
+                )
+        # Same validated warm as the primary spawn handler. old.cwd was validated
+        # at the ORIGINAL spawn, but the allowlist may have changed since (and a
+        # gateway restart leaves the cache cold), so it is re-checked against the
+        # current config before any discovery read.
+        if old.agent:
+            await warm_project_agents_for_spawn(state, old.cwd or "")
+        start = _spawn_on_loop(
+            state,
+            old._raw_task or old.task,
+            parent_session_key=old.parent_session_key,
+            agent=old.agent,
+            max_turns=old.max_turns,
+            cwd=old.cwd,
+            model=old.model or None,
+            # Like model and the context groups: a retry must run at the SAME
+            # effort as the run it replaces, or it is a different experiment.
+            reasoning_effort=old.reasoning_effort,
+            # And on the same backend: a retry on the default harness would be a
+            # different experiment, and a quiet one.
+            backend=getattr(old, "backend", None),
+            approval_mode=old.approval_mode or None,
+            silent=old.silent,
+            # A retry must see the SAME context scope as the run it replaces —
+            # otherwise the retried agent is a different experiment.
+            delegation=dict(old.delegation),
+            include_memory=old.include_memory,
+            include_lessons=old.include_lessons,
+            include_project=old.include_project,
+            # Same scope the original ran under. Omitting it makes a retry widen to
+            # the global store, so the failure mode is "retrying a delegation leaks
+            # it" -- and a retry is exactly when nobody re-reads the scope.
+            memory_store=old.memory_store,
+            crew=old.crew,
+            app=execution.app,
+            _memory_mode=execution.memory_mode,
+            _execution_context=execution.to_record(),
+        )
+        import contextlib
+
+        from kiro_crew.shared_crew.admission_entry import admitted_scope
 
         try:
-            execution = await asyncio.to_thread(read_run_execution, old.id)
-        except (OSError, ValueError) as exc:
+            with admitted_scope(admission) if admission is not None else contextlib.nullcontext():
+                info = await start
+        except BaseException:
+            # The spawn may have accepted its durable row before it raised (a
+            # cancelled request included), so whether a successor exists is unknown:
+            # the claim stays taken rather than letting a second retry run the task.
+            state.subagents.settle_retry(old, SUCCESSOR_UNKNOWN)
+            raise
+        if not info:
             return web.json_response(
-                {"error": f"memory_unavailable: {exc}", "code": "memory_unavailable"}, status=400
+                {"error": f"capacity reached ({state.subagents.max_concurrent})"}, status=429
             )
-    # Same validated warm as the primary spawn handler. old.cwd was validated
-    # at the ORIGINAL spawn, but the allowlist may have changed since (and a
-    # gateway restart leaves the cache cold), so it is re-checked against the
-    # current config before any discovery read.
-    if old.agent:
-        await warm_project_agents_for_spawn(state, old.cwd or "")
-    start = _spawn_on_loop(
-        state,
-        old._raw_task or old.task,
-        parent_session_key=old.parent_session_key,
-        agent=old.agent,
-        max_turns=old.max_turns,
-        cwd=old.cwd,
-        model=old.model or None,
-        # Like model and the context groups: a retry must run at the SAME
-        # effort as the run it replaces, or it is a different experiment.
-        reasoning_effort=old.reasoning_effort,
-        # And on the same backend: a retry on the default harness would be a
-        # different experiment, and a quiet one.
-        backend=getattr(old, "backend", None),
-        approval_mode=old.approval_mode or None,
-        silent=old.silent,
-        # A retry must see the SAME context scope as the run it replaces —
-        # otherwise the retried agent is a different experiment.
-        delegation=dict(old.delegation),
-        include_memory=old.include_memory,
-        include_lessons=old.include_lessons,
-        include_project=old.include_project,
-        # Same scope the original ran under. Omitting it makes a retry widen to
-        # the global store, so the failure mode is "retrying a delegation leaks
-        # it" -- and a retry is exactly when nobody re-reads the scope.
-        memory_store=old.memory_store,
-        crew=old.crew,
-        app=execution.app,
-        _memory_mode=execution.memory_mode,
-        _execution_context=execution.to_record(),
-    )
+        if info.done and info.error:
+            return web.json_response({"error": info.error}, status=400)
+        # Stopped before it started: nothing ran, so the claim is left pending for
+        # the caller's ``finally`` to release and the failed run stays retryable.
+        stopped = _stopped_before_start(info)
+        if stopped is not None:
+            return stopped
+        state.subagents.settle_retry(old, info.id)
+        logger.info("Subagent %s retried as %s (POST /api/spawn/{id}/retry)", agent_id, info.id)
+        started.append(info.id)
+        return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})
+
     try:
-        info = await start
+        response = await _start()
     except BaseException:
-        # The spawn may have accepted its durable row before it raised (a
-        # cancelled request included), so whether a successor exists is unknown:
-        # the claim stays taken rather than letting a second retry run the task.
-        state.subagents.settle_retry(old, SUCCESSOR_UNKNOWN)
+        if admission is not None:
+            await admission.abandon()
         raise
-    if not info:
-        return web.json_response(
-            {"error": f"capacity reached ({state.subagents.max_concurrent})"}, status=429
-        )
-    if info.done and info.error:
-        return web.json_response({"error": info.error}, status=400)
-    # Stopped before it started: nothing ran, so the claim is left pending for
-    # the caller's ``finally`` to release and the failed run stays retryable.
-    stopped = _stopped_before_start(info)
-    if stopped is not None:
-        return stopped
-    state.subagents.settle_retry(old, info.id)
-    logger.info("Subagent %s retried as %s (POST /api/spawn/{id}/retry)", agent_id, info.id)
-    return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})
+    if admission is not None:
+        if started:
+            await admission.attach_child(started[0], session_key=f"subagent:{started[0]}")
+        else:
+            await admission.abandon()
+    return response
 
 
 async def _log_panel_dismissal(state: DashboardState, agent_id: str) -> str:

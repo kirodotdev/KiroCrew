@@ -467,6 +467,12 @@ def schedule_eager_spawn(
         cfg = live.snapshot()
         if cfg is None or not cfg.session.eager_spawn:
             return None
+        # Shared Crew: with fair admission on, a runtime starts only inside an
+        # admitted turn, so creating sessions cannot start unbounded processes.
+        from kiro_crew.shared_crew.turn_gate import admission_active
+
+        if admission_active():
+            return None
     except Exception:
         return None
     if _eager_spawn_held_off(slot):

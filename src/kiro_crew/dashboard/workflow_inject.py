@@ -188,6 +188,9 @@ def inject_workflow_result(
                 slot.invalidate_source_links()
                 slot._dismissed_hydrated = False
                 note_crew_log_class(state, slot)
+                from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+                bind_transcript(state, slot)
             slot.title = f"Workflow: {snapshot.get('name') or run_id}"
 
         # Dedup: don't double-inject the same result on a re-fire.

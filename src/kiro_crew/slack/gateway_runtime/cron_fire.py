@@ -219,11 +219,14 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         # When agent_sequence has multiple agents, run them sequentially
         # with per-agent session keys and per-job env vars.
         if agent_sequence_dispatches(cap.cron_agents):
-            return await self._cron_run_sequence(job, cap)
+            dispatch = self._cron_run_sequence(job, cap)
+        else:
+            # ── Single-agent path (existing behavior) ──
+            # Per-job env vars (single-agent path) travel via extra_env passthrough
+            dispatch = self._cron_run_single(job, cap, retry=_cron_callback)
+        from kiro_crew.shared_crew.admission_entry import admitted_cron_dispatch
 
-        # ── Single-agent path (existing behavior) ──
-        # Per-job env vars (single-agent path) travel via extra_env passthrough
-        return await self._cron_run_single(job, cap, retry=_cron_callback)
+        return await admitted_cron_dispatch(job, dispatch)
 
     self._cron_reconciled = False
     self._cron_armed = False
@@ -284,6 +287,20 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
 
     # Snapshot the job before yielding; reloading a cron cannot rebind it.
     cron_agents = list(job.agent_sequence)
+    # Only an agent run writes a transcript under this key; tagging a script or
+    # command job would create an empty transcript on every fire.
+    if (
+        not job.persistent_session
+        and not (job.script or job.command)
+        and not agent_sequence_dispatches(cron_agents)
+    ):
+
+        def tag_run_transcript() -> None:
+            from kiro_crew.history import ConversationLog
+
+            ConversationLog().update_metadata(session_key, {"cron_run": "ephemeral"})
+
+        await asyncio.to_thread(tag_run_transcript)
     # ── Default-agent fallback (LLM jobs) ──
     # A job with no explicit agent_id must run the configured default
     # agent (config.agent.default_agent), matching the chat transports'

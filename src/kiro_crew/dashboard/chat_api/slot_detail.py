@@ -1266,6 +1266,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     turn_running = slot.turn_running
     verdict_key = slot_history_key(slot)
     running = slot.running
+    from kiro_crew.shared_crew.admission_entry import admission_pending
+
+    admission_queued = admission_pending(key)
     # A turn another path runs on this slot's linked session (the Slack thread a
     # channel-born tab is bound to) has no task here but IS in flight: the same
     # read the slots summary makes, so the open pane and the sidebar agree and
@@ -1380,7 +1383,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 # LLM-generated or set by a rename, so they are content, not
                 # configuration.
                 "title": _redact_for_display(display_title),
+                # A turn waiting in fair admission is still the accepted,
+                # in-flight turn: ``running`` stays true so the composer keeps
+                # its Stop control, and ``admission_queued`` says it has not
+                # started yet (``shared_crew.admission_entry.admission_pending``).
                 "running": running,
+                "admission_queued": admission_queued,
                 **turn_identity,
                 "stopping": stopping,
                 "stop_state": stop_state,

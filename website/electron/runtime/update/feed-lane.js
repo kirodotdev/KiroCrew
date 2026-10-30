@@ -15,6 +15,10 @@ const {
 } = require("./freshness-gate");
 
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
+// The longest a quit is held while Squirrel.Mac stages the update. A healthy
+// ~900MB stage takes about 40s; this bound only keeps a wedged installer from
+// leaving an app the user can never quit.
+const STAGING_QUIT_HOLD_MAX_MS = 10 * 60 * 1000;
 
 /** Native notices are optional: a platform without them must not fail the path. */
 function showNotice(Notification, title, body) {
@@ -117,6 +121,10 @@ function createFeedLane({
   //: a plain quit with the stage uninstalled. So the quit is held and replayed by
   //: `honorDeferredQuit` once the path either installs (which quits anyway) or aborts.
   let quitDeferredForInstall = false;
+  // Set while Squirrel.Mac stages the update inside quitAndInstall() (see
+  // holdQuitsWhileStaging). `stagingQuitHeld` records that a quit arrived then.
+  let stagingHold = null;
+  let stagingQuitHeld = false;
   // The channel the LAST configureFeed() pointed the updater at. Captured at
   // check time because the update-available handler's direction gate must
   // compare the candidate against the channel its FEED was configured for, not
@@ -531,7 +539,11 @@ function createFeedLane({
     // BaseUpdater re-emits it for the platforms it installs itself.
     const native = nativeAutoUpdater;
     if (native && typeof native.once === "function") {
+      holdQuitsWhileStaging(reason);
       native.once("before-quit-for-update", () => {
+        // Release first: the installer's own quit follows this event and must
+        // not be held.
+        releaseStagingHold();
         log.info(`[update] installer took over (${reason}) — arming the exit failsafe`);
         arm();
       });
@@ -540,6 +552,56 @@ function createFeedLane({
     // No native updater surface to listen on (tests, unexpected platform):
     // fall back to the timer rather than losing the guarantee entirely.
     arm();
+  }
+
+  /**
+   * Hold every quit while Squirrel.Mac stages the update.
+   *
+   * On darwin quitAndInstall() returns at once and Squirrel then pulls the zip
+   * over the loopback proxy, unpacks and verifies it, about 40s for a real
+   * build. Until `before-quit-for-update` fires, ShipIt is not armed, so any quit
+   * in that window -- a second Cmd+Q, Quit from the Dock or tray, the window's
+   * close button, a logout -- kills the stage and the app reopens on the OLD
+   * version with no error. Both install paths stop holding before they call
+   * quitAndInstall() (the manual path removes deferredInstallOnQuit, the quit
+   * path's once-listener is spent), so this hold is the only guard there.
+   *
+   * Released when the installer takes over, when the install fails
+   * (reportUpdaterFailure replays a held quit), or after STAGING_QUIT_HOLD_MAX_MS.
+   * Darwin only: the Windows and Linux installers quit the app themselves at
+   * once, and holding that quit would block the install.
+   */
+  function holdQuitsWhileStaging(reason) {
+    if (osPlatform !== "darwin" || stagingHold) return;
+    const onQuit = (event) => {
+      event.preventDefault();
+      // Re-armed per quit, the pattern deferredInstallOnQuit uses.
+      app.once("before-quit", onQuit);
+      if (stagingQuitHeld) return;
+      stagingQuitHeld = true;
+      log.info(`[update] quit requested while the installer stages the update (${reason}) — holding it`);
+      showNotice(Notification, "Finishing the update", "Kiro Crew is preparing the update and will restart by itself in a moment.");
+    };
+    const timer = setTimeout(() => {
+      log.error(`[update] installer did not take over within ${STAGING_QUIT_HOLD_MAX_MS}ms (${reason}) — no longer holding quits`);
+      const held = releaseStagingHold();
+      if (held) app.quit();
+    }, STAGING_QUIT_HOLD_MAX_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    stagingHold = { onQuit, timer };
+    stagingQuitHeld = false;
+    app.once("before-quit", onQuit);
+  }
+
+  /** Stop holding quits. Returns whether a quit was held, so a caller can replay it. */
+  function releaseStagingHold() {
+    if (!stagingHold) return false;
+    app.removeListener("before-quit", stagingHold.onQuit);
+    clearTimeout(stagingHold.timer);
+    stagingHold = null;
+    const held = stagingQuitHeld;
+    stagingQuitHeld = false;
+    return held;
   }
 
   // isForceRunAfter=true so the user lands back in the app after the swap.
@@ -1141,6 +1203,10 @@ function createFeedLane({
       // The dispatch is over: allow a retry (updateReady is still true -- the
       // zip is still staged).
       installing = false;
+      // Stop holding quits before either branch below quits or recovers. A quit
+      // held while Squirrel staged is the same request as one held before the
+      // dispatch, so the manual branch replays it the same way.
+      if (releaseStagingHold()) quitDeferredForInstall = true;
       if (deferredInstalling) {
         // Dispatched from the quit handler, so recovery is the WRONG answer here
         // even though this is the same Squirrel rejection: that quit was

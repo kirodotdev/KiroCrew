@@ -335,6 +335,17 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
+        # The off-loop watchdog's sustained-lag reading, for a local probe
+        # telling a slow gateway from a dead one.
+        from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+        state = request.app.get("state")
+        watchdog = getattr(state, "_loop_watchdog", None)
+        if isinstance(watchdog, LoopStallWatchdog):
+            payload["loop"] = {
+                "lagging": bool(watchdog.lagging),
+                "sustained_lag_episodes": int(watchdog.sustained_lag_episodes),
+            }
     return payload
 
 

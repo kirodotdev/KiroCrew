@@ -75,13 +75,14 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
-from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+from kiro_crew.dashboard.transcript_binding import bind_transcript, seed_project_from_disk
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.attribution import Principal, stamp_principal_author
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -191,7 +192,7 @@ def project_channel_turn_live(
                     broadcast_user=broadcast_user,
                     # A PERSON sent this into the channel. See
                     # history.HUMAN_TURN_META_KEY for why the marker is explicit.
-                    meta={HUMAN_TURN_META_KEY: True},
+                    meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
                 )
             )
             or ""
@@ -451,6 +452,7 @@ def _rebind_unbound_channel_slot(
         return False
     slot.linked_session_key = session_key
     note_crew_log_class(state, slot)
+    bind_transcript(state, slot)
     # Flagged, or the periodic flush skips it and the next restart refuses all over again.
     slot._dirty = True
     # The rebind changes the slot's effective key, so the registry still holds the

@@ -61,6 +61,8 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.shared_crew.admission_gate import actor_budget
+from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
@@ -632,19 +634,20 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
             if unanswered and flight_key not in _in_flight:
                 _in_flight.add(flight_key)
                 run_id = uuid.uuid4().hex
-                task = asyncio.create_task(
-                    _run_thread_turn(
-                        state,
-                        slot,
-                        mid,
-                        run_id,
-                        str(existing.get("content", "")),
-                        parent,
-                        context_before,
-                        flight_key,
-                        identity,
+                with initiated_by(actor_budget(request)):
+                    task = asyncio.create_task(
+                        _run_thread_turn(
+                            state,
+                            slot,
+                            mid,
+                            run_id,
+                            str(existing.get("content", "")),
+                            parent,
+                            context_before,
+                            flight_key,
+                            identity,
+                        )
                     )
-                )
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
                 return web.json_response(
@@ -740,20 +743,21 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
             content=text,
             reply=reply,
         )
-        task = asyncio.create_task(
-            _run_thread_turn(
-                state,
-                slot,
-                mid,
-                run_id,
-                text,
-                parent,
-                context_before,
-                flight_key,
-                identity,
-                start_priority=owner_start_priority(request),
+        with initiated_by(actor_budget(request)):
+            task = asyncio.create_task(
+                _run_thread_turn(
+                    state,
+                    slot,
+                    mid,
+                    run_id,
+                    text,
+                    parent,
+                    context_before,
+                    flight_key,
+                    identity,
+                    start_priority=owner_start_priority(request),
+                )
             )
-        )
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
         launched = True
@@ -879,7 +883,59 @@ async def _run_thread_turn(
     identity: str | None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
-    """Background task: one crewmate reply into the thread on *mid*.
+    """Background task: one crewmate reply, admitted by Shared Crew fair admission.
+
+    Charged to the replier (the handler binds it with ``initiated_by``). A
+    refused or unstarted reply never runs: the thread gets a final error frame
+    naming the capacity limit and the reply slot is freed.
+    """
+
+    def _refused(reason: object) -> None:
+        _in_flight.discard(flight_key)
+        broadcast_thread_reply(
+            state,
+            slot_key=slot.key,
+            mid=mid,
+            run_id=run_id,
+            role=ROLE_ASSISTANT,
+            content=capacity_note(reason),
+            is_error=True,
+            final=True,
+            ts=time.time(),
+        )
+
+    await run_admitted(
+        _thread_turn_body(
+            state,
+            slot,
+            mid,
+            run_id,
+            text,
+            parent,
+            context_before,
+            flight_key,
+            identity,
+            start_priority,
+        ),
+        session_key=thread_session_key(slot.key, mid),
+        text=text,
+        refused=_refused,
+    )
+
+
+async def _thread_turn_body(
+    state: DashboardState,
+    slot: _ChatSlot,
+    mid: str,
+    run_id: str,
+    text: str,
+    parent: dict[str, Any],
+    context_before: list[dict[str, Any]],
+    flight_key: str,
+    identity: str | None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
+) -> None:
+    """One crewmate reply into the thread on *mid*.
 
     The shape is the side turn's (``handlers/side._run_side_turn``) without its
     steer/queue ledger: resolve the slot's agent, derive the read-only spec on

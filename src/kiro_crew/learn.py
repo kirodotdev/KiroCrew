@@ -153,9 +153,21 @@ class Lesson:
     # from ``category``, ``ts`` or wording -- see
     # ``kiro_crew.lesson_validation.normalize_lesson_applies``.
     applies: str | None = None
+    # Who wrote this lesson, as the server derived it: the reduced principal
+    # ``shared_crew.memory_changes.writer_stamp`` builds (id, kind, display name).
+    # ``None`` for a lesson written before writers were recorded, or with no
+    # known person behind it. A label only; nothing gates on it.
+    written_by: dict[str, str] | None = None
 
 
 # ── Storage ──
+
+
+def _written_by_of(raw: object) -> dict[str, str] | None:
+    """A stored ``written_by`` read back; ``None`` when absent or damaged."""
+    from kiro_crew.shared_crew.memory_changes import stamp_of
+
+    return stamp_of(raw)
 
 
 def _serializable(lesson: Lesson) -> dict:
@@ -171,6 +183,8 @@ def _serializable(lesson: Lesson) -> dict:
     row = asdict(lesson)
     if row.get("applies") is None:
         row.pop("applies", None)
+    if row.get("written_by") is None:
+        row.pop("written_by", None)
     return row
 
 
@@ -214,6 +228,30 @@ def _prune_to_total(lessons: list[Lesson]) -> list[Lesson]:
         if len(drop) >= over:
             break
     return [lesson for index, lesson in enumerate(lessons) if index not in drop]
+
+
+def _conflicting_preference(new: Lesson, stored: Lesson, new_scope: str | None) -> bool:
+    """Whether *stored* is a preference that *new* replaces (newest wins).
+
+    Both rows are ``preference`` lessons in the same scope, and they share at
+    least half of the larger keyword set: the vector store's topic-overlap
+    rule (``vector_memory_runtime.lessons.lesson_keywords``), so both stores
+    call the same pair a conflict. A standing (``always``) row is never
+    replaced by a finding (``on_topic``), matching the vector store's tier rule.
+    """
+    if new.category != "preference" or stored.category != "preference":
+        return False
+    if canonical_scope(stored.repo_scope) != new_scope:
+        return False
+    if new.applies == LESSON_APPLIES_ON_TOPIC and stored.applies != LESSON_APPLIES_ON_TOPIC:
+        return False
+    from kiro_crew.vector_memory_runtime.lessons import lesson_keywords
+
+    new_words = lesson_keywords(new.rule.lower())
+    old_words = lesson_keywords(stored.rule.lower())
+    if not new_words or not old_words:
+        return False
+    return len(new_words & old_words) / max(len(new_words), len(old_words)) >= 0.5
 
 
 def _keep_one_identity(lesson: Lesson) -> str:
@@ -391,7 +429,7 @@ class LessonStore:
         return self._insert_or_enrich(lesson, enrich=False)
 
     @named_store_operation
-    def save_or_enrich(self, lesson: Lesson) -> str:
+    def save_or_enrich(self, lesson: Lesson, *, superseded_out: list[str] | None = None) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
         rule, in ONE lock acquisition. Returns
         ``inserted``/``enriched``/``unchanged``/``refused``.
@@ -402,10 +440,16 @@ class LessonStore:
         Re-submitting a rule to attach a NOT-clause must not fall into the duplicate
         check, which matches on the rule alone: returning before looking at
         ``negative`` would drop the clause behind an HTTP 200.
-        """
-        return self._insert_or_enrich(lesson, enrich=True)
 
-    def _insert_or_enrich(self, lesson: Lesson, *, enrich: bool) -> str:
+        A ``preference`` insert also replaces the stored preferences it
+        conflicts with (newest wins, :func:`_conflicting_preference`). The rule
+        text of each replaced row is appended to *superseded_out* when given.
+        """
+        return self._insert_or_enrich(lesson, enrich=True, superseded_out=superseded_out)
+
+    def _insert_or_enrich(
+        self, lesson: Lesson, *, enrich: bool, superseded_out: list[str] | None = None
+    ) -> str:
         """Shared body for :meth:`save` and :meth:`save_or_enrich`.
 
         The single lock acquisition is the load-bearing part. Doing enrich and
@@ -498,11 +542,31 @@ class LessonStore:
                         # edit followed by a failed write would leave the cache
                         # advertising a clause that was never persisted -- and that
                         # cache feeds context injection.
-                        updated.append(replace(le, negative=next_negative, repo_scope=next_scope))
+                        updated.append(
+                            replace(
+                                le,
+                                negative=next_negative,
+                                repo_scope=next_scope,
+                                written_by=lesson.written_by or le.written_by,
+                            )
+                        )
                     continue
                 updated.append(le)
             if outcome == "unchanged":
                 return outcome  # nothing to write; leave the file untouched
+            replaced: list[str] = []
+            if not matched and enrich:
+                # Newest wins: an explicit preference replaces the stored
+                # preferences it conflicts with, so two contradicting rules are
+                # never both in effect. Automatic writers (``save``) never reach
+                # this, and nothing but a preference is replaced.
+                kept: list[Lesson] = []
+                for le in updated:
+                    if _conflicting_preference(lesson, le, wanted_scope):
+                        replaced.append(le.rule)
+                    else:
+                        kept.append(le)
+                updated = kept
             if not matched:
                 # Insert the normalised clause too, so a whitespace-only one is stored
                 # as absent rather than as blanks.
@@ -528,6 +592,8 @@ class LessonStore:
                         )
                         return "refused"
             self._write_all(updated)
+        if superseded_out is not None:
+            superseded_out.extend(replaced)
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
 
@@ -702,6 +768,7 @@ class LessonStore:
                             and data["applies"].strip().lower() in LESSON_APPLIES_VALUES
                             else None
                         ),
+                        written_by=_written_by_of(data.get("written_by")),
                     )
                 )
             except (json.JSONDecodeError, KeyError):

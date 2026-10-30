@@ -1094,9 +1094,29 @@ async def run_channel_agent(
                     agent.state = "failed"
                     break
                 client = replacement
-            fault = await _stream_task(
-                agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
+            # Shared Crew fair admission for each turn: a person's message is
+            # charged to the bounded Unknown bucket (a channel message names no
+            # principal), agent-to-agent routing to Crew automation.
+            from kiro_crew.shared_crew.admission import OperationKind
+            from kiro_crew.shared_crew.turn_gate import capacity_note, run_admitted
+
+            refusal: list[object] = []
+            fault = await run_admitted(
+                _stream_task(agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo),
+                session_key=agent.session_key,
+                text=prompt,
+                automation=msg.from_id != "human",
+                operation=OperationKind.CHANNEL_TURN,
+                refused=refusal.append,
             )
+            if refusal:
+                await channel.post(
+                    agent.id,
+                    capacity_note(refusal[0]),
+                    from_role=agent.role,
+                    msg_type="system",
+                    thread_id=tid,
+                )
             if fault:
                 # This loop owns the SessionManager, so it is the only place that
                 # can clear a wedge or a lost session: replace the session and

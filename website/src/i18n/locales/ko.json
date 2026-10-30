@@ -7992,6 +7992,7 @@
       "save_failed_typed": "이 AWS 프로필을 저장할 수 없습니다. 이름을 확인하고 다시 시도하세요.",
       "applies_next": "선택해도 지금은 아무것도 실행되지 않습니다. 이 폴더의 새 채팅이 사용할 AWS 프로필만 정합니다.",
       "read_failed": "이 프로젝트의 AWS 프로필을 읽을 수 없습니다",
+      "read_unreachable": "게이트웨이가 바빠서 응답하지 않았습니다. 잠시 후 다시 시도하세요.",
       "row_title": "{{name}}의 AWS 프로필"
     },
     "projectPicker": {

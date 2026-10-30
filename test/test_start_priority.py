@@ -861,7 +861,7 @@ def _priority_args(path: str, function: str, callee: str) -> list[str]:
         ),
         # A turn's own background work passes the priority it was given.
         ("dashboard/handlers/side.py", "_run_side_turn", "get_or_create", "start_priority"),
-        ("dashboard/chat_threads.py", "_run_thread_turn", "get_or_create", "start_priority"),
+        ("dashboard/chat_threads.py", "_thread_turn_body", "get_or_create", "start_priority"),
         ("dashboard/handlers/taskrunner.py", "_run_refine", "get_or_create", "start_priority"),
     ],
 )

@@ -14,7 +14,10 @@ launching session as the caller. Pinned here:
   the launching session's own, and only on a session the launching session opened;
 * every session a workflow opens carries the ``workflow-opened`` sidebar tag
   without using up the session's own first-message auto-tag pass;
-* ``open_session`` spends the run's agent cap like ``ctx.agent()``;
+* ``send_to_session`` reaches only sessions the launcher opened, even for an
+  owner launcher;
+* ``open_session`` and ``send_to_session`` spend the run's agent cap like
+  ``ctx.agent()``;
 * the happy path: a script opens a session and seeds it, and the seeded turn reads
   as sent by the launching session via ``workflow``.
 """
@@ -682,6 +685,87 @@ def test_a_workflow_opens_a_session_and_seeds_it_as_the_launcher(setup, monkeypa
     assert WORKFLOW_OPENED_TAG in _tag_names(state, child)
     assert ran[child_key].startswith(f"[sent by session {launcher.key} via workflow]")
     assert "start on item 1" in ran[child_key]
+
+
+def test_send_to_session_reaches_only_sessions_the_launcher_opened(setup, monkeypatch):
+    """An owner launcher's run cannot start a turn in the person's own tab."""
+    state, launcher, port = setup
+    ran: dict[str, str] = {}
+
+    async def _fake_run_chat(_state, slot, prompt):
+        ran[slot.key] = prompt
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+    peer = _slot(state, "chat-2")
+    peer._trust = True
+    with pytest.raises(WorkflowSessionError) as exc:
+        asyncio.run(
+            _verb(port, "send_to_session")(
+                run_id="wf_1", caller_session_key=_key(launcher), slot=peer.key, message="x"
+            )
+        )
+    assert exc.value.code == "not_creator"
+    child = _open_child(state, launcher, port)
+
+    async def _send_child():
+        receipt = await _verb(port, "send_to_session")(
+            run_id="wf_1", caller_session_key=_key(launcher), slot=child.key, message="go"
+        )
+        # flake-ok: two yields let the started turn task run, as the send tests do
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return receipt
+
+    assert asyncio.run(_send_child())["ok"] is True
+    assert set(ran) == {child.key}
+
+
+def _send_script(n: int) -> str:
+    return (
+        'META = {"name": "s"}\n'
+        "async def workflow(ctx):\n"
+        f"    for i in range({n}):\n"
+        "        await ctx.send_to_session('chat-5', 'turn ' + str(i))\n"
+        "    return 'done'\n"
+    )
+
+
+def test_send_to_session_counts_against_the_runs_agent_cap():
+    ports, calls = _counting_ports()
+    runner = WorkflowRunner(
+        agent_fn=_echo, ports=ports, audit=lambda *a, **k: None, max_agents_per_run=2
+    )
+    res = asyncio.run(runner.run(_send_script(3), run_id="wf_s", now=NOW, session_key="chat-1"))
+    assert not res.ok
+    assert "agent-count cap" in (res.error or "")
+    # The third send was refused before the port ran: each send starts a turn.
+    assert calls["send"] == [("chat-5", "turn 0"), ("chat-5", "turn 1")]
+
+
+def test_send_to_session_stops_at_the_budget_ceiling():
+    from kiro_crew.workflows.context import AgentCounter, Budget
+    from kiro_crew.workflows.events import EventStream
+    from kiro_crew.workflows.runner import _RunContext
+
+    ports, calls = _counting_ports()
+    budget = Budget(total=10)
+    budget._spent = 10
+    ctx = _RunContext(
+        run_id="wf_b",
+        args={},
+        now=NOW,
+        owner_dm="",
+        stream=EventStream("wf_b"),
+        budget=budget,
+        counter=AgentCounter(5),
+        agent_fn=_echo,
+        concurrency=None,
+        session_key="chat-1",
+        ports=ports,
+    )
+    with pytest.raises(BudgetExceeded):
+        asyncio.run(ctx.send_to_session("chat-5", "x"))
+    assert calls["send"] == []
 
 
 def test_send_to_session_keeps_the_session_control_fence(setup):
