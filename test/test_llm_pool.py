@@ -21,9 +21,12 @@ from llm_pool_helpers import (  # noqa: F401 -- the autouse fixture registers by
     FakeWorker,
     _config_dir_tracks_patched_home,
     _make_pool_with_fake_workers,
+    _real_client_without_io,
     _zero_tool_client,
 )
 
+from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -485,30 +488,20 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "off"}}')
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["sandbox_mode"] == "off"
+        assert worker._client._sandbox_mode == "off"
 
     @pytest.mark.asyncio
     async def test_start_defaults_sandbox_to_auto(self, tmp_path):
         # With no config, the sandbox mode defaults to "auto" — engaging
         # OS-level isolation (namespace on Linux, seatbelt on macOS) and
         # automatically deferring to kiro-cli's internal sandbox when enabled.
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["sandbox_mode"] == "auto"
+        assert worker._client._sandbox_mode == "auto"
 
     @pytest.mark.parametrize(
         ("persisted", "expected"),
@@ -551,15 +544,17 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_KIRO}}))
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+            _real_client_without_io(),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", wraps=AcpClient) as mk,
         ):
             worker = AcpWorker()
             await worker.start()
+        # ACP_BACKEND_KIRO is also the client's default, so only the call shows
+        # that the value was passed rather than inherited.
         assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        assert worker._client.backend == ACP_BACKEND_KIRO
 
     @pytest.mark.asyncio
     async def test_start_passes_a_zero_tool_enforced_opencode_backend(self, tmp_path):
@@ -572,15 +567,10 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_OPENCODE}}))
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_OPENCODE
+        assert worker._client.backend == ACP_BACKEND_OPENCODE
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -590,37 +580,33 @@ class TestReadConfig:
         """None of these harnesses reads a spec of Crew's, so the knowledge model pin
         reaches the client explicitly, the model kiro-cli reads from the spec;
         without it extraction silently ran on the harness default."""
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
         with (
             patch("kiro_crew.knowledge.llm_pool._get_acp_backend", return_value=backend),
             patch(
                 "kiro_crew.knowledge.llm_pool._knowledge_spec_model",
                 return_value="local/extract-small",
             ),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+            _real_client_without_io(),
         ):
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["acp_backend"] == backend
-        assert mk.call_args.kwargs["model"] == "local/extract-small"
+        assert worker._client.backend == backend
+        assert worker._client._model == "local/extract-small"
 
     @pytest.mark.asyncio
     async def test_a_kiro_worker_reads_the_pin_from_its_spec(self, tmp_path):
         """kiro-cli reads the spec's own model, so its construction is unchanged."""
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
         with (
             patch("kiro_crew.knowledge.llm_pool._get_acp_backend", return_value=ACP_BACKEND_KIRO),
             patch(
                 "kiro_crew.knowledge.llm_pool._knowledge_spec_model",
                 side_effect=AssertionError("kiro must not read the pin here"),
             ),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+            _real_client_without_io(),
         ):
             worker = AcpWorker()
             await worker.start()
-        assert "model" not in mk.call_args.kwargs
+        assert worker._client._model == DEFAULT_MODEL
 
     @pytest.mark.parametrize(
         ("pin", "expected"),
@@ -652,15 +638,10 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_CODEX}}))
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        assert worker._client.backend == ACP_BACKEND_KIRO
 
     def test_unsafe_backend_fallback_warns_once_naming_the_capability(self, caplog):
         """A configured backend that fails a capability check logs a warning
@@ -721,31 +702,22 @@ class TestReadConfig:
 
     @pytest.mark.asyncio
     async def test_start_defaults_backend_to_kiro(self, tmp_path):
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             worker = AcpWorker()
             await worker.start()
-        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        assert worker._client.backend == ACP_BACKEND_KIRO
 
     @pytest.mark.asyncio
     async def test_pool_worker_resolves_backend_through_get_acp_backend(self, tmp_path):
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_KIRO}}))
-        mock_client = _zero_tool_client()
-        mock_client.is_ready = True
-        with (
-            patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
-        ):
+        with patch("pathlib.Path.home", return_value=tmp_path), _real_client_without_io():
             pool = LLMPool(pool_size=1)
             await pool.start()
+            backends = [w._client.backend for w in pool._workers]
             await pool.shutdown()
-        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        assert backends == [ACP_BACKEND_KIRO]
 
 
 # ---------------------------------------------------------------------------
