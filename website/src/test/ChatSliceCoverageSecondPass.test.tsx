@@ -73,6 +73,7 @@ import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
 import { reduceResume } from './resumeLanded'
 import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
+import { addStashEntry, loadPromptStash, makeStashEntry } from '../utils/promptStash'
 
 const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
@@ -1609,7 +1610,7 @@ describe('chatSlice thunks', () => {
 
   it('removes a deleted session from the history list', async () => {
     apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1' }, { key: 'h2' }], has_more: false })
-    apiMock.deleteSession.mockResolvedValue({})
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
     expect(chat(store).history).toHaveLength(2)
@@ -1630,11 +1631,13 @@ describe('chatSlice thunks', () => {
       status: 409,
       body: JSON.stringify({ ok: false, error: 'owned by nobody', code: 'cron_ownership_unknown' }),
     }))
+    expect(addStashEntry('h1', makeStashEntry('keep refused draft', []))).toBe(true)
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).history.map(h => h.key)).toEqual(['h1', 'h2'])
     expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: 'Nightly digest', code: 'cron_ownership_unknown' })
+    expect(loadPromptStash('h1').map(entry => entry.text)).toEqual(['keep refused draft'])
     store.dispatch(clearUndeletableHistory())
     expect(chat(store).undeletableHistory).toBeNull()
   })
@@ -1678,7 +1681,7 @@ describe('chatSlice thunks', () => {
     await store.dispatch(fetchHistory(false))
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: '', code: '' })
-    apiMock.deleteSession.mockResolvedValueOnce({})
+    apiMock.deleteSession.mockResolvedValueOnce({ ok: true })
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).undeletableHistory).toBeNull()
     expect(chat(store).history).toEqual([])

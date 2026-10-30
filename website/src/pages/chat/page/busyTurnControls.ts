@@ -4,14 +4,14 @@ import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../../../chat-core/composer/outgoingTurn'
-import { mintSendId } from '../../../chat-core/transport/sendTurn'
+import { mintSendId, type SendReceipt } from '../../../chat-core/transport/sendTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { useSteerRetract } from '../../../hooks/useSteerRetract'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
-import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
+import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, selectSendConfirmed, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
@@ -22,6 +22,8 @@ import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
 import type { ComposerDraftStores } from './composerDrafts'
 import type { ComposerStaging } from './composerStaging'
 
+type SteerVars = { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null; files?: string[] }
+
 interface BusyTurnControlsOptions {
   activeSlot: string | null
   currentSlot: ChatSlot | undefined
@@ -31,9 +33,14 @@ interface BusyTurnControlsOptions {
   messages: ChatMessage[]
   transcriptAuthoritative: boolean
   /** The page's send, for the busy-but-not-running case and nothing else. */
-  send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
+  send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean, reportConfirmed?: (confirmed: boolean) => void) => Promise<boolean>
   /** The receipt-aware steer POST (turnActions.ts's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null; files?: string[] }) => void }
+  steerMutation: {
+    mutate: (vars: SteerVars) => void
+    /** Same POST. Settles for every call, where `mutate`'s per-call callbacks
+     *  fire only for the latest one, so the composer steer reads its verdict here. */
+    mutateAsync: (vars: SteerVars) => Promise<SendReceipt>
+  }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -128,8 +135,13 @@ export function useBusyTurnControls({
   // the text inline via the 'steer_push' WS event. Composer, pending files,
   // paste blocks, and the per-slot drafts are all cleared HERE (not in
   // ChatInput) so text and attachments clear atomically.
-  const steer = useCallback((opts?: { auto?: boolean; text?: string }) => {
-    if (!activeSlot) return
+  //
+  // Resolves true only when the server provably holds the composer's text (a
+  // `dispatched` or `queued` receipt, or a correlated echo), the verdict
+  // `composerSend` gives a send. The composer's prompt stash deletes a
+  // restored draft's stored copy on it, so every other path resolves false.
+  const steer = useCallback(async (opts?: { auto?: boolean; text?: string }): Promise<boolean> => {
+    if (!activeSlot) return false
     // A follow-up chip's own text, steered as-is: like an option send, it
     // leaves the composer draft, attachments and staged quote alone.
     const optionText = opts?.text
@@ -141,13 +153,17 @@ export function useBusyTurnControls({
     // server-side hold that keeps a user message behind running sub-agents.
     // Delegating here, BEFORE the composer is read and cleared below, leaves
     // send() owning the draft, attachment and optimistic-bubble bookkeeping.
-    if (!slotRunning) { void send(optionText, undefined, true); return }
+    if (!slotRunning) {
+      let confirmed = false
+      const delivered = await send(optionText, undefined, true, false, (ok) => { confirmed = ok })
+      return delivered && confirmed
+    }
     if (optionText) {
       // Offline, a chip send is a no-op, as send() makes it: the chip stays.
-      if (!connected) return
+      if (!connected) return false
       composerRef.current?.voice()?.disarmForSend()
       steerText(optionText, activeSlot, opts?.auto === true)
-      return
+      return false
     }
     const askAtSteer = capturePendingAskId(store.getState().chat.pendingQuestions, activeSlot)
     const raw = inputRef.current.trim()
@@ -160,7 +176,7 @@ export function useBusyTurnControls({
     // A staged quote alone is a payload; a slash command is not a send, so the
     // quote stays staged through it.
     const steerQuote = isInterceptedSlashCommand(raw) ? null : messageQuote.consume('').quote
-    if (isEmptyTurn({ text: raw, files, quote: steerQuote })) return
+    if (isEmptyTurn({ text: raw, files, quote: steerQuote })) return false
     // Same rule as send(): a steer while STREAMING dictation is live ends the
     // dictation before the composer is cleared below. AFTER the empty-payload
     // check, like send(): an Enter on an empty composer before the first
@@ -214,7 +230,7 @@ export function useBusyTurnControls({
         }
       })
       setInput(''); setPasteBlocks([])
-      return
+      return false
     }
     // The text-only steer turn (`buildOutgoingTurn`): files inlined, folder
     // tokens kept in their `@rel/` form (a marker with no `meta.dirs` to
@@ -252,7 +268,13 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles })
+    const steerSlot = activeSlot
+    const verdict = steerMutation.mutateAsync({ text: llmTxt, sendId: steerSendId, slot: steerSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles })
+      .then(
+        receipt => receipt.status === 'dispatched' || receipt.status === 'queued'
+          || selectSendConfirmed(store.getState(), steerSlot, steerSendId),
+        () => false,
+      )
     // Staged session references were appended to `llmTxt` as links, so they
     // are consumed with the rest of the composer. Nothing is lost on a
     // refused, failed or unconfirmed steer: steerMutation hands the whole
@@ -262,6 +284,7 @@ export function useBusyTurnControls({
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([]); setPendingSessions([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; delete sessionRefDrafts.current[activeSlot]
     saveDrafts()
+    return verdict
   }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts,

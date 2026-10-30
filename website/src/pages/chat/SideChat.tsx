@@ -1095,6 +1095,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
             typedCommandMenus={false}
             slotApprovalChrome={false}
             promptOptimizer={false}
+            promptStash={false}
             connected={connected}
           />
           {postureError ? (

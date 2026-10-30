@@ -149,7 +149,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, stashMenuRows }: {
   /** "Optimize prompt" while a turn runs (#23572), a menu row because the
    *  busy send cluster is at its button cap. Null when idle: the cluster's
    *  own Optimize button is back then. */
@@ -171,6 +171,8 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   collapseMenuRow: ReactNode
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
+  /** The prompt-stash rows the "+" menu hosts (null when the stash is off). */
+  stashMenuRows?: ReactNode
 }) {
   const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger } = plus
   // The "+" trigger opens its menu on the mouse press (usePressActivation);
@@ -361,6 +363,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
+              {stashMenuRows}
             </div>
           </OverlayPortal>}
           </GuideRevealScope>
