@@ -118,6 +118,29 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _deferred_instances(handler_name: str) -> Callable:
+    """Bind a crew-scoped session-read route without importing the peer module at boot.
+
+    Same shape and same reason as :func:`_deferred_work_ledger`. The three
+    ``/api/crew-sessions/*`` handlers live in the ``handlers_instances`` facade
+    family, a sibling of the ``handlers`` package rather than a submodule of it, so
+    :func:`_deferred` cannot name it. The dashboard entrypoint imports that family
+    eagerly for its connections routes; the headless ``--slack-only`` entrypoint does
+    not, and this binder keeps it that way until the first crew read arrives. The
+    handler is read through the FACADE, not its owner module, so a test that patches
+    ``handlers_instances.<name>`` reaches the route like every other instances route.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard import handlers_instances
+
+        handler = getattr(handlers_instances, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -548,6 +571,16 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/summary",
         _deferred("session_control", "api_session_control_summary"),
     )
+    # Crew-scoped session reads (the crew= scope on the session read MCP tools).
+    # Registered HERE, not in the dashboard-only connections block, so both
+    # gateway entrypoints route them: a headless --slack-only gateway builds no
+    # tunnel manager, and there the handlers answer MANAGER_UNAVAILABLE_CODE
+    # rather than a route miss the tool would read as "no such endpoint". All
+    # three are on _STRICT_INTERNAL_API_PATHS (internal-secret, no browser
+    # caller), exactly like /api/sessions/summarize.
+    app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
+    app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
+    app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)

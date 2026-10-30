@@ -228,6 +228,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
+        # The regenerated turn's owner mark is THIS request's: see ``api_chat``.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
         task = asyncio.create_task(
             _run_chat(
                 state,
@@ -235,6 +238,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 user_msg,
                 regenerate_hint=hint,
                 _directive_user_origin=not bool(request.get("app", "")),
+                _directive_owner_origin=is_owner_dashboard_request(request),
                 # See ``api_chat``: an observed app must be NAMED, because the
                 # actor resolver's fallback is ``user``. ``""`` is the parameter's
                 # own default and reads as "not named".
@@ -638,6 +642,13 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         dispatch_ready = asyncio.Event()
         dispatch_commit = False
 
+        # Decided at request time, carried by the dispatch: see ``api_chat``.
+        # The edited words are whoever sent THIS request's, so the turn's owner
+        # mark is this request's, not the original row's.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        _owner_sent = is_owner_dashboard_request(request)
+
         async def _edit_resend_dispatch() -> None:
             await dispatch_ready.wait()
             if dispatch_commit:
@@ -646,6 +657,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     slot,
                     _bc,
                     _directive_user_origin=not bool(request_app),
+                    _directive_owner_origin=_owner_sent,
                     # See ``api_chat``: an observed app must be NAMED, because the
                     # actor resolver's fallback is ``user``. ``""`` is the
                     # parameter's own default and reads as "not named".

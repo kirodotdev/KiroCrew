@@ -141,6 +141,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only crew-scoped session reads (crew= scope on search_chat_history
+        # / list_sessions / get_chat_session). Prefix matching covers
+        # "/api/crew-sessions/search|list|read". No browser caller — the
+        # dashboard's own federated read is the owner-guarded
+        # "/api/instances/search-sessions". Without this entry the tools'
+        # internal-secret calls fall through to cookie auth and are refused.
+        "/api/crew-sessions",
         # MCP-only (session_ledger_read / session_ledger_record tools); no
         # browser caller. Prefix matching covers "/api/session-ledger/record".
         # Without this entry the tools' internal-secret calls fall through to

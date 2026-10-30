@@ -828,6 +828,16 @@ class InstancesConfig:
             restart=True,
         ),
     )
+    crew_reads_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Crew Reads",
+            "Let the agent read another crew's sessions with the crew= scope of "
+            "search_chat_history, list_sessions and get_chat_session. Default off: a "
+            "peer's transcripts enter the agent's context as untrusted text, so this "
+            "is a separate opt-in on top of Enabled. Read per call; no restart.",
+        ),
+    )
     warm_set_cap: int = field(
         default=_DEFAULT_WARM_SET_CAP,
         metadata=_meta(

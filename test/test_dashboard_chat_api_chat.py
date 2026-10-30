@@ -23,7 +23,9 @@ class TestApiChatDrainOnDisconnect:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "partial answer", "chunk")
             # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the fake turn parks here until the disconnect cancels it; nothing waits on this sleep
@@ -69,7 +71,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -103,7 +107,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -133,7 +139,9 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -211,7 +219,9 @@ class TestApiChatModeForwarding:
     """
 
     async def _post_chat(self, state, body):
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -323,7 +333,9 @@ class TestApiChatNoBrowseMarker:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             assert _directive_user_origin is True
             sl.append("chunk", "ack", "chunk")
 
@@ -527,7 +539,9 @@ class TestApiChatSendReceiptMid:
 
         monkeypatch.setattr(state, "broadcast_ws", record_echo)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             # The frontend can see this turn's first chunk before the HTTP
             # receipt. Its user row must already be on the ordered event stream.
             assert [(row["slot"], row["role"]) for row in echoed] == [("echo-slot", "user")]
@@ -561,7 +575,9 @@ class TestApiChatSendReceiptMid:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        async def fake_run_chat(
+            st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
+        ):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -612,7 +628,7 @@ class TestApiChatSendReceiptMid:
 def _long_turn(n_chunks: int, finished: asyncio.Event):
     """A turn that streams *n_chunks* rows of about 1 KB through the real ``append``."""
 
-    async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+    async def fake_run_chat(st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False):
         for i in range(n_chunks):
             sl.append("chunk", f"{i:06d}" + "x" * 1024, "chunk")
             if i % 16 == 0:

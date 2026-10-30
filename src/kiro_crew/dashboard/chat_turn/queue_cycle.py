@@ -619,6 +619,12 @@ async def _end_turn_tail(
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = False
         slot._turn_user_sent = False
+    # The owner mark is cleared on EVERY exit, the handed-off depth-1 exit
+    # included: a `/prompts get` hand-off ends the turn from the nested frame
+    # (the outermost frame runs no tail), and a mark that survived it would be
+    # authority left lying on the slot. Clearing at a nested exit that was not
+    # the turn's end costs only a refusal, the direction that cannot be wrong.
+    slot._turn_owner_sent = False
     # A healthy `wait` clears its own state with a final keepalive ping, but
     # that ping is best-effort and cannot run at all if the MCP subprocess died
     # mid-sleep (hard stop, crash, gateway abort). Clearing at turn end is the

@@ -1472,11 +1472,13 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
 #
 #   ``handlers_instances_gate`` -- the owner gate, audit, registry access, chain policy
 #   ``handlers_instances_peer`` -- the routes that read a peer, and the proxy to it
+#   ``handlers_instances_crew_reads`` -- the MCP-only crew-scoped session reads
 # --------------------------------------------------------------------------- #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.handlers_instances_gate",
     "kiro_crew.dashboard.handlers_instances_peer",
+    "kiro_crew.dashboard.handlers_instances_crew_reads",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1487,6 +1489,32 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.dashboard.handlers_instances_crew_reads import (  # noqa: F401
+        _CREW_PROXY_TIMEOUT,
+        _FIELD_MAX_RAW_CHARS,
+        _FIELD_TOO_LONG,
+        _OFF_LOOP_BYTES,
+        _PEER_MESSAGE_MAX_CHARS,
+        _T,
+        CREW_AMBIGUOUS_CODE,
+        CREW_READS_DISABLED_CODE,
+        _audit_crew,
+        _authorize_crew_read,
+        _cap_field,
+        _crew_proxy_json,
+        _crew_refusal,
+        _decode_and_shape,
+        _peer_row_is_restricted,
+        _peer_status_error,
+        _resolve_crew_id,
+        _shape_list_rows,
+        _shape_read_messages,
+        _shape_search_rows,
+        _slot_refusal,
+        api_crew_sessions_list,
+        api_crew_sessions_read,
+        api_crew_sessions_search,
+    )
     from kiro_crew.dashboard.handlers_instances_gate import (  # noqa: F401
         MANAGER_UNAVAILABLE_CODE,
         MANAGER_UNAVAILABLE_MESSAGE,

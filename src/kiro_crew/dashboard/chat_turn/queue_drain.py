@@ -758,6 +758,12 @@ async def _start_next_queued_turn(
     directive_channel_origin = bool(consumed) and any(
         item.get("_directive_channel_origin") is True for item in consumed
     )
+    # The owner mark reduces like the user one: EVERY consumed entry must carry
+    # it, since a batch that folds another dashboard user's words in with the
+    # owner's would otherwise run them under the owner's crew-read authority.
+    directive_owner_origin = bool(consumed) and all(
+        item.get("_directive_owner_origin") is True for item in consumed
+    )
     if slot._stopping and not is_system_injection:
         slot.append(
             "error",
@@ -1249,6 +1255,10 @@ async def _start_next_queued_turn(
         queued_work,
     )
 
+    # The owner mark is the dispatcher's fact about who queued the words; it rides
+    # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
+    # it only for a user-sent opener).
+    _run_kwargs["_directive_owner_origin"] = directive_owner_origin
     with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
         task = spawn_guarded_turn(
             state,

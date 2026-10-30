@@ -439,6 +439,20 @@ class TestDropped:
         assert row["meta"][steer_retract.RETRACT_ACTION_META] == "queue"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("owner", [True, False])
+    async def test_queue_instead_keeps_the_steers_owner_mark(self, harness, owner):
+        async with TestClient(TestServer(harness.app)) as http:
+            await _steer(http, "read the other crew's chat")
+            harness.slot._steer_owner_origin["read the other crew's chat"] = owner
+            await _retract(http, _mid_of(harness.slot, "read the other crew's chat"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert entry.get("_directive_owner_origin", False) is owner
+        assert "read the other crew's chat" not in harness.slot._steer_owner_origin
+
+    @pytest.mark.asyncio
     async def test_queue_instead_keeps_the_request_time_admission(self, harness):
         from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard import session_control as sc

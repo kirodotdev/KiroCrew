@@ -822,6 +822,13 @@ async def _run_chat(
     # only by ``_fire_dashboard_nudge``.
     _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
+    # Whether the OWNER's own dashboard request dispatched this turn
+    # (`is_owner_dashboard_request`), declared by the dashboard send, regenerate
+    # and rewind handlers and by the queue drain. It rides this call rather than
+    # the slot, so it ends with the dispatch it belongs to: a dispatch that never
+    # starts takes it with it, and one that does not declare starts from False.
+    # Adopted into `_turn_owner_sent` only for a turn the person sent.
+    _directive_owner_origin: bool = False,
     # The message is turn CONTENT and its first word is never read as a dashboard
     # command: set by the drain for an entry the channel hand-off stamped
     # (``COMMANDS_OFF_META_KEY``). A channel's own queue already replays every
@@ -868,6 +875,7 @@ async def _run_chat(
         _directive_loop_gen=_directive_loop_gen,
         _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
+        _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,

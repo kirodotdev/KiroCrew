@@ -505,6 +505,7 @@ def _build_instances_config(
     section = SectionReader(InstancesConfig, instances_data)
     return InstancesConfig(
         enabled=bool(section.get("enabled")),
+        crew_reads_enabled=bool(section.get("crew_reads_enabled")),
         warm_set_cap=section.read("warm_set_cap", _safe_int),
         default_destination=clean_crew_ref(section.get("default_destination")),
         tunnel_base_port=section.read("tunnel_base_port", _safe_int),

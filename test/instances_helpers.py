@@ -159,6 +159,11 @@ class _State:
         self.instances_registry = registry
         self.instances_manager = manager
 
+    def get_slot(self, slot_key):
+        """The live slot *slot_key* names, as the shared caller resolver reads it."""
+        slots = getattr(self, "_slots", None)
+        return slots.get(slot_key) if slots is not None and slot_key else None
+
 
 class _ConnectedMgr:
     """Manager stub where the named instances report a live tunnel.
@@ -188,9 +193,12 @@ class _ConnectedMgr:
         return None
 
 
-def _enable(tmp_path: Path, monkeypatch, *, enabled=True, warm_set_cap=None):
+def _enable(tmp_path: Path, monkeypatch, *, enabled=True, warm_set_cap=None, crew_reads=True):
+    """Turn the Instances feature on for a test; ``crew_reads`` opts the agent's
+    ``crew=`` reads in as well, since every crew-read test wants them unless it is
+    the one proving the default-off flag."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    section: dict = {"enabled": enabled}
+    section: dict = {"enabled": enabled, "crew_reads_enabled": crew_reads}
     if warm_set_cap is not None:
         section["warm_set_cap"] = warm_set_cap
     (tmp_path / "config.json").write_text(json.dumps({"instances": section}))
