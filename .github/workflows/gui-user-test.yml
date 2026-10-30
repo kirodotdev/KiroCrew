@@ -74,7 +74,12 @@ concurrency:
 jobs:
   gui-user-test:
     name: GUI User Test
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Named by its runner
+    # LABEL, not by `group:`: the group belongs to the kirodotdev organization,
+    # so a fork running its own copy cannot reach it and would wait forever for
+    # a runner. The `||` leg keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Boot (~4 min: npm ci + build) + every shipped scenario at ~2-4 min each
     # with one retry apiece, plus model-latency tail. The USD budget below is
     # the real stop; this is the backstop for a hung target.

@@ -516,7 +516,15 @@ jobs:
   smoke-linux-packages:
     name: Smoke-install Linux packages (deb + rpm)
     needs: build-desktop
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. The install checks run
+    # in distro containers, so the runner's own image is not what they measure;
+    # `build-desktop` above keeps its pinned ubuntu-22.04 legs, which ARE a
+    # glibc-floor decision. Named by its runner LABEL, not by `group:`: the
+    # group belongs to the kirodotdev organization, so a fork running its own
+    # copy cannot reach it and would wait forever for a runner. The `||` leg
+    # keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
