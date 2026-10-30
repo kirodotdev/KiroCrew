@@ -2287,7 +2287,18 @@ because none of them can change anything: the strict-internal
 a card in the caller's own slot. `search_docs(query? | page, offset?)` on the
 same server is a read of the packaged user docs (`kiro_crew/docs/*.md`, pages
 named from the directory's own listing so no caller string becomes a path; up to
-5 results with 3 matching lines, pages in 12,000-character chunks); it calls no
+5 results with 3 matching lines, pages in 12,000-character chunks). A query is
+matched word by word at the start of a word, after dropping question words such
+as `how`, `do` and `I` (kept when nothing else is left) and one common ending
+(`reminder` finds `reminders` and `remind`, `reply` and `replies` find each other;
+`_` starts a word, so `cycles` finds
+`max_cycles`). A page ranks by the query words it holds, each worth more the
+fewer pages hold it, twice as much in the page name and half again in its
+opening lines, then by how often it says them; a word found on nearly every page
+(`use`, `set`) counts for little. The word itself, with a common ending
+(`updat` + `e`, `automatic` + `ally`), counts full; only the start of a longer
+word (`mode` in `model`, `run` in `runner`) counts half. A tie goes to the
+shorter page name. It calls no
 gateway route, needs no caller identity, and is granted as
 part of `agent._GUIDE_AUTO_GRANTS`; so is `find_ui`, the read of the packaged
 dashboard location index described in
