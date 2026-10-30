@@ -1577,7 +1577,8 @@ def apply(
     # The delete witnesses compare this against the current write target; a
     # mismatch means the slot's routing has drifted to a different file, so the
     # observed ``created_at`` must not be read as a delete-recreate.
-    if slot._disk_meta_created_at or slot._disk_meta_observed:
+    # Read through getattr: a reader may hand a partial slot that never observed a line.
+    if getattr(slot, "_disk_meta_created_at", "") or getattr(slot, "_disk_meta_observed", False):
         slot._disk_meta_key = slot_history_key(slot)
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
