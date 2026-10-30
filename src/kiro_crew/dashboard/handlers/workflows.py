@@ -57,6 +57,11 @@ def _redact_obj(obj):
     ``json`` writes it as a bare ``Infinity``/``NaN`` token, which no browser
     ``JSON.parse`` accepts. A script reaches one through ``ctx.budget.remaining()``
     on a run without a budget.
+
+    A tuple is walked like a list and comes back as one. The live
+    ``workflow_run_event`` broadcast passes a run's raw result through here, so
+    a script that returns a tuple holding ``inf`` would otherwise reach
+    ``json.dumps`` untouched.
     """
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
@@ -64,7 +69,7 @@ def _redact_obj(obj):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)
         return s
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
         return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
