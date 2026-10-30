@@ -1043,7 +1043,7 @@ class TestEnvFileAndPin:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
         c = PodConfig.load()
         rt.pin_checkout(c, "x", Path("/abs/co"))
-        assert rt.read_env_file(c, "x")["CHECKOUT"] == "/abs/co"
+        assert rt.read_env_file(c, "x")["CHECKOUT"] == str(Path("/abs/co"))
 
 
 class TestWorktreeResolution:

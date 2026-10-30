@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from unittest.mock import DEFAULT, MagicMock, patch
 
@@ -24,6 +25,8 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_layout
 from kiro_crew.platform.update_layout import InstallLayout
+
+_UPDATES_LOGGER = "kiro_crew.dashboard.handlers.updates"
 
 
 @pytest.fixture(autouse=True)
@@ -710,7 +713,9 @@ class TestRestartEndpoint:
         resp = asyncio.run(_run())
         assert resp.status == 200
 
-    def test_a_restart_failure_is_surfaced_not_swallowed(self):
+    def test_a_restart_failure_is_surfaced_not_swallowed(self, caplog):
+        caplog.set_level(logging.ERROR, logger=_UPDATES_LOGGER)
+
         async def _boom(_state: object) -> None:
             raise RuntimeError("exec failed")
 
@@ -725,6 +730,9 @@ class TestRestartEndpoint:
         state = asyncio.run(_run())
         # The user is told, rather than left watching a spinner that never ends.
         assert state.push_update_progress.called
+        logged = [r for r in caplog.records if r.name == _UPDATES_LOGGER]
+        assert [r.getMessage() for r in logged] == ["Gateway restart failed"]
+        assert str(logged[0].exc_info[1]) == "exec failed"
 
     def test_duplicate_requests_share_one_restart_task(self):
         """Double-clicks cannot race two successors for one gateway port."""

@@ -575,7 +575,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_clear_tool_dispatch": ("staticmethod", "(info: 'SubagentInfo') -> 'None'"),
     "_continue_prelude": (
         "method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None, *, _execution_context=None, _captured_state=Ellipsis) -> \"'SubagentInfo | dict[str, Any] | None'\"",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, *, _execution_context=None, _captured_state=Ellipsis) -> \"'SubagentInfo | dict[str, Any] | None'\"",
     ),
     "_conversation_busy": ("method", "(self, conv_key: 'str') -> 'SubagentInfo | None'"),
     "_create_shared_session": (
@@ -851,11 +851,11 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "consume_report_hold": ("method", "(self, batch_id: 'str', agent_id: 'str') -> 'None'"),
     "continue_conversation": (
         "method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None) -> 'SubagentInfo | None'",
     ),
     "continue_conversation_async": (
         "async method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None) -> 'SubagentInfo | None'",
     ),
     "count": ("property", ""),
     "dependency_coordinator": ("method", "(self) -> 'Any'"),
@@ -953,7 +953,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "spawn": (
         "method",
-        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None) -> 'SubagentInfo | None'",
     ),
     "spawn_async": (
         "async method",

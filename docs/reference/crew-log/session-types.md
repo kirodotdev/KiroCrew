@@ -1152,6 +1152,7 @@ A child this session dispatched.
 |---|---|---|---|---|
 | `agent_id` | string | required | The child's id. | |
 | `turn` | int | optional | The asking turn. Absent when no turn asked — a slash command, a cron, a hook. | |
+| `attempt` | int | optional | Which try at `turn` asked, matching `turn/started`'s attempt. Written only beside `turn`. Absent means not observed, which is not attempt 1: the dispatch can be pinned before the turn's attempt is derived. | |
 | `agent` | string | optional | Agent name. | |
 | `model` | string | optional | The child's model. | |
 | `task` | string | optional | What the child was asked to do, redacted and clipped. Absent when the dispatch carried no task text. | |

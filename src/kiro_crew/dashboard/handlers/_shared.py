@@ -207,6 +207,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         annotate_skills_with_agents,
         collect_skills_blocking,
         list_kiro_skills,
+        skill_rows_for_globs,
     )
     from kiro_crew.dashboard.handlers._shared_skill_roots import (  # noqa: F401
         LEAF_SYMLINK_PREFIX,

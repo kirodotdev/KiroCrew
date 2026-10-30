@@ -1328,7 +1328,7 @@ def _src_root() -> Path:
 def test_session_pid_call_sites_are_registered() -> None:
     src = _src_root()
     found = {
-        str(p.relative_to(src))
+        p.relative_to(src).as_posix()
         for p in src.rglob("*.py")
         if _SESSION_PID_TOKEN.search(p.read_text(encoding="utf-8", errors="replace"))
     }

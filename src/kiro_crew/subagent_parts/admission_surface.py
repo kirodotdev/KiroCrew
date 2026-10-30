@@ -287,7 +287,7 @@ def spawn(
     _agent_prevalidated: bool = False,
     _from_queue: bool = False,
     _preassigned_id: str = "",
-    _crew_log_asked: "tuple[str, int] | None" = None,
+    _crew_log_asked: "tuple[str, int, int] | None" = None,
     _memory_mode: str | None = None,
     _store_accepted: bool = False,
     _stop_before_claim: bool = False,

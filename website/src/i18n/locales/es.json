@@ -1760,11 +1760,11 @@
         "show_this_screen": "Mostrar esta pantalla",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "Inicia una nueva crítica — lo que ya esté en marcha continúa",
-        "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
-        "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
+        "still_working_on_this_one_it_s_kept_running_come": "Sigo trabajando en esto. Continúa en ejecución — vuelve en un minuto.",
+        "still_working_on_this_one_it_s_kept_running_come_2": "Sigo trabajando en esto. Continúa en ejecución — vuelve a esta página en un minuto y retomará donde lo dejó.",
         "switch_critique": "Cambiar de crítica",
         "that_critique_didn_t_finish": "That critique didn’t finish.",
-        "that_s_more_than_20_screens_send_fewer": "That’s more than 20 screens — send fewer.",
+        "that_s_more_than_20_screens_send_fewer": "Son más de 20 pantallas — envía menos.",
         "that_s_the_limit_of_max_screens": "Ese es el límite de {{max}} pantallas.",
         "that_scan_didn_t_finish": "That scan didn’t finish.",
         "those_weren_t_image_files": "Those weren’t image files.",
@@ -1809,12 +1809,12 @@
         "what_should_i_audit": "¿Qué debo revisar?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
-        "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "Lo capturaré y mediré el contraste y los tamaños reales.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "Lo clonaré y listaré las pantallas. Solo se pueden ver las páginas que se renderizan sin un servidor.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "Listaré las pantallas. Solo se pueden ver las páginas que se renderizan sin un servidor.",
+        "i_ll_pull_the_frames": "Traeré los frames.",
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "debe estar en ejecución ahora mismo. Lo capturaré en vivo y mediré el contraste y los tamaños reales.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "No lo reconozco. Envíame un enlace de Figma, un repositorio de GitHub, una ruta local absoluta o una URL que ya esté en servicio."
       },
       "waitingScreen": {
         "cancel_this_run": "Cancelar esta ejecución",

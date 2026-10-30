@@ -168,8 +168,12 @@ def on_turn_started(
     # module holds nothing, so a turn costs one env read. The RELEASE paths are
     # deliberately not guarded -- a flag turned off mid-turn must still free what
     # it allocated while on.
+    #
+    # ``begin`` returns the record this start owns, so its job below stamps the
+    # attempt on that record and on no later try's (``TurnTracker.note_attempt``).
+    record = None
     if session_id and enabled():
-        _tracker().begin(session_id, turn)
+        record = _tracker().begin(session_id, turn)
     data: dict[str, Any] = {
         "turn": int(turn),
         "actor": actor if actor in ACTORS else "other",
@@ -183,6 +187,10 @@ def on_turn_started(
     if not session_id or not enabled():
         return
 
+    # The attempt this job derived. The writer retries a failed append by running the
+    # same job again, and a second derivation would count the retry as another try.
+    derived: list[int] = []
+
     def _job() -> None:
         log = _handle(session_id)
         if log is None:
@@ -195,7 +203,12 @@ def on_turn_started(
         # resume then writes an attempt the file already holds. The alternative,
         # making the caller wait for a seeded event, puts a filesystem read in
         # front of the turn on the event loop.
-        n = attempt if attempt > 0 else _tracker().next_attempt(session_id, turn)
+        if not derived:
+            derived.append(attempt if attempt > 0 else _tracker().next_attempt(session_id, turn))
+        n = derived[0]
+        # Stamped on this start's own record, so a child dispatched by this try can
+        # name it and a later try's record is never stamped with this one.
+        _tracker().note_attempt(session_id, turn, n, record)
         payload = dict(data)
         # Which try this is at the same turn ordinal. Omitted at 1, which is every
         # turn that was never rerun -- the common case should not pay a field for

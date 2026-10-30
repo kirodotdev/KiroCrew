@@ -893,7 +893,7 @@ class TestAutoSdeRound1Findings:
         results = server._search_python(tmp_tree, "needle", "", "")
         files = {r["file"] for r in results}
         assert any(
-            f.endswith("src/main.py") for f in files
+            Path(f).as_posix().endswith("src/main.py") for f in files
         ), f"src/main.py missing from results — allowlist side-effect: {files}"
 
     def test_python_search_never_surfaces_kirocrew_root_files(self, tmp_tree):

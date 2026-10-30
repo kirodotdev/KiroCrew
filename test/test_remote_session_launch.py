@@ -14,6 +14,7 @@ import os
 import runpy
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -274,12 +275,31 @@ async def test_link_reports_lost_when_worker_is_gone(tmp_path):
         os.killpg(pid, signal.SIGKILL)  # setsid made it a group leader (Linux)
     except (ProcessLookupError, PermissionError):
         os.kill(pid, signal.SIGKILL)  # no setsid (macOS): its engine sees EOF and exits
+    # Hold the freed port, bound but not listening, so every dial is refused at
+    # connect. Left free, the kernel can hand it to another test's worker, whose
+    # hello names a different session: the link then ends REFUSED, not LOST.
+    hold = await async_wait_until(lambda: _bind_loopback(port), ignoring=(OSError,))
     link = _link(launch, "sess-lost", secret, port)
     try:
         ended = (link_mod.LOST, link_mod.RETIRING)
         await async_wait_until(lambda: link.state in ended, describe=lambda: link.state)
     finally:
         await link.aclose()
+        hold.close()
+
+
+def _bind_loopback(port: int) -> socket.socket:
+    """A socket bound to ``127.0.0.1:port`` that never listens.
+
+    No ``SO_REUSEADDR``, so no other socket can bind the port while this one holds it.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 @pytest.mark.skipif(shutil.which("python3.9") is None, reason="no python3.9 on this host")

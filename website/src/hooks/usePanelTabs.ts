@@ -611,14 +611,27 @@ function upsertInBucket(b: Bucket, tab: PanelTab, replaceId?: string): Bucket {
  *  a session row's PR chip switches sessions and opens Changes in one gesture.
  *  `usePanelTabs` is bound to whichever slot was active when it rendered, so
  *  going through `openView` there would open the tab on the chat being LEFT. */
-/** Add view *kind* to *slotKey*'s strip if it is missing, WITHOUT taking focus
- *  (an empty strip takes it, having nothing else to show). For a view a session
- *  should always be able to reach -- a Crew Mode chat's Workers -- on a fresh
- *  browser, a reload or a reopened tab. */
+/** Add view *kind* to *slotKey*'s strip if it is missing, and make it the tab
+ *  the strip opens on while nobody has picked one. For a view a session should
+ *  always be able to reach and land on -- a Crew Mode chat's Workers -- on a
+ *  fresh browser, a reload or a reopened tab.
+ *
+ *  "Nobody has picked one" is read from the stored strip, not a new store: no
+ *  focus at all, or focus still on the first pinned view (Changes, which
+ *  `syncPinned` writes on its own) with the focus history never having left it
+ *  and no tab asked for in this page session (`tabChoices`: a PR chip opening
+ *  Changes is such an ask). Any other stored focus is kept. */
 export function offerPanelView(slotKey: string | null, kind: ViewKind): void {
-  mutateSlot(bucketKey(slotKey), b => (b.tabs.some(t => t.id === kind)
-    ? b
-    : { tabs: [...b.tabs, { id: kind, kind, title: viewTitle(kind) }], activeId: b.activeId ?? kind }))
+  const key = bucketKey(slotKey)
+  mutateSlot(key, b => {
+    const has = b.tabs.some(t => t.id === kind)
+    const unpicked = b.activeId === null
+      || (b.activeId === PINNED_VIEWS[0] && !tabChoices.get(key)
+        && (b.recent ?? []).every(id => id === b.activeId))
+    if (has && !(unpicked && b.activeId !== kind)) return b
+    const tabs = has ? b.tabs : [...b.tabs, { id: kind, kind, title: viewTitle(kind) }]
+    return { tabs, activeId: unpicked ? kind : b.activeId }
+  })
 }
 
 export function openPanelView(slotKey: string | null, kind: ViewKind): void {

@@ -111,7 +111,7 @@ def list_kiro_skills(project_dir: Path | None = None) -> list[dict[str, Any]]:
 
 
 def _agent_dirs() -> list[Path]:
-    """Return existing agent JSON directories (global + workspace)."""
+    """Return existing agent JSON directories (the user-level dir)."""
     out: list[Path] = []
     user = kiro_agents_dir()
     if user.is_dir():
@@ -119,7 +119,9 @@ def _agent_dirs() -> list[Path]:
     return out
 
 
-def _expand_resource_uri(uri: str, agent_path: Path) -> str | None:
+def _expand_resource_uri(
+    uri: str, agent_path: Path, *, project_dir: str | Path | None = None
+) -> str | None:
     """Strip ``skill://`` and resolve ``~`` / workspace-relative paths.
 
     Thin alias for :func:`kiro_crew.agent_discovery.expand_skill_uri` — the
@@ -127,9 +129,16 @@ def _expand_resource_uri(uri: str, agent_path: Path) -> str | None:
     dashboard's ``loaded_by_agents`` annotation and the runtime injection agree
     on what a given URI matches.
 
+    A workspace-relative URI (``skill://.kiro/skills/*``) resolves against
+    *project_dir* when the caller supplies one — the same cwd kiro-cli is
+    launched in — so the picker's agent filter matches a relative glob the way
+    the runtime's ``session_skill_globs`` does. With no project it falls back
+    to the project root inferred from *agent_path*, which for a user-dir spec
+    collapses the glob onto ``~`` and never matches a project skill.
+
     Returns a glob pattern usable with fnmatch, or None if not a skill URI.
     """
-    return expand_skill_uri(uri, agent_path)
+    return expand_skill_uri(uri, agent_path, project_dir=project_dir)
 
 
 def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: Path) -> bool:
@@ -155,18 +164,24 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
 
 def _expand_agent_globs(
     parsed_agents: list[tuple[str, dict[str, Any], Path]],
+    *,
+    project_dir: str | Path | None = None,
 ) -> list[tuple[str, list[str]]]:
     """Pre-expand every agent's ``skill://`` resources into fnmatch globs ONCE.
 
     Returns ``(agent_name, [glob, ...])`` pairs. The glob for a resource
-    depends only on ``(uri, agent_path)`` — NOT on the skill being matched —
-    so expanding here (O(agents × resources)) and reusing the result across
-    all skills avoids re-running :func:`_expand_resource_uri` once per
+    depends only on ``(uri, agent_path, project_dir)`` — NOT on the skill being
+    matched — so expanding here (O(agents × resources)) and reusing the result
+    across all skills avoids re-running :func:`_expand_resource_uri` once per
     (skill, agent, resource), which on a large catalog is the dominant cost.
     Agents with no skill:// resources are dropped (they can match nothing).
     Each glob is paired with its canonical spelling, as the loader's scope
     match does, so a ``~`` mapping under a symlinked ``$HOME`` still matches
     the resolved catalog path the loader injects.
+
+    *project_dir* anchors a workspace-relative glob, so the catalog's
+    ``kiro-workspace`` rows match the agent that declares ``skill://.kiro/...``
+    the same way the runtime does.
     """
     expanded: list[tuple[str, list[str]]] = []
     for name, data, agent_path in parsed_agents:
@@ -177,11 +192,11 @@ def _expand_agent_globs(
             g
             for res in resources
             if isinstance(res, str)
-            for g in (_expand_resource_uri(res, agent_path),)
+            for g in (_expand_resource_uri(res, agent_path, project_dir=project_dir),)
             if g
         ]
         if globs:
-            expanded.append((name, _with_canonical_globs(globs)))
+            expanded.append((name, _with_canonical_globs(globs, project_dir)))
     return expanded
 
 
@@ -204,6 +219,43 @@ def _agents_loading_skill(
         name
         for name, globs in expanded_agents
         if _matches_any(target, globs) or _alias_matches(skill_md, globs, [skills_dir()])
+    ]
+
+
+def skill_rows_for_globs(
+    rows: list[dict[str, Any]],
+    globs: list[str],
+    *,
+    project_dir: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Keep the catalog *rows* whose ``SKILL.md`` the agent's *globs* load.
+
+    *globs* are the skill globs a caller already resolved for ONE agent via
+    ``agent_skill_globs(agent, project_dir=…)``, whose winning spec
+    :func:`kiro_crew.agent_discovery.list_agents` alone decides (project scope
+    shadows user, declared name outranks filename, package rules). Whether a
+    row is loaded is answered by :func:`_agents_loading_skill` -- the one
+    matcher the ``loaded_by_agents`` annotation uses -- so the agent-scoped
+    picker and that badge apply the same runtime rule: canonical globs, the
+    resolved-symlink retry, and the flat-link alias fallback for app skills.
+    *project_dir* is handed to the canonicalization as the annotation does, so a
+    prefix inside the project is never resolved before consent. A row with no
+    ``path`` is dropped.
+
+    A row :func:`_one_row_per_skill_file` collapsed several spellings into
+    also carries the dropped rows' paths as ``alias_paths``; the row is kept
+    when ANY spelling matches, so a glob naming only the dropped spelling (a
+    crew skill symlinked into ``~/.kiro/skills``) still finds the skill.
+    """
+    agent = [("", _with_canonical_globs(globs, project_dir))]
+    return [
+        row
+        for row in rows
+        if any(
+            _agents_loading_skill(Path(p), agent)
+            for p in (row.get("path"), *(row.get("alias_paths") or ()))
+            if p
+        )
     ]
 
 
@@ -257,7 +309,9 @@ def _resolve_loaded_by_agents(
     return out
 
 
-def annotate_skills_with_agents(skills: list[dict[str, Any]]) -> None:
+def annotate_skills_with_agents(
+    skills: list[dict[str, Any]], *, project_dir: str | Path | None = None
+) -> None:
     """Annotate each skill dict in-place with ``loaded_by_agents``.
 
     Parses the agent JSONs ONCE and pre-expands each agent's ``skill://``
@@ -267,8 +321,14 @@ def annotate_skills_with_agents(skills: list[dict[str, Any]]) -> None:
     (the parse walks ~/.kiro/agents) — callers on the asyncio event loop MUST
     run this off the loop. Per-skill failures isolate to an empty list (the
     documented default) rather than blanking the whole response.
+
+    *project_dir* anchors workspace-relative ``skill://`` globs, so a
+    ``kiro-workspace`` row is credited to the agent that declares the relative
+    glob — the same project the runtime resolves it against. Without it such a
+    row is never credited to a user-dir agent, so the agent-scoped listing
+    would drop every project skill for that agent.
     """
-    expanded = _expand_agent_globs(_load_parsed_agents())
+    expanded = _expand_agent_globs(_load_parsed_agents(), project_dir=project_dir)
     for s in skills:
         path = s.get("path") or ""
         if not path:
@@ -303,7 +363,9 @@ def collect_skills_blocking(
        parsing, so nothing is parsed here.
     3. Global open-standard kiro-cli skills plus project rows from the loader's
        confined no-follow catalog.
-    4. ``annotate_skills_with_agents(...)`` — ``loaded_by_agents`` per skill.
+    4. ``annotate_skills_with_agents(...)`` — ``loaded_by_agents`` per skill,
+       with *project_dir* so a workspace-relative ``skill://`` glob is credited
+       to the agent the way the runtime resolves it.
 
     The capability-manager fetch is intentionally NOT done here (it is async);
     the caller awaits it and hands us the structured rows.
@@ -341,7 +403,7 @@ def collect_skills_blocking(
             row["trusted"] = trusted
         workspace_rows.extend(project_rows)
     result.extend(workspace_rows)
-    annotate_skills_with_agents(result)
+    annotate_skills_with_agents(result, project_dir=project_dir)
     return _one_row_per_skill_file(result)
 
 
@@ -408,7 +470,9 @@ def _one_row_per_skill_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     lists it as ``kiro-user`` -- and the browser showed both. :func:`_row_rank`
     picks the row kept. ``loaded_by_agents`` is the union, so an agent-scoped listing
     still finds the skill through whichever spelling its glob matched, and the
-    dropped keys ride along as ``aliases`` for readers that look a row up by key.
+    dropped keys ride along as ``aliases`` for readers that look a row up by key,
+    and the dropped paths as ``alias_paths`` for :func:`skill_rows_for_globs`,
+    which matches an agent's globs against every spelling.
     """
     out: list[dict[str, Any]] = []
     seen: dict[tuple[int, int], int] = {}
@@ -439,6 +503,15 @@ def _one_row_per_skill_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if key and key != kept.get("key") and key not in aliases:
                 aliases.append(key)
         kept["aliases"] = aliases
+        # The dropped row's path too: ``skill_rows_for_globs`` matches an
+        # agent's globs against every spelling, as the ``loaded_by_agents``
+        # union above does, so a glob naming only the dropped spelling still
+        # keeps the skill in an agent-scoped listing.
+        alias_paths = list(kept.get("alias_paths") or [])
+        for p in [row.get("path"), *(row.get("alias_paths") or [])]:
+            if p and p != kept.get("path") and p not in alias_paths:
+                alias_paths.append(p)
+        kept["alias_paths"] = alias_paths
         # Usage, size, creation time and the injection mode come only from the
         # loader's read, so a kept row from another source would otherwise show
         # the skill as never used, undated, sizeless and "on demand".

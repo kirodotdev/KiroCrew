@@ -662,7 +662,7 @@ class TestDefaultWorkspaceBase:
         monkeypatch.setattr(
             Path,
             "is_dir",
-            lambda self: False if str(self) == "/Volumes/workplace" else _real_is_dir(self),
+            lambda self: False if self == Path("/Volumes/workplace") else _real_is_dir(self),
         )
         assert paths._default_workspace_base() == tmp_path / "workplace"
 
@@ -676,7 +676,7 @@ class TestDefaultWorkspaceBase:
         monkeypatch.setattr(
             Path,
             "is_dir",
-            lambda self: True if str(self) == "/Volumes/workplace" else _real_is_dir(self),
+            lambda self: True if self == Path("/Volumes/workplace") else _real_is_dir(self),
         )
         assert paths._default_workspace_base() == Path("/Volumes/workplace")
 

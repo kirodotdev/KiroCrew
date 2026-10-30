@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Sequence
+    from typing import Any
 
     from ...subagent import SubagentInfo, logger
     from .gate import _GateMixin
@@ -78,12 +80,46 @@ async def _safe_announce_impl(self: _GateMixin, info: SubagentInfo) -> None:
         self._manager.consume_report_hold(info.batch_id, info.id)
 
 
+def crew_log_asking_origin(sessions: Any, parent_session_key: str) -> "tuple[str, int, int] | None":
+    """``(unit, turn, attempt)`` of the turn asking for a spawn right now, or None.
+
+    Read once where a spawn is first accepted and carried on the queued row as
+    ``_crew_log_asked``, so every later pass pins the same origin. That includes a
+    pass in another process: the durable queue replays a row after a restart, when
+    the parent's unit has moved on and the asking turn is gone from memory, and
+    the row is then the only record of which unit asked. ``turn`` is 0 when no turn
+    is asking (a cron, a hook, a slash command); the unit is still worth keeping.
+
+    None when the crew log is off or the parent has no unit, which leaves the pin
+    to :func:`_record_crew_log_dispatch`'s own reading. Best-effort like it: a
+    failure here must not fail the spawn.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+    from kiro_crew.subagent import logger as _logger
+
+    try:
+        if not crew_log_emit.enabled():
+            return None
+        sid = unit_for_session_key(sessions, parent_session_key)
+        # The provider authors the id, and the row persists it. An over-long one is
+        # left off the row; the dispatch pin then reads it live and refuses it there,
+        # counted as a lost origin.
+        if not sid or len(sid) > crew_log_emit._MAX_SESSION_ID_CHARS:
+            return None
+        turn, attempt = crew_log_emit.asking_turn(sid)
+        return (sid, turn, attempt)
+    except Exception:
+        _logger.debug("crew log: reading a spawn's asking turn failed", exc_info=True)
+        return None
+
+
 def _record_crew_log_dispatch(
     self: _GateMixin,
     info: SubagentInfo,
     *,
     from_queue: bool,
-    asked: "tuple[str, int] | None" = None,
+    asked: "Sequence[Any] | None" = None,
 ) -> None:
     """PIN the parent session and turn that asked for *info*. Writes nothing.
 
@@ -97,13 +133,14 @@ def _record_crew_log_dispatch(
     written by ``_log_spawned``, the one site that means the run is really
     starting, from the pin this leaves behind.
 
-    ``asked`` overrides that reading, and one caller needs it: a queued
-    follow-up is DISPATCHED by its watcher after the run it continues has
+    ``asked`` is ``(unit, turn, attempt)`` and overrides that reading. ``spawn``
+    reads it once where the spawn is first accepted
+    (:func:`crew_log_asking_origin`) and carries it on the queued row, and a
+    queued follow-up's watcher hands in the one it pinned where the follow-up
+    was requested: that follow-up is DISPATCHED after the run it continues has
     finished, so no turn is asking at this moment and the parent may be on an
-    unrelated one. That caller pinned the asking ordinal where the follow-up was
-    requested and hands it in; without it the continuation would be filed under
-    a turn that did not ask for it. A caller that supplies no ``asked`` is
-    dispatching from inside its own turn, where the live reading is correct.
+    unrelated one. With no ``asked`` the live reading is used, which is correct
+    for a caller dispatching from inside its own turn.
 
     ``from_queue`` marks a member re-entering under the same id after the
     stagger or concurrency gate held it, and the pin it was accepted with must
@@ -112,10 +149,11 @@ def _record_crew_log_dispatch(
     the durable queue replays a queued row into this site in a process whose map
     is empty -- so the pin is re-established on that pass rather than skipped,
     or the child's spawn, steer and terminal entries are all omitted with
-    nothing to report the gap. The turn is left UNOBSERVED there: the turn that
-    asked died with the process that recorded it, the parent's live turn names
-    one that did not ask, and the writers omit an unobserved ordinal rather
-    than stamping a turn that never existed.
+    nothing to report the gap. The row's ``asked`` names the unit and turn that
+    asked, so the replayed child lands in the asking unit's log rather than the
+    parent's post-restart one. A row persisted before the origin was stored
+    carries none: it falls back to the parent's current unit with the turn left
+    UNOBSERVED, because the parent's live turn names one that did not ask.
 
     Best-effort throughout. A spawn must not fail because a log entry could
     not be pinned, and an unresolvable parent yields an empty session id, which
@@ -134,8 +172,12 @@ def _record_crew_log_dispatch(
     try:
         if not crew_log_emit.enabled():
             return
+        attempt = 0
         if asked is not None:
-            sid, turn = asked
+            # ``(unit, turn, attempt)``; a row persisted before the attempt was
+            # recorded carries the pair, and a durable row reads back as a list.
+            sid, turn = str(asked[0] or ""), int(asked[1] or 0)
+            attempt = int(asked[2] or 0) if len(asked) > 2 else 0
         else:
             sid = unit_for_session_key(self._manager._sessions, info.parent_session_key)
             if from_queue:
@@ -147,10 +189,10 @@ def _record_crew_log_dispatch(
                 # with the process that held it.
                 turn = 0
             else:
-                turn = crew_log_emit.live_turn(sid) if sid else 0
+                turn, attempt = crew_log_emit.asking_turn(sid) if sid else (0, 0)
         if not sid:
             return
-        crew_log_emit.remember_child_origin(info.id, sid, turn)
+        crew_log_emit.remember_child_origin(info.id, sid, turn, attempt)
     except Exception:
         _logger.debug("crew log: pinning a subagent dispatch failed", exc_info=True)
 
@@ -186,6 +228,7 @@ def _record_crew_log_spawn_started(self: _GateMixin, info: SubagentInfo) -> None
             sid,
             asked_turn,
             agent_id=info.id,
+            attempt=crew_log_emit.child_origin_attempt(info.id),
             agent=info.run_agent,
             model=info.model,
             task=info.task,

@@ -151,6 +151,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_skill_file  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import requesting_slot_project  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import skill_rows_for_globs  # noqa: F401
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
     )

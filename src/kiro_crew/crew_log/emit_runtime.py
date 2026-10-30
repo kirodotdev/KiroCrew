@@ -570,6 +570,20 @@ def live_turn(session_id: str) -> int:
     return tracker.live_turn(session_id)
 
 
+def asking_turn(session_id: str) -> "tuple[int, int]":
+    """``(turn, attempt)`` of the turn that can be asking for a dispatch, or ``(0, 0)``.
+
+    The reader for pinning a child's origin. It differs from :func:`live_turn` in one
+    case: a turn whose terminal is already queued for the writer has ended, so a
+    dispatch arriving then (a cron, a hook, a slash command) has no asking turn and
+    gets none. See :meth:`TurnTracker.asking_turn`.
+    """
+    tracker = _tracker_instance
+    if not session_id or tracker is None:
+        return (0, 0)
+    return tracker.asking_turn(session_id)
+
+
 def _bound_open() -> None:
     """Trim the handle cache. ``_lock`` held. See :meth:`TurnTracker.trim` for the rule."""
     _tracker().trim(_open, _MAX_OPEN_CREW_LOGS, lambda k: k, "open handles")
@@ -1157,8 +1171,12 @@ def _child_gone_probe(session_id: str) -> "Callable[[str], bool] | None":
     return _gone
 
 
-def remember_child_origin(agent_id: str, session_id: str, turn: int) -> None:
+def remember_child_origin(agent_id: str, session_id: str, turn: int, attempt: int = 0) -> None:
     """Pin the parent session and turn that dispatched *agent_id*, unopened.
+
+    *attempt* is which try at *turn* asked, 0 when unobserved. A regenerate or rewind
+    reruns the same ordinal, so the turn alone cannot tell the two tries' children
+    apart. It is kept only with a turn: an attempt of no turn names nothing.
 
     A child's later facts -- its ``subagent/spawned`` entry, a steer, its terminal
     outcome -- are produced after the parent's turn has ended, often while the
@@ -1206,7 +1224,7 @@ def remember_child_origin(agent_id: str, session_id: str, turn: int) -> None:
     with _lock:
         if agent_id in _child_origin:
             return
-        _child_origin[agent_id] = (session_id, int(turn), False)
+        _child_origin[agent_id] = (session_id, int(turn), False, int(attempt) if turn else 0)
         if len(_child_origin) <= _MAX_CHILD_ORIGINS:
             return
         oldest = list(_child_origin)[:_ORIGIN_REAP_SCAN]
@@ -1290,9 +1308,23 @@ def open_child_origin(agent_id: str) -> "tuple[str, int]":
         found = _child_origin.get(agent_id)
         if found is None:
             return ("", 0)
-        session_id, turn, _opened = found
-        _child_origin[agent_id] = (session_id, turn, True)
+        session_id, turn, _opened, attempt = found
+        _child_origin[agent_id] = (session_id, turn, True, attempt)
         return (session_id, turn)
+
+
+def child_origin_attempt(agent_id: str) -> int:
+    """Which try at its pinned turn asked for *agent_id*, or 0 when unobserved.
+
+    Read beside :func:`open_child_origin` by the ``subagent/spawned`` writer. A
+    separate reader rather than a third field on the pair, because every other
+    reader of a pin wants only the session and the turn.
+    """
+    if not agent_id:
+        return 0
+    with _lock:
+        found = _child_origin.get(agent_id)
+        return 0 if found is None else found[3]
 
 
 def child_origin(agent_id: str) -> "tuple[str, int]":

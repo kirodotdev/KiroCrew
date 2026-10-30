@@ -27,7 +27,7 @@ the child-origin loss counters or `_child_liveness` belongs in `emit_runtime`, b
 |---|---|
 | `crew_log/emit_state.py` | `enabled`; the boot-path import gates `_crew_log` (storage) and `_note_eager` (the eager fold's wake); the session kind and the two sources; `session_id_of`; the process-wide maps and `_lock`, which guards them |
 | `crew_log/emit_tree.py` | a slot's lineage (`slot_previous_store`, `_durable_previous`, `_candidate_is_same_slot`, `_parent_citation`); the `_record_session_tree_*` folds that advance the in-memory session tree after a commit; the settled signal `_TreeSettle` and `awaiting_commit` |
-| `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn`; the child-origin pins; `on_session_closed` |
+| `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn` and `asking_turn`; the child-origin pins and `child_origin_attempt`; `on_session_closed` |
 | `crew_log/emit_text.py` | `_safe_text` and `safe_work_fields` (redaction), `_clip`, the one-line fit checks, `_append_body_entry`'s `message/chunk` slicing, `_payload_digest` |
 | `crew_log/emit_session.py` | `on_session_opened`, `on_session_adopted`, `on_session_released`, `on_session_spawned`, `on_class_observed` and `on_open_tab_unrestored` |
 | `crew_log/emit_turn.py` | a turn's start and end; messages, request configuration, the composed context, steps, tool calls, approvals, the plan, model selection and compaction; `close_open_tool_calls`; `background/completed` |
@@ -238,7 +238,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `approval/requested` / `approval/decided` (a running child's tool prompt) | `subagent_manager/run.py`, when a child asks for a tool | in the PARENT's log under the turn that asked (`child_origin`): approval id `<child_id>:<request_id>` |
 | `plan/updated` | `EVENT_TODO_UPDATE`, inside `slot.set_todo`'s own change gate | turn, the whole task list as `{id, text, state}` |
 | `background/completed` | `run_bg_oneliner` and `background_turn`, at the point they record usage, against an owner pinned BEFORE the call | kind, served model, provider, the billed token dimensions, credits, ms -- no turn |
-| `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED, read from the pin taken at acceptance; child id, agent, model, the task text redacted and clipped, the three context-scope flags |
+| `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED and its attempt when observed, read from the pin taken at acceptance; child id, agent, model, the task text redacted and clipped, the three context-scope flags |
 | `subagent/steered` | `steer_run` after the provider accepted, `follow_up_run` after the queue accepted | child id, `interrupt` or `follow_up` |
 | `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms, credits when billed |
 | `subagent/failed` | the same report, for outcome `failed` or `stopped` | child id, reason, which outcome it was, elapsed ms, credits when billed |
@@ -949,7 +949,13 @@ Two different moments, and conflating them produces two different defects.
 The **asking turn** is knowable only at acceptance: a spawn arrives as a tool call inside the
 parent's turn, while the child's own entries are produced long afterwards, usually while the parent
 is on a different turn. So `(session id, turn)` is pinned there and every later entry about that
-child reads it back.
+child reads it back. The pin also carries that turn's **attempt**, because a regenerate or rewind
+reruns the same ordinal and `turn/started` is identified by `(turn, attempt)`. The attempt is
+derived on the writer thread by the start's own job and stamped on the record that start opened,
+so a child dispatched before that job runs is pinned with the attempt unobserved, and the entry
+omits it rather than claiming attempt 1. The asking turn is read with `asking_turn`, not
+`live_turn`: a turn whose closer is already handed to the writer has ended and asks for nothing,
+though the tail repair still counts it as running.
 
 The **entry** may not be written there, because acceptance is not a start. Registration is followed
 by the spawn approval gate, and a decline returns through the finalize claim and the announce
@@ -975,6 +981,12 @@ on an unrelated one. Its asking ordinal is pinned where the follow-up was REQUES
 is itself a tool call inside the asking turn -- and carried to the dispatch on the run record, the
 same way `_preassigned_id` and the inherited context groups already ride that call. Without it the
 continuation would be filed under a turn that did not ask for it.
+
+Every other spawn reads its origin, `(unit, turn, attempt)`, once on its first pass and carries it
+on the queued row as `_crew_log_asked`. A row the durable queue replays after a restart has no pin
+in the new process and the parent has moved to a new unit, so the replay pins to the unit that
+asked, from the row. A unit id over the emitter's session-id cap is left off the row. A row written
+before the origin was stored falls back to the parent's current unit with the turn unobserved.
 
 Several follow-ups queued across several turns are delivered as ONE continuation, so that entry can
 name only one turn, and the pin it carries is the most recent ask's. That is a choice rather than a

@@ -9,6 +9,7 @@ record too: otherwise the app restarts minutes after the user said "later".
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,6 +34,19 @@ def _cfg(record: object, *, auto_update: bool = True) -> SimpleNamespace:
 
 def _snoozed(version: str, until: float) -> dict:
     return {"version": version, "snoozed_until": until, "skipped": False}
+
+
+_GATEWAY_LOGGER = "kiro_crew.slack.gateway"
+_NOT_INSTALLED = "was put off by the user — not installing it unattended"
+_NOT_RESTARTED = "is ready but was put off by the user — not restarting"
+_BUILDING = "Auto-update enabled for managed install — building beside it"
+
+
+@pytest.fixture
+def gateway_logs(caplog):
+    """The update coordinator's own log lines, read after the run."""
+    caplog.set_level(logging.INFO, logger=_GATEWAY_LOGGER)
+    return lambda: [r.getMessage() for r in caplog.records if r.name == _GATEWAY_LOGGER]
 
 
 # ── the record ──────────────────────────────────────────────────────────────
@@ -138,16 +152,18 @@ def _run_legacy(cfg: SimpleNamespace, *, info: dict = _MANAGED_UPDATE, route: st
     return orch
 
 
-def test_a_snoozed_update_is_not_installed_unattended() -> None:
+def test_a_snoozed_update_is_not_installed_unattended(gateway_logs) -> None:
     orch = _run_legacy(_cfg(_snoozed("9.9.9", _FAR_FUTURE)))
     orch._auto_apply_wheel_update.assert_not_awaited()
     orch._auto_apply_update.assert_not_awaited()
     orch.dashboard_state.push_refresh.assert_called_with("update_available")
+    assert f"Update 9.9.9 {_NOT_INSTALLED}" in gateway_logs()
 
 
-def test_a_skipped_update_is_not_installed_unattended() -> None:
+def test_a_skipped_update_is_not_installed_unattended(gateway_logs) -> None:
     orch = _run_legacy(_cfg({"version": "9.9.9", "snoozed_until": 0, "skipped": True}))
     orch._auto_apply_wheel_update.assert_not_awaited()
+    assert f"Update 9.9.9 {_NOT_INSTALLED}" in gateway_logs()
 
 
 @pytest.mark.parametrize(
@@ -155,9 +171,12 @@ def test_a_skipped_update_is_not_installed_unattended() -> None:
     [_snoozed("9.9.8", _FAR_FUTURE), _snoozed("9.9.9", _LONG_AGO), {}],
     ids=["other-version", "snooze-over", "no-record"],
 )
-def test_without_a_live_deferral_the_update_still_installs(record) -> None:
+def test_without_a_live_deferral_the_update_still_installs(record, gateway_logs) -> None:
     orch = _run_legacy(_cfg(record))
     orch._auto_apply_wheel_update.assert_awaited_once_with("stable", "9.9.9")
+    logs = gateway_logs()
+    assert _BUILDING in logs
+    assert not [m for m in logs if _NOT_INSTALLED in m]
 
 
 def _run_provider(cfg: SimpleNamespace):
@@ -196,26 +215,31 @@ def _run_provider(cfg: SimpleNamespace):
     return orch, apply
 
 
-def test_a_snoozed_provider_update_is_not_applied_or_restarted() -> None:
+def test_a_snoozed_provider_update_is_not_applied_or_restarted(gateway_logs) -> None:
     orch, apply = _run_provider(_cfg(_snoozed("2.0.0", _FAR_FUTURE)))
     apply.assert_not_awaited()
     orch._restart_after_update.assert_not_awaited()
     orch._prepare_auto_update_apply.assert_not_awaited()
+    assert f"Update 2.0.0 {_NOT_INSTALLED}" in gateway_logs()
 
 
-def test_a_provider_update_nobody_put_off_still_applies() -> None:
+def test_a_provider_update_nobody_put_off_still_applies(gateway_logs) -> None:
     orch, apply = _run_provider(_cfg(_snoozed("1.9.0", _FAR_FUTURE)))
     apply.assert_awaited_once()
     orch._restart_after_update.assert_awaited_once()
+    logs = gateway_logs()
+    assert "Auto-update enabled — applying update via provider" in logs
+    assert not [m for m in logs if _NOT_INSTALLED in m]
 
 
 # ── the git route ───────────────────────────────────────────────────────────
 
 
-def test_a_snoozed_git_update_is_not_pulled_unattended() -> None:
+def test_a_snoozed_git_update_is_not_pulled_unattended(gateway_logs) -> None:
     orch = _run_legacy(_cfg(_snoozed("9.9.9", _FAR_FUTURE)), info=_GIT_UPDATE, route="git")
     orch._auto_apply_update.assert_not_awaited()
     orch.dashboard_state.push_refresh.assert_called_with("update_available")
+    assert f"Update 9.9.9 {_NOT_INSTALLED}" in gateway_logs()
 
 
 def test_a_git_update_nobody_put_off_still_pulls_and_queues_an_unheld_restart() -> None:
@@ -300,10 +324,11 @@ def test_a_queued_restart_nobody_put_off_still_restarts(record) -> None:
     orch._restart_after_update.assert_awaited_once()
 
 
-def test_a_held_restart_still_runs_the_update_check() -> None:
+def test_a_held_restart_still_runs_the_update_check(gateway_logs) -> None:
     orch = _run_one_pending_cycle(_cfg({"version": "9.9.9", "snoozed_until": 0, "skipped": True}))
     orch._restart_after_update.assert_not_awaited()
     orch._check_for_updates.assert_awaited_once()
+    assert f"Update 9.9.9 {_NOT_RESTARTED}" in gateway_logs()
 
 
 def test_a_restart_nobody_held_does_not_also_run_the_check() -> None:
@@ -351,22 +376,28 @@ def _run_held_cycle_through_the_real_check(
 _SKIPPED_999 = {"version": "9.9.9", "snoozed_until": 0, "skipped": True}
 
 
-def test_a_floor_raised_while_a_skipped_restart_is_held_is_still_applied() -> None:
+def test_a_floor_raised_while_a_skipped_restart_is_held_is_still_applied(gateway_logs) -> None:
     orch = _run_held_cycle_through_the_real_check(
         _cfg(_SKIPPED_999), _MANAGED_UPDATE, AutoUpdateEffect("mandatory", "wheel"), floor=True
     )
     orch._restart_after_update.assert_not_awaited()
     orch._auto_apply_wheel_update.assert_awaited_once()
     assert orch._auto_apply_wheel_update.await_args.kwargs["mandatory"] is True
+    logs = gateway_logs()
+    assert f"Update 9.9.9 {_NOT_RESTARTED}" in logs
+    assert [m for m in logs if "applying mandatory update beside the managed venv" in m]
 
 
-def test_a_newer_release_is_still_found_while_a_skipped_restart_is_held() -> None:
+def test_a_newer_release_is_still_found_while_a_skipped_restart_is_held(gateway_logs) -> None:
     newer = {**_MANAGED_UPDATE, "latest_version": "9.9.10"}
     orch = _run_held_cycle_through_the_real_check(
         _cfg(_SKIPPED_999), newer, AutoUpdateEffect("install", "wheel"), floor=False
     )
     orch._restart_after_update.assert_not_awaited()
     orch._auto_apply_wheel_update.assert_awaited_once_with("stable", "9.9.10")
+    logs = gateway_logs()
+    assert f"Update 9.9.9 {_NOT_RESTARTED}" in logs
+    assert _BUILDING in logs
 
 
 def test_a_policy_floor_restart_does_not_wait_for_a_snooze() -> None:
