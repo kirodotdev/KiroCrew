@@ -659,3 +659,150 @@ def test_a_field_named_constructor_is_not_dimmed_while_it_resolves() -> None:
         "__calls.push([cell.textContent, cell.attrs['data-dashboard-missing'] || null]);",
     )
     assert calls == [["7", None]], calls
+
+
+#: A page script recording what each callback was told: value, and the meta flags.
+_RECORD = (
+    "window.kirocrew.subscribe('boards', (v, n, m) =>"
+    "  __calls.push([v, m.missing, Object.keys(m).length]));"
+)
+
+
+class TestASubscriberIsToldAFieldStoppedResolving:
+    """A field named in ``missing`` reaches its subscriber, flagged, with the value the
+    page already drew. Before this a chart drawn from a subscriber froze on the old
+    value at full strength while the bound cells beside it dimmed."""
+
+    def test_present_then_missing_then_present_on_full_reads(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _RECORD
+            + "__push({ fields: { owner: 'atlas' }, agentic: [], seq: 2, missing: ['boards'],"
+            "         version: 1 });"
+            "__push({ fields: { boards: 5 }, agentic: [], seq: 3, missing: [], version: 2 });",
+        )
+        assert calls == [[2, False, 1], [2, True, 1], [5, False, 1]]
+
+    def test_a_two_argument_callback_still_gets_values_only(self) -> None:
+        """An existing page that reads ``cb(value, name)`` redraws what it had: the
+        value it is handed while missing is the one it already drew, never a new one."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            "window.kirocrew.subscribe('boards', (v, n) => __calls.push([v, n]));"
+            "__push({ fields: {}, agentic: [], seq: 2, missing: ['boards'], version: 1 });",
+        )
+        assert calls == [[2, "boards"], [2, "boards"]]
+
+    def test_zero_is_a_value_present_and_missing(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(fields={"boards": 0}),
+            _RECORD
+            + "__push({ fields: {}, agentic: [], seq: 2, missing: ['boards'], version: 1 });",
+        )
+        assert calls == [[0, False, 1], [0, True, 1]]
+
+    def test_a_patch_naming_it_missing_tells_once_and_its_recovery_is_told(self) -> None:
+        """A patch that names the field missing tells the subscriber; a second patch
+        still naming it does not repeat; a patch that drops it from ``missing`` without
+        carrying it (resolved again, unmoved) tells it with the merged value."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _RECORD + "__push({ patch: true, version: 1, fields: {}, missing: ['boards'] });"
+            "__push({ patch: true, version: 2, fields: { owner: 'nyx' }, missing: ['boards'] });"
+            "__push({ patch: true, version: 3, fields: {}, missing: [] });"
+            "__push({ patch: true, version: 4, fields: {}, missing: [] });",
+        )
+        assert calls == [[2, False, 1], [2, True, 1], [2, False, 1]]
+
+    def test_a_read_carrying_an_older_value_it_names_missing_flags_it(self) -> None:
+        """``missing`` wins over presence, exactly as the fill reads it."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(fields={"boards": 4}, missing=["boards"]),
+            _RECORD,
+        )
+        assert calls == [[4, True, 1]]
+
+    def test_an_agentic_field_going_missing_is_told(self) -> None:
+        """``meta`` carries only ``missing``; the agentic marks stay on the global."""
+        stamp = "2026-10-30T12:00:00Z"
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(agentic=["boards"], written_at={"boards": stamp}),
+            _RECORD + "__push({ fields: {}, agentic: ['boards'], seq: 2, missing: ['boards'],"
+            f"         written_at: {{ boards: '{stamp}' }}, version: 1 }});",
+        )
+        assert calls == [[2, False, 1], [2, True, 1]]
+
+    def test_a_field_the_page_never_held_stays_silent_when_named_missing(self) -> None:
+        """No older value exists to mark, and ``undefined`` is not a value."""
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(fields={"owner": "atlas"}, missing=["boards"]),
+            _RECORD
+            + "__push({ fields: {}, agentic: [], seq: 2, missing: ['boards'], version: 1 });",
+        )
+        assert calls == []
+
+
+def _cell_js(name: str) -> str:
+    return (
+        "const cell = { attrs: {}, textContent: 'old',"
+        f"  getAttribute(k) {{ return k === 'data-dashboard-field' ? '{name}' : this.attrs[k]; }},"
+        "  setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };"
+        "nodes.push(cell);"
+    )
+
+
+_CELL_STATE = (
+    "__calls.push([cell.textContent, cell.attrs['data-dashboard-missing'] || null,"
+    "  cell.attrs['data-dashboard-missing-label'] || null]);"
+)
+
+
+class TestAMissingCellSaysSo:
+    """Dimming alone read as a real number. A missing cell carries a label the host CSS
+    draws after the value, in the reader's language, and keeps the value it showed."""
+
+    def test_the_label_is_set_while_missing_and_cleared_on_recovery(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _cell_js("boards")
+            + "__push({ fields: { boards: 3 }, agentic: [], seq: 2, missing: [], version: 1 });"
+            + _CELL_STATE
+            + "__push({ fields: {}, agentic: [], seq: 3, missing: ['boards'], version: 2 });"
+            + _CELL_STATE
+            + "__push({ fields: { boards: 0 }, agentic: [], seq: 4, missing: [], version: 3 });"
+            + _CELL_STATE,
+        )
+        assert calls == [
+            ["3", None, None],
+            ["3", "true", "not current"],
+            ["0", None, None],
+        ]
+
+    def test_the_label_is_in_the_readers_language(self) -> None:
+        calls = _run(
+            dashboard_frame._BOOTSTRAP_JS,
+            _read(),
+            _cell_js("boards")
+            + "__push({ fields: {}, agentic: [], seq: 2, missing: ['boards'], version: 1,"
+            "         locale: 'zh-CN' });" + _CELL_STATE,
+        )
+        assert calls == [["old", "true", dashboard_frame._MISSING_LABELS["zh-CN"]]]
+
+    def test_every_shipped_catalog_has_a_label(self) -> None:
+        from kiro_crew.context_assembly.output_contract import _UI_LANGUAGE_CATALOGS
+
+        assert set(dashboard_frame._MISSING_LABELS) == set(_UI_LANGUAGE_CATALOGS)
+        assert all(label.strip() for label in dashboard_frame._MISSING_LABELS.values())
+
+    def test_the_host_css_draws_the_label(self) -> None:
+        css = dashboard_frame._HOST_CSS
+        assert "[data-dashboard-missing='true']::after" in css
+        assert "attr(data-dashboard-missing-label)" in css
