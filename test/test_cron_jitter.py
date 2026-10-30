@@ -2,7 +2,7 @@
 
 import asyncio
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -231,49 +231,79 @@ class TestReaperJitterAllowance:
     """Test that reaper accounts for jitter in timeout threshold."""
 
     @staticmethod
-    async def _sweep_once(age: float, jitter: float) -> tuple[Any, AsyncMock]:
-        """Run one real reaper sweep over a live run claimed ``age`` seconds ago."""
+    async def _sweep_once(monkeypatch, tmp_path, age: float, jitter: float) -> tuple[Any, Any]:
+        """Run one real reaper sweep over a live run of job ``j1`` claimed ``age`` seconds ago.
+
+        The reap itself runs for real against a session manager with no
+        processes, so its outcome is read off the job and the run history.
+        """
         import time as time_mod
 
-        from cron_reaper_helpers import _live_task
+        import cron_reaper_helpers
+        from cron_reaper_helpers import _live_task, _make_job, _mock_sessions
 
+        import kiro_crew.cron as cron_mod
+        from kiro_crew import platform_compat
         from kiro_crew.cron import _RunClaim
+        from kiro_crew.cron_history import CronHistoryStore
 
+        # The session manager holds no process, so a reap must signal nothing.
+        for name in cron_reaper_helpers._KILL_PRIMITIVES:
+            refuse = (
+                cron_reaper_helpers._refuse_unpinned_signal_async
+                if name.endswith("_async")
+                else cron_reaper_helpers._refuse_unpinned_signal
+            )
+            monkeypatch.setattr(platform_compat, name, refuse)
+        # Only the timeout and the jitter make up the deadline under test.
+        for allowance in ("_pool_queue_allowance", "_gate_budget_allowance", "_vet_allowance"):
+            monkeypatch.setattr(cron_mod, allowance, lambda job: 0)
         svc = CronService(base_dir=None, on_job=AsyncMock())
-        svc._sessions = MagicMock()
-        claim = svc._claims["j1"] = _RunClaim(
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+        job = _make_job("j1")
+        svc._jobs = [job]
+        svc._claims["j1"] = _RunClaim(
             trigger="scheduled",
             claimed_at=time_mod.time() - age,
             jitter=jitter,
             task=_live_task(),
         )
-        reap = AsyncMock()
         with (
-            patch.object(svc, "_force_reap", reap),
+            patch("kiro_crew.sel.sel"),
+            patch.object(svc, "_save"),
             patch(  # flake-ok: stands in for the reaper's interval sleep so one sweep runs
                 "asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])
             ),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
-        return claim, reap
+        return svc, job
 
     @pytest.mark.asyncio
-    async def test_job_within_timeout_plus_jitter_not_reaped(self):
+    async def test_job_within_timeout_plus_jitter_not_reaped(self, monkeypatch, tmp_path):
         """Job running for less than timeout+jitter should NOT be reaped."""
         from kiro_crew.cron import _JOB_TIMEOUT_SECS
 
         # Past the bare timeout, so only the jitter allowance keeps it alive.
-        _claim, reap = await self._sweep_once(_JOB_TIMEOUT_SECS + 600, jitter=1200.0)
-        reap.assert_not_awaited()
+        svc, job = await self._sweep_once(
+            monkeypatch, tmp_path, _JOB_TIMEOUT_SECS + 600, jitter=1200.0
+        )
+        assert job.last_status != "error"
+        assert await svc._history.get_job_history("j1") == ([], 0)
 
     @pytest.mark.asyncio
-    async def test_job_exceeding_timeout_plus_jitter_would_be_reaped(self):
+    async def test_job_exceeding_timeout_plus_jitter_would_be_reaped(self, monkeypatch, tmp_path):
         """Job running longer than timeout+jitter should be reaped."""
         from kiro_crew.cron import _JOB_TIMEOUT_SECS
 
-        claim, reap = await self._sweep_once(_JOB_TIMEOUT_SECS + 1200 + 100, jitter=1200.0)
-        reap.assert_awaited_once_with("j1", ANY, _JOB_TIMEOUT_SECS, claim=claim)
+        svc, job = await self._sweep_once(
+            monkeypatch, tmp_path, _JOB_TIMEOUT_SECS + 1200 + 100, jitter=1200.0
+        )
+        assert job.last_status == "error"
+        assert f"(exceeded {_JOB_TIMEOUT_SECS}s deadline)" in job.last_error
+        rows, _total = await svc._history.get_job_history("j1")
+        assert [r["status"] for r in rows] == ["timeout"]
 
 
 class TestJitterWaitEndsOnWallClock:
