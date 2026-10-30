@@ -166,5 +166,32 @@ describe('useCrewModeSwitch entering an Ultra Mode root', () => {
   })
 })
 
+describe('useCrewModeSwitch turning Ultra Mode on', () => {
+  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+  afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
+
+  const turnOn = () => {
+    const store = createTestStore()
+    const openView = vi.fn()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('fresh'), defaultAgent: 'default', hasUserMessage: false, switchAgent: vi.fn(() => new Promise<void>(() => {})), openView }), { wrapper })
+    act(() => { hook.result.current.turnOnCrewMode() })
+    return { store, openView }
+  }
+
+  it('opens the side panel on the Board on a desktop', () => {
+    const { store, openView } = turnOn()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+
+  it('keeps a phone on the chat: no panel sheet opens', () => {
+    mobile.value = true
+    const { store, openView } = turnOn()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+})
+
 // Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
 crewModePreviewOn()

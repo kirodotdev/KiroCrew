@@ -285,7 +285,7 @@ export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
 
       <div className="flex flex-col items-center gap-1.5">
         <motion.h2
-          className="m-0 text-[36px] @[34rem]/crewwelcome:text-6xl [@media(max-height:480px)]:text-[28px] font-bold tracking-tight leading-none text-aim"
+          className="m-0 text-[36px] @[34rem]/crewwelcome:text-6xl [@media(max-height:480px)]:text-[28px] font-bold tracking-tight leading-none ultra-title-text"
           {...enter(still, 0.15, { opacity: 0, y: 10 }, { opacity: 1, y: 0 })}
         >
           {i18nT('components.crewMode.title')}
