@@ -61,4 +61,5 @@ async def test_eager_spawn_skips_a_chat_bound_to_a_profile(
         patch.object(chat_runner, "resolve_agent_bindings", return_value=_bindings()),
     ):
         await _eager_spawn(state, slot)
+    assert list(chat_runner._armed_prefetches) == (["dashboard:c1"] if prewarmed else [])
     assert state.sessions.get_or_create.await_count == (1 if prewarmed else 0)

@@ -47,6 +47,9 @@ class TestArmedPrefetchCap:
         sessions.remove_if_unclaimed = AsyncMock(return_value=True)
         for i in range(chat_runner._RESUME_PREFETCH_MAX_LIVE):
             await chat_runner._cap_armed_prefetches(sessions, f"dashboard:k{i}")
+        assert list(chat_runner._armed_prefetches) == [
+            f"dashboard:k{i}" for i in range(chat_runner._RESUME_PREFETCH_MAX_LIVE)
+        ]
         sessions.remove_if_unclaimed.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -69,6 +72,11 @@ class TestArmedPrefetchCap:
         await chat_runner._cap_armed_prefetches(sessions, "dashboard:k0")  # re-arm
         await chat_runner._cap_armed_prefetches(sessions, "dashboard:new")
         # k1 is now the oldest, not the re-armed k0.
+        assert list(chat_runner._armed_prefetches) == [
+            *(f"dashboard:k{i}" for i in range(2, chat_runner._RESUME_PREFETCH_MAX_LIVE)),
+            "dashboard:k0",
+            "dashboard:new",
+        ]
         sessions.remove_if_unclaimed.assert_awaited_once_with("dashboard:k1")
 
     @pytest.mark.asyncio
