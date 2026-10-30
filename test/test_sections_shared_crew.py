@@ -9,6 +9,12 @@ from kiro_crew.config.loader_builders import _build_dashboard_config
 from kiro_crew.config.sections_dashboard import DashboardConfig
 
 
+@pytest.fixture(autouse=True)
+def _shared_crew_preview(monkeypatch):
+    """These cases pin the preview-on reader (``shared_crew.preview``)."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 def test_defaults_keep_every_switch_off():
     cfg = sc.shared_crew_config_from(None)
     assert cfg == sc.SharedCrewConfig()

@@ -19,9 +19,26 @@ A Crew is a machine identity, not a group of people. Its synthetic principal is 
 Crew acting as itself; the people who may work in it are individual grants, and
 several Crews may have overlapping member lists.
 
-Status: proof of concept. In this build only the configuration section exists, and
-nothing reads it yet. With every switch at its default the gateway behaves as a
+Status: proof of concept. With every switch at its default the gateway behaves as a
 single-operator Crew.
+
+### Release gate
+
+Shared Crew is behind one release gate until the owner ships it: the gateway
+environment variable `KIROCREW_SHARED_CREW_PREVIEW=1`
+(`shared_crew.preview.preview_enabled`, true only for exactly `1`). It is not a
+config field, so no Settings row, change card or `propose_change` path can set it.
+
+- Gate off (the default): `config.sections_shared_crew.load_shared_crew_config`, the
+  runtime's one reader of the section, returns `SharedCrewConfig()` whatever
+  config.json says. `admission_enabled`, `hard_limits` and every other
+  `dashboard.shared_crew` switch read as their default, fair admission stays a
+  pass-through and the gateway behaves as it did before Shared Crew. The stored
+  values are not rewritten: only the runtime read is gated, so a save keeps them.
+- Gate on: config decides, as every section below describes.
+
+`GET /api/shared-crew/capabilities` reports the gate as `preview` (true or false).
+Each field's help in the Settings schema says it requires the variable.
 
 ## 2. Identity
 

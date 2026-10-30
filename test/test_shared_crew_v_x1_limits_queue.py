@@ -20,6 +20,13 @@ from kiro_crew.shared_crew.contracts import Principal
 from kiro_crew.shared_crew.work_store import WorkStore
 from kiro_crew.taskq.store import TaskStore
 
+
+@pytest.fixture(autouse=True)
+def _shared_crew_preview(monkeypatch):
+    """These cases pin the preview-on reader (``shared_crew.preview``)."""
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+
+
 BUDGET = Principal.system("limits-test").id
 
 
