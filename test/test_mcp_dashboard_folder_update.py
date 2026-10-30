@@ -332,7 +332,9 @@ async def test_a_move_and_rename_in_one_write_checks_the_new_name() -> None:
 async def test_a_reposition_in_place_is_not_checked() -> None:
     """Same parent, same name: a folder that already has a twin may still be reordered."""
     folders = _tree() + [dict(_A, id="fldr0000000d")]
-    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": "", "order": 3}, internal=True)
+    status, _ = await _patch_folder(
+        folders, _A["id"], {"parent_id": "", "after": _B["id"]}, internal=True
+    )
     assert status == 200
 
 

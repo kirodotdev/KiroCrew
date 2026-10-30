@@ -10,7 +10,7 @@
  * Choosing a mode never rewrites a stored position.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -437,6 +437,28 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
     expect(drawnFolderIds(container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
     // The refused write never reached the server's copy.
     expect(serverConfig.dashboard.folder_sort).toBe('custom')
+  })
+
+  it('the folder-action notice puts Ask the agent on its own row under the copy, inside the text column', async () => {
+    patchConfig.mockRejectedValueOnce(new Error('The folder this move was placed next to has moved or was deleted. Try the move again.'))
+    const { getByLabelText, findByTestId } = renderSidebar(NUMBERED, 'custom')
+    fireEvent.keyDown(getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    fireEvent.click(await findByTestId('folder-order-name'))
+    const notice = await findByTestId('folder-action-error')
+    const handoff = within(notice).getByRole('button', { name: /ask the agent/i })
+    // Beside the copy, the hand-off is a flex sibling of the text column and
+    // leaves the copy about one word of width in the ~300px sidebar. Below, it
+    // is a block inside the text column, after every text node of the copy.
+    const textColumn = notice.querySelector('.flex-1')
+    expect(textColumn).not.toBeNull()
+    const wrapper = handoff.parentElement!
+    expect(wrapper.tagName).toBe('DIV')
+    expect(wrapper.parentElement).toBe(textColumn)
+    const copyNodes = [...textColumn!.childNodes].filter(n => n !== wrapper && (n.textContent ?? '').trim() !== '')
+    expect(copyNodes.length).toBeGreaterThan(0)
+    for (const node of copyNodes) {
+      expect(node.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
   })
 
   it('outside Custom a folder row is no reorder target, and a scripted sibling drop writes nothing but says why', async () => {

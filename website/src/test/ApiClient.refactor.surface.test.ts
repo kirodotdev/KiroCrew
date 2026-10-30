@@ -129,7 +129,7 @@ const API_KEY_ORDER = [
   'rewind', 'slackLink', 'unlinkSlack', 'pauseSlack',
   'pauseMirror', 'channelTargets', 'linkMirror', 'remindMirror',
   'unlinkMirror', 'slackChannels', 'chatFolders', 'createChatFolder',
-  'updateChatFolder', 'reorderChatFolders', 'deleteChatFolder', 'cleanupChatFolders', 'backfillChannelFolder',
+  'updateChatFolder', 'deleteChatFolder', 'cleanupChatFolders', 'backfillChannelFolder',
   'setSlotFolder', 'setSlotColor', 'setSlotColorHex', 'clearSlotColor',
   'setSlotPin', 'setSlotMutesOpened', 'setSlotMuted', 'setPinnedOrder', 'setManualOrder', 'chatTags', 'createChatTag',
   'adoptChatTag', 'updateChatTag', 'deleteChatTag', 'setSlotTags',

@@ -107,6 +107,39 @@ class TestRemovableFolderIds:
             "worker",
         ]
 
+    def test_siblings_list_in_rank_order_when_ranks_and_legacy_order_disagree(self) -> None:
+        # The sidebar draws ranked siblings by rank, so the preview must too:
+        # a rank order that reverses the legacy ``order`` wins, at the top
+        # level and below it, and an unranked root sorts after the ranked ones.
+        rows = [
+            _f("work", order=0, project_dir="/srv/work"),
+            _f("late", "work", 0, rank="V"),
+            _f("early", "work", 1, rank="F"),
+            _f("zeta", order=1, rank="V"),
+            _f("alpha", order=2, rank="F"),
+        ]
+        assert removable_folder_ids(rows, set(), include_top_level=True) == [
+            "alpha",
+            "zeta",
+            "early",
+            "late",
+        ]
+
+    def test_a_malformed_rank_falls_back_to_legacy_order_without_breaking_the_walk(self) -> None:
+        # A hand-edited rank that is not a rank key sorts the row after every
+        # ranked sibling, by its legacy ``order``; nothing raises.
+        rows = [
+            _f("work"),
+            {**_f("bad", "work", 0), "rank": 7},
+            {**_f("trailing", "work", 1), "rank": "V0"},
+            _f("ranked", "work", 2, rank="V"),
+        ]
+        assert removable_folder_ids(rows, set(), include_top_level=False) == [
+            "ranked",
+            "bad",
+            "trailing",
+        ]
+
     def test_a_folder_a_channel_files_into_by_name_is_kept(self) -> None:
         # A channel adopts an existing folder by name without stamping it, so
         # the name its setting carries is what marks it; matched like the

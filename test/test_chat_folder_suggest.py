@@ -101,6 +101,57 @@ def test_eligible_folders_caps_the_list() -> None:
     assert len(fs._eligible_folders(state)) == fs._MAX_FOLDERS
 
 
+def test_eligible_folders_keeps_tree_order_when_a_nested_section_is_ranked() -> None:
+    """A ranked nested section must not jump ahead of unranked top-level folders.
+
+    ``custom_sort_key`` is a sibling order (ranked rows before unranked ones), so
+    sorting the flat list with it would place every ranked child of ``top0``
+    ahead of the other top-level folders and push them past the cap. Sidebar
+    order is depth-first: each top-level folder, then its children.
+    """
+    tops = [{"id": f"top{i}", "name": f"Top {i}", "order": i} for i in range(fs._MAX_FOLDERS + 5)]
+    nested = [
+        {"id": "kid1", "name": "Kid 1", "parent_id": "top0", "rank": "V"},
+        {"id": "kid0", "name": "Kid 0", "parent_id": "top0", "rank": "F"},
+    ]
+    state = _state(nested + tops)
+    got = [f["id"] for f in fs._eligible_folders(state)]
+    assert len(got) == fs._MAX_FOLDERS
+    assert got[:3] == ["top0", "kid0", "kid1"]
+    assert got[3:] == [f"top{i}" for i in range(1, fs._MAX_FOLDERS - 2)]
+
+
+def test_eligible_folders_tolerates_missing_parents_and_cycles() -> None:
+    """An orphan is top level; a ``parent_id`` loop is visited once, not forever."""
+    state = _state(
+        [
+            {"id": "orphan", "name": "Orphan", "parent_id": "gone", "order": 1},
+            {"id": "loop-a", "name": "Loop A", "parent_id": "loop-b", "order": 2},
+            {"id": "loop-b", "name": "Loop B", "parent_id": "loop-a", "order": 3},
+            {"id": "hid", "name": "Hidden", "order": 0, "hidden": True},
+            {"id": "under-hid", "name": "Under hidden", "parent_id": "hid", "order": 0},
+        ]
+    )
+    got = [f["id"] for f in fs._eligible_folders(state)]
+    assert got[:2] == ["under-hid", "orphan"]
+    assert sorted(got[2:]) == ["loop-a", "loop-b"]
+
+
+def test_eligible_folders_walks_a_deep_chain_without_recursing() -> None:
+    """Nesting depth is unbounded in the store, so the walk must not recurse.
+
+    A chain deeper than the interpreter's recursion limit is listed in full
+    (capped by count), parent before child, instead of raising RecursionError.
+    """
+    depth = 3000
+    chain = [{"id": "c0", "name": "C0", "order": 0}] + [
+        {"id": f"c{i}", "name": f"C{i}", "parent_id": f"c{i - 1}", "order": 0}
+        for i in range(1, depth)
+    ]
+    got = [f["id"] for f in fs._eligible_folders(_state(chain))]
+    assert got == [f"c{i}" for i in range(fs._MAX_FOLDERS)]
+
+
 # ── grounding samples ───────────────────────────────────────────────────────
 
 
@@ -177,7 +228,9 @@ def test_live_slot_titles_excludes_self_and_unfiled() -> None:
     slots = {
         "me": SimpleNamespace(key="me", folder_id="a", title="Mine", memory_mode="persistent"),
         "sib": SimpleNamespace(key="sib", folder_id="a", title="Sibling", memory_mode="persistent"),
-        "loose": SimpleNamespace(key="loose", folder_id="", title="Loose", memory_mode="persistent"),
+        "loose": SimpleNamespace(
+            key="loose", folder_id="", title="Loose", memory_mode="persistent"
+        ),
     }
     titles = fs._live_slot_titles(_state([], slots=slots), exclude_key="me")
     assert titles == {"a": ["Sibling"]}
@@ -257,7 +310,7 @@ def test_build_prompt_numbers_folders_and_marks_empty_ones() -> None:
         labels=["Kiro Crew › i18n", "Errands"],
         samples=[["Pseudolocale gate", "Catalog sync"], []],
     )
-    assert "1. Kiro Crew › i18n — contains: \"Pseudolocale gate\"; \"Catalog sync\"" in prompt
+    assert '1. Kiro Crew › i18n — contains: "Pseudolocale gate"; "Catalog sync"' in prompt
     assert "2. Errands — (no sessions yet)" in prompt
     assert "Fix the render gate flake" in prompt
     # The NONE escape must always be offered, or the model is forced to guess.
@@ -353,8 +406,8 @@ def test_none_reply_delivers_nothing() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"folder_id": "already"},   # already filed
-        {"suggested": True},        # one shot already spent
+        {"folder_id": "already"},  # already filed
+        {"suggested": True},  # one shot already spent
         {"memory_mode": "temporary"},  # blank-slate session
     ],
 )

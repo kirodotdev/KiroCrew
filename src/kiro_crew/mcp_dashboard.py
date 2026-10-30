@@ -181,10 +181,12 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "in its custom folder order, and when the person has sorted folders "
                 "by name or creation date (chat_folder_tree's header says which) an "
                 "anchor changes nothing they see until they switch back. An app "
-                "agent may move only a folder it created itself, "
-                "and only to the top level or under another of its own; positioning "
-                "is refused outright when it would renumber siblings the app does "
-                "not own. A crew member is bound by the same own-folders-only rule."
+                "agent may move and position only a folder it created itself, and "
+                "only to the top level or under another of its own. It may position "
+                "its folder among the person's once the person has arranged that "
+                "section by dragging any folder there; until then positioning is "
+                "refused with a message explaining what the person must do. A crew "
+                "member is bound by the same own-folders-only rule."
             ),
             schema={
                 "type": "object",
@@ -217,7 +219,6 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "GET /api/chat/slots",
                 "GET /api/chat/folders",
                 "PATCH /api/chat/folders/{folder}",
-                "POST /api/chat/folders/reorder",
             ),
         ),
         Tool(
@@ -766,7 +767,6 @@ from kiro_crew.mcp_dashboard_folder_tree import (  # noqa: E402, F401
     _SIDEBAR_MAX_DRAWN_DEPTH,
     _chat_folder_children,
     _chat_folder_created,
-    _chat_folder_name_key,
     _chat_folder_natural_key,
     _chat_folder_order,
     _chat_folder_paths,
@@ -774,7 +774,6 @@ from kiro_crew.mcp_dashboard_folder_tree import (  # noqa: E402, F401
     _chat_folder_siblings,
     _chat_folder_sort_key,
     _chat_folder_sort_mode,
-    _free_slot_order,
     _pinned_sidebar_order,
     _read_folder_sort_setting,
     _sidebar_group_order,
@@ -992,9 +991,11 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         FOLDER_SORT_MODES,
     )
     from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES  # noqa: F401
-    from kiro_crew.dashboard.folder_ownership import (  # noqa: F401
-        _folder_owner_app,
-        _subtree_holds_foreign_folder,
+    from kiro_crew.dashboard.folder_rank import (  # noqa: F401
+        ORDER_LIMIT,
+        custom_sort_key,
+        legacy_order,
+        tree_order,
     )
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401

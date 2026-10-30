@@ -108,7 +108,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers._shared_route_guards import (  # noqa: F401
         _CRON_SESSION_CONTROL_PATHS,
         _MEMBER_CHAT_FOLDER_ID_METHODS,
-        _MEMBER_CHAT_FOLDER_REORDER_METHODS,
         _MEMBER_CHAT_FOLDERS_METHODS,
         _MEMBER_CHAT_SLOT_DROP_METHODS,
         _MEMBER_CHAT_SLOT_FOLDER_METHODS,

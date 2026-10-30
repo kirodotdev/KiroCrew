@@ -1055,7 +1055,8 @@ class TestFolderPersistence:
 
 class TestChatFolderOrderIsNotA500:
     """A caller-supplied order never reaches int() unguarded: no middleware maps
-    handler exceptions, so it would surface as HTTP 500. A bad order is skipped."""
+    handler exceptions, so it would surface as HTTP 500. Any order is refused as
+    retired (400 order_retired) before it is parsed, and the folder is unchanged."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bad_order", ["abc", None, [], {}, "1.5", 1e309, -1e309, "nan"])
@@ -1070,12 +1071,16 @@ class TestChatFolderOrderIsNotA500:
             resp = await client.patch(
                 f"/api/chat/folders/{created['id']}", json={"order": bad_order}
             )
-            assert resp.status == 200, f"order={bad_order!r} produced {resp.status}"
-            # The bad field is skipped, not coerced into some other order.
-            assert (await resp.json())["order"] == created["order"]
+            assert resp.status == 400, f"order={bad_order!r} produced {resp.status}"
+            assert (await resp.json())["code"] == "order_retired"
+            # The refused write changed nothing.
+            listed = await (await client.get("/api/chat/folders")).json()
+            stored = next(f for f in listed if f["id"] == created["id"])
+            assert stored["order"] == created["order"]
 
     @pytest.mark.asyncio
-    async def test_valid_order_is_still_applied(self, tmp_path, monkeypatch):
+    async def test_a_valid_order_is_refused_as_retired(self, tmp_path, monkeypatch):
+        """Position is set with before/after now; an integer order is a 400, not a no-op."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
@@ -1083,5 +1088,5 @@ class TestChatFolderOrderIsNotA500:
             created = await client.post("/api/chat/folders", json={"name": "Oncall"})
             folder_id = (await created.json())["id"]
             resp = await client.patch(f"/api/chat/folders/{folder_id}", json={"order": 7})
-            assert resp.status == 200
-            assert (await resp.json())["order"] == 7
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "order_retired"
