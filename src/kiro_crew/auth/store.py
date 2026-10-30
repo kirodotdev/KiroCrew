@@ -19,10 +19,12 @@ concern, not reimplemented here.
 from __future__ import annotations
 
 import enum
+import hashlib
 import json
 import logging
 import os
 import secrets
+import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -49,6 +51,16 @@ _PRIORITY = ("external_idp", "builder_id", "identity_center", "social")
 #: The identity kinds the store accepts, for callers that validate a caller-supplied
 #: kind before handing it to the store (the same tuple, public name).
 KNOWN_IDENTITIES: tuple[str, ...] = _PRIORITY
+
+#: Refresh refusals this process saw: (vault dir, slot) -> digest of the refused
+#: refresh token. Kept apart from the marker file so a write that fails still
+#: leaves the refusal visible here (:meth:`TokenStore.refused_in_process`).
+_REFUSED_IN_PROCESS: dict[tuple[str, str], str] = {}
+_REFUSED_LOCK = threading.Lock()
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class SocialProvider(enum.Enum):
@@ -425,14 +437,20 @@ class TokenStore:
             # not be removed is a stale diagnostic, not a failed operation.
             logger.debug("could not clear refresh-rejected marker for %s", identity, exc_info=True)
 
-    def mark_refresh_rejected(self, identity: str) -> None:
+    def mark_refresh_rejected(self, identity: str, refresh_token: str | None = None) -> None:
         """Record that the issuer refused this identity's refresh token.
 
         Called by the refresher from inside the identity's refresh lock, so it needs
-        no lock of its own. Best-effort: a marker that cannot be written costs the
-        dashboard its explicit "expired" wording, not the refusal itself, which the
-        caller still raises. Never raises.
+        no lock of its own. Given *refresh_token* (the refused one), the refusal is
+        also kept in this process's memory BEFORE the marker is written, so a check
+        in this process (:meth:`refused_in_process`) still sees it when the write
+        fails (a full disk). The marker file is best-effort: one that cannot be
+        written costs other processes the refusal's wording, not the refusal itself,
+        which the caller still raises. Never raises.
         """
+        if refresh_token:
+            with _REFUSED_LOCK:
+                _REFUSED_IN_PROCESS[(str(self._kas_dir), identity)] = _digest(refresh_token)
         try:
             path = self._refresh_rejected_path(identity)  # ValueError for an unknown kind
             self._assert_unlinked()
@@ -440,6 +458,34 @@ class TokenStore:
             path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
         except (OSError, TokenStoreError, ValueError):
             logger.debug("could not record refresh-rejected marker for %s", identity, exc_info=True)
+
+    def refused_in_process(self, token: KasToken) -> bool:
+        """Did THIS process see the issuer refuse *token*'s refresh token?
+
+        Keyed on a digest of the refused refresh token, so a new sign-in in the
+        slot (another refresh token, saved by any process) is never read as refused.
+        """
+        if not token.refresh_token:
+            return False
+        with _REFUSED_LOCK:
+            refused = _REFUSED_IN_PROCESS.get((str(self._kas_dir), token.identity))
+        return refused is not None and secrets.compare_digest(refused, _digest(token.refresh_token))
+
+    def refresh_rejected_strict(self, identity: str) -> datetime | None:
+        """Like :meth:`refresh_rejected`, but a marker it cannot read RAISES.
+
+        For a fail-closed reader (the enterprise gate): only a marker that is not
+        there is "not refused". A marker that exists but cannot be parsed still
+        records a refusal, so it answers now.
+        """
+        try:
+            raw = self._refresh_rejected_path(identity).read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        try:
+            return _parse_dt(raw)
+        except ValueError:
+            return datetime.now(timezone.utc)
 
     def refresh_rejected(self, identity: str) -> datetime | None:
         """When the issuer last refused this identity's refresh token, or ``None``.

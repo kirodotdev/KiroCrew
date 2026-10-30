@@ -11,10 +11,13 @@ Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_
       "manifest": {"hash", "versionId", ...},
       "body": {"policy": <Trust V2 YAML>, "configuration": [...]}}
 
-**Who is asking.** The Kiro sign-in in Crew's own vault (``kirocrew kas login``), read
-and refreshed through :class:`~kiro_crew.auth.provider.KasAuthProvider` with the
-``KIRO_API_KEY`` bypass off: an API key carries no profile, and the environment must not
-stand in for the signed-in identity.
+**Who is asking.** The one enterprise sign-in (:func:`kiro_crew.enterprise_sign_in.resolve`,
+RFC D4): Crew's own vault (``kirocrew kas login``), refreshed through
+:class:`~kiro_crew.auth.provider.KasAuthProvider` with the ``KIRO_API_KEY`` bypass off.
+An API
+key carries no profile, and the environment never stands in for the signed-in identity.
+The same resolver answers the start check and the account lock below, so the three
+cannot name different accounts.
 
 **Where.** ``control_plane_url(profile_region(arn))``: a host from the region table built
 into this package. Nothing in the environment or config names it.
@@ -35,19 +38,18 @@ control stays at the build's own locked default.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
 import signal
 import ssl
-import threading
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from kiro_crew import __version__, edition
+from kiro_crew import enterprise_sign_in as _sign_in
 from kiro_crew.auth.login.control_plane import (
     ControlPlaneError,
     control_plane_url,
@@ -83,14 +85,45 @@ _HASH_PREFIX = "sha256:"
 #: Joins the scope and the neutral document's digest in a DISABLED answer's etag.
 _DISABLED_TAG = "/disabled/"
 _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
-_TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
-_SIGN_IN = "sign in with `kirocrew kas login --provider idc --start-url <your start URL>`"
-#: Seconds to wait for the vault read and token refresh.
-_CREDENTIAL_TIMEOUT_SECS = 30.0
+
+
+def _sign_in_remedy() -> str:
+    return f"sign in with {_sign_in.sign_in_hint()}"
 
 
 class EnterprisePolicyError(RuntimeError):
-    """The organisation's policy could not be read. Its message is safe to print."""
+    """The organisation's policy could not be read. Its message is safe to print.
+
+    ``cause`` is one of :mod:`kiro_crew.enterprise_sign_in`'s ``CAUSE_*`` values, or
+    ``""`` when none applies. It is also recorded for :func:`last_failure_cause`.
+    """
+
+    def __init__(self, message: str, cause: str = "") -> None:
+        super().__init__(message)
+        self.cause = cause
+        _note_cause(cause, message)
+
+
+#: ``(cause, message)`` of this process's latest refused fetch or account check.
+_last_failure: Tuple[str, str] = ("", "")
+
+
+def _note_cause(cause: str, message: str) -> None:
+    global _last_failure
+    if cause and message:
+        _last_failure = (cause, message)
+
+
+def last_failure_cause(error_text: str) -> str:
+    """The ``CAUSE_*`` behind *error_text*, or ``""`` when it is not a recorded failure.
+
+    The policy core re-raises a fetcher's failure as a plain ``PlatformCompositionError``
+    message, so the boot error finds the cause by the recorded failure's own message
+    inside that text. A cause whose message is not in *error_text* belongs to an earlier
+    failure (one the cache recovered from, say) and is not returned.
+    """
+    cause, message = _last_failure
+    return cause if cause and message in error_text else ""
 
 
 class _Identity:
@@ -126,13 +159,21 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
     try:
         url = control_plane_url(profile_region(identity.profile_arn))
     except ControlPlaneError as exc:
-        raise EnterprisePolicyError(f"{exc}; {_SIGN_IN}") from None
+        raise EnterprisePolicyError(
+            f"{exc}; {_sign_in_remedy()}", _sign_in.CAUSE_NOT_ELIGIBLE
+        ) from None
     scope = _identity_scope(identity.profile_arn)
     if scope != pinned_scope():
         assert_signed_in_unchanged()  # raises: the pin is another account's
     sent_version = _version_for(request.etag, scope)
     raw = _post(url, identity, sent_version, request.timeout_secs)
-    status, version_id, policy = parse_envelope(raw, sent_version_id=sent_version)
+    try:
+        status, version_id, policy = parse_envelope(raw, sent_version_id=sent_version)
+    except EnterprisePolicyError as exc:
+        if not exc.cause:
+            # A malformed answer: the rules cannot be applied.
+            _note_cause(_sign_in.CAUSE_BAD_RULES, str(exc))
+        raise
     etag = f"{scope}:{version_id}" if version_id else ""
     if status == STATUS_UNCHANGED:
         return pd.FetchedPolicy(etag=etag, not_modified=True)
@@ -143,7 +184,7 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
             document = translate(policy or "")
         except TranslationError as exc:
             raise EnterprisePolicyError(
-                f"the organisation's policy cannot be applied: {exc}"
+                f"the organisation's policy cannot be applied: {exc}", _sign_in.CAUSE_BAD_RULES
             ) from None
     # The profile the document was read for, so a cached copy is never served to another.
     document["identity"] = {"issuer": ISSUER_PREFIX + scope}
@@ -207,7 +248,25 @@ def assert_signed_in_unchanged(body: Optional[bytes] = None) -> None:
     sign-in of its own, so only *body* is checked there.
     """
     pin = pinned_scope()
-    live_ok = cache_only_process() or signed_in_scope() == pin
+    cache_only = cache_only_process()
+    if not pin and not cache_only:
+        # Never pinned: nothing was signed in when this process first asked. That is
+        # a missing sign-in (or one the resolver refused), not an account change.
+        # (``pinned_scope`` only pins a non-empty scope, so the next call retries.)
+        from kiro_crew.platform.governance_health import mark_governance_incident
+
+        reason = _refusal_now()
+        logger.critical("Enterprise policy refused: %s", reason)
+        mark_governance_incident("failed_closed", f"enterprise_policy:{reason.cause}")
+        _note_cause(reason.cause, str(reason))
+        raise PlatformCompositionError(str(reason))
+    live_ok = cache_only or signed_in_scope() == pin
+    if not live_ok:
+        # The scope differs from the pin. Only a sign-out or another account is an
+        # account change; an unreadable store or no profile is refused
+        # with its own cause and does not stop the gateway. Classified by its own read,
+        # so an empty scope alone never counts as a change.
+        _refuse_unless_account_changed(pin)
     if pin and live_ok and (body is None or document_scope(body) == pin):
         return
     from kiro_crew.platform.governance_health import mark_governance_incident
@@ -215,11 +274,57 @@ def assert_signed_in_unchanged(body: Optional[bytes] = None) -> None:
 
     logger.critical("Enterprise policy refused: %s", ACCOUNT_CHANGED)
     mark_governance_incident("failed_closed", "enterprise_policy:account_changed")
+    _note_cause(_sign_in.CAUSE_ACCOUNT_CHANGED, ACCOUNT_CHANGED)
     if central_ceiling_installed():
         # Stops this process the way a shutdown request does, on every platform. It
         # is not a kill site: no other process is signalled.
         signal.raise_signal(signal.SIGTERM)
     raise PlatformCompositionError(ACCOUNT_CHANGED)
+
+
+def _refuse_unless_account_changed(pin: str) -> None:
+    """Raise (no stop) unless the selection now names no sign-in or another account."""
+    reason: Optional[_sign_in.SignInError] = None
+    try:
+        scope = _identity_scope(_sign_in.select().profile_arn)
+    except _sign_in.SignInError as exc:
+        if exc.cause == _sign_in.CAUSE_NO_SIGN_IN:
+            return  # a sign-out: the caller treats it as an account change
+        reason = exc
+    except Exception as exc:
+        reason = _sign_in.SignInError(
+            f"the Kiro sign-in could not be read ({type(exc).__name__}); {_sign_in_remedy()}",
+            _sign_in.CAUSE_SIGN_IN_UNUSABLE,
+        )
+    else:
+        if scope != pin:
+            return  # another account: the caller treats it as an account change
+        reason = _sign_in.SignInError(
+            f"the Kiro sign-in changed while it was being read; {_sign_in_remedy()}",
+            _sign_in.CAUSE_SIGN_IN_UNUSABLE,
+        )
+    logger.critical("Enterprise policy refused: %s", reason)
+    _note_cause(reason.cause, str(reason))
+    raise PlatformCompositionError(str(reason))
+
+
+def _refusal_now() -> _sign_in.SignInError:
+    """Why the resolver finds no sign-in right now (the error it raises, not raised)."""
+    try:
+        _sign_in.resolve()
+    except _sign_in.SignInError as exc:
+        return exc
+    except Exception as exc:
+        return _sign_in.SignInError(
+            f"the Kiro sign-in could not be read ({type(exc).__name__}); {_sign_in_remedy()}",
+            _sign_in.CAUSE_SIGN_IN_UNUSABLE,
+        )
+    # Nothing was pinned, so nothing can have changed: a sign-in that appeared while
+    # this process was starting. Not an account change; the next start pins it.
+    return _sign_in.SignInError(
+        "the Kiro sign-in appeared while Kiro Crew was starting; start Kiro Crew again",
+        _sign_in.CAUSE_SIGN_IN_UNUSABLE,
+    )
 
 
 def cache_only_process() -> bool:
@@ -230,70 +335,33 @@ def cache_only_process() -> bool:
 
 
 def signed_in_scope() -> str:
-    """The digest of the profile signed in now, or ``""`` when there is none.
+    """The digest of the profile the one enterprise sign-in names now, or ``""``.
 
-    A plain vault read: no refresh, no network. Anything unreadable answers ``""``,
-    which matches no document, so the cache is refused and a fetch reports the cause.
+    :func:`kiro_crew.enterprise_sign_in.select`, the same selection the start check,
+    the gate and the fetch read: which account is stored, so a lapsed sign-in still
+    names its account and reaches the fetch as ``sign_in_unusable``, never as an
+    account change. No sign-in, or anything unreadable answers
+    ``""``, which matches no document, so the cache is refused and a fetch reports the
+    cause.
     """
     try:
-        from kiro_crew.auth.bridge import default_token_store
-
-        stored = default_token_store().resolve()
+        return _identity_scope(_sign_in.select().profile_arn)
     except Exception:
         return ""
-    if stored is None or not stored.profile_arn:
-        return ""
-    return _identity_scope(stored.profile_arn)
 
 
 def signed_in_identity() -> _Identity:
-    """The vault's Kiro sign-in, refreshed if due, or raise :class:`EnterprisePolicyError`."""
-    from kiro_crew.auth.bridge import default_token_store
-    from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
-
-    provider = KasAuthProvider(default_token_store(), allow_env_api_key=False)
+    """The one enterprise sign-in with a live token, or raise :class:`EnterprisePolicyError`."""
     try:
-        token = _run(provider.current())
-    except NotAuthenticated:
-        raise EnterprisePolicyError(f"no Kiro sign-in was found; {_SIGN_IN}") from None
+        sign_in = _sign_in.resolve(with_token=True)
+    except _sign_in.SignInError as exc:
+        raise EnterprisePolicyError(str(exc), exc.cause) from None
     except Exception as exc:
         raise EnterprisePolicyError(
-            f"the Kiro sign-in could not be read or refreshed ({type(exc).__name__}); {_SIGN_IN}"
+            f"the Kiro sign-in could not be read or refreshed ({type(exc).__name__}); {_sign_in_remedy()}",
+            _sign_in.CAUSE_SIGN_IN_UNUSABLE,
         ) from None
-    if not token.profile_arn:
-        raise EnterprisePolicyError(
-            f"the Kiro sign-in has no profile, so it is not an organisation account; {_SIGN_IN}"
-        )
-    token_type = _TOKEN_TYPE_EXTERNAL_IDP if token.auth_method == "external_idp" else ""
-    return _Identity(token.access_token, token.profile_arn, token_type)
-
-
-def _run(coro: Any) -> Any:
-    """Run *coro* to completion on its own loop in a worker thread.
-
-    The core calls fetchers from synchronous code that may itself be running on an
-    event loop thread (boot) or on the refresher's thread, so running a loop here
-    directly could find one already running.
-    """
-    box: Dict[str, Any] = {}
-
-    def work() -> None:
-        loop = asyncio.new_event_loop()
-        try:
-            box["value"] = loop.run_until_complete(coro)
-        except BaseException as exc:  # noqa: BLE001 - handed back to the caller
-            box["error"] = exc
-        finally:
-            loop.close()
-
-    worker = threading.Thread(target=work, name="enterprise-policy-credential", daemon=True)
-    worker.start()
-    worker.join(_CREDENTIAL_TIMEOUT_SECS)
-    if worker.is_alive():
-        raise TimeoutError("the Kiro sign-in did not answer in time")
-    if "error" in box:
-        raise box["error"]
-    return box["value"]
+    return _Identity(sign_in.token, sign_in.profile_arn, sign_in.token_type)
 
 
 def _post(url: str, identity: _Identity, sent_version: str, timeout: float) -> bytes:
@@ -314,16 +382,24 @@ def _post(url: str, identity: _Identity, sent_version: str, timeout: float) -> b
             status = getattr(resp, "status", None) or resp.getcode()
             raw = resp.read(MAX_ENVELOPE_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        raise EnterprisePolicyError(_http_failure(exc)) from None
+        refused = exc.code in (401, 403)
+        message = _http_failure(exc)
+        if "refused the Kiro sign-in" in message:
+            refused = True
+        cause = _sign_in.CAUSE_REFUSED if refused else _sign_in.CAUSE_UNREACHABLE
+        raise EnterprisePolicyError(message, cause) from None
     except urllib.error.URLError as exc:
-        raise EnterprisePolicyError(_unreachable(exc.reason)) from None
+        raise EnterprisePolicyError(_unreachable(exc.reason), _sign_in.CAUSE_UNREACHABLE) from None
     except (OSError, ValueError) as exc:
-        raise EnterprisePolicyError(_unreachable(exc)) from None
+        raise EnterprisePolicyError(_unreachable(exc), _sign_in.CAUSE_UNREACHABLE) from None
     if status != 200:
-        raise EnterprisePolicyError(f"the governance service answered HTTP {status}")
+        raise EnterprisePolicyError(
+            f"the governance service answered HTTP {status}", _sign_in.CAUSE_UNREACHABLE
+        )
     if len(raw) > MAX_ENVELOPE_BYTES:
         raise EnterprisePolicyError(
-            f"the governance service's answer exceeds {MAX_ENVELOPE_BYTES} bytes"
+            f"the governance service's answer exceeds {MAX_ENVELOPE_BYTES} bytes",
+            _sign_in.CAUSE_BAD_RULES,
         )
     return raw
 
@@ -353,9 +429,7 @@ def _http_failure(exc: urllib.error.HTTPError) -> str:
         error_type = ""
     named = f" {error_type}" if error_type else ""
     if exc.code in (401, 403) or error_type in ("AccessDeniedException", "UnauthorizedException"):
-        return (
-            f"the governance service refused the Kiro sign-in (HTTP {exc.code}{named}); {_SIGN_IN}"
-        )
+        return f"the governance service refused the Kiro sign-in (HTTP {exc.code}{named}); {_sign_in_remedy()}"
     if 300 <= exc.code < 400:
         return f"the governance service answered a redirect (HTTP {exc.code}), which is refused"
     return f"the governance service answered HTTP {exc.code}{named}"
@@ -377,7 +451,8 @@ def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, 
     if status == STATUS_NOT_ELIGIBLE:
         raise EnterprisePolicyError(
             "the signed-in Kiro account has no enterprise management, and this enterprise "
-            f"build requires an organisation's policy; {_SIGN_IN}"
+            f"build requires an organisation's policy; {_sign_in_remedy()}",
+            _sign_in.CAUSE_NOT_ELIGIBLE,
         )
     if status == STATUS_DISABLED:
         return STATUS_DISABLED, "", None
@@ -441,6 +516,11 @@ def _configuration(raw: object) -> Tuple[Mapping[str, str], ...]:
 def _identity_scope(profile_arn: str) -> str:
     """A short digest of the profile, so one profile's cached version is never sent for another."""
     return hashlib.sha256(profile_arn.encode("utf-8")).hexdigest()[:16]
+
+
+def profile_scope(profile_arn: str) -> str:
+    """The digest the account lock pins for *profile_arn* (see :func:`pinned_scope`)."""
+    return _identity_scope(profile_arn)
 
 
 def _version_for(etag: str, scope: str) -> str:

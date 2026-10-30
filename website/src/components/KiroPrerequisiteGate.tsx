@@ -20,20 +20,13 @@ import {
 } from '../api/client'
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
-import {
-  PANEL_CLASS,
-  PINNED_FOOTER_CLASS,
-  SCRIM_CLASS,
-  SECTION_CLASS,
-  ShellAside,
-} from './OnboardingChapterShell'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
-import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
+import { EnterpriseSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -87,98 +80,6 @@ export function asSentence(message: string): string {
   const trimmed = message.trim()
   if (!trimmed) return trimmed
   return /[.!?:;…]$/.test(trimmed) ? trimmed : `${trimmed}.`
-}
-
-// Shared full-screen chrome for every gate state. This is the SAME container the
-// first-run onboarding chapters use (Import setup / Customize): the identical
-// scrim, panel geometry, and accent aside with the identical mascot positions,
-// imported from OnboardingChapterShell rather than re-declared here. Only the
-// copy in the aside and the right-column content differ. `cardLabel` names the
-// region for assistive tech.
-function SetupShell({
-  children,
-  footer,
-  cardLabel,
-  asideHeadline,
-  asideBody,
-}: {
-  children: ReactNode
-  // Rendered OUTSIDE the scroll region, so a state whose content overflows the
-  // fixed panel height still shows its closure action whole. A half-clipped
-  // primary button reads as a rendering defect rather than a scroll affordance.
-  footer?: ReactNode
-  cardLabel?: string
-  // The default aside says "Install Kiro CLI, sign in once…", which contradicts
-  // a state whose headline is "already installed" and which deliberately offers
-  // no install action. States like that pass their own copy so the two columns
-  // of the same screen do not disagree.
-  asideHeadline?: string
-  asideBody?: string
-}) {
-  const label = cardLabel || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
-  // A scroll cue on the internally-scrolling column: the panel height is fixed,
-  // so the tallest states clip below the footer divider, and that divider then
-  // reads as the end of the content rather than a fold. `attachContent` follows
-  // the body because it swaps with the gate's state, changing the overflow.
-  const [attachScroll, edges, , attachScrollContent] = useScrollEdgesY<HTMLDivElement>()
-  return (
-    <main className={SCRIM_CLASS} aria-label={label}>
-      <div className={PANEL_CLASS}>
-        <ShellAside
-          copy={{
-            ariaLabel: label,
-            panelHeadline:
-              asideHeadline || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready'),
-            panelBody:
-              asideBody
-              || i18nT('components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will'),
-            panelFootnote: i18nT(
-              'components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host',
-            ),
-          }}
-        />
-        {/* Same scroll structure as the chapters: the panel height is fixed and
-            the right column scrolls internally. `my-auto` keeps the short states
-            (status error / non-owner) optically centered without breaking the
-            scroll on the tall two-step setup. The edge cues exist because that
-            fixed height clips the tallest states, and the footer divider below
-            otherwise reads as the end of the content rather than a fold — the
-            overlay scrollbar fades when idle and leaves no standing sign. */}
-        <section className={SECTION_CLASS}>
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <div
-              ref={attachScroll}
-              data-testid="gate-scroll-region"
-              className="flex min-h-0 flex-1 flex-col overflow-y-auto"
-            >
-              <div ref={attachScrollContent} className="my-auto w-full px-6 py-8 sm:px-10 sm:py-10">{children}</div>
-            </div>
-            {/* `from-card` matches SECTION_CLASS's own `bg-card`, so the fade
-                dissolves into the column rather than onto a mismatched surface.
-                `bottom-0`/`top-0` of this relative wrapper are the footer divider
-                and the top edge of the scroll region. */}
-            {edges.top && (
-              <div
-                aria-hidden="true"
-                data-testid="gate-scroll-cue-top"
-                className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-card to-transparent"
-              />
-            )}
-            {edges.bottom && (
-              <div
-                aria-hidden="true"
-                data-testid="gate-scroll-cue-bottom"
-                className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-card to-transparent"
-              />
-            )}
-          </div>
-          {footer ? (
-            <div data-testid="gate-footer" className={`${PINNED_FOOTER_CLASS} shrink-0 border-t border-border px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-10 sm:pb-4`}>{footer}</div>
-          ) : null}
-        </section>
-      </div>
-    </main>
-  )
 }
 
 function OwnerSetupRequired({
@@ -1663,6 +1564,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         {children}
         <RelockNotice
           owner={relockStatus.setup_allowed !== false}
+          command={relockStatus.enterprise_sign_in_command}
           exactCommandElsewhere={relockStatus.bundled_cli === true
             || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
         />
@@ -1699,6 +1601,24 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
   // Enterprise login gate closed: the gateway refuses every API but sign-in, so
   // none of the bypasses below may hand over the dashboard -- not `ready`, not an
+  // established install, not another harness. The first-run screens still run
+  // in order, so a missing CLI or a sandbox refusal shows its own remedy before
+  // the sign-in step.
+  // An enterprise gate reads Crew's own vault sign-in, so its sign-in screen names
+  // the vault command, never kiro-cli's login and never a kiro-cli install step.
+  if (enterpriseLocked && prerequisite.enterprise_sign_in_command) {
+    return unlessRelocked(
+      <EnterpriseSignInRequired
+        command={prerequisite.enterprise_sign_in_command}
+        needsStartUrl={prerequisite.enterprise_sign_in_needs_start_url === true}
+        owner={prerequisite.setup_allowed !== false}
+        retrying={retrying}
+        onRetry={retryStatus}
+      />,
+    )
+  }
+  // An enterprise build's closed gate shows sign-in, not the app, whatever the
+  // probe says about readiness: being ready can mean the login probe passed on an
   // established install, not another harness. The first-run screens still run
   // in order, so a missing CLI or a sandbox refusal shows its own remedy before
   // the sign-in step.

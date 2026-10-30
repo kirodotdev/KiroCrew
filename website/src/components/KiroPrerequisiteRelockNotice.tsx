@@ -37,9 +37,12 @@ export const BARE_LOGIN_COMMAND = 'kiro-cli login'
 export default function KiroPrerequisiteRelockNotice({
   owner,
   exactCommandElsewhere,
+  command,
 }: {
   owner: boolean
   exactCommandElsewhere: boolean
+  /** The enterprise gate's own sign-in command; set, the card sends the owner to a new window. */
+  command?: string
 }) {
   return createPortal(
     (
@@ -52,7 +55,15 @@ export default function KiroPrerequisiteRelockNotice({
           <ShieldCheck className="lucide-inline" />
           {i18nT('components.kiroPrerequisiteGate.sign_in_required')}
         </p>
-        {owner && exactCommandElsewhere ? (
+        {owner && command ? (
+          // The enterprise command names this install's launcher and the start URL:
+          // too long to retype from a card nobody can select. Same route as the
+          // exact-command case below: a new window opens on the sign-in screen,
+          // which shows it with a copy button.
+          <p data-testid="enterprise-relock-new-window" className="mt-1 text-sm font-semibold leading-relaxed text-text-strong">
+            {i18nT('components.kiroPrerequisiteGate.relock_enterprise_new_window')}
+          </p>
+        ) : owner && exactCommandElsewhere ? (
           <p className="mt-1 text-sm font-semibold leading-relaxed text-text-strong">
             {i18nT('components.kiroPrerequisiteGate.relock_exact_command_hint')}
           </p>

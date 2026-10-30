@@ -448,6 +448,24 @@ def _no_gateway_running() -> bool:
         return False
 
 
+def _doctor_enterprise_sign_in(issues: list[str]) -> None:
+    """Enterprise build only: the one sign-in the start check and rules fetch read (RFC D4).
+
+    Prints nothing in an ``oss`` build. A plain read of both stores (no refresh, no
+    network); a refusal is a blocking issue, because the build will not start on it.
+    """
+    from kiro_crew import edition
+
+    if not edition.is_enterprise():
+        return
+    from kiro_crew import enterprise_sign_in
+
+    line = enterprise_sign_in.describe()
+    print(f"  sign-in:     {line}")
+    if line.startswith("❌"):
+        issues.append(f"enterprise sign-in: {line[2:].strip()}")
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -520,6 +538,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # blocking issue with the remediation hint rather than letting it abort the
     # whole CLI before the doctor can run.
     print("Platform")
+    _doctor_enterprise_sign_in(issues)
     if platform_boot_error is not None:
         print(f"  edition:     ❌ composition failed: {platform_boot_error}")
         issues.append(f"platform composition failed: {platform_boot_error}")

@@ -184,7 +184,12 @@ def resolve_signed_in(store: TokenStore) -> KasToken | None:
         token = store.resolve()
         if token is None or not token.is_usable():
             return None
-        if store.refresh_rejected(token.identity) is not None:
+        # Strict, the reading the enterprise gate uses: a marker that exists but is
+        # empty or malformed still records a refusal, so `kas login` goes on to a
+        # fresh sign-in instead of "already signed in" over a gate that stays closed.
+        if store.refused_in_process(token):
+            return None
+        if store.refresh_rejected_strict(token.identity) is not None:
             return None
     except Exception:  # noqa: BLE001 - a status read never raises
         return None

@@ -1,21 +1,21 @@
-"""Enterprise boot: no kiro login or no governance rules, no Crew.
+"""Enterprise boot: no kiro sign-in or no governance rules, no Crew.
 
 Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
-"Enterprise gate": "Start | Login and fetch rules. If either fails, exit". In an
-enterprise build (``edition.is_enterprise()``) the gateway checks both before its
-HTTP server binds, and exits non-zero with a message naming what failed and how
-to fix it. It never serves a locked gateway for a failed boot. An ``oss`` build
-does nothing here.
+"Enterprise gate" and D4. In an enterprise build (``edition.is_enterprise()``) the
+gateway checks both before its HTTP server binds, and exits non-zero with a message
+naming what failed and how to fix it. It never serves a locked gateway for a failed
+boot. An ``oss`` build does nothing here.
 
-* The governance rules load in ``boot_platform``. A
+* One sign-in (D4): :func:`kiro_crew.enterprise_sign_in.resolve`, Crew's own vault
+  sign-in. The rules fetch reads it first, so the sign-in check and
+  the fetch are one step inside ``boot_platform``, before any port binds. A
   :class:`~kiro_crew.platform.context.PlatformCompositionError` from it reaches
-  :func:`refuse_policy_boot`.
-* The login check is :func:`require_kiro_login`, the setup gate's own
-  ``--version`` and ``whoami`` probe (``KiroPrerequisiteService.boot_login_status``);
-  there is no second login check.
+  :func:`refuse_policy_boot`, which picks the fix from the recorded cause.
+* :func:`require_kiro_login` re-checks the same resolver at gateway start; ``kiro-cli
+  whoami`` is not the enterprise gate.
 
-Once the gateway is up, a login that expires closes the enterprise gate
-(``kiro_crew.enterprise_gate``); that runtime half is not changed here.
+Once the gateway is up, a sign-in that is lost closes the enterprise gate
+(``kiro_crew.enterprise_gate``, fed by :class:`~kiro_crew.enterprise_sign_in.SignInLoginSource`).
 """
 
 from __future__ import annotations
@@ -26,9 +26,10 @@ import sys
 from typing import TYPE_CHECKING, NoReturn
 
 from kiro_crew import edition
+from kiro_crew import enterprise_sign_in as sign_in
 
 if TYPE_CHECKING:
-    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, PrerequisiteStatus
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,34 @@ logger = logging.getLogger(__name__)
 EXIT_CODE = 1
 
 _RESTART = "then start Kiro Crew again"
+
+#: The fix sentence for each refusal cause (``enterprise_sign_in.CAUSE_*``).
+_FIX_FOR_CAUSE = {
+    sign_in.CAUSE_NO_SIGN_IN: f"Sign in with {{sign_in}}, {_RESTART}.",
+    sign_in.CAUSE_SIGN_IN_UNUSABLE: f"Sign in again with {{sign_in}}, {_RESTART}.",
+    sign_in.CAUSE_UNREACHABLE: (
+        f"Check that this machine can reach the governance service, {_RESTART}."
+    ),
+    sign_in.CAUSE_REFUSED: (
+        f"Sign in again with {{sign_in}} as an account of your organisation, " f"{_RESTART}."
+    ),
+    sign_in.CAUSE_NOT_ELIGIBLE: (
+        "Sign in with an account your organisation manages (Identity Center), using "
+        f"{{sign_in}}, {_RESTART}."
+    ),
+    sign_in.CAUSE_ACCOUNT_CHANGED: (
+        "The Kiro account changed while Kiro Crew was running. Sign back in to the "
+        f"account Kiro Crew started with, or {_RESTART} as the new account."
+    ),
+    sign_in.CAUSE_BAD_RULES: (
+        "Ask your administrator to check the organisation's Kiro Crew policy, " f"{_RESTART}."
+    ),
+}
+
+_FIX_UNKNOWN = (
+    "Check that this machine can reach the governance service and that you are "
+    f"signed in to Kiro ({{sign_in}}), {_RESTART}."
+)
 
 
 def refuse_boot(failed: str, fix: str) -> NoReturn:
@@ -50,81 +79,53 @@ def refuse_boot(failed: str, fix: str) -> NoReturn:
     raise SystemExit(EXIT_CODE)
 
 
+def fix_for(cause: str) -> str:
+    """The fix sentence for a refusal *cause*; a generic one when the cause is unknown."""
+    # The command names this install's launcher, resolved when it is printed.
+    return _FIX_FOR_CAUSE.get(cause, _FIX_UNKNOWN).format(sign_in=sign_in.sign_in_hint())
+
+
 def refuse_policy_boot(exc: BaseException) -> None:
     """Exit if *exc* is an enterprise build's failed policy load. Else return.
 
     Returns (so the caller re-raises as before) in an ``oss`` build and for any
-    error that is not a ``PlatformCompositionError``.
+    error that is not a ``PlatformCompositionError``. The fix sentence comes from the
+    cause the fetch or the account lock recorded.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
     if not edition.is_enterprise() or not isinstance(exc, PlatformCompositionError):
         return
+    from kiro_crew.platform.enterprise_policy_fetch import last_failure_cause
+
     refuse_boot(
         f"the organisation's governance rules or enterprise platform could not be loaded ({exc})",
-        "Check that this machine can reach the governance service and that you are "
-        f"signed in to Kiro, {_RESTART}.",
+        fix_for(last_failure_cause(str(exc))),
     )
 
 
 async def require_kiro_login(*, assume_ready: bool = False) -> KiroPrerequisiteService | None:
-    """In an enterprise build, exit unless a kiro login is verified now.
+    """In an enterprise build, exit unless the one enterprise sign-in resolves now.
 
-    Returns the service whose probe saw the login, so the dashboard reuses it
-    and its gate starts open on that verdict. Returns ``None`` in an ``oss``
-    build, having done nothing. *assume_ready* is ``--test-mode``; the service
-    ignores it in an enterprise build.
+    Reads :func:`kiro_crew.enterprise_sign_in.resolve` (Crew's own vault sign-in), the
+    same identity the rules fetch and the account lock read. Returns
+    ``None`` in every build: the caller builds its own setup service, and the gate's
+    login source is :class:`~kiro_crew.enterprise_sign_in.SignInLoginSource`.
+    *assume_ready* (``--test-mode``) changes nothing here.
     """
+    del assume_ready
     if not edition.is_enterprise():
         return None
-    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
-
     try:
-        service = await asyncio.to_thread(KiroPrerequisiteService, assume_ready=assume_ready)
-        # ``--version`` and ``whoami`` only: the spec and ``acp`` checks of a
-        # full probe run after the bind, so they add nothing before it.
-        status = await service.boot_login_status()
+        await asyncio.to_thread(sign_in.resolve)
     except asyncio.CancelledError:
         raise
+    except sign_in.SignInError as exc:
+        refuse_boot(str(exc), fix_for(exc.cause))
     except Exception as exc:
-        logger.warning("Enterprise boot login check raised", exc_info=True)
+        logger.warning("Enterprise boot sign-in check raised", exc_info=True)
         refuse_boot(
             f"the Kiro sign-in could not be checked ({type(exc).__name__})",
-            f"Run `kiro-cli whoami` to see why, {_RESTART}.",
+            fix_for(sign_in.CAUSE_SIGN_IN_UNUSABLE),
         )
-    if status.authenticated:
-        return service
-    _refuse_for_status(status)
-
-
-def _refuse_for_status(status: PrerequisiteStatus) -> NoReturn:
-    """Exit naming why *status* has no verified sign-in. Unknown is never "signed out"."""
-    sso = status.sso_login_command
-    sign_in = f"run `{status.login_command}`" + (f" (organisation SSO: `{sso}`)" if sso else "")
-    if status.sandbox_unavailable:
-        detail = status.sandbox_detail or "the sandbox could not start"
-        refuse_boot(
-            f"the Kiro sign-in could not be checked ({detail})",
-            f"Fix the sandbox error above, {_RESTART}.",
-        )
-    if status.probe_timed_out:
-        refuse_boot(
-            "the Kiro sign-in could not be checked (kiro-cli did not answer in time)",
-            f"Check that kiro-cli starts (`kiro-cli --version`), {_RESTART}.",
-        )
-    if status.probe_error and not status.installed:
-        refuse_boot(
-            f"kiro-cli did not start ({status.probe_error})",
-            f"Reinstall it from {status.docs_url}, {_RESTART}.",
-        )
-    if status.probe_error:
-        refuse_boot(
-            f"the Kiro sign-in could not be checked ({status.probe_error})",
-            f"Run `kiro-cli whoami` to see why, {_RESTART}.",
-        )
-    if not status.installed:
-        refuse_boot(
-            "kiro-cli was not found",
-            f"Install it from {status.docs_url}, sign in ({sign_in}), {_RESTART}.",
-        )
-    refuse_boot("no Kiro sign-in was found", f"Sign in: {sign_in}, {_RESTART}.")
+    return None
