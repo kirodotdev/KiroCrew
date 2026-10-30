@@ -2517,8 +2517,17 @@ hand-off shows the page's Download failed notice and saves nothing.
   fetches the URL again. Entries expire after 5 minutes and the stash is capped
   in count and bytes, oldest evicted first. One file may be as large as the
   largest stored artifact plus 2 MiB for the export around it.
-- The POST takes only the export's content types; a path in the filename, an
-  unknown type or a missing field is a 400, an oversized file a 413.
+- The POST takes only `text/plain`, `text/html`, `application/json`,
+  `image/svg+xml` and `image/png`; a path in the filename, an unknown type or a
+  missing field is a 400, an oversized file a 413. A png arrives base64-encoded
+  and must start with the png signature, so no other bytes ride that type.
+  `saveBlob` sends every type as base64 with `encoding: "base64"`, so bytes that
+  are not UTF-8 (a legacy svg) are kept exactly and served with no forced charset.
+- Other browser-built downloads use the same hand-off through `saveBlob`
+  (`website/src/utils/download.ts`): a Mermaid export, a share image, a lightbox
+  picture (re-encoded as png when it is another raster type) and a file's last
+  copy. The file panel's Download already has an attachment URL, so inside a
+  WebView it downloads that URL directly at any size.
 
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 

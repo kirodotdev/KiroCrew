@@ -1,7 +1,7 @@
 import { memo, useEffect, useId, useRef, useState } from 'react'
 import { Check, Copy, Download, FileCode, Loader2, Maximize2, MoreHorizontal } from 'lucide-react'
 import { mermaidFontCss } from '../mermaidFontCss'
-import { downloadBlob } from '../../utils/download'
+import { saveBlob } from '../../utils/download'
 import { copyCode } from '../../utils/clipboard'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu'
@@ -132,7 +132,7 @@ export const MermaidBlock = memo(function MermaidBlock({ code }: { code: string 
         if (!image) throw new Error('canvas encoder returned null')
         blob = image
       }
-      downloadBlob(blob, `${basename}.${format}`)
+      await saveBlob(blob, `${basename}.${format}`)
       setDownloadFailed(false)
     } catch {
       setDownloadFailed(true)

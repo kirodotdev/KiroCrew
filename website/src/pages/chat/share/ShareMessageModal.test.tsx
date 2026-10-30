@@ -252,6 +252,31 @@ describe('ShareMessageModal', () => {
     expect(toBlobMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pixelRatio: 2 }))
   })
 
+  it('in an Android in-app browser downloads from a gateway URL, and reports a failed hand-off', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0 Mobile Safari/537.36',
+    )
+    toBlobMock.mockResolvedValue(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: 'image/png' }))
+    const { api } = await import('../../../api/client')
+    const handOff = vi.spyOn(api, 'artifactDownloadUrl').mockResolvedValueOnce({ url: '/api/artifact-downloads/s' })
+    const hrefs: string[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) {
+      hrefs.push(this.getAttribute('href') ?? '')
+    })
+    await renderModal()
+    fireEvent.click(screen.getByTestId('share-download'))
+    // Behind saveBlob's dynamic import of the API client, so an explicit ceiling.
+    const handOffTimeout = { timeout: 5000 }
+    await waitFor(() => expect(hrefs).toEqual(['/api/artifact-downloads/s']), handOffTimeout)
+    expect(handOff.mock.calls[0][1]).toBe('image/png')
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+
+    handOff.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByTestId('share-download'))
+    await waitFor(() => expect(screen.getByText(/render the share card/i)).toBeInTheDocument(), handOffTimeout)
+    expect(hrefs).toHaveLength(1)
+  })
+
   it('reports success when the clipboard write goes through', async () => {
     vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
     const write = vi.fn().mockResolvedValue(undefined)
