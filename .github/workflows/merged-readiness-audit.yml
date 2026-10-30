@@ -34,7 +34,13 @@ jobs:
     name: Merged PR's readiness
     # A fork's main has none of upstream's PRs or readiness statuses.
     if: ${{ github.repository == 'kirodotdev/KiroCrew' }}
-    runs-on: ubuntu-latest  # two read-only GETs and a stdlib script; no fleet runner needed.
+    # Two read-only GETs and a stdlib script, so this needs no fleet runner and
+    # no large machine; it is here for queue position only, because it records
+    # the readiness a merge landed with and a reading taken hours late is a
+    # worse record. The group is a GitHub-hosted Ubuntu VM carrying no fleet
+    # credentials, so this job's isolation contract is unchanged.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

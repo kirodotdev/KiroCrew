@@ -1092,6 +1092,12 @@ The sites that target the group with `group:` are, by workflow:
   `github-release`, `record-promotion`
 - the fork helpers: `fork-internal-content-scan`, `fork-pr-description`'s
   `describe`, and `fork-workflow-guard`'s `guard` and `strip-stale-override`
+- `merged-readiness-audit.yml`'s `audit`, for queue position only: it fires on
+  `push` to `main`, after the merge, so it holds none, and its work is two
+  read-only GETs and a stdlib script. It records the readiness a merge landed
+  with, and a reading taken hours late is a worse record. Its job-level
+  `if: ${{ github.repository == 'kirodotdev/KiroCrew' }}` is false in a fork,
+  so it passes the admission test below outright, as the fork helpers do
 
 A change that adds or removes a site edits that workflow's own entry and its own
 subsection, never a shared total. Do not reintroduce one: a total in prose is
@@ -1467,6 +1473,48 @@ the `runs-on` of `wheel-closure`, `native-redaction-gate` or
 `new-test-stability`, so the same edit on those three lines is silent. Removing
 the fallback from each line in turn reds exactly one test for the first three
 and nothing for the last three.
+
+**The merge-path utility lanes reach the group by LABEL too.**
+`issue-gate.yml`'s `issue-gate`, `sensitive-change-review-comment.yml`'s
+`rerun`, `pr-size-override.yml`'s `record` and
+`disposition-deferral-check.yml`'s `validate-deferral` use
+`runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`.
+Each is seconds of work whose wall clock was almost all queue wait in the
+shared standard pool, on a path where someone is waiting to merge, so the move
+buys queue position rather than a bigger machine. Each can also execute in a
+contributor's own repository -- `issue-gate` on a pull request opened inside
+the fork, the other three on a comment there -- where an organization runner
+group is unreachable and a job asking for a label no runner there carries
+waits out GitHub's pending limit, so the `ubuntu-latest` branch is
+load-bearing rather than defensive. The rename exposure that group targeting
+avoids therefore applies to these four lines: rename the definition and they
+must move with it.
+
+The three `issue_comment` lanes stay off the CodeBuild fleet for a reason
+their own comments record: any commenter can fire that event, and a
+non-allowlisted actor's fleet dispatch would queue forever. The group is a
+GitHub-hosted Ubuntu VM dispatched by GitHub rather than by the AWS webhook, so
+no actor allowlist applies and that reason is untouched.
+
+**Two of the four can hold a merge, and they are the ones to roll back
+first.** `Issue Gate` holds one directly: `pr-readiness.yml` lists it among its
+lanes and adds `issue-gate.yml|Issue Gate` to `workflow_specs`, so a run
+waiting for a runner keeps `PR Readiness` pending. It is also the only one of
+the four that fires at pull-request time (`pull_request`), so it adds
+occupancy exactly when the review lanes are competing for the cap.
+`sensitive-change-review-comment.yml` holds one indirectly: it re-runs
+`Sensitive Change Review`, which `pr-readiness.yml` polls, so its queueing
+delays clearing a gate that blocks the merge. `pr-size-override.yml` and
+`disposition-deferral-check.yml` are polled by neither readiness workflow; they
+only delay a human, who is waiting on the first to approve an oversized pull
+request and on the second's reply to clear a disposition.
+`merge-queue-readiness.yml` polls none of the four. Rollback is the plain
+whole-line replacement, since these four carry no fleet route to preserve:
+restore `runs-on: ubuntu-latest` on the affected line, and edit the
+expression that line is pinned to in
+`test/test_ci_fleet_routing_expression_parity.py` with it (and in
+`test/test_pr_size.py` or `test/test_sensitive_change_review.py` for those two
+lanes).
 
 **One site cannot use the group, and uses the label instead:** `ci.yml`'s
 `changes` resolver, whose `linux_runner` and `linux_runner_large` outputs carry
