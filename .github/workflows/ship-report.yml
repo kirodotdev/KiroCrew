@@ -88,7 +88,11 @@ concurrency:
 
 jobs:
   report:
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    # schedule/workflow_dispatch has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}

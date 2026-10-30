@@ -156,6 +156,15 @@ _PERMANENT_EXCEPTIONS = {
     ("fork-pr-description.yml", "describe"),
     ("fork-workflow-guard.yml", "guard"),
     ("fork-workflow-guard.yml", "strip-stale-override"),
+    # Scheduled lanes whose schedule event carries no live collaborator actor for
+    # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
+    # was rejected. Neither fires on a pull request or declares merge_group.
+    ("merge-queue-ruleset.yml", "check"),
+    ("playwright-cli-banner.yml", "check"),
+    # Dispatch-only, and never fleet-routed. The allowlist reason above does not
+    # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
+    # route one to the fleet through the same actor predicate.
+    ("test-durations.yml", "refresh"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
@@ -177,6 +186,37 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fork-pr-description.yml", "describe"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "guard"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
+    ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
+    ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
+    # These dispatchable jobs use the group label upstream, but a personal
+    # fork cannot reach the org group and must retain the hosted fallback.
+    ("memory-benchmark.yml", "accept"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("add-contributor.yml", "add"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("connections-l0.yml", "probe"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("deferred-findings-audit.yml", "audit"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("fix-loop-analysis.yml", "metrics"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("fix-loop-analysis.yml", "analyze"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("playwright-cli-banner.yml", "check"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("ship-report.yml", "report"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("test-durations.yml", "refresh"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 
