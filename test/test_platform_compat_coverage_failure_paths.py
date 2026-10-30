@@ -13,6 +13,7 @@ consults is replaced, and nothing spawns a process or writes outside ``tmp_path`
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import errno
 import logging
 import os
@@ -34,6 +35,7 @@ from platform_compat_coverage_helpers import (
 )
 
 from kiro_crew import platform_compat as pc
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # The whole-module skip ``test_platform_compat_coverage.py`` applies, for the reasons given
 # there.
@@ -536,6 +538,87 @@ class TestDescendantHandlesAsyncWindows:
         # The retained map is copied before crossing the thread boundary, so a
         # caller mutating its own dict cannot race the worker.
         assert forwarded == [(100, {55: 7}, 8001)]
+
+    @staticmethod
+    def _held_worker(monkeypatch: pytest.MonkeyPatch) -> tuple[list[Any], list[int]]:
+        """Route the walk to a worker that is RUNNING and finishes only on demand.
+
+        A started executor job cannot be cancelled, which is the case under test:
+        ``submit`` hands back a future already marked running, and the test
+        completes it. Returns the submitted futures and the closed handles.
+        """
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        submitted: list[Any] = []
+        closed: list[int] = []
+
+        class _HeldExecutor:
+            def submit(self, _fn: Any, *_args: Any) -> Any:
+                future: Any = concurrent.futures.Future()
+                assert future.set_running_or_notify_cancel()
+                submitted.append(future)
+                return future
+
+        executor = _HeldExecutor()
+        monkeypatch.setattr(pc, "subprocess_executor", lambda: executor)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        return submitted, closed
+
+    @staticmethod
+    async def _cancel_while_running(submitted: list[Any], cancels: int) -> asyncio.Task:
+        task = asyncio.ensure_future(pc.descendant_termination_handles_async(100, {55: 7001}, 8001))
+        await async_wait_until(lambda: submitted, describe=lambda: "the walk was never submitted")
+        assert len(submitted) == 1
+        for _ in range(cancels):
+            task.cancel()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            # The worker still reads the borrowed root and retained handles, so
+            # the caller must not be released to close them yet.
+            assert not task.done()
+        return task
+
+    @pytest.mark.parametrize("cancels", [1, 3])
+    def test_cancel_settles_the_worker_and_closes_its_new_handles(self, monkeypatch, cancels):
+        submitted, closed = self._held_worker(monkeypatch)
+
+        async def _driver() -> None:
+            task = await self._cancel_while_running(submitted, cancels)
+            submitted[0].set_result({101: 9001, 102: 9002})
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled walk")
+
+        asyncio.run(_driver())
+        # Only the handles the cancelled caller never received are closed; the
+        # borrowed root (8001) and retained (7001) handles stay caller-owned.
+        assert sorted(closed) == [9001, 9002]
+
+    def test_cancel_with_a_failing_worker_closes_nothing_and_still_cancels(self, monkeypatch):
+        submitted, closed = self._held_worker(monkeypatch)
+
+        async def _driver() -> None:
+            task = await self._cancel_while_running(submitted, 2)
+            # The synchronous walk closes what it opened before raising.
+            submitted[0].set_exception(OSError("Windows descendant ancestry incomplete"))
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled walk")
+
+        asyncio.run(_driver())
+        assert closed == []
+
+    def test_an_uncancelled_walk_hands_its_handles_to_the_caller(self, monkeypatch):
+        submitted, closed = self._held_worker(monkeypatch)
+
+        async def _driver() -> Any:
+            task = asyncio.ensure_future(
+                pc.descendant_termination_handles_async(100, {55: 7001}, 8001)
+            )
+            await async_wait_until(lambda: submitted)
+            submitted[0].set_result({101: 9001})
+            return await await_until(task, what="the uncancelled walk")
+
+        assert asyncio.run(_driver()) == {101: 9001}
+        assert closed == []
 
 
 # ---------------------------------------------------------------------------
