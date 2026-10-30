@@ -5,13 +5,14 @@ every service, and the final exit.
 
 Orchestrator fields read: ``_adaptive_controller``, ``_auto_migrate_task``,
 ``_channel_handles``, ``_channel_restart_tasks``, ``_console_script_repair_task``,
-``_dashboard_port``, ``_dashboard_runner``, ``_feature_video_task``, ``_handler_tasks``,
+``_dashboard_port``, ``_dashboard_runner``, ``_feature_video_task``, ``_force_exit_claimed``,
+``_handler_tasks``,
 ``_inbound_replay_task``, ``_marker_clear_pending``, ``_marker_write_task``,
 ``_memory_repair_stop``, ``_memory_repair_task``, ``_memory_startup``,
 ``_model_download_task``, ``_profile_watch_task``, ``_sign_in_refresher_task``,
 ``_socket_client``, ``_update_check_task``, ``cron_svc``, ``dashboard_state``,
 ``heartbeat_svc``, ``sessions``, ``subagent_mgr``.
-Orchestrator fields written: none.
+Orchestrator fields written: ``_force_exit_claimed`` (by the signal-handler install).
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     import contextlib
     import os
     import signal
+    import threading
 
     from kiro_crew.slack.gateway import (
         GRACEFUL_SHUTDOWN_SECS,
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
         GatewayOrchestrator,
         _stop_session_environments,
         drain_sign_in_refresher,
+        flush_audit_queue,
         flush_audit_queue_before_hard_exit,
         listener_guard_exit_code,
         logger,
@@ -440,46 +443,113 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
     # same event used by the authenticated owner shutdown route.
     loop = asyncio.get_running_loop()
     _shutting_down = False
+    # Set once, by the second signal, the moment it takes over the exit. From
+    # then on the force-exit thread below is the ONLY thing that ends the
+    # process: ``_shutdown_and_exit`` reads this before each of its own drains
+    # and its own ``os._exit`` and parks instead, so the graceful exit the first
+    # signal started can neither stop the gateway.log listener under the force
+    # thread's SEL drain nor ``os._exit`` over its unwritten tail.
+    force_exit_claimed = threading.Event()
+    self._force_exit_claimed = force_exit_claimed
+
+    def _force_exit() -> None:
+        """The second signal's drains and exit, run on the ``kc-force-exit`` thread.
+
+        Off the event loop because the drains block (SEL ``flush`` waits on a
+        condition variable, the log drain joins the listener thread), and on a
+        dedicated thread rather than the shared executor because a second
+        Ctrl-C is the escape hatch for a shutdown stuck on wedged pool work.
+        The thread is NOT a daemon: if the graceful coroutine unwinds out of
+        ``run()`` anyway, interpreter shutdown joins this thread instead of
+        killing it mid-drain, and its ``hard_exit`` then ends the process.
+
+        Every step is bounded inside its own module and none may raise past
+        here: a force exit must never be blocked by bookkeeping.
+        """
+        # SEL first, before the unbounded orphan sweep, so the audit tail queued
+        # when the operator pressed Ctrl-C again is on disk whatever that sweep
+        # does. Bounded by flush_audit_queue's own deadline; never creates the
+        # singleton.
+        flush_audit_queue()
+        # ``narrow_with_leaders=False`` so this path does exactly the work it
+        # did before the recycled-pid change: killing leftover processes is
+        # what it is for.
+        try:
+            cleanup_orphaned_sessions(narrow_with_leaders=False)
+        except Exception:
+            pass  # force exit must never be blocked by bookkeeping
+        # os._exit skips atexit, so the member event log's own drain hook never
+        # runs. Bounded inside the module: a wedged disk delays this exit,
+        # never holds it.
+        try:
+            from kiro_crew import eventlog_hooks
+
+            eventlog_hooks.drain_for_shutdown()
+        except Exception:
+            pass  # force exit must never be blocked by bookkeeping
+        # Again, for whatever the gateway audited while the sweep and the
+        # event-log drain ran (the graceful teardown is still going on the
+        # loop). A no-op when nothing is queued. SEL BEFORE the gateway.log
+        # tail, the order the graceful exit uses: draining gateway.log stops
+        # its listener, and a SEL write failure would then log its "dropped N
+        # events" line into a dead queue.
+        flush_audit_queue()
+        # os._exit skips atexit, so the log queue's drain hook never runs --
+        # flush the queued gateway.log tail here, bounded so a wedged disk
+        # cannot hang the force exit.
+        try:
+            from kiro_crew.cli import _stop_log_queue_listener
+
+            _stop_log_queue_listener(timeout=2.0)
+        except Exception:
+            pass  # force exit must never be blocked by logging
+        platform_compat.hard_exit(0)
 
     def _on_signal(*_args: object) -> None:
         nonlocal _shutting_down
-        # Before anything else, on either signal: a stop owns any apply in
+        # Before anything else, on every signal: a stop owns any apply in
         # flight (cancelled here), so its build child dies here, ahead of
         # any exit path.
         platform_compat.cancel_wheel_applies_in_flight("shutdown")
         if _shutting_down:
-            print("\n👻 Force exit!")
-            # Synchronous by necessity: a signal handler cannot await.
-            # The process calls os._exit immediately below, so loop latency
-            # does not matter on this path.
-            #
-            # ``narrow_with_leaders=False`` so this handler does exactly the
-            # work it did before the recycled-pid change: killing leftover
-            # processes is what this path is for, and a handler that reaches
-            # for extra work before its os._exit is a handler that may not
-            # get there.
-            cleanup_orphaned_sessions(narrow_with_leaders=False)
-            # Same reason as the log queue below: os._exit skips atexit, so the
-            # member event log's own drain hook never runs. Synchronous because
-            # a signal handler cannot await, and bounded inside the module for
-            # the same reason the log-queue drain is bounded here -- a wedged
-            # disk must delay this exit, never hold it.
+            if force_exit_claimed.is_set():
+                # Single shot: a repeat signal while the force exit drains must
+                # neither start a second drain nor exit over the unwritten tail.
+                return
+            force_exit_claimed.set()
+            # The backstop for a step that overruns its own bound (the orphan
+            # sweep has none): the process ends at this deadline whatever the
+            # force-exit thread is doing. Comfortably past the sum of the
+            # drains' own bounds, so it never cuts a drain that is keeping to
+            # its deadline. A daemon timer, so it holds nothing alive.
+            deadline = threading.Timer(
+                _FORCE_EXIT_DEADLINE_SECS, platform_compat.hard_exit, args=(0,)
+            )
+            deadline.daemon = True
+            deadline.name = "kc-force-exit-deadline"
+            drain_inline = False
             try:
-                from kiro_crew import eventlog_hooks
-
-                eventlog_hooks.drain_for_shutdown()
-            except Exception:
-                pass  # force exit must never be blocked by bookkeeping
-            # os._exit skips atexit, so the log queue's drain hook never
-            # runs — flush the queued gateway.log tail here, bounded so a
-            # wedged disk cannot hang the force exit.
+                deadline.start()
+                threading.Thread(target=_force_exit, name="kc-force-exit", daemon=False).start()
+            except RuntimeError:
+                # No thread could be started (the interpreter is finalizing or
+                # out of threads). Drain inline: blocking the loop for the
+                # drains' bounded time beats exiting over the audit tail.
+                drain_inline = True
+            # Only after the exit is started, and best-effort: the claim above
+            # already turns every later signal away, so a closed stdout must not
+            # stop this handler before the exit is under way. Says why the stop
+            # is not instant, since a repeat Ctrl-C does nothing more.
             try:
-                from kiro_crew.cli import _stop_log_queue_listener
-
-                _stop_log_queue_listener(timeout=2.0)
+                print(
+                    "\n👻 Force exit! Saving the audit and log tail first "
+                    f"(at most {_FORCE_EXIT_DEADLINE_SECS:.0f}s)…"
+                )
             except Exception:
-                pass  # force exit must never be blocked by logging
-            platform_compat.hard_exit(0)
+                pass  # force exit must never be blocked by output
+            if drain_inline:
+                _force_exit()
+            return
         _shutting_down = True
         shutdown_event.set()
 
@@ -687,14 +757,53 @@ async def _shutdown_and_exit(
     # draining gateway.log first stops its listener, and a SEL write failure
     # then logs its "dropped N events" line into a dead queue, so the audit
     # loss would leave no trace.
+    #
+    # A second signal may have taken the exit over by now (or does so during
+    # either drain). Its thread then owns both drains and the exit, so this
+    # path parks before each of them instead of racing it: see
+    # _park_if_force_exit_claimed.
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
+    await self._park_if_force_exit_claimed()
     await flush_audit_queue_before_hard_exit()
+    await self._park_if_force_exit_claimed()
     await drain_log_queue_before_hard_exit()
+    await self._park_if_force_exit_claimed()
     os._exit(exit_code)
+
+
+async def _park_if_force_exit_claimed(self: GatewayOrchestrator) -> None:
+    """Return at once, unless the second signal has taken the exit over; then never.
+
+    Once ``_on_signal``'s force-exit thread owns the exit, this coroutine must
+    not reach its own drains or ``os._exit``: ``os._exit`` here would cut the
+    force thread's SEL and gateway.log drains mid-write. Returning would be as
+    bad: ``_shutdown_and_exit`` is the last statement of ``run()``, so the
+    coroutine unwinding out of it lets ``asyncio.run()`` finish and the
+    interpreter start shutting down underneath the drain. So it waits on a
+    future nothing resolves and keeps the loop alive, and the force thread's
+    ``hard_exit`` is what ends the process. That thread is bounded by its own
+    deadline timer, so this wait cannot outlive it.
+
+    Read and acted on with no ``await`` in between, on the loop thread that
+    runs ``_on_signal`` too, so a signal cannot land between the check and the
+    step it guards.
+    """
+    claimed = getattr(self, "_force_exit_claimed", None)
+    if claimed is None or not claimed.is_set():
+        return
+    await asyncio.get_running_loop().create_future()
 
 
 # Budget for awaiting the in-flight run-marker write during shutdown. Bounded
 # so a stalled write can never eat into GRACEFUL_SHUTDOWN_SECS (which saves
 # active slots) — the marker is best-effort, the slot save is not.
 _MARKER_WRITE_WAIT_SECS = 5.0
+
+# The second-signal force exit's backstop: the process ends this long after the
+# second signal whatever the ``kc-force-exit`` thread is doing. Past the sum of
+# that thread's own bounds -- two SEL flushes (``_HARD_EXIT_FLUSH_TIMEOUT_SECS``,
+# 3 s each), the member event-log drain (``SHUTDOWN_DRAIN_SECONDS``, 5 s) and the
+# gateway.log drain (2 s) -- with room for the orphan sweep, which has no bound
+# of its own, so it only ever cuts a step that has overrun.
+_FORCE_EXIT_DEADLINE_SECS = 20.0
