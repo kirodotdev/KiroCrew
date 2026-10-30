@@ -37,6 +37,7 @@ ASSEMBLERS: tuple[str, ...] = (
     "dashboard/goal_reminder.py",
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",
+    "dashboard/mate_peer_messages.py",
     "dashboard/mate_welcome.py",
     "mate_upgrade_notice.py",
     "mate_capability_catalog.py",
@@ -165,6 +166,10 @@ _EXEMPT: dict[str, str] = {
     "work_brief": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_report": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_ledger_rebuild": "repairs a damaged or missing ledger, not part of the ordinary loop",
+    "message_mate": (
+        "named by conductor.mate_messaging_line, only while the user turned crewmate "
+        "messages on and allowed a pair for this crewmate (mate_messaging.open_for)"
+    ),
     "offer_dashboard_page": (
         "named by its per-turn note (dashboard/page_offer.py), which is the only time "
         "the crewmate may call it"

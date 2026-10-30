@@ -174,6 +174,24 @@ _USER_TURN_OPERATIONS = frozenset(
 #: user did not send, because it runs in the calling crewmate's own thread.
 REQ_OWN_GOAL_TURN = "own_goal_turn"
 
+#: Operations refused under peer influence: in a turn that another crewmate's
+#: message started, and in the turns the user did not send after it until the
+#: user answers (:func:`kiro_crew.dashboard.mate_peer_messages.peer_influenced`).
+#: A peer has no authority to change the crewmate or to put a card or a guide in
+#: front of the user. ``member.goal_write`` covers key-result readings, reports
+#: and notes. The lesson and cron routes run the same check.
+_PEER_TURN_REFUSED_OPERATIONS = frozenset(
+    {
+        "guide.start",
+        "guide.observe",
+        "cards.propose",
+        "cards.request_server",
+        "member.update_self",
+        "member.propose_self",
+        "member.goal_write",
+    }
+)
+
 
 def _is_crewmate_thread(slot: Any) -> bool:
     """Whether *slot* is a crewmate's own pinned thread (its DM slot)."""
@@ -282,6 +300,12 @@ async def _resolve_agent_caller(
             "channel_caller",
             "this message came from a messaging channel, not the dashboard",
         )
+    if operation in _PEER_TURN_REFUSED_OPERATIONS:
+        from kiro_crew.dashboard.mate_peer_messages import PEER_TURN_REFUSAL, peer_influenced
+
+        if peer_influenced(state, slot):
+            _audit(sk, operation, "denied", "peer message turn")
+            raise GuideError(403, "peer_message_turn", PEER_TURN_REFUSAL)
     if operation in _USER_TURN_OPERATIONS and getattr(slot, "_turn_user_sent", False) is not True:
         if own_goal and _is_crewmate_thread(slot):
             request[REQ_OWN_GOAL_TURN] = True

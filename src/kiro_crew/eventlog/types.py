@@ -44,6 +44,11 @@ MEMBER_RESET = "member/reset"
 # A message landed in the member's DM thread.  data: {"ts": float, "preview": str}
 MEMBER_MESSAGE = "member/message"
 
+# A crewmate sent a message to, or got a message from, another crewmate
+# (``message_mate``). The text is not held here; it is in the two threads.
+# data: {"ts": float, "direction": "out" | "in", "peer": str, "hop": int, "chars": int}
+MEMBER_PEER_MESSAGE = "member/peer_message"
+
 # One participation / routing record (the former activity.jsonl line).
 # data: the record as written by ``members.record_activity`` (must include "ts").
 ACTIVITY_RECORD = "activity/record"
@@ -66,6 +71,7 @@ ALL_EVENT_TYPES = frozenset(
         MEMBER_RULES,
         MEMBER_RESET,
         MEMBER_MESSAGE,
+        MEMBER_PEER_MESSAGE,
         ACTIVITY_RECORD,
         SLOT_OPENED,
         SLOT_CLOSED,

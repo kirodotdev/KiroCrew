@@ -367,6 +367,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/member/self/notes", "api_member_self_notes"),
     ):
         app.router.add_route(_method, _path, _deferred("member_goals", _name))
+    # A message from one crewmate to another (``message_mate``), MCP-only under
+    # the same strict prefix. Off unless ``agent.mate_messaging`` is on.
+    app.router.add_post(
+        "/api/member/self/message",
+        _deferred("member_peer_message", "api_member_self_message"),
+    )
     # Spelled with ``add_put``: the ``crewmate.goal``, ``crewmate.key_results``
     # and ``crewmate.check_ins`` cards apply and undo through these routes, and
     # the card hook's route list is pinned against them.

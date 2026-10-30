@@ -754,6 +754,13 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # default back to true. `_safe_bool` here is the final guard for a real
         # bool.
         crew_panel=section.read("crew_panel", _safe_bool),
+        # Default false: a missing key and a malformed one both leave it off.
+        mate_messaging=section.read("mate_messaging", _safe_bool),
+        mate_messaging_allow=(
+            [p for p in _mate_pairs if isinstance(p, str) and p]
+            if isinstance(_mate_pairs := section.get("mate_messaging_allow"), list)
+            else section.default("mate_messaging_allow")
+        ),
         subagent_cost_gb=section.read("subagent_cost_gb", _safe_float),
         subagent_cpu_cost_cores=section.read("subagent_cpu_cost_cores", _safe_float),
         subagent_auto_max=section.read(

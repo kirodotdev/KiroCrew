@@ -71,6 +71,9 @@ _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/key_result_progress",
     f"@{_MATE_SERVER}/save_goal_report",
     f"@{_MATE_SERVER}/save_notes",
+    # Off unless the user turns on ``agent.mate_messaging`` and names the pair;
+    # that switch, not an approval prompt, is the consent.
+    f"@{_MATE_SERVER}/message_mate",
 )
 
 

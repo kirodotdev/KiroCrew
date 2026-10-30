@@ -58,6 +58,9 @@ class DirectiveOutcome:
 # directive: it blocks and returns the answers as its own tool result.)
 _DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
+#: Directives refused under another crewmate's influence
+#: (``mate_peer_messages.peer_influenced_session``): each arms later work.
+_PEER_REFUSED_DIRECTIVES = frozenset({"monitor_start", "monitor_watch", "monitor_update"})
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
 # already answered "requested" over its own pipe by the time this consumer

@@ -3268,6 +3268,10 @@
       "saving": "Saving…",
       "tap_to_comment": "Tap to write a comment…"
     },
+    "peerMessage": {
+      "to": "To {{name}}",
+      "from": "From {{name}}"
+    },
     "lessonSaved": {
       "saved": "Lesson saved: {{rule}}",
       "updated": "Lesson updated: {{rule}}",

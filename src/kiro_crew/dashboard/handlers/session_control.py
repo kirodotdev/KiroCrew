@@ -403,7 +403,17 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             result["patrol_note"] = note
         await _add_worker_capabilities(request, state, result)
         _write_crew_dispatch_notice(state, _read_session_key(request), result)
+        _note_peer_delegation(state, _read_session_key(request), result)
     return web.json_response(result)
+
+
+def _note_peer_delegation(state: DashboardState, caller_session_key: str, result: object) -> None:
+    """Mark the session that got work from a caller under peer influence."""
+    from kiro_crew.dashboard.mate_peer_messages import note_delegation
+
+    target = result.get("target") if isinstance(result, dict) else ""
+    if isinstance(target, str) and target:
+        note_delegation(state, caller_session_key, target)
 
 
 def _write_crew_dispatch_notice(
@@ -836,6 +846,7 @@ async def api_session_control_send(request: web.Request) -> web.Response:
     if isinstance(result, dict):
         result = dict(result)
         await _add_worker_capabilities(request, state, result)
+        _note_peer_delegation(state, _read_session_key(request), result)
     return web.json_response(result)
 
 

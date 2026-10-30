@@ -137,6 +137,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A worker report or the upgrade notice waits for the crewmate's
                 # thread to be free, reservation included.
                 ("mate_thread_wakes.py", "_idle"),
+                # A crewmate message waits the same way: never on a reserved slot.
+                ("mate_peer_messages.py", "thread_idle"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
                 # The create's retraction of a newborn it answers with a

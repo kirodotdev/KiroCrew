@@ -1176,6 +1176,31 @@ class AgentConfig:
             "and a subagent has no panel to write.",
         ),
     )
+    mate_messaging: bool = field(
+        default=False,
+        metadata=_meta(
+            "Mate Messaging",
+            "Let a crewmate send a short text message to another crewmate on this "
+            "gateway with the message_mate tool. Off by default. When on, a "
+            "crewmate can start a message only to a crewmate that "
+            "mate_messaging_allow names for it, and can reply to a crewmate whose "
+            "message it is answering. The message shows in both threads, reaches "
+            "the target as data from the sender and not as your words, and a turn "
+            "it starts cannot change the target's name, goals, notes, cards or "
+            "settings. The send route reads this switch on every call, so turning "
+            "it off stops the next send at once.",
+        ),
+    )
+    mate_messaging_allow: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Mate Messaging Pairs",
+            'The crewmates that can start a message, as "sender>target" entries '
+            'of exact crew names, for example "mate>natey". One entry is one '
+            "direction. No wildcard entry is accepted. Used only while "
+            "mate_messaging is on.",
+        ),
+    )
     subagent_cost_gb: float = field(
         default=_DEFAULT_SUBAGENT_COST_GB,
         metadata=_meta(

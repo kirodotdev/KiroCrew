@@ -556,6 +556,12 @@ def build_member_section(
                 else "conductor.crew_log_section"
             )
         )
+        # message_mate is named only for a crewmate the user let send or get
+        # crewmate messages; with the switch off the prompt does not change.
+        from kiro_crew import mate_messaging
+
+        if has_mate_tools and mate_messaging.open_for(member):
+            parts[-1] += _prompt("conductor.mate_messaging_line")
     if rules:
         # The header names what it outranks. Without the protocol layer there
         # is no "working protocol above" to name, so that clause goes with it.

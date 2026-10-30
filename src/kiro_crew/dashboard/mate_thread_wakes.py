@@ -536,6 +536,9 @@ def note_turn_end(state: Any, slot: Any, reply_text: str | None) -> None:
                 reply_text if isinstance(reply_text, str) else "",
             )
         elif is_crewmate_thread(slot):
+            from kiro_crew.dashboard import mate_peer_messages
+
+            mate_peer_messages.note_turn_end(state, slot, reached_model=reply_text is not None)
             if (
                 _pending(state).get(slot.key)
                 or slot.key in _notices(state)

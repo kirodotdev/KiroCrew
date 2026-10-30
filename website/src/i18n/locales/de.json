@@ -8552,6 +8552,10 @@
       "quote": "Zitieren",
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"
     },
+    "peerMessage": {
+      "to": "An {{name}}",
+      "from": "Von {{name}}"
+    },
     "lessonSaved": {
       "saved": "Lektion gespeichert: {{rule}}",
       "updated": "Lektion aktualisiert: {{rule}}",

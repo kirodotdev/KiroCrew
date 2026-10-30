@@ -41,6 +41,8 @@ SURFACE_GUIDE = "guide"
 SURFACE_SELF = "self"
 #: A lesson the agent just saved (``learn_add``), with a link to review it.
 SURFACE_LESSON = "lesson"
+#: A message one crewmate sent to another (``message_mate``), in both threads.
+SURFACE_PEER = "peer"
 
 #: The status a proposal is born with, per surface.
 _PROPOSED = {SURFACE_CHANGE: "pending", SURFACE_GUIDE: "offered"}
@@ -473,3 +475,51 @@ def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> N
         _append_row(slot, f"Lesson {'updated' if status == 'enriched' else 'saved'}: {text}", meta)
     except Exception:
         logger.warning("could not record a saved lesson in its conversation", exc_info=True)
+
+
+# ── crewmate-to-crewmate messages ──
+
+#: The most of a peer message one row holds. The route caps a message at the same size.
+PEER_TEXT_MAX = 4000
+
+
+def record_peer_message(
+    state: Any,
+    slot_key: str,
+    *,
+    direction: str,
+    peer: str,
+    text: str,
+    hop: int,
+    message_id: str,
+) -> bool:
+    """Put one crewmate-to-crewmate message into thread *slot_key*. Never raises.
+
+    *direction* is ``out`` in the sender's thread and ``in`` in the target's.
+    *text* is ``mate_peer_messages.peer_text``'s output and is kept as it is,
+    so the row shows exactly what the target's wake carries. The row is
+    display-only: no model-bound reader carries it, so the target sees the
+    text only in the wake that wraps it as data
+    (:mod:`kiro_crew.dashboard.mate_peer_messages`). Returns whether the row
+    was written.
+    """
+    try:
+        slot = _get_slot(state, slot_key)
+        body = text if isinstance(text, str) and len(text) <= PEER_TEXT_MAX else ""
+        name = _clean(peer, _TITLE_MAX)
+        if slot is None or not body.strip() or not name or direction not in ("in", "out"):
+            return False
+        meta = _row_meta(
+            SURFACE_PEER,
+            message_id,
+            slot_key,
+            direction=direction,
+            peer=name,
+            text=body,
+            hop=int(hop),
+        )
+        label = "To" if direction == "out" else "From"
+        return bool(_append_row(slot, f"{label} {name}: {body}", meta))
+    except Exception:
+        logger.warning("could not record a crewmate message in its conversation", exc_info=True)
+        return False

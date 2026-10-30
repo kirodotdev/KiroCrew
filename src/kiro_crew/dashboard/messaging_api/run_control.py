@@ -311,6 +311,22 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 headers={"Retry-After": "5"},
             )
         return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
+    # A run steered by a caller under another crewmate's influence holds that
+    # caller's words too (``mate_peer_messages.note_delegation``).
+    from kiro_crew.dashboard.mate_peer_messages import note_delegation
+
+    run = next(
+        (
+            r
+            for r in getattr(state.subagents, "running", ()) or ()
+            if getattr(r, "id", "") == agent_id
+        ),
+        None,
+    )
+    child_key = (getattr(run, "conversation_key", "") if run is not None else "") or (
+        f"subagent:{agent_id}"
+    )
+    note_delegation(state, request.headers.get("X-Session-Key", "").strip(), child_key)
     return web.json_response(
         {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
     )

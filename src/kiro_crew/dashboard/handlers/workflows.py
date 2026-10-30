@@ -567,6 +567,13 @@ async def _start_admitted(
 
 async def api_workflow_run(request: web.Request) -> web.Response:
     """POST /api/workflows/run — launch a background run, return its run_id."""
+    # A turn under another crewmate's influence may not start work the
+    # peer-influence walk cannot follow (``mate_peer_messages``).
+    from kiro_crew.dashboard.mate_peer_messages import refuse_under_peer_influence
+
+    peer_refused = refuse_under_peer_influence(request, "workflows.run")
+    if peer_refused is not None:
+        return peer_refused
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. The other two
     # caller classes keep the control that already governs them -- an
@@ -641,6 +648,13 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     background run (a visible "Authoring" phase) so the slow model call never
     blocks this request (no 30s synchronous-author timeout).
     """
+    # A turn under another crewmate's influence may not start work the
+    # peer-influence walk cannot follow (``mate_peer_messages``).
+    from kiro_crew.dashboard.mate_peer_messages import refuse_under_peer_influence
+
+    peer_refused = refuse_under_peer_influence(request, "workflows.run_intent")
+    if peer_refused is not None:
+        return peer_refused
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. The other two
     # caller classes keep the control that already governs them -- an
@@ -842,6 +856,13 @@ async def api_workflow_run_cancel(request: web.Request) -> web.Response:
 
 async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     """POST /api/workflows/runs/{id}/rerun — restart, replaying the prefix."""
+    # A turn under another crewmate's influence may not start work the
+    # peer-influence walk cannot follow (``mate_peer_messages``).
+    from kiro_crew.dashboard.mate_peer_messages import refuse_under_peer_influence
+
+    peer_refused = refuse_under_peer_influence(request, "workflows.rerun")
+    if peer_refused is not None:
+        return peer_refused
     # A rerun launches a new run under the prior run's origin session, optionally
     # with an edited script, so it is gated like the other launch routes above.
     if request.get("internal_auth") is not True and request.get("app") == "":

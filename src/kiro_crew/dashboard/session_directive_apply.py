@@ -60,6 +60,7 @@ from kiro_crew.dashboard.session_directive_apply_monitor import (
 from kiro_crew.dashboard.session_directive_apply_outcome import (
     _ARMING_DIRECTIVES,
     _DASHBOARD_ONLY_DIRECTIVES,
+    _PEER_REFUSED_DIRECTIVES,
     _REVISION_DIRECTIVES,
     _STOP_DIRECTIVES,
     _USER_ORIGIN_DIRECTIVES,
@@ -190,6 +191,20 @@ async def apply_session_directive_outcome(
             f"Error: {kind} only works from a dashboard chat session "
             f"(this turn is {session_key!r}). Nothing was changed."
         )
+    if kind in _PEER_REFUSED_DIRECTIVES:
+        # A monitor is later work in this session's name, like a schedule, so
+        # another crewmate's message must not be able to arm or change one.
+        from kiro_crew.dashboard.mate_peer_messages import (
+            PEER_TURN_REFUSAL,
+            peer_influenced,
+            peer_influenced_session,
+        )
+
+        if (slot is not None and peer_influenced(state, slot)) or peer_influenced_session(
+            state, session_key
+        ):
+            _audit(session_key, kind, "denied")
+            return DirectiveOutcome(f"Error: {PEER_TURN_REFUSAL}. Nothing was changed.")
     if kind in _USER_SURFACE_DIRECTIVES and slot is None:
         # set_project mutates the SLOT (its project and session CWD). A
         # slot-less caller — a channel transport's TurnDriver — holds no slot

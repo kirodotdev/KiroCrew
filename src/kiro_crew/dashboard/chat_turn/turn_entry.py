@@ -252,6 +252,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # `_turn_owner_sent` is overwritten here. Adopted only for a turn the
         # person sent.
         slot._turn_owner_sent = turn._directive_owner_origin is True and slot._turn_user_sent
+        if slot._turn_owner_sent:
+            # The owner speaks in this thread, so another crewmate's earlier
+            # message stops counting as the reason for its later turns. A
+            # guest's message on a shared crew does not close it.
+            from kiro_crew.dashboard.mate_peer_messages import note_user_turn
+
+            note_user_turn(state, slot)
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

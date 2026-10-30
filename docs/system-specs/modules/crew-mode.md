@@ -4786,10 +4786,73 @@ Parent-change and impact previews use the server's redacted projection.
   `kirocrew-security-conductor` are in `UNADVERTISED_AGENTS`, so they never
   appear in a rendered roster.
 
+## Crewmate-to-crewmate messages
+
+Design: the RFC *mate messaging* (`rfc-mate-messaging`), proposed in its own pull request.
+A crewmate sends a short text to another crewmate with `message_mate`
+(`kirocrew-mate`), which posts `POST /api/member/self/message`
+(`dashboard/handlers/member_peer_message.py`, strict `/api/member/self`
+prefix). The rules and the delivery are in `dashboard/mate_peer_messages.py`.
+
+- **Separate path.** The route does not use session control. The member-thread
+  refusal of `session_revive`, `authorize_target`'s workspace check and the
+  creator-ownership fence of `caller_access` are unchanged for every caller.
+- **Sender.** `handlers.guide._resolve_agent_caller` (operation
+  `member.message_mate`) admits the caller, then the slot must be the
+  crewmate's own pinned thread, and its DM binding must name that slot. A
+  channel turn, a subagent, an app and a scheduled slot are refused. A turn the
+  user did not send is admitted, so a reply and a heartbeat can send.
+- **Consent.** `agent.mate_messaging` (default `false`) is read on each call
+  and again before each wake. `agent.mate_messaging_allow` holds
+  `"sender>target"` pairs, one direction each, no wildcard (`parse_pairs`). In
+  a turn that a peer message started, a reply to a sender of that message needs
+  no pair (`pair_allowed`). The pair is checked before the target lookup.
+- **Text.** `peer_text` makes the one string the rows and the wake carry: NFKC,
+  the context fold table, hidden characters removed, boundary markers and
+  dashed turn fences neutralized, credentials scrubbed.
+- **Limits.** `MAX_MESSAGE_CHARS` 4000, `MAX_HOPS` 3 (`409 hop_limit`),
+  `MAX_SENDS_PER_TURN` 3, `RATE_MAX_PER_SENDER` 10 and `RATE_MAX_PER_PAIR` 5 in
+  `RATE_WINDOW_SECS` 600, `MAX_PENDING_PER_TARGET` 10. A reply has the hop of the
+  message it answers plus one; a later turn the user did not send continues
+  the thread's highest peer hop; a turn the user sent starts at hop 1.
+- **Delivery.** The target's display-only `card` row, surface `peer`, is
+  written first (a failure refuses the send, `500 not_recorded`), then the
+  sender's (`chat_cards.record_peer_message`), then the message waits on the
+  dashboard state. When the target thread is idle, one hidden turn
+  (`mate_welcome.dispatch_hidden_turn`) carries every waiting message in the
+  `[Mate message]` envelope, each in a fence whose lines carry a random id that
+  is new for each wake (`peer_prompt`). A busy thread gets it when its turn ends
+  (`mate_thread_wakes.note_turn_end`). A message is never steered. A wake that
+  ends before it reaches the model is tried again, `MAX_DELIVERY_TRIES` 2. The
+  queue is in memory and a restart drops it.
+- **Peer influence.** The hidden turn's task, messages and the hop per sender
+  are kept per thread on the state (`state._mate_peer_turns`); `peer_turn`
+  matches only while `slot.task` is that task. `peer_influenced` is true in
+  that turn and in every later turn the user did not send, until a turn the
+  owner sent starts (`note_user_turn` from `chat_turn.turn_entry._turn_open`,
+  on `_turn_owner_sent`) or `PEER_INFLUENCE_SECS` (1800) pass after the wake
+  ends. `peer_influenced_session` also covers the sessions the thread
+  delegated to, walking `slot._created_by` and `SubagentInfo.parent_session_key`
+  (a cycle ends the walk, a chain past 32 fails closed, a user-sent turn on the
+  way stops it), and a session marked by `note_delegation`: a spawn, continue,
+  steer, session create or session send from a caller under peer influence
+  marks the child until a turn the user sent runs in it. Workflow runs, reruns
+  and task runs are refused under it (`refuse_under_peer_influence`). Under it,
+  `_resolve_agent_caller` refuses `_PEER_TURN_REFUSED_OPERATIONS` (self
+  changes, cards, guides, goal and notes writes), `/api/lessons` refuses the
+  agent's `learn_add` and `learn_remove`, `POST /api/crons/tools` refuses every
+  cron tool but `cron_list`, and `session_directive_apply` refuses
+  `_PEER_REFUSED_DIRECTIVES` (the monitor directives), all with
+  `peer_message_turn`. A wake whose task ends with no turn end is settled by a
+  done callback.
+- **Logs.** The SEL audit row for each attempt, and `member/peer_message`
+  (`{ts, direction, peer, hop, chars}`, no text) in both crewmates' event logs.
+
 ## Tests that pin this
 
 | Test | What it holds |
 |---|---|
+| `test/test_mate_peer_messages.py` | Crewmate messages: off by default and refused while off; one-way exact pairs with no wildcard; rows in both threads and one hidden wake on the target; the row text equals the text the target reads and a message of only hidden characters is refused; a send whose target row is not written is not queued; a busy target gets the message after its turn ends and nothing is steered; waiting messages share one wake; a peer turn can reply to its sender at that message's hop + 1 but not message a third crewmate without a pair; the hop limit, its continuation into later turns the user did not send and its reset by a user turn; the per-turn cap, both rate limits and the queue cap; body and target refusals, and the pair checked before the target; only a crewmate's own dashboard thread can send (channel, narrowed, app, subagent and unattested callers refused); peer influence refuses update_self, notes, key-result readings, own-goal cards, lesson saves and removals, cron changes and monitor directives, reaches the thread's workers and sub-agents, restarts when the wake ends, and ends when a user turn starts (pinned in `_turn_open`) or after its window; a wake whose task ends with no turn end is tried again, and one the user stopped is not; the fence cannot be forged, also through the Unicode folds; a wake that never reaches the model is tried once more; a wake that cannot start keeps its messages; turning the switch off drops waiting messages; the real turn-end hook delivers; the tool is listed, validated and granted; the real config, bindings and event log end to end |
 | `test/test_pruned_crewmate_records.py` | Records bound to a pruned synced mate decode as their template for every reader (chat resume, subagent continuation and inheritance, prompt builder); owned members still refuse; the first send of a resumed pruned chat is admitted by the session CAS while a real concurrent change is still refused |
 | `test/test_dashboard_agents_composition_contract.py` | The agents handlers keep their surface across the `agent_admin` split: every base name still resolves on `handlers/agents.py`, routes and the handlers package reach the same objects, each owner runs on the facade's globals so a test's patch reaches it, and what repository guards read in `agents.py` stays there or is re-keyed to its owner |
 | `test/test_agent_execution_catalog.py` | Read-only catalog, same-name member/template choices, requesting-project isolation, private-template exclusion and explicit discovery failure |
