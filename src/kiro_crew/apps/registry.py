@@ -691,6 +691,7 @@ if _typing.TYPE_CHECKING:
         _GIT_NO_FSMONITOR_PAIR,
         _GIT_NO_HOOKS_PAIR,
         _PUBLIC_GIT_HOSTS,
+        _SSH_AUTH_REFUSAL_RE,
         IPv6Address,
         _clone_sandbox_mode,
         _entry_git_url,
