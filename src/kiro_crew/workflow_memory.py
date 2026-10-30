@@ -358,7 +358,19 @@ class WorkflowScope:
             modes[key] = stricter_memory_mode(execution.memory_mode, modes.get(key, "persistent"))
         return self.store
 
-    async def prompt(self, context, key, text, *, is_new, agent, cwd, provider, resumed=False):
+    async def prompt(
+        self,
+        context,
+        key,
+        text,
+        *,
+        is_new,
+        agent,
+        cwd,
+        provider,
+        resumed=False,
+        skill_trigger_text: str | None = None,
+    ):
         await self.prepare(context, key)
         from kiro_crew.executors import run_in_embed_pool
 
@@ -390,6 +402,7 @@ class WorkflowScope:
             blocks_reads=self.memory_mode == "temporary",
             context_provider=provider,
             resumed=resumed,
+            skill_trigger_text=skill_trigger_text,
         )
         return full
 

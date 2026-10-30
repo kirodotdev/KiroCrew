@@ -324,6 +324,8 @@ async def decompose(
                 memory_store=memory_store,
                 context_provider=client,
                 resumed=_resumed,
+                # Triggers read the spec, not the decomposition instructions.
+                skill_trigger_text=spec,
             )
         else:
             full_prompt = prompt

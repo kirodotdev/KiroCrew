@@ -1025,6 +1025,9 @@ class WorkflowService:
                     resumed=_resumed,
                     agent="kirocrew-lite",
                     cwd=None,
+                    # Triggers read the operator's intent, not the authoring
+                    # instructions or the reference workflows quoted around it.
+                    skill_trigger_text=intent,
                 )
                 stop_reasons.clear()
                 text = await stream_and_collect(
