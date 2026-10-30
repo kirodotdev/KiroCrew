@@ -286,6 +286,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                       expanded: row.expanded,
                       aggregate: row.aggregate,
                       orphanOf: row.orphanOf,
+                      // The closed creator's last-known title, when the backend still
+                      // remembers it (`parent.title`); only an orphan row names one.
+                      orphanTitle: row.orphanOf != null ? (row.slot.parent?.title ?? null) : null,
                       citesParent: row.citesParent ?? null,
                       anchorOnly: row.anchorOnly,
                     })}

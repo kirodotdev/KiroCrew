@@ -924,6 +924,31 @@ def _reset_overlay_refresher():
     overlay_refresh.set_overlay_refresher(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_creator_titles():
+    """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
+
+    Every lineage join remembers the titles of the live rows it sees, process-wide, and
+    a remembered title rides any later ``parent`` that cites that slot as closed. Left
+    over, one test's titles would add a ``title`` key to another test's exact-payload
+    assertion -- and the module that writes them is not the one that misreads them.
+    Read from ``sys.modules`` rather than imported, so a test that pins what a code
+    path imports never sees this fixture load the module for it.
+    """
+    import sys as _sys
+
+    def _reset() -> None:
+        mod = _sys.modules.get("kiro_crew.dashboard.creator_titles")
+        if mod is not None:
+            mod._reset_for_tests()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under

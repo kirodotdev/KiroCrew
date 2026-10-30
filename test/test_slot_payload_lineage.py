@@ -496,6 +496,176 @@ def test_a_whole_closed_chain_still_leaves_an_orphan_root():
     assert rows[0]["parent"] == {"slot": "chat-mid", "key": None}
 
 
+# ── the closed creator's last-known title ──────────────────────────────────
+
+
+def _titled(key: str, title: str) -> dict:
+    return {"key": key, "title": title}
+
+
+def test_a_closed_creator_is_named_by_the_title_it_had_while_live():
+    """Seen live once, then closed: both the orphan and the re-parented row name it.
+
+    Two DIFFERENT closed creators get two different names, which is the whole point --
+    under the generic label they read the same line.
+    """
+    _unit("s-lead", "chat-lead")
+    _unit("s-mid", "chat-mid", parent="chat-lead")
+    _unit("s-w", "chat-w", parent="chat-mid")
+    _unit("s-solo", "chat-solo")
+    _unit("s-o", "chat-o", parent="chat-solo")
+    _seeded()
+
+    # A frame while every creator is still live remembers their titles.
+    _attach_slot_parents(
+        [
+            _titled("chat-lead", "Lead"),
+            _titled("chat-mid", "Triage conductor"),
+            _titled("chat-w", "Worker"),
+            _titled("chat-solo", "Release conductor"),
+            _titled("chat-o", "Orphan"),
+        ]
+    )
+
+    # Both creators close. The next frame carries no row for either.
+    rows = [_titled("chat-lead", "Lead"), _titled("chat-w", "Worker"), _titled("chat-o", "Orphan")]
+    _attach_slot_parents(rows)
+
+    assert rows[1]["parent"] == {
+        "slot": "chat-mid",
+        "key": "chat-lead",
+        "ancestor": True,
+        "title": "Triage conductor",
+    }
+    assert rows[2]["parent"] == {"slot": "chat-solo", "key": None, "title": "Release conductor"}
+
+
+def test_a_live_creator_never_carries_a_title():
+    """The live creator is named by its own row; a second name could disagree with it."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-1", "Conductor"), _titled("chat-2", "Worker")]
+    _attach_slot_parents(rows)
+
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": "chat-1"}
+
+
+def test_a_cycle_on_live_creators_is_not_named_as_closed():
+    """``key: None`` from a cycle is NOT a closed creator: both are live rows."""
+    _unit("s-1", "chat-1", parent="chat-2")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-1", "One"), _titled("chat-2", "Two")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-2", "key": None}
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": None}
+
+
+def test_a_creator_this_process_never_saw_live_keeps_the_generic_answer():
+    """Closed before any frame (e.g. before a restart): no title, the base payload."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-2", "Worker")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-1", "key": None}
+
+
+def test_the_untitled_placeholder_is_never_remembered_or_overwrites_a_name():
+    """A tab with no generated title yet says less than the generic label does."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _unit("s-3", "chat-3")
+    _unit("s-4", "chat-4", parent="chat-3")
+    _seeded()
+
+    _attach_slot_parents([_titled("chat-1", st.NEW_SESSION_TITLE), _titled("chat-2", "W2")])
+    _attach_slot_parents([_titled("chat-3", "Named"), _titled("chat-4", "W4")])
+    # A later placeholder frame for chat-3 must not erase the name it had.
+    _attach_slot_parents([_titled("chat-3", st.NEW_SESSION_TITLE), _titled("chat-4", "W4")])
+
+    rows = [_titled("chat-2", "W2"), _titled("chat-4", "W4")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-1", "key": None}
+    assert rows[1]["parent"] == {"slot": "chat-3", "key": None, "title": "Named"}
+
+
+def test_the_sessions_table_names_the_closed_creator_from_the_same_registry(tmp_path, monkeypatch):
+    """A title the sidebar frame remembered names the creator on the memory payload's
+    join too, under its ``dashboard:`` key space."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    _attach_slot_parents([_titled("chat-1", "Conductor"), _titled("chat-2", "Worker")])
+
+    table = lineage_parents([{"key": "dashboard:chat-2"}], stp.projection().nodes(), None)
+    assert table["dashboard:chat-2"] == {"slot": "chat-1", "key": None, "title": "Conductor"}
+
+
+def test_the_registry_is_bounded_and_forgets_the_oldest(monkeypatch):
+    from kiro_crew.dashboard import creator_titles
+
+    monkeypatch.setattr(creator_titles, "_CAP", 2)
+    creator_titles.remember(["a"], "A", placeholder="-")
+    creator_titles.remember(["b"], "B", placeholder="-")
+    creator_titles.remember(["c"], "C", placeholder="-")
+
+    assert creator_titles.last_known(["a"]) is None
+    assert creator_titles.last_known(["b"]) == "B"
+    assert creator_titles.last_known(["c"]) == "C"
+
+
+def test_a_rename_sent_as_a_patch_is_the_name_a_closed_creator_reads(tmp_path, monkeypatch):
+    """A rename reaches patch-capable tabs as a ``slot_patch``, with no full frame.
+
+    The closed-creator label must read the NEW name, not the one the last full frame
+    recorded -- even with no client connected when the rename happened.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "rename-home"))
+    stp.reset_for_tests()
+    _unit("s-c", "chat-c")
+    _unit("s-w", "chat-w", parent="chat-c")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    creator = state.get_or_create_slot("chat-c")
+    state.get_or_create_slot("chat-w")
+    creator.title, creator._titled = "Old conductor name", True
+    state.serialize_slots()  # a full frame while it is live records the old name
+
+    creator.title = "Renamed conductor"
+    state.push_slot_patch("chat-c", ("title",))
+    state._slots.pop("chat-c")  # it closes before any other full frame
+
+    wire = {p["key"]: p["parent"] for p in state.serialize_slots()}["chat-w"]
+    assert wire["slot"] == "chat-c"
+    assert wire["title"] == "Renamed conductor"
+
+
+def test_a_retained_title_is_bounded_in_length(monkeypatch):
+    """The entry cap bounds the count, this bounds each entry: an unbounded title
+    restored from transcript metadata would otherwise stay pinned after it closes."""
+    from kiro_crew.dashboard import creator_titles
+
+    monkeypatch.setattr(creator_titles, "_MAX_TITLE_CHARS", 10)
+    creator_titles.remember(["long"], "x" * 1_000_000, placeholder="-")
+    creator_titles.remember(["fits"], "ten chars!", placeholder="-")
+
+    kept = creator_titles.last_known(["long"])
+    assert kept is not None and len(kept) == 10 and kept.endswith("…")
+    assert creator_titles.last_known(["fits"]) == "ten chars!"
+
+
 def test_both_surfaces_re_parent_the_same_worker(tmp_path, monkeypatch):
     """One join, so the sidebar and the Sessions table cannot disagree about where a
     worker whose conductor closed belongs."""

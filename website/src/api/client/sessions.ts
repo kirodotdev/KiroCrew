@@ -45,7 +45,7 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
          * nests under the session that owns the run and the citation still names the
          * creator that is gone.
          */
-        parent: { slot: string; key: string | null; ancestor?: boolean } | null
+        parent: { slot: string; key: string | null; ancestor?: boolean; title?: string } | null
       }[]
       tasks: {
         id: string; task: string; agent: string; parent: string

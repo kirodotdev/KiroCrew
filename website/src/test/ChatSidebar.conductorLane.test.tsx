@@ -694,6 +694,25 @@ describe('chat sidebar — conductor lane', () => {
     expect(hint.textContent).toBe('')
   })
 
+  it('names a closed creator by its last-known title on the orphan glyph', () => {
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    const { getByTestId } = renderSidebar([
+      { key: 'k-lead', title: 'Lead', messages: 1, running: false, modified: 3000 },
+      // Top-level orphan: the backend remembered the closed creator's title.
+      { key: 'k-orphan', title: 'Orphaned worker', messages: 1, running: false, modified: 2000, parent: { slot: 'k-gone', key: null, title: 'Release conductor' } },
+      // Re-parented onto the open lead, its own creator closed and still remembered.
+      { key: 'k-worker', title: 'Worker', messages: 1, running: false, modified: 1000, parent: { slot: 'k-mid', key: 'k-lead', ancestor: true, title: 'Triage conductor' } },
+    ] as never)
+    const lane = getByTestId('conductor-view-lane')
+    const orphan = within(lane).getByTestId('conductor-orphan-k-orphan')
+    expect(orphan.getAttribute('title')).toBe('Opened by Release conductor (closed)')
+    expect(orphan.getAttribute('aria-label')).toBe('Opened by Release conductor (closed)')
+    expect(orphan.getAttribute('data-orphan-of')).toBe('k-gone')
+    const worker = within(lane).getByTestId('conductor-orphan-k-worker')
+    expect(worker.getAttribute('title')).toBe('Opened by Triage conductor (closed)')
+    expect(worker.getAttribute('aria-label')).toBe('Opened by Triage conductor (closed)')
+  })
+
   it('nests a worker whose conductor closed under the lead, and still says the conductor is gone', () => {
     /* The case the lane kept getting wrong: a lead opens a conductor, the conductor
        opens the workers, the conductor is closed. The backend resolves `key` to the

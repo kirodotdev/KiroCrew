@@ -466,10 +466,17 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
          *  to sit on an element whose role admits one. Without it the row offers a reader
          *  a shape and no fact: the arrow says a creator exists and never says which. */}
         {conductor.orphanOf != null && (
+          // Named by the closed creator's LAST-KNOWN title when the gateway still
+          // remembers it, so two rows whose different creators closed read different
+          // lines; the generic label only when no title survives.
           <span className="inline-flex items-center text-muted shrink-0"
             role="img"
-            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session')}
-            title={i18nT('pages.chatSidebar.opened_by_closed_session')}
+            aria-label={conductor.orphanTitle != null
+              ? i18nT('pages.chatSidebar.opened_by_closed_named', { name: conductor.orphanTitle })
+              : i18nT('pages.chatSidebar.opened_by_closed_session')}
+            title={conductor.orphanTitle != null
+              ? i18nT('pages.chatSidebar.opened_by_closed_named', { name: conductor.orphanTitle })
+              : i18nT('pages.chatSidebar.opened_by_closed_session')}
             data-orphan-of={conductor.orphanOf}
             data-testid={`conductor-orphan-${rowIdentity}`}>
             <CornerDownRight size={11} className="lucide-inline" aria-hidden="true" />
