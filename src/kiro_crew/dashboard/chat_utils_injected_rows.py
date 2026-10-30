@@ -611,9 +611,20 @@ def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:
     that degraded into a queue entry must not drain into a conversation the
     person asked to drop. The successor's own admission consume does not allow
     discards, so nothing downstream would catch it.
+
+    An entry restored from disk that the user did not choose never drains here:
+    this path runs no containment sweep, and such a card waits for the user.
     """
+    # Local import: slot_queue_repository reaches this module at call time.
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
     release = is_system_injection_item if system_only else releases_past_subagent_hold
     for i, item in enumerate(slot._queue):
+        if item.get(RESTORED_QUEUE_KEY) and not item.get(RESTORED_SEND_CHOSEN_KEY):
+            continue
         if release(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]

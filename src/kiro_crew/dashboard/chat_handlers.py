@@ -346,6 +346,8 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _reject_pending_approvals,
     _resolve_stop_event,
     _settle_discarded_stage_deliveries,
+    _start_chosen_restored_card,
+    _unchoose_restored_card,
     api_chat_slot_interrupt,
     api_chat_slot_stop,
     stop_slot_turn,
@@ -533,7 +535,11 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
+    RESTORED_QUEUE_KEY,
+    RESTORED_SEND_CHOSEN_KEY,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_registry import (  # noqa: F401
     SlotRegistry,
     TakeoverBasis,

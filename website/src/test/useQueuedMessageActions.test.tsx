@@ -395,6 +395,18 @@ describe('useQueuedMessageActions — in-flight latch (#5891 item 2)', () => {
     await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
   })
 
+  it('releases an interrupt the server declined to select, since that card stays queued', async () => {
+    // A second "run now" while another stop owns the slot answers 200 without
+    // promoting the card. No row retires, so a latch would never release.
+    const d = deferred()
+    apiMocks.interruptSlot.mockReturnValue(d.promise)
+    const { get } = renderActions({})
+    act(() => { get().onInterrupt('q2') })
+    await waitFor(() => expect(get().pendingIds.has('q2')).toBe(true))
+    await act(async () => { d.resolve({ ok: true, info: 'stop already in progress', queue_selected: false }) })
+    await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
+  })
+
   it('latches cancel and edit only for their request, since their dispatch settles the card', async () => {
     const d = deferred()
     apiMocks.editQueuedMessage.mockReturnValue(d.promise)

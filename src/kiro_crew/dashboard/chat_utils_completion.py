@@ -331,12 +331,32 @@ async def chat_done_payload(
     turn = slot._turn_generation
     turn_gen = chunk_generation()
 
+    # Restored cards the user has not sent wait for them: no drain runs them, so
+    # a queue holding only those is not work that continues. Imported here so the
+    # two keys do not become names this facade owner serves.
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
+    queue = getattr(slot, "_queue", None)
+    only_restored_cards = (
+        isinstance(queue, list)
+        and bool(queue)
+        and all(
+            isinstance(item, dict)
+            and item.get(RESTORED_QUEUE_KEY)
+            and not item.get(RESTORED_SEND_CHOSEN_KEY)
+            for item in queue
+        )
+    )
     try:
         continuing = bool(
             continuing
             or (
                 slot.queue_depth
                 and not queue_held
+                and not only_restored_cards
                 and not slot._last_turn_auth_required
                 and not teardown_hold_active(state, slot)
             )

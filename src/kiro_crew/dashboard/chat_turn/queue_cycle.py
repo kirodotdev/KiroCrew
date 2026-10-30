@@ -9,6 +9,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         _arm_parked_queue_drain,
         _mark_turn_end,
         _start_next_queued_turn,
+        idle_slot_admits_drain,
     )
     from kiro_crew.dashboard.chat_turn.regenerate_swap import settle_regenerate
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -205,6 +207,57 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
         slot._synthesis_recheck = None
 
 
+def _chosen_restored_head(slot: _ChatSlot) -> Any:
+    """The queue head's id when it is a restored card a "Run now" chose, else ``None``."""
+    head = slot._queue[0] if slot._queue else None
+    if (
+        isinstance(head, dict)
+        and head.get(RESTORED_QUEUE_KEY)
+        and head.get(RESTORED_SEND_CHOSEN_KEY)
+    ):
+        return head.get("id")
+    return None
+
+
+async def _start_chosen_restored_after_release(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> None:
+    """Start the restored card a "Run now" chose while this cycle held the slot.
+
+    The turn's own drain runs past a restored card the user has not chosen, and
+    the click's own start (``turn_stop._start_chosen_restored_card``) refuses
+    while the ending turn still holds the slot. A click landing in between would
+    answer success and the card would never run. Run after the slot is released,
+    under the slot's lock and the idle-slot drain checks, so this and the click's
+    own start cannot both start it, and never while a stop is in flight (the
+    click's stop then starts it itself) or a teardown holds the queue.
+    *session_key* is the session this cycle ended; a slot rebound since is left
+    to the click's own start, which re-authorizes against the new session. A card
+    the drain cannot start yet (a sub-agent hold) stays chosen and the next turn end
+    drains it.
+    """
+    try:
+        async with slot._lock:
+            chosen = _chosen_restored_head(slot)
+            if (
+                chosen is None
+                or effective_session_key(slot) != session_key
+                or teardown_hold_active(state, slot)
+                or not idle_slot_admits_drain(state, slot)
+            ):
+                return
+            slot._turn_admission_reserved = True
+            try:
+                started = await _start_next_queued_turn(state, slot, required_queue_id=chosen)
+            finally:
+                slot._turn_admission_reserved = False
+        if started:
+            state.push_slots_update()
+    except Exception:
+        # A background task: an error here would otherwise surface only at exit.
+        logger.warning("chosen restored card could not start on slot %s", slot.key, exc_info=True)
+
+
 async def _finish_queue_cycle(
     state: DashboardState,
     slot: _ChatSlot,
@@ -351,6 +404,14 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
+    if drain and _chosen_restored_head(slot) is not None:
+        # A task of its own: it takes the slot's lock, which a caller of this
+        # cycle may hold.
+        chosen_start = asyncio.ensure_future(
+            _start_chosen_restored_after_release(state, slot, stop_session_key)
+        )
+        state._background_tasks.add(chosen_start)
+        chosen_start.add_done_callback(state._background_tasks.discard)
     reached_provider = slot._cycle_reached_provider
     slot._cycle_reached_provider = False
     if not reached_provider:
