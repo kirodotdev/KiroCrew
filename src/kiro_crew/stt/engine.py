@@ -535,6 +535,8 @@ class WhisperEngine:
         #: 148 MB at the default and 1.6 GB at the largest, so two at once is what
         #: exhausts a host sized for one.
         self._load_future: "asyncio.Future[Any] | None" = None
+        #: The model path `_load_future` is building; see `building_path`.
+        self._building_path: str | None = None
         #: Usage-marker writes in flight. Detached so a stalled filesystem never
         #: holds a finished transcript; kept here so the loop cannot collect one.
         self._stamp_tasks: set[asyncio.Task[None]] = set()
@@ -590,7 +592,22 @@ class WhisperEngine:
         Returns an :class:`Availability` rather than raising so a websocket
         handler can turn a missing extra or an undownloaded model into a status
         frame instead of a 500.
+
+        The model is claimed for the whole call, taken before the first await. A load
+        can reach `ModelStore.ensure`, which downloads a missing file, so a removal
+        that lands while this call is still probing would otherwise be undone by the
+        load re-downloading the model. Claiming here, on the one path every load
+        takes, covers prewarm, the batch decode and live sessions alike, rather than
+        relying on each caller to claim before it awaits.
         """
+        held = models.claim(model_name)
+        try:
+            return await self._ensure_loaded_claimed(model_name, language)
+        finally:
+            models.release(held)
+
+    async def _ensure_loaded_claimed(self, model_name: str, language: str) -> Availability:
+        """:meth:`ensure_loaded` with its model already claimed by the caller."""
         # Off the loop: `probe` imports the binding, which dlopens a native library.
         # Measured at 209 ms cold, and this runs on the websocket handler's task, so
         # doing it inline stalled the whole gateway on the first voice session of a
@@ -729,6 +746,7 @@ class WhisperEngine:
                     stt_executor(), self._build_model_handed_over, key, marker_dir
                 )
                 self._load_future = future
+                self._building_path = key.model_path
                 load_started = time.monotonic()
                 done, _pending = await asyncio.wait({future}, timeout=self._timeout_secs)
                 if not done:
@@ -874,6 +892,36 @@ class WhisperEngine:
         if not checked.ok:
             return caps_mod.Capabilities(raw=checked.raw, detail=checked.detail)
         return caps_mod.detect()
+
+    @property
+    def loading(self) -> bool:
+        """Whether a model load is under way: verifying, building, or outliving a timeout.
+
+        ``loaded_key`` is set only once a load FINISHES, so it cannot answer "is any
+        model file in use right now". A caller about to delete a model file asks this
+        too: the load lock is held from the digest check through the native build,
+        and ``_load_future`` outlives the lock when a build overran its timeout.
+        """
+        lock = self._load_lock
+        if lock is not None and lock.locked():
+            return True
+        return self._load_future is not None and not self._load_future.done()
+
+    @property
+    def building_path(self) -> str | None:
+        """The file a native build is reading right now, or ``None``.
+
+        Set when the build is handed to the executor and kept until it finishes,
+        including a build that outlived its caller's timeout. That is the one window
+        a model claim does not cover: :meth:`ensure_loaded` releases its claim when it
+        returns, and an overrun build keeps reading the file after that. A caller
+        deleting a model file refuses only when this names that file, so a download
+        or load of one model never blocks removing another.
+        """
+        future = self._load_future
+        if future is None or future.done():
+            return None
+        return self._building_path
 
     @property
     def loaded_key(self) -> LoadedKey | None:
@@ -1217,6 +1265,28 @@ class WhisperEngine:
         load_lock, _ = self._locks()
         async with load_lock:
             self._unload_locked()
+
+    async def release_if_resident(self, model_path: str) -> bool:
+        """Drop the resident model now if it was loaded from ``model_path``.
+
+        Compared against the residency key's full path, never its file name: a
+        custom model in a subfolder may carry a catalog file name, and releasing
+        it would unload the user's selected model.
+
+        For removing a model the user has deselected: it stays resident until the
+        idle sweep (600 s by default, up to a day), and until then its file cannot
+        be deleted. Holds both locks for the reason :meth:`maybe_evict` gives, so a
+        decode still running on it finishes first and no second context is built.
+        Returns whether it released anything.
+        """
+        load_lock, decode_lock = self._locks()
+        async with load_lock, decode_lock:
+            key = self._key
+            if self._model is None or key is None or key.model_path != model_path:
+                return False
+            self._unload_locked()
+        logger.info("Released whisper model %s for removal", model_path)
+        return True
 
     def _unload_locked(self) -> None:
         """Release the context. Caller holds the load lock.

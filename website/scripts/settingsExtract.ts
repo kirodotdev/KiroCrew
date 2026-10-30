@@ -209,6 +209,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'AboutPanelUpdateFlow.tsx': 'about',
   'AboutPanelGatewayUpdate.tsx': 'about',
   'SttSettings.tsx': 'voice',
+  // SttSettings.tsx's owner of the speech-model table. Mapped with it so a control
+  // the table gains stays indexed on the Voice tab.
+  'SttModelTable.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
@@ -267,6 +270,10 @@ const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {
   // Regex -> URL rule-pair editor (ChatPanel). Same composite contract: `label`
   // prop, `data-setting-label` on its frame, 'input' to every registry reader.
   LinkPatternsEditor: 'input',
+  // The Voice panel's speech-model table (SttSettings). Same composite contract:
+  // a `label` prop and a `SettingsField` frame carrying `data-setting-label`. It
+  // writes `stt.model`, so to every registry reader it is the select it replaced.
+  SttModelTable: 'select',
 }
 
 const PRIMITIVES = Object.keys(PRIMITIVE_MAP)

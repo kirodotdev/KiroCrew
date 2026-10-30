@@ -144,6 +144,23 @@ class TestSttStatus:
         assert all(row["size_bytes"] > 0 for row in body["models"])
 
     @pytest.mark.asyncio
+    async def test_status_names_the_stored_model_it_resolved(
+        self, seeded_config, model_store
+    ) -> None:
+        """The status answer names the `stt.model` it was resolved from, the same
+        value `GET /api/config/stt` serves, so the panel can tell an answer
+        resolved from its current config from one resolved before a later save.
+        The loader canonicalizes a superseded name, so a stored `medium` reads
+        back as `large-v3-turbo` in both."""
+        _seed_stt(seeded_config, model="small")
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["configured_model"] == "small" and body["model"] == "small"
+        _seed_stt(seeded_config, model="medium")
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["configured_model"] == "large-v3-turbo"
+        assert body["model"] == "large-v3-turbo"
+
+    @pytest.mark.asyncio
     async def test_status_reports_a_present_model_as_present(
         self, seeded_config, monkeypatch, model_store
     ) -> None:

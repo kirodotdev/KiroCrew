@@ -126,7 +126,7 @@ describe('SttSettings audio decoder', () => {
     mount({ ffmpeg: { present: true, source: 'store' } })
     // The model picker proves the panel rendered, so the absence below is a real
     // absence rather than a page that had not loaded yet.
-    await waitFor(() => expect(screen.getByRole('combobox', { name: /model/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('table', { name: /model/i })).toBeTruthy())
     expect(screen.queryByText(/ffmpeg is missing/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /download decoder/i })).toBeNull()
   })
@@ -249,7 +249,7 @@ describe('SttSettings audio decoder', () => {
     // Claiming a decoder is missing while the probe is still running would offer a
     // download on a host that already has one.
     mount({ ffmpeg: null })
-    await waitFor(() => expect(screen.getByRole('combobox', { name: /model/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('table', { name: /model/i })).toBeTruthy())
     expect(screen.queryByText(/ffmpeg is missing/i)).toBeNull()
   })
 })

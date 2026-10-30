@@ -32,6 +32,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/stt/status", handlers.api_stt_status)
     app.router.add_get("/api/stt/vocabularies", handlers.api_stt_vocabularies)
     app.router.add_post("/api/stt/prepare", handlers.api_stt_prepare)
+    app.router.add_delete("/api/stt/models/{name}", handlers.api_stt_model_delete)
     app.router.add_post("/api/stt/prewarm", handlers.api_stt_prewarm)
     app.router.add_post("/api/stt/polish", handlers.api_stt_polish)
     app.router.add_post("/api/stt/ffmpeg/download", handlers.api_stt_ffmpeg_download)

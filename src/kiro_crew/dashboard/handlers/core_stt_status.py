@@ -143,6 +143,10 @@ async def api_stt_status(request: web.Request) -> web.Response:
             "code": detail.code,
             "detail": detail.detail,
             "model": model.name,
+            # The stored `stt.model` that `model` was resolved from, so the panel
+            # can tell this answer belongs to its current config and not to a
+            # selection it has since changed.
+            "configured_model": cfg.stt.model,
             "model_present": present.get(model.name, False),
             "model_bytes": model.size_bytes,
             # The whole catalog, in the order the picker offers it (smallest
@@ -321,6 +325,123 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
     return web.json_response(
         {"model": model.name, "download": dict(stt_models.store().status)}, status=202
     )
+
+
+#: Refusal codes of ``DELETE /api/stt/models/{name}`` beyond the store's own.
+_CODE_STT_MODEL_UNKNOWN = "stt_model_unknown"
+_CODE_STT_MODEL_SELECTED = "stt_model_selected"
+_CODE_STT_MODEL_IN_USE = "stt_model_in_use"
+_CODE_STT_MODEL_LOADING = "stt_model_loading"
+_CODE_STT_MODEL_REMOVE_FAILED = "stt_model_remove_failed"
+
+
+async def api_stt_model_delete(request: web.Request) -> web.Response:
+    """DELETE /api/stt/models/{name} -- remove one downloaded speech model.
+
+    Lets the operator take back the disk a model they do not use holds, up to
+    1.6 GB for ``large-v3-turbo``. Only a catalog name is accepted, and only that
+    entry's file under the managed whisper directory is deleted (see
+    ``ModelStore.remove``); an alias or an unknown name is a 404, never a path.
+
+    Refused with 409, never silently resolved, when the model is:
+
+    - the configured ``stt.model``. Removing it would make voice input
+      re-download on the next dictation. The panel asks the user to pick another
+      model first, so the selection stays explicit.
+    - claimed by work that still reads it: a live voice session, which keeps the
+      model it started with after the user selects another, a batch
+      transcription between reading the config and its decode, or a meetings
+      audio import across its probe and every segment of a split. Its next decode
+      would re-download a removed file, or fail and lose the audio when offline.
+    - resident in the recogniser while something still holds it: a load or a
+      re-selection that landed while it was being released. A deselected model
+      that is merely still resident (the idle sweep has not run) is released
+      first, under the engine's load and decode locks, and then removed. While
+      any load is running that release is skipped, because it would wait on the
+      load lock for the whole of a first download; the model then answers a
+      retryable ``stt_model_in_use`` until the load finishes.
+    - being loaded. ``WhisperEngine.ensure_loaded`` claims its model for the whole
+      call, so the claim check covers it; a native build that outlived its timeout
+      keeps reading after that and is refused by its path
+      (``WhisperEngine.building_path``). A load of another model does not block.
+    - being downloaded. Deleting under a running transfer races its final rename.
+
+    A model that is not on disk answers 200 with ``removed: false``, so a second
+    click is harmless.
+    """
+    denied = _deny_app_token(request, "stt.model_delete")
+    if denied is not None:
+        return denied
+    name = request.match_info.get("name", "")
+    model = next((m for m in stt_models.CATALOG if m.name == name), None)
+    if model is None:
+        return web.json_response(
+            {"error": "unknown speech model", "code": _CODE_STT_MODEL_UNKNOWN}, status=404
+        )
+    cfg = KiroCrewConfig.load()
+    if stt_models.resolve(cfg.stt.model).name == model.name:
+        return web.json_response(
+            {"error": "model is selected for transcription", "code": _CODE_STT_MODEL_SELECTED},
+            status=409,
+        )
+    # Imported here for the reason api_stt_status gives: the engine pulls numpy.
+    from kiro_crew.stt import engine as stt_engine
+
+    # Work that fixed this model before awaiting (a live session, a batch
+    # transcription) claims it. Releasing it would only force that work to reload;
+    # `ModelStore.remove` refuses the delete itself.
+    if stt_models.is_claimed(model.name):
+        return web.json_response(
+            {"error": "the model is still in use", "code": _CODE_STT_MODEL_IN_USE}, status=409
+        )
+    engine = stt_engine.shared_engine()
+    # The full path, never the file name: a custom model may live in a subfolder
+    # under a catalog file name (`sub/ggml-small.bin`), and that file is the user's
+    # own selected model, not this catalog entry. A catalog path is
+    # `models_dir() / model.filename` and touches no disk, and the residency key
+    # is built from the same function, so the strings compare exactly.
+    catalog_path = str(stt_models.model_path(model))
+    # A model the user just deselected stays resident until the idle sweep, which
+    # would refuse the table's main use (select a smaller model, then remove the
+    # large one) for up to a day. It is not the configured model, so release it.
+    key = engine.loaded_key
+    if not engine.loading and key is not None and key.model_path == catalog_path:
+        await engine.release_if_resident(catalog_path)
+        # The await opened a window: re-read the selection before trusting it.
+        if stt_models.resolve(KiroCrewConfig.load().stt.model).name == model.name:
+            return web.json_response(
+                {"error": "model is selected for transcription", "code": _CODE_STT_MODEL_SELECTED},
+                status=409,
+            )
+
+    # No await from here to the reservation in `remove`, so neither a load, a
+    # download nor a new claim can start between these checks and the delete.
+    # A load in progress claims its own model (`WhisperEngine.ensure_loaded`), so the
+    # claim check above already refuses that model, and a load or download of
+    # another model does not block this one. The only reader a claim misses is a
+    # native build that outlived its timeout, and that is refused by its path.
+    if engine.building_path == catalog_path:
+        return web.json_response(
+            {"error": "a speech model is loading", "code": _CODE_STT_MODEL_LOADING}, status=409
+        )
+    key = engine.loaded_key
+    if key is not None and key.model_path == catalog_path:
+        return web.json_response(
+            {"error": "model is loaded in the recogniser", "code": _CODE_STT_MODEL_IN_USE},
+            status=409,
+        )
+    try:
+        removed = await stt_models.store().remove(model)
+    except stt_models.ModelRemovalRefused as exc:
+        logger.warning("Refused to remove whisper model %s: %s", model.name, exc)
+        return web.json_response({"error": str(exc), "code": exc.code}, status=409)
+    except OSError as exc:
+        logger.warning("Could not remove whisper model %s: %s", model.name, exc)
+        return web.json_response(
+            {"error": "could not remove the model file", "code": _CODE_STT_MODEL_REMOVE_FAILED},
+            status=500,
+        )
+    return web.json_response({"model": model.name, "removed": removed})
 
 
 #: Values of the status endpoint's ``ffmpeg.auto_fetch``. ``bundled`` is not

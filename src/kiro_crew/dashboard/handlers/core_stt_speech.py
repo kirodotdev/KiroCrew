@@ -397,13 +397,24 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
     model with live sessions, so a voice memo lands on a model that is already
     loaded.
     """
+    cfg = KiroCrewConfig.load()
+    from kiro_crew.transcribe import local_model_claim
+
+    # The model is fixed here, before the upload and transcode awaits, so it is
+    # claimed until the request ends: `DELETE /api/stt/models/{name}` must not
+    # remove it in between.
+    with local_model_claim(cfg.stt):
+        return await _stt_transcribe(request, cfg)
+
+
+async def _stt_transcribe(request: web.Request, cfg: KiroCrewConfig) -> web.Response:
+    """The body of :func:`api_stt_transcribe`, under its model claim."""
     import tempfile  # noqa: F811
     import uuid
 
     from kiro_crew.dashboard import part_stream
     from kiro_crew.transcribe import transcribe_audio  # noqa: F811
 
-    cfg = KiroCrewConfig.load()
     # Off the loop: every provider branch of the probe reaches the filesystem, and
     # `local` and `transcribe` each import an optional extra the first time.
     detail = await asyncio.to_thread(availability_detail, cfg.stt)

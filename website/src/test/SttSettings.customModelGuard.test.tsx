@@ -88,18 +88,23 @@ function mount(
   )
 }
 
-const modelSelect = () => screen.getByRole('combobox', { name: /model/i })
+const modelTable = () => screen.getByTestId('stt-model-table')
 /** The explanation line, by its served copy rather than by a class or position. */
 const explanation = () => screen.queryByText(/add both the file name and the SHA-256/i)
 const askAgent = () => screen.queryByRole('button', { name: /ask the agent/i })
 
-/** Pick a model the way a user does: open the listbox, click the option. */
-async function pickModel(name: RegExp) {
-  const trigger = await screen.findByRole('combobox', { name: /model/i })
-  await waitFor(() => expect(trigger).not.toHaveAttribute('data-disabled'))
-  fireEvent.click(trigger)
-  const option = within(screen.getByRole('listbox')).getByRole('option', { name })
-  fireEvent.click(option)
+/** What a row is called on screen: the custom row by its served label, a catalog row by its name. */
+const rowLabel = (name: string) =>
+  name === 'custom' ? i18next.t('pages.settings.sttSettings.model_option_custom') : name
+
+/** Pick a model the way a user does: the Select button on that model's table row. */
+async function pickModel(name: string) {
+  const row = await screen.findByTestId(`stt-model-${name}`)
+  const use = within(row).getByRole('button', {
+    name: i18next.t('pages.settings.sttSettings.model_use_named', { name: rowLabel(name) }),
+  })
+  await waitFor(() => expect(use).not.toBeDisabled())
+  fireEvent.click(use)
 }
 
 beforeEach(async () => {
@@ -115,50 +120,60 @@ afterEach(() => cleanup())
 describe('SttSettings custom-model pair explanation', () => {
   it('explains the degrade when custom is picked with both fields empty', async () => {
     mount()
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     expect(explanation()).toBeNull()
 
-    await pickModel(/custom/i)
+    await pickModel('custom')
 
     await waitFor(() => expect(explanation()).not.toBeNull())
   })
 
   it('keeps explaining while only one half of the pair is filled', async () => {
     mount({ custom_model_path: FILE, custom_model_sha256: '' })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     await waitFor(() => expect(explanation()).not.toBeNull())
   })
 
   it('says nothing once the pair is complete and custom is in force', async () => {
     mount({ model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     expect(explanation()).toBeNull()
   })
 
   it('does not claim both are needed when a catalog model is deliberately chosen', async () => {
     mount({ model: 'base', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     expect(explanation()).toBeNull()
     // The rows stay open so the stored file can be cleared, and say they are idle.
     expect(await screen.findByText(/not used while base is selected/i)).toBeTruthy()
 
-    await pickModel(/custom/i)
-    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalled())
+    // The gateway answers a save with the config now in force, so the table's
+    // selection moves with each pick and the next row's Select is on screen.
+    let current: Record<string, unknown> = mockApi.sttConfig.mock.results[0]
+      ? await mockApi.sttConfig.mock.results[0].value
+      : {}
+    mockApi.saveSttConfig.mockImplementation(async (patch: Record<string, unknown>) => {
+      current = { ...current, ...patch }
+      return current
+    })
+    await pickModel('custom')
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ model: 'custom' }))
     expect(explanation()).toBeNull()
 
-    await pickModel(/^base/i)
+    await pickModel('base')
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenLastCalledWith({ model: 'base' }))
     expect(explanation()).toBeNull()
   })
 
   it('stays silent for a caller the pair was withheld from, whose rows read empty', async () => {
     mount({ model: 'custom' }, { pairWithheld: true })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     expect(explanation()).toBeNull()
   })
 
   it('leaves a sibling row alone when the other half is saved', async () => {
     mount({ model: 'custom', custom_model_path: '', custom_model_sha256: '' })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     const sha = await screen.findByLabelText(/SHA-256/i)
     fireEvent.change(sha, { target: { value: SHA } })
@@ -175,7 +190,7 @@ describe('SttSettings custom-model pair explanation', () => {
   it('quotes the file name in the copyable commands so it is never shell syntax', async () => {
     const hostile = "ggml-$(touch x)'; rm -rf ~.bin"
     mount({ model: 'custom', custom_model_path: hostile, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     const unix = await screen.findByText((_, el) => el?.tagName === 'CODE' && el.textContent!.startsWith('shasum'))
     const win = screen.getByText((_, el) => el?.tagName === 'CODE' && el.textContent!.startsWith('Get-FileHash'))
@@ -208,7 +223,7 @@ describe('SttSettings custom-model SHA-256 row', () => {
 
   it('links the model site once, from step 1, which says the file page lists the SHA-256', async () => {
     mount({ model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
     const links = (await screen.findAllByRole('link'))
       .filter(a => a.getAttribute('href') === 'https://huggingface.co/ggerganov/whisper.cpp')
     expect(links).toHaveLength(1)
@@ -236,7 +251,7 @@ describe('SttSettings custom-model file-name row', () => {
 describe('SttSettings custom-model refusals', () => {
   it('shows the reason a file name was refused under the rows, with the hand-off on', async () => {
     mount({ model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     const reason = 'The model file must be inside the speech models folder.'
     mockApi.saveSttConfig.mockRejectedValue(new Error(reason))
@@ -260,7 +275,7 @@ describe('SttSettings custom-model refusals', () => {
 
   it('clears the refusal once a corrected value saves', async () => {
     mount({ model: 'custom', custom_model_path: '', custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     mockApi.saveSttConfig.mockRejectedValueOnce(new Error('No file with that name is in the speech models folder.'))
     const file = await screen.findByLabelText(/custom model file/i)
@@ -295,7 +310,7 @@ describe('SttSettings custom-model refusals', () => {
     // The page notice navigates on Ask Agent, which would throw away a file name the
     // user typed and has not saved yet.
     mount({ model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     const file = await screen.findByLabelText(/custom model file/i)
     fireEvent.change(file, { target: { value: 'ggml-other.bin' } })
@@ -309,12 +324,74 @@ describe('SttSettings custom-model refusals', () => {
 
   it('offers the page-level hand-off once no draft differs from what is stored', async () => {
     mount({ model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA })
-    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    await waitFor(() => expect(modelTable()).toBeTruthy())
 
     mockApi.saveSttConfig.mockRejectedValue(new Error('transcribe profile is unknown'))
     fireEvent.click(screen.getByRole('switch', { name: /enabled/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
 
     expect(askAgent()).not.toBeNull()
+  })
+})
+
+describe('SttSettings custom-model table row', () => {
+  const tableRows = () =>
+    within(modelTable()).getAllByRole('row').map(r => r.getAttribute('data-testid')).filter(Boolean)
+
+  it('lists the custom row last, by its label, with no Download or Remove button', async () => {
+    // Present AND not selected: the state in which a catalog row would offer Remove.
+    mount(
+      { model: 'base', custom_model_path: FILE, custom_model_sha256: SHA },
+      { models: [
+        { name: 'base', size_bytes: 147_951_465, present: true },
+        { name: 'small', size_bytes: 487_601_967, present: false },
+        { name: 'custom', size_bytes: 0, present: true },
+      ] },
+    )
+    const row = await screen.findByTestId('stt-model-custom')
+    expect(tableRows().at(-1)).toBe('stt-model-custom')
+    expect(within(row).getByText(i18next.t('pages.settings.sttSettings.model_option_custom'))).toBeTruthy()
+    // A catalog row in the same state does offer them, so the absence below is the
+    // custom row's own rule and not an empty table.
+    expect(within(screen.getByTestId('stt-model-small')).getByRole('button', { name: /download small/i })).toBeTruthy()
+    expect(within(row).getByRole('button', { name: /^select custom/i })).toBeTruthy()
+    expect(within(row).queryByRole('button', { name: /download/i })).toBeNull()
+    expect(within(row).queryByRole('button', { name: /remove/i })).toBeNull()
+    // No size to show, and no "0 B" in its place.
+    expect(row.textContent).not.toMatch(/\b0\s*(B|bytes)\b/i)
+  })
+
+  it('offers the custom row even while the status lists no custom entry', async () => {
+    mount()
+    const row = await screen.findByTestId('stt-model-custom')
+    expect(tableRows().at(-1)).toBe('stt-model-custom')
+    expect(within(row).queryByRole('button', { name: /download/i })).toBeNull()
+    expect(within(row).queryByRole('button', { name: /remove/i })).toBeNull()
+    // "Not downloaded" would be untrue for a file the user places themselves.
+    expect(within(row).queryByText(/not downloaded/i)).toBeNull()
+  })
+
+  it('opens the custom file rows when the custom row is selected', async () => {
+    mount()
+    await waitFor(() => expect(modelTable()).toBeTruthy())
+    expect(screen.queryByLabelText(/custom model file/i)).toBeNull()
+
+    await pickModel('custom')
+
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ model: 'custom' }))
+    expect(await screen.findByLabelText(/custom model file/i)).toBeTruthy()
+  })
+
+  it('shows no download prompt under a selected custom row', async () => {
+    mount(
+      { model: 'custom', custom_model_path: FILE, custom_model_sha256: SHA },
+      { models: [
+        { name: 'base', size_bytes: 147_951_465, present: true },
+        { name: 'custom', size_bytes: 0, present: false, error: '' },
+      ] },
+    )
+    await screen.findByTestId('stt-model-custom')
+    expect(screen.queryByTestId('stt-model-custom-notice')).toBeNull()
+    expect(screen.queryByText(/not on this machine yet/i)).toBeNull()
   })
 })

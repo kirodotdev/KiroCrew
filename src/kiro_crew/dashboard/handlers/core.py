@@ -624,7 +624,7 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
 #   ``core_security`` -- the SEL accessor, the security event log and posture routes
 #   ``core_stt_access`` -- STT error codes, background tasks, refusals and their audit
 #   ``core_stt_settings`` -- the STT settings route and the choices it offers
-#   ``core_stt_status`` -- STT readiness: status, vocabularies, download, fetch, prewarm
+#   ``core_stt_status`` -- STT readiness: status, vocabularies, download, remove, fetch, prewarm
 #   ``core_stt_speech`` -- the transcribe route and the transcript polish
 #   ``core_config_view`` -- the masked config view and the whole-document read and write
 #   ``core_config_models`` -- whether the account can use a pinned model
@@ -748,16 +748,23 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _polish_preserves_words,
         _polish_spaces_its_words,
         _polish_split,
+        _stt_transcribe,
         api_stt_polish,
         api_stt_transcribe,
     )
     from kiro_crew.dashboard.handlers.core_stt_status import (
+        _CODE_STT_MODEL_IN_USE,
+        _CODE_STT_MODEL_LOADING,
+        _CODE_STT_MODEL_REMOVE_FAILED,
+        _CODE_STT_MODEL_SELECTED,
+        _CODE_STT_MODEL_UNKNOWN,
         _STT_VOCABULARIES_TIMEOUT_SECS,
         AUTO_FETCH_AVAILABLE,
         AUTO_FETCH_BUNDLED,
         AUTO_FETCH_UNSUPPORTED,
         _ffmpeg_auto_fetch,
         api_stt_ffmpeg_download,
+        api_stt_model_delete,
         api_stt_prepare,
         api_stt_prewarm,
         api_stt_status,
