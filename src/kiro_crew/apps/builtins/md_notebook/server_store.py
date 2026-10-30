@@ -213,7 +213,8 @@ def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
 
 def _read_pat_sync() -> Optional[str]:
     try:
-        pat = open(_pat_file(), encoding="utf-8").read().strip() or None
+        with open(_pat_file(), encoding="utf-8") as fh:
+            pat = fh.read().strip() or None
     except OSError:
         return None
     if pat is not None:
