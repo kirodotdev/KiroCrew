@@ -25,12 +25,6 @@
 test/metrics/test_local_exporter.py::test_export_locks_only_the_prune_phase
 test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_runs_scan_and_sweep_off_loop
 test/test_acp_runtime_client_parity.py::test_periodic_sweep_skips_protected_runtime_pid
-test/test_agent.py::TestResolveKirocrewBin::test_accepts_any_readable_bin_from_walk
-test/test_agent.py::TestResolveKirocrewBin::test_accepts_apollo_binary_with_envroot
-test/test_agent.py::TestResolveKirocrewBin::test_accepts_wrapper_bin_from_walk
-test/test_agent.py::TestResolveKirocrewBin::test_finds_bin_in_parent_hierarchy
-test/test_agent.py::TestResolveKirocrewBin::test_prefers_venv_bin_over_project_bin
-test/test_agent.py::TestResolveKirocrewBin::test_venv_install_falls_through_to_step1
 # Drives a real AcpRuntime.spawn through the shared TestRuntimeProjectedLaunchDocuments
 # harness, which simulates only asyncio's subprocess; Windows spawns through the
 # cleanup-owned child (pin/identity) the harness cannot fake. The decision it pins is
@@ -92,7 +86,6 @@ test/test_hooks_shell_command.py::TestSafeReadFile::test_blocks_symlinked_ancest
 test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
-test/test_instances_run_marker.py::TestRunMarker::test_write_read_clear
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
 test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
