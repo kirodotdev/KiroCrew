@@ -11696,6 +11696,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "\"{{name}}\" এজেন্ট শুধু নিজের MCP সার্ভারগুলোই লোড করে।",
+        "default_agent_loads_all_mcp_servers": "{{name}} কনফিগার করা সব MCP সার্ভার লোড করে — ওভারভিউ → MCP থেকে এগুলো সামলাও।",
         "disabled": "নিষ্ক্রিয়",
         "load_failed": "MCP সার্ভার লোড করা যায়নি",
         "mcp_servers_count": "MCP সার্ভার ({{count}}/{{total}} সক্রিয়)",
@@ -11908,6 +11909,8 @@
         "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
         "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",
         "more_running_normally": "আরও কয়েকটি স্বাভাবিকভাবে চলছে…",
+        "show_more_running_in_sidebar_one": "সাইডবারে আরও {{count}}টি চলমান সাবএজেন্ট দেখাও",
+        "show_more_running_in_sidebar_other": "সাইডবারে আরও {{count}}টি চলমান সাবএজেন্ট দেখাও",
         "no_activity_possibly_stalled": "কোনো অ্যাক্টিভিটি নেই — সম্ভবত থমকে গেছে",
         "open_in_subagents_sidebar": "সাবএজেন্ট সাইডবারে {{label}} খোলো",
         "possibly_stalled_at_tool": "{{tool}} এ সম্ভবত থমকে গেছে — কোনো অ্যাক্টিভিটি নেই",

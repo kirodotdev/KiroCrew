@@ -11696,6 +11696,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Der Agent „{{name}}“ lädt nur seine eigenen MCP-Server.",
+        "default_agent_loads_all_mcp_servers": "{{name}} lädt alle konfigurierten MCP-Server – verwalte sie unter Übersicht → MCP.",
         "disabled": "deaktiviert",
         "load_failed": "MCP-Server konnten nicht geladen werden",
         "mcp_servers_count": "MCP-Server ({{count}}/{{total}} aktiviert)",
@@ -11908,6 +11909,8 @@
         "collapse_agent_list": "Subagentenliste einklappen",
         "expand_agent_list": "Subagentenliste aufklappen",
         "more_running_normally": "weitere laufen normal…",
+        "show_more_running_in_sidebar_one": "{{count}} weiteren laufenden Subagenten in der Seitenleiste anzeigen",
+        "show_more_running_in_sidebar_other": "{{count}} weitere laufende Subagenten in der Seitenleiste anzeigen",
         "no_activity_possibly_stalled": "Keine Aktivität — möglicherweise blockiert",
         "open_in_subagents_sidebar": "{{label}} in der Subagenten-Seitenleiste öffnen",
         "possibly_stalled_at_tool": "möglicherweise blockiert bei {{tool}} — keine Aktivität",

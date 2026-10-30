@@ -11530,6 +11530,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "代理“{{name}}”仅加载自己的 MCP 服务器。",
+        "default_agent_loads_all_mcp_servers": "{{name}} 加载所有已配置的 MCP 服务器，可在 概览 → MCP 中管理。",
         "disabled": "已禁用",
         "load_failed": "无法加载 MCP 服务器",
         "mcp_servers_count": "MCP 服务器（{{count}}/{{total}} 已启用）",
@@ -11740,6 +11741,7 @@
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
         "more_running_normally": "个仍在正常运行…",
+        "show_more_running_in_sidebar_other": "在侧边栏中显示另外 {{count}} 个正在运行的子代理",
         "no_activity_possibly_stalled": "无活动 — 可能已停滞",
         "open_in_subagents_sidebar": "在子代理侧边栏中打开 {{label}}",
         "possibly_stalled_at_tool": "在 {{tool}} 处可能已停滞 — 无活动",

@@ -6870,6 +6870,8 @@
       "subagentProgressBar": {
         "backend_hiccup_retrying": "connection unstable — retrying…",
         "more_running_normally": "more running normally…",
+        "show_more_running_in_sidebar_one": "Show {{count}} more running subagent in the sidebar",
+        "show_more_running_in_sidebar_other": "Show {{count}} more running subagents in the sidebar",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
         "possibly_stalled_at_tool": "possibly stalled at {{tool}} — no activity",
         "possibly_stalled_at_tool_for_secs": "possibly stalled at {{tool}} — no activity for {{secs}}s",

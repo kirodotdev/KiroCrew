@@ -5190,6 +5190,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Agent \"{{name}}\" loads only its own MCP servers.",
+        "default_agent_loads_all_mcp_servers": "{{name}} loads all configured MCP servers — manage them in Overview → MCP.",
         "load_failed": "Couldn't load the MCP servers",
         "mcp_servers_count": "MCP Servers ({{count}}/{{total}} enabled)",
         "mode_load_failed": "Couldn't read the Tool Search mode; showing the default"

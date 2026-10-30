@@ -11530,6 +11530,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "エージェント「{{name}}」は自身の MCP サーバーのみを読み込みます。",
+        "default_agent_loads_all_mcp_servers": "{{name}} は設定済みのすべての MCP サーバーを読み込みます。概要 → MCP で管理できます。",
         "disabled": "無効",
         "load_failed": "MCP サーバーを読み込めませんでした",
         "mcp_servers_count": "MCP サーバー（{{count}}/{{total}} 有効）",
@@ -11740,6 +11741,7 @@
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",
         "expand_agent_list": "サブエージェント一覧を展開",
         "more_running_normally": "ほかは正常に実行中…",
+        "show_more_running_in_sidebar_other": "サイドバーで実行中のサブエージェントをあと {{count}} 件表示",
         "no_activity_possibly_stalled": "アクティビティなし — 停止している可能性があります",
         "open_in_subagents_sidebar": "{{label}} をサブエージェントサイドバーで開く",
         "possibly_stalled_at_tool": "{{tool}} で停止している可能性があります — アクティビティなし",

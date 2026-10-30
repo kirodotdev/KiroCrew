@@ -12028,6 +12028,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Агент «{{name}}» загружает только свои серверы MCP.",
+        "default_agent_loads_all_mcp_servers": "{{name}} загружает все настроенные MCP-серверы — управляй ими в разделе Обзор → MCP.",
         "disabled": "отключено",
         "load_failed": "Не удалось загрузить серверы MCP",
         "mcp_servers_count": "MCP-серверы ({{count}}/{{total}} включено)",
@@ -12244,6 +12245,10 @@
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
         "more_running_normally": "ещё выполняются нормально…",
+        "show_more_running_in_sidebar_one": "Показать ещё {{count}} выполняющийся субагент на боковой панели",
+        "show_more_running_in_sidebar_few": "Показать ещё {{count}} выполняющихся субагента на боковой панели",
+        "show_more_running_in_sidebar_many": "Показать ещё {{count}} выполняющихся субагентов на боковой панели",
+        "show_more_running_in_sidebar_other": "Показать ещё {{count}} выполняющегося субагента на боковой панели",
         "no_activity_possibly_stalled": "Нет активности — возможно, застряло",
         "open_in_subagents_sidebar": "Открыть {{label}} на панели субагентов",
         "possibly_stalled_at_tool": "возможно, застряло на {{tool}} — нет активности",

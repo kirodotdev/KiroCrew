@@ -11696,6 +11696,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "एजेंट \"{{name}}\" सिर्फ़ अपने ही MCP सर्वर लोड करता है।",
+        "default_agent_loads_all_mcp_servers": "{{name}} सभी कॉन्फ़िगर किए गए MCP सर्वर लोड करता है — इन्हें अवलोकन → MCP में मैनेज करो।",
         "disabled": "अक्षम",
         "load_failed": "MCP सर्वर लोड नहीं हो सके",
         "mcp_servers_count": "MCP सर्वर ({{count}}/{{total}} सक्षम)",
@@ -11908,6 +11909,8 @@
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
         "more_running_normally": "और सामान्य रूप से चल रहे…",
+        "show_more_running_in_sidebar_one": "साइडबार में {{count}} और चल रहा सबएजेंट दिखाओ",
+        "show_more_running_in_sidebar_other": "साइडबार में {{count}} और चल रहे सबएजेंट दिखाओ",
         "no_activity_possibly_stalled": "कोई गतिविधि नहीं — संभवतः अटका हुआ",
         "open_in_subagents_sidebar": "{{label}} को सबएजेंट साइडबार में खोलें",
         "possibly_stalled_at_tool": "{{tool}} पर संभवतः अटका हुआ — कोई गतिविधि नहीं",
