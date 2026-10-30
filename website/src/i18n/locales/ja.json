@@ -107,7 +107,7 @@
       "decision_rejected_once": "今回のみ拒否 {{n}} 件",
       "decision_unknown": "不明 {{n}} 件"
     },
-    "workers": "クルー",
+    "workers": "ボード",
     "workers_error": "クルーを読み込めませんでした。",
     "workers_error_live": "クルーの一覧を読み込めませんでした。開いているクルーメンバーを表示しています。",
     "worker_status_working": "実行中",
@@ -9410,7 +9410,9 @@
       "restart_gateway_title": "完了するには {{productName}} を再起動してください",
       "restart_gateway_body": "ネットワーク名は利用可能になりましたが、このサーバーは起動時に名前を解決できなかったため、その名前はまだ信頼されていません。{{productName}} を一度再起動すると、最後のステップの準備が整います。",
       "occupied_title": "ここでは既に別のものが提供されています",
-      "occupied_body": "Tailscale はこのアドレスで既に何かを提供しており、公開するとそれが置き換えられます。何も変更されていません。上書きしても安全だと確信できる場合は、ご自身で公開してください。",
+      "occupied_body": "Tailscale はこのアドレスで既に別のものを提供しています。公開するとそれが置き換えられるため、何も変更していません。",
+      "occupied_replace": "置き換えても安全な場合は、<cmd/> を実行してください",
+      "occupied_keep_both": "両方を残すには、先に <cmd/> で別のサービスを専用のパスに移してください。",
       "publish_title": "ダッシュボードをプライベートネットワークに公開する",
       "publish_body": "すべての準備が整いました。これによりダッシュボードはご自身の Tailscale ネットワークにのみ公開され（公開インターネットには決して公開されません）、スマートフォンから開けるようになります。",
       "ready_title": "スマートフォンで利用できます",
@@ -9828,6 +9830,7 @@
       "steer_not_recorded_crew_log_off": "{{name}} に届けましたが、台帳には記録されていません: クルーログがオフです。",
       "steer_not_recorded_ledger_failed": "{{name}} に届けましたが、台帳には記録されていません: 台帳への書き込みに失敗しました。",
       "ultra_needs_you": "対応が必要",
+      "ultra_paused": "一時停止",
       "ultra_needs_you_none": "今は対応が必要な項目はありません。",
       "ultra_needs_you_none_blocked": "承認待ちはありません。ブロック中の作業はマイルストーンにあります。",
       "ultra_answer_in_chat": "チャットで回答",
@@ -12002,7 +12005,7 @@
         "quote_message": "メッセージを引用",
         "more_actions": "その他の操作",
         "edit_replaces_below": "送信すると下の返信が置き換わります",
-        "seed_from_conductor": "コンダクターから",
+        "seed_from_conductor": "メインチャットから",
         "seed_from_worker": "クルーメンバーから",
         "seed_from_session": "別のチャットから"
       },
@@ -13899,7 +13902,7 @@
         "crewmate_harness": "クルーメイトごとのエージェントハーネス",
         "crewmate_harness_desc": "各クルーメイトのプロフィールにエージェントハーネスの設定を追加し、1 人を Claude Code などの別の AI コーディングツールとそのモデルで動かし、ほかは既定のままにできるようにします。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "チャットがタスクをクルーに任せ、Crew タブで追跡できるようにします。"
+        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
@@ -14255,7 +14258,6 @@
         "keyboard_shortcuts": "キーボードショートカット",
         "knowledge_library": "ナレッジライブラリ",
         "list_view": "リストビュー",
-        "mentions": "メンション",
         "next": "次へ →",
         "no_items_found": "アイテムが見つかりません",
         "no_items_match_your_filters": "フィルタに一致するアイテムはありません",

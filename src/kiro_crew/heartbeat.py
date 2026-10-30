@@ -38,6 +38,55 @@ logger = logging.getLogger(__name__)
 
 # Deliver target extracted from <!-- deliver:xxx --> in heartbeat entries
 _DELIVER_RE = re.compile(r"<!--\s*deliver:(\S+)\s*-->")
+# The pieces the comment scan reads: a whole deliver tag, an opener, a closer.
+# A deliver tag sits on one line; a comment that spans lines is never one, so
+# its padding is spaces and tabs only, never a newline. HTML also ends a
+# comment at ``--!>``, so the closer accepts it too.
+_COMMENT_TOKEN_RE = re.compile(r"<!--[ \t]*deliver:\S+[ \t]*-->|<!--|--!?>")
+
+
+def _strip_comments(content: str) -> str:
+    """Return *content* with every HTML comment except a bare deliver tag removed.
+
+    One scan, left to right. Outside a comment a deliver tag is kept for the
+    per-line parse. Inside one, a deliver tag is part of the comment, so a task
+    commented out together with its tag stays hidden. A closed comment becomes
+    just its newlines, so text on either side of it keeps its own line. A
+    ``<!--`` with no ``-->`` after it hides only the rest of its own line and
+    logs a warning: hiding every later line would drop those tasks without a
+    word, and the next rewrite would then erase them from the file.
+    """
+    parts: list[str] = []
+    pos = 0
+    while True:
+        opener = next(
+            (m.start() for m in _COMMENT_TOKEN_RE.finditer(content, pos) if m.group() == "<!--"),
+            -1,
+        )
+        if opener == -1:
+            parts.append(content[pos:])
+            return "".join(parts)
+        parts.append(content[pos:opener])
+        closer = next(
+            (
+                m.end()
+                for m in _COMMENT_TOKEN_RE.finditer(content, opener + 4)
+                if m.group() in ("-->", "--!>")
+            ),
+            -1,
+        )
+        if closer == -1:
+            logger.warning(
+                "HEARTBEAT.md line %d opens an HTML comment that is never closed;"
+                " ignoring the rest of that line only",
+                content.count("\n", 0, opener) + 1,
+            )
+            end_of_line = content.find("\n", opener)
+            pos = len(content) if end_of_line == -1 else end_of_line
+            continue
+        parts.append("\n" * content.count("\n", opener, closer))
+        pos = closer
+
 
 # Agent can include this sentinel in its response to signal the task is not done
 _KEEP_SENTINEL = "HEARTBEAT_KEEP"
@@ -454,18 +503,9 @@ def _extract_tasks(content: str) -> list[tuple[str, str]]:
     Empty string when absent.
     """
     tasks: list[tuple[str, str]] = []
-    in_comment = False
-    for line in content.splitlines():
+    for line in _strip_comments(content).splitlines():
         stripped = line.strip()
         if not stripped:
-            continue
-        # Track multi-line HTML comments (standalone comment lines)
-        if "<!--" in stripped and "-->" not in stripped:
-            in_comment = True
-            continue
-        if in_comment:
-            if "-->" in stripped:
-                in_comment = False
             continue
         # Standalone comment line (<!-- ... --> on one line, no task text)
         if stripped.startswith("<!--") and stripped.endswith("-->"):

@@ -107,7 +107,7 @@
       "decision_rejected_once": "이번만 거부 {{n}}건",
       "decision_unknown": "알 수 없음 {{n}}건"
     },
-    "workers": "크루",
+    "workers": "보드",
     "workers_error": "크루를 불러오지 못했습니다.",
     "workers_error_live": "크루 목록을 불러오지 못했습니다. 열려 있는 크루원을 표시합니다.",
     "worker_status_working": "작업 중",
@@ -9410,7 +9410,9 @@
       "restart_gateway_title": "완료하려면 {{productName}} 재시작",
       "restart_gateway_body": "이제 네트워크 이름을 사용할 수 있지만, 이 서버가 시작될 때는 아무 이름도 확인하지 못해 아직 신뢰되지 않은 상태입니다. {{productName}}을(를) 한 번 재시작하면 마지막 단계가 준비됩니다.",
       "occupied_title": "이 주소에서 이미 다른 것이 제공되고 있습니다",
-      "occupied_body": "Tailscale이 이 주소에서 이미 무언가를 제공하고 있어, 게시하면 그것을 대체하게 됩니다. 아무것도 변경되지 않았습니다. 덮어써도 안전하다고 확신하면 직접 게시하세요.",
+      "occupied_body": "Tailscale이 이 주소에서 이미 다른 것을 제공하고 있습니다. 게시하면 그것이 대체되므로 아무것도 변경하지 않았습니다.",
+      "occupied_replace": "대체해도 안전하다면 <cmd/>을(를) 실행하세요",
+      "occupied_keep_both": "둘 다 유지하려면 먼저 <cmd/>로 다른 서비스를 별도 경로로 옮기세요.",
       "publish_title": "대시보드를 사설 네트워크에 올리기",
       "publish_body": "모든 준비가 끝났습니다. 이 작업은 대시보드를 공용 인터넷이 아닌 사용자 본인의 Tailscale 네트워크에만 게시하여 휴대폰에서 열 수 있게 합니다.",
       "ready_title": "휴대폰에서 사용 준비 완료",
@@ -9828,6 +9830,7 @@
       "steer_not_recorded_crew_log_off": "{{name}}에 전달했지만 원장에 기록되지 않았습니다: 크루 로그가 꺼져 있습니다.",
       "steer_not_recorded_ledger_failed": "{{name}}에 전달했지만 원장에 기록되지 않았습니다: 원장 기록에 실패했습니다.",
       "ultra_needs_you": "확인 필요",
+      "ultra_paused": "일시 중지",
       "ultra_needs_you_none": "지금은 확인할 항목이 없습니다.",
       "ultra_needs_you_none_blocked": "승인을 기다리는 항목이 없습니다. 막힌 작업은 마일스톤에 있습니다.",
       "ultra_answer_in_chat": "채팅에서 답변",
@@ -12002,7 +12005,7 @@
         "quote_message": "메시지 인용",
         "more_actions": "추가 작업",
         "edit_replaces_below": "보내면 아래 답변이 바뀝니다",
-        "seed_from_conductor": "컨덕터가 보냄",
+        "seed_from_conductor": "메인 채팅에서",
         "seed_from_worker": "크루원에게서",
         "seed_from_session": "다른 채팅이 보냄"
       },
@@ -13899,7 +13902,7 @@
         "crewmate_harness": "크루메이트별 에이전트 하네스",
         "crewmate_harness_desc": "각 크루메이트의 프로필에 에이전트 하네스 설정을 추가해, 한 크루메이트는 Claude Code 같은 다른 AI 코딩 도구와 그 모델로 실행하고 나머지는 기본값을 유지할 수 있게 합니다.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 Crew 탭에서 추적할 수 있게 합니다."
+        "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다."
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
@@ -14255,7 +14258,6 @@
         "keyboard_shortcuts": "키보드 단축키",
         "knowledge_library": "지식 라이브러리",
         "list_view": "목록 보기",
-        "mentions": "언급",
         "next": "다음 →",
         "no_items_found": "항목을 찾을 수 없습니다",
         "no_items_match_your_filters": "필터와 일치하는 항목이 없습니다",

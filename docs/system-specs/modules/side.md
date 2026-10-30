@@ -267,23 +267,33 @@ live one did. The other error notices a turn can end with are not stored, so aft
 a reload such a turn shows its question without the notice, which is also what
 the model holds.
 
-**After the socket connects.** Side frames reach owner sockets only, so a turn
-that ends while this tab cannot hear it (after the restore read was answered but
-before the socket connected, or while the socket is down) sends its final frame
-to no socket of this tab. So each time the socket opens, a restored panel still
-waiting on a turn reads `GET .../side` again, once any restore read still in
+**After the socket connects.** Side frames reach owner sockets only, so whatever
+happens to a side conversation while this tab cannot hear it (after the restore
+read was answered but before the socket connected, or while the socket is down)
+reaches no socket of this tab: a turn's final frame, another tab's question and
+answer, a question queued, run or cancelled elsewhere. So each time the socket
+opens, every restored panel, idle or waiting on a turn, reads `GET .../side`
+again, once any restore read still in
 flight has landed (`resyncWaitingSideConversations` in `store/chatSlice.ts`,
 `sideResync` in `store/chat/side.ts`). The read is judged against the panel as it
 was when the read was sent. When the socket opens again while a read is out, only
 the newer read is applied: the older one can answer last and would undo what the
 newer one learned. A read that shares one of its runs is merged the way a
-restore merges it: the stored rows and the busy state. The send receipt records
+restore merges it: the stored rows, the queue and the busy state. The send receipt records
 the started run on its optimistic question. A stored row settles that question
 only when its run matches the receipt; without a receipt, the optimistic copy
 stays pending even when the read already holds its stored and answered row. A
 receipt that lands after its question's frame drops the copy still shown as
 unsent, and ends the wait when that copy was all that kept a finished turn busy.
-The queue keeps to its own frames. A read with no open conversation, or one that
+The queue takes the read's entries. A card the read lacks goes when the panel
+already showed it as the read was sent (it ran or was cancelled meanwhile), and
+its id is retired like a drain's; its text is kept until a cancel for it arrives,
+so this tab's own cancel answered after the read still hands the question back
+to the composer once, even when the side was closed before that answer came,
+and even when a new question opened the next conversation meanwhile; that
+cancel is not applied to the newer conversation.
+A card added after the read was sent stays.
+A read with no open conversation, or one that
 shares none of those runs and so describes another conversation (this one was
 closed while the tab could not hear it), stops the wait and leaves the panel's
 rows as they are, except that a question accepted into one of those runs is no

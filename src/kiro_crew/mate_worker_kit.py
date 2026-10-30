@@ -86,10 +86,6 @@ def template_kit(template: str) -> dict[str, Any]:
         raise WorkerKitError("template_unreadable") from exc
 
 
-#: What a worker kit restricts on the worker base's own servers (``_worker_kit``).
-_BASE_RESTRICTION_KEYS = ("disabledTools", "disabledServers")
-
-
 def _owned_file(member: str) -> tuple[Path, dict[str, Any]]:
     """The crewmate's own file and its parsed spec; refuses a binding that owns none."""
     from kiro_crew.agent import _read_spec_capped, _spec_path_is_safe

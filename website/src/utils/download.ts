@@ -34,3 +34,13 @@ export function downloadUrl(url: string, filename: string): void {
   announceDownload(filename)
   clickDownload(url, filename)
 }
+
+/** True inside an Android app that embeds a WebView (an in-app browser).
+ *  Android marks a WebView's user agent with `; wv)`. Such a browser saves
+ *  nothing for an `<a download>` click itself: it hands the URL to the host
+ *  app, which cannot fetch a `blob:` URL, so a blob download there is silently
+ *  dropped and the caller must give it an http(s) URL instead. Android Chrome
+ *  has no `wv` mark and keeps the blob path. */
+export function isAndroidWebView(ua: string = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
+  return /\bAndroid\b/.test(ua) && /;\s*wv\)/.test(ua)
+}

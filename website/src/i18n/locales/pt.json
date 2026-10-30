@@ -125,7 +125,7 @@
       "decision_rejected_once": "rejeitadas uma vez: {{n}}",
       "decision_unknown": "desconhecidas: {{n}}"
     },
-    "workers": "Equipe",
+    "workers": "Quadro",
     "workers_error": "Não foi possível carregar a equipe.",
     "workers_error_live": "Não foi possível carregar a lista da equipe; seus membros abertos são mostrados.",
     "worker_status_working": "Trabalhando",
@@ -9696,7 +9696,9 @@
       "restart_gateway_title": "Reinicie o {{productName}} para concluir",
       "restart_gateway_body": "Um nome de rede já está disponível, mas este servidor não resolveu nenhum ao iniciar, então o nome ainda não é confiável. Reinicie o {{productName}} uma vez e a última etapa estará pronta.",
       "occupied_title": "Já existe outra coisa servida aqui",
-      "occupied_body": "O Tailscale já está servindo algo neste endereço, e publicar iria substituí-lo. Nada foi alterado. Publique você mesmo se tiver certeza de que é seguro sobrescrever.",
+      "occupied_body": "O Tailscale já está servindo outra coisa neste endereço. Publicar iria substituí-la, então nada foi alterado.",
+      "occupied_replace": "Se for seguro substituir, execute <cmd/>",
+      "occupied_keep_both": "Para manter os dois, primeiro mova o outro serviço para o próprio caminho com <cmd/>.",
       "publish_title": "Coloque o painel na sua rede privada",
       "publish_body": "Está tudo pronto. Isto publica o painel apenas na sua própria rede Tailscale — nunca na internet pública — para que o seu telefone possa abri-lo.",
       "ready_title": "Pronto no seu telefone",
@@ -10118,6 +10120,7 @@
       "steer_not_recorded_crew_log_off": "Entregue a {{name}}, mas não registrado no livro: o log da crew está desligado.",
       "steer_not_recorded_ledger_failed": "Entregue a {{name}}, mas não registrado no livro: a gravação no livro falhou.",
       "ultra_needs_you": "Precisa de você",
+      "ultra_paused": "Pausado",
       "ultra_needs_you_none": "Nada precisa de você agora.",
       "ultra_needs_you_none_blocked": "Nenhuma aprovação aguarda você. O trabalho bloqueado está em Marcos.",
       "ultra_answer_in_chat": "Responder no chat",
@@ -12388,7 +12391,7 @@
         "quote_message": "Citar mensagem",
         "more_actions": "Mais ações",
         "edit_replaces_below": "Enviar substitui as respostas abaixo",
-        "seed_from_conductor": "Do conductor",
+        "seed_from_conductor": "Do chat principal",
         "seed_from_worker": "De um membro da equipe",
         "seed_from_session": "De outro chat"
       },
@@ -14379,7 +14382,7 @@
         "crewmate_harness": "Harness do agente por colega",
         "crewmate_harness_desc": "Adiciona uma configuração Harness do agente ao perfil de cada colega, para que um colega rode em outra ferramenta de programação com IA, como Claude Code, com os modelos dela, enquanto os demais ficam no padrão.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permite que um chat entregue tarefas a uma equipe e as acompanhe em uma aba Crew."
+        "crew_mode_desc": "Permite que um chat entregue tarefas a uma equipe e as acompanhe em um quadro."
       },
       "kasBundleCard": {
         "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",
@@ -14737,7 +14740,6 @@
         "keyboard_shortcuts": "Atalhos de teclado",
         "knowledge_library": "Biblioteca de conhecimento",
         "list_view": "Visualização em lista",
-        "mentions": "menções",
         "next": "Próxima →",
         "no_items_found": "Nenhum item encontrado",
         "no_items_match_your_filters": "Nenhum item corresponde aos seus filtros",

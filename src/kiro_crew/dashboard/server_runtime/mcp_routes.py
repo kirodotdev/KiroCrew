@@ -702,6 +702,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes
 
     register_sandbox_doc_routes(app)
+    # An http(s) download URL for browsers that drop a blob: download.
+    from kiro_crew.dashboard.handlers.artifact_download import register_artifact_download_routes
+
+    register_artifact_download_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)

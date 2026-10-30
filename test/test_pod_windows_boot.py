@@ -41,6 +41,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -431,10 +432,20 @@ def test_a_real_pod_boots_under_task_scheduler_and_leaves_nothing_behind(plane, 
         # OWNER_POD, which on Windows needs the gateway's own pid sidecar (the
         # launcher stub's child) to attest against the stub the supervisor
         # recorded. Health alone passed while that proof was still failing.
+        #
+        # A mint that exits nonzero or prints no token names the pod's own log tail
+        # and how long the verb ran, read here because `pod down` in the finally
+        # block reclaims the home those logs live in. The elapsed time is reported
+        # text, never a bound.
+        mint_started = time.monotonic()
         minted = _pod(cfg_env, "token", name)
-        assert (
-            minted.returncode == 0 and minted.stdout.strip()
-        ), f"pod token refused for a healthy pod:\n{minted.stdout}\n{minted.stderr}"
+        mint_secs = time.monotonic() - mint_started
+        assert minted.returncode == 0 and minted.stdout.strip(), (
+            f"pod token failed for a healthy pod (exit {minted.returncode}) "
+            f"after {mint_secs:.1f}s:\n"
+            f"{minted.stdout}\n{minted.stderr}\nIts own log:\n"
+            f"{win.recent_journal(cfg, name, 80)}"
+        )
     finally:
         down = _pod(cfg_env, "down", name)
 

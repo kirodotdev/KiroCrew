@@ -125,7 +125,7 @@
       "decision_rejected_once": "refusées une fois : {{n}}",
       "decision_unknown": "inconnues : {{n}}"
     },
-    "workers": "Équipe",
+    "workers": "Tableau",
     "workers_error": "Impossible de charger l’équipe.",
     "workers_error_live": "Impossible de charger la liste de l’équipe ; ses membres ouverts sont affichés.",
     "worker_status_working": "En cours",
@@ -9696,7 +9696,9 @@
       "restart_gateway_title": "Redémarrer {{productName}} pour terminer",
       "restart_gateway_body": "Un nom de réseau est désormais disponible, mais ce serveur n'en a résolu aucun à son démarrage ; le nom n'est donc pas encore approuvé. Redémarrez {{productName}} une fois et la dernière étape sera prête.",
       "occupied_title": "Quelque chose d'autre est déjà servi ici",
-      "occupied_body": "Tailscale sert déjà quelque chose à cette adresse, et la publication le remplacerait. Rien n'a été modifié. Publiez-le vous-même si vous êtes certain qu'il est sûr de l'écraser.",
+      "occupied_body": "Tailscale sert déjà autre chose à cette adresse. La publication le remplacerait, donc rien n'a été modifié.",
+      "occupied_replace": "Si le remplacement est sans risque, exécute <cmd/>",
+      "occupied_keep_both": "Pour garder les deux, déplace d'abord l'autre service vers son propre chemin avec <cmd/>.",
       "publish_title": "Placer le tableau de bord sur votre réseau privé",
       "publish_body": "Tout est prêt. Ceci publie le tableau de bord sur votre propre réseau Tailscale uniquement — jamais sur l'Internet public — afin que votre téléphone puisse l'ouvrir.",
       "ready_title": "Prêt sur votre téléphone",
@@ -10118,6 +10120,7 @@
       "steer_not_recorded_crew_log_off": "Remis à {{name}}, mais non enregistré dans le registre : le journal de l'équipe est désactivé.",
       "steer_not_recorded_ledger_failed": "Remis à {{name}}, mais non enregistré dans le registre : l'écriture dans le registre a échoué.",
       "ultra_needs_you": "Requiert ton attention",
+      "ultra_paused": "En pause",
       "ultra_needs_you_none": "Rien ne requiert ton attention pour le moment.",
       "ultra_needs_you_none_blocked": "Aucune approbation ne t’attend. Le travail bloqué se trouve dans Jalons.",
       "ultra_answer_in_chat": "Réponds dans le chat",
@@ -12388,7 +12391,7 @@
         "quote_message": "Citer le message",
         "more_actions": "Plus d'actions",
         "edit_replaces_below": "L'envoi remplace les réponses ci-dessous",
-        "seed_from_conductor": "Du conductor",
+        "seed_from_conductor": "Du chat principal",
         "seed_from_worker": "D’un membre de l’équipe",
         "seed_from_session": "D’un autre chat"
       },
@@ -14379,7 +14382,7 @@
         "crewmate_harness": "Harness de l’agent par coéquipier",
         "crewmate_harness_desc": "Ajoute un réglage Harness de l’agent au profil de chaque coéquipier, pour qu’un coéquipier puisse tourner avec un autre outil de code IA, comme Claude Code, et ses modèles, pendant que les autres gardent celui par défaut.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre dans un onglet Crew."
+        "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre sur un tableau."
       },
       "kasBundleCard": {
         "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",
@@ -14737,7 +14740,6 @@
         "keyboard_shortcuts": "Raccourcis clavier",
         "knowledge_library": "Bibliothèque de connaissances",
         "list_view": "Vue liste",
-        "mentions": "mentions",
         "next": "Suivant →",
         "no_items_found": "Aucun élément trouvé",
         "no_items_match_your_filters": "Aucun élément ne correspond à vos filtres",

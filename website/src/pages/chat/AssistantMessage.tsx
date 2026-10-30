@@ -743,8 +743,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
          code, and Tailwind's `font-mono` pins `var(--mono)` — a token the Font
          Family setting never writes, so this line ignored the user's choice.
          `tabular-nums` stays: fixed-width digits are what the mono was earning
-         here, and it works in a proportional face too. */
-      <div className="flex items-center gap-1 mt-1 text-[11px] leading-4 text-muted/60 tabular-nums" data-testid="turn-stats" title={turnStatsTitle}>
+         here, and it works in a proportional face too. Full `text-muted`, no
+         `/60`: at 60% the line read 2.3:1 on the card, under the 4.5:1 text
+         floor (mutedTextContrast.test.ts). The smaller size keeps it below the
+         timestamp. */
+      <div className="flex items-center gap-1 mt-1 text-[11px] leading-4 text-muted tabular-nums" data-testid="turn-stats" title={turnStatsTitle}>
         {/* Cost leads, elapsed trails: credits are the scarce resource users
             actually budget, so they read first. The clock icon travels WITH the
             elapsed value (never leads the line) so it never appears to label

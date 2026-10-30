@@ -434,7 +434,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     # Background work on battery. Explicit adds never run through the sweeps it gates.
     "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
-    "knowledge.extraction_model": {"type": "str"},
+    # Settings → Knowledge lists the same advertised model names as the role-model
+    # pickers and the installer writes the value into the knowledge agent's spec,
+    # so it shares their grammar. No entitlement check: the picker lists the
+    # default harness's models, while the pool's zero-tool workers may run on
+    # another backend (``llm_pool._get_acp_backend``), so neither catalog can judge
+    # every id the picker offers. ``agent.model`` takes the same grammar-only spec.
+    "knowledge.extraction_model": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+    },
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {
         "type": "int",

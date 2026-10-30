@@ -134,13 +134,42 @@ jobs:
           END: ${{ steps.window.outputs.end }}
         run: |
           set -euo pipefail
-          gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
-            --search "merged:>=$START" \
-            --json number,title,author,mergedAt,url --limit 301 > raw.json
-          if [ "$(jq length raw.json)" -gt 300 ]; then
-            echo "::error::window exceeds the supported 300-PR limit; failing so the window is not advanced"
-            exit 1
-          fi
+          # Complete at any volume. GitHub search returns at most 1000 results
+          # per query, so a slice that comes back full may be truncated: split
+          # it at its midpoint and fetch both halves. `merged:A..B` is inclusive
+          # at both ends, so neighbouring halves share their midpoint second;
+          # duplicates are dropped by PR number, keeping the first occurrence.
+          # The exact half-open window is applied by the jq filter below.
+          CAP=1000
+          echo '[]' > raw.json
+          fetch_range() {
+            local A="$1" B="$2" A_S B_S MID
+            gh pr list --repo "$GITHUB_REPOSITORY" --state merged \
+              --search "merged:$A..$B" \
+              --json number,title,author,mergedAt,url --limit "$CAP" > slice.json
+            if [ "$(jq length slice.json)" -ge "$CAP" ]; then
+              A_S="$(date -u -d "$A" +%s)"
+              B_S="$(date -u -d "$B" +%s)"
+              if [ $((B_S - A_S)) -le 1 ]; then
+                # Cannot be split further; failing keeps the window unadvanced.
+                echo "::error::$CAP or more PRs merged in $A..$B; cannot split the search further"
+                exit 1
+              fi
+              MID="$(date -u -d "@$(( (A_S + B_S) / 2 ))" +%Y-%m-%dT%H:%M:%SZ)"
+              fetch_range "$A" "$MID"
+              fetch_range "$MID" "$B"
+              return
+            fi
+            jq -s '.[0] + .[1]' raw.json slice.json > raw.next
+            mv raw.next raw.json
+          }
+          fetch_range "$START" "$END"
+          jq 'reduce .[] as $p ({seen: {}, out: []};
+                if .seen[$p.number | tostring] then .
+                else .seen[$p.number | tostring] = true | .out += [$p] end) | .out' \
+            raw.json > raw.next
+          mv raw.next raw.json
+          echo "Fetched $(jq length raw.json) merged PRs"
           jq --arg s "$START" --arg e "$END" \
               '[ .[] | select(.mergedAt > $s and .mergedAt <= $e) ] | sort_by(.mergedAt)' \
             raw.json > prs.json
@@ -190,8 +219,8 @@ jobs:
           COUNT="$(jq length issues.json)"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Issues filed in window: $COUNT"
-          # Deliberately NOT a hard failure on overflow, unlike the 300-PR cap
-          # above. Failing would withhold the whole report AND leave the window
+          # Deliberately NOT a hard failure on overflow. Failing would withhold
+          # the whole report AND leave the window
           # unadvanced, so a quiet inbound spike would suppress the shipping
           # half it has nothing to do with. The fetch stops at 101 issues, so
           # in a bigger window every inbound count and list covers only the

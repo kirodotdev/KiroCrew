@@ -786,6 +786,23 @@ def _check_entrypoint(tree: ast.Module, errors: list[str]) -> None:
             args = node.args.posonlyargs + node.args.args
             if not args or args[0].arg != "ctx":
                 errors.append(f"'{ENTRYPOINT}' must take 'ctx' as its first parameter")
+                return
+            # The runner calls ``workflow(ctx)`` and nothing else, so any further
+            # parameter without a default raises TypeError the moment the run
+            # starts, after the script was accepted.
+            positional_defaults = len(node.args.defaults)
+            required = [a.arg for a in args[1 : len(args) - positional_defaults]]
+            required += [
+                a.arg
+                for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                if default is None
+            ]
+            if required:
+                names = ", ".join(f"'{name}'" for name in required)
+                errors.append(
+                    f"'{ENTRYPOINT}' is called with 'ctx' only; give {names} a default "
+                    "or remove it"
+                )
             return
         if isinstance(node, ast.FunctionDef) and node.name == ENTRYPOINT:
             errors.append(f"'{ENTRYPOINT}' must be 'async def', not 'def'")

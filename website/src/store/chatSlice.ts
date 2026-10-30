@@ -1203,12 +1203,15 @@ export const awaitSideRestore = createAsyncThunk<'restored' | 'failed' | 'timeou
 const latestSideResyncRead = new Map<string, object>()
 
 /**
- * A side turn can end while this tab cannot hear it: before its socket first
- * connects, when the restore read was answered first, or while the socket is
- * down. Its final frame then reaches no socket of this tab, and a panel waiting
- * on the turn would wait until the next reload. So each time the socket opens,
- * every restored panel still waiting on a turn reads the gateway's copy again
- * (`sideResync`), once any restore read still in flight has landed. A 404 means
+ * Side Chat frames reach only the sockets connected when they are sent. While
+ * this tab cannot hear them -- before its socket first connects, when the
+ * restore read was answered first, or while the socket is down -- a side turn
+ * can end, another tab can ask and be answered, and queued questions can be
+ * added, run or cancelled. A panel waiting on a turn would wait until the next
+ * reload, and an idle one would show a conversation and a queue the gateway no
+ * longer holds. So each time the socket opens, every restored panel reads the
+ * gateway's copy again (`sideResync`), whether or not it waits on a turn, once
+ * any restore read still in flight has landed. A 404 means
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
@@ -1222,7 +1225,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
       const side = slotSide[slot]
-      if (!slotSideRestored?.[slot] || !side || !(side.pending || side.streaming || side.awaitingFinalRunId)) return
+      if (!slotSideRestored?.[slot] || !side) return
       const thisRead = {}
       latestSideResyncRead.set(slot, thisRead)
       let snapshot: SideSnapshot | undefined
@@ -1256,7 +1259,7 @@ export {
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
-export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
+export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,

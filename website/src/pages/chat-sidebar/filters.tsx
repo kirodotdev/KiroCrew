@@ -2,7 +2,6 @@
  *  and tag filter state, the Recent window, the status sets the chips count, and the
  *  unread auto-drain. */
 import { Circle, Zap, Pin, Clock } from 'lucide-react'
-import { KiroGhostMark } from '../../components/KiroGhostMark'
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
@@ -56,8 +55,8 @@ export const SESSION_FILTERS: SessionFilterDef[] = [
     // workers are never rows here, so there is nothing for a hide to drop.
     key: 'crew', storageKey: 'mc-session-crew-only',
     color: 'var(--accent)',
-    // The crew's own ghost on the gradient, the mark the root rows wear.
-    icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><KiroGhostMark size={8} className="inline-block shrink-0" /></span>,
+    // The Ultra Mode lightning bolt on the gradient, the mark the root rows wear.
+    icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><Zap size={8} aria-hidden="true" className="inline-block shrink-0" /></span>,
   },
 ]
 

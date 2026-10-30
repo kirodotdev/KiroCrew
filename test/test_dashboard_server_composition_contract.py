@@ -392,6 +392,7 @@ _LAZY_IMPORTS = {
     ),
     "kiro_crew.enterprise_boot": "require_kiro_login",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
     "kiro_crew.dashboard.handlers.ask_question": (
         "api_agent_ask_open api_agent_ask_wait api_agent_ask_withdraw "
         "api_ask_question api_ask_question_answer api_ask_question_dismiss "

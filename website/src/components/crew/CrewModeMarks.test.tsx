@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { CrewEyebrow, CrewGhostBadge, CrewModeComposerChip, CrewModeMarkSource, CrewStatusDot, CrewWorkerStack } from './CrewModeMarks'
+import { CrewEyebrow, CrewGhostBadge, CrewModeComposerChip, CrewStatusDot, CrewWorkerStack } from './CrewModeMarks'
 
 describe('CrewModeMarks', () => {
   it('draws the ghost badge on the crew gradient at the size asked', () => {
@@ -66,8 +66,10 @@ describe('CrewModeMarks', () => {
     expect(mark.textContent).toBe('Ultra Mode')
   })
 
-  it('the mark source wraps the chip it hands to the composer mark', () => {
-    render(<CrewModeMarkSource><span data-testid="inner">chip</span></CrewModeMarkSource>)
-    expect(screen.getByTestId('inner').parentElement?.className).toContain('inline-flex')
+  it('marks Ultra Mode with a lightning bolt, not the ghost', () => {
+    render(<CrewModeComposerChip />)
+    const chip = screen.getByTestId('crew-mode-composer-chip')
+    expect(chip.querySelector('.lucide-zap')).not.toBeNull()
+    expect(chip.querySelector('[data-testid="kiro-ghost-mark"]')).toBeNull()
   })
 })

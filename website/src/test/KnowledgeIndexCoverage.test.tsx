@@ -108,7 +108,9 @@ let filteredCountsEmpty: boolean
 let namespacesFixture: NamespaceInfo[]
 let statsFixture: Stats | undefined
 let statsPending: boolean
-let entitiesFixture: { id: string; name: string; entity_type: string; mention_count?: number }[]
+// The row shape GET /api/knowledge/entities answers with: `SELECT * FROM entities`.
+type EntityRow = { id: string; name: string; entity_type: string; description: string | null; aliases: string; created_at: string; updated_at: string }
+let entitiesFixture: EntityRow[]
 let entityItemsFixture: { id: string; title: string; item_type: string; status: string; updated_at: string }[]
 let flatTotal: number
 let itemMutationError: Error | null
@@ -153,7 +155,7 @@ beforeEach(() => {
   filteredCountsEmpty = false
   namespacesFixture = []
   statsFixture = { items: 4, entities: 2, relations: 1, sources: 1, embeddings: { enabled: true, available: true, model: 'gte-small', embedded_items: 4 } }
-  entitiesFixture = [{ id: 'e1', name: 'Ledger', entity_type: 'concept', mention_count: 7 }]
+  entitiesFixture = [{ id: 'e1', name: 'Ledger', entity_type: 'concept', description: null, aliases: '[]', created_at: '2026-01-01', updated_at: '2026-01-01' }]
   entityItemsFixture = [{ id: 'i9', title: 'Ledger design', item_type: 'design_doc', status: 'active', updated_at: '2026-01-02' }]
   flatTotal = 1
   itemMutationError = null
@@ -454,11 +456,22 @@ describe('KnowledgePage — graph tab', () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     const input = await screen.findByPlaceholderText(/Search knowledge/i)
     await userEvent.type(input, 'led')
-    // The suggestion row carries the entity type and its mention count.
-    const hit = await screen.findByRole('button', { name: /concept Ledger 7 mentions/ })
+    // The suggestion row carries the entity type and name, nothing else.
+    const hit = await screen.findByRole('button', { name: 'concept Ledger' })
     await userEvent.click(hit)
     expect(await screen.findByText('highlight:Ledger')).toBeInTheDocument()
     expect(await screen.findByText('Items mentioning:')).toBeInTheDocument()
+  })
+
+  it('an autocomplete row shows no count, even for a stray mention_count of 0', async () => {
+    // /api/knowledge/entities sends entity rows only; no route computes a
+    // mention count. A stray field must not leak into the row, and a `0`
+    // must not render as a literal "0".
+    entitiesFixture = [{ ...entitiesFixture[0], mention_count: 0 } as EntityRow]
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await userEvent.type(await screen.findByPlaceholderText(/Search knowledge/i), 'led')
+    const hit = await screen.findByRole('button', { name: 'concept Ledger' })
+    expect(hit).toHaveTextContent(/^conceptLedger$/)
   })
 })
 

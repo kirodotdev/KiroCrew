@@ -1842,6 +1842,59 @@ class TestStatusIsOwnerOnly:
         )
 
     @pytest.mark.asyncio
+    async def test_occupied_reaches_the_card_with_the_publish_command(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """`occupied` gets the same manual publish command as `untrusted_cli`.
+
+        Serve already holds this mount for something else, so the gateway refuses
+        to publish (it would REPLACE it). The card's copy tells the operator to
+        run the command if the existing mapping is safe to overwrite — so the
+        command has to be there, and it must be the real `tailscale serve`
+        publish, not `kirocrew tailnet up`, which re-runs the path that refused.
+        """
+        # `occupied` sits late in the step order (past trust_off and
+        # restart_gateway), so the derivation only reaches it with the origin
+        # trusted (config enabled) and the running host matching the resolved
+        # name. Stub those inputs and let the real _derive_step run, rather than
+        # injecting the step — the wiring under test is that an `occupied` state
+        # produces the command.
+        cfg = SimpleNamespace(
+            dashboard=SimpleNamespace(
+                tailscale=SimpleNamespace(
+                    enabled=True,
+                    keep_awake=True,
+                    trust_identity=False,
+                    allowed_logins=[],
+                ),
+                qr_session_until_restart=True,
+                qr_session_persist_across_restart=False,
+            )
+        )
+        healthy = DaemonProbe(
+            name=_HOST,
+            installed=True,
+            reachable=True,
+            logged_in=True,
+            detail="",
+        )
+        stranger = tailnet_mobile.tailnet_serve.ServeState(
+            published=False, configured=True, detail="not ours", port_free=False
+        )
+        with (
+            patch.object(tailnet_mobile.KiroCrewConfig, "load", classmethod(lambda cls: cfg)),
+            patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=healthy),
+            patch.object(tailnet_mobile.tailnet_serve, "serve_state", return_value=stranger),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_status(_request(tailnet_host=_HOST))
+        body = json.loads(resp.body)
+        port = tailnet_mobile._dashboard_port(_request())
+        assert body["step"] == "occupied"
+        assert body["serve_command"] == (
+            f"tailscale serve --bg --https=443 http://127.0.0.1:{port}"
+        )
+
+    @pytest.mark.asyncio
     async def test_non_owner_read_is_refused(self, _unrestricted, _quiet_audit) -> None:
         resp = await self._status(user="telegram-11893")
         assert resp.status == 403

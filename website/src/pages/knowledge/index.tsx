@@ -89,7 +89,6 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
           className="w-full px-3 py-2 text-left text-[13px] hover:bg-bg-hover flex items-center gap-2 bg-transparent border-none cursor-pointer">
           <span className="text-accent text-[11px]">{e.entity_type}</span>
           <span className="text-text">{e.name}</span>
-          {e.mention_count && <span className="text-muted text-[10px] ml-auto">{e.mention_count} {i18nT('pages.knowledge.index.mentions')}</span>}
         </button>
       ))}
     </div>

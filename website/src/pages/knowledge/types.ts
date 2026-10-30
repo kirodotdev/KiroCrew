@@ -23,7 +23,6 @@ export interface Entity {
   name: string
   entity_type: string
   description?: string
-  mention_count?: number
 }
 
 export interface Relation {
