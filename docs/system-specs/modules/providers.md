@@ -1210,6 +1210,12 @@ are the entries of `agent.py:_MANAGED_MCP_SERVERS` (see also
 `kirocrew-work`, `kirocrew-crew-log`) are opt-in per their entry.
 User-configured servers from the agent config are merged in.
 
+Vibe's MCP projection is declared `NO_CHANNEL` in `providers/mirrors/registry.py`:
+its permission routing and MCP delivery are unverified, so it stays dormant and
+receives neither a projected agent spec nor the session/new MCP array. Offering it
+requires a verified MCP transport and a projection onto that transport as well as
+permission-routing verification.
+
 ## SessionManager (`session.py`)
 
 - Provider-agnostic via factory (one provider, `AcpProvider`, over the resolved backend)

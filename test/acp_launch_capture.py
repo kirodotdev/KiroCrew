@@ -54,11 +54,11 @@ from kiro_crew.acp.harness import strands as strands_mod
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.skill_projection import NativeSkillProjection
 from kiro_crew.agent_sdk.backends import (
-    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KNOWN,
@@ -93,6 +93,7 @@ _STRANDS_BIN = "/opt/bin/strands"
 # The Strands gate module, sealed into its project directory in the gate leaf.
 _STRANDS_PROJECT = "/opt/run/strands"
 _STRANDS_GATE = "/opt/run/strands/agent.py"
+_VIBE_BIN = "/opt/bin/vibe-acp"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
 
@@ -485,6 +486,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     ACP_BACKEND_DEEPSEEK: (_DEEPSEEK_BIN, _SEARCH_PATH),
                     ACP_BACKEND_COPILOT: (_COPILOT_BIN, _SEARCH_PATH),
                     ACP_BACKEND_STRANDS: (_STRANDS_BIN, _SEARCH_PATH),
+                    ACP_BACKEND_VIBE: (_VIBE_BIN, _SEARCH_PATH),
                 }[backend],
             ),
         ]

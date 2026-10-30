@@ -1022,6 +1022,8 @@ async def _initialize_session(self: AcpClient) -> None:
                 # own read-back on the response that replaces this one.
                 if self._is_goose and self._resumed:
                     self._verify_goose_routing(load_resp)
+                if self._is_vibe and self._resumed:
+                    self._verify_vibe_routing(load_resp)
                 if self._is_claude and self._resumed:
                     await self._pin_claude_starting_mode(load_resp)
         else:
@@ -1053,6 +1055,8 @@ async def _initialize_session(self: AcpClient) -> None:
         # an adapter (harness-parity H13).
         if self._is_goose:
             self._verify_goose_routing(session_resp)
+        if self._is_vibe:
+            self._verify_vibe_routing(session_resp)
         if not self._session_id:
             # Both the initial attempt and the substitution retry failed to
             # yield a session. Raise a clear, actionable error instead of

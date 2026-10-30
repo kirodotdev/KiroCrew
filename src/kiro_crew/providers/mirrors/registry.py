@@ -40,6 +40,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -308,6 +309,22 @@ PROJECTIONS: dict[str, McpProjection] = {
         # rule a lower config source outranked is withheld whole
         # (providers/mirrors/opencode.py::opencode_projection).
         per_tool_deny=PerToolDeny.SETTINGS_FILE,
+    ),
+    ACP_BACKEND_VIBE: McpProjection(
+        kind=ProjectionKind.BROKER_ONLY,
+        reason=(
+            "vibe-acp consumes the ``session/new`` ``mcpServers`` array itself "
+            "(``vibe.acp.agent`` hands it to the session as "
+            "``SessionOptions.mcp_servers``), so the array IS the channel and "
+            "carries Crew's pooled broker stubs -- captured live on mistral-vibe "
+            "3.0.3: a stdio element in the array was spawned and asked "
+            "``initialize``, ``notifications/initialized`` and ``tools/list`` "
+            "(``test/fixtures/acp_frames/vibe/routing-live.jsonl``). What does not "
+            "travel is the agent spec's own server list or its per-tool deny set: "
+            "no mirror translates them for this harness, so a dashboard tool-off "
+            "withholds the whole server stub rather than one tool of it"
+        ),
+        tracking="docs/system-specs/modules/providers.md#mcp-server-registration",
     ),
     ACP_BACKEND_PI: McpProjection(
         kind=ProjectionKind.BROKER_ONLY,

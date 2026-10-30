@@ -28,6 +28,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KNOWN,
@@ -247,8 +248,17 @@ class TestTheEffortControlIsReachableOnThisHarness:
 
     def test_the_advertised_option_answers_for_this_harness(self) -> None:
         """Written out per harness, so a silently granted authority names its own."""
+        # vibe joins for the same reason as the others: its ``thinking`` select
+        # sits on every ``session/new`` result and its model ids are foreign to the
+        # registry (captured on mistral-vibe 3.0.3).
         assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset(
-            {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+            {
+                ACP_BACKEND_DEEPSEEK,
+                ACP_BACKEND_GOOSE,
+                ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_PI,
+                ACP_BACKEND_VIBE,
+            }
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION

@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -56,6 +57,13 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # ``[provider, model]`` pair -- ``["deepseek-official", "deepseek-v4-flash"]`` -- so
 # the value is passed through exactly as advertised rather than parsed. That is what
 # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` membership is for.
+#
+# ``ACP_BACKEND_VIBE`` is a member on the same kind of evidence: vibe-acp's
+# ``session/new`` result advertises a ``model`` select whose options are the model
+# aliases its own config/catalog resolved, and its ``session/set_config_option``
+# accepts ``model`` (captured on mistral-vibe 3.0.3,
+# ``test/fixtures/acp_frames/vibe/routing-live.jsonl``: ``configOptions`` carries
+# ``mode``, ``model`` and ``thinking``).
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -64,6 +72,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -161,6 +170,11 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        # Vibe exposes thinking as the ``thinking`` config option (off/low/medium/
+        # high/xhigh/max), advertised on ``session/new`` and writable through
+        # ``session/set_config_option`` -- captured on mistral-vibe 3.0.3, see
+        # ``test/fixtures/acp_frames/vibe/routing-live.jsonl``.
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -198,6 +212,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_GOOSE: "thinking_effort",
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
+    ACP_BACKEND_VIBE: "thinking",
 }
 
 #: The spelling used by every backend without a row in
@@ -258,8 +273,19 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
 # take a level, is the right authority for them.
+# vibe is a member for the same reason as deepseek/goose: its model ids (catalog
+# aliases) are foreign to the registry, and its own ``thinking`` select sits on
+# every ``session/new`` result (captured on mistral-vibe 3.0.3), offering
+# off/low/medium/high/xhigh/max. Crew's levels are spelled identically there, so
+# no ``EFFORT_CONFIG_OPTION_VALUES`` row is needed.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
-    {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_VIBE,
+    }
 )
 
 
@@ -405,6 +431,10 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # vibe-acp advertises its model select only as a ``configOptions`` entry on
+        # ``session/new`` (the catalog it resolves, keyed by alias), so the capture
+        # is the source of ids ``session/set_config_option("model", ...)`` accepts.
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -528,6 +558,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # strands gets its own key: its ids are ``provider/model`` strings (or bare
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
+    ACP_BACKEND_VIBE: "vibe",
 }
 
 

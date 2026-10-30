@@ -103,7 +103,8 @@ into its own directory, and a child process classifies against it with
 - **Each child is hermetic.** Every `KIROCREW_*` variable is stripped, and both
   the OS home (`HOME` / `USERPROFILE`) and `KIROCREW_HOME` are repointed at a
   throwaway directory. `KIRO_HOME` and the agent harnesses' declared credential
-  home overrides are also stripped. The sensitive-path target set therefore
+  home overrides are also stripped, including `VIBE_HOME` for the unverified
+  Vibe adapter. The sensitive-path target set therefore
   never probes an inherited operator home, the verdict depends on the checkout
   alone, and the best-effort audit writes never reach a real security log.
 
