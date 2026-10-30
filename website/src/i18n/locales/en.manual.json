@@ -7911,9 +7911,22 @@
       },
       "postureDisclosure": {
         "filter": "Filter {{label}}",
-        "filter_items": "Filter {{n}} {{unit}}…",
         "no_matches_for_query": "No matches for “{{query}}”.",
-        "live_count_unavailable": "The live count for this control is currently unavailable."
+        "live_count_unavailable": "The live count for this control is currently unavailable.",
+        "show_details": "Show {{label}} details — {{amount}}",
+        "hide_details": "Hide {{label}} details — {{amount}}",
+        "currently_unavailable": "currently unavailable",
+        "filter_amount": "Filter {{amount}}…",
+        "label_sensitive_paths": "Sensitive path blocking",
+        "label_write_protected_paths": "Write-protected paths",
+        "label_denied_commands": "Denied commands",
+        "label_suspicious_patterns": "Suspicious bash patterns",
+        "label_tool_schemas": "MCP input validation",
+        "label_redaction_paths": "Output redaction",
+        "label_credential_families": "Credential patterns",
+        "label_exfil_heuristics": "URL exfiltration detection",
+        "label_audit_surfaces": "SEL audit logging",
+        "label_token_auth": "Dashboard token auth"
       },
       "slackPanel": {
         "auto_link_sessions": "Connect new sessions to Slack automatically",

@@ -810,7 +810,7 @@ describe('SecurityPanel — posture disclosure', () => {
     )
     renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
-    expect(await screen.findByText('1 built-in rules')).toBeInTheDocument()
+    expect(await screen.findByText('1 built-in rule')).toBeInTheDocument()
     expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
     expect(screen.queryByText('129 built-in rules')).not.toBeInTheDocument()
   })
@@ -859,7 +859,7 @@ describe('SecurityPanel — posture disclosure', () => {
             summary: '', source: '', count: null, items: [], unavailable: true,
           },
           {
-            key: 'audit_surfaces', label: 'SEL audit logging', unit: 'audited surfaces',
+            key: 'audit_surfaces', label: 'SEL audit logging', unit: 'session-key surfaces',
             summary: '', source: '', count: 2, unavailable: false,
             items: [{ label: 'Slack handler', detail: '' }, { label: 'MCP core', detail: '' }],
           },
@@ -871,7 +871,7 @@ describe('SecurityPanel — posture disclosure', () => {
 
     // The badge is the row's payload, so it belongs in the accessible name.
     expect(
-      await screen.findByLabelText('Show SEL audit logging details — 2 audited surfaces'),
+      await screen.findByLabelText('Show SEL audit logging details — 2 session-key surfaces'),
     ).toBeInTheDocument()
     // A control with nothing to expand is a plain row, not an aria-disabled button.
     expect(screen.getByText('unavailable')).toBeInTheDocument()

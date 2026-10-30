@@ -9808,7 +9808,27 @@
       "postureDisclosure": {
         "more": "more",
         "show": "Show",
-        "unavailable": "unavailable"
+        "unavailable": "unavailable",
+        "count_sensitive_paths_one": "{{count}} credential path",
+        "count_sensitive_paths_other": "{{count}} credential paths",
+        "count_write_protected_paths_one": "{{count}} config path",
+        "count_write_protected_paths_other": "{{count}} config paths",
+        "count_denied_commands_one": "{{count}} built-in rule",
+        "count_denied_commands_other": "{{count}} built-in rules",
+        "count_suspicious_patterns_one": "{{count}} pattern",
+        "count_suspicious_patterns_other": "{{count}} patterns",
+        "count_tool_schemas_one": "{{count}} tool schema",
+        "count_tool_schemas_other": "{{count}} tool schemas",
+        "count_redaction_paths_one": "{{count}} output path",
+        "count_redaction_paths_other": "{{count}} output paths",
+        "count_credential_families_one": "{{count}} credential family",
+        "count_credential_families_other": "{{count}} credential families",
+        "count_exfil_heuristics_one": "{{count}} heuristic",
+        "count_exfil_heuristics_other": "{{count}} heuristics",
+        "count_audit_surfaces_one": "{{count}} session-key surface",
+        "count_audit_surfaces_other": "{{count}} session-key surfaces",
+        "count_token_auth_one": "{{count}} auth control",
+        "count_token_auth_other": "{{count}} auth controls"
       },
       "releases": {
         "badge_unreleased": "Unreleased",

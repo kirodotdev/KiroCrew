@@ -317,5 +317,15 @@
   "components.crewMode.ultra_done_line_green",
   "components.crewMode.ultra_done_line_green_rest",
   "components.crewMode.ultra_done_line_files",
-  "components.crewMode.ultra_done_line_files_rest"
+  "components.crewMode.ultra_done_line_files_rest",
+  "pages.settings.postureDisclosure.count_sensitive_paths",
+  "pages.settings.postureDisclosure.count_write_protected_paths",
+  "pages.settings.postureDisclosure.count_denied_commands",
+  "pages.settings.postureDisclosure.count_suspicious_patterns",
+  "pages.settings.postureDisclosure.count_tool_schemas",
+  "pages.settings.postureDisclosure.count_redaction_paths",
+  "pages.settings.postureDisclosure.count_credential_families",
+  "pages.settings.postureDisclosure.count_exfil_heuristics",
+  "pages.settings.postureDisclosure.count_audit_surfaces",
+  "pages.settings.postureDisclosure.count_token_auth"
 ]

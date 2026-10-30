@@ -43,6 +43,47 @@ function isCodeLabel(label: string): boolean {
   return !label.includes(' ') || /[~/|*$\\]|^-|\.\w+$/.test(label)
 }
 
+/** "<count> <unit>" in the user's language, chosen by the control's stable `key`.
+ *
+ *  The server's `unit` is English (`security_posture_controls.py`), so the catalog
+ *  owns the translated, plural-aware wording for every shipped control. A key this
+ *  build does not know yet (a newer backend) falls back to the server's English
+ *  unit rather than dropping the count. Each key is spelled out in full so the
+ *  catalog's dead-key and key-reference checks can see it. */
+export function postureAmount(key: string, count: number, unit: string): string {
+  switch (key) {
+    case 'sensitive_paths': return i18nT('pages.settings.postureDisclosure.count_sensitive_paths', { count })
+    case 'write_protected_paths': return i18nT('pages.settings.postureDisclosure.count_write_protected_paths', { count })
+    case 'denied_commands': return i18nT('pages.settings.postureDisclosure.count_denied_commands', { count })
+    case 'suspicious_patterns': return i18nT('pages.settings.postureDisclosure.count_suspicious_patterns', { count })
+    case 'tool_schemas': return i18nT('pages.settings.postureDisclosure.count_tool_schemas', { count })
+    case 'redaction_paths': return i18nT('pages.settings.postureDisclosure.count_redaction_paths', { count })
+    case 'credential_families': return i18nT('pages.settings.postureDisclosure.count_credential_families', { count })
+    case 'exfil_heuristics': return i18nT('pages.settings.postureDisclosure.count_exfil_heuristics', { count })
+    case 'audit_surfaces': return i18nT('pages.settings.postureDisclosure.count_audit_surfaces', { count })
+    case 'token_auth': return i18nT('pages.settings.postureDisclosure.count_token_auth', { count })
+    default: return `${count} ${unit}`
+  }
+}
+
+/** The control's name in the user's language, chosen by its stable `key`; the
+ *  server's English `label` is the fallback for a key this build does not know. */
+export function postureLabel(key: string, label: string): string {
+  switch (key) {
+    case 'sensitive_paths': return i18nT('pages.settings.postureDisclosure.label_sensitive_paths')
+    case 'write_protected_paths': return i18nT('pages.settings.postureDisclosure.label_write_protected_paths')
+    case 'denied_commands': return i18nT('pages.settings.postureDisclosure.label_denied_commands')
+    case 'suspicious_patterns': return i18nT('pages.settings.postureDisclosure.label_suspicious_patterns')
+    case 'tool_schemas': return i18nT('pages.settings.postureDisclosure.label_tool_schemas')
+    case 'redaction_paths': return i18nT('pages.settings.postureDisclosure.label_redaction_paths')
+    case 'credential_families': return i18nT('pages.settings.postureDisclosure.label_credential_families')
+    case 'exfil_heuristics': return i18nT('pages.settings.postureDisclosure.label_exfil_heuristics')
+    case 'audit_surfaces': return i18nT('pages.settings.postureDisclosure.label_audit_surfaces')
+    case 'token_auth': return i18nT('pages.settings.postureDisclosure.label_token_auth')
+    default: return label
+  }
+}
+
 function ItemRow({ item }: { item: PostureItem }) {
   const code = isCodeLabel(item.label)
   return (
@@ -117,11 +158,17 @@ export function PostureDisclosureRow({
   // The badge carries the row's actual payload, so fold it into the accessible
   // name — an `aria-label` overrides name-from-content, and a keyboard user
   // hearing only "Show Output redaction details" would miss the count entirely.
-  const headerLabel = canExpand
-    ? `${open ? 'Hide' : 'Show'} ${control.label} details — ${
-        unresolved ? 'currently unavailable' : `${count} ${control.unit}`
-      }`
-    : undefined
+  const name = postureLabel(control.key, control.label)
+  const amount = unresolved ? null : postureAmount(control.key, count, control.unit)
+  const labelVars = {
+    label: name,
+    amount: amount ?? i18nT('pages.settings.postureDisclosure.currently_unavailable'),
+  }
+  const headerLabel = !canExpand
+    ? undefined
+    : open
+      ? i18nT('pages.settings.postureDisclosure.hide_details', labelVars)
+      : i18nT('pages.settings.postureDisclosure.show_details', labelVars)
 
   const headerInner = (
     <>
@@ -139,7 +186,7 @@ export function PostureDisclosureRow({
         )}
         <span className="text-muted shrink-0 flex items-center">{icon}</span>
         <span className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors truncate">
-          {control.label}
+          {name}
         </span>
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
@@ -151,7 +198,7 @@ export function PostureDisclosureRow({
              button and toggle the disclosure on click. */
           <Badge variant="warn"><AlertTriangle className="lucide-inline" /> {i18nT('pages.settings.postureDisclosure.unavailable')}</Badge>
         ) : (
-          <Badge variant="ok" className="tabular-nums">{count} {control.unit}</Badge>
+          <Badge variant="ok" className="tabular-nums">{amount}</Badge>
         )}
       </div>
     </>
@@ -212,8 +259,10 @@ export function PostureDisclosureRow({
                   <SearchInput
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
-                    placeholder={i18nT('pages.settings.postureDisclosure.filter_items', { n: control.items.length, unit: control.unit })}
-                    aria-label={i18nT('pages.settings.postureDisclosure.filter', { label: control.label })}
+                    placeholder={i18nT('pages.settings.postureDisclosure.filter_amount', {
+                      amount: postureAmount(control.key, control.items.length, control.unit),
+                    })}
+                    aria-label={i18nT('pages.settings.postureDisclosure.filter', { label: name })}
                   />
                 </div>
               )}
