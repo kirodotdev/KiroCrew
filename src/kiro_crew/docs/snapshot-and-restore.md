@@ -278,8 +278,8 @@ So a merge never destroys anything on the receiving machine. If you want the
 snapshot to win, use `--mode replace`.
 
 **The dashboard's import follows the same rule for settings.** The import on
-Settings > Imports (a `.zip` from the dashboard's export) defaults to Merge too,
-and its Merge never overwrites a settings document: `config.json`,
+Settings > Import / Export (a `.zip` from the dashboard's export) defaults to
+Merge too, and its Merge never overwrites a settings document: `config.json`,
 `ui-prefs.json` (the browser-held settings) and `notification_settings.json` are
 installed only where this install has none, and one this install already has is
 kept exactly as it is. Like `kirocrew restore`, it never installs the archive's

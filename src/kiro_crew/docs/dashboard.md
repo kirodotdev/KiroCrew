@@ -56,7 +56,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Imports, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 
