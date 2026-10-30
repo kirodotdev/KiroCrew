@@ -189,6 +189,33 @@ async def test_a_relative_project_prompt_may_not_escape_the_checkout(layout):
         await _project("proj", checkout)
 
 
+def test_a_project_prompt_is_handed_on_as_the_checked_target(layout, tmp_path):
+    # The read must not resolve the checkout's ref a second time: a link
+    # repointed after the containment check would be followed.
+    _user, checkout, project = layout
+    (project / "real.md").write_text("inside", encoding="utf-8")
+    (project / "p.md").symlink_to(project / "real.md")
+    _write(project, "proj", {"name": "proj", "prompt": "file://./p.md"})
+
+    spec, _anchor = resolve_projected_spec(tmp_path / "home" / "agents", "proj", checkout)
+
+    assert spec["prompt"] == "file://" + (project / "real.md").resolve().as_posix()
+
+
+@pytest.mark.asyncio
+async def test_a_project_prompt_symlinked_out_of_the_checkout_is_refused(layout, tmp_path):
+    # A trusted user-level spec may climb with `..`; a checkout's may not, and a
+    # link inside the checkout is judged by where it points.
+    _user, checkout, project = layout
+    outside = tmp_path / "notes.md"
+    outside.write_text("the user's own notes", encoding="utf-8")
+    (project / "p.md").symlink_to(outside)
+    _write(project, "proj", {"name": "proj", "prompt": "file://./p.md"})
+
+    with pytest.raises(AcpRuntimeError, match="escapes the agent directory"):
+        await _project("proj", checkout)
+
+
 @pytest.mark.asyncio
 async def test_an_unreadable_project_only_spec_refuses_the_session(layout):
     _user, checkout, project = layout

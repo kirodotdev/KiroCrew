@@ -2176,6 +2176,14 @@ spec the same way kiro-cli v2 does where the wire allows it:
   place. Only Crew's background agent `kirocrew-lite` gets the inline
   `_KAS_FALLBACK_PROMPT` brief instead. Measured live on kiro-cli 2.35.1: `""`
   registers the agent (its empty `tools` held), a missing key falls back to `vibe`.
+- A `file://` prompt is read by Crew and its text shipped over the wire, so the
+  path is checked first. A relative ref is anchored to the agents directory and
+  may use `..` (`file://../prompts/x.md` loads, as on kiro-cli); relative or
+  absolute, the resolved path (symlinks followed) is refused when it is a
+  sensitive location, `~/.config/gh`, the data home's `app_receipt_secret` or `session_token_*.sig`,
+  or a pseudo-filesystem (`acp/kas_prompt_paths.py`). A spec from
+  a project checkout is untrusted, and its relative ref must stay inside that
+  checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`).
 - `toolsSettings.subagent` becomes `subagent` rules
   (`kas_permissions.tools_settings_to_permissions`), the capability whose
   resource is the sub-agent's name (a KAS consent names it as such, and KAS writes
