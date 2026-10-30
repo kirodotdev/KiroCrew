@@ -262,6 +262,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
 
     _session_stop_gen_at_entry = _session_stop_generation(turn)
     turn._session_stop_gen_at_entry = _session_stop_gen_at_entry
+    # On the slot as well: the restart-resume error pass runs after this turn's
+    # teardown, outside the turn, and measures the session's Stop count against
+    # the turn's entry -- a channel Stop landing in the teardown awaits moves the
+    # counter and nothing else on the slot.
+    slot._turn_entry_stop_count = _session_stop_gen_at_entry
 
     # Who caused this turn, for the session ledger. Bound COMPLETELY here, before
     # anything that can fail: ``_queue_recovery`` stamps this value, and the

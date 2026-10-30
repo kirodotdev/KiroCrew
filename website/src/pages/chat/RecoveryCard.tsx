@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
 import { useRowDisclosure } from './rowDisclosure'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -35,6 +36,8 @@ export type RecoveryKind =
   | 'promise_only'
   | 'compaction'
   | 'manual'
+  | 'auto_restart'
+  | 'auto_error'
   | 'refusal_fallback'
   | 'hook'
   | 'hook_halted'
@@ -81,6 +84,13 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   // the same shape (an `inject` continuation the model reads), but its copy must
   // not claim an automatic recovery — a person pressed Continue.
   ['manual', '[Continue — requested by the user]'],
+  // Automatic like the recoveries above it, but it is the Resume button pressed
+  // by the gateway on the person's behalf (`dashboard.resume_interrupted_turns`,
+  // a setting that is off by default), so its copy must say neither "requested
+  // by the user" nor claim an in-turn recovery: nobody pressed anything, and the
+  // turn had already ended when the resume was dispatched.
+  ['auto_restart', '[Continue — automatic after a restart]'],
+  ['auto_error', '[Continue — automatic after an error]'],
   // A content-filter refusal landed after the turn had already run tools, and a
   // fallback model is configured. The user's message is not replayed (the tools
   // would run twice); the session is moved to the fallback model and handed the
@@ -134,6 +144,21 @@ const TOOL_BLOCKED_DETAIL: Record<string, string> = {
 /** A blocked-item bullet in the refusal body (`  - <tool>: <reason>`). */
 const BULLET_RE = /^\s*-\s+\S/
 
+/**
+ * The `{ n, limit }` an automatic-resume row's `meta.autoResume` stamp carries,
+ * or null when the stamp is absent or malformed. Checked field by field: the
+ * row's persisted meta is on disk beside agent-written rows, so a bad shape must
+ * drop the count rather than render it.
+ */
+function autoResumeAttempt(meta: Record<string, unknown> | null | undefined): { n: number; limit: number } | null {
+  const stamp = meta?.autoResume
+  if (stamp === null || typeof stamp !== 'object' || Array.isArray(stamp)) return null
+  const { attempt, limit } = stamp as Record<string, unknown>
+  if (typeof attempt !== 'number' || !Number.isInteger(attempt) || attempt < 1) return null
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) return null
+  return { n: attempt, limit }
+}
+
 export interface ParsedRecovery {
   kind: RecoveryKind
   /** What happened, stated as fact. Never claims the recovery succeeded. */
@@ -154,8 +179,13 @@ export interface ParsedRecovery {
  * renders, the continuation has only just been injected — the model may adapt,
  * or may correctly decide it cannot proceed and stop. "Recovered" would claim a
  * result that has not happened yet, so the attempt lives in `detail` instead.
+ *
+ * `meta` is the row's persisted meta. Only the automatic-resume kinds read it,
+ * for the attempt count the dispatcher stamped at queue-insert time; every other
+ * kind is decided by `content` alone, so a caller that has no row to hand over
+ * (QueueStack, turnPolicyBlock, TurnBlock) passes `content` only.
  */
-export function parseRecoveryMessage(content: string): ParsedRecovery | null {
+export function parseRecoveryMessage(content: string, meta?: Record<string, unknown> | null): ParsedRecovery | null {
   const raw = content ?? ''
   const found = PREFIXES.find(([, prefix]) => raw.startsWith(prefix))
   if (!found) return null
@@ -245,6 +275,26 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       kind,
       title: i18nT('pages.chat.recoveryCard.continued_by_you'),
       detail: i18nT('pages.chat.recoveryCard.resuming_the_interrupted_turn'),
+      chip: '',
+      body,
+    }
+  }
+
+  if (kind === 'auto_restart' || kind === 'auto_error') {
+    // The gateway pressed Resume on the person's behalf. Title states that event;
+    // detail names the cause, then the attempt count the dispatcher stamped on the
+    // row's meta -- never recomputed here, and dropped when the stamp is absent or
+    // malformed rather than rendered as "attempt NaN of undefined".
+    const cause = kind === 'auto_restart'
+      ? i18nT('pages.chat.recoveryCard.after_app_restart')
+      : i18nT('pages.chat.recoveryCard.after_error_ended_turn')
+    const attempt = autoResumeAttempt(meta)
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.resumed_automatically'),
+      detail: attempt
+        ? `${cause} · ${i18nT('pages.chat.recoveryCard.attempt_n_of_limit', attempt)}`
+        : cause,
       chip: '',
       body,
     }
@@ -458,6 +508,43 @@ export function opensTurn(row: ChatMessage): boolean {
   return TURN_OPENER_ROLES.has(row.role) || injectOpensTurn(row)
 }
 
+/** The gateway's two automatic resumes of an ENDED turn. A person's Resume
+ *  press (`manual`) is deliberately not here: the row it follows keeps the
+ *  rendering it has always had, so a dashboard with the switch off reads
+ *  exactly as before. The other kinds are the in-turn ladder's own rungs. */
+const AUTOMATIC_CONTINUATION_KINDS: ReadonlySet<RecoveryKind> = new Set(['auto_restart', 'auto_error'])
+
+/**
+ * Whether the gateway's own automatic resume picked the turn that ended at
+ * `messages[index]` back up: the next row that bears on it is an automatic
+ * continuation.
+ *
+ * Read from the rows that follow, not from the absence of a Resume button: the
+ * button is also withheld from a row that is not the newest, and from a chat the
+ * person simply typed into after the interruption, and neither of those means
+ * the cut-off work was ever picked up. The scan stops at the first row that
+ * OPENS a turn (the person moved on; {@link opensTurn}) and at a reply or a
+ * stream, which the turn produced without any continuation; rows that bear on
+ * nothing -- a notice, a later error, an inject that opens no turn -- are
+ * walked past, because a continuation is still what resolves them.
+ */
+export function automaticResumeFollows(messages: readonly ChatMessage[], index: number): boolean {
+  for (let j = index + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'inject') {
+      const parsed = parseRecoveryMessage(row.content ?? '', row.meta)
+      if (parsed && AUTOMATIC_CONTINUATION_KINDS.has(parsed.kind)) return true
+    }
+    // The gateway's own notices ride the assistant role (the permissions
+    // notice lands between the restart row and its automatic resume); they
+    // are status, not the turn's reply, so they bear on nothing here.
+    const kind = row.meta?.kind
+    if (typeof kind === 'string' && isSystemNoticeKind(kind)) continue
+    if (opensTurn(row) || row.role === 'assistant' || row.role === 'streaming') return false
+  }
+  return false
+}
+
 /**
  * Decide which card, if any, an `inject` row gets. The single decision point
  * shared by ChatPage and the transcript-renderer registry, so the surfaces
@@ -480,7 +567,7 @@ export function opensTurn(row: ChatMessage): boolean {
 export function resolveInjectCard(m: { content: string; meta?: Record<string, unknown> | null }): ParsedRecovery | null {
   // Content-based first: the recovery markers live in the text, which IS durable,
   // and they carry per-kind copy no structural tag can reproduce.
-  const recovery = parseRecoveryMessage(m.content ?? '')
+  const recovery = parseRecoveryMessage(m.content ?? '', m.meta)
   if (recovery) return recovery
 
   const meta = m.meta ?? {}
@@ -525,8 +612,9 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
   const { kind, title, detail, chip, body } = parsed
   // Severity split: a refusal or a stall means something was blocked or died and
   // the user may need to act, so it keeps the warning triangle. A transient
-  // backend error, an empty generation, or a continuation someone asked for is
-  // not a fault the user must act on — a neutral retry glyph, so it does not
+  // backend error, an empty generation, a continuation someone asked for, or one
+  // the gateway sent on their behalf (the automatic resume) is not a fault the
+  // user must act on — a neutral retry glyph, so it does not
   // read as urgently as a deny-pattern block.
   const routine =
     kind === 'connection' ||
@@ -536,6 +624,8 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'promise_only' ||
     kind === 'compaction' ||
     kind === 'manual' ||
+    kind === 'auto_restart' ||
+    kind === 'auto_error' ||
     kind === 'refusal_fallback' ||
     kind === 'hook' ||
     kind === 'synthesis' ||

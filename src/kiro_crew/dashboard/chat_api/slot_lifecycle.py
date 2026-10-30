@@ -1050,6 +1050,14 @@ async def _close_slot(
     _eager = getattr(slot, "_eager_spawn_task", None)
     if _eager is not None and not _eager.done():
         _eager.cancel()
+    # And any armed automatic resume (rfc-restart-resume): a closed chat has no
+    # turn to pick back up. The same call a Stop makes, so the supersession
+    # epoch moves too and a dispatch already past its backoff refuses.
+    from kiro_crew.dashboard import (  # imported on use: the dispatcher stays off the boot path (AUTOSDE no-new-work-on-gateway-boot-path)
+        restart_resume,
+    )
+
+    restart_resume.cancel_armed_retry(slot)
     # A pending resume-prefetch TTL timer is deliberately NOT cancelled here:
     # its removal is conditional (no-ops once the slot is gone or the session
     # was claimed), while a cancel landing mid-removal would interrupt

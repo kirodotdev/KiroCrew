@@ -37,7 +37,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
-import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
+import RecoveryCard, { automaticResumeFollows, opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
@@ -714,6 +714,7 @@ export function createTranscriptRenderers(
           <ErrorCard
             content={transient ? transient.text : m.content}
             meta={m.meta}
+            resumed={automaticResumeFollows(ctx.messages, ctx.index)}
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
             // resuming would replay the identical rejection (or the same

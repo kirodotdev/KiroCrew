@@ -27,10 +27,9 @@ from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
 from kiro_crew.dashboard.chat_utils import (
-    _BUSY_RECOVER_MSG,
-    _CONN_RECOVER_MSG,
-    _MANUAL_RESUME_MSG,
+    _INTERRUPTED_TURN_RESUME_MSGS,
     _apply_incognito_prefix,
+    interrupted_turn_rows,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
@@ -720,14 +719,14 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             is_new
             and _provider_has_history
             and _synthetic_recovery_turn
-            and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG, _BUSY_RECOVER_MSG)
+            and message in _INTERRUPTED_TURN_RESUME_MSGS
         ):
             from kiro_crew.context import (  # circular: context -> chat
                 build_interrupted_turn_preamble,
             )
 
             preamble = build_interrupted_turn_preamble(
-                rows_before_regenerate_target(slot, list(slot.messages)),
+                rows_before_regenerate_target(slot, interrupted_turn_rows(slot.messages)),
                 current=_current_replay_message,
                 opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
             )

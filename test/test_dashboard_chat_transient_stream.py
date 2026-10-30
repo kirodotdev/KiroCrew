@@ -7,6 +7,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from test_dashboard_chat import TestRunChatTransientRetry as _TransientSuite
 
+from kiro_crew.dashboard.chat_utils import (
+    STOPPED_META,
+    TRANSIENT_NOTICE_GIVE_UP,
+    TRANSIENT_NOTICE_META_KEY,
+)
+
 
 class TestRunChatTransientRetryStreamFailure:
     """TestRunChatTransientRetry: pre- and post-token failures, the retry budget, connection drops."""
@@ -190,6 +196,14 @@ class TestRunChatTransientRetryStreamFailure:
         # eligibility); no ❌ terminal error is raised here.
         assert any("Connection unstable" in t for t in self._err_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        # The give-up row records that a Stop caused it, so the automatic error
+        # pass never resumes the turn the person stopped.
+        give_up = [
+            m
+            for m in slot.messages
+            if (m.get("meta") or {}).get(TRANSIENT_NOTICE_META_KEY) == TRANSIENT_NOTICE_GIVE_UP
+        ]
+        assert [m["meta"].get(STOPPED_META) for m in give_up] == [True]
         # No chat_stream_reset broadcast — that event was removed entirely.
         assert not any(
             c.args and c.args[0] == "chat_stream_reset" for c in state.broadcast_ws.call_args_list

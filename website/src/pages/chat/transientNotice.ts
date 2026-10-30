@@ -72,6 +72,11 @@ export function isPendingTransientNotice(m: ChatMessage): boolean {
   return shape === 'retrying' || shape === 'resuming'
 }
 
+/** Whether `m` is the ladder's terminal give-up row (token or legacy wording). */
+export function isTransientGiveUp(m: ChatMessage): boolean {
+  return shapeOf(m) === 'give_up'
+}
+
 export type TransientNotice =
   | {
       /**

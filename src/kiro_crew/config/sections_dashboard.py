@@ -266,6 +266,42 @@ class DashboardConfig:
             restart=True,
         ),
     )
+    resume_interrupted_turns: bool = field(
+        default=False,
+        metadata=_meta(
+            "Resume Interrupted Turns Automatically",
+            "Spends model turns and tool calls while nobody is watching, which is "
+            "why it is off by default: after the app restarts, or after a turn ends "
+            "in an error a retry can fix, Resume is pressed on the user's behalf "
+            "through the same path the Resume button uses, bounded per chat by "
+            "`resume_retry_limit` over `resume_retry_window_minutes`. Takes effect "
+            "on the next restart or turn end; no restart needed to change it. A "
+            "Trust picked in a chat's composer still ends at a restart; the chat is "
+            "told so when that happens, and a resumed turn that then needs a tool "
+            "approval waits for you at that card -- except in a crewmate's chat, "
+            "which turn admission re-seeds with the approval mode its profile "
+            "declares (Trust when unset) before the resumed turn runs. The resumed "
+            "turn starts from partial output nobody has reviewed, so work the "
+            "cut-off turn had begun may be repeated.",
+        ),
+    )
+    resume_retry_limit: int = field(
+        default=5,
+        metadata=_meta(
+            "Automatic Resumes Per Chat",
+            "How many automatic resumes one chat may get inside the window "
+            "(1-20), restart and error resumes counted together. At the limit the "
+            "chat gets one notice and waits for a person to press Resume, which "
+            "resets the count.",
+        ),
+    )
+    resume_retry_window_minutes: int = field(
+        default=60,
+        metadata=_meta(
+            "Automatic Resume Window Minutes",
+            "The rolling window (5-1440 minutes) the per-chat limit is counted over.",
+        ),
+    )
     idle_slot_sweep_days: int = field(
         default=7,
         metadata=_meta(

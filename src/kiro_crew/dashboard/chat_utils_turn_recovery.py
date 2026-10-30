@@ -11,10 +11,13 @@ patch; this module never imports it.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
 from kiro_crew.dashboard.chat_utils_injected_rows import (
+    _AUTO_RESUME_ERROR_MSG,
+    _AUTO_RESUME_RESTART_MSG,
     _BUSY_RECOVER_MSG,
     _CONN_RECOVER_MSG,
     RecoveryPayload,
@@ -25,6 +28,7 @@ from kiro_crew.dashboard.state import (
     MANUAL_RESUME_RECOVERY_PREFIX,
     REFUSAL_FALLBACK_RECOVERY_PREFIX,
 )
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS
 
 #: Normalised, CLOSED stop-reason vocabulary for the empty-turn diagnostic. The
@@ -487,6 +491,34 @@ _MANUAL_RESUME_MSG = (
     "assume any particular progress was made — if nothing was done yet, simply "
     "start the request now."
 )
+#: Every continuation body that picks up an INTERRUPTED turn: the Resume press,
+#: the two automatic resumes (``restart_resume``) and the in-turn connection /
+#: busy recoveries. ``_run_chat`` re-injects the lost turn from the slot window
+#: (``build_interrupted_turn_preamble``) for exactly these on a session this
+#: turn natively resumed -- kiro-cli logs a prompt only once it is answered, so
+#: ``session/load`` restored a history that lacks the turn the process died on.
+#: A body that asks the model to finish the interrupted request belongs here, or
+#: on such a session the model is told to finish a request it cannot see.
+_INTERRUPTED_TURN_RESUME_MSGS: tuple[str, ...] = (
+    _MANUAL_RESUME_MSG,
+    _AUTO_RESUME_RESTART_MSG,
+    _AUTO_RESUME_ERROR_MSG,
+    _CONN_RECOVER_MSG,
+    _BUSY_RECOVER_MSG,
+)
+
+
+def interrupted_turn_rows(messages: Iterable[dict]) -> list[dict]:
+    """The slot rows ``build_interrupted_turn_preamble`` may read, same objects, in order.
+
+    The builder quotes every assistant row between the opener and the resume row
+    as the model's partial answer. The gateway's own assistant-role system
+    notices (a compaction note, the restart's permissions notice) can sit in
+    that span and are not the model's words, so they are left out here.
+    """
+    return [row for row in messages if not is_system_notice(row.get("role"), row.get("meta"))]
+
+
 # Injected when the user presses Continue on a slot whose last turn ended
 # NORMALLY. Continue is offered on any idle slot with a transcript (a killed
 # gateway writes no error row, so an interrupted turn can be shape-identical to

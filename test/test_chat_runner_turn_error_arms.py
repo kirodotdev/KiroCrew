@@ -40,12 +40,14 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTH_REQUIRED_KIND,
+    RETRY_INVITED_KIND,
     TRANSIENT_NOTICE_META_KEY,
     TRANSIENT_NOTICE_RESUMING,
     TRANSIENT_NOTICE_RETRYING,
     TRANSIENT_RETRY_KIND,
 )
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
+from kiro_crew.dashboard.restart_resume import RETRYABLE_ERROR_KINDS
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES, PromptBusyExhaustedError
 from kiro_crew.recovery.ladder import SESSION_RECOVERY_MAX_ATTEMPTS
 from kiro_crew.session_allocation import SessionClosingError
@@ -124,9 +126,19 @@ class _Arm:
     label: tuple[str, ...] | None = ()
     #: Budgets that differ from ``_UNSPENT`` after the turn.
     after: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    #: Whether restart-resume's error pass retries the turn from this arm's LAST
+    #: persisted row with nobody present: that row is an ``error`` whose
+    #: ``meta.kind`` is in ``restart_resume.RETRYABLE_ERROR_KINDS``. The pass fails
+    #: closed on every other kind, so a writer that forgets the tag is silently
+    #: never resumed; every arm states its answer here and the pin test holds the
+    #: two together. ``None`` is "not chosen yet" and fails that test.
+    auto_resumed: bool | None = None
 
 
 _RETRY = ("error", TRANSIENT_RETRY_KIND)
+#: The ladder's terminal "please retry" row: tagged so the restart-resume error
+#: pass can retry it without reading its words.
+_INVITED = ("error", RETRY_INVITED_KIND)
 _PLAIN = ("error", None)
 
 _ARMS: dict[str, _Arm] = {
@@ -137,6 +149,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_last_turn_auth_required": True},
+        auto_resumed=False,
     ),
     "auth-required-host-sign-in": _Arm(
         events=lambda: [Raise(AcpAuthRequired("Not signed in", backend=ACP_BACKEND_KAS))],
@@ -145,6 +158,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_last_turn_auth_required": True},
+        auto_resumed=False,
     ),
     "process-died-own-fault": _Arm(
         events=lambda: [Raise(AcpProcessDied("process exited"))],
@@ -153,6 +167,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=("AcpProcessDied",),
         after={"_acp_pipe_death_retries": 1},
+        auto_resumed=False,
     ),
     "process-died-after-text": _Arm(
         events=lambda: [_REPLY, Raise(AcpProcessDied("process exited"))],
@@ -161,6 +176,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=("AcpProcessDied",),
         after={"_acp_pipe_death_retries": 1},
+        auto_resumed=False,
     ),
     "process-died-own-fault-exhausted": _Arm(
         events=lambda: [Raise(AcpProcessDied("process exited"))],
@@ -171,6 +187,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=("AcpProcessDied",),
         after={"_acp_pipe_death_retries": SESSION_RECOVERY_MAX_ATTEMPTS + 1},
+        auto_resumed=False,
     ),
     "process-died-shared-runtime": _Arm(
         events=lambda: [Do(_shared_runtime_died), Raise(AcpProcessDied("process exited"))],
@@ -178,15 +195,17 @@ _ARMS: dict[str, _Arm] = {
         requeued=True,
         reset=True,
         label=("AcpProcessDied",),
+        auto_resumed=False,
     ),
     "process-died-shared-runtime-exhausted": _Arm(
         events=lambda: [Do(_shared_runtime_died), Raise(AcpProcessDied("process exited"))],
         shared_streak=SESSION_RECOVERY_MAX_ATTEMPTS,
-        rows=[_PLAIN],
+        rows=[_INVITED],
         # The process it shares keeps dying: retrying the healthy chat is the advice.
         card="shares kept restarting",
         reset=True,
         label=("AcpProcessDied",),
+        auto_resumed=True,
     ),
     "prompt-busy-exhausted-outer": _Arm(
         events=lambda: [Raise(PromptBusyExhaustedError())],
@@ -195,14 +214,17 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_prompt_busy_retries": 1},
+        auto_resumed=False,
     ),
     "prompt-busy-exhausted-nested": _Arm(
         events=lambda: [Raise(PromptBusyExhaustedError())],
         run_kwargs={"_prompt_depth": 1},
-        rows=[_PLAIN],
+        rows=[_INVITED],
+        card="Session busy — please retry.",
         reset=True,
         label=_UNNAMED,
         after={"_prompt_busy_retries": 1},
+        auto_resumed=True,
     ),
     "acp-busy-under-budget": _Arm(
         events=lambda: [Raise(AcpError("prompt already in progress"))],
@@ -211,6 +233,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_prompt_busy_retries": 1},
+        auto_resumed=False,
     ),
     "acp-busy-exhausted": _Arm(
         events=lambda: [Raise(AcpError("prompt already in progress"))],
@@ -219,6 +242,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_prompt_busy_retries": _PROMPT_BUSY_BUDGET + 1},
+        auto_resumed=False,
     ),
     "acp-pipe-death": _Arm(
         events=lambda: [Raise(AcpError("process exited"))],
@@ -227,6 +251,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_acp_pipe_death_retries": 1},
+        auto_resumed=False,
     ),
     "session-not-found-once": _Arm(
         events=lambda: [Raise(AcpError("Session not found"))],
@@ -236,6 +261,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_session_not_found_retry_used": True},
+        auto_resumed=False,
     ),
     "session-not-found-again": _Arm(
         events=lambda: [Raise(AcpError("Session not found"))],
@@ -245,6 +271,7 @@ _ARMS: dict[str, _Arm] = {
         reset=True,
         label=_UNNAMED,
         after={"_session_not_found_retry_used": True},
+        auto_resumed=False,
     ),
     "pre-token-transient-under-budget": _Arm(
         events=lambda: [Raise(AcpError("Internal server error", transient=True))],
@@ -253,6 +280,7 @@ _ARMS: dict[str, _Arm] = {
         requeued=True,
         label=_UNNAMED,
         after={"_transient_5xx_retries": 1},
+        auto_resumed=False,
     ),
     "pre-token-transient-exhausted": _Arm(
         events=lambda: [Raise(AcpError("Internal server error", transient=True))],
@@ -261,6 +289,7 @@ _ARMS: dict[str, _Arm] = {
         card="Internal server error",
         label=_UNNAMED,
         after={"_prestream_exhausted_cycles": 1},
+        auto_resumed=False,
     ),
     "post-token-transient": _Arm(
         events=lambda: [_REPLY, Raise(AcpError("Internal server error", transient=True))],
@@ -269,19 +298,24 @@ _ARMS: dict[str, _Arm] = {
         requeued=False,
         label=_UNNAMED,
         after={"_posttoken_retry_used": True},
+        auto_resumed=False,
     ),
     "terminal-acp-error": _Arm(
         events=lambda: [Raise(AcpError("bad request", transient=False))],
         rows=[_PLAIN],
         card="bad request",
         label=_UNNAMED,
+        auto_resumed=False,
     ),
     "session-closing-at-allocation": _Arm(
-        allocation_error=lambda: SessionClosingError("closing"), label=None
+        allocation_error=lambda: SessionClosingError("closing"),
+        label=None,
+        auto_resumed=False,
     ),
     "session-closing-mid-stream": _Arm(
         events=lambda: [_REPLY, Raise(SessionClosingError("closing"))],
         label=("SessionClosingError",),
+        auto_resumed=False,
     ),
     "generic-exception": _Arm(
         events=lambda: [Raise(RuntimeError("boom"))],
@@ -289,6 +323,7 @@ _ARMS: dict[str, _Arm] = {
         card="boom",
         breaker_charged=True,
         label=("RuntimeError",),
+        auto_resumed=False,
     ),
 }
 
@@ -320,6 +355,23 @@ def _sessions(record: TurnRecord) -> list[str]:
 
 
 class TestEachErrorArm:
+    @pytest.mark.parametrize("name", list(_ARMS))
+    def test_turn_error_arm_declares_whether_the_error_pass_resumes_it(self, name: str) -> None:
+        """Each arm says whether restart-resume's error pass retries its last row.
+
+        The pass retries only an ``error`` row whose ``meta.kind`` is in
+        ``RETRYABLE_ERROR_KINDS`` and fails closed on every other kind, so a new
+        "please retry" writer that forgets the tag would be silently never resumed.
+        The table states the answer beside each arm's rows and this holds the two
+        together: a new arm has to choose, and a kind added to or dropped from the
+        set shows up here as the arms it moves.
+        """
+        arm = _ARMS[name]
+        assert arm.auto_resumed is not None, f"{name}: choose auto_resumed"
+        last = arm.rows[-1] if arm.rows else None
+        retried = last is not None and last[0] == "error" and last[1] in RETRYABLE_ERROR_KINDS
+        assert retried is arm.auto_resumed, (name, last, sorted(RETRYABLE_ERROR_KINDS))
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", list(_ARMS))
     async def test_turn_error_arm_card_hand_off_reset_breaker_and_label(
@@ -329,6 +381,10 @@ class TestEachErrorArm:
         latch = _SignInLatch()
         record, slot = await _run_arm(arm, latch)
 
+        # Every turn leaves the session Stop count it read at its entry on the slot:
+        # the restart-resume error pass measures the count after the teardown
+        # against it (GPT review, rev 65). The harness's manager answers 0.
+        assert slot._turn_entry_stop_count == 0
         rows = [
             (row["role"], (row.get("meta") or {}).get("kind")) for row in record.history_rows[1:]
         ]
@@ -357,6 +413,54 @@ class TestEachErrorArm:
         assert budgets == {**_UNSPENT, **arm.after}
         # Only the sign-in arm latches the prerequisite service signed-out.
         assert latch.signed_out == int(name.startswith("auth-required"))
+
+
+class TestTheTeardownHold:
+    """GPT review, rev 72: the runner holds the chat's key armed from before it
+    releases the failed turn's session until the error pass has decided, so a
+    channel Stop landing in the reset's teardown awaits is recorded and the pass
+    arms nothing (``restart_resume.stops_recordable_through_teardown``). Pinned
+    on the session manager's call order: the hold's arm precedes the reset, and
+    its disarm follows the pass's own count read at the cycle end."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name", ["process-died-shared-runtime-exhausted", "prompt-busy-exhausted-outer"]
+    )
+    async def test_the_key_is_held_from_before_the_reset_until_the_pass_has_read(
+        self, name: str, fresh_runtime_deaths: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard import restart_resume
+
+        monkeypatch.setattr(restart_resume, "_switch_on_now", lambda: True)
+        monkeypatch.setattr(restart_resume, "_load_settings", lambda: (False, 5, 3600))
+        arm = _ARMS[name]
+        assert arm.reset  # a turn whose session the teardown pops
+
+        record, _ = await _run_arm(arm, _SignInLatch())
+
+        names = _sessions(record)
+        assert "arm_resume" in names and "reset" in names
+        assert names.index("arm_resume") < names.index("reset")
+        last_read = len(names) - 1 - names[::-1].index("stop_generation")
+        assert names.index("disarm_resume") > last_read
+        # Balanced by the end of the record: the hold is counted, the pass's own arm
+        # (when it arms) releases with its task.
+        assert names.count("arm_resume") == names.count("disarm_resume")
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_held_while_the_switch_is_off(
+        self, fresh_runtime_deaths: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard import restart_resume
+
+        monkeypatch.setattr(restart_resume, "_switch_on_now", lambda: False)
+
+        record, _ = await _run_arm(_ARMS["prompt-busy-exhausted-outer"], _SignInLatch())
+
+        names = _sessions(record)
+        assert "reset" in names
+        assert "arm_resume" not in names and "disarm_resume" not in names
 
 
 class TestArmSpecifics:

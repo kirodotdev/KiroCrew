@@ -1,17 +1,18 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Btn } from '../../components/ui'
-import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal, AlertTriangle } from 'lucide-react'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 import {
-  RESTORE_OPTIONS, restoreLabels, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
+  RESTORE_OPTIONS, restoreLabels, RESUME_RETRY_LIMIT_MIN, RESUME_RETRY_LIMIT_MAX,
+  RESUME_WINDOW_OPTIONS, resumeWindowLabels, resumeWindowProse, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
   TECH_OPTIONS, techLabels, SOFT_STOP_MIN, SOFT_STOP_MAX, SOFT_STOP_DEFAULT, TURN_LIMIT_MIN,
   TURN_LIMIT_MAX, TURN_LIMIT_DEFAULT, TITLE_REFRESH_PATH, TITLE_REFRESH_MIN, TITLE_REFRESH_MAX,
   normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
@@ -308,6 +309,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
+  const resumeConsequenceId = useId()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
   // is what the pane shows by default. Every setting the old single scroll held
@@ -1101,6 +1103,67 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} hint={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
+          )}
+          <div className="flex flex-col gap-1">
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.resume_interrupted_turns')} description={i18nT('pages.settings.chatPanel.resume_interrupted_turns_description')} checked={dashCfg.resume_interrupted_turns} onChange={v => setDash({ resume_interrupted_turns: v })} disabled={dashDisabled} configKey="dashboard.resume_interrupted_turns" describedBy={resumeConsequenceId} />
+            {/* The row's grey help says what the switch does; the consequences to weigh
+                before flipping it -- a resumed turn may repeat work nobody reviewed, it
+                spends model turns and tool calls with nobody watching, and after an
+                error it runs under the chat's Trust -- are one warning list under the
+                row, one bullet per risk with the risk first (the irreversible one apart
+                from the routine spend), announced to the switch through `describedBy`,
+                so none reads as optional help and none hides inside a paragraph. The
+                Trust bullet carries both halves of the approval rule (after a restart a
+                turn that needs an approval waits), so the rule is read in one place and
+                the help cannot be skimmed as "every resume waits at an approval". */}
+            <div id={resumeConsequenceId} className="text-[12px] text-warn-text flex items-start gap-1.5 leading-relaxed">
+              <AlertTriangle size={13} className="lucide-inline shrink-0 mt-0.5" aria-hidden="true" />
+              <ul className="list-disc pl-4 flex flex-col gap-0.5 m-0">
+                <li>{i18nT('pages.settings.chatPanel.resume_interrupted_turns_cost')}</li>
+                <li>{i18nT('pages.settings.chatPanel.resume_interrupted_turns_spend')}</li>
+                <li>{i18nT('pages.settings.chatPanel.resume_interrupted_turns_consequence')}</li>
+              </ul>
+            </div>
+          </div>
+          {dashCfg.resume_interrupted_turns && (
+            <>
+              {/* Clamped to the backend's 1..20: the − button is disabled at the floor,
+                  and + past the ceiling writes the ceiling, like Message Font Size. */}
+              <SettingsStepper
+                label={i18nT('pages.settings.chatPanel.resume_retry_limit')}
+                hint={i18nT('pages.settings.chatPanel.resume_retry_limit_hint')}
+                value={dashCfg.resume_retry_limit}
+                onIncrement={() => setDash({ resume_retry_limit: Math.min(RESUME_RETRY_LIMIT_MAX, dashCfg.resume_retry_limit + 1) })}
+                onDecrement={() => setDash({ resume_retry_limit: Math.max(RESUME_RETRY_LIMIT_MIN, dashCfg.resume_retry_limit - 1) })}
+                disabled={dashDisabled}
+                decrementDisabled={dashCfg.resume_retry_limit <= RESUME_RETRY_LIMIT_MIN}
+                reserveWidthFor={[RESUME_RETRY_LIMIT_MAX]}
+                configKey="dashboard.resume_retry_limit"
+              />
+              {/* The limit and the window are one budget read together, so the
+                  window row states the pair in a sentence with both live values
+                  ("At most 5 automatic resumes per chat in any 1 hour."): a reader
+                  who sees a "5" and a "1h" is not left to assemble the rule. The
+                  sentence spells the window out; the select keeps its "1h". Its
+                  second sentence says what the limit decides -- the chat pauses
+                  there and a Resume press resets the count -- in the open rather
+                  than behind the stepper's glyph, where a person choosing the
+                  number would not have read it; the glyph keeps only the detail
+                  that restart and error resumes share the count. */}
+              <SettingsSelect
+                label={i18nT('pages.settings.chatPanel.resume_retry_window')}
+                description={i18nT('pages.settings.chatPanel.resume_retry_limit_summary', {
+                  count: dashCfg.resume_retry_limit,
+                  window: resumeWindowProse(dashCfg.resume_retry_window_minutes),
+                })}
+                value={String(dashCfg.resume_retry_window_minutes)}
+                options={RESUME_WINDOW_OPTIONS}
+                optionLabels={resumeWindowLabels()}
+                onChange={v => setDash({ resume_retry_window_minutes: Number(v) })}
+                disabled={dashDisabled}
+                configKey="dashboard.resume_retry_window_minutes"
+              />
+            </>
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it

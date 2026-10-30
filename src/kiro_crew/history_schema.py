@@ -76,6 +76,12 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # can put the prompt back before flagging the interruption. Cleared by
         # omission alongside the generation.
         "turn_in_flight_prompt",
+        # The automatic-resume budget's stamps and the approval mode the person
+        # last saw (rfc-restart-resume). Slot-owned so a full save with none
+        # (budget reset by the person; mode back to normal) clears the key
+        # rather than carrying a stale value forward forever.
+        "auto_resume_stamps",
+        "approval_mode_seen",
         "folder_id",
         "app",
         "artifact",

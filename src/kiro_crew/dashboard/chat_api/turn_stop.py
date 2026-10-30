@@ -459,6 +459,13 @@ async def stop_slot_turn(
     """
     name = slot.key
     cancel_key = cancel_key or _cancel_target(slot)
+    # A Stop is the person's recorded intent that nothing continues on its own:
+    # an armed automatic retry is dropped before the stop runs (rfc-restart-resume).
+    from kiro_crew.dashboard import (  # imported on use: the dispatcher stays off the boot path (AUTOSDE no-new-work-on-gateway-boot-path)
+        restart_resume,
+    )
+
+    restart_resume.cancel_armed_retry(slot)
 
     # The second press after a DECLINED Stop (the session was compacting) is
     # the user's escape hatch and takes the escalation branch below, which is

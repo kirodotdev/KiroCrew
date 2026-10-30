@@ -504,12 +504,16 @@ SESSION_NOT_FOUND_GIVE_UP_TEXT = (
 # classify them identically to the turn logic here). Re-exported here so
 # callers importing them from chat_runner resolve them.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
+    _BUSY_RECOVER_MSG,
+    _CONN_RECOVER_MSG,
+    _MANUAL_RESUME_MSG,
     _POSTTOKEN_RECOVER_MSG,
     CRON_NOTIFICATION_KIND,
     SEED_DECLINED_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHESIS_CLEAR,
     SYNTHETIC_RECOVERY_KIND,
+    TRANSIENT_NOTICE_GIVE_UP,
     background_wake_absent,
     should_recover_promise_only,
     subagents_attached_async,
@@ -1202,28 +1206,37 @@ async def _run_chat(
         await _turn_release_handles(turn)
         _held_flush_cancel = await _turn_flush_file_changes(turn)
         await _turn_settle_debts(turn)
-        await _turn_release_session(turn)
-        # Retire the in-flight marker once every transcript mutation is complete
-        # and the session permit is released in _turn_release_session (an await here
-        # cannot skip that release), and only while the process is going to live on: during
-        # a shutdown the cancellation that ended this turn came from the process
-        # dying, which is exactly the interruption the marker exists to record --
-        # the graceful save writes it and the next start converts it. A turn
-        # that landed inside the shutdown grace keeps its clear. Before the queue
-        # drain below, so the successor's own marker is never overtaken by this
-        # omission. Guarded so a failing save cannot skip the tail.
-        if not (_gateway_shutdown_requested(state) and not turn._turn_landed):
-            try:
-                await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
-            except Exception:
-                logger.debug("_clear_local_turn_marker failed", exc_info=True)
-        # The per-exit duties and the queue hand-off, in their one order. Run to
-        # completion: a cancel landing inside the tail (a turn deadline during
-        # the deferred-reset consume) is deferred until the hand-off ran, then
-        # re-raised, so the queue is never left behind a finished task. A cancel
-        # the file-change flush in _turn_flush_file_changes held resurfaces here,
-        # once the hand-off has run, for the same reason.
-        await run_to_completion(_end_turn_tail(state, slot, turn_exit))
+        # A channel Stop landing in the teardown below -- after the reset popped
+        # the session, before the error pass arms the key at the cycle end -- is
+        # recorded nowhere, and the pass would resume a turn the person stopped.
+        # The key is held armed from here until the pass has decided
+        # (rfc-restart-resume, GPT review rev 72); the hold never raises, and the
+        # import is a cached lookup after the first turn, like the cycle end's.
+        from kiro_crew.dashboard import restart_resume
+
+        with restart_resume.stops_recordable_through_teardown(state, slot):
+            await _turn_release_session(turn)
+            # Retire the in-flight marker once every transcript mutation is complete
+            # and the session permit is released in _turn_release_session (an await here
+            # cannot skip that release), and only while the process is going to live on: during
+            # a shutdown the cancellation that ended this turn came from the process
+            # dying, which is exactly the interruption the marker exists to record --
+            # the graceful save writes it and the next start converts it. A turn
+            # that landed inside the shutdown grace keeps its clear. Before the queue
+            # drain below, so the successor's own marker is never overtaken by this
+            # omission. Guarded so a failing save cannot skip the tail.
+            if not (_gateway_shutdown_requested(state) and not turn._turn_landed):
+                try:
+                    await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
+                except Exception:
+                    logger.debug("_clear_local_turn_marker failed", exc_info=True)
+            # The per-exit duties and the queue hand-off, in their one order. Run to
+            # completion: a cancel landing inside the tail (a turn deadline during
+            # the deferred-reset consume) is deferred until the hand-off ran, then
+            # re-raised, so the queue is never left behind a finished task. A cancel
+            # the file-change flush in _turn_flush_file_changes held resurfaces here,
+            # once the hand-off has run, for the same reason.
+            await run_to_completion(_end_turn_tail(state, slot, turn_exit))
         if _held_flush_cancel is not None:
             raise _held_flush_cancel
 

@@ -14,6 +14,10 @@ if TYPE_CHECKING:
         LINK_PATTERNS_MAX,
         MODEL_PICKER_HIDDEN_MODEL_ID_RE,
         MODEL_PICKER_HIDDEN_MODELS_MAX,
+        RESUME_RETRY_LIMIT_MAX,
+        RESUME_RETRY_LIMIT_MIN,
+        RESUME_RETRY_WINDOW_MAX,
+        RESUME_RETRY_WINDOW_MIN,
         SESSION_FOLDER_ROOT_MAX_CHARS,
         VALID_MEMORY_MODES,
         _body_err_code,
@@ -81,6 +85,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         _allowed = {
             "restore_sessions",
             "restore_window_minutes",
+            "resume_interrupted_turns",
+            "resume_retry_limit",
+            "resume_retry_window_minutes",
             "merge_queued_messages",
             "default_memory_mode",
             "widget_density",
@@ -218,6 +225,51 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "restore_window_minutes must be an integer"}, status=400
             )
+        if "resume_interrupted_turns" in body:
+            val = body["resume_interrupted_turns"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "resume_interrupted_turns must be a boolean",
+                        "code": "invalid_resume_interrupted_turns",
+                    },
+                    status=400,
+                )
+            updates["resume_interrupted_turns"] = val
+        # Same clamp the loader applies, so the stored value is what the loader
+        # would read back and the Settings controls never show a number the
+        # gateway does not use.
+        for _resume_key, _lo, _hi in (
+            ("resume_retry_limit", RESUME_RETRY_LIMIT_MIN, RESUME_RETRY_LIMIT_MAX),
+            ("resume_retry_window_minutes", RESUME_RETRY_WINDOW_MIN, RESUME_RETRY_WINDOW_MAX),
+        ):
+            if _resume_key not in body:
+                continue
+            _raw = body[_resume_key]
+            if isinstance(_raw, bool) or not isinstance(_raw, (int, float, str)):
+                _raw = None
+            try:
+                # A JSON ``Infinity``/``NaN`` reaches here as a float and ``int()``
+                # raises OverflowError / ValueError; a fraction is rejected like the
+                # loader rejects it rather than silently truncated.
+                _parsed = int(_raw)  # type: ignore[arg-type]
+                if isinstance(_raw, float) and _raw != _parsed:
+                    raise ValueError("not an integer")
+            except (TypeError, ValueError, OverflowError):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": f"{_resume_key} must be an integer",
+                        "code": f"invalid_{_resume_key}",
+                    },
+                    status=400,
+                )
+            updates[_resume_key] = max(_lo, min(_hi, _parsed))
         if "merge_queued_messages" in body:
             val = body["merge_queued_messages"]
             if not isinstance(val, bool):
@@ -721,6 +773,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
             "restore_window_minutes": cfg.dashboard.restore_window_minutes,
+            "resume_interrupted_turns": cfg.dashboard.resume_interrupted_turns,
+            "resume_retry_limit": cfg.dashboard.resume_retry_limit,
+            "resume_retry_window_minutes": cfg.dashboard.resume_retry_window_minutes,
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
             "default_memory_mode": cfg.dashboard.default_memory_mode,
             "widget_density": cfg.dashboard.widget_density,

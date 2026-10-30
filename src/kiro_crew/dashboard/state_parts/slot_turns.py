@@ -188,6 +188,51 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # put it back before the interruption is judged. None when no turn is
     # in flight.
     self._turn_in_flight_prompt = None
+    # Wall-clock stamps of the automatic resumes ``restart_resume`` dispatched
+    # for this chat, persisted on the metadata line so a gateway that
+    # restarts, resumes, dies on the resumed turn and restarts again still
+    # counts the earlier ones. Reset by a person's own action on the chat
+    # (a send, a Resume press). Bounded by ``restart_resume.MAX_STAMPS``.
+    self._auto_resume_stamps = []
+    # True from a person's reset of a non-empty budget until a save that
+    # carries the empty list has completed: the turn marker then writes the
+    # empty list instead of omitting it, so a gateway that dies before the
+    # periodic flush does not read the spent budget back off the line.
+    self._auto_resume_reset_pending = False
+    # The one armed error-pass retry for this chat (``restart_resume``), or
+    # None. Cancelled by anything that makes it moot: a send, a press, a
+    # Stop, a close.
+    self._auto_resume_task = None
+    # Moves on every person's action that supersedes an automatic resume (a
+    # send, a Resume press, a Stop, a close). An automatic dispatch re-reads
+    # it under the slot lock right before its queue insert and refuses when
+    # it moved, so a cancel that lands after the backoff but before the
+    # insert cannot leave a gateway-authored entry at the head of the queue.
+    self._auto_resume_epoch = 0
+    # Set for THIS process by the restore when the metadata line carried a
+    # turn-in-flight marker (the previous process admitted a turn it never
+    # finished); never persisted. The boot pass resumes only flagged chats, so
+    # an interruption row left by an earlier boot is not resumed on a later one.
+    self._restart_cut_turn = False
+    # The session's Stop count when the restore armed this cut chat's key for the
+    # boot pass (``restart_resume.arm_cut_chats``), or None while it is not
+    # armed. Set the moment the chat exists -- synchronously, before the restore
+    # awaits again -- so a channel Stop landing before the pass runs is recorded
+    # and compared against this reading. Cleared when the pass disarms the key.
+    self._restart_stop_count = None
+    # The session's Stop count the turn now running (or the last one run) read
+    # at its entry (``_turn_open``), or None before the first turn. The error
+    # pass compares the count it reads when the turn has ended against this: a
+    # Stop from a linked channel during the turn's teardown moves the counter and
+    # writes nothing on the slot, and read only at arming time it would pass as
+    # the baseline (``restart_resume.schedule_after_error``).
+    self._turn_entry_stop_count = None
+    # The approval mode this chat's PERSON last saw it hold -- ``"trust"``,
+    # ``"trust_reads"`` or ``"normal"`` -- recorded on the metadata line by
+    # the periodic flush, never read back INTO the mode. The restore compares
+    # it with the mode the slot comes back holding and tells the person when
+    # they differ; see ``restart_resume.approval_mode_dropped_notice``.
+    self._approval_mode_recorded = ""
     self._buffers = SlotBufferCoordinator()
     self._queue_repository = SlotQueueRepository(
         id_provider=lambda: uuid.uuid4().hex[:12],

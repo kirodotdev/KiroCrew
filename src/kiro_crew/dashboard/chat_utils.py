@@ -67,6 +67,26 @@ TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
 
+#: Meta key on the give-up row: the person's Stop signal is what ended the
+#: ladder's backoff. A Stop on the dashboard also writes a Stop card on the
+#: slot; a Stop issued on a linked channel (Slack's Stop, a transport's stop
+#: verb) moves the session's stop counter alone, so this mark is the only record
+#: on the slot that the person stopped the turn. ``restart_resume`` reads it: a
+#: stopped turn is never resumed on its own.
+STOPPED_META = "stopped"
+
+
+def transient_give_up_meta(*, stopped: bool) -> dict[str, object]:
+    """The meta of the ladder's give-up row; *stopped* when the person's Stop ended the backoff.
+
+    The ``STOPPED_META`` mark is what ``restart_resume`` reads to leave a stopped
+    turn alone: a Stop issued on a linked channel writes no Stop card on the slot.
+    """
+    meta: dict[str, object] = {TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP}
+    if stopped:
+        meta[STOPPED_META] = True
+    return meta
+
 
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
@@ -677,6 +697,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_injected_rows import (  # noqa: F401
         _ACTIVITY_NO_REPLY_CONTINUE_MSG,
+        _AUTO_RESUME_BODY,
+        _AUTO_RESUME_ERROR_MSG,
+        _AUTO_RESUME_RESTART_MSG,
         _BUSY_RECOVER_MSG,
         _COMPACTION_CONTINUE_MSG,
         _CONN_RECOVER_MSG,
@@ -699,6 +722,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,
+        RETRY_INVITED_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -709,6 +733,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SUBAGENT_DELIVERY_KINDS,
         SYNTHETIC_RECOVERY_KIND,
         TRANSIENT_RETRY_KIND,
+        TURN_FAILED_META,
         USAGE_LIMIT_KIND,
         RecoveryPayload,
         _dequeue_next_message,
@@ -772,6 +797,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CONTINUATION_BY_CAUSE,
         _FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE,
         _FALSE_CURRENT_TOOL_BLOCKER_RE,
+        _INTERRUPTED_TURN_RESUME_MSGS,
         _MANUAL_CONTINUE_MSG,
         _MANUAL_RESUME_MSG,
         _READ_ONLY_PREPARATION_TOOLS,
@@ -795,6 +821,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ResetCause,
         build_recovery_requeue,
         classify_empty_turn,
+        interrupted_turn_rows,
         is_false_current_tool_blocker,
         is_false_current_tool_blocker_near_miss,
         normalize_stop_reason,
@@ -842,6 +869,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ATTACHMENT_META_KEYS,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
+        AUTO_RESUME_ERROR_RECOVERY_PREFIX,
+        AUTO_RESUME_RESTART_RECOVERY_PREFIX,
         BUSY_RECOVERY_PREFIX,
         COMPACTION_RECOVERY_PREFIX,
         CONN_RECOVERY_PREFIX,
@@ -853,6 +882,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         REFUSAL_FALLBACK_RECOVERY_PREFIX,
         SUBAGENT_COMPLETION_PREFIXES,
         _normalize_slot_key,
+    )
+    from kiro_crew.dashboard.system_notices import (  # noqa: F401
+        is_system_notice,
     )
     from kiro_crew.execution_context import (  # noqa: F401
         ExecutionContext,

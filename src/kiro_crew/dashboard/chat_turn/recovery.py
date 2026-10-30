@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_utils import (
     IMAGE_REPAIR_KIND,
     KIRO_CLI_MISSING_KIND,
     MODEL_UNENTITLED_KIND,
+    RETRY_INVITED_KIND,
     SESSION_START_FAILED_KIND,
     TRANSIENT_RETRY_KIND,
     USAGE_LIMIT_KIND,
@@ -824,7 +825,12 @@ async def _requeue_after_prompt_busy(
     else:
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.
-        slot.append("error", "⟳ Session busy — please retry.", "msg msg-err")
+        slot.append(
+            "error",
+            "⟳ Session busy — please retry.",
+            "msg msg-err",
+            meta={"kind": RETRY_INVITED_KIND},
+        )
 
 
 _REFUSAL_CARD_LEAD = "Response declined by the model."

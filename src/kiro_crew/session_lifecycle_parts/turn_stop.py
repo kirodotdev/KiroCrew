@@ -82,17 +82,46 @@ def _stop_bucket(self: SessionLifecycleService, key: str) -> str:
 def note_stop(self: SessionLifecycleService, key: str) -> bool:
     """Record one user Stop against *key*; True when it was recorded.
 
-    Recorded when the key has a live session, or while it sits in a replay
-    gap (:meth:`open_replay_gap`). A Stop on a key that has neither is not
+    Recorded when the key has a live session, while it sits in a replay gap
+    (:meth:`open_replay_gap`), or while an automatic resume is armed for it
+    (:meth:`arm_resume`). A Stop on a key that has none of those is not
     recorded, so the per-key dict grows only with conversations that exist.
     Recording happens before anything is awaited on every caller, so a
     turn's end-of-turn gates can see the Stop as soon as it was issued.
     """
     bucket = self._stop_bucket(key)
-    if bucket not in self._owner._sessions and bucket not in self.state.replay_gaps:
+    if (
+        bucket not in self._owner._sessions
+        and bucket not in self.state.replay_gaps
+        and bucket not in self.state.armed_resumes
+    ):
         return False
     self.state.stop_requests[bucket] = self.state.stop_requests.get(bucket, 0) + 1
     return True
+
+
+def arm_resume(self: SessionLifecycleService, key: str) -> None:
+    """Keep Stops for *key* recordable while an automatic resume is armed for it.
+
+    Called by ``restart_resume`` as it arms a resume and before it reads
+    :meth:`stop_generation`; paired with :meth:`disarm_resume` once the resume
+    dispatched or stood down. Counted, so two chats armed on one session stay
+    armed until both disarm. Keyed canonically like the replay gap, so a Slack
+    Stop under the bare thread ts and the pass reading under ``slack:<ts>``
+    meet in one bucket.
+    """
+    armed_key = canonical_key(key)
+    self.state.armed_resumes[armed_key] = self.state.armed_resumes.get(armed_key, 0) + 1
+
+
+def disarm_resume(self: SessionLifecycleService, key: str) -> None:
+    """Undo one :meth:`arm_resume` for *key*. Idempotent past the last one."""
+    armed_key = canonical_key(key)
+    left = self.state.armed_resumes.get(armed_key, 0) - 1
+    if left > 0:
+        self.state.armed_resumes[armed_key] = left
+    else:
+        self.state.armed_resumes.pop(armed_key, None)
 
 
 def open_replay_gap(self: SessionLifecycleService, key: str) -> None:

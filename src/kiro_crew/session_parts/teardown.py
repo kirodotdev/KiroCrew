@@ -311,6 +311,16 @@ def note_stop(self: SessionManager, key: str) -> bool:
     return self._lifecycle_boundary().note_stop(key)
 
 
+def arm_resume(self: SessionManager, key: str) -> None:
+    """Keep Stops recordable for *key* while an automatic resume is armed for it."""
+    self._lifecycle_boundary().arm_resume(key)
+
+
+def disarm_resume(self: SessionManager, key: str) -> None:
+    """Undo one :meth:`arm_resume` for *key*."""
+    self._lifecycle_boundary().disarm_resume(key)
+
+
 def open_replay_gap(self: SessionManager, key: str) -> None:
     """Keep Stops recordable for *key* across a reset-then-replay window."""
     self._lifecycle_boundary().open_replay_gap(key)
