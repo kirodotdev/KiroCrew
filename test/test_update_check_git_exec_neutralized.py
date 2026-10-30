@@ -191,6 +191,47 @@ def test_a_commondir_redirect_is_refused(checkout, tmp_path):
     assert info["update_available"] is None
 
 
+def _redirect_common_dir(work: Path, tmp_path: Path) -> None:
+    """Point *work*'s ``.git/commondir`` at a CLEAN bare repo.
+
+    Clean on purpose: nothing in the redirected config is a key the scope probes
+    refuse, so only the commondir refusal itself can turn this checkout away.
+    """
+    common = tmp_path / "redirected-common"
+    common.mkdir()
+    _git(common, "init", "-q", "--bare")
+    (work / ".git" / "commondir").write_text(f"{common}\n")
+
+
+def test_the_commondir_file_itself_is_the_refusal(checkout, tmp_path):
+    """The structural ``.git/commondir`` check answers before any git probe runs.
+
+    The planted-program test above stays green with this check deleted, because
+    the env pins already beat the redirected ``core.sshCommand``/``core.fsmonitor``.
+    This one pins the check's own verdict.
+    """
+    work, _program, _marker = checkout
+    _redirect_common_dir(work, tmp_path)
+    assert (
+        update_governance.repo_exec_config_reason(str(work))
+        == "repository redirects its common git dir via .git/commondir"
+    )
+
+
+def test_a_redirected_common_dir_is_refused_without_the_file_check(checkout, tmp_path, monkeypatch):
+    """git's own resolved common dir is the backstop when the file is not seen."""
+    work, _program, _marker = checkout
+    _redirect_common_dir(work, tmp_path)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        update_governance.os.path,
+        "exists",
+        lambda path: False if str(path).endswith("commondir") else real_exists(path),
+    )
+    reason = update_governance.repo_exec_config_reason(str(work))
+    assert reason.startswith("common git dir is redirected to "), reason
+
+
 def test_a_textconv_driver_named_by_gitattributes_does_not_run(checkout):
     work, program, marker = checkout
     _git(work, "config", "diff.pwn.textconv", str(program))

@@ -828,7 +828,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # or cancellation. Same trust class as git_divergence.py::count_divergence;
         # it replaced the inline fetch spawns in _check_git_checkout and
         # _auto_apply_update.
-        "platform/update_governance.py::fetch_and_pin_upstream",
+        "platform/update_fetch.py::fetch_and_pin_upstream",
         "instances/diagnostics.py::_run_ok",
         "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
