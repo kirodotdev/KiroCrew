@@ -136,6 +136,33 @@ def live_workers(state: Any, channel_slot: Any) -> list[Any]:
     ]
 
 
+def descendants(state: Any, channel_slot: Any) -> list[Any]:
+    """Every live session under *channel_slot* in the ``_created_by`` tree.
+
+    Wider than :func:`live_workers` on purpose: a worker's own workers and
+    workers linked to Slack inherit their creator's Trust when they start, so a
+    lowering of the channel must reach them all. Only a lowering reads this;
+    a raise stays with the direct, unlinked workers.
+    """
+    root = str(getattr(channel_slot, "key", "") or "")
+    if state is None or not root:
+        return []
+    slots = [s for s in list((getattr(state, "_slots", None) or {}).values()) if s is not None]
+    found: list[Any] = []
+    seen = {root}
+    frontier = [root]
+    while frontier:
+        parents = set(frontier)
+        frontier = []
+        for s in slots:
+            key = str(getattr(s, "key", "") or "")
+            if key and key not in seen and str(getattr(s, "_created_by", "") or "") in parents:
+                seen.add(key)
+                found.append(s)
+                frontier.append(key)
+    return found
+
+
 def claim_pending(worker_key: str) -> list[WorkerCard]:
     """Claim *worker_key*'s relayed cards still waiting, before a Trust sweep.
 
@@ -184,12 +211,14 @@ async def settle_claimed(
         await _update(card, text)
 
 
-async def channel_of_worker(state: Any, slot: Any) -> Binding | None:
+async def channel_of_worker(state: Any, slot: Any, *, posting: bool = False) -> Binding | None:
     """The code channel whose session created *slot*, or None.
 
     Only a direct child of the channel's CURRENT session counts, while the
     feature is on and the channel is not archived. A slot that is itself
-    linked to Slack posts its own prompts and is never relayed.
+    linked to Slack posts its own prompts and is never relayed. *posting* adds
+    the gates a new card must pass (:func:`_channel_egress_open`); a card
+    already posted stays answerable through a mirror pause or a Slack Stop.
     """
     if state is None or slot is None or not code_channels_on(live_config()):
         return None
@@ -201,7 +230,31 @@ async def channel_of_worker(state: Any, slot: Any) -> Binding | None:
     binding = await surface.binding_for_slot(state, creator)
     if binding is None or await surface.is_archived(binding):
         return None
+    if posting and not _channel_egress_open(state, binding, creator):
+        return None
     return binding
+
+
+def _channel_egress_open(state: Any, binding: Binding, creator: str) -> bool:
+    """The gates the channel's OWN prompts pass before posting there.
+
+    The channel session's mirror is not paused, the code channel and its origin
+    still admit the bot (not off, not in review), and Slack's Stop has not
+    silenced the channel's turn. A worker's card posts where its channel's
+    would, and nowhere the owner asked for silence.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key, slack_mirror_is_paused
+    from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
+
+    channel_slot = (getattr(state, "_slots", None) or {}).get(creator)
+    if channel_slot is None:
+        return False
+    if slack_mirror_is_paused(state, effective_session_key(channel_slot)):
+        return False
+    origin = _origin_of(binding.channel_id, binding, None)
+    if not channel_and_origin_permit(live_config(), binding.channel_id, origin):
+        return False
+    return not surface.channel_stopped(binding.channel_id)
 
 
 def _blocks(header: str, request_id: str, title: str, tool_input: str) -> list[dict[str, Any]]:
@@ -275,7 +328,7 @@ async def relay(
     the dashboard, and the worker's wait is unchanged.
     """
     try:
-        binding = await channel_of_worker(state, slot)
+        binding = await channel_of_worker(state, slot, posting=True)
         slack = surface.slack()
         if binding is None or slack is None or not await surface.outbound_permitted():
             return None
@@ -409,9 +462,25 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         await _ephemeral(channel, user, NOT_LIVE_TEXT)
         return True
     resources += f" worker={card.worker_key} request={card.request_id}"
+    from kiro_crew.slack.code_channels.approval_picker import _channel_open
+    from kiro_crew.slack.code_channels.binding import bound_slot
+
+    channel_slot_seen = bound_slot(state, binding)
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
         await _ephemeral(channel, user, refusal)
+        return True
+    # authorize() awaited: an Archive, a toggle-off or a replaced channel
+    # session may have landed meanwhile, so the answer is checked again here,
+    # with nothing awaited before it is given.
+    if (
+        not _channel_open(binding, orch)
+        or channel_slot_seen is None
+        or bound_slot(state, binding) is not channel_slot_seen
+        or getattr(worker, "_created_by", "") != getattr(channel_slot_seen, "key", None)
+    ):
+        _audit("denied", resources, "not a live worker approval card here")
+        await _ephemeral(channel, user, NOT_LIVE_TEXT)
         return True
     line = APPROVED_BY if action_id == APPROVE_ACTION_ID else REJECTED_BY
     if action_id == TRUST_ACTION_ID:
@@ -435,9 +504,22 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
             via="worker_card",
             still_live=_live,
             origin_card=f"{channel}:{msg_ts}",
+            orch=orch,
+            expected_slot=channel_slot_seen,
         )
         if outcome.result not in ("set", "unchanged"):
             await _ephemeral(channel, user, outcome.text)
+            return True
+        # set_channel_mode awaited: answer the call by hand only while the
+        # channel is still open and this is still its worker (nothing awaited
+        # between this check and the resolve below).
+        if not card.future.done() and not (
+            _channel_open(binding, orch)
+            and bound_slot(state, binding) is channel_slot_seen
+            and getattr(worker, "_created_by", "") == getattr(channel_slot_seen, "key", None)
+        ):
+            _audit("denied", resources, "not a live worker approval card here")
+            await _ephemeral(channel, user, NOT_LIVE_TEXT)
             return True
         line = TRUSTED_BY
     approved = action_id != REJECT_ACTION_ID

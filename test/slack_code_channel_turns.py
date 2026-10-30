@@ -85,8 +85,11 @@ async def prompt_in_worker(
     channel: str,
     anchor: str,
     answer: str,
+    prompt: AcpEvent | None = None,
 ) -> TurnRecord:
-    """One turn in *worker_key*, which *conductor_key* (the channel's session) created."""
+    """One turn in *worker_key*, which *conductor_key* (the channel's session) created.
+
+    *prompt* replaces the default permission event (same request id)."""
 
     def _worker(ctx: TurnContext) -> None:
         ctx.state.slack_client = env.slack
@@ -96,6 +99,6 @@ async def prompt_in_worker(
         ctx.slot.title = title
 
     return await run_turn(
-        TurnScript(events=[_PROMPT, _DONE], answers={REQUEST: answer}, setup=_worker),
+        TurnScript(events=[prompt or _PROMPT, _DONE], answers={REQUEST: answer}, setup=_worker),
         slot=SlotSpec(key=worker_key),
     )

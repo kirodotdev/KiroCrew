@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -44,6 +45,9 @@ logger = logging.getLogger(__name__)
 #: The approval card's "Trust this channel" button (routed by
 #: ``slack/interactions.py``).
 TRUST_CALL_ACTION_ID = "kc_code_channel_trust_call"
+
+#: A slash-command name as Slack accepts one (what the replies may echo).
+_COMMAND_NAME = re.compile(r"[a-z0-9_-]{1,32}")
 
 AUDIT_CALLER = "slack-code-channels"
 OPERATION = "slack.code_channel.approval_mode"
@@ -175,13 +179,15 @@ def _command(orch: Any = None) -> str:
     matched (``orch.slack_command``) when an orchestrator is in hand, else
     ``slack.command``."""
     routed = str(getattr(orch, "slack_command", "") or "").strip().lstrip("/")
-    if routed:
-        return routed
-    try:
-        name = str(getattr(getattr(live_config(), "slack", None), "command", "") or "")
-    except Exception:
-        name = ""
-    return name.strip().lstrip("/") or "kirocrew"
+    if not routed:
+        try:
+            routed = str(getattr(getattr(live_config(), "slack", None), "command", "") or "")
+        except Exception:
+            routed = ""
+        routed = routed.strip().lstrip("/")
+    # A hand-edited value is never echoed into a channel: only a name Slack
+    # itself accepts for a command is shown, else the default.
+    return routed if _COMMAND_NAME.fullmatch(routed) else "kirocrew"
 
 
 # ── The kickoff select ────────────────────────────────────────────────────
@@ -227,6 +233,8 @@ class ModeResult:
 
     result: str
     text: str
+    #: Running workers the change could not reach (named in ``text``).
+    partial: bool = False
 
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -290,6 +298,8 @@ async def set_channel_mode(
     via: str,
     still_live: Callable[[], bool] | None = None,
     origin_card: str = "",
+    orch: Any = None,
+    expected_slot: Any = None,
 ) -> ModeResult:
     """Put *binding*'s session on *mode* for *user*, who is already authorized.
 
@@ -300,6 +310,11 @@ async def set_channel_mode(
 
     *origin_card* (``channel:ts``) is the card whose click asked: the caller
     writes its final text, so the Trust sweep does not re-write it first.
+
+    *expected_slot* is the session the caller authorized against: a channel
+    whose session was replaced since then changes nothing. Right before each
+    mutation the channel must also still be unarchived here and the feature on,
+    since an Archive or a toggle-off can land during the awaits in between.
     """
     channel = binding.channel_id
     resources = f"channel={channel} user={user} mode={mode} via={via}"
@@ -308,36 +323,57 @@ async def set_channel_mode(
         return ModeResult("refused", FAILED_TEXT.format(reason="unknown mode"))
     state = surface.dashboard_state()
     slot = bound_slot(state, binding)
-    if slot is None:
+    if slot is None or (expected_slot is not None and slot is not expected_slot):
         _audit("error", resources, "session unavailable")
         return ModeResult("unavailable", NO_SESSION_TEXT)
+
+    def _channel_live() -> bool:
+        return (
+            # A raise needs the channel still open; a lowering only takes a
+            # grant away, so an archive or toggle-off never blocks it.
+            (not _raises(mode, slot) or _channel_open(binding, orch))
+            and bound_slot(state, binding) is slot
+            and (still_live is None or still_live())
+        )
+
     yolo_before = _yolo_on()
     async with _lock(channel):
-        if still_live is not None and not still_live():
+        if not _channel_live():
             _audit("denied", resources, STALE_REASON)
             return ModeResult("refused", NOT_LIVE_TEXT)
         if current_mode(slot) == mode and not _yolo_active():
             # The channel already holds it; its live workers may not (they were
             # started before it changed). No grant has committed yet, so the
             # originating card's fence rides on theirs.
-            if not await _apply_to_workers(
+            fenced, failed = await _apply_to_workers(
                 state,
                 binding,
                 slot,
                 mode,
                 user,
                 via,
-                origin_live=still_live,
+                origin_live=_channel_live,
                 origin_card=origin_card,
-            ):
+                orch=orch,
+            )
+            if not fenced:
                 _audit("denied", resources, STALE_REASON)
                 return ModeResult("refused", NOT_LIVE_TEXT)
             _audit("allowed", f"{resources} result=unchanged")
-            return ModeResult("unchanged", f"ℹ️ This channel is already on *{label(mode)}*.")
+            return ModeResult(
+                "unchanged",
+                f"ℹ️ This channel is already on *{label(mode)}*.{_failed_note(failed)}",
+                partial=bool(failed),
+            )
         own_cards = _own_pending_cards(binding, slot) if mode == "trust" else []
         _kept_cards.update(own_cards)
         try:
-            ok, error = await _apply(state, slot, mode, user, still_live)
+            ok, error = await _apply(state, slot, mode, user, _channel_live)
+        except asyncio.CancelledError:
+            # Kept cards are only for a Trust that took; a cancelled change
+            # leaves them to the runner's own cleanup.
+            _kept_cards.difference_update(own_cards)
+            raise
         except Exception:
             logger.warning("code channel %s: approval mode change failed", channel, exc_info=True)
             ok, error = False, "the change failed"
@@ -351,12 +387,58 @@ async def set_channel_mode(
             return ModeResult("refused", FAILED_TEXT.format(reason=error))
         _audit("allowed", f"{resources} result=set")
         await _settle_own_cards(binding, [k for k in own_cards if k != origin_card], user)
-        await _apply_to_workers(state, binding, slot, mode, user, via, origin_card=origin_card)
+        _fenced, failed = await _apply_to_workers(
+            state, binding, slot, mode, user, via, origin_card=origin_card, orch=orch
+        )
     if mode == "trust":
-        await _post_channel(channel, TRUST_WARNING.format(user=user, command=_command()))
+        await _post_channel(channel, TRUST_WARNING.format(user=user, command=_command(orch)))
     await _refresh(binding, note=SET_NOTE.format(label=label(mode), user=user))
     ended = YOLO_OFF_TEXT if yolo_before and not _yolo_on() else ""
-    return ModeResult("set", f"✅ This channel is now on *{label(mode)}*.{ended}")
+    return ModeResult(
+        "set",
+        f"✅ This channel is now on *{label(mode)}*.{ended}{_failed_note(failed)}",
+        partial=bool(failed),
+    )
+
+
+def _channel_open(binding: Binding, orch: Any = None) -> bool:
+    """Synchronous: the feature is on and the channel is not archived.
+
+    Both halves of :func:`.surface.is_archived`: the in-process fence (an archive
+    in progress) and the stored stamp (one already recorded, which lifts the
+    fence). The store is read from its loaded snapshot, so nothing blocks here.
+    """
+    try:
+        on = code_channels_on(live_config(orch))
+        if not on or binding.channel_id in surface._archived_here:
+            return False
+        current = store().get_binding(binding.channel_id)
+    except Exception:
+        return False
+    return not bool((current or binding).archived_at)
+
+
+def _raises(mode: str, slot: Any) -> bool:
+    """Whether putting *slot* on *mode* can widen what runs without asking.
+
+    Judged by what the write does, not by :func:`current_mode`: every Trust
+    write re-runs the sweep that approves pending prompts (a lapsed trust scope
+    or a live YOLO grant still reads as Trust), and Reads widens a slot holding
+    neither flag. Only Normal, or Reads on a slot already above it, takes away.
+    """
+    if mode == "trust":
+        return True
+    if mode == "trust_reads":
+        return not (getattr(slot, "_trust", False) or getattr(slot, "_trust_reads", False))
+    return mode != "normal"
+
+
+def _failed_note(failed: list[str]) -> str:
+    """The reply's line for workers a change could not reach ("" when none)."""
+    if not failed:
+        return ""
+    shown = ", ".join(failed[:5]) + (f" and {len(failed) - 5} more" if len(failed) > 5 else "")
+    return f" ⚠️ Couldn't change {len(failed)} running worker(s): {shown}."
 
 
 def _own_pending_cards(binding: Binding, slot: Any) -> list[str]:
@@ -414,12 +496,37 @@ def _worker_grant_live(
         key = str(getattr(worker, "key", "") or "")
         return (
             bool(key)
+            and (not _raises(mode, worker) or _channel_open(binding))
             and current is channel_slot
             and (getattr(state, "_slots", None) or {}).get(key) is worker
             and str(getattr(worker, "_created_by", "") or "") == str(channel_slot.key)
             and not getattr(worker, "_slack_linked", False)
             and _RANK.get(mode, 3) <= _RANK.get(current_mode(channel_slot), -1)
             and (origin_live is None or origin_live())
+        )
+
+    return live
+
+
+def _lowering_live(
+    state: Any, binding: Binding, channel_slot: Any, worker: Any, mode: str
+) -> Callable[[], bool]:
+    """The fence for lowering a deeper session (a worker's worker, a linked one).
+
+    Asked right before the mutation: the exact session is still registered,
+    still under the channel's CURRENT session in the ``_created_by`` tree, and
+    *mode* still lowers it. A lowering only ever takes a grant away.
+    """
+    from kiro_crew.slack.code_channels import worker_approvals
+
+    def live() -> bool:
+        key = str(getattr(worker, "key", "") or "")
+        return (
+            bool(key)
+            and bound_slot(state, binding) is channel_slot
+            and (getattr(state, "_slots", None) or {}).get(key) is worker
+            and _RANK.get(mode, 3) < _RANK.get(current_mode(worker), -1)
+            and any(s is worker for s in worker_approvals.descendants(state, channel_slot))
         )
 
     return live
@@ -435,20 +542,28 @@ async def _apply_to_workers(
     *,
     origin_live: Callable[[], bool] | None = None,
     origin_card: str = "",
-) -> bool:
+    orch: Any = None,
+) -> tuple[bool, list[str]]:
     """Put the channel session's live workers on *mode* too (never raises).
 
     Only :func:`.worker_approvals.live_workers` (the relay's own lineage), each
     through the same audited mutation, so a worker is never left above the
     channel and a raise to Trust answers its pending prompts the way a
     mid-wait dashboard switch does; their relayed cards say so in place.
+    A lowering also reaches every deeper session in the ``_created_by`` tree
+    (a worker's workers, linked ones), which inherited the grant when they
+    started; nothing deeper is ever raised.
 
     *origin_live* is the asking card's fence, carried until the first grant
-    commits. False when that fence refused, so nothing was granted.
+    commits. Returns ``(fenced, failed)``: *fenced* False when that fence
+    refused, so nothing was granted; *failed* the shown titles of the sessions
+    the change could not reach.
     """
     from kiro_crew.slack.code_channels import worker_approvals
 
-    for worker in worker_approvals.live_workers(state, slot):
+    failed: list[str] = []
+    direct = worker_approvals.live_workers(state, slot)
+    for worker in direct:
         resources = (
             f"channel={binding.channel_id} user={user} mode={mode} via={via} "
             f"worker={getattr(worker, 'key', '')}"
@@ -456,7 +571,7 @@ async def _apply_to_workers(
         if current_mode(worker) == mode and not _yolo_active():
             continue
         if origin_live is not None and not origin_live():
-            return False
+            return False, failed
         # Claim the relayed cards first: the sweep wakes the worker, whose own
         # cleanup would otherwise label them "approved in the dashboard".
         key = str(getattr(worker, "key", ""))
@@ -464,6 +579,11 @@ async def _apply_to_workers(
         live = _worker_grant_live(state, binding, slot, worker, mode, origin_live)
         try:
             ok, error = await _apply(state, worker, mode, user, live)
+        except asyncio.CancelledError:
+            # Release the claim: each card's own cleanup says how it ended.
+            for card in cards:
+                card.answered = False
+            raise
         except Exception:
             logger.warning("code channel worker mode change failed", exc_info=True)
             ok, error = False, "the change failed"
@@ -478,8 +598,50 @@ async def _apply_to_workers(
         if ok:
             origin_live = None  # a grant committed under the fence
         elif origin_live is not None and error == STALE_REASON and not origin_live():
-            return False
-    return True
+            return False, failed
+        elif _still_above(state, worker, mode):
+            failed.append(worker_approvals._worker_title(worker))
+    failed += await _lower_deeper(state, binding, slot, mode, user, via, skip=direct)
+    return True, failed
+
+
+async def _lower_deeper(
+    state: Any, binding: Binding, slot: Any, mode: str, user: str, via: str, *, skip: list[Any]
+) -> list[str]:
+    """Lower every deeper session above *mode*; the titles of those it could not."""
+    from kiro_crew.slack.code_channels import worker_approvals
+
+    failed: list[str] = []
+    for worker in worker_approvals.descendants(state, slot):
+        if any(worker is s for s in skip):
+            continue
+        if not _RANK.get(mode, 3) < _RANK.get(current_mode(worker), -1):
+            continue
+        resources = (
+            f"channel={binding.channel_id} user={user} mode={mode} via={via} "
+            f"worker={getattr(worker, 'key', '')} depth=deeper"
+        )
+        live = _lowering_live(state, binding, slot, worker, mode)
+        try:
+            ok, error = await _apply(state, worker, mode, user, live)
+        except Exception:
+            logger.warning("code channel worker mode lowering failed", exc_info=True)
+            ok, error = False, "the change failed"
+        _audit(
+            "allowed" if ok else ("denied" if error == STALE_REASON else "error"),
+            f"{resources} result={'worker_set' if ok else 'worker_refused'}",
+            error,
+        )
+        if not ok and _still_above(state, worker, mode):
+            failed.append(worker_approvals._worker_title(worker))
+    return failed
+
+
+def _still_above(state: Any, worker: Any, mode: str) -> bool:
+    """A lowering that did not take: *worker* is still registered and above *mode*."""
+    key = str(getattr(worker, "key", "") or "")
+    registered = (getattr(state, "_slots", None) or {}).get(key) is worker
+    return registered and _RANK.get(mode, 3) < _RANK.get(current_mode(worker), -1)
 
 
 async def _post_channel(channel: str, text: str) -> None:
@@ -602,6 +764,8 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
         via="approval_card",
         still_live=_live,
         origin_card=f"{channel}:{msg_ts}",
+        orch=orch,
+        expected_slot=slot,
     )
     if outcome.result not in ("set", "unchanged"):
         await _ephemeral(channel, user, outcome.text)
@@ -610,6 +774,10 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     # already-trusted session's card (a race) is answered on that slot alone,
     # and only while the slot still holds the very future the card was for.
     resolved = expected is not None and expected.done()
+    if not resolved and expected is not None and not _channel_open(binding, orch):
+        _audit("denied", resources, STALE_REASON)
+        await _ephemeral(channel, user, NOT_LIVE_TEXT)
+        return True
     if not resolved and expected is not None:
         resolve = getattr(state, "resolve_slot_approval", None)
         if callable(resolve):
@@ -652,9 +820,10 @@ async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:
         if refusal:
             await _refresh(binding)  # put the select back on the real mode
         return True
-    outcome = await set_channel_mode(binding, mode, user, via="select")
-    if outcome.result != "set":
+    outcome = await set_channel_mode(binding, mode, user, via="select", orch=orch)
+    if outcome.result != "set" or outcome.partial:  # a partial set names what it missed
         await _ephemeral(channel, user, outcome.text)
+    if outcome.result != "set":
         await _refresh(binding)
     return True
 
@@ -684,4 +853,4 @@ async def handle_command(
 
         await respond(UNKNOWN_TEXT.format(word=escape_mrkdwn(word[:40]), command=command))
         return
-    await respond((await set_channel_mode(binding, mode, user, via="command")).text)
+    await respond((await set_channel_mode(binding, mode, user, via="command", orch=orch)).text)

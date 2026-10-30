@@ -477,7 +477,11 @@ command line, plus the other arguments only when there are any.
 message, `/<command> trust ask|reads|all` or a **Trust this channel** button changes it
 for the workers the channel's agent is already running as well, raising or lowering it
 the same way, each
-change recorded like the dashboard's. Raising to Trust also answers their waiting tool
+change recorded like the dashboard's. Lowering the channel also lowers anything those
+workers started in turn, since a session starts with its creator's mode; nothing below
+the agent's own workers is ever raised. If a worker can't be changed, the reply names it.
+A session whose creator has already closed is no longer counted as under the channel, so
+a lowering doesn't reach it; change its mode from the dashboard. Raising to Trust also answers their waiting tool
 prompts, as switching a session to Trust does on the dashboard. A person-only question
 from a worker is never answered for you. Sessions the agent did not start are left alone.
 

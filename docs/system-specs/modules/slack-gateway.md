@@ -2110,7 +2110,17 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   either card, the kickoff select or the command) also runs `apply_approval_mode` on
   each of `worker_approvals.live_workers` (the same `_created_by` lineage, direct
   children only, not Slack-linked), raising and lowering, audited per worker
-  (`result=worker_set`); a raise to Trust answers their pending prompts and the
+  (`result=worker_set`); a lowering also reaches every deeper session in the
+  `_created_by` tree (`worker_approvals.descendants`, linked ones included, audited
+  `depth=deeper`), which inherited the grant at creation, and the reply names any
+  worker it could not change (the kickoff select says so ephemerally). Known limit:
+  the walk follows live `_created_by` links, so a session whose creator already
+  closed is orphaned from the tree and keeps its mode. A raise needs the channel
+  open (`_channel_open`: feature on, not fenced, no stored archive stamp); a
+  lowering never waits on it. Each grant is fenced right before the mutation: the
+  channel not archived here, the feature on, the same channel session, the same
+  worker object; a worker card is relayed only where the channel's own prompt would
+  post (mirror not paused, channel and origin admit the bot, no Slack Stop); a raise to Trust answers their pending prompts and the
   channel's own through that call's slot-scoped sweep, and the cards are re-written in
   place ("Ran under Trust"; the channel's own are kept from `_run_chat`'s delete via
   `approval_picker.keep_card`). `ask_question` cards wait in `_question_futures`,

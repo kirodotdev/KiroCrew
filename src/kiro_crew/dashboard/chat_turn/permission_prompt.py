@@ -389,7 +389,8 @@ async def _on_permission_prompt(
         slot,
         session_key,
         event.request_id,
-        event.title,
+        # The same title the linked card carries, warning included.
+        (f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title),
         event.tool_input or "",
         fut,
         perm_meta=perm_meta,
