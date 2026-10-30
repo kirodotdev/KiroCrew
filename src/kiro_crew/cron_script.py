@@ -1108,7 +1108,6 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         Skip,
         SkipError,
         _redact_deep,
-        _redact_pair,
         _refusal_code,
         logger,
     )
@@ -1138,11 +1137,17 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         validate_secret_env_grant,
     )
     from kiro_crew.cron_script_mcp import (  # noqa: F401
+        _MAX_RETAINED_VALUE_LEN,
+        _MAX_RETAINED_VALUES_PER_SERVER,
         _STDERR_TAIL_READ_SPAN,
         KeptMcpServers,
+        McpArgRedactionError,
         McpToolClient,
         McpToolError,
+        _collect_string_leaves,
+        _redact_pair,
         _resolve_mcp_server,
+        _scan_tool_args,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,

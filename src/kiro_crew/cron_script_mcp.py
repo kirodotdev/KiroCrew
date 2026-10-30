@@ -20,6 +20,7 @@ import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.paths import kiro_agents_dir
@@ -33,7 +34,7 @@ from kiro_crew.cron_script_redaction import (
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
-from kiro_crew.security import _REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import _REDACTED_CREDENTIAL_TAG, REDACTED_CREDENTIAL_TAG, redact
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kiro_crew.cron_script")
@@ -46,12 +47,150 @@ logger = logging.getLogger("kiro_crew.cron_script")
 # window plus the context before it (PEM markers, the severed line).
 _STDERR_TAIL_READ_SPAN = 64 * 1024
 
+# Bounds on the per-run, per-server record of returned string values, so a
+# paginated run that streams large distinct results cannot grow the record
+# without limit. A value longer than this is never recorded (an opaque id a
+# server hands back is short); a server keeps at most this many recorded
+# values, and once full it records no more for that server. An unrecorded
+# value is simply scanned like any other argument, so overflow costs the
+# exemption, never safety.
+_MAX_RETAINED_VALUE_LEN = 4096
+_MAX_RETAINED_VALUES_PER_SERVER = 4096
+
+
+def _collect_string_leaves(value: object, into: set[str], max_len: int) -> None:
+    """Add every string leaf of a decoded JSON structure to ``into``.
+
+    Walks dicts (values only; keys are not returned values) and lists/tuples
+    recursively; a string leaf is added when it is non-empty and at most
+    ``max_len`` characters. A longer leaf is skipped: an opaque id a server
+    hands back is short, so the cap drops only bulk payload text the exemption
+    never needs to match. Numbers, booleans and null carry no credential bytes,
+    so they are ignored. This records the exact strings a server returned, for
+    the same-server exemption in ``ScriptContext.call_tool``. The caller bounds
+    recursion depth by catching ``RecursionError``.
+    """
+    if isinstance(value, str):
+        if value and len(value) <= max_len:
+            into.add(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _collect_string_leaves(v, into, max_len)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _collect_string_leaves(v, into, max_len)
+
 
 # ── MCP Tool Bridge ──
 
 
 class McpToolError(RuntimeError):
     """A tool call the MCP server answered with an error; the server is still usable."""
+
+
+class McpArgRedactionError(McpToolError):
+    """A tool-call argument carried a credential-shaped value the scan refused.
+
+    Raised instead of sending the ``[REDACTED: credential]`` placeholder on to
+    the server (which answers with a misleading error of its own). The message
+    names the argument path and the class of value; it never echoes the value.
+    """
+
+
+def _redact_pair(key: str, value: str) -> str:
+    """``value`` redacted as the value UNDER ``key``.
+
+    A credential pattern can need its key to match: ``Bearer <token>`` alone
+    passes the redactor, while ``authorization: Bearer <token>`` is caught. So
+    the value is judged twice: alone, and then the cleaned result spelled beside
+    its key the way a header line spells it. A pair the second judgement catches
+    is answered with the redactor's own tag in the value's place, so the key
+    stays and the shape holds.
+    """
+    safe = redact(value)
+    spelled = f"{key}: {safe}"
+    if redact(spelled) != spelled:
+        return REDACTED_CREDENTIAL_TAG
+    return safe
+
+
+def _scan_tool_args(
+    args: Any, exempt: "frozenset[str] | set[str]", *, truncated: bool = False
+) -> Any:
+    """Return ``args`` ready to send, refusing any credential-shaped leaf.
+
+    The structure is rebuilt with every string judged by :func:`redact` the same
+    way a serialized redaction pass judges it -- a value under a key is judged
+    with its key (:func:`_redact_pair`), a bare value alone, and every key is
+    judged too. ONE difference: a string VALUE that is an exact member of
+    ``exempt`` (a value this same server returned earlier in the run) is passed
+    through unchanged without being scanned. If the scan would CHANGE any
+    non-exempt string -- value or key -- the call is refused with
+    :class:`McpArgRedactionError` naming the path, rather than sending the
+    placeholder. The exemption is membership only: no substring or prefix match,
+    and the set is this server's alone. ``truncated`` says this server's
+    returned-value record overflowed its bound, so a refused value may in fact
+    have been returned by the server; the refusal discloses that rather than
+    claim the value was never seen.
+
+    Both the live run (``ScriptContext.call_tool``) and the dry-run preview
+    (``_LiveTestCtx.call_tool``) scan through :meth:`KeptMcpServers.scan_and_call`,
+    which calls this, so the preview rewrites an argument exactly as the real run.
+    """
+    refusals = []
+
+    def key_segment(raw_key: object) -> str:
+        """A path segment for ``raw_key`` that carries no credential bytes.
+
+        A dict key is the script's own free text, so a credential-shaped key
+        must not reach the refusal diagnostic verbatim. A key the redactor would
+        change is named by its redacted form; any other key is named as written.
+        """
+        if isinstance(raw_key, str):
+            return redact(raw_key)
+        return str(raw_key)
+
+    def rewrite(value: Any, key: str, path: str) -> Any:
+        if isinstance(value, str):
+            if value in exempt:
+                # A value this same server returned this run: hand it back as-is.
+                return value
+            safe = _redact_pair(key, value) if key else redact(value)
+            if safe != value:
+                refusals.append(path)
+            return value
+        if isinstance(value, dict):
+            out: dict[Any, Any] = {}
+            for raw_key, inner in value.items():
+                seg = key_segment(raw_key)
+                if isinstance(raw_key, str) and raw_key not in exempt:
+                    if redact(raw_key) != raw_key:
+                        refusals.append(f"{path}/{seg}")
+                out[raw_key] = rewrite(
+                    inner, raw_key if isinstance(raw_key, str) else "", f"{path}.{seg}"
+                )
+            return out
+        if isinstance(value, (list, tuple)):
+            return [rewrite(inner, key, f"{path}[{i}]") for i, inner in enumerate(value)]
+        return value
+
+    rebuilt = rewrite(args, "", "args")
+    if refusals:
+        where = ", ".join(refusals)
+        message = (
+            "MCP tool error: refused a credential-shaped value in tool argument "
+            f"{where}. A script may only pass back a value the SAME server returned "
+            "this run; any other credential-shaped value is refused rather than sent "
+            "redacted. The value is not shown."
+        )
+        if truncated:
+            message += (
+                " Note: this server returned more distinct values than the run can"
+                " retain, so a value it did return may have been dropped from the"
+                " record and refused here."
+            )
+        raise McpArgRedactionError(message)
+    return rebuilt
 
 
 class McpToolClient:
@@ -310,6 +449,19 @@ class KeptMcpServers:
         self._kept_clients: dict[str, McpToolClient] = {}
         self._kept_clients_lock = threading.Lock()
         self._closed = False
+        # Per run, per server: the exact string values THIS server returned. A
+        # later arg whose string leaf equals one of them for the SAME server is
+        # the script handing a value back to the server that produced it, so the
+        # credential scan should let it through unchanged (see
+        # ScriptContext.call_tool). In memory only; never shared across servers,
+        # never persisted, cleared in close(). Guarded by its own lock so a call
+        # that started its own server (no kept slot) still records safely.
+        self._returned_values: dict[str, set[str]] = {}
+        self._returned_values_lock = threading.Lock()
+        # Servers whose returned-value record overflowed its bound this run. A
+        # refusal of a value such a server returned reads this to disclose that
+        # the record is incomplete, rather than claim the value was never seen.
+        self._truncated_servers: set[str] = set()
 
     def call_tool(self, server: str, tool: str, args: dict) -> str:
         client = self._take_kept_client(server)
@@ -323,10 +475,94 @@ class KeptMcpServers:
                 kept = self._keep_client(server, client)
                 raise
             kept = self._keep_client(server, client)
+            self._record_returned_values(server, result)
             return result
         finally:
             if client is not None and not kept:
                 client.close()
+
+    def scan_and_call(self, server: str, tool: str, args: dict) -> str:
+        """Scan ``args`` for credential leakage, then call the tool.
+
+        The single path both the live run and the dry-run preview take, so the
+        same-server exemption and the fail-loud refusal behave identically in
+        each. A value this same server returned this run is exempt; any other
+        credential-shaped value raises :class:`McpArgRedactionError` naming a
+        redacted argument path, never the value, instead of sending the
+        placeholder on. The caller owns its own audit of the outcome.
+        """
+        exempt = self.recorded_values(server)
+        truncated = self.retention_truncated(server)
+        safe_args = _scan_tool_args(args, exempt, truncated=truncated)
+        return self.call_tool(server, tool, safe_args)
+
+    def recorded_values(self, server: str) -> frozenset[str]:
+        """The exact strings ``server`` has returned so far this run.
+
+        A snapshot, so the caller can test membership without holding the lock.
+        Empty for a server that has not answered yet, and never carries any
+        other server's values.
+        """
+        with self._returned_values_lock:
+            return frozenset(self._returned_values.get(server, ()))
+
+    def _record_returned_values(self, server: str, result: str) -> None:
+        """Record every string ``result`` carries, under ``server``.
+
+        ``result`` is the tool's returned text. When it parses as JSON, every
+        string leaf of the decoded structure is recorded (ids are usually leaves
+        of a JSON object). The raw text is recorded when it is not JSON, so a
+        tool that returns a bare id string is covered. Recording never raises and
+        never aborts the call: a result too deeply nested to walk
+        (:class:`RecursionError`) or any other bookkeeping failure discards that
+        result's exemptions and returns -- the successful tool text is still
+        handed back by the caller. A value the scan would later refuse is better
+        refused than a successful call made to fail here. Retention is bounded by
+        value length and by a per-server count; an unrecorded value is simply
+        scanned like any other argument.
+        """
+        values: set[str] = set()
+        try:
+            try:
+                _collect_string_leaves(json.loads(result), values, _MAX_RETAINED_VALUE_LEN)
+            except (ValueError, TypeError):
+                # Not JSON: the whole result is the returned value.
+                if isinstance(result, str) and 0 < len(result) <= _MAX_RETAINED_VALUE_LEN:
+                    values.add(result)
+        except RecursionError:
+            # Too deeply nested to walk: drop this result's exemptions, keep the
+            # successful call.
+            logger.debug("recording returned values hit recursion limit; skipped", exc_info=True)
+            return
+        if not values:
+            return
+        with self._returned_values_lock:
+            kept = self._returned_values.setdefault(server, set())
+            # Only values not already kept consume capacity, so a result that
+            # repeats retained strings does not spend room a new id needs.
+            fresh = values - kept
+            room = _MAX_RETAINED_VALUES_PER_SERVER - len(kept)
+            if len(fresh) > room:
+                # More new values than room: record what fits (deterministically,
+                # so which are dropped does not depend on set order) and mark this
+                # server's retention as truncated, so a later refusal of a value
+                # this server returned can say the record is incomplete.
+                self._truncated_servers.add(server)
+                for value in sorted(fresh)[: max(room, 0)]:
+                    kept.add(value)
+            else:
+                kept.update(fresh)
+
+    def retention_truncated(self, server: str) -> bool:
+        """Whether ``server``'s returned-value record overflowed its bound this run.
+
+        True once a result from ``server`` carried more new values than the
+        record could hold, so a value that server returned may be absent and a
+        same-server reuse of it refused. A refusal diagnostic reads this to
+        disclose the overflow instead of claiming the value was never returned.
+        """
+        with self._returned_values_lock:
+            return server in self._truncated_servers
 
     def close(self) -> None:
         """Stop every kept server; never raises, and later calls keep none."""
@@ -334,6 +570,9 @@ class KeptMcpServers:
             self._closed = True
             clients = list(self._kept_clients.values())
             self._kept_clients.clear()
+        with self._returned_values_lock:
+            self._returned_values.clear()
+            self._truncated_servers.clear()
         for client in clients:
             try:
                 client.close()
@@ -452,3 +691,4 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
 
 # A traceback names these by the path callers import them from.
 McpToolError.__module__ = "kiro_crew.cron_script"
+McpArgRedactionError.__module__ = "kiro_crew.cron_script"
