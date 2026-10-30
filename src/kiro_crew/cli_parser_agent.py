@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
 from kiro_crew.cli_arg_types import positive_int
-from kiro_crew.config.loader import DASHBOARD_PORT
 from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
 
 if TYPE_CHECKING:
