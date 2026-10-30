@@ -241,13 +241,17 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
 
     def test_nothing_installed_is_an_issue_naming_the_install(self, monkeypatch, capsys):
+        """Not installed yet is a warning: the first chat downloads the engine, and
+        the row names the command that does it now."""
         from kiro_crew.agent_sdk import kas_bundle
 
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌" in out
+        assert "route:       bundle" in out
+        assert "bundle:      ⚠  not installed yet" in out
+        assert "downloads it at the first chat" in out
         assert "kirocrew kas install" in out
         assert issues == ["agent.kas_bundle is on but no KAS engine bundle is installed"]
         assert "relay:" not in out

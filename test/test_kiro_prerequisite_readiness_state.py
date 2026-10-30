@@ -1046,9 +1046,13 @@ class TestKasRecordsFirstRunSetup:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed: bool
     ) -> None:
         # agent.kas_bundle on, and NO kiro-cli anywhere on this host: the route
-        # never runs kiro-cli, so the marker must follow the installed engine --
-        # and nothing may try to spawn the absent binary while deciding.
-        from kiro_crew.agent_sdk import kas_bundle
+        # never runs kiro-cli, so the marker must follow the engine -- installed,
+        # or installable by the first spawn -- and nothing may try to spawn the
+        # absent binary while deciding. Here the host cannot run the engine, so
+        # only an installed one completes setup.
+        from kiro_crew.agent_sdk import backend_install, kas_bundle
+
+        monkeypatch.setattr(backend_install, "_engine_installable_here", lambda: False)
 
         calls: list[tuple[str, list[str]]] = []
 

@@ -64,17 +64,34 @@ class ConfigUnreadable(Exception):
 def agent_owns_sign_in(agent: Any) -> bool:
     """THE bundle-route predicate over a loaded ``agent`` section.
 
-    Positive on both halves: ``agent.acp_backend == "kas"`` AND ``agent.kas_bundle``
-    on -- the shape ``kiro_prerequisite_service._kas_bundle_route`` uses for the
-    readiness gate. The bundle flag alone says nothing when another harness is
-    selected, and the backend alone is the kiro-cli relay route, where kiro-cli
-    owns the sign-in.
+    Positive on both halves: ``agent.acp_backend == "kas"`` AND Crew owning the
+    credential -- the vault holds an identity (every KAS spawn then draws on it), or
+    the bundle route --
+    ``agent.kas_bundle`` on, or the automatic switch when kiro-cli's relay cannot run
+    on this host (``acp/kas_route.py``), the shape
+    ``kiro_prerequisite_service._kas_bundle_route`` uses for the readiness gate. The
+    bundle flag alone says nothing when another harness is selected, and the
+    backend alone is the kiro-cli relay route, where kiro-cli owns the sign-in.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 
-    return getattr(agent, "acp_backend", "") == ACP_BACKEND_KAS and bool(
-        getattr(agent, "kas_bundle", False)
-    )
+    if getattr(agent, "acp_backend", "") == ACP_BACKEND_KAS:
+        if getattr(agent, "kas_bundle", False):
+            return True
+        # The vault owns the credential whenever it holds an identity: the relay
+        # then spawns Crew-owned too (``kas_host_auth``). Read first, so a sign-in
+        # never flips the owner back to kiro-cli by moving the route to the relay.
+        try:
+            from kiro_crew.auth.bridge import vault_holds_identity
+
+            if vault_holds_identity():
+                return True
+        except Exception:  # noqa: BLE001 - an unreadable vault leaves the route to decide
+            pass
+        from kiro_crew.agent_sdk import kas_bundle
+
+        return bool(kas_bundle.kas_route().bundle)
+    return False
 
 
 def load_sign_in_owner_config() -> Any:

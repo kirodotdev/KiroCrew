@@ -351,8 +351,9 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
 
     With no ``?backend=`` it is the installation's harness and the shared bundle
     predicate (``agent_sdk.kas_bundle.kas_bundle_route``). With one, the asked
-    harness names its own route: the bundle only for KAS with ``agent.kas_bundle``
-    on, whatever the installation runs. ``None`` for a harness that is not
+    harness names its own route: the bundle only for KAS on the bundle route
+    (``agent.kas_bundle`` on, or chosen because kiro-cli's relay cannot run),
+    whatever the installation runs. ``None`` for a harness that is not
     selectable. Blocking (the bundle predicate reads config).
     """
     asked = query["backend"] if "backend" in query else None
@@ -363,7 +364,13 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
     backend = harness_for_query(asked)
     if backend is None:
         return None
-    on_bundle = backend == _backends.ACP_BACKEND_KAS and bool(
-        getattr(config.agent, "kas_bundle", False)
-    )
+    on_bundle = False
+    if backend == _backends.ACP_BACKEND_KAS:
+        from kiro_crew.agent_sdk import kas_bundle
+
+        # The route rule the spawn applies (``acp/kas_route.py``): the switch, or
+        # the automatic bundle route when kiro-cli's relay cannot run here.
+        on_bundle = bool(getattr(config.agent, "kas_bundle", False)) or bool(
+            kas_bundle.kas_route().bundle
+        )
     return backend, on_bundle

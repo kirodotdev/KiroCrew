@@ -527,6 +527,21 @@ def _doctor_agent_auth() -> None:
         if not host_probed:
             host_signed_in = cli_doctor._kiro_cli_signed_in()
             host_probed = True
+        if backend == kas_backend:
+            # KAS on the relay with an empty vault: kiro-cli's store answers this
+            # spawn. The row names that route, and its remedy is the Kiro sign-in,
+            # which the next spawn uses (through kiro-cli, or on Kiro Crew's own
+            # engine when kiro-cli cannot run).
+            if host_signed_in is True:
+                print(f"  {label.ljust(13)}✅ {source} (KAS through kiro-cli's relay)")
+            else:
+                state = "could not check" if host_signed_in is None else "not signed in"
+                glyph = "⚠  " if host_signed_in is None else "⏹ "
+                print(f"  {label.ljust(13)}{glyph}{source}; {state} (KAS through kiro-cli's relay)")
+                render._print_wrapped(remedy)
+            if vault_detail:
+                render._print_wrapped(f"crew vault: {vault_detail}")
+            continue
         if host_signed_in is True:
             print(f"  {label.ljust(13)}✅ {source}")
         elif host_signed_in is None:

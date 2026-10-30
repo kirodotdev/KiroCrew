@@ -24,6 +24,20 @@
 > route) Crew spawns its own installed engine and is the auth owner unconditionally:
 > the callback always reaches Crew, and there is no `--auth-method cli` to fall back
 > to.
+>
+> **Choosing KAS means Kiro Crew's own sign-in** (decision
+> [2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
+> Where the relay cannot run -- no kiro-cli, or a kiro-cli whose own sign-in is
+> proven absent and through which the vault cannot reach the engine (no
+> `kiro-cli-chat` entry) -- a KAS spawn takes the bundle route automatically
+> (`acp/kas_route.py`), and the gateway installs the pinned engine when it is missing.
+> So the vault sign-in always takes effect on the next spawn, and every KAS prompt
+> points at the Kiro sign-in card and never at `kiro-cli login`: the declaration's
+> `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
+> of the last spawn once one ran (`host_auth._with_kas_route`); `kirocrew doctor`'s
+> `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
+> same remedy when kiro-cli's own store is what answers. A stored Kiro CLI pick
+> (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.
 
 ## Why this exists
 
@@ -347,7 +361,7 @@ nothing to act on there. The verbs deliberately speak kiro-cli's vocabulary:
 | `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, exits 0 once stored; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`) |
 | `kas whoami [--format json]` | who the vault is signed in as: `KasToken.is_usable` (the predicate the spawn reads) AND no refresh-rejected marker on the slot, so a sign-in doctor and the card call "expired -- sign in again" reads as signed out here too and `kas login` replaces it | exit 0 + the `kiro-cli whoami --format json` document (`auth/whoami.whoami_document`: `accountType`, and `startUrl` when recorded -- nothing else, never a token or e-mail); exit 1 when signed out |
 | `kas logout` | removes every stored identity (`KasLoginService.logout`) and bumps the store's **sign-out generation** (below) | a running gateway retires its agent processes on the next turn: the vault is in its identity fingerprint and the pre-turn identity-change check runs the same sweep the dashboard's sign-out runs; a dashboard login pending at that moment is refused when its code is approved |
-| `kas route` | which program owns the Kiro sign-in on this host | `kas-bundle` when `agent.acp_backend == "kas"` AND `agent.kas_bundle` is on, `kiro-cli` otherwise; a config that cannot be read -- a load that raised, OR one the loader returned as defaults with `_base_unreadable` / `_overlay_unreadable` set (`auth/whoami.load_sign_in_owner_config`) -- is a plain-language error naming the path and the fault, exit 1: the owner is then UNKNOWN, never kiro-cli, so a remote script neither runs a kiro-cli branch on a bundle-route box nor signs the wrong store out. The predicate itself is `auth/whoami.agent_owns_sign_in(agent)`, the one in-process spelling |
+| `kas route` | which program owns the Kiro sign-in on this host | `kas-bundle` when `agent.acp_backend == "kas"` AND Crew owns the credential: the vault holds an identity (every KAS spawn then draws on it, so a sign-in never flips the answer back to kiro-cli), or the bundle route (`agent.kas_bundle` on, or chosen automatically because kiro-cli's relay cannot run here, `acp/kas_route.py`); `kiro-cli` otherwise; a config that cannot be read -- a load that raised, OR one the loader returned as defaults with `_base_unreadable` / `_overlay_unreadable` set (`auth/whoami.load_sign_in_owner_config`) -- is a plain-language error naming the path and the fault, exit 1: the owner is then UNKNOWN, never kiro-cli, so a remote script neither runs a kiro-cli branch on a bundle-route box nor signs the wrong store out. The predicate itself is `auth/whoami.agent_owns_sign_in(agent)`, the one in-process spelling |
 
 `accountType` is spelled as kiro-cli spells it (`BuilderId`, `IamIdentityCenter`,
 `ExternalIdP`, `Social<Provider>`), so `cloud/login_target.parse_whoami_output` and

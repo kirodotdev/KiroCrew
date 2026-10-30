@@ -87,6 +87,14 @@ export function KasBundleCard() {
 
   const installed = status.installed
   const canTurnOn = installed !== null && !installing
+  // The last KAS spawn took Crew's own engine because kiro-cli's relay cannot run
+  // here. The only sign of that switch on this card, so it is always shown.
+  const automatic = status.route?.automatic === true
+  const automaticText = !automatic
+    ? ''
+    : status.route?.reason === 'kiro_cli_signed_out'
+      ? i18nT('pages.developer.kasBundleCard.route_auto_kiro_cli_signed_out')
+      : i18nT('pages.developer.kasBundleCard.route_auto_no_kiro_cli')
   const progress = status.progress
   const progressText =
     progress.total > 0
@@ -118,6 +126,12 @@ export function KasBundleCard() {
           <SchemaRestartBadge configKey={KAS_BUNDLE_CONFIG_KEY} />
         </span>
       </div>
+
+      {automatic && (
+        <div className="text-[12px] text-muted" role="status" data-testid="kas-bundle-route-auto">
+          {automaticText}
+        </div>
+      )}
 
       {restartPending && (
         <div
@@ -153,8 +167,9 @@ export function KasBundleCard() {
                   })
                 : i18nT('pages.developer.kasBundleCard.installed', { version: installed.version })}
             </span>
-            {/* A green line under an OFF switch reads as "already running" without this. */}
-            {!status.enabled && (
+            {/* A green line under an OFF switch reads as "already running" without
+                this, unless the engine runs anyway because kiro-cli cannot. */}
+            {!status.enabled && !automatic && (
               <span className="text-muted" data-testid="kas-bundle-off-note">
                 {i18nT('pages.developer.kasBundleCard.off_note')}
               </span>
