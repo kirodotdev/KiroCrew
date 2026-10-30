@@ -94,14 +94,15 @@ _CANONICAL_BASE_ONLY_PR_EXPR = (
 )
 # PR Readiness runs only default-branch code too. Only its pull_request_target
 # runs use the fleet: workflow_run carries the in_progress merge-guard hold,
-# and workflow_dispatch names no head to check, so both stay hosted.
+# and workflow_dispatch names no head to check. Both take the group label
+# instead, which is what keeps this lane's bursts off the shared standard pool.
 _CANONICAL_READINESS_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
     + " && github.event_name == 'pull_request_target' && "
     "github.event.pull_request.head.repo.full_name == github.repository && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # The ratchet audit: push, manual dispatch, and the merge group, which is the
 # integrated tree one step before it lands.
