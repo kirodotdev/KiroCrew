@@ -527,8 +527,9 @@ class CdpRelay:
         if self._closing:
             params = msg.get("params") or {}
             if sid in self._closing or params.get("sessionId") in self._closing:
-                if msg.get("method") == "Target.detachedFromTarget":
-                    self._closing.discard(params.get("sessionId") or sid)
+                closed = params.get("sessionId") or sid
+                if msg.get("method") == "Target.detachedFromTarget" and isinstance(closed, str):
+                    self._closing.discard(closed)
                 return
         self._observe_event(msg)
         for ws in list(self._clients):

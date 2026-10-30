@@ -35,6 +35,7 @@ from kiro_crew.dashboard.handlers import browser_ask
 from kiro_crew.dashboard.handlers import browser_live as live_mod
 from kiro_crew.dashboard.routes import browser_live as route_slice
 from kiro_crew.mcp_tools import browser as tool
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -678,10 +679,7 @@ async def test_an_answer_that_waited_on_the_fence_past_the_turn_lands_nothing() 
     fence = hub.op_fence(KEY)
     await fence.acquire()  # an agent op is running
     task = asyncio.ensure_future(_answer({"ask_id": ask.id, "action": "confirm"}))
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if ask.lock.locked():
-            break
+    await async_wait_until(ask.lock.locked)
     hub.turn_ended(KEY)  # the turn folds the ask while the answer waits
     fence.release()
     status, out, _ = await task

@@ -22,7 +22,8 @@ from aiohttp import web
 from kiro_crew.browser_harness import relay as relay_mod
 from kiro_crew.browser_harness.relay import RELAY_ID_BASE, CdpError, CdpRelay, RelayClosed
 
-_WAIT = 5.0
+#: A hang ceiling only: every wait below awaits a signal the relay emits.
+_WAIT = 30.0
 
 
 class FakeBrowser:

@@ -306,11 +306,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # posture row.
         "apps/builtins/aws_control/backend/routes_parts/common.py",
         "apps/builtins/aws_control/backend/routes_parts/drive.py",
-        # Beside the registered browser_cli/install.py sink: install_runner.py defines its redactor;
-        # the launcher and seams owners apply it to refusal and seam text. No new egress path.
-        "browser_cli/install_launcher.py",
-        "browser_cli/install_runner.py",
-        "browser_cli/install_seams.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
@@ -728,7 +723,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/state_parts/slot_turns.py",
         "dashboard/state_parts/slots_frame.py",
         "dashboard/state_parts/transcript_rows.py",
-        "dashboard/websocket_hub.py",
         # Owners extracted from dashboard/handlers/source_providers.py, which keeps
         # the HTTP handlers. They redact provider data before it is cached or
         # returned through those handlers, but they add no logical egress path:

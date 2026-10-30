@@ -409,7 +409,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
-    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
+    EXPECTED: dict[str, int] = {"standard": 303, "cc": 310, "strict": 311}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

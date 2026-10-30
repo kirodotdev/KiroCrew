@@ -42,6 +42,7 @@ from kiro_crew.decisions import gate
 from kiro_crew.decisions import provider as provider_mod
 from kiro_crew.decisions.provider import Capabilities
 from kiro_crew.decisions.types import Answer, Choice, Noul
+from kiro_crew.testing.wait import async_wait_until
 
 SESSION = "dashboard:chat-1"
 FAST = Capabilities(max_in_flight=8, latency_ms=50)
@@ -185,8 +186,9 @@ class Model:
             }
         )
         try:
-            while self.now < self.together and len(self.calls) < self.together:
-                await asyncio.sleep(0.001)
+            await async_wait_until(
+                lambda: self.now >= self.together or len(self.calls) >= self.together
+            )
             await asyncio.sleep(self.latency)
             if self.fail:
                 return None
@@ -387,8 +389,8 @@ def test_virtual_time_lets_the_page_go_when_the_op_is_cancelled(seam):
 
     async def _cancel():
         task = asyncio.ensure_future(reflex.run(_ctx(page), {**STOP_AT, "mode": "virtual_time"}))
-        while not model.calls:  # the decision is being made on the held page
-            await asyncio.sleep(0.001)
+        # The decision is being made on the held page.
+        await async_wait_until(lambda: model.calls)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

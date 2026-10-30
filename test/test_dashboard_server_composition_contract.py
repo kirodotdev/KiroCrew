@@ -420,7 +420,6 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
-    "kiro_crew.decisions": "impl_jev local_runtime",
     "kiro_crew.decisions": "impl_systemone local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
     "kiro_crew.memory_startup": "memory_prepared memory_startup_preparing",
@@ -459,7 +458,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 102
+    assert len(expected) == 105
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

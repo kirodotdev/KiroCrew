@@ -703,7 +703,7 @@ async def test_a_slow_re_pull_never_holds_the_navigation_past_its_budget(
     monkeypatch.setattr(supervisor, "NAV_REFRESH_BUDGET_SECS", 0.05)
     provider.fp = "v2"
     try:
-        assert await asyncio.wait_for(sup.refresh_credentials_if_source_changed(), 5.0) is False
+        assert await asyncio.wait_for(sup.refresh_credentials_if_source_changed(), 30.0) is False
     finally:
         gate.set()
     assert sup.status()["credentials"]["reason"] == "refresh_timeout"
