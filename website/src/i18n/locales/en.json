@@ -10842,7 +10842,7 @@
     "console_link": "Manage access in the Console",
     "console_link_missing": "Access is managed in your organization's Console. This Crew was not given a link to it.",
     "adapters_title": "How people connect",
-    "adapter_tailscale_body": "People reach this Crew through Tailscale. Invite them above, or share this machine in Tailscale.",
+    "adapter_tailscale_body": "People reach this Crew through Tailscale. Invite them below, or share this machine in Tailscale.",
     "adapter_tailscale_docs": "Tailscale sharing docs",
     "adapter_tailscale_manage": "Manage people in Tailscale",
     "adapter_tailscale_listening": "Listening on your tailnet",

@@ -20710,7 +20710,7 @@
     "invite_alias_help": "O nome e a imagem são só para exibição. Quem entra é a conta do Tailscale que aceita.",
     "page_previous": "Voltar",
     "people_unnamed_platform_body": "Colegas na lista de permitidos do Tailscale podem usar este Crew pelo Tailscale Serve, mas este sistema operacional não consegue provar quem é cada um, então o trabalho deles aparece como Sem atribuição. Compartilhe o link direto do Tailscale para ver os nomes. Quem não está na lista é recusado.",
-    "adapter_tailscale_body": "As pessoas acessam este Crew pelo Tailscale. Convide acima ou compartilhe esta máquina no Tailscale.",
+    "adapter_tailscale_body": "As pessoas acessam este Crew pelo Tailscale. Convide abaixo ou compartilhe esta máquina no Tailscale.",
     "setup_kiro_login_body": "Os colegas entram com o login do Kiro da organização.",
     "several_typing": "Várias pessoas estão digitando",
     "waitlist_first_seen": "Primeira tentativa: {{when}}",

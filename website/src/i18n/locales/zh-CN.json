@@ -20088,7 +20088,7 @@
     "invite_alias_help": "名称和头像仅用于显示。能进入的是接受邀请的 Tailscale 账号。",
     "page_previous": "返回",
     "people_unnamed_platform_body": "Tailscale 允许列表中的成员可以通过 Tailscale Serve 使用此 Crew，但此操作系统无法证明每个人是谁，因此他们的工作显示为未归属。请改为分享直连 Tailscale 链接以显示他们的名字。不在列表中的人会被拒绝。",
-    "adapter_tailscale_body": "大家通过 Tailscale 访问此 Crew。可在上方邀请，或在 Tailscale 中共享这台机器。",
+    "adapter_tailscale_body": "大家通过 Tailscale 访问此 Crew。可在下方邀请，或在 Tailscale 中共享这台机器。",
     "setup_kiro_login_body": "队友使用所在组织的 Kiro 登录进行登录。",
     "several_typing": "有几个人正在输入",
     "waitlist_first_seen": "首次尝试于 {{when}}",

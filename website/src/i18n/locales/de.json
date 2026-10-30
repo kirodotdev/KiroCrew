@@ -20399,7 +20399,7 @@
     "invite_alias_help": "Name und Bild dienen nur der Anzeige. Herein kommt das Tailscale-Konto, das annimmt.",
     "page_previous": "Zurück",
     "people_unnamed_platform_body": "Teammitglieder auf der Tailscale-Zulassungsliste können diese Crew über Tailscale Serve nutzen, aber dieses Betriebssystem kann nicht nachweisen, wer sie sind, daher erscheint ihre Arbeit als Nicht zugeordnet. Teile stattdessen den direkten Tailscale-Link, um ihre Namen zu sehen. Wer nicht auf der Liste steht, wird abgewiesen.",
-    "adapter_tailscale_body": "Man erreicht diese Crew über Tailscale. Lade oben ein oder teile diesen Rechner in Tailscale.",
+    "adapter_tailscale_body": "Man erreicht diese Crew über Tailscale. Lade unten ein oder teile diesen Rechner in Tailscale.",
     "setup_kiro_login_body": "Teammitglieder melden sich mit der Kiro-Anmeldung ihrer Organisation an.",
     "several_typing": "Mehrere Personen schreiben",
     "waitlist_first_seen": "Erster Versuch: {{when}}",

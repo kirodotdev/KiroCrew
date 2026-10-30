@@ -20088,7 +20088,7 @@
     "invite_alias_help": "이름과 사진은 표시용입니다. 들어오는 것은 수락한 Tailscale 계정입니다.",
     "page_previous": "뒤로",
     "people_unnamed_platform_body": "Tailscale 허용 목록에 있는 팀원은 Tailscale Serve로 이 Crew를 사용할 수 있지만, 이 운영 체제는 각 사람이 누구인지 증명할 수 없어 작업이 '미지정'으로 표시됩니다. 이름을 보려면 직접 Tailscale 링크를 공유하세요. 목록에 없는 사람은 거부됩니다.",
-    "adapter_tailscale_body": "이 Crew에는 Tailscale로 접속합니다. 위에서 초대하거나 Tailscale에서 이 머신을 공유하세요.",
+    "adapter_tailscale_body": "이 Crew에는 Tailscale로 접속합니다. 아래에서 초대하거나 Tailscale에서 이 머신을 공유하세요.",
     "setup_kiro_login_body": "팀원은 소속 조직의 Kiro 로그인으로 로그인합니다.",
     "several_typing": "여러 사람이 입력 중",
     "waitlist_first_seen": "첫 시도: {{when}}",
