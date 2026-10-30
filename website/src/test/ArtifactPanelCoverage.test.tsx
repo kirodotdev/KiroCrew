@@ -70,6 +70,8 @@ let stubHasDraft = false
 /** Whether the stub layers report the comment box open at all. */
 let stubComposerOpen = false
 const draftSlotClears: string[] = []
+/** How many times the panel ran a layer's draft guard (each run is one close/exit request). */
+let guardCalls = 0
 
 // A stateful stand-in: real `sidebarOpen` state (so the toggle is exercised for
 // real) over a comment list the test controls. The two instances are told apart
@@ -92,6 +94,7 @@ vi.mock('../components/FileArtifactComments', async () => {
       // host's prompt only while a draft is open; a confirmed discard clears
       // that layer's slot.
       guardCommentDraft: async (proceed: () => void) => {
+        guardCalls += 1
         if (stubHasDraft) {
           if (!(await args.confirmDiscardDraft?.())) return
           draftSlotClears.push(which)
@@ -258,6 +261,7 @@ describe('ArtifactPanel', () => {
     stubHasDraft = false
     stubComposerOpen = false
     draftSlotClears.length = 0
+    guardCalls = 0
     vi.mocked(api.artifact).mockResolvedValue(mkArtifact())
     // The provider tree's own boot query rides along on the automocked client;
     // resolving it keeps React Query's "data cannot be undefined" out of stderr.
@@ -511,6 +515,23 @@ describe('ArtifactPanel', () => {
       expect(onClose).toHaveBeenCalledTimes(1)
     })
 
+    it('leaves Escape to an open discard prompt: only the prompt closes', async () => {
+      // The panel's document listener runs before Modal's window listener, so
+      // without the guard one Escape re-runs requestClose under the prompt.
+      stubHasDraft = true
+      const { onClose } = renderPanel()
+      await screen.findByText(NAME)
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await screen.findByText('Discard your unsaved comment?')
+      expect(guardCalls).toBe(1)
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(guardCalls).toBe(1)
+      expect(onClose).not.toHaveBeenCalled()
+      expect(draftSlotClears).toEqual([])
+    })
+
     it('ignores keys other than Escape', async () => {
       const { onClose } = renderPanel()
       await screen.findByText(NAME)
@@ -620,6 +641,24 @@ describe('ArtifactPanel', () => {
       fireEvent.click(within(prompt.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: 'Discard comment' }))
       await waitFor(() => expect(screen.queryByRole('dialog', { name: /full screen artifact preview/i })).toBeNull())
       expect(draftSlotClears).toEqual(['full'])
+    })
+
+    it('Escape on the discard prompt in full screen closes only the prompt', async () => {
+      const { onClose } = renderPanel()
+      await screen.findByText(NAME)
+      await enterFullscreen()
+      // Entering ran the guard once (no draft yet); count only the Escapes.
+      guardCalls = 0
+      stubHasDraft = true
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await screen.findByText('Discard your unsaved comment?')
+      expect(guardCalls).toBe(1)
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByText('Discard your unsaved comment?')).toBeNull())
+      expect(guardCalls).toBe(1)
+      expect(screen.getByRole('dialog', { name: /full screen artifact preview/i })).toBeInTheDocument()
+      expect(onClose).not.toHaveBeenCalled()
     })
 
     it('exits fullscreen on Escape before closing the panel', async () => {
