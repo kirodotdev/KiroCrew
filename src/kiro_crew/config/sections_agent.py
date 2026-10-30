@@ -1052,6 +1052,15 @@ class AgentConfig:
             "completed before the cutoff is preserved on the run record.",
         ),
     )
+    kas_workflows: bool = field(
+        default=False,
+        metadata=_meta(
+            "Kiro Workflows on Kiro Agent",
+            "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by "
+            "default. This build has no surface that reads it yet, so setting it "
+            "changes nothing. No effect unless the backend is Kiro Agent.",
+        ),
+    )
     subagent_mem_buffer_pct: int = field(
         default=20,
         metadata=_meta(

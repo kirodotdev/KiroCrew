@@ -87,6 +87,7 @@
         "dependency_wake_spacing_secs": 1.0,
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
+        "kas_workflows": false,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
@@ -1344,6 +1345,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "agent.kas_workflows",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Workflows on Kiro Agent",
+      "help": "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by default. This build has no surface that reads it yet, so setting it changes nothing. No effect unless the backend is Kiro Agent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.subagent_mem_buffer_pct",

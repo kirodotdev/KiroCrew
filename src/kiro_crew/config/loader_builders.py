@@ -861,6 +861,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # Same band workflows/service.py clamp_run_timeout enforces, so a
         # hand-edited file and the live-bound setter agree.
         workflow_run_timeout_secs=section.read("workflow_run_timeout_secs", _safe_int, 60, 21600),
+        kas_workflows=section.read("kas_workflows", _safe_bool),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
             if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
