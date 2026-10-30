@@ -317,5 +317,7 @@
   "components.crewMode.ultra_done_line_green",
   "components.crewMode.ultra_done_line_green_rest",
   "components.crewMode.ultra_done_line_files",
-  "components.crewMode.ultra_done_line_files_rest"
+  "components.crewMode.ultra_done_line_files_rest",
+  "sessionEnvironments.remoteGit.notPushed",
+  "sessionEnvironments.remoteGit.notPulled"
 ]
