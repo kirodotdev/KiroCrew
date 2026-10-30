@@ -1209,6 +1209,11 @@ class WorkspaceService:
             else:
                 self._boards.pop(key, None)
                 self._board_refreshed.pop(key, None)
+            # The PR tabs before the board, so the board (and its Workers tab)
+            # can link each one. Its own failure costs nothing else. (The diff,
+            # published after the bar as before, can displace a PR tab at the cap;
+            # :meth:`_call` then runs one more pass so the board drops that link.)
+            await self._publish_pr_tabs(binding, record, board)
             if board is not None and self._publish_board is not None:
                 # First, so the bar below links the board message this pass
                 # posted. The board's pointers live on the channel's surface
@@ -1468,6 +1473,30 @@ class WorkspaceService:
             if (record.bar_hash, record.slack_off) != before:
                 await asyncio.to_thread(self._store.put, record)
 
+    async def _publish_pr_tabs(
+        self, binding: Any, record: WorkspaceRecord, board: BoardSnapshot | None
+    ) -> None:
+        """Native pull-request tabs for the channel's newest open PRs (:mod:`..tabs`).
+
+        The channel's own PR and its workers' -- the ones the context bar and the
+        board show, from this same pass -- at most two, newest first.
+        """
+        if record.slack_off:
+            return
+        from kiro_crew.slack.code_channels import tabs
+
+        own = (
+            tabs.PrRef(record.pr_number, record.pr_url, record.pr_state)
+            if record.pr_number
+            else None
+        )
+        rows = board.rows if board is not None else ()
+        # A board that could not be read (or PRs the forge did not answer for)
+        # leaves its tabs alone: only PRs SEEN merged or closed lose theirs.
+        await tabs.sync_pr_tabs(
+            binding, tabs.wanted_prs(own, rows), settled=tabs.settled_prs(own, rows)
+        )
+
     async def _publish_resource(self, record: WorkspaceRecord) -> None:
         """Set the channel's ``agent_resource`` to its pull request, when that changed.
 
@@ -1643,9 +1672,14 @@ class WorkspaceService:
         except CodeChannelApiError as exc:
             code = exc.code
             if code == "too_many_views" and room_for:
-                from kiro_crew.slack.code_channels.views import make_room
+                from kiro_crew.slack.code_channels.views import is_pr_tab, make_room
 
-                if await make_room(client, record.channel_id, for_key=room_for):
+                removed = await make_room(client, record.channel_id, for_key=room_for)
+                if removed:
+                    if is_pr_tab({"key": removed, "type": "pull_request"}):
+                        # A PR tab gave way: the board posted this pass may link
+                        # it, so one more pass re-renders it without that link.
+                        self._again.add(record.key)
                     return await self._call(method, record, *args, **kwargs)
         except CodeChannelError as exc:  # refused locally, before it was sent
             logger.warning("code channel %s: %s not sent: %s", record.channel_id, method, exc)

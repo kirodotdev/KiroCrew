@@ -20,7 +20,10 @@ Tools
 
 ``code_channel_set_view``
     an ``html`` or ``block_kit`` tab. The Code tab's diff is the workspace's,
-    and the plan tab comes with the plan canvas. HTML is self-contained (no
+    the plan tab comes with the plan canvas, and the Workers tab and the pull
+    request tabs are the channel's own (:mod:`.tabs`); their keys are reserved,
+    and the agent's tabs are the first to make room at Slack's cap
+    (:mod:`.views`). HTML is self-contained (no
     ``csp`` resource domains are ever sent); Block Kit is display-only (no
     interactive elements, no remote media).
 ``code_channel_publish_plan_canvas``
@@ -350,9 +353,15 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
         SET_VIEW,
     )
     kind = _text(args, "type") or "html"
-    if kind in ("diff", "pull_request"):
+    if kind == "diff":
         raise ArgumentError(
-            f"{kind} views are published from the worktree automatically; use html, block_kit or canvas"
+            "the Code tab's diff is published from the worktree automatically; "
+            "use html or block_kit"
+        )
+    if kind == "pull_request":
+        raise ArgumentError(
+            "pull request tabs are opened automatically for the channel's newest open "
+            "pull requests (yours and your workers'); use html or block_kit"
         )
     if kind == "canvas":
         raise ArgumentError("the plan canvas tab comes with code_channel_publish_plan_canvas")
@@ -369,6 +378,15 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     if view_key == PLAN_VIEW_KEY:
         raise ArgumentError(f"view_key {PLAN_VIEW_KEY!r} is the plan canvas's; choose another")
     from kiro_crew.slack.code_channels import views
+
+    if views.reserved_key(view_key):
+        # An upsert under one of these keys would overwrite the channel's own
+        # Workers tab or a pull request tab.
+        raise ArgumentError(
+            f"view_key {view_key!r} belongs to the channel's own tabs "
+            f"({views.WORKERS_KEY!r}, {views.DIFF_KEY!r} and '{views.PR_KEY_PREFIX}<number>'); "
+            "choose another"
+        )
 
     channel = call.binding.channel_id
     if kind == "html":
@@ -458,7 +476,12 @@ async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
             )
             await surface_update(channel, plan_view_id=view_id)
             view_note = " It is the Plan tab; people can comment, only you edit it."
-            if removed:
+            if removed and views.is_pr_tab({"key": removed, "type": views.PR_VIEW_TYPE}):
+                view_note += (
+                    f" To make room, the pull request tab {removed!r} was removed; it comes "
+                    "back when a tab frees up."
+                )
+            elif removed:
                 view_note += f" To make room, your older view {removed!r} was removed."
         except CodeChannelApiError as exc:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)

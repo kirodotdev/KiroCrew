@@ -640,6 +640,12 @@ PEEK_CALLERS: "dict[str, str]" = {
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
     ),
+    "slack/code_channels/worker_stop.py::_workspace_still_admitted": (
+        "no-context answer is a refusal: the Workers-tab Stop's final gate stops "
+        "nothing. It re-asks a workspace gate the click already passed through "
+        "current_context(), so a context is installed by then; the peek only keeps "
+        "that synchronous gate from composing or loading one on the way to a stop."
+    ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "
         "central fetch. It is reached only when boot never installed a context, "

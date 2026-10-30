@@ -299,7 +299,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id=""):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", **_kw):
         publisher._retry_at[binding.channel_id] = 7.0
         return "deferred"
 
@@ -817,7 +817,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def boom(binding, snapshot, *, link_for, owner_id=""):
+    async def boom(binding, snapshot, *, link_for, owner_id="", **_kw):
         publisher._retry_at[binding.channel_id] = 15.0
         raise RuntimeError("pin step blew up")
 

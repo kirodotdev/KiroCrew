@@ -167,28 +167,9 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     resources = f"channel={click.channel} action={click.key[:64] or '-'}"
     if not _first_delivery(click):
         return "duplicate"
-    if not click.user:
-        surface.audit("", OPERATION, "denied", resources, "no single clicking user")
-        return "denied"
-    if not surface.workspace_admitted(click.team):
-        surface.audit(
-            click.user,
-            OPERATION,
-            "denied",
-            f"{resources} team_id={click.team}",
-            "enterprise_origin_mismatch",
-        )
-        return "denied"
-    from kiro_crew.messaging.identity import channel_inbound_permitted
-
-    if not await channel_inbound_permitted("slack"):
-        surface.audit(click.user, OPERATION, "denied", resources, "channels governance policy")
-        return "denied"
     respond = _responder(click.channel, click.user)
-    binding = await asyncio.to_thread(store().get_binding, click.channel) if click.channel else None
+    binding = await admit(click, respond, resources)
     if binding is None:
-        surface.audit(click.user, OPERATION, "denied", resources, "not a bound code channel")
-        await respond(NOT_A_CODE_CHANNEL_TEXT)
         return "denied"
     if click.key == ACTION_CREATE_PR:
         from kiro_crew.slack.code_channels import commands
@@ -212,9 +193,56 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     return "unknown"
 
 
-def _may_stop(orch: Any, binding: Binding, user: str) -> bool:
+async def admit(
+    click: Click,
+    respond: Callable[[str], Awaitable[None]],
+    resources: str,
+    *,
+    operation: str = OPERATION,
+) -> Binding | None:
+    """The gates every channel button passes before its own path; the binding, or None.
+
+    One clicking user, the event's workspace admitted, the ``channels`` policy
+    admitting inbound Slack, and a bound code channel. Each refusal is SEL-audited
+    under *operation*; the last is also told to the person privately. Shared by the
+    context bar's actions and the Workers tab's Stop (:mod:`.worker_stop`), so
+    neither adds a rule of its own.
+    """
+    if not click.user:
+        surface.audit("", operation, "denied", resources, "no single clicking user")
+        return None
+    if not surface.workspace_admitted(click.team):
+        surface.audit(
+            click.user,
+            operation,
+            "denied",
+            f"{resources} team_id={click.team}",
+            "enterprise_origin_mismatch",
+        )
+        return None
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+
+    if not await channel_inbound_permitted("slack"):
+        surface.audit(click.user, operation, "denied", resources, "channels governance policy")
+        return None
+    binding = await asyncio.to_thread(store().get_binding, click.channel) if click.channel else None
+    if binding is None:
+        surface.audit(click.user, operation, "denied", resources, "not a bound code channel")
+        await respond(NOT_A_CODE_CHANNEL_TEXT)
+        return None
+    return binding
+
+
+_RESOLVE: Any = object()
+
+
+def _may_stop(orch: Any, binding: Binding, user: str, *, cfg: Any = _RESOLVE) -> bool:
     """The checks Slack's Stop runs for a code channel, asked first only to answer
-    a refused person privately: the stop itself checks them again."""
+    a refused person privately: the stop itself checks them again.
+
+    *cfg* is the live config the caller already resolved (the gateway's one
+    config object, updated in place), for a caller that must not resolve it here.
+    """
     from kiro_crew.slack.agent_sessions.session_events import _may_use_bot
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_allowed_user
@@ -224,7 +252,8 @@ def _may_stop(orch: Any, binding: Binding, user: str) -> bool:
     if not _may_use_bot(user) or not is_allowed_user(user):
         return False
     origin = _origin_of(binding.channel_id, binding, None)
-    return channel_and_origin_permit(live_config(orch), binding.channel_id, origin)
+    live = live_config(orch) if cfg is _RESOLVE else cfg
+    return channel_and_origin_permit(live, binding.channel_id, origin)
 
 
 def _running(binding: Binding) -> bool:
