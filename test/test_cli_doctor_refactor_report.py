@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import _llama_lib_path, cli_doctor
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install, services
+from kiro_crew.doctor_checks import access, agents, install, services
 from kiro_crew.platform import PlatformCompositionError
 
 pytestmark = pytest.mark.skipif(
@@ -52,6 +52,7 @@ _SECTIONS = (
     "_doctor_cron_script_sources",
     "_doctor_skill_currency",
     "_doctor_deprecated_agent_specs",
+    "_doctor_refused_hooks",
     "_doctor_path_launcher",
     "_doctor_trust_root",
     "_doctor_signing_key",
@@ -107,6 +108,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
     "_doctor_signing_key": access,
+    "_doctor_refused_hooks": agents,
     "_doctor_kiro_chat_delegate": services,
 }
 
@@ -422,6 +424,7 @@ Configuration
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
+  <<_doctor_refused_hooks>>
   <<_doctor_path_launcher>>
   <<_doctor_trust_root>>
   <<_doctor_signing_key>>
@@ -607,6 +610,7 @@ Configuration
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
+  <<_doctor_refused_hooks>>
   <<_doctor_path_launcher>>
   <<_doctor_trust_root>>
   <<_doctor_signing_key>>

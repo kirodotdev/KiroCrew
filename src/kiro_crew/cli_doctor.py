@@ -682,6 +682,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     install._doctor_cron_script_sources(issues)
     install._doctor_skill_currency(issues)
     agents._doctor_deprecated_agent_specs(cfg, issues)
+    agents._doctor_refused_hooks(issues)
     install._doctor_path_launcher()
     access._doctor_trust_root()
     access._doctor_signing_key(issues)

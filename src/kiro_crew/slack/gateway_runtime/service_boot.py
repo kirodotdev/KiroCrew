@@ -1034,6 +1034,16 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_checkout_task)
         _checkout_task.add_done_callback(self._background_tasks.discard)
 
+        # Name the saved hooks the deny rules will refuse, once per start, so an
+        # agent whose every tool call is blocked by a refused PreToolUse hook has a
+        # cause in the log before the first call. Same placement rules: past
+        # KIROCREW_READY, off-loop, fire-and-forget, it only logs.
+        from kiro_crew.hook_deny_scan import warn_refused_hooks
+
+        _hook_scan_task = asyncio.create_task(asyncio.to_thread(warn_refused_hooks))
+        self._background_tasks.add(_hook_scan_task)
+        _hook_scan_task.add_done_callback(self._background_tasks.discard)
+
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
     # the grant is refused on read already, so readiness need not wait.

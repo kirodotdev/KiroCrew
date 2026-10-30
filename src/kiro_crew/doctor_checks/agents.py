@@ -70,6 +70,35 @@ def _doctor_member_dispatchability(cfg: KiroCrewConfig, issues: list[str]) -> No
     issues.append("stored Crew Member names are not dispatchable")
 
 
+def _doctor_refused_hooks(issues: list[str]) -> None:
+    """Report saved hooks the shell deny set will refuse before they run.
+
+    A refused PreToolUse hook blocks every tool call it matches, so a hook that
+    worked on an older build, or under a harness that runs the spec's hooks itself,
+    can stop an agent cold. The scan runs the fire-time check
+    (:mod:`kiro_crew.hook_deny_scan`) and names the hook and the rule, never the
+    hook command. Silent when nothing would be refused.
+    """
+    from kiro_crew import hook_deny_scan
+
+    try:
+        found = hook_deny_scan.refused_hooks(cli_doctor._agents_dir())
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken setup
+        print("\nHooks")
+        print("  deny check:  ⚠  could not check saved hooks against the deny rules")
+        return
+    if not found:
+        return
+    print("\nHooks")
+    for hook in found:
+        print(f"  ❌ {hook_deny_scan.describe(hook)}")
+    print("               A refused PreToolUse hook blocks every tool call it matches.")
+    print("               Agent-spec hooks are refused only where Kiro Crew runs them")
+    print("               (KAS, goose, opencode); Kiro CLI runs them itself.")
+    print("               Change the hook command, or the rule in Settings > Security.")
+    issues.append("hooks refused by the deny rules")
+
+
 def _missing_v1_store_remedy(cfg: KiroCrewConfig, member: str, store: object) -> str:
     """The create command for a V1 binding whose only defect is a missing store directory."""
     from kiro_crew.memory_stores import (

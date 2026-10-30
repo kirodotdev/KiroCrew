@@ -173,6 +173,7 @@ from kiro_crew.hook_runtime.script_hooks import (  # noqa: F401
     ScriptHookStore,
     _hook_subprocess_env,
     run_script_hook,
+    shell_deny_reason,
 )
 from kiro_crew.hook_runtime.script_validation import (  # noqa: F401
     _normalize_hook_timeout,

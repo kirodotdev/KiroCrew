@@ -109,6 +109,20 @@ class ScriptHookResult:
         return self.exit_code == 0
 
 
+def shell_deny_reason(command: str) -> str | None:
+    """Why the shell deny set refuses a hook *command*, redacted, or ``None``.
+
+    The one check :func:`run_script_hook` applies before a hook spawns, also read
+    by the doctor and startup scan (``kiro_crew.hook_deny_scan``) so they report
+    exactly the hooks that will be refused. Blocking: it reads the keystone file and
+    runs the deny regexes.
+    """
+    reason = current_context().security.is_denied(
+        command, denied_regexes=effective_denied_regexes_from_config()
+    )
+    return redact_via_context(reason) if reason else None
+
+
 async def run_script_hook(
     hook: ScriptHook,
     context: str = "",
@@ -177,14 +191,7 @@ async def run_script_hook(
     # resolve reads the keystone file and the match runs regexes, neither of which
     # belongs on the gateway's shared event loop.
     if hook.command:
-
-        def _shell_deny_reason() -> str | None:
-            reason = current_context().security.is_denied(
-                hook.command, denied_regexes=effective_denied_regexes_from_config()
-            )
-            return redact_via_context(reason) if reason else None
-
-        deny_reason = await asyncio.to_thread(_shell_deny_reason)
+        deny_reason = await asyncio.to_thread(shell_deny_reason, hook.command)
         if deny_reason:
             hook.last_run = time.time()
             hook.last_status = "blocked"
