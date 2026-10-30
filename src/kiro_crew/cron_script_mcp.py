@@ -20,6 +20,7 @@ import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.paths import kiro_agents_dir
@@ -33,7 +34,13 @@ from kiro_crew.cron_script_redaction import (
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
-from kiro_crew.security import _REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import (
+    _REDACTED_CREDENTIAL_TAG,
+    CREDENTIAL_REDACTION_TAGS,
+    REDACTED_CREDENTIAL_TAG,
+    redact,
+)
+from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kiro_crew.cron_script")
@@ -46,12 +53,270 @@ logger = logging.getLogger("kiro_crew.cron_script")
 # window plus the context before it (PEM markers, the severed line).
 _STDERR_TAIL_READ_SPAN = 64 * 1024
 
+# Bounds on the per-run, per-server record of returned string values, so a
+# paginated run that streams large distinct results cannot grow the record
+# without limit. A value longer than this is never recorded (an opaque id a
+# server hands back is short); a server keeps at most this many recorded
+# values, and once full it records no more for that server. An unrecorded
+# value is simply scanned like any other argument, so overflow costs the
+# exemption, never safety.
+_MAX_RETAINED_VALUE_LEN = 4096
+_MAX_RETAINED_VALUES_PER_SERVER = 4096
+
+
+def _collect_string_leaves(value: object, into: set[str], max_len: int) -> None:
+    """Add every string leaf of a decoded JSON structure to ``into``.
+
+    Walks dicts (values only; keys are not returned values) and lists/tuples
+    recursively; a string leaf is added when it is non-empty and at most
+    ``max_len`` characters. A longer leaf is skipped: an opaque id a server
+    hands back is short, so the cap drops only bulk payload text the exemption
+    never needs to match. Numbers, booleans and null carry no credential bytes,
+    so they are ignored. This records the exact strings a server returned, for
+    the same-server exemption in ``ScriptContext.call_tool``. The caller bounds
+    recursion depth by catching ``RecursionError``.
+    """
+    if isinstance(value, str):
+        if value and len(value) <= max_len:
+            into.add(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _collect_string_leaves(v, into, max_len)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _collect_string_leaves(v, into, max_len)
+
 
 # ── MCP Tool Bridge ──
 
 
 class McpToolError(RuntimeError):
     """A tool call the MCP server answered with an error; the server is still usable."""
+
+
+class McpArgRedactionError(McpToolError):
+    """A tool-call argument carried a credential-shaped value the scan refused.
+
+    Raised instead of sending the ``[REDACTED: credential]`` placeholder on to
+    the server (which answers with a misleading error of its own). The message
+    names the argument path and the class of value; it never echoes the value.
+    """
+
+
+def _redact_pair(key: str, value: str) -> str:
+    """``value`` redacted as the value UNDER ``key``.
+
+    A credential pattern can need its key to match: ``Bearer <token>`` alone
+    passes the redactor, while ``authorization: Bearer <token>`` is caught. So
+    the value is judged twice: alone, and then the cleaned result spelled beside
+    its key the way a header line spells it. A pair the second judgement catches
+    is answered with the redactor's own tag in the value's place, so the key
+    stays and the shape holds.
+    """
+    safe = redact(value)
+    spelled = f"{key}: {safe}"
+    if redact(spelled) != spelled:
+        return REDACTED_CREDENTIAL_TAG
+    return safe
+
+
+def _is_whole_leaf_credential(safe: str) -> bool:
+    """Did the credential redactor swallow the WHOLE string leaf?
+
+    ``safe`` is :func:`_redact_pair`/`:func:`redact` applied to a value that
+    changed. The leaf is credential-shaped AS A WHOLE when, after removing every
+    credential tag, nothing but whitespace -- OR the one or two ``=`` characters of
+    terminal base64 padding -- is left. That is the id-argument case, where the
+    entire value is a credential: an opaque id under a key becomes exactly the tag,
+    and a padded base64 id (ending ``=`` or ``==``, as Microsoft Graph message ids
+    do) becomes the tag with its padding left trailing, because the redactor
+    replaces the credential body and leaves the ``=`` padding behind. Both are a
+    whole leaf, so a placeholder could only make the server answer with a
+    misleading error and the call is refused (or, for an exempt same-server value,
+    the original id is handed straight back).
+
+    A credential-shaped SPAN inside longer text leaves its surrounding text behind,
+    so the remainder holds real characters beyond at most two trailing ``=`` and
+    this is False: that value keeps main's behaviour -- redacted in place and SENT
+    with the placeholder. Note only the CREDENTIAL tags count here: the
+    exfiltration-URL rewriter's tag is deliberately NOT one of them, so a digest
+    line whose only redaction is a tracking URL is a span, not a whole leaf, and is
+    sent as on main.
+    """
+    remainder = safe
+    for tag in CREDENTIAL_REDACTION_TAGS:
+        remainder = remainder.replace(tag, "")
+    # Whitespace, or only the 1-2 ``=`` characters of terminal base64 padding the
+    # redactor leaves after a padded opaque id, count as a whole leaf.
+    return remainder.strip().strip("=") == ""
+
+
+#: The ``CredentialMatch.rule`` the bare-secret entropy pass writes (pass 3). It is
+#: the ONLY match class an opaque identifier (a high-entropy base64 id with no
+#: distinctive marker) trips -- an explicit credential PATTERN trips a pass-1 rule,
+#: an encoded credential ``encoded_credential`` (pass 2), a ``?token=`` link
+#: ``token_parameter`` (pass 4). The same-server exemption is limited to this rule
+#: so that a value the redactor recognises as an actual secret (a vendor token, a
+#: key pair, a header) is never handed back unredacted, honouring the Secret vs
+#: Identifier classification recorded in the redaction value-classification
+#: decision under docs/decisions (a Secret is always redacted, an Identifier never).
+_BARE_ENTROPY_RULE = "bare_aws_secret"
+
+
+def _is_bare_entropy_whole_leaf_id(value: str) -> bool:
+    """Is ``value`` a whole-leaf opaque id caught ONLY by the bare-entropy rule?
+
+    The same-server exemption hands a value straight back to the server
+    unredacted, so it must apply only to an Identifier -- an opaque id the server
+    coined -- and never to a recognised Secret. ``value`` is judged ALONE (no key),
+    because a credential KEY driving the redaction (``token``/``authorization``)
+    makes it a Secret by context, which must stay non-exempt.
+
+    True only when the redactor would change the value, every placeholder it writes
+    comes from the bare-entropy pass (:data:`_BARE_ENTROPY_RULE`), and those
+    placeholders cover the WHOLE leaf (:func:`_is_whole_leaf_credential`). An
+    explicit credential-pattern, encoded-credential, or ``?token=`` match -- or any
+    leftover real text beyond the id and its base64 padding -- makes this False, so
+    the value is refused (whole leaf) or redacted in place and sent (span) rather
+    than exempted.
+    """
+    safe, _warnings, matches = redact_credentials_with_records(value)
+    if safe == value or not matches:
+        return False
+    if any(m.rule != _BARE_ENTROPY_RULE for m in matches):
+        return False
+    return _is_whole_leaf_credential(safe)
+
+
+def _scan_tool_args(
+    args: Any, exempt: "frozenset[str] | set[str]", *, truncated: bool = False
+) -> Any:
+    """Return ``args`` ready to send, refusing a whole-leaf credential value.
+
+    The structure is rebuilt with every string judged by :func:`redact` the same
+    way a serialized redaction pass judges it -- a value under a key is judged
+    with its key (:func:`_redact_pair`), a bare value alone, and every key is
+    judged too.
+
+    A string VALUE is handled by whether redaction would change it, and if so
+    whether the change covers the WHOLE leaf (:func:`_is_whole_leaf_credential`):
+
+    * a value redaction leaves unchanged is sent as-is;
+    * a WHOLE-LEAF opaque IDENTIFIER that is an exact member of ``exempt`` (a value
+      this same server returned earlier in the run) AND whose redaction comes
+      entirely from the bare-entropy rule (:func:`_is_bare_entropy_whole_leaf_id`)
+      is sent unchanged -- the id-argument case the exemption exists for, an opaque
+      id handed straight back. A value the redactor recognises as a SECRET -- an
+      explicit credential pattern, an encoded credential, a ``?token=`` link, or a
+      value a credential KEY drives -- is NOT exempt even when the same server
+      returned it, honouring the Secret-vs-Identifier classification;
+    * any OTHER whole-leaf credential is REFUSED with :class:`McpArgRedactionError`
+      naming the path, rather than sending the placeholder, because a placeholder
+      there only makes the server answer with a misleading error of its own;
+    * a credential-shaped SPAN inside longer text (a tracking link in a digest
+      line, a Graph-style ``conversationId eq '<id>'`` filter) keeps main's
+      behaviour: the redacted text is SENT with the placeholder in place, so a
+      cron that posts a summary with one redacted span still posts. This holds
+      even when the longer string is an exempt same-server value -- the exemption
+      covers only a whole-leaf bare-entropy id, NOT a credential span embedded in
+      forwarded text, so a pasted token inside returned message text is still
+      redacted rather than sent back out in the clear.
+
+    A dict KEY is sent verbatim, so it cannot be redacted in place: only a
+    whole-leaf bare-entropy identifier the same server returned is handed back, and
+    any other key redaction would change -- a recognised secret key, a span inside
+    the key, or a whole-leaf key not from this server -- refuses the call. The
+    exemption is membership only: no substring or prefix match, and the set is this
+    server's alone. ``truncated`` says this server's returned-value record
+    overflowed its bound, so a refused value may in fact have been returned by the
+    server; the refusal discloses that rather than
+    claim the value was never seen.
+
+    Both the live run (``ScriptContext.call_tool``) and the dry-run preview
+    (``_LiveTestCtx.call_tool``) scan through :meth:`KeptMcpServers.scan_and_call`,
+    which calls this, so the preview rewrites an argument exactly as the real run.
+    """
+    refusals = []
+
+    def key_segment(raw_key: object) -> str:
+        """A path segment for ``raw_key`` that carries no credential bytes.
+
+        A dict key is the script's own free text, so a credential-shaped key
+        must not reach the refusal diagnostic verbatim. A key the redactor would
+        change is named by its redacted form; any other key is named as written.
+        """
+        if isinstance(raw_key, str):
+            return redact(raw_key)
+        return str(raw_key)
+
+    def rewrite(value: Any, key: str, path: str) -> Any:
+        if isinstance(value, str):
+            safe = _redact_pair(key, value) if key else redact(value)
+            if safe == value:
+                # Nothing credential-shaped: send as-is (exempt or not).
+                return value
+            if value in exempt and _is_bare_entropy_whole_leaf_id(value):
+                # The exemption's intended case: a WHOLE-LEAF opaque IDENTIFIER
+                # this same server returned this run, handed straight back. The
+                # exemption is limited to a value whose redaction comes ENTIRELY
+                # from the bare-entropy rule (judged on the value alone): a
+                # recognised secret -- an explicit credential pattern, an encoded
+                # credential, a ``?token=`` link, or a value a credential KEY
+                # drives -- is never exempt, honouring the Secret-vs-Identifier
+                # classification. A longer string that merely CONTAINS a credential
+                # span is not a whole leaf, so it is not exempt either.
+                return value
+            if _is_whole_leaf_credential(safe):
+                # A whole-leaf credential that is NOT an exempt bare-entropy id:
+                # refuse, and never send the placeholder. The original value is
+                # kept out of the sent result -- the call is refused below.
+                refusals.append(path)
+                return value
+            # A credential-shaped span inside longer text (exempt or not): redact
+            # it in place and SEND the result, as on main, so a digest line still
+            # posts -- and an exempt value's embedded credential never leaks.
+            return safe
+        if isinstance(value, dict):
+            out: dict[Any, Any] = {}
+            for raw_key, inner in value.items():
+                seg = key_segment(raw_key)
+                if isinstance(raw_key, str) and redact(raw_key) != raw_key:
+                    # A dict key is sent verbatim, so a credential-shaped key
+                    # cannot be redacted in place. Only a whole-leaf opaque
+                    # IDENTIFIER the same server returned (bare-entropy rule alone)
+                    # is handed back; any other change -- a recognised secret key,
+                    # a span inside the key, or a whole-leaf key not from this
+                    # server -- is refused rather than sent unredacted.
+                    if not (raw_key in exempt and _is_bare_entropy_whole_leaf_id(raw_key)):
+                        refusals.append(f"{path}/{seg}")
+                out[raw_key] = rewrite(
+                    inner, raw_key if isinstance(raw_key, str) else "", f"{path}.{seg}"
+                )
+            return out
+        if isinstance(value, (list, tuple)):
+            return [rewrite(inner, key, f"{path}[{i}]") for i, inner in enumerate(value)]
+        return value
+
+    rebuilt = rewrite(args, "", "args")
+    if refusals:
+        where = ", ".join(refusals)
+        message = (
+            "MCP tool error: refused a credential-shaped value in tool argument "
+            f"{where}. The whole argument is a credential, and a script may only "
+            "pass back a value the SAME server returned this run; any other "
+            "whole-leaf credential is refused rather than sent as a placeholder "
+            "(which would only make the server answer with a misleading error). A "
+            "credential-shaped span inside longer text is still sent with the span "
+            "redacted. The value is not shown."
+        )
+        if truncated:
+            message += (
+                " Note: this server returned more distinct values than the run can"
+                " retain, so a value it did return may have been dropped from the"
+                " record and refused here."
+            )
+        raise McpArgRedactionError(message)
+    return rebuilt
 
 
 class McpToolClient:
@@ -310,6 +575,19 @@ class KeptMcpServers:
         self._kept_clients: dict[str, McpToolClient] = {}
         self._kept_clients_lock = threading.Lock()
         self._closed = False
+        # Per run, per server: the exact string values THIS server returned. A
+        # later arg whose string leaf equals one of them for the SAME server is
+        # the script handing a value back to the server that produced it, so the
+        # credential scan should let it through unchanged (see
+        # ScriptContext.call_tool). In memory only; never shared across servers,
+        # never persisted, cleared in close(). Guarded by its own lock so a call
+        # that started its own server (no kept slot) still records safely.
+        self._returned_values: dict[str, set[str]] = {}
+        self._returned_values_lock = threading.Lock()
+        # Servers whose returned-value record overflowed its bound this run. A
+        # refusal of a value such a server returned reads this to disclose that
+        # the record is incomplete, rather than claim the value was never seen.
+        self._truncated_servers: set[str] = set()
 
     def call_tool(self, server: str, tool: str, args: dict) -> str:
         client = self._take_kept_client(server)
@@ -323,10 +601,96 @@ class KeptMcpServers:
                 kept = self._keep_client(server, client)
                 raise
             kept = self._keep_client(server, client)
+            self._record_returned_values(server, result)
             return result
         finally:
             if client is not None and not kept:
                 client.close()
+
+    def scan_and_call(self, server: str, tool: str, args: dict) -> str:
+        """Scan ``args`` for credential leakage, then call the tool.
+
+        The single path both the live run and the dry-run preview take, so the
+        same-server exemption and the fail-loud refusal behave identically in
+        each. A value this same server returned this run is exempt; a whole-leaf
+        credential (an id argument) raises :class:`McpArgRedactionError` naming a
+        redacted argument path, never the value, instead of sending the
+        placeholder on; a credential-shaped span inside longer text is sent with
+        the span redacted, as on main. The caller owns its own audit of the
+        outcome.
+        """
+        exempt = self.recorded_values(server)
+        truncated = self.retention_truncated(server)
+        safe_args = _scan_tool_args(args, exempt, truncated=truncated)
+        return self.call_tool(server, tool, safe_args)
+
+    def recorded_values(self, server: str) -> frozenset[str]:
+        """The exact strings ``server`` has returned so far this run.
+
+        A snapshot, so the caller can test membership without holding the lock.
+        Empty for a server that has not answered yet, and never carries any
+        other server's values.
+        """
+        with self._returned_values_lock:
+            return frozenset(self._returned_values.get(server, ()))
+
+    def _record_returned_values(self, server: str, result: str) -> None:
+        """Record every string ``result`` carries, under ``server``.
+
+        ``result`` is the tool's returned text. When it parses as JSON, every
+        string leaf of the decoded structure is recorded (ids are usually leaves
+        of a JSON object). The raw text is recorded when it is not JSON, so a
+        tool that returns a bare id string is covered. Recording never raises and
+        never aborts the call: a result too deeply nested to walk
+        (:class:`RecursionError`) or any other bookkeeping failure discards that
+        result's exemptions and returns -- the successful tool text is still
+        handed back by the caller. A value the scan would later refuse is better
+        refused than a successful call made to fail here. Retention is bounded by
+        value length and by a per-server count; an unrecorded value is simply
+        scanned like any other argument.
+        """
+        values: set[str] = set()
+        try:
+            try:
+                _collect_string_leaves(json.loads(result), values, _MAX_RETAINED_VALUE_LEN)
+            except (ValueError, TypeError):
+                # Not JSON: the whole result is the returned value.
+                if isinstance(result, str) and 0 < len(result) <= _MAX_RETAINED_VALUE_LEN:
+                    values.add(result)
+        except RecursionError:
+            # Too deeply nested to walk: drop this result's exemptions, keep the
+            # successful call.
+            logger.debug("recording returned values hit recursion limit; skipped", exc_info=True)
+            return
+        if not values:
+            return
+        with self._returned_values_lock:
+            kept = self._returned_values.setdefault(server, set())
+            # Only values not already kept consume capacity, so a result that
+            # repeats retained strings does not spend room a new id needs.
+            fresh = values - kept
+            room = _MAX_RETAINED_VALUES_PER_SERVER - len(kept)
+            if len(fresh) > room:
+                # More new values than room: record what fits (deterministically,
+                # so which are dropped does not depend on set order) and mark this
+                # server's retention as truncated, so a later refusal of a value
+                # this server returned can say the record is incomplete.
+                self._truncated_servers.add(server)
+                for value in sorted(fresh)[: max(room, 0)]:
+                    kept.add(value)
+            else:
+                kept.update(fresh)
+
+    def retention_truncated(self, server: str) -> bool:
+        """Whether ``server``'s returned-value record overflowed its bound this run.
+
+        True once a result from ``server`` carried more new values than the
+        record could hold, so a value that server returned may be absent and a
+        same-server reuse of it refused. A refusal diagnostic reads this to
+        disclose the overflow instead of claiming the value was never returned.
+        """
+        with self._returned_values_lock:
+            return server in self._truncated_servers
 
     def close(self) -> None:
         """Stop every kept server; never raises, and later calls keep none."""
@@ -334,6 +698,9 @@ class KeptMcpServers:
             self._closed = True
             clients = list(self._kept_clients.values())
             self._kept_clients.clear()
+        with self._returned_values_lock:
+            self._returned_values.clear()
+            self._truncated_servers.clear()
         for client in clients:
             try:
                 client.close()
@@ -452,3 +819,4 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
 
 # A traceback names these by the path callers import them from.
 McpToolError.__module__ = "kiro_crew.cron_script"
+McpArgRedactionError.__module__ = "kiro_crew.cron_script"
