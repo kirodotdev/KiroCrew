@@ -13032,6 +13032,7 @@
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
       "no_sessions_match_folders": "Aucune session ne correspond — seul un nom de dossier",
+      "history_search_failed": "La recherche a échoué. Seuls les titres correspondants sont affichés.",
       "add_column_after_this_one": "Ajouter une colonne après celle-ci",
       "agent_finished_your_turn": "L'agent a terminé — à vous",
       "all_sessions": "Toutes les sessions",

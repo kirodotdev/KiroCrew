@@ -9,7 +9,7 @@ import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessi
 import { i18nT } from '../../i18n/t'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
-import { useDebouncedSessionSearch } from './search'
+import { useDebouncedSessionSearchState } from './search'
 import type { Slot } from './types'
 import { sessionRowIdentity } from './rowIdentity'
 
@@ -34,7 +34,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // so gating the render would gate the rows but not the wire. The SAME switch as
   // "New chat on crew": a chat started on a crew must have a group to return to.
   const instanceSessionsEnabled = useRemoteCrewChat()
-  const historySearchResults = useDebouncedSessionSearch(
+  const { result: historySearchResults, failed: historySearchFailed } = useDebouncedSessionSearchState(
     historyFilter, s => s, slotTitleDigest, hasWarmInstances,
   )
   // Shared ['instances'] cache + shared select-and-maybe-reconnect semantics for
@@ -177,7 +177,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // adopt (see `adoptPeerSession` in ChatSidebar).
   const { selectInstance } = useSelectInstance(instancesList)
   return {
-    historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
+    historySearchResults, historySearchFailed, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
     selectInstance, crewGroups,
   }
 }

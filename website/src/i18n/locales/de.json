@@ -12833,6 +12833,7 @@
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
       "no_sessions_match_folders": "Keine Sitzungen passen — nur ein Ordnername",
+      "history_search_failed": "Suche fehlgeschlagen. Nur Titeltreffer werden angezeigt.",
       "add_column_after_this_one": "Spalte nach dieser hinzufügen",
       "agent_finished_your_turn": "Agent fertig — du bist dran",
       "all_sessions": "Alle Sitzungen",

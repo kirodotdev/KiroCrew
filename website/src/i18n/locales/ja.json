@@ -12634,6 +12634,7 @@
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
       "no_sessions_match_folders": "一致するセッションはありません — フォルダー名のみ一致",
+      "history_search_failed": "検索に失敗しました。タイトルの一致のみ表示しています。",
       "add_column_after_this_one": "この列の後に列を追加",
       "agent_finished_your_turn": "エージェントが完了しました — あなたの番です",
       "all_sessions": "すべてのセッション",

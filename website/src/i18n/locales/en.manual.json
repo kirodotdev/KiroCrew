@@ -6023,6 +6023,7 @@
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",
+      "history_search_failed": "Search failed. Showing title matches only.",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",

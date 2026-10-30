@@ -12833,6 +12833,7 @@
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
       "no_sessions_match_folders": "কোনও সেশন মেলেনি — কেবল একটি ফোল্ডারের নাম মিলেছে",
+      "history_search_failed": "অনুসন্ধান ব্যর্থ হয়েছে। শুধু শিরোনামের মিলগুলো দেখানো হচ্ছে।",
       "add_column_after_this_one": "এটির পরে কলাম যোগ করুন",
       "agent_finished_your_turn": "এজেন্ট শেষ করেছে — এখন আপনার পালা",
       "all_sessions": "সব সেশন",
