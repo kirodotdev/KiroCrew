@@ -924,6 +924,33 @@ class TestClientSeam:
 
         assert steps == [("read", ""), ("seed", "0.84.0"), ("warm", "")]
         assert client._session_mcp_cache == []
+        assert client._claude_adapter_argv == ("/opt/bin/claude-agent-acp",)
+
+    def test_a_wrapper_is_judged_on_the_version_its_last_handshake_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """A wrapper script has no package.json beside it, so the version the same
+        argv reported at its latest handshake stands in; a manifest still wins."""
+        from kiro_crew.acp.harness import claude as claude_mod
+
+        monkeypatch.setattr(claude_mod, "_claude_adapter_handshake_versions", {})
+        wrapper = tmp_path / "bin" / "claude-agent-acp"
+        wrapper.parent.mkdir()
+        wrapper.write_text('#!/bin/sh\nexec node /elsewhere/dist/index.js "$@"\n', encoding="utf-8")
+        argv = [str(wrapper)]
+        assert client_mod._claude_adapter_known_version(argv) == ""
+
+        claude_mod._claude_adapter_handshake_versions[tuple(argv)] = "0.87.0"
+        assert client_mod._claude_adapter_known_version(argv) == "0.87.0"
+        assert client_mod._claude_adapter_known_version([str(tmp_path / "other")]) == ""
+
+        pkg = wrapper.parent / "node_modules" / "@agentclientprotocol" / "claude-agent-acp"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(
+            json.dumps({"name": client_mod.CLAUDE_ACP_NPM_PKG, "version": "0.88.0"}),
+            encoding="utf-8",
+        )
+        assert client_mod._claude_adapter_known_version(argv) == "0.88.0"
 
     def test_the_installed_version_is_read_from_the_adapters_own_manifest(self, tmp_path):
         pkg = tmp_path / "node_modules" / "@agentclientprotocol" / "claude-agent-acp"
@@ -1277,6 +1304,25 @@ class TestClientSeam:
             await client._initialize_session()
         assert killed == [True]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["0.87.0", None])
+    async def test_the_handshake_records_the_version_its_adapter_argv_reported(
+        self, tmp_path, agents_dir, monkeypatch, version
+    ):
+        """The next pre-spawn check reads it for that argv, and a handshake that
+        reports no version replaces an earlier answer rather than keeping it."""
+        from kiro_crew.acp.harness import claude as claude_mod
+
+        argv = ("/opt/bin/claude-agent-acp",)
+        monkeypatch.setattr(claude_mod, "_claude_adapter_handshake_versions", {argv: "0.85.0"})
+        client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
+        client._claude_adapter_argv = argv
+        self._adapter_transport(client, monkeypatch, started_mode=None, version=version)
+
+        await client._initialize_session()
+
+        assert claude_mod._claude_adapter_handshake_versions == {argv: version or ""}
+
     @staticmethod
     def _claude_reads_natively(path, *, deny, allow):
         """Whether Claude Code runs a Read of *path* without asking the host.
@@ -1404,10 +1450,12 @@ class TestClientSeam:
     )
     def test_side_chat_asks_the_installed_adapters_version(self, monkeypatch, version, expected):
         """Side Chat grants tools on claude only from an adapter at the floor."""
+        from kiro_crew.acp.harness import claude as claude_mod
         from kiro_crew.agent_sdk.drivers.acp import claude_adapter_honours_session_options
 
         monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", (["/x/claude-agent-acp"], ""))
         monkeypatch.setattr(client_mod, "_claude_adapter_installed_version", lambda argv: version)
+        monkeypatch.setattr(claude_mod, "_claude_adapter_handshake_versions", {})
         assert claude_adapter_honours_session_options() is expected
 
     def test_side_chat_sees_no_adapter_as_unverified(self, monkeypatch):
@@ -1415,6 +1463,23 @@ class TestClientSeam:
 
         monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", (None, "PATH"))
         assert claude_adapter_honours_session_options() is False
+
+    def test_side_chat_on_a_wrapper_reads_the_version_its_last_handshake_reported(
+        self, monkeypatch
+    ):
+        """No package.json beside a wrapper script: Side Chat grants tools once the
+        same argv has reported a version at the floor at a handshake."""
+        from kiro_crew.acp.harness import claude as claude_mod
+        from kiro_crew.agent_sdk.drivers.acp import claude_adapter_honours_session_options
+
+        argv = ["/x/claude-agent-acp"]
+        monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", (argv, ""))
+        monkeypatch.setattr(client_mod, "_claude_adapter_installed_version", lambda argv: "")
+        monkeypatch.setattr(claude_mod, "_claude_adapter_handshake_versions", {})
+        assert claude_adapter_honours_session_options() is False
+
+        claude_mod._claude_adapter_handshake_versions[tuple(argv)] = "0.87.0"
+        assert claude_adapter_honours_session_options() is True
 
     @pytest.mark.parametrize(
         "raw",

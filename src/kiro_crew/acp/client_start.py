@@ -842,6 +842,7 @@ async def _initialize_session(self: AcpClient) -> None:
     self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
     self._note_pi_adapter_version()
     self._note_goose_version()
+    self._note_claude_adapter_version()
     # Copilot only: a release other than the verified one is refused here, before
     # any session exists; the AcpToolGateUnroutable it raises ends the child with no
     # respawn (see ``ensure_ready``).
