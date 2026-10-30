@@ -95,9 +95,15 @@ jobs:
       # an absent output (this job failed) reads as "run", never as a skip.
       windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
       # Central runner labels: eligible repository/event/actor combinations
-      # use CodeBuild; all other runs use the corresponding hosted OS.
-      # Linux consumers retain a fallback when this job never reports:
-      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`.
+      # use CodeBuild. Any other run EXECUTING in this repository uses the
+      # `kirocrew-runners` group's own runner label, and a fork running its own
+      # CI uses `ubuntu-latest`, because it cannot reach that group. Windows
+      # uses the hosted image on every non-fleet path, since the group is
+      # Linux-only. Linux consumers retain a hosted fallback for when this job
+      # never reports at all:
+      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}` --
+      # deliberately still hosted, because an empty output means the resolver
+      # failed rather than that the run was found ineligible.
       # if this job fails or is cancelled the output is empty, and a job that
       # runs anyway (`coverage-gate` fails closed with `if: !cancelled()`) must still
       # get a runner rather than error out before its own checks execute.
@@ -380,12 +386,44 @@ jobs:
         id: runner
         env:
           ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          # Separate from ELIGIBLE on purpose: the larger-runner group belongs to
+          # the kirodotdev organization, so only a run EXECUTING in this
+          # repository can reach it. A fork pull request against this repository
+          # executes here and can; a fork's own CI on its own `main` executes
+          # there and cannot.
+          IN_REPO: ${{ github.repository == 'kirodotdev/KiroCrew' }}
           LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ "$ELIGIBLE" = "true" ]; then
             echo "linux_runner=$LABEL" >> "$GITHUB_OUTPUT"
             echo "linux_runner_large=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          elif [ "$IN_REPO" = "true" ]; then
+            # Running here but not admitted to the fleet: a fork head, an
+            # unlisted actor, or a pull_request action other than
+            # opened/synchronize. Those runs take the `kirocrew-runners`
+            # larger-runner group rather than the shared standard pool, whose
+            # concurrency is shared enterprise-wide and which this matrix
+            # occupies at a triple-digit job count. Same CPU and memory as a
+            # public-repository `ubuntu-latest`, so durations do not move; only
+            # queue position does, and larger-runner minutes bill where standard
+            # ones are free. This adds load to the group's `maximum_runners`
+            # cap, which the larger-runner section of docs/ci/ci-and-reviews.md
+            # describes.
+            #
+            # The definition's own label, not `runs-on: {group: ...}`: the choice
+            # is made at run time and no single `runs-on` can name both
+            # destinations, because the fleet runners are REPOSITORY-level
+            # self-hosted runners and are not members of this organization
+            # group. Keep this label in step with the runner definition's name.
+            echo "linux_runner=kirocrew-linux-4-core" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=kirocrew-linux-4-core" >> "$GITHUB_OUTPUT"
           else
+            # Another repository entirely -- a fork running its own CI. It cannot
+            # reach this organization's group, so the label would match no runner
+            # and every consumer would sit queued until GitHub's pending limit
+            # cancelled it. The consumers' own `|| 'ubuntu-latest'` cannot
+            # rescue that: it fires only on an EMPTY output, and this one is
+            # non-empty and unusable, which is strictly worse than absent.
             echo "linux_runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
             echo "linux_runner_large=ubuntu-latest" >> "$GITHUB_OUTPUT"
           fi
@@ -686,16 +724,52 @@ jobs:
       matrix:
         python-version: ["3.12"]
     steps:
-      # Full history so the black gate can compute THIS change's own diff. A
-      # shallow clone truncates parent info and leaves no base ref, and the gate
-      # then falls back to judging the whole tree -- which reddens the PR for
-      # files the base branch merged after the baseline was taken. depth 2 was
-      # tried first and was not enough; the gate now prints which scope it used,
-      # so a regression here is visible in the log instead of silent.
+      # Depth 2 keeps HEAD^1 -- the base commit the merge ref was computed
+      # against -- which is the only commit the baselined gates below diff
+      # against. Depth 2 ALONE is not enough, and the step after this one is
+      # why: see its comment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 2
+
+      # scripts/ratchet_scope.py scopes every baselined gate in this job to THIS
+      # change, and it gets there by ANCESTRY, not by having the base commit:
+      # `merge-base --is-ancestor HEAD^1 origin/main` is what confirms HEAD^1 is
+      # a base commit rather than the feature tip of a local merge, and only then
+      # does it diff HEAD^1..HEAD. A depth-2 clone has no ancestry and no
+      # origin/main at all, so the probe says no, the scope falls back to the
+      # whole tree, and the gate fails this change for files the base branch
+      # merged after the baseline was taken. That is the regression the previous
+      # `fetch-depth: 0` existed to avoid, and fetching the base SHA alone does
+      # NOT fix it: the merge ref is recomputed when the base moves, so HEAD^1 is
+      # routinely NEWER than the event's base.sha and `--is-ancestor` against
+      # that single commit correctly says no. What restores the probe is a
+      # bounded deepening of the base BRANCH, which is also what the three-dot
+      # fallback inside ratchet_scope needs. `main` and not base.ref because
+      # origin/main is the literal ref ratchet_scope looks for.
+      #
+      # If the base has moved further than the window, unshallow instead of
+      # accepting the whole-tree fallback, so this job is never WORSE than the
+      # full-history checkout it replaces -- it just stops paying for one in the
+      # common case. Measured on this repo: 537 MiB of pack for full history
+      # against ~296 MiB for depth 2 plus a 50-commit base, and a live PR's
+      # merge ref sat 8 commits behind main.
+      - name: Give the baselined gates their diff base (bounded)
+        run: |
+          # Nothing happens on a complete repository, and that is a guard, not
+          # an optimisation: a `--depth` fetch TRUNCATES a complete clone to
+          # that depth, so an unguarded deepening would destroy the ancestry it
+          # exists to provide -- and would truncate a real object store if these
+          # lines are ever run outside a fresh CI checkout (#17146). A complete
+          # clone already has what the gates need.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --depth=50 origin main
+            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
+              echo "::notice::the base moved past the 50-commit window; unshallowing so the gates stay diff-scoped."
+              git fetch --no-tags --quiet --unshallow origin main
+            fi
+          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -894,15 +968,18 @@ jobs:
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
     # All eight shards use large compute and the measured non-root boundary.
-    # Forks, non-admitted actors and absent resolver output stay hosted.
+    # A non-admitted run executing here takes the `kirocrew-runners` group; a
+    # fork's own CI, and an absent resolver output, stay on the hosted pool.
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Keep the existing wall-clock budget; individual tests still time out at
     # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
-      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
-      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
-      # fallback resolves to 'ubuntu-latest', so this correctly lifts only on CodeBuild.
+      # 4 protects the shared hosted pool and the larger-runner group's own
+      # `maximum_runners` cap; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs. Every
+      # non-fleet value ('kirocrew-linux-4-core' or 'ubuntu-latest') fails that
+      # test, so this still lifts only on CodeBuild.
       max-parallel: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 8 || 4 }}
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
@@ -2841,13 +2918,37 @@ jobs:
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
-      # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      # Full history so the file line cap below can compute THIS change's scope:
-      # Backend Lint, its other home, is skipped on a frontend-only diff.
+      # persist-credentials retained: the i18n and phantom-classes gates below
+      # run `git fetch origin` against the same remote, through the shared
+      # diff-base resolver script.
+      # Depth 2 keeps HEAD^1 for the file line cap below, which is the only gate
+      # here that needs a diff base it cannot fetch for itself; the step after
+      # this one is what makes depth 2 sufficient.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
+
+      # Same reasoning as Backend Lint's copy of this step, for the same shared
+      # scope resolver: `Check file line cap` reaches scripts/ratchet_scope.py,
+      # which confirms HEAD^1 is a base commit by ANCESTRY before it will diff
+      # HEAD^1..HEAD, and a depth-2 clone has neither ancestry nor origin/main.
+      # Without this the cap gate judges the whole tree and fails a frontend diff
+      # for an over-cap file the base branch merged. This job is the cap gate's
+      # only home on a frontend-only diff, because Backend Lint is skipped there.
+      # The i18n and phantom-classes gates are unaffected either way: both take
+      # an explicit base.sha and already fetch that one commit themselves.
+      - name: Give the file line cap its diff base (bounded)
+        run: |
+          # Same shape and same guard as Backend Lint's copy: a `--depth` fetch
+          # truncates a COMPLETE clone, so the deepening only runs on a clone
+          # that is already shallow.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --depth=50 origin main
+            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
+              echo "::notice::the base moved past the 50-commit window; unshallowing so the cap gate stays diff-scoped."
+              git fetch --no-tags --quiet --unshallow origin main
+            fi
+          fi
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
@@ -3162,8 +3263,9 @@ jobs:
     if: needs.changes.outputs.only_frontend != 'true'
     # PILOT (first wave): runs on a CodeBuild-hosted runner (project
     # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. The label is
-    # chosen once in `changes` (forks and fork PRs get ubuntu-latest, because the
-    # runner never serves them). Rollback: `ubuntu-latest`. Policy, image caveat
+    # chosen once in `changes`: the fleet never serves a fork, so a fork pull
+    # request takes the `kirocrew-runners` group and a fork's own CI takes
+    # `ubuntu-latest`. Rollback: `ubuntu-latest`. Policy, image caveat
     # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10

@@ -117,6 +117,7 @@ describe('one public surface', () => {
       'contextTraceKey',
       'crewLogProjectionsKey',
       'emitSlotFocused',
+      'endSplitPaneFocus',
       'fetchingAnyFoldQuery',
       'handleDashboardMoved',
       'healRedactionSwitchAfterReconnect',

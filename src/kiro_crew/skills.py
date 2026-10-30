@@ -1034,6 +1034,8 @@ class SkillsLoader:
         target: str | None = None,
         base_version: int | None = None,
         refusal: ClaimRefusal | None = None,
+        missing_scripts: list[str] | None = None,
+        rejected_scripts: dict[str, list[str]] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -1054,6 +1056,8 @@ class SkillsLoader:
             target=target,
             base_version=base_version,
             refusal=refusal,
+            missing_scripts=missing_scripts,
+            rejected_scripts=rejected_scripts,
         )
 
     # ── Pending candidate trees: ``kiro_crew.skills_candidate_tree`` ──

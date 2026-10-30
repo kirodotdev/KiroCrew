@@ -1011,6 +1011,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _secret_revision,
         _server_reach,
         _sync_read_state,
+        _template_server_state,
         _template_state_with_skills,
         _unified_hunks,
         _unified_range,

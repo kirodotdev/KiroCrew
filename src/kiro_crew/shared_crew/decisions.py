@@ -606,7 +606,12 @@ def resolve_approval_by_id(
     id can reach. Returns ``None`` when nothing is pending and nothing settled is
     known, which the route answers with its existing 404.
     """
-    decision = "approved" if approved else ("rejected_once" if rejected_once else "rejected")
+    if approved:
+        decision = "approved"
+    elif rejected_once:
+        decision = "rejected_once"
+    else:
+        decision = "rejected"
     state_future = state._approval_futures.get(approval_id)
     if state_future is not None and not state_future.done():
         return resolve_state_approval(state, request, approval_id, approved, decision, response_id)

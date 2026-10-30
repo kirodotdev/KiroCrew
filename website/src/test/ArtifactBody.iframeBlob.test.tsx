@@ -85,6 +85,28 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     expect(mintSpy).toHaveBeenCalledWith(HTML_CONTENT)
   })
 
+  it('carries the wheel relay and its mark only when asked (the side panel)', async () => {
+    buildSrcdocSpy.mockClear()
+    const { unmount } = render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} relayWheel />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    expect(frame.hasAttribute('data-wheel-relay')).toBe(true)
+    expect(buildSrcdocSpy).toHaveBeenLastCalledWith(expect.objectContaining({ relayWheel: true }))
+    unmount()
+    buildSrcdocSpy.mockClear()
+    render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />)
+    const plain = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    expect(plain.hasAttribute('data-wheel-relay')).toBe(false)
+    expect(buildSrcdocSpy).toHaveBeenLastCalledWith(expect.objectContaining({ relayWheel: false }))
+  })
+
   it('does not delegate clipboard-write to agent-authored HTML', async () => {
     // A delegated write permission lets an on-load script overwrite the
     // clipboard without a Copy action. The injected shim still lets a real

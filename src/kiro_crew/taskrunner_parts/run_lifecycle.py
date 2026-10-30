@@ -8,7 +8,7 @@ pause, delete). ``execute_plan`` and ``retry_from_task`` stay ``TaskRunner`` met
 ``taskrunner.py``, where mypy keeps the narrowing their background closures read; a new
 entry point that starts or stops a run still goes here.
 
-Instance fields written: ``_agent``, ``_run_session_keys``, ``_runs``,
+Instance fields written: ``_agent``, ``_last_id_suffix``, ``_run_session_keys``, ``_runs``,
 ``_stall_cancelled_ids``, ``_start_ids_in_flight``, ``_tasks``.
 
 Instance fields read: ``_consolidator``, ``_ctx``, ``_fresh``, ``_sessions``,
@@ -260,6 +260,30 @@ async def run(
     return run
 
 
+def _task_id_taken(runner: TaskRunner, task_id: str) -> bool:
+    return (
+        task_id in runner._runs
+        or task_id in runner._tasks
+        or task_id in runner._start_ids_in_flight
+    )
+
+
+def mint_task_id(self: TaskRunner, spec_path: str | Path) -> str:
+    """A fresh task id for *spec_path*: ``<spec stem>_<nanoseconds>``.
+
+    Nanosecond IDs avoid routine same-second collisions. The suffix also only
+    ever grows, so two ids minted before either run is registered (fair
+    admission links one first) still differ on a coarse clock.
+    """
+    id_suffix = max(time.time_ns(), self._last_id_suffix + 1)
+    task_id = f"{Path(spec_path).stem}_{id_suffix}"
+    while _task_id_taken(self, task_id):
+        id_suffix += 1
+        task_id = f"{Path(spec_path).stem}_{id_suffix}"
+    self._last_id_suffix = id_suffix
+    return task_id
+
+
 async def start_background(
     self: TaskRunner,
     spec_path: str | Path,
@@ -272,6 +296,7 @@ async def start_background(
     session_key: str = "",
     execution_context: ExecutionContext | None = None,
     input_content: str | None = None,
+    task_id: str = "",
 ) -> str:
     """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -280,7 +305,11 @@ async def start_background(
     handed to the notify sink, which is what lets a stall-worthy notice (an
     approval request, a denial) reach the surface the operator started the
     task on rather than one hard-wired destination.
+
+    *task_id*, from :func:`mint_task_id`, is the id a caller recorded before
+    the start (fair admission links it first); one already in use is refused.
     """
+    requested_id = task_id  # the pruning loops below rebind ``task_id``
     execution = await capture_admission_execution(
         self._ctx,
         session_key,
@@ -344,16 +373,12 @@ async def start_background(
             self._stall_cancelled_ids.discard(task_id)
             self._run_session_keys.pop(task_id, None)
 
-        # Nanosecond IDs avoid routine same-second collisions. The guarded
-        # increment is a deterministic fallback if a clock/platform returns
-        # the same value for two starts.
-        id_suffix = time.time_ns()
-        task_id = f"{Path(spec_path).stem}_{id_suffix}"
-        while (
-            task_id in self._runs or task_id in self._tasks or task_id in self._start_ids_in_flight
-        ):
-            id_suffix += 1
-            task_id = f"{Path(spec_path).stem}_{id_suffix}"
+        if not requested_id:
+            task_id = mint_task_id(self, spec_path)
+        elif _task_id_taken(self, requested_id):
+            raise ValueError(f"task id {requested_id} is already in use")
+        else:
+            task_id = requested_id
         self._start_ids_in_flight.add(task_id)
 
         try:

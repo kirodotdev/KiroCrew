@@ -224,6 +224,8 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         client = self._client()
         # A SEL failure must never break tool dispatch.
         await client._maybe_audit_unasked_tool_call(self._result_ev())
+        # The call is settled even though its write failed, so no later event retries it.
+        assert client._sel_settled_tool_calls == {"tc1"}
 
     @pytest.mark.asyncio
     async def test_the_send_message_path_records_an_unasked_call(self, monkeypatch):

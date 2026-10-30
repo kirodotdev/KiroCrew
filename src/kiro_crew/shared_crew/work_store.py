@@ -209,6 +209,28 @@ class WorkStore:
             raise StaleRevision(work.revision, current.revision if current else -1)
         return nxt
 
+    def annotate_sync(self, work: AcceptedWork, extra: Mapping[str, Any]) -> AcceptedWork:
+        """Write *extra* onto *work* as its next revision, in the same state."""
+        nxt = replace(work, revision=work.revision + 1, extra={**dict(work.extra), **dict(extra)})
+        ok = self._tasks.work_compare_and_set(
+            work.work_id,
+            expected_revision=work.revision,
+            state=nxt.state.value,
+            revision=nxt.revision,
+            updated_at=self._clock(),
+            record_json=_encode(nxt),
+            clear_payload=False,
+        )
+        if not ok:
+            current = self.get_sync(work.work_id)
+            raise StaleRevision(work.revision, current.revision if current else -1)
+        return nxt
+
+    async def annotate(self, work: AcceptedWork, extra: Mapping[str, Any]) -> AcceptedWork:
+        result: AcceptedWork = await self._tasks.run(self.annotate_sync, work, extra)
+        _changed(result)
+        return result
+
     async def advance(
         self,
         work: AcceptedWork,

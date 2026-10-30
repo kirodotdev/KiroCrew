@@ -21,6 +21,7 @@ class _State:
         self._warm_task_brief_model_active: set[str] = set()
         self._warm_task_brief_abandoned: set[str] = set()
         self._warm_task_brief_opened: set[str] = set()
+        self._warm_task_brief_hidden_left: dict[int, str] = {}
         self.frames: list[tuple[str, dict]] = []
         self.preparing_pushes: list[dict[str, bool]] = []
         # The real registry is ``_slots``; one dict serves both names.

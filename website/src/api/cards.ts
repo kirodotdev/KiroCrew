@@ -28,6 +28,7 @@ export const CARD_KINDS = [
   'crewmate.check_ins',
   'crewmate.dashboard_page',
   'template.update',
+  'template.mcp_server',
   'mcp.install',
   'mcp.add_custom',
   'mcp.toggle',
@@ -58,6 +59,10 @@ export interface CardChange {
   addition?: CardAddition
   /** A raw row a card with plain lines keeps behind its Details. */
   detail?: boolean
+  /** A goal card's Heartbeat checkbox row (`heartbeat_offer`): the minutes it runs every. */
+  interval?: number
+  /** The same row: the most runs a day at that interval. */
+  per_day?: number
 }
 
 /** One thing a capabilities card gives a crewmate's worker. */
@@ -109,7 +114,8 @@ export interface Card {
   widen?: boolean
   title: string
   changes: CardChange[]
-  scope?: { members: string[]; count: number }
+  /** `only_this_member`: the gateway's mark that the one member IS the card's own subject. */
+  scope?: { members: string[]; count: number; only_this_member?: boolean }
   reason?: string
   editable: string[]
   params: Record<string, unknown>

@@ -10,7 +10,7 @@ import { AlarmClock,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
-import { NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
+import { GOAL_HEARTBEAT_FIELD, GoalHeartbeatOption, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
 import { ImportFilesBody } from './ImportFilesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
@@ -20,13 +20,15 @@ export interface CardKindSpec {
   label: () => string
   /** The primary button: the concrete action, never a bare "OK". */
   primary: (card?: Card) => string
-  /** The decline button, when "Decline change" does not say what declining means here. */
+  /** The decline button, when a bare "Decline" does not say what declining means here. */
   decline?: () => string
   /** One line beside the primary button: what the press does and how to take it back. */
   pressNote?: () => string
   /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
   riskNote?: () => string
   Body: ComponentType<KindBodyProps>
+  /** An option of the primary press, drawn after the reason, just above the buttons. */
+  Option?: ComponentType<KindBodyProps>
 }
 
 export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
@@ -67,6 +69,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'crewmate.goal': {
     icon: Goal, label: () => i18nT('components.changeCards.kind_crewmate_goal'),
     primary: () => i18nT('components.changeCards.primary_crewmate_goal'), Body: OneCrewmateBody,
+    Option: GoalHeartbeatOption,
   },
   'crewmate.key_results': {
     icon: Gauge, label: () => i18nT('components.changeCards.kind_crewmate_key_results'),
@@ -83,6 +86,10 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'template.update': {
     icon: LayoutTemplate, label: () => i18nT('components.changeCards.kind_template_update'),
     primary: () => i18nT('components.changeCards.primary_template_update'), Body: NoBody,
+  },
+  'template.mcp_server': {
+    icon: PackagePlus, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
+    primary: () => i18nT('components.changeCards.primary_template_mcp_server'), Body: NoBody,
   },
   'mcp.install': {
     icon: PackagePlus, label: () => i18nT('components.changeCards.kind_mcp_install'),
@@ -212,6 +219,23 @@ export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'change
   return i18nT(key, { item: list.item, label })
 }
 
+/** True when the Affects row would only repeat the title: the gateway marks the
+ *  one member as the card's own subject (`only_this_member`) and the title names
+ *  that member as a whole word. A scope the gateway does not mark (a template's
+ *  users, whose name can equal the template's) keeps its row. */
+export function scopeRepeatsTitle(title: string, scope: Card['scope']): boolean {
+  if (!scope || scope.only_this_member !== true || scope.count !== 1 || scope.members.length !== 1) return false
+  const name = scope.members[0].trim()
+  if (!name) return false
+  const word = /[\p{L}\p{N}_]/u
+  for (let at = title.indexOf(name); at !== -1; at = title.indexOf(name, at + 1)) {
+    const before = title[at - 1] ?? ''
+    const after = title[at + name.length] ?? ''
+    if (!word.test(before) && !word.test(after)) return true
+  }
+  return false
+}
+
 /** A one-shot schedule's rows: no recurrence row, and its `at` row reads
  *  "Runs once" with the localized date and time. */
 function oneShotChanges(card: Pick<Card, 'kind' | 'params' | 'changes' | 'once' | 'timezone'>): CardChange[] {
@@ -232,6 +256,8 @@ function oneShotChanges(card: Pick<Card, 'kind' | 'params' | 'changes' | 'once' 
 /** The card's change rows, a list setting's row named for the list it edits. */
 export function cardChanges(card: Pick<Card, 'kind' | 'params' | 'changes'> & Partial<Pick<Card, 'once' | 'timezone'>>): CardChange[] {
   if (isOneShot(card)) return oneShotChanges(card)
+  // A goal card's Heartbeat row is drawn as its checkbox (GoalBody), not a change line.
+  if (card.kind === 'crewmate.goal') return card.changes.filter(c => c.field !== GOAL_HEARTBEAT_FIELD)
   const wording = listOp(card)?.wording
   if (!wording || card.changes.length !== 1) return card.changes
   return [{ ...card.changes[0], label: wording.label() }]

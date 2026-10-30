@@ -21,6 +21,7 @@ from denied_commands_security_helpers import (
     Q,
     _denied_by,
 )
+from named_cases_helpers import named_cases
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
@@ -272,71 +273,138 @@ class TestSelfProtectionKillTargetScoping:
     @pytest.mark.parametrize(
         ("origin", "cmd", "rule"),
         [
-            # The value is PRODUCED by a substitution, so there is no literal to carry
-            # forward.  It is resolved conservatively instead: if the substitution names a
-            # protected program anywhere, the variable is treated as holding that name.
-            # Over-approximating is the safe direction -- the value only matters when the
-            # variable is later used AS a program, where a wrong guess is a refusal.
-            *_named(
-                "test_computed_assignment_value_still_blocked",
-                ("X=$(printf {n}); $X {v}", _RULE_MINT),
-                ("X=`printf {n}`; $X {v}", _RULE_MINT),
-                ("X=$(which {n}); $X {v}", _RULE_MINT),
-                ("P=$(printf PKILL); $P -f {n}", _RULE_KILL),
+            *named_cases(
+                "test_resolved_program_text_is_judged_by_its_rule",
+                ("origin", "cmd", "rule"),
+                [
+                    # The value is PRODUCED by a substitution, so there is no literal to carry
+                    # forward.  It is resolved conservatively instead: if the substitution names a
+                    # protected program anywhere, the variable is treated as holding that name.
+                    # Over-approximating is the safe direction -- the value only matters when the
+                    # variable is later used AS a program, where a wrong guess is a refusal.
+                    *_named(
+                        "test_computed_assignment_value_still_blocked",
+                        ("X=$(printf {n}); $X {v}", _RULE_MINT),
+                        ("X=`printf {n}`; $X {v}", _RULE_MINT),
+                        ("X=$(which {n}); $X {v}", _RULE_MINT),
+                        ("P=$(printf PKILL); $P -f {n}", _RULE_KILL),
+                    ),
+                    # `${!V}` is INDIRECT -- it expands to the value of the variable NAMED by `V`, so
+                    # resolving it takes two hops through the same assignment table.
+                    *_named(
+                        "test_indirect_expansion_resolved",
+                        ("N=PKILL; V=N; ${{!V}} -f {n}", _RULE_KILL),
+                        ("A={n}; B=A; ${{!B}} {v}", _RULE_MINT),
+                        ("x=p; x=${{x}}kill; y=x; ${{!y}} -f {n}", _RULE_KILL),
+                    ),
+                    # `${K:0}` / `${K^^}` / `${K/x/y}` transform the variable's OWN value, so none of
+                    # them is a plain `${K}`.  Resolved to the value itself: the transformation is not
+                    # modelled, and over-approximating is the safe direction, because the result only
+                    # matters where it is used as a program or a verb.
+                    *_named(
+                        "test_parameter_transformation_on_a_tracked_variable",
+                        ("K={n}; ${{K:0}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K:0:9}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K^^}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K/x/y}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K#z}} {v}", _RULE_MINT),
+                        ("K=PKILL; ${{K:0}} -f {n}", _RULE_KILL),
+                        ("V2={v}; {n} ${{V2:0}}", _RULE_MINT),
+                    ),
+                    # `bash<<<'<payload>'` glues program, operator and payload into ONE token, so the
+                    # program never appears as a token of its own; the operator is split off instead.
+                    *_named(
+                        "test_glued_herestring",
+                        ("bash<<<'{n} {v}'", _RULE_MINT),
+                        ("sh<<<'{n} {v}'", _RULE_MINT),
+                        ("bash<<<'PKILL -f {n}'", _RULE_KILL),
+                    ),
+                    # `a=(<name> <verb>); "${a[@]}"` runs the elements AS a command line.  The
+                    # expansion is a single token, so there are no adjacent operands for the argv
+                    # checks -- the joined elements go to the payload walk, which re-tokenizes them.
+                    *_named(
+                        "test_bash_array_expanded_as_a_command",
+                        ('a=({n} {v}); "${{a[@]}}"', _RULE_MINT),
+                        ("a=({n} {v}); ${{a[*]}}", _RULE_MINT),
+                        ('arr=({n} {v}); "${{arr[@]}}"', _RULE_MINT),
+                        ('a=({n} {v}); echo hi; "${{a[@]}}"', _RULE_MINT),
+                        ('a=(PKILL -f {n}); "${{a[@]}}"', _RULE_KILL),
+                        ('a=(killall {n}); "${{a[@]}}"', _RULE_KILL),
+                    ),
+                    # `$SHELL -c '<payload>'` runs the payload exactly as a named shell does; the
+                    # recognizer already used for the `| $SHELL` evaluator sink applies here too.
+                    *_named(
+                        "test_shell_reached_through_a_variable_is_a_nested_shell",
+                        ("$SHELL -c '{n} {v}'", _RULE_MINT),
+                        ("${{SHELL}} -c '{n} {v}'", _RULE_MINT),
+                        ("$SHELL -c 'PKILL -f {n}'", _RULE_KILL),
+                    ),
+                ],
             ),
-            # `${!V}` is INDIRECT -- it expands to the value of the variable NAMED by `V`, so
-            # resolving it takes two hops through the same assignment table.
-            *_named(
-                "test_indirect_expansion_resolved",
-                ("N=PKILL; V=N; ${{!V}} -f {n}", _RULE_KILL),
-                ("A={n}; B=A; ${{!B}} {v}", _RULE_MINT),
-                ("x=p; x=${{x}}kill; y=x; ${{!y}} -f {n}", _RULE_KILL),
-            ),
-            # `${K:0}` / `${K^^}` / `${K/x/y}` transform the variable's OWN value, so none of
-            # them is a plain `${K}`.  Resolved to the value itself: the transformation is not
-            # modelled, and over-approximating is the safe direction, because the result only
-            # matters where it is used as a program or a verb.
-            *_named(
-                "test_parameter_transformation_on_a_tracked_variable",
-                ("K={n}; ${{K:0}} {v}", _RULE_MINT),
-                ("K={n}; ${{K:0:9}} {v}", _RULE_MINT),
-                ("K={n}; ${{K^^}} {v}", _RULE_MINT),
-                ("K={n}; ${{K/x/y}} {v}", _RULE_MINT),
-                ("K={n}; ${{K#z}} {v}", _RULE_MINT),
-                ("K=PKILL; ${{K:0}} -f {n}", _RULE_KILL),
-                ("V2={v}; {n} ${{V2:0}}", _RULE_MINT),
-            ),
-            # `bash<<<'<payload>'` glues program, operator and payload into ONE token, so the
-            # program never appears as a token of its own; the operator is split off instead.
-            *_named(
-                "test_glued_herestring",
-                ("bash<<<'{n} {v}'", _RULE_MINT),
-                ("sh<<<'{n} {v}'", _RULE_MINT),
-                ("bash<<<'PKILL -f {n}'", _RULE_KILL),
-            ),
-            # `a=(<name> <verb>); "${a[@]}"` runs the elements AS a command line.  The
-            # expansion is a single token, so there are no adjacent operands for the argv
-            # checks -- the joined elements go to the payload walk, which re-tokenizes them.
-            *_named(
-                "test_bash_array_expanded_as_a_command",
-                ('a=({n} {v}); "${{a[@]}}"', _RULE_MINT),
-                ("a=({n} {v}); ${{a[*]}}", _RULE_MINT),
-                ('arr=({n} {v}); "${{arr[@]}}"', _RULE_MINT),
-                ('a=({n} {v}); echo hi; "${{a[@]}}"', _RULE_MINT),
-                ('a=(PKILL -f {n}); "${{a[@]}}"', _RULE_KILL),
-                ('a=(killall {n}); "${{a[@]}}"', _RULE_KILL),
-            ),
-            # `$SHELL -c '<payload>'` runs the payload exactly as a named shell does; the
-            # recognizer already used for the `| $SHELL` evaluator sink applies here too.
-            *_named(
-                "test_shell_reached_through_a_variable_is_a_nested_shell",
-                ("$SHELL -c '{n} {v}'", _RULE_MINT),
-                ("${{SHELL}} -c '{n} {v}'", _RULE_MINT),
-                ("$SHELL -c 'PKILL -f {n}'", _RULE_KILL),
+            *named_cases(
+                "test_resolved_payload_is_judged_by_its_rule",
+                ("origin", "cmd", "rule"),
+                [
+                    # `X=<name>;$X <verb>` glues the assignment and the command that uses it into ONE
+                    # token, so neither was seen.  Tokens are split on top-level control operators
+                    # before assignments are resolved.
+                    *_named(
+                        "test_glued_assignment_separator_still_resolved",
+                        ("X={n};$X {v}", _RULE_MINT),
+                        ("X=PKILL;$X -f {n}", _RULE_KILL),
+                    ),
+                    # `x(){ <name> "$@";}; x <verb>` never puts the program and the verb in one argv:
+                    # the body holds the program, the call site holds the verb.  A function whose body
+                    # invokes a protected program is therefore treated as an alias for it, so the
+                    # ordinary argv checks see the real command at the call site.
+                    *_named(
+                        "test_function_forwarding_arguments_blocked",
+                        ('x(){{ {n} "$@";}}; x {v}', _RULE_MINT),
+                        ('x(){{ {n} "$1";}}; x {v}', _RULE_MINT),
+                        ('function x(){{ {n} "$@";}}; x {v}', _RULE_MINT),
+                        ('x(){{ PKILL -f "$1";}}; x {n}', _RULE_KILL),
+                        ("k(){{ PKILL -f {n};}}; k", _RULE_KILL),
+                    ),
+                    # `alias x=<name>` then `x <verb>` is the same evasion as a function wrapper --
+                    # the definition holds the program, the call site holds the verb -- so aliases
+                    # resolve alongside function definitions.
+                    *_named(
+                        "test_alias_definition_resolved",
+                        ("bash -c 'alias x={n}; x {v}'", _RULE_MINT),
+                        ("bash -c 'alias k=PKILL; k -f {n}'", _RULE_KILL),
+                    ),
+                    # `$(printf <name>) <verb>` puts the data consumer INSIDE a substitution that
+                    # occupies program position, so its OUTPUT is what runs.  The "arguments are just
+                    # data" exemption must not apply there.
+                    *_named(
+                        "test_substitution_in_program_position_is_not_inert_data",
+                        ("$(printf {n}) {v}", _RULE_MINT),
+                        ("`printf {n}` {v}", _RULE_MINT),
+                        ("$(echo {n}) {v}", _RULE_MINT),
+                        ("$(printf PKILL) -f {n}", _RULE_KILL),
+                    ),
+                    # bash runs the inner command of a PROCESS substitution (`<( )`, `>( )`) exactly as
+                    # it does for a command substitution, so every substitution body is walked as a
+                    # payload and the ordinary argv checks see the inner invocation.
+                    *_named(
+                        "test_process_substitution_body_is_a_command",
+                        ("cat <({n} {v})", _RULE_MINT),
+                        ("diff <({n} {v}) /tmp/x", _RULE_MINT),
+                        ("tee >({n} {v})", _RULE_MINT),
+                        ("cat <(PKILL -f {n})", _RULE_KILL),
+                    ),
+                    # A multiword alias replacement is a whole COMMAND LINE, not just a program name,
+                    # so it is handed to the payload walk rather than treated as an alias target.
+                    *_named(
+                        "test_multiword_alias_replacement_blocked",
+                        ("bash -c \"alias x='{n} {v}'; x\"", _RULE_MINT),
+                        ("bash -c \"alias k='PKILL -f {n}'; k\"", _RULE_KILL),
+                    ),
+                ],
             ),
         ],
     )
-    def test_resolved_program_text_is_judged_by_its_rule(self, origin, cmd, rule):
+    def test_resolved_text_is_judged_by_its_rule(self, origin, cmd, rule):
         text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         assert _denied_by(text) == rule
 
@@ -400,31 +468,112 @@ class TestSelfProtectionKillTargetScoping:
     @pytest.mark.parametrize(
         ("origin", "cmd"),
         [
-            # Piping into `$SHELL` runs the piped text exactly as piping into `bash` does,
-            # and the expansion hides the program name from any basename comparison.  The
-            # variables that conventionally hold a shell are recognised as evaluators.
-            *_named(
-                "test_variable_expanded_shell_sink_still_blocked",
-                "echo 'PKILL -f {n}' | $SHELL",
-                "echo 'PKILL -f {n}' | ${{SHELL}}",
-                "echo {n} {v} | $SHELL",
-                'echo {n} {v} | "$SHELL"',
+            *named_cases(
+                "test_text_fed_to_a_shell_still_blocked",
+                ("origin", "cmd"),
+                [
+                    # Piping into `$SHELL` runs the piped text exactly as piping into `bash` does,
+                    # and the expansion hides the program name from any basename comparison.  The
+                    # variables that conventionally hold a shell are recognised as evaluators.
+                    *_named(
+                        "test_variable_expanded_shell_sink_still_blocked",
+                        "echo 'PKILL -f {n}' | $SHELL",
+                        "echo 'PKILL -f {n}' | ${{SHELL}}",
+                        "echo {n} {v} | $SHELL",
+                        'echo {n} {v} | "$SHELL"',
+                    ),
+                    # A herestring feeds the script on STDIN rather than as an argument, so its text
+                    # is a command just as a `-c` argument is.  Both the spaced and glued spellings
+                    # are covered.  (A heredoc was already caught -- its newline puts the name in
+                    # command position for the raw-text half.)
+                    *_named(
+                        "test_herestring_payload_still_blocked",
+                        "bash <<< '{n} {v}'",
+                        'bash <<< "{n} {v}"',
+                        "sh <<< '{n} {v}'",
+                        "bash <<< '{n} >/tmp/x {v}'",
+                        "bash <<< 'PKILL -f {n}'",
+                    ),
+                ],
             ),
-            # A herestring feeds the script on STDIN rather than as an argument, so its text
-            # is a command just as a `-c` argument is.  Both the spaced and glued spellings
-            # are covered.  (A heredoc was already caught -- its newline puts the name in
-            # command position for the raw-text half.)
-            *_named(
-                "test_herestring_payload_still_blocked",
-                "bash <<< '{n} {v}'",
-                'bash <<< "{n} {v}"',
-                "sh <<< '{n} {v}'",
-                "bash <<< '{n} >/tmp/x {v}'",
-                "bash <<< 'PKILL -f {n}'",
+            *named_cases(
+                "test_interpreter_payload_spellings_still_blocked",
+                ("origin", "cmd"),
+                [
+                    # A `;` INSIDE `$( ... )` belongs to that substitution, not to the argv being
+                    # scanned -- `<name> $(true; echo <verb>)` is one command.  The scan tracks
+                    # substitution depth so only a top-level separator ends it.
+                    *_named(
+                        "test_separator_nested_in_a_substitution_does_not_end_the_argv",
+                        "{n} $(true; echo {v})",
+                        "{n} $(echo {v})",
+                        "PKILL -f $(true; echo {n})",
+                    ),
+                    # `env -S` splits its argument into a command and execs it, so the payload is a
+                    # command line like a `-c` argument.  The flag arrives lowercased (`is_denied`
+                    # lowercases its input), which is why the comparison is case-insensitive.
+                    *_named(
+                        "test_env_split_string_payload_blocked",
+                        "env -S '{n} {v}'",
+                        "env -S'{n} {v}'",
+                        "env --split-string '{n} {v}'",
+                        "env --split-string='{n} {v}'",
+                        "env -S 'PKILL -f {n}'",
+                    ),
+                    # `xargs` does not read a script -- it APPENDS the piped words to its own
+                    # command, so `echo <verb> | xargs <name>` runs `<name> <verb>` even though
+                    # neither half contains a space.  The effective command line is reconstructed so
+                    # the ordinary argv checks can see it.
+                    *_named(
+                        "test_xargs_appended_arguments_blocked",
+                        "echo {v} | xargs {n}",
+                        "echo {v} | xargs -n1 {n}",
+                        "echo {n} | xargs PKILL -f",
+                    ),
+                    # `f"..."`, `rb"..."` and friends put a prefix between the sink's paren and the
+                    # opening quote, which the opener did not admit.
+                    *_named(
+                        "test_string_prefix_before_the_payload_blocked",
+                        "python -c 'os.system(f\"{n} {v}\")'",
+                        "python -c 'os.system(f\"PKILL -f {n}\")'",
+                        "python -c 'os.system(rb\"{n} {v}\")'",
+                    ),
+                    # An interpreter argv can name the program by ABSOLUTE or relative path.  The
+                    # quoted program-name patterns admit a path prefix, written as one flat
+                    # character class rather than a repeated group -- a group carrying its own
+                    # quantifier is rejected by `_redos_prone`, and a rejected pattern is DISABLED.
+                    *_named(
+                        "test_path_qualified_program_in_interpreter_argv_blocked",
+                        "python -c \"subprocess.run(['/usr/bin/{n}','{v}'])\"",
+                        "python -c \"subprocess.run(['./bin/{n}','{v}'])\"",
+                        "python -c \"subprocess.run(['/usr/bin/PKILL','-f','{n}'])\"",
+                        'node -e \'execFileSync("/opt/{n}",["{v}"])\'',
+                        "python -c 'os.system(\"/usr/bin/{n} {v}\")'",
+                    ),
+                    # `printf` expands `\n` before the shell sees it, so the payload is decoded the
+                    # same way before re-tokenizing.  Without that, the escape glues onto the verb
+                    # and the comparison misses.
+                    *_named(
+                        "test_printf_escaped_payload_blocked",
+                        "printf '{n} {v}\\n' | bash",
+                        "printf '{n} {v}\\n' | sh",
+                        "printf 'PKILL -f {n}\\n' | bash",
+                        "echo -e '{n} {v}\\n' | bash",
+                    ),
+                    # `*['<verb>']` unpacks into the argv, so `*` joins the argv separator class.  It
+                    # stays OUT of the command-position gap on purpose -- that exclusion is what keeps
+                    # a regex literal (`.*<name>.*<verb>`) from matching, and here every element is
+                    # quoted so the literal still cannot.
+                    *_named(
+                        "test_star_unpacked_argv_blocked",
+                        "python -c \"subprocess.run(['{n}', *['{v}']])\"",
+                        "python -c \"subprocess.run(['PKILL', *['-f','{n}']])\"",
+                    ),
+                ],
             ),
         ],
     )
-    def test_text_fed_to_a_shell_still_blocked(self, origin, cmd):
+    def test_text_fed_to_an_executor_is_still_blocked(self, origin, cmd):
         text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         assert _denied_by(text) is not None
 

@@ -34,6 +34,7 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .shell_commands import sharing_views
 from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
@@ -273,6 +274,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             payloads = _shell_normalizer._nested_shell_payloads(
                 tokens, allow_join=allow_join, joined_out=joined_here
             )
+            # A redirect before the ``-c`` operand hides the script from the payloads.
+            payloads = [*payloads, *_submodule("shell_commands").redirect_hidden_payloads(source)]
             programs = _shell_normalizer._argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -416,6 +419,7 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+@sharing_views
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
@@ -773,7 +777,7 @@ def is_denied(
     if rm_enabled and _rm._can_fire(tool_name):
         note = _rm._RM_FLOOR_NOTE
         try:
-            rm_targets = _rm._rm_wipe_targets(tool_name)
+            rm_targets = _rm._rm_wipe_targets_nested(tool_name)
         except Exception as exc:  # incl. RecursionError
             # Fail closed for a command naming rm as a word; letters inside
             # another word (``--format``) are not a command the floor reads.

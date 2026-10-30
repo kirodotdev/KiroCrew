@@ -286,6 +286,10 @@ app was a stdlib `ThreadingHTTPServer` on its own port using blocking
 - a timeout kills the whole **process tree** via
   `platform_compat.kill_process_tree_async` and then reaps it, so no zombie holds
   its pipes;
+- a cancel (the app stops, the gateway shuts down or restarts) kills and reaps the
+  tree too, through the shielded `platform_compat.kill_and_reap`, then lets the
+  cancel propagate. The child runs in its own session, so nothing else would stop
+  a compiler or `git` child once its caller stops awaiting it;
 - every synchronous filesystem call — the tree walk, file read/write, compiler
   discovery, the `.bst`/`.bib` search-path `rglob`, `installed.json` reads, and the
   managed-compiler probes behind `/health` and `/compiler/provision` — is offloaded
@@ -894,7 +898,7 @@ that host reports `supported: false` and keeps the manual install path.
 |------|--------|
 | `test/test_papyrus_store.py` | Traversal/symlink/backslash/NUL defenses, project-name slug rule, **the `.git` refusal (any depth, any case) and the symlinked-project-entry refusal incl. the self-referential `-> .` case**, untrusted `.papyrus.json`, main-document discovery, bounded walk, file I/O |
 | `test/test_papyrus_latex.py` | Log parsing (incl. the two-bangs rule), the `-no-shell-escape` invariant, the pass sequence, timeout kill, compiler discovery + cache, env minimalism (incl. the Windows location hints, and that widening the allowlist admitted no secrets), the platform `os.pathsep` for `BSTINPUTS`, and that a sandbox refusal is reported rather than bypassed |
-| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/resource-limit-wrapper routing, tree-kill, the repo-config denylist against real git, **that the attributes pin ends up LAST even when pre-seeded and is never written through a symlink**, that a sandbox refusal becomes `GitSandboxUnavailable`, and that `clone` returns the new paper's generation |
+| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/resource-limit-wrapper routing, tree-kill on timeout and on cancel, the repo-config denylist against real git, **that the attributes pin ends up LAST even when pre-seeded and is never written through a symlink**, that a sandbox refusal becomes `GitSandboxUnavailable`, and that `clone` returns the new paper's generation |
 | `test/test_papyrus_routes.py` | The `_require_enabled` gate on every registered route, name/path authorization, response contracts, PDF security headers, git status mapping, the provisioning endpoint (202/idempotent/unsupported/one-job) and its off-loop discipline |
 | `test/test_papyrus_routes_clone_title.py` | Clone-time naming: the document title becomes the display name, a shipped or requested name wins, a missing title or an unwritable `.papyrus.json` keeps the folder name without failing the clone, a paper deleted and recreated under the same name during the clone keeps its own name, a `main.tex` linking outside the paper is never read, and the title is redacted and capped |
 | `test/test_papyrus_doc_title.py` | The `\title{...}` parser: comments, look-alike commands, `\thanks`, line breaks, `~` as a space, escaped characters, and the inputs that give no title |

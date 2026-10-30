@@ -48,13 +48,14 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
-import { CrewEyebrow, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { KiroGhostMark } from '../../components/KiroGhostMark'
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -275,24 +276,36 @@ interface SessionRowProps {
  *  message line, so a crew card is as tall as any other row. */
 function CrewRootSummaryLine({ root, fallback }: { root: string; fallback: ReactNode }) {
   // The server's groups (the worker list API), so the row, the panel and the
-  // breadcrumb agree; the fallback until the list has answered.
-  // A failed background poll keeps the last summary's ghosts and says the read
-  // failed in the row's own status line (the panel's wording, with the agent
-  // hand-off); the next poll clears it. With no data at all the row says so too.
+  // breadcrumb agree; the fallback until the list has answered. A failed poll
+  // says so in the row's own status line; the next poll clears it. The left
+  // side is one state word, never cut; the right side is a ghost with the
+  // session count and, while any run, a green dot with the running count. The
+  // words "sessions" and "running" live in its tooltip and accessible name.
   const { lastWorkers, failed } = useCrewWorkerSummary(root)
   // Only tool approvals reach the person; a worker's question is its conductor's.
   const { groups, approval, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
+  const running = groups.filter(g => g === 'working').length
   if (total === 0 && !failed) return <>{fallback}</>
+  const counts = i18nT('components.crewMode.ultra_row_sessions', { count: total, running })
+  const [word, tone] = approval > 0 ? [i18nT('components.crewMode.ultra_needs_you'), 'crew-tone-warn font-medium']
+    : running > 0 ? [i18nT('commandCenter.running'), 'text-text']
+      : done === total ? [i18nT('commandCenter.worker_group_done'), 'crew-tone-ok']
+        : [i18nT('commandCenter.worker_group_waiting'), 'text-muted']
   return (
     <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
-      {total > 0 && <CrewWorkerStack groups={groups} />}
       {failed ? (
-        <ErrorNotice variant="inline" askAgent className="ml-auto min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
       ) : (
-        <span className={`ml-auto text-[12px] truncate ${approval > 0 ? 'crew-tone-warn font-medium' : 'crew-tone-muted'}`}>
-          {approval > 0
-            ? i18nT('components.crewMode.summary_approval', { n: approval })
-            : i18nT('components.crewMode.summary_done', { done, total })}
+        <span className={`shrink-0 whitespace-nowrap text-[12px] ${tone}`} data-testid="crew-root-state">{word}</span>
+      )}
+      {total > 0 && (
+        <span className="ml-auto shrink-0 inline-flex items-center gap-1 text-[12px] tabular-nums crew-tone-muted" data-testid="crew-root-counts" title={counts} aria-label={counts} role="img">
+          <KiroGhostMark size={11} className="inline-block shrink-0 ultra-accent" />
+          <span aria-hidden="true">{total}</span>
+          {running > 0 && <>
+            <span aria-hidden="true" className="ml-1 w-1.5 h-1.5 rounded-full bg-[var(--ok)]" data-testid="crew-root-running-dot" />
+            <span aria-hidden="true">{running}</span>
+          </>}
         </span>
       )}
     </div>
@@ -309,7 +322,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.
-  const crewRoot = !!s.crew_mode_root && !s.peer_id
+  const crewRoot = useCrewMode() && !!s.crew_mode_root && !s.peer_id
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -1524,7 +1537,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  conductor is Crew Mode's to choose and may be swapped. The ghost sits
                 *  inline on this line rather than as a badge before the title, so the
                 *  title keeps the row's full width. */}
-              {crewRoot && <KiroGhostMark size={12} className="inline-block shrink-0 text-aim" />}
+              {crewRoot && <KiroGhostMark size={12} className="inline-block shrink-0 ultra-accent" />}
               {crewRoot && <CrewEyebrow />}
               {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>

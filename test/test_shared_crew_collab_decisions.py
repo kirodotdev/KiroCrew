@@ -493,6 +493,37 @@ async def test_by_id_slot_approval_first_wins_then_conflict_then_replay(state):
     assert won[1]["decision"]["initiator"]["id"] == ALICE.id
 
 
+@pytest.mark.parametrize(
+    "approved,rejected_once,expected",
+    [
+        (True, False, "approved"),
+        (True, True, "approved"),
+        (False, True, "rejected_once"),
+        (False, False, "rejected"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_by_id_slot_approval_records_the_action_as_its_outcome(
+    state, approved, rejected_once, expected
+):
+    from kiro_crew.shared_crew.decisions import resolve_approval_by_id
+
+    _slot, fut = _slot_with_pending(state, "rid-30")
+    won = resolve_approval_by_id(
+        state,
+        _request_as(BOB),
+        "rid-30",
+        approved=approved,
+        rejected_once=rejected_once,
+        response_id="r-bob",
+    )
+    assert won is not None and won[0] == 200
+    assert won[1]["decision"]["outcome"] == expected
+    assert _decision_frames(state)[-1]["decision"]["outcome"] == expected
+    assert decisions_for(state).get(approval_decision_id(SLOT, "rid-30")).outcome == expected
+    assert fut.result() == expected
+
+
 @pytest.mark.asyncio
 async def test_by_id_with_nothing_pending_returns_none(state):
     from kiro_crew.shared_crew.decisions import resolve_approval_by_id

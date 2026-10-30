@@ -634,7 +634,8 @@ def sandboxed_spawn_argv(
             spawn gets). ``None`` keeps ``wrap_argv``'s own classification.
         first_party_fixed_argv: Threaded to :func:`wrap_argv`. True ONLY for
             spawns whose full argv is derived inside this package with zero
-            agent/repo/user-config influence; every passing site must be
+            agent/repo/user-config influence, or that run the ACP kiro-cli
+            (``kiro_cli.find_kiro_cli_candidates``) with a fixed argv; every passing site must be
             allowlisted in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``.
             See :func:`wrap_argv` for the no-backend carve-out it gates.
 

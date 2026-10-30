@@ -301,6 +301,12 @@ def _audit_project_skill_enforcement(
     if marker in self._audited_projects:
         return
     try:
+        if allowed:
+            reason = "project skills admitted for a granted directory"
+        elif not skill_trust.project_skill_traversal_supported():
+            reason = "project skills withheld: this platform lacks no-follow directory traversal"
+        else:
+            reason = "project skills withheld: no grant, or the feature is off"
         sel().log_governance_decision(
             session_key="",
             tool_name="skills",
@@ -308,15 +314,7 @@ def _audit_project_skill_enforcement(
             item=key or str(project_dir),
             outcome="allowed" if allowed else "denied",
             rule="project_skills_trust_enforced",
-            reason=(
-                "project skills admitted for a granted directory"
-                if allowed
-                else (
-                    "project skills withheld: this platform lacks no-follow " "directory traversal"
-                    if not skill_trust.project_skill_traversal_supported()
-                    else "project skills withheld: no grant, or the feature is off"
-                )
-            ),
+            reason=reason,
             critical=False,
         )
         self._audited_projects.add(marker)

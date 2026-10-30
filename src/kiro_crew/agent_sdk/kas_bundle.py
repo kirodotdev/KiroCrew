@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -151,6 +151,18 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     from kiro_crew.acp.kas_transport import build_kas_bundle_argv
 
     return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
+
+
+def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
+    """Whether the KAS harness treats *binary* as the operator's ``KIROCREW_KIRO_BIN``.
+
+    The harness's own rule (``KasHarness.resolve_spawn`` never swaps that binary
+    for its ``kiro-cli-chat`` sibling), read at call time, so ``kirocrew doctor``
+    predicts the relay spawn with the same comparison instead of a copy.
+    """
+    from kiro_crew.acp.harness.kas import _is_operator_override
+
+    return _is_operator_override(binary, environ)
 
 
 def kas_bundle_route() -> bool:

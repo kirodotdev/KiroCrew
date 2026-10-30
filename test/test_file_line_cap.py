@@ -988,17 +988,35 @@ class TestCiWiring:
         return [str(step.get("run") or "") for step in job.get("steps") or []]
 
     @pytest.mark.parametrize("job", ["backend-lint", "frontend-lint"])
-    def test_a_lint_job_runs_the_guard_on_full_history(self, job: str) -> None:
+    def test_a_lint_job_runs_the_guard_with_a_reachable_diff_base(self, job: str) -> None:
+        """Either full history, or depth 2 with the base branch deepened.
+
+        A clone with no reachable base leaves the scope undeterminable and the
+        guard judges the whole tree, failing this change for every other
+        change's file. What ratchet_scope needs to avoid that is ancestry --
+        `merge-base --is-ancestor HEAD^1 origin/main` gates the HEAD^1..HEAD
+        diff -- so depth 2 counts only when the job also deepens the base
+        branch, and that step must unshallow if the base moved past its window.
+        """
         spec = self._job("ci.yml", job)
         checkouts = [
             step.get("with") or {}
             for step in spec["steps"]
             if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
-        # A shallow clone leaves the scope undeterminable, and the guard then
-        # judges the whole tree, failing this change for every other change's file.
-        assert [c.get("fetch-depth") for c in checkouts] == [0], checkouts
+        depths = [c.get("fetch-depth") for c in checkouts]
         runs = "\n".join(self._runs(spec))
+        if depths != [0]:
+            assert depths == [2], checkouts
+            assert "--depth=50 origin main" in runs, (
+                f"{job} checks out at depth 2, so it must deepen the base branch "
+                "before the cap gate runs"
+            )
+            assert "--unshallow origin main" in runs, (
+                f"{job}'s bounded deepening must unshallow when the base moved "
+                "past its window, so the gate is never scoped worse than under "
+                "full history"
+            )
         assert "python3 scripts/check_file_line_cap.py --test" in runs
         assert "python3 scripts/check_file_line_cap.py\n" in runs + "\n"
 

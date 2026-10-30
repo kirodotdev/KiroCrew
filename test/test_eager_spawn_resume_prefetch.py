@@ -135,14 +135,30 @@ class TestResumePrefetchWiring:
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
         assert getattr(slot, "_prefetch_ttl_task", None) is None
 
+    @staticmethod
+    async def _unclaimed_prefetch(key: str):
+        """A real SessionManager holding one released, never-claimed speculative session."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        cfg.session.pool_size = 0
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        chat_runner._armed_prefetches[key] = 1
+        return mgr
+
     @pytest.mark.asyncio
     async def test_prefetch_ttl_removes_unclaimed_session(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_RESUME_PREFETCH_TTL_SECS", 0)
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
-        state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        state.sessions = await self._unclaimed_prefetch("dashboard:t1")
         await chat_runner._prefetch_ttl(state, slot, "dashboard:t1")
-        state.sessions.remove_if_unclaimed.assert_awaited_once_with("dashboard:t1")
+        assert "dashboard:t1" not in state.sessions._sessions
+        assert chat_runner._armed_prefetches == {}
 
     @pytest.mark.asyncio
     async def test_prefetch_ttl_bails_when_slot_replaced(self, monkeypatch):
@@ -151,9 +167,9 @@ class TestResumePrefetchWiring:
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         state.get_slot = MagicMock(return_value=_ChatSlot("t1"))  # replaced
-        state.sessions.remove_if_unclaimed = AsyncMock()
+        state.sessions = await self._unclaimed_prefetch("dashboard:t1")
         await chat_runner._prefetch_ttl(state, slot, "dashboard:t1")
-        state.sessions.remove_if_unclaimed.assert_not_awaited()
+        assert "dashboard:t1" in state.sessions._sessions
 
     @pytest.mark.asyncio
     async def test_prefetch_ttl_still_reaps_after_slot_deletion(self, monkeypatch):
@@ -167,9 +183,9 @@ class TestResumePrefetchWiring:
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         state.get_slot = MagicMock(return_value=None)  # slot deleted
-        state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        state.sessions = await self._unclaimed_prefetch("slack:12345.678")
         await chat_runner._prefetch_ttl(state, slot, "slack:12345.678")
-        state.sessions.remove_if_unclaimed.assert_awaited_once_with("slack:12345.678")
+        assert "slack:12345.678" not in state.sessions._sessions
 
 
 class TestToolSearchReplayPrefetchGate:
@@ -216,6 +232,7 @@ class TestToolSearchReplayPrefetchGate:
             setattr(loader.return_value.agent, name, value)
         with patch.object(chat_runner.KiroCrewConfig, "load", loader):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        assert list(chat_runner._armed_prefetches) == ["dashboard:t1"]
         assert state.sessions.get_or_create.await_args.kwargs["speculative_resume"] is True
 
 

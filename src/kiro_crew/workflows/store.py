@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import stat
 from pathlib import Path
@@ -83,7 +84,13 @@ def default_workflow_library_dir() -> Path:
 
 def _redact(obj):
     """Recursively redact credentials / exfiltration URLs in a JSON-able value
-    before it touches disk (defense-in-depth, mirrors the broadcast/persist rule)."""
+    before it touches disk (defense-in-depth, mirrors the broadcast/persist rule).
+
+    A non-finite float becomes ``None``, so the file stays strict JSON. A file that
+    already holds a bare ``Infinity`` still loads: ``json.load`` accepts the token,
+    and the response redactor nulls it on the way out."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)

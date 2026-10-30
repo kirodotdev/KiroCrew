@@ -133,6 +133,63 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         "effort_pinned": bool(crew_effort),
     }
 
+    from kiro_crew.acp_backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+    from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.handlers.agents_harness_effort import (
+        harness_effort,
+        own_models_backend,
+    )
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    try:
+        owner = is_owner_dashboard_request(request)
+    except (KeyError, AttributeError):
+        # No dashboard state to name an owner by: not an owner request.
+        owner = False
+    try:
+        # A crewmate's harness pin names the harness that judges its pins first. Only the
+        # owner reads the pin, so any other caller gets the member route's answer.
+        pin_backend: str | None = _pin_entitlement_backend(cfg, alias if owner else "")
+    except CrewmateHarnessUnavailable:
+        # The pinned harness cannot start: the harness readout below reports it.
+        pin_backend = None
+    if pin_backend is not None:
+        own = own_models_backend(pin_backend, cfg.agent.acp_backend)
+        # Only a pair-id harness (codex) answers for its build, which holds for any pick the
+        # editor makes; every other answer would be one model's, so the editor judges the pick.
+        effort = (
+            harness_effort(request.app.get("state"), pin_backend, None, alias, model_answers=False)
+            if pin_backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+            else {}
+        )
+        if "effort_levels" in effort:
+            # A pin saves through _crew_effort_rejected, which takes the shared vocabulary only.
+            effort["effort_levels"] = [
+                lvl for lvl in effort["effort_levels"] if lvl in EFFORT_VALUES
+            ]
+        # circular import: see _model_pin_rejected.
+        from kiro_crew.dashboard.handlers.core import _active_advertised_ids
+
+        advertised = (
+            _active_advertised_ids(request, backend=pin_backend)
+            if model_pin not in ("", "auto")
+            else None
+        )
+        # The backend whose list the editor offers, when the pin is judged by another
+        # harness's catalog than the configured one.
+        if own is not None:
+            body["models_backend"] = own
+        # The id that harness serves the crew's pin as ("" for none), off a live session's
+        # advertised list; absent while no session has advertised one.
+        if advertised is not None:
+            body["pin_served_as"] = resolve_pin_spelling_on(
+                model_pin, advertised, backend=pin_backend
+            )
+        # Whether and at which levels a pair-id harness's build takes an effort pin; null
+        # until a live session on it answers. Otherwise the editor judges the model.
+        body.update(effort)
+
     # The crewmate's harness pin is read HERE and nowhere else on the dashboard
     # (GET /api/agents and GET /api/members leave it out), and only by the owner.
     def _crew_harness_readout(cfg: KiroCrewConfig, crew: str, app_kw: dict) -> dict[str, object]:
@@ -176,13 +233,6 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             out["model"] = resolve_effective_model(cfg, crew, backend=runtime, **app_kw)
         return out
 
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
-    try:
-        owner = is_owner_dashboard_request(request)
-    except (KeyError, AttributeError):
-        # No dashboard state to name an owner by: not an owner request.
-        owner = False
     if alias and alias in cfg.agents and owner:
         body.update(await asyncio.to_thread(_crew_harness_readout, cfg, alias, app_kw))
     return web.json_response(body)

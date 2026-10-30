@@ -288,6 +288,8 @@ async def test_taskrunner_resume_inherits_admitted_principal(monkeypatch, endpoi
     admission = SimpleNamespace(
         rejected=False,
         replayed=False,
+        passthrough=False,
+        service=None,
         work=None if expected is None else SimpleNamespace(budget_key=expected),
         abandon=AsyncMock(),
         attach_child=AsyncMock(),

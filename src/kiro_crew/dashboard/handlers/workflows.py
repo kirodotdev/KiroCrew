@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
@@ -51,7 +52,14 @@ def _redact_obj(obj):
     …}``) and a values-only walk would pass it through untouched. Two distinct
     credential-shaped keys can collapse into one redacted key — losing a
     pathological key is strictly preferable to leaking the secret.
+
+    A non-finite float (``inf``, ``-inf``, ``nan``) becomes ``None``: Python's
+    ``json`` writes it as a bare ``Infinity``/``NaN`` token, which no browser
+    ``JSON.parse`` accepts. A script reaches one through ``ctx.budget.remaining()``
+    on a run without a budget.
     """
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)

@@ -286,7 +286,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
+        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, rejected_scripts: \"'dict[str, list[str]] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
     ),
     "_start_counted": (
         "function",

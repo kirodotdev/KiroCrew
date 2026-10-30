@@ -1699,9 +1699,10 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"slot_focused","slot":"slot-b"}',
     'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_focused","slot":null}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    // A reveal re-announces the focused split-view pane, not activeSlot.
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_read","slot":"slot-b","read_ts":"2026-09-01T00:00:00.000Z"}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'close',
   ],
 }

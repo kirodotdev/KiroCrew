@@ -439,6 +439,11 @@ ACP_BACKENDS_COMPACT = frozenset(
 # memberships it lacks, and the refusal arm that promises nothing -- so the leak is
 # reported rather than either denied or answered by ending the conversation.
 #
+# KAS 0.66.70 (kiro-cli 2.36.0) live: with its automatic-compaction threshold set low,
+# one turn crosses it and the engine sends ``summarization_started`` then
+# ``summarization_completed`` on its own, no client request
+# (acp_frames/kas/auto-compaction-live.jsonl).
+#
 # kiro-cli is not a member: no capture shows it compacting on its own, and its
 # ``/compact`` is served through ``ACP_BACKENDS_COMPACT``.
 ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
@@ -699,6 +704,12 @@ ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
 # turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+# Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``
+# meteringUsage unit=credit entry (acp_frames/kiro/compaction-live.jsonl); KAS 0.66.70 as a
+# turn_completion promptTurnSummaries unit=credit entry (acp_frames/kas/turn-usage-live.jsonl);
+# claude, opencode and goose as token counts on the ``session/prompt`` result's ``usage``
+# (acp_frames/claude/session.jsonl, acp_frames/opencode/session-live.jsonl,
+# acp_frames/goose/turn-live.jsonl).
 ACP_BACKENDS_REPORT_USAGE = frozenset(
     {
         ACP_BACKEND_KIRO,

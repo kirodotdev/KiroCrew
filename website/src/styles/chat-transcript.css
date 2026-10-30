@@ -491,3 +491,18 @@ file-tree-container{
 [data-pinned-standin="folding"] [data-role="user"] > [data-message-actions]{visibility:visible;opacity:1}
 [data-pinned-standin] [data-message-edit]{display:none}
 
+
+/* A side panel sliding under a trackpad drag (utils/panelSlide.ts): the
+   text reflows under a still pointer on every frame, so the hovered message
+   (and the action bar it mounts) changed on every frame. No hover over the
+   transcript until the panel rests; the swipe's wheel events still reach the
+   page listener above the scroller. */
+:root[data-panel-sliding] .chat-container {
+  pointer-events: none;
+}
+/* The transcript's own reading-position anchor while a panel slides
+   (TranscriptScrollShell's useSlideAnchor): the browser's scroll anchoring
+   would pick another node and pull against it. */
+.chat-container[data-slide-anchor] {
+  overflow-anchor: none !important;
+}

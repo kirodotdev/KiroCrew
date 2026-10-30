@@ -831,12 +831,25 @@ def _reset_home_bound_globals() -> None:
     from kiro_crew.shared_crew import admission_gate as shared_crew_admission
 
     shared_crew_admission.install_host_hooks(None)
+    # Shared crew: the admission service a boot builds from its home's limits and
+    # work store. Left in place, the next boot on the same loop keeps it (and the
+    # first home's store), and its cancelled ticker is never restarted.
+    ticker = shared_crew_admission._ticker
+    if ticker is not None and not ticker.done():
+        ticker.cancel()
+    shared_crew_admission._ticker = None
+    shared_crew_admission.install_service(None)
+    shared_crew_admission._last_config_at = 0.0
+    shared_crew_admission._SERVICE_LOCK = shared_crew_admission.LoopBoundLock()
 
 
 def home_bound_globals_are_clear() -> bool:
     """Whether no home-derived module global is currently populated."""
+    from kiro_crew.shared_crew import admission_gate as shared_crew_admission
+
     return (
-        token_secret._SECRET is None
+        shared_crew_admission._SERVICE is None
+        and token_secret._SECRET is None
         and token_auth._revoked_store_singleton is None
         and revocation_gen._gen is None
         and not token_auth._app_perms_cache

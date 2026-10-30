@@ -281,8 +281,13 @@ The mechanism, when on:
   background context, and on an auto-nudge cycle the `[auto-nudge cycle N]`
   header and ledger news), and passes `""` on a turn whose text the person did not
   write (a recovery or Continue continuation, the synthesis prompt, an MCP
-  App's message), which then matches and selects nothing. Other callers match
-  the turn text.
+  App's message), which then matches and selects nothing. The headless callers
+  that wrap a request in Kiro Crew's own text pass the request alone: a
+  task-runner step its own title and description (`task_executor.task_trigger_text`,
+  not the role text, the plan's other steps, the spec or the instructions), a
+  task decomposition the spec, and a workflow authoring turn the intent (through
+  `WorkflowScope.prompt`, not the authoring instructions or the reference
+  workflows). Other callers match the turn text.
   A Discord or Webex DM auto-nudge reads the loop's message instead of the
   `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
   dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline

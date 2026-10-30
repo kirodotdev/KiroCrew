@@ -276,7 +276,7 @@ class TestAdoptTargetVisibility:
             _cron(_adopt_args(session_of="chat-9-typo"))
         assert "no recorded session" in capsys.readouterr().err
 
-    def test_existence_is_checked_on_the_delivery_resolved_key(self):
+    def test_existence_is_checked_on_the_delivery_resolved_key(self, capsys, tmp_path, monkeypatch):
         """Not on the prefix-stripped slot, which no transcript is keyed by.
 
         The check must ask for the same file the DELIVERY path would read, so
@@ -284,8 +284,17 @@ class TestAdoptTargetVisibility:
         the full session key; the two tests below cover the spellings where
         delivery resolves something else.
         """
-        mock_log_cls = self._run_adopt_with_known(True)
-        mock_log_cls.return_value.has_log.assert_called_once_with("dashboard:chat-9-1712799999")
+        # A transcript under the prefix-stripped slot only: a lookup on that
+        # spelling would find it and stay quiet.
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("chat-9-1712799999", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="chat-9-1712799999"))
+        assert "no recorded session" in capsys.readouterr().err
 
     def test_a_channel_origin_slot_does_not_warn(self, capsys, tmp_path, monkeypatch):
         """``dashboard:slack_<ts>`` has no ``dashboard_`` on its transcript.

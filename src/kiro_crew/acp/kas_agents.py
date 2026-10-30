@@ -1642,6 +1642,28 @@ def _pin_legacy_negotiation(servers: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
+def _managed_first(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*servers* with Crew's own entries moved to the front, each group in its order.
+
+    KAS starts a session's servers in array order, a few at a time, and a server
+    that never answers ``initialize`` holds its place until the engine gives up on
+    it. Session start waits for Crew's servers (``wait_mcp_ready``), so behind slow
+    user servers they would delay the first prompt for nothing. Only the start
+    order moves: the same entries are sent.
+    """
+
+    def is_managed(element: Any) -> bool:
+        # The same ownership test as _pin_legacy_negotiation: a same-named entry
+        # with no command (a remote server) is not Crew's launch.
+        return (
+            isinstance(element, dict)
+            and element.get("name") in MANAGED_MCP_SERVER_NAMES
+            and bool(element.get("command"))
+        )
+
+    return [e for e in servers if is_managed(e)] + [e for e in servers if not is_managed(e)]
+
+
 def hoist_servers_for_session(
     custom_agents: list[dict[str, Any]] | None,
     agent_id: str,
@@ -1675,7 +1697,8 @@ def hoist_servers_for_session(
 
     Pure and non-mutating: returns a new agents list (the active descriptor
     shallow-copied with the hoisted names removed from ``mcpServers``) and a new
-    array (the caller's entries first, then the hoisted elements by name). The
+    array (Crew's own servers first, then the caller's other entries, then the
+    other hoisted elements by name). The
     entries hoisted are the ALREADY projected ones -- credential fields withheld,
     ``autoApprove`` dropped, ``KIROCREW_PORT``/``KIROCREW_SESSION_KEY`` applied
     -- so no spec is re-read and the source snapshot is untouched.
@@ -1745,7 +1768,9 @@ def hoist_servers_for_session(
     property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
 
     Every managed element in the returned array, caller entries included, is
-    pinned to legacy version negotiation (:func:`_pin_legacy_negotiation`).
+    pinned to legacy version negotiation (:func:`_pin_legacy_negotiation`) and
+    placed ahead of every other entry (:func:`_managed_first`), because KAS
+    starts servers in array order and session start waits for Crew's own.
     """
     if not custom_agents:
         # The kiro path (no wire payload) returns here without importing the
@@ -1793,7 +1818,7 @@ def hoist_servers_for_session(
             del copied["mcpServers"]
         out_agents.append(copied)
     if not hoisted:
-        return custom_agents, _pin_legacy_negotiation(session_servers)
+        return custom_agents, _pin_legacy_negotiation(_managed_first(session_servers))
     hoisted.sort(key=lambda element: element["name"])
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
@@ -1813,7 +1838,7 @@ def hoist_servers_for_session(
             )
             for element in hoisted
         ]
-    return out_agents, _pin_legacy_negotiation([*session_servers, *hoisted])
+    return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
 
 
 #: Env keys a tokened hoisted element keeps from its projection. Both are set by

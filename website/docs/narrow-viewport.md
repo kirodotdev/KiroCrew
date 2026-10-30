@@ -590,7 +590,14 @@ panel where it is presenting it and follows from there, as a phone's drag can; a
 back/forward swipe does not start under it. The drag is released only on a real
 lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
 lift), or the momentum tail's signature, three steps in a row each smaller than the last
-by a near-constant ratio. A finger that slows down or pauses for 60ms wobbles instead and
+by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
+a step of 16px or more. The floor is absolute: a slow drag's own steps are a few px and
+uneven, and a rule against the run's own peak read a slow drag as its tail. At the release the
+distance rule reads the projected landing, not only the position: the fingers' last speed
+(before the tail, which never moved the panel) carried `TRACKPAD_PROJECTION_MS` (120ms)
+further, so a light flick that would coast past the 20% share commits at once and one that
+would not falls back, both on the fast trackpad settle. A finger that slows down or pauses
+for 60ms wobbles instead and
 keeps following 1:1, so a slow partial drag holds where it is and, on lift-off, falls
 back. Steps that may be the tail are held back and dropped once it is recognised, so the
 panel stops where the fingers left it; the rest of the run never drags again. A
@@ -602,7 +609,7 @@ the wheel sibling of `relayTouches`, opt-in per host so the chat page's preview 
 Command Center keep their back swipe); the frame relays only while armed, which the host
 does in answer to the frame's hello while its swipe listens and undoes when it stops (a
 phone-width window, a creation surface), so a run nobody acts on is never cancelled; a
-relayed run may only start the close, and only while the Dashboard tab is on screen. A static Dashboard page (sandbox without
+relayed run may only start the close, and only from a frame in the tab on screen (an artifact tab relays the same way). A static Dashboard page (sandbox without
 `allow-scripts`) runs no relay, so a swipe that starts over one is the frame's.
 
 In the macOS desktop app the release can be exact. The shell reads Chromium's
@@ -619,6 +626,55 @@ preload: its own document reads the wheels over it, and it asks its host for the
 its tunnel origin, holds one bridge subscription while any pane listens, and forwards each
 phase only to the pane on screen, addressed to its exact origin; the pane accepts a phase
 only from `window.parent` at the origin it asked, for its own watch id.
+
+### The same swipe on the chat page's side panel
+
+The chat page plays the same drag on its right side panel off the phone
+(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
+the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
+the Mates page uses too). The panel lives in the shell's `actbar` column, an
+`auto` grid track, so the drag does not need a spacer in a page row: while it
+runs, the column becomes a window onto the panel as wide as its visible part
+(`deskSpacerW`), with the panel pinned at its left edge and clipped, so the
+panel's edge and the chat's right edge both follow the fingers. A close starts
+from the column's own docked width, measured before the swap, and the panel is
+the same element throughout (its terminals and frames live on). The settle runs
+on the main thread so the column reads every frame. The swipe is bound on the
+shell grid, which holds both the chat and the column, so a run keeps going when
+the panel arrives under the pointer. It is off for a bottom-docked panel, while
+the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
+through the same reader. An artifact frame in the panel (`ArtifactBodyIframe`
+with `relayWheel`, set only for the side panel) relays the runs its own content
+cannot scroll, on both pages: a frame with sideways scroll room left keeps its
+scroll, and one with none hands a rightward run to the page, which drags the
+panel shut. The host takes a relayed run only from a frame inside the open
+panel, in the tab on screen (`shownWithin`), and only for the close. A frame
+that runs no script (a static artifact, a URL artifact, an MCP app, the web
+preview) cannot relay, so a swipe that starts over one is the frame's.
+
+On both pages a trackpad drag commits by rule C (`hooks/trackpadPanelDrag`):
+SPEED commits mid-drag (past `COMMIT_VELOCITY` over the last 60ms, held over at
+least two steps and without its largest step, so one spiky event cannot), and
+the rest of that run is ignored; DISTANCE waits for the release, so a slow drag
+past 20% stays under the fingers and can come back. The settle is the
+trackpad's own (`settleTrackpadDrag`), not the phone's: 80-150ms, never under
+4 px/ms on average, a front-loaded ease-out that opens no slower than the
+fingers and covers most of the way in the first frames. A committed or ended
+run is held against its momentum, but only while its events still look like
+momentum: a turn back, or two steps in a row each 1.3x the last, starts a new
+run at once, so there is no cooldown after a commit. A run that starts inside a
+modal layer is the layer's. While a panel slides it carries
+`data-native-overlay`, so a native Browser view hides until it docks, and a
+sideways wheel the swipe cancelled does not count as the transcript reader's
+input (`attachUserScrollIntent`), so the chat stays pinned to its last message.
+The transcript keeps its place through the slide itself (`useSlideAnchor` in
+`TranscriptScrollShell`): at the bottom it stays pinned there, otherwise the line
+the reader is on keeps its offset. The correction runs in a ResizeObserver
+(after layout, before paint) and synchronously when the slide ends, in the same
+commit that lands the panel and publishes the held width, so no frame paints the
+rewrapped transcript unpinned. The pinned prompt at the top (`usePinnedPrompt`) holds
+its card until that place has settled (`slideSettling`): read mid-reflow, its prompt
+measured taller for one frame, failed the tall-prompt gate and the card blinked out.
 
 ## A panel that gains a gesture must be bound LIVE to its offset
 

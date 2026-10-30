@@ -178,11 +178,20 @@ class TestAdoptOnChange:
 
     @pytest.mark.asyncio
     async def test_factory_bound_default_goes_through_refresh_defaults(self) -> None:
-        mgr, _ = _make_manager()
-        mgr.refresh_defaults = AsyncMock()  # type: ignore[method-assign]
+        mgr, old_factory = _make_manager()
         new_cfg = _make_cfg()
-        await mgr._on_config_change(_change(new_cfg, "agent.model"))
-        mgr.refresh_defaults.assert_awaited_once_with(cfg=new_cfg)
+        with (
+            patch.object(mgr, "refresh_defaults", wraps=mgr.refresh_defaults) as refresh,
+            patch("kiro_crew.session.KiroCrewConfig.load"),
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+        ):
+            await mgr._on_config_change(_change(new_cfg, "agent.model"))
+        refresh.assert_awaited_once_with(cfg=new_cfg)
+        assert mgr._cfg is new_cfg
+        assert mgr._provider_factory is not old_factory, "the factory was rebuilt"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -200,10 +209,18 @@ class TestAdoptOnChange:
         ],
     )
     async def test_each_factory_path_triggers_a_refresh(self, path: str) -> None:
-        mgr, _ = _make_manager()
-        mgr.refresh_defaults = AsyncMock()  # type: ignore[method-assign]
-        await mgr._on_config_change(_change(_make_cfg(), path))
-        mgr.refresh_defaults.assert_awaited_once()
+        mgr, old_factory = _make_manager()
+        with (
+            patch.object(mgr, "refresh_defaults", wraps=mgr.refresh_defaults) as refresh,
+            patch("kiro_crew.session.KiroCrewConfig.load"),
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+        ):
+            await mgr._on_config_change(_change(_make_cfg(), path))
+        refresh.assert_awaited_once()
+        assert mgr._provider_factory is not old_factory, "the factory was rebuilt"
 
 
 class TestRefreshDefaultsRederivesThePool:

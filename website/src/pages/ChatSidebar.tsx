@@ -3,7 +3,7 @@ import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -15,7 +15,7 @@ import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { setCrewEnabled } from '../lib/crewEnabled'
-import { crewModeView } from '../lib/crewMode'
+import { crewModeView, crewRootOf } from '../lib/crewMode'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -137,7 +137,9 @@ function ChatSidebar({
   // show (`crewModeView`): they never reach a lane, the Broadcast dialog or any
   // other reader of this collection. The server keeps them in the slot frame
   // (`?crew=all`), so the one filter is here, at the sidebar's door.
-  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp])
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewModeView reads
+  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp, crewMode])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -791,7 +793,8 @@ function ChatSidebar({
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
   // A worker in the pane is not listed, so its root's row is marked as its parent.
-  const crewParent = (activeSlot && slotsProp.find(s => s.key === activeSlot)?.crew_root) || null
+  // Through the preview-gated read (`crewMode` above re-renders on a flip).
+  const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
     activeSlot, crewWindow, crewParent, shell: rowShell,
     local: {

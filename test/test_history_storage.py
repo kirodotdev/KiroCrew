@@ -904,11 +904,15 @@ class TestAppendMid:
         assert log.append_if_absent("t1", "assistant", "result") is False
         assert (tmp_path / "t1.jsonl").read_text(encoding="utf-8") == before
 
-    def test_append_if_absent_off_loop_threads_the_id_through(self) -> None:
+    def test_append_if_absent_off_loop_threads_the_id_through(self, tmp_path) -> None:
         # No running loop, so the wrapper takes the inline path; the contract
         # under test is only that *mid* survives the hop to the log method.
         # ``append_off_loop`` deliberately has no mid parameter: it has no
         # dual-write caller, and a parameter nothing consumes is surface.
-        log = MagicMock()
+        log = ConversationLog(base_dir=tmp_path)
         history.append_if_absent_off_loop(log, "k", "assistant", "body", mid="m-2")
-        assert log.append_if_absent.call_args.kwargs["mid"] == "m-2"
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "k.jsonl").read_text(encoding="utf-8").splitlines()[1:]
+        ]
+        assert [(r["content"], r["meta"]) for r in rows] == [("body", {"mid": "m-2"})]

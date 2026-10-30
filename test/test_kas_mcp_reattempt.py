@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS, is_recoverable_auth_failure
 from kiro_crew.acp.runtime import AcpRuntime
@@ -56,36 +57,39 @@ def test_a_credential_failure_is_recoverable(message):
 @pytest.mark.parametrize(
     "message",
     [
-        None,
-        "",
-        "spawn uvx ENOENT",
-        "Connection closed",
-        "server exited with code 1",
-        "listening on port 4013",
-        "unknown author field",
-        42,
+        *named_cases(
+            "test_any_other_failure_is_left_alone",
+            "message",
+            [
+                None,
+                "",
+                "spawn uvx ENOENT",
+                "Connection closed",
+                "server exited with code 1",
+                "listening on port 4013",
+                "unknown author field",
+                42,
+            ],
+        ),
+        # A credential or auth word alone is not a credential failure: re-attempting
+        # these spends the budget on a server a later credential cannot fix.
+        *named_cases(
+            "test_a_failure_that_only_mentions_a_credential_is_left_alone",
+            "message",
+            [
+                "loaded credentials from profile default; server exited with code 1",
+                "ModuleNotFoundError: No module named 'credentials_helper'",
+                "using credential_process from config, then spawn uvx ENOENT",
+                "credentials ok; Connection closed",
+                "ModuleNotFoundError: authentication module not found",
+                "upstream answered with a forbidden content type",
+                "parsed 403 rows, then exited with code 1",
+                "listening on port 401",
+            ],
+        ),
     ],
 )
-def test_any_other_failure_is_left_alone(message):
-    assert is_recoverable_auth_failure(message) is False
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "loaded credentials from profile default; server exited with code 1",
-        "ModuleNotFoundError: No module named 'credentials_helper'",
-        "using credential_process from config, then spawn uvx ENOENT",
-        "credentials ok; Connection closed",
-        "ModuleNotFoundError: authentication module not found",
-        "upstream answered with a forbidden content type",
-        "parsed 403 rows, then exited with code 1",
-        "listening on port 401",
-    ],
-)
-def test_a_failure_that_only_mentions_a_credential_is_left_alone(message):
-    # A credential or auth word alone is not a credential failure: re-attempting
-    # these spends the budget on a server a later credential cannot fix.
+def test_a_non_auth_failure_is_left_alone(message):
     assert is_recoverable_auth_failure(message) is False
 
 

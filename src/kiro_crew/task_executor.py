@@ -854,6 +854,10 @@ async def execute_task(
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
+                    # Triggers read only what this step asks for, not the role
+                    # text, the plan's other steps, the spec or the instructions
+                    # build_task_prompt wraps it in.
+                    skill_trigger_text=task_trigger_text(task),
                 )
             else:
                 full_prompt = task_prompt
@@ -1452,6 +1456,13 @@ async def execute_task(
 
     task.status = TaskStatus.FAILED
     return False
+
+
+def task_trigger_text(task: Task) -> str:
+    """The text a step's skill triggers match: its own title and description."""
+    if task.description and task.description != task.title:
+        return f"{task.title}\n\n{task.description}"
+    return task.title
 
 
 async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Path) -> str:

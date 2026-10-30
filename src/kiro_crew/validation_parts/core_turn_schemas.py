@@ -158,6 +158,18 @@ def _validate_chat_tag(cleaned: dict[str, Any]) -> None:
 # a name like "Needs: review" is valid vocabulary — a charset gate here would
 # refuse handles the resolver could match, while admitting nothing an
 # attacker needs (authorization lives in the grants store, not the argv).
+# request_server names a server and where it comes from; the gateway resolves
+# the rest. Bounded here so a malformed call is a clean ValidationError.
+REQUEST_SERVER_SCHEMA = ToolSchema(
+    tool_name="request_server",
+    fields=[
+        FieldSpec("server", str, max_len=128),
+        FieldSpec("source", str, required=True, max_len=16),
+        FieldSpec("registry_id", str, max_len=200),
+        FieldSpec("reason", str, max_len=500),
+    ],
+)
+
 CHAT_TAG_SCHEMA = ToolSchema(
     tool_name="chat_tag",
     fields=[

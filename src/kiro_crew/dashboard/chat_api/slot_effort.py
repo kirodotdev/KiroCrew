@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -32,10 +33,13 @@ if TYPE_CHECKING:
         effective_session_key,
         get_reasoning_effort_ordered,
         get_reasoning_effort_values,
+        harness_effort,
         logger,
         model_registry,
+        own_models_backend,
         read_bounded_json,
         relay_archive_refusal,
+        resolve_effective_model,
         slot_not_found,
     )
 
@@ -53,6 +57,16 @@ async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
         config.agent.acp_backend,
         crew_backend=crewmate_backend_pin(config, session_key),
     )
+
+
+async def _own_models_field(backend: str, config: Any = None) -> dict[str, str]:
+    """``models_backend`` for a slot on *backend*, when its pickers need that backend's list.
+
+    *config* is the caller's already-loaded one, so the cold path reads it once.
+    """
+    config = config if config is not None else await asyncio.to_thread(KiroCrewConfig.load)
+    own = own_models_backend(backend, config.agent.acp_backend)
+    return {} if own is None else {"models_backend": own}
 
 
 async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Response:
@@ -81,12 +95,41 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
         except CrewmateHarnessUnavailable as exc:
             # The crewmate's pinned harness cannot start: say so, not a 500.
             return web.json_response({"error": str(exc), "code": exc.code}, status=409)
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+        # An app-owned slot starts on that app's own model setting, as its session does.
+        app_kw = {"app_name": slot._app} if slot._app else {}
+        # Scoped to the harness this slot routes to, as the session factory scopes it.
+        from kiro_crew import model_scope
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        pin = slot.model and model_scope.scoped_pin(
+            slot.model,
+            capabilities_for(backend).model_id_namespace,
+            source="slot",
+            log_level=logging.DEBUG,
+        )
+        model = pin or await asyncio.to_thread(
+            resolve_effective_model,
+            config,
+            slot.agent or None,
+            selection_kind=slot.agent_kind,
+            backend=backend,
+            **app_kw,
+        )
         return web.json_response(
             {
                 "known": False,
                 # The harness a new session would get: the Context panel names it.
                 "backend": backend,
                 "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+                **await _own_models_field(backend, config),
+                **harness_effort(
+                    state,
+                    backend,
+                    model,
+                    slot.agent or "",
+                    model_answers=backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+                ),
             }
         )
     backend = provider.capabilities.backend
@@ -121,6 +164,7 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             "effort_supported": supported and bool(levels),
             "effort_levels": levels,
             "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+            **await _own_models_field(backend),
         }
     )
 

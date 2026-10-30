@@ -16,6 +16,7 @@ import { useChatStream } from './chatStream'
 import type { StreamBuffers } from './streamBuffers'
 import type { VoicePlayback } from './voicePlayback'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead, _resetSlotReadRelayForTest } from '../../lib/slotReadRelay'
+import { crewModePreviewOn } from '../../test/crewModePreview'
 
 const toasts = vi.hoisted(() => ({ posted: [] as { title: string; tag?: string }[] }))
 vi.mock('../../lib/nativeNotify', async importOriginal => ({
@@ -137,3 +138,6 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     }
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

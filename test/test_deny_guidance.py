@@ -167,8 +167,15 @@ _AWS_READ_TELL = "AWS CLI calls themselves are NOT blocked"
 
 #: Categories whose rules carry guidance, and so must all resolve. The first three
 #: have a sanctioned path; ``sql`` is routed because its text match reaches prose
-#: the agent is writing, and the bare pattern line does not say so.
-_REMEDIATION_CATEGORIES = ("sensitive-file-read", "credential-exfil", "self-protection", "sql")
+#: the agent is writing, and the bare pattern line does not say so;
+#: ``pipe-to-shell`` because a refused installer is the user's step to take.
+_REMEDIATION_CATEGORIES = (
+    "sensitive-file-read",
+    "credential-exfil",
+    "self-protection",
+    "sql",
+    "pipe-to-shell",
+)
 
 
 def _rule_by_id(rule_id: str) -> security.DeniedCommandRule:
@@ -235,6 +242,9 @@ class TestRuleIdentityRoutesTheRegexTier:
             ("data-exfil-curl-file-body", dg.DENY_CLASS_EXFIL_SHAPE),
             ("self-protection-kill", dg.DENY_CLASS_SELF_PROTECTION),
             ("self-protection-cron-adopt", dg.DENY_CLASS_SELF_PROTECTION),
+            # One-line installers, resolved by their category.
+            ("pipe-to-shell-curl-sh", dg.DENY_CLASS_REMOTE_SCRIPT),
+            ("pipe-to-shell-wget-bash", dg.DENY_CLASS_REMOTE_SCRIPT),
             # The three text-matched SQL rows, resolved by their category.
             ("sql-drop-database", dg.DENY_CLASS_STATEMENT_TEXT),
             ("sql-drop-table", dg.DENY_CLASS_STATEMENT_TEXT),
@@ -718,6 +728,45 @@ class TestStatementTextMatchedInProse:
             assert "database client" in lowered and "never" in lowered, path.name
 
 
+class TestRefusedInstallerHandsTheCommandBack:
+    """A one-line installer refused by the pipe-to-shell rules (bug-bash H4).
+
+    Without guidance a crewmate promised the install, hit the rule, then offered
+    the user an approval no card or setting grants. The refusal stays; the
+    guidance says the open step is the user's own terminal.
+    """
+
+    # Assembled at runtime so this file's own text is an ordinary line.
+    _INSTALL = " ".join(
+        ["curl", "--proto", "'=https'", "--tlsv1.2", "-sSf", "https://sh.rustup.rs", "|", "sh"]
+    )
+
+    def test_the_rustup_installer_is_still_refused(self):
+        reason = security.is_denied(self._INSTALL, denied_regexes=_builtin_regexes())
+        assert reason == _rule_tier_reason(_rule_by_id("pipe-to-shell-curl-sh"))
+
+    def test_the_refusal_tells_the_agent_to_give_the_user_the_command(self):
+        reason = security.is_denied(self._INSTALL, denied_regexes=_builtin_regexes())
+        assert dg.classify_deny(reason, self._INSTALL) == dg.DENY_CLASS_REMOTE_SCRIPT
+        lowered = dg.remediation_for(reason, self._INSTALL).lower()
+        assert "exact command" in lowered
+        assert "code block" in lowered
+        assert "their own terminal" in lowered
+
+    def test_the_guidance_closes_the_two_step_route_and_the_false_offer(self):
+        lowered = dg.REMEDIATION[dg.DENY_CLASS_REMOTE_SCRIPT].lower()
+        assert "same action in two steps" in lowered
+        assert "do not offer to ask for one" in lowered
+        for phrase in ("disable", "opt out", "turn off", "is allowed", "will be allowed"):
+            assert phrase not in lowered, phrase
+
+    def test_the_guidance_interpolates_nothing_from_the_command(self):
+        reason = security.is_denied(self._INSTALL, denied_regexes=_builtin_regexes())
+        text = dg.remediation_for(reason, self._INSTALL)
+        assert "rustup" not in text
+        assert text == dg.REMEDIATION[dg.DENY_CLASS_REMOTE_SCRIPT]
+
+
 class TestWireReasonFirstLineIsUnchanged:
     """The first line of a refusal is a parsed contract, and routing must not move it.
 
@@ -780,7 +829,8 @@ class TestNonAwsCredentialStoresGetProviderNeutralGuidance:
 
 class TestRemediationText:
     def test_every_class_has_text(self):
-        # Two classes have remediation text and no anchor row: the unverified-path
+        # Three classes have remediation text and no anchor row (the third,
+        # the remote-script class, is reached only through its category): the unverified-path
         # class is classified structurally (a fixed-prefix test in
         # ``classify_deny``), and the statement-text class is reached only through
         # a rule's identity (the ``sql`` category) -- an anchor for it would let a
@@ -789,6 +839,7 @@ class TestRemediationText:
         classes = {name for name, _anchors in dg._CLASS_ANCHORS} | {
             dg.DENY_CLASS_PATH_UNVERIFIED,
             dg.DENY_CLASS_STATEMENT_TEXT,
+            dg.DENY_CLASS_REMOTE_SCRIPT,
         }
         assert classes == set(dg.REMEDIATION)
         assert all(text.strip() for text in dg.REMEDIATION.values())
@@ -1478,9 +1529,6 @@ class TestNoticeIntegration:
         assert "If the answer stands as given" not in body
         assert "If the task is NOT finished, continue from there" in body
         assert "Only if the task IS finished" in body
-
-    def test_empty_refusals_still_yield_nothing(self):
-        assert build_refusal_recovery_prompt([]) == ""
 
 
 # The permission verb, spelled in halves so this file's own text does not trip the

@@ -58,6 +58,7 @@ import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
 import { addSlotRefreshCases, withRefreshRevision } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
+import { crewRootOf } from '../lib/crewMode'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
  *
@@ -635,9 +636,9 @@ export const deleteSlot = createAsyncThunk<
       // A Crew Mode worker is its conductor's, never where a close lands: not by
       // the sidebar's displayed order (where it may sit right under its root) and
       // not by recency. Both sets leave it out.
-      const sameSurface = new Set(root.dashboard.slots.filter(s => !s.crew_root && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
+      const sameSurface = new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const sidebarSurface = isChatPageSurface(deletedSurface)
-        ? new Set(root.dashboard.slots.filter(s => !s.crew_root && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
+        ? new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
         : sameSurface
       // Land on the sidebar row below the closed one (above at the bottom): the
       // tab-strip landing rule, applied to the sidebar's displayed order. The

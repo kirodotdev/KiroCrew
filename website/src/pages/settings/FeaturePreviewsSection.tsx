@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -119,6 +119,7 @@ export function FeaturePreviewsSection() {
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -200,6 +201,18 @@ export function FeaturePreviewsSection() {
             </button>
           )}
         </div>
+      </SettingsCard>
+      {/* Ultra Mode (flag key `mc-preview-crew-mode`): every Crew Mode surface
+          reads this one flag through `lib/crewMode.ts`. A plain switch only,
+          with no preview dialog and no ingress link. Off, a chat already in
+          Crew Mode stays an ordinary chat on its agent. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
+          description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
+          checked={crewMode}
+          onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
+        />
       </SettingsCard>
       {/* A chat dispatched to another MACHINE over the instances tunnel.
 

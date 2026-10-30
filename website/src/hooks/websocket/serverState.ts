@@ -27,8 +27,6 @@ import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY } from '../useSessionCo
 import type { ChatSlot, PullRequestStatusBatch } from '../../types'
 import { emitArtifactDeleted } from './browserEvents'
 import type { FrameData } from './frames'
-import { reconcileReactionsOnReconnect } from '../reactionToggleLedger'
-import { recoverableQueryClients } from '../../api/queryClient'
 
 /** After a reconnect, re-read the owner's credential-redaction switch and purge
  *  this document's file bodies when that could matter (the
@@ -280,15 +278,6 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   threadLiveStore.reset()
   queryClient.invalidateQueries({ queryKey: ['chat-thread'] })
   queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
-  // A `reactions_changed` frame pushed while the socket was down was never
-  // delivered, and the reactions query carries the app-wide staleTime:Infinity
-  // with no other refresh path, so a reconnected tab would show stale reaction
-  // markers until a reload or a local toggle. Reconcile every observed slot's
-  // reactions, deferring any slot with a pending local toggle so the refetch
-  // cannot drop a still-pending optimistic entry (reactionToggleLedger).
-  // Every registered app client too, since an embedded app chat keeps its own
-  // reactions cache.
-  reconcileReactionsOnReconnect([queryClient, ...recoverableQueryClients()])
   // A guide frame missed while the socket was down is recovered by re-reading.
   queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
   // Same for a change-card frame: every slot's cards are re-read.

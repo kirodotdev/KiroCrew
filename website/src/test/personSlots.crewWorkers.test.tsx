@@ -14,6 +14,7 @@ import { selectPersonSlots } from '../store/dashboardSlice'
 import { useRecentsProvider } from '../components/commandPalette/providers/recentsProvider'
 import { renderWithProviders, createTestStore } from './helpers'
 import type { ChatSlot } from '../types'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -77,3 +78,6 @@ describe('the person-list rule', () => {
     expect(titles).not.toContain('Welcome note')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

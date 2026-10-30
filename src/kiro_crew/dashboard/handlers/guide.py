@@ -157,6 +157,9 @@ _USER_TURN_OPERATIONS = frozenset(
         "cards.propose",
         "member.update_self",
         "member.propose_self",
+        # ``request_server`` (handlers.template_server_request): a card in front of
+        # the person, so only their own turn raises it -- never a patrol or a wake.
+        "cards.request_server",
     }
 )
 

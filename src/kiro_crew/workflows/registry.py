@@ -22,6 +22,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from kiro_crew.strict_json import json_portable
+
 from . import WorkflowEvent
 
 # Run lifecycle states (also the values surfaced to the UI / MCP status tool).
@@ -291,6 +293,9 @@ class RunHandle:
     def from_store_json(cls, obj: dict) -> "RunHandle":
         from kiro_crew.execution_context import execution_from_record
 
+        # A run stored before records were kept strict JSON can hold Infinity/NaN,
+        # which Python reads back but the dashboard cannot parse.
+        obj = json_portable(obj)
         status = obj.get("status", STATUS_FINISHED)
         error = obj.get("error")
         derived_from = obj.get("derived_from") or {}
@@ -500,7 +505,7 @@ class RunRegistry:
         h = self._runs.get(run_id)
         if h is None:
             return
-        h.agent_results[call_index] = result
+        h.agent_results[call_index] = json_portable(result)
         if fingerprint:
             h.agent_fingerprints[call_index] = fingerprint
         if error or not ok:
@@ -513,7 +518,7 @@ class RunRegistry:
         if h is None or h.status not in ACTIVE_STATUSES:
             return None  # idempotent: only the first terminal transition counts
         h.status = status
-        h.result = result
+        h.result = json_portable(result)
         h.error = error
         return h
 
@@ -858,7 +863,7 @@ async def start_background_run(
             # while the run was executing, and a terminal path that hands back a
             # partial (or empty) map must not erase them.
             if agent_results:
-                handle.agent_results.update(agent_results)
+                handle.agent_results.update(json_portable(agent_results))
         except asyncio.CancelledError:
             await registry.mark_terminal_async(run_id, STATUS_CANCELLED, error="cancelled")
             raise

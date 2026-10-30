@@ -44,7 +44,6 @@ export function CrewWorkerComposerGate({ root, worker, workerTitle, waitingForAp
   const store = useAppStore()
   const isMobile = useIsMobile()
   const { rootClosed, rootTitle, failed } = useCrewRoot(root)
-  const unrecorded = useCrewSteerNotice(worker)
   const [reopening, setReopening] = useState(false)
   const [reopenFailed, setReopenFailed] = useState(false)
   const reopen = () => {
@@ -88,6 +87,22 @@ export function CrewWorkerComposerGate({ root, worker, workerTitle, waitingForAp
           conductor is closed, and drafts are saved per chat (utils/chatDrafts),
           so the hand-off may navigate. */}
       {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
+      <CrewSteerUnrecordedNotice worker={worker} workerTitle={workerTitle} />
+    </>
+  )
+}
+
+/**
+ * A steer that was delivered but not recorded on the ledger (the send receipt's
+ * `ledger_error`, noted per slot by the transport). The gate renders it for a
+ * Crew Mode worker; a composer without the gate (the Crew Mode preview off, while
+ * the server still records the send as a steer) renders it on its own, so the
+ * failure is never silent. No Crew Mode chrome: just this one line.
+ */
+export function CrewSteerUnrecordedNotice({ worker, workerTitle }: { worker: string; workerTitle: string }) {
+  const unrecorded = useCrewSteerNotice(worker)
+  return (
+    <>
       {/* The steer was delivered; this is about its ledger record. A closed task
           is status (nothing to record). Every other code is a ledger write the
           server reported as failed, so it goes through ErrorNotice with the

@@ -5,13 +5,7 @@ import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, type LucideIcon } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
-import { ICON_ACTION_ROW_CLS, HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
-import { MessageReactionBar } from './MessageReactionBar'
-import type { ReactionError } from '../../hooks/useChatReactions'
-
-// Stable empty-set identity so an absent `activeReactions` prop never forces
-// a re-render of MessageReactionBar's memo comparison on every parent render.
-const EMPTY_REACTIONS: ReadonlySet<string> = new Set()
+import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
@@ -102,18 +96,6 @@ interface UserMessageProps {
   mode?: string
   pinned?: boolean
   onTogglePin?: () => void
-  /** Emoji the current caller has already placed on this message.
-   *  Absent or empty: the reaction row still renders when
-   *  `onToggleReaction` is given — `active` only decides which of the fixed
-   *  four start filled. */
-  activeReactions?: ReadonlySet<string>
-  /** Toggle one of the fixed reaction emoji on this message. Absent: no
-   *  reaction row is drawn, same opt-in contract as `onTogglePin`. */
-  onToggleReaction?: (emoji: string) => void
-  /** The last failed reaction on this message, surfaced inline by the bar so a
-   *  failure is never silent. */
-  reactionError?: ReactionError | null
-  onClearReactionError?: () => void
   /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */
   onReplyInThread?: () => void
   /** Whether the slot currently has a running turn. Gates the pending-steer
@@ -172,7 +154,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -823,23 +805,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {steerDecision && <SteerDecisionLine record={steerDecision} />}
           {bubbleWithMenu}
         </>
-      )}
-      {/* Reaction row directly UNDER the bubble and ABOVE the action strip, so a
-          placed emoji reads as belonging to THIS message. Rendered below the
-          strip it sat past the strip's reserved (opacity-0 but space-occupying)
-          height — about 70px under the bubble and nearer the reply below, so a
-          reader could not tell which message a reaction marked (UX review). The
-          bar manages its own per-button reveal: a placed emoji shows at rest as
-          a marker, with the `+` beside it; on a message with none the whole
-          row stays collapsed until hover/focus. */}
-      {messageTs && onToggleReaction && (
-        <MessageReactionBar
-          active={activeReactions ?? EMPTY_REACTIONS}
-          onToggle={onToggleReaction}
-          error={reactionError}
-          onClearError={onClearReactionError}
-          className={`mt-0.5 ${HOVER_NONE_ACTIONS_ROW_CLS}`}
-        />
       )}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px

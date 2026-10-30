@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck } from 'lucide-react'
+import { ChevronRight, ShieldCheck } from 'lucide-react'
 import { api } from '../../api/client'
 import { ApiError, isTerminalApprovalRefusal } from '../../api/apiError'
 import { useAppSelector } from '../../store'
@@ -10,6 +10,7 @@ import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useCrewWorkerSummary, crewWorkersQueryKey } from '../../pages/chat/command-center/CrewWorkerList'
 import type { ChatSlot, PendingApproval } from '../../types'
+import { approvalTitle } from '../../pages/chat/command-center/model'
 
 /** One request's identity: its worker, origin, request id and delivery
  *  (`request_mid` for a native request, `request_instance` for a coordinator
@@ -64,7 +65,10 @@ export function crewApprovalRequests(
  * runs the existing per-slot approve route on the WORKER's own slot, through the
  * root's owner-only crew route (`POST .../crew-workers/{worker}/approve`).
  */
-export default function CrewApprovalCards({ root }: { root: string }) {
+/** `compact` (Ultra Mode Needs your input): each request is one short row --
+ *  who and the call in plain words, Approve / Reject, a small Trust link -- with the
+ *  full tool input behind a collapsed Details disclosure. Same data, same route. */
+export default function CrewApprovalCards({ root, compact = false }: { root: string; compact?: boolean }) {
   const slots = useAppSelector(s => s.dashboard.slots)
   // The last list read, kept through a failed re-read: each card keeps its task
   // line, and the notice below says the newest read did not land.
@@ -75,20 +79,21 @@ export default function CrewApprovalCards({ root }: { root: string }) {
   return (
     <section
       aria-label={i18nT('components.crewMode.approvals_label', { n: requests.length })}
-      className="mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto"
+      className={compact ? 'space-y-1.5' : 'mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto'}
       data-testid="crew-approval-cards"
+      data-compact={compact ? 'true' : undefined}
     >
       {/* The task lines come from the worker list, the last one read; when the
           newest read failed this says so, and the cards still show the exact
           tool input, so the person can decide. Nothing to lose on hand-off: the
           requests are on the server and the draft is saved per chat. */}
       {failed && <ErrorNotice variant="inline" message={i18nT('commandCenter.workers_error')} askAgent testId="crew-approval-workers-error" />}
-      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} />)}
+      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} compact={compact} />)}
     </section>
   )
 }
 
-function CrewApprovalCard({ root, request }: { root: string; request: CrewApprovalRequest }) {
+function CrewApprovalCard({ root, request, compact = false }: { root: string; request: CrewApprovalRequest; compact?: boolean }) {
   const queryClient = useQueryClient()
   const [done, setDone] = useState(false)
   const locked = useRef(false)
@@ -117,6 +122,54 @@ function CrewApprovalCard({ root, request }: { root: string; request: CrewApprov
     mutation.mutate(action)
   }
   if (done) return null
+  if (compact) {
+    const busy = mutation.isPending || gone
+    // An MCP tool ("@server/tool_name") reads as its tool's own name: its raw
+    // arguments can carry session keys, which belong behind Details.
+    const mcpTool = (approval.tool || '').match(/^@[^/]+\/(.+)$/)
+    const call = mcpTool ? mcpTool[1].replace(/_/g, ' ') : approvalTitle({ id: approval.request_id, tool: approval.tool, tool_input: approval.tool_input, tool_purpose: approval.tool_purpose }) || approval.tool || i18nT('components.crewMode.approval_tool_unknown')
+    const small = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md text-[12px] font-medium border transition-colors disabled:opacity-40 shrink-0'
+    return (
+      <article aria-labelledby={headingId} className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="crew-approval-card" data-worker={worker}>
+        <div className="flex items-center gap-2 min-w-0">
+          <ShieldCheck size={14} aria-hidden="true" className="shrink-0 text-warn" />
+          <h3 id={headingId} className="flex-1 min-w-0 text-[13px] truncate" title={`${title}: ${call}`}>
+            <span className="font-semibold">{title}</span><span className="text-muted">: </span><span>{call}</span>
+          </h3>
+          <button type="button" className={`${small} bg-accent text-accent-fg border-accent`} disabled={busy} onClick={() => decide('approve')}>{i18nT('components.crewMode.approval_approve')}</button>
+          <button type="button" className={`${small} border-border hover:bg-bg-hover`} disabled={busy} onClick={() => decide('reject')}>{i18nT('components.crewMode.approval_reject')}</button>
+        </div>
+        <div className="flex items-start gap-3 pl-[22px] text-[11px] text-muted">
+          <details className="group min-w-0 flex-1" data-testid="crew-approval-details">
+            <summary className="inline-flex items-center gap-0.5 cursor-pointer list-none hover:text-text">
+              <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />{i18nT('components.crewMode.ultra_details')}
+            </summary>
+            {task && <p className="mt-1 text-text/80 break-words">{task}</p>}
+            <p className="mt-1 text-text/80"><span className="font-semibold">{approval.tool || i18nT('components.crewMode.approval_tool_unknown')}</span>{approval.tool_purpose ? ` · ${approval.tool_purpose}` : ''}</p>
+            {input && (
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users scroll the exact input.
+              <pre tabIndex={0} role="region" aria-label={i18nT('components.crewMode.approval_input_label')} className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all bg-bg-hover rounded px-2 py-1 font-mono text-[11px] text-text">{input}</pre>
+            )}
+          </details>
+          {approval.trust_grantable === '1' && (
+            <button type="button" className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
+              title={i18nT('components.crewMode.approval_trust_hint')} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
+          )}
+        </div>
+        {/* The same failure surface and wording as the full card below. */}
+        <ErrorNotice
+          variant="inline"
+          message={!mutation.error ? undefined
+            : gone ? i18nT('components.approvalCard.approval_no_longer_pending')
+              : mutation.error instanceof ApiError && mutation.error.message
+                ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
+                : i18nT('components.approvalCard.decision_failed')}
+          askAgent
+          testId="crew-approval-failure"
+        />
+      </article>
+    )
+  }
   return (
     <article
       aria-labelledby={headingId}

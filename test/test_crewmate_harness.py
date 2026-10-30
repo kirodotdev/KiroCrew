@@ -299,6 +299,34 @@ class TestWorkerBackend:
             crewmate_worker_backend(_cfg("codex"), "atlas")
 
 
+class TestPinnedEntitlementBackend:
+    """Which harness judges a save's model pins, from the harness pin that save stores."""
+
+    @pytest.mark.parametrize("cleared", ["", "   "], ids=["empty", "blank"])
+    def test_a_cleared_pin_judges_nothing_and_never_reads_the_stored_one(self, cleared):
+        from kiro_crew.crewmate_harness import pinned_entitlement_backend
+
+        # The stored pin cannot start, so reading it would raise.
+        cfg = _cfg("codex")
+        assert pinned_entitlement_backend(cfg, "atlas", cleared) is None
+        assert pinned_entitlement_backend(cfg, "atlas", cleared, for_workers=True) == "kas"
+
+    def test_a_pin_about_to_be_stored_is_judged_stripped(self):
+        from kiro_crew.crewmate_harness import pinned_entitlement_backend
+
+        assert pinned_entitlement_backend(_cfg("codex"), "atlas", " claude ") == "claude"
+
+    def test_with_no_pin_to_store_the_stored_one_judges(self):
+        from kiro_crew.crewmate_harness import (
+            CrewmateHarnessUnavailable,
+            pinned_entitlement_backend,
+        )
+
+        assert pinned_entitlement_backend(_cfg("claude"), "atlas", None) == "claude"
+        with pytest.raises(CrewmateHarnessUnavailable):
+            pinned_entitlement_backend(_cfg("codex"), "atlas", None)
+
+
 class TestAKiroPinOnAV3KiroCli:
     """A stored ``kiro`` pin reads as a stored ``agent.acp_backend`` does: KAS once
     the host's kiro-cli is confirmed to offer v3, off the KAS bundle route

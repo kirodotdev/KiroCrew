@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Iterable, Optional
 
+from kiro_crew.strict_json import json_portable
+
 from . import EVENT_TYPES, WorkflowEvent
 
 # Required ``data`` keys per event type — the spec's run-event table, executable.
@@ -84,7 +86,9 @@ class EventStream:
 
     def _emit(self, ts: str, type_: str, data: dict[str, Any]) -> WorkflowEvent:
         stamp = self._clock() if self._clock is not None else ts
-        event = WorkflowEvent(run_id=self.run_id, seq=self._seq, ts=stamp, type=type_, data=data)
+        event = WorkflowEvent(
+            run_id=self.run_id, seq=self._seq, ts=stamp, type=type_, data=json_portable(data)
+        )
         validate_event(event)
         self._seq += 1
         return event

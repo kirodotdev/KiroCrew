@@ -27,8 +27,9 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import _llama_lib_path, cli_doctor
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install
+from kiro_crew.doctor_checks import access, install, services
 from kiro_crew.platform import PlatformCompositionError
 
 pytestmark = pytest.mark.skipif(
@@ -83,6 +84,7 @@ _SECTIONS = (
     "_doctor_model_url_reachable",
     "_doctor_discord",
     "_doctor_whatsapp",
+    "_doctor_kiro_chat_delegate",
 )
 
 #: The sections that take the shared ``issues`` list, so a marker can add to it.
@@ -105,6 +107,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
     "_doctor_signing_key": access,
+    "_doctor_kiro_chat_delegate": services,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -123,6 +126,7 @@ _ISSUES_POSITION = {
     "_doctor_mcp_governance": 1,
     "_doctor_discord": 3,
     "_doctor_whatsapp": 1,
+    "_doctor_kiro_chat_delegate": 1,
 }
 
 
@@ -469,6 +473,7 @@ Loop-stall Crash Dumps
 
 Connectivity
   kiro-cli:    ✅ kiro-cli 1.2.3
+  <<_doctor_kiro_chat_delegate>>
   gateway:     ⏹  not running
 
 ✅ Kiro Crew is ready!
@@ -665,6 +670,7 @@ Loop-stall Crash Dumps
 
 Connectivity
   kiro-cli:    ⏭  skipped (not installed)
+  <<_doctor_kiro_chat_delegate>>
   gateway:     ✅ running (token auth enabled)
   running:     ⚠️  8.8.8, on disk 9.9.9 (restart needed)
                Fix: `kirocrew restart` (the gateway still runs the old code)
@@ -832,6 +838,50 @@ def test_slack_and_cloud_transcription_rows(host, capsys) -> None:
     assert code == 1
     args, _ = host.called("_doctor_discord")
     assert args[1] == host.creds
+
+
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "required"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        (ACP_BACKEND_KAS, "claude", False, True),
+        (ACP_BACKEND_KAS, ACP_BACKEND_KAS, True, False),
+        ("claude", "claude", False, False),
+        # Crewmate DM sessions run on member_acp_backend, so a relay-served KAS
+        # there needs kiro-cli-chat even when the main backend does not.
+        ("claude", ACP_BACKEND_KAS, False, True),
+        ("claude", ACP_BACKEND_KAS, True, False),
+        # The loader resolves member_acp_backend through the selection gate, so
+        # an unservable crewmate pick arrives here as the Kiro CLI floor.
+        ("claude", ACP_BACKEND_KIRO, False, True),
+        ("claude", ACP_BACKEND_KIRO, True, True),
+        # Mixed selection: both the launcher's delegate and the relay entry run.
+        (ACP_BACKEND_KIRO, ACP_BACKEND_KAS, False, True),
+    ],
+)
+def test_chat_delegate_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
+    host, capsys, monkeypatch, backend, member_backend, kas_bundle, required
+) -> None:
+    _ready(host)
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+    entry = "/opt/kiro/bin/kiro-cli-chat"
+    monkeypatch.setattr(services, "kas_relay_entry", lambda kiro: entry)
+
+    host.run(capsys)
+
+    args, kwargs = host.called("_doctor_kiro_chat_delegate")
+    assert args[0] == _KIRO
+    # The vault-signed relay entry is passed whenever relay KAS is selected for
+    # either role, including next to the Kiro CLI backend, so both binaries a
+    # mixed selection runs are probed.
+    relay_role = not kas_bundle and ACP_BACKEND_KAS in (backend, member_backend)
+    assert kwargs == {
+        "required": required,
+        "relay_entry": entry if relay_role else None,
+        "kiro_role": ACP_BACKEND_KIRO in (backend, member_backend),
+    }
 
 
 _BUNDLE = """\

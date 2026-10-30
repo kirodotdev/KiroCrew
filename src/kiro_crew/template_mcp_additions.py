@@ -63,7 +63,8 @@ RECORD_MAX_BYTES = 1024 * 1024
 
 #: The only keys an addition's server entry may carry: how to launch or reach the
 #: server. Nothing here grants a tool. ``autoApprove`` / ``allowedTools`` /
-#: ``disabledTools`` and anything else are refused on write and dropped on merge.
+#: ``disabledTools`` and anything else are refused on write and dropped on merge;
+#: the merge then layers the MCP page's own ``disabledTools`` switch back on.
 ENTRY_KEYS: frozenset[str] = frozenset(
     {"command", "args", "env", "url", "headers", "type", "timeout"}
 )
@@ -170,13 +171,17 @@ def add_addition(
     approved_by: str,
     card_id: str,
     approved_at: str | None = None,
-) -> McpAddition:
+    only_if_absent: bool = False,
+) -> McpAddition | None:
     """Record *server* on *template* and return the stored addition.
 
     *entry* must be the gateway-resolved server entry (never an agent-supplied
     launch line) and carry only :data:`ENTRY_KEYS`; a trust key is refused with
     ``AdditionError("trust_key:<key>")``. Recording a server the template already
-    has an addition for replaces that addition (the newer approval wins).
+    has an addition for replaces that addition (the newer approval wins), unless
+    *only_if_absent*: then an existing addition is left as it is and ``None`` is
+    returned, decided under the same lock as the write (a rollback restoring an
+    older record never overwrites a newer approval).
     Raises :class:`AdditionError` on a refused input and ``OSError`` /
     ``ValueError`` when an existing record cannot be read (it is never overwritten
     blind).
@@ -206,6 +211,8 @@ def add_addition(
         bucket = templates.setdefault(template, {})
         if not isinstance(bucket, dict):
             raise ValueError("template_mcp_additions_invalid")
+        if only_if_absent and server in bucket:
+            return None
         bucket[server] = addition.to_record()
         _write(data)
     return addition
@@ -249,19 +256,57 @@ def merge_into(template: str, servers: Mapping[str, Any] | None) -> dict[str, An
     approved entry is its launch, and the restriction is layered on top, so it still
     narrows the server instead of withholding it whole. Each added entry is rebuilt
     from :data:`ENTRY_KEYS` alone, so no trust key reaches a spec even from a
-    hand-edited record. *servers* is not mutated.
+    hand-edited record, and then takes the MCP page's current tool switch-offs for
+    that server (:func:`_page_switch_offs`), so an addition never brings back a tool
+    the owner turned off. *servers* is not mutated.
     """
     merged: dict[str, Any] = dict(servers or {})
-    for name, addition in read_additions(template).items():
+    recorded = read_additions(template)
+    switched_off = _page_switch_offs(recorded) if recorded else {}
+    for name, addition in recorded.items():
         existing = merged.get(name)
         if isinstance(existing, dict) and _restriction_only(existing):
             kept = {k: copy.deepcopy(existing[k]) for k in RESTRICTION_KEYS if k in existing}
-            merged[name] = {**copy.deepcopy(dict(addition.entry)), **kept}
+            merged[name] = _with_switch_offs(
+                {**copy.deepcopy(dict(addition.entry)), **kept}, switched_off.get(name)
+            )
             continue
         if name in merged:
             continue
-        merged[name] = copy.deepcopy(dict(addition.entry))
+        merged[name] = _with_switch_offs(
+            copy.deepcopy(dict(addition.entry)), switched_off.get(name)
+        )
     return merged
+
+
+def _page_switch_offs(names: Any) -> dict[str, list[str]]:
+    """The tools the owner switched off on the MCP page, per server in *names*. Blocking.
+
+    An approved addition is the gateway's launch line for a server, and the page's
+    ``disabledTools`` switch is a guard on that server wherever it runs, so every
+    merge layers the page's current switch-offs onto it. The page is read by the
+    one reader the crewmate path already uses (``mate_worker.globally_disabled_refs``,
+    ``@server/tool`` refs), grouped here per server. Read live, so a tool switched
+    off later is off here too.
+    """
+    from kiro_crew.mate_worker import globally_disabled_refs
+
+    out: dict[str, list[str]] = {}
+    for ref in globally_disabled_refs(names):
+        server, _, tool = ref[1:].partition("/")
+        if server and tool:
+            out.setdefault(server, []).append(tool)
+    return out
+
+
+def _with_switch_offs(entry: dict[str, Any], tools: list[str] | None) -> dict[str, Any]:
+    """*entry* with *tools* added to its ``disabledTools`` (a union; never fewer)."""
+    if not tools:
+        return entry
+    have = entry.get("disabledTools")
+    have = [t for t in have if isinstance(t, str)] if isinstance(have, list) else []
+    entry["disabledTools"] = list(dict.fromkeys([*have, *tools]))
+    return entry
 
 
 #: The keys a restriction-only entry may carry onto an approved one. Both only narrow:

@@ -300,6 +300,9 @@ class Budget(Protocol):
 `would_exceed(cost=0)` and `charge(cost)`:
 
 - `remaining()` is `math.inf` when `total is None`, else `max(0, total - spent)`.
+  A script that returns or records that value gets `null` in the run record
+  (see the strict-JSON note under `registry.py`), and the authoring prompt tells the
+  model not to emit it raw.
 - `charge(cost)` raises `BudgetExceeded` the moment cumulative spend **reaches**
   the ceiling (the comparison is `>=`, so a run cannot exceed the target), and
   clamps the stored counter to `total` so it never reads above it. The message
@@ -722,6 +725,16 @@ records: all mutation happens on the gateway event loop, so no locks are needed,
 and snapshots handed to callers are plain JSON-serializable dicts, never the live
 objects (in particular never the `asyncio.Task`).
 
+Strict JSON, not just Python-serializable: `kiro_crew.strict_json.json_portable` replaces
+every non-finite float (`inf`, `-inf`, `nan`) with `None` where script or agent
+values enter the record -- `EventStream._emit` event data, the terminal
+`result`, per-call `agent_results`, and the terminal merge of the runner's
+returned per-call results -- and on `from_store_json`, so a run stored
+by an older build loads clean. Python's `json` writes those floats as the bare
+tokens `Infinity`/`NaN` and reads them back, but the dashboard's `JSON.parse`
+rejects the whole snapshot ("Could not load snapshot") while the run itself
+succeeds. `None` matches what a browser's `JSON.stringify` writes.
+
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
@@ -881,6 +894,11 @@ Properties that matter:
   `redact_exfiltration_urls` then `redact_credentials`, recursively. Mapping keys
   are retained as-is by `WorkflowRunStore`; the HTTP and chat response redactors
   independently cover both keys and values on the way out.
+- **Strict JSON:** a non-finite float (`inf`, `-inf`, `nan`) is written as `null`,
+  both to disk and in every `/api/workflows` response, because a bare `Infinity`
+  token fails the browser's `JSON.parse`. A script reaches one through
+  `ctx.budget.remaining()` on a run without a budget. A run file that already holds
+  a bare `Infinity` still loads, and the response redactor nulls it.
 - **Injective paths:** a `run_id` is sanitized to alphanumerics plus `_`/`-` so a
   malformed id cannot traverse out of the runs dir. Because sanitizing is lossy,
   when it changes the id a 12-hex-char sha256 prefix of the original is appended,

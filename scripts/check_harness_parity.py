@@ -420,20 +420,23 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # own MCP server reached the session with an EMPTY session/new array.
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": None,
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": None,
+    # KAS 0.66.70 (kiro-cli 2.36.0): the consent URL after a resetServer sign-in.
+    "ACP_BACKENDS_OPEN_EXTERNAL_URL": None,
+    # KAS 0.66.70: summarization_* sent on its own once a turn crosses the threshold.
+    "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": None,
+    # Every member: kiro-cli and KAS credits, claude/opencode/goose prompt-result tokens.
+    "ACP_BACKENDS_REPORT_USAGE": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
 # in HARNESS_EXEMPT_SETS. These are X sets with no capture yet. Shrink-only: an
 # entry missing on the base ref fails, and a removed entry must move to X_FEATURE_SETS.
 X_REGISTRATION_PENDING: dict[str, str] = {
-    "ACP_BACKENDS_HOOKS_LIST": "kas _kiro/hooks/* requests (KAS_CLIENT_CAPABILITIES does not announce hooks, so the engine asks none; not reachable to capture)",
-    "ACP_BACKENDS_OPEN_EXTERNAL_URL": "kas _kiro/openExternalUrl request",
-    "ACP_BACKENDS_STRUCTURED_REFUSAL": "kiro/kas _kiro.dev/metadata refusal notification",
+    "ACP_BACKENDS_HOOKS_LIST": "kas _kiro/hooks/* requests (KAS 0.66.70 asks them only after an initialize with _meta.kiro.hooks.enabled, which KAS_CLIENT_CAPABILITIES does not send; no capture of Crew's own handshake can show one)",
+    "ACP_BACKENDS_STRUCTURED_REFUSAL": "kiro/kas _kiro.dev/metadata refusal notification (needs a Kiro service content-filter decline)",
     "ACP_BACKENDS_FORK_AT_MESSAGE": "claude _meta.jetbrains.air.fork.messageId fork",
     "ACP_BACKENDS_META_IDENTITY": "goose _meta tool identity channel",
-    "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": "kas summarization_* notifications",
     "ACP_BACKENDS_NATIVE_TODOS": "claude native /todos prompt command",
-    "ACP_BACKENDS_REPORT_USAGE": "kiro _kiro.dev/metadata meteringUsage; kas _meta.kiro turn_completion",
     "ACP_BACKENDS_AGENT_STARTED_TURNS": 'claude _meta["_claude/origin"] end-of-turn marker',
 }
 

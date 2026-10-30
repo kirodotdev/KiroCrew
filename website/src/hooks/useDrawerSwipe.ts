@@ -3,6 +3,7 @@ import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import { deepActiveElement } from '../utils/editableTarget'
 import { haptic } from '../lib/haptic'
+import { isModalLayer } from './modalLayer'
 
 /**
  * Finger-tracking open/close gesture for a mobile edge panel — the sessions
@@ -759,10 +760,10 @@ function dragOwnedBelow(chain: HTMLElement[], root: HTMLElement, side: Side): bo
     // is not necessarily portaled out of the shell: the changelog and
     // update-error overlays are plain `fixed inset-0` JSX inside it, so a drag
     // across one used to pull the nav drawer out BEHIND the dialog. Read as a
-    // rule rather than a list of overlays, since `src/` declares dozens of
-    // dialogs and the next one would have to remember an attribute.
-    const role = node.getAttribute('role')
-    if (role === 'dialog' || role === 'alertdialog') return true
+    // rule rather than a list of overlays (`isModalLayer`, shared with the
+    // desktop trackpad swipe), since `src/` declares dozens of dialogs and the
+    // next one would have to remember an attribute.
+    if (isModalLayer(node)) return true
     // Computed, not inline: a drag widget declares this through a class
     // (Tailwind's `touch-none`), and the computed value covers both that and an
     // inline style in every engine including jsdom.

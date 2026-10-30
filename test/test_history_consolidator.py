@@ -235,7 +235,7 @@ class TestConsolidationDoesNotBlockLoop:
             "via asyncio.to_thread()."
         )
 
-    def test_save_lessons_caps_oversized_list(self):
+    def test_save_lessons_caps_oversized_list(self, caplog):
         """The LLM lessons array is capped like semantic/episodic: each
         write_lesson can perform up to 6 blocking embeds, so an uncapped list
         would occupy a worker thread for minutes."""
@@ -255,9 +255,12 @@ class TestConsolidationDoesNotBlockLoop:
             {"rule": f"lesson number {i}", "category": "tool"}
             for i in range(_MAX_LESSONS_PER_CONSOLIDATION * 3)
         ]
-        c._save_lessons(oversized)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._save_lessons(oversized)
 
-        assert vector_store.write_lesson.call_count == _MAX_LESSONS_PER_CONSOLIDATION
+        cap = _MAX_LESSONS_PER_CONSOLIDATION
+        assert f"Extracted {cap} lesson(s) from chat (vector store)" in caplog.text
+        assert vector_store.write_lesson.call_count == cap
 
 
 class TestConsolidateSession:
@@ -497,7 +500,7 @@ class TestConsolidateSession:
         assert "dashboard:chat-fail" not in consolidator._running
 
     @pytest.mark.asyncio
-    async def test_consolidate_now_skips_sensitive(self, tmp_path):
+    async def test_consolidate_now_skips_sensitive(self, tmp_path, caplog):
         """consolidate_now skips sessions that touched sensitive paths."""
         from kiro_crew.memory import MemoryStore
 
@@ -511,9 +514,15 @@ class TestConsolidateSession:
             "dashboard:chat-sens2", "assistant", "read .ssh/id_rsa", tools=["cat .ssh/id_rsa"]
         )
 
-        with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-sens2")
-            mock_consolidate.assert_not_called()
+        with (
+            patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate,
+            caplog.at_level(logging.INFO, logger="kiro_crew.history"),
+        ):
+            assert await consolidator.consolidate_now("dashboard:chat-sens2") is True
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert "consolidate_now skipped for dashboard:chat-sens2: sensitive session" in messages
+        assert conv_log.unconsolidated_count("dashboard:chat-sens2") == 1
+        mock_consolidate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_consolidate_now_happy_path(self, tmp_path):

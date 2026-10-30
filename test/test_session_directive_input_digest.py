@@ -583,6 +583,7 @@ class TestEmptyArgumentDirectives:
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
         spy.assert_called_once()
         assert spy.call_args.args[3] == "reset_conversation"
+        assert directive_queue.depth(effective_session_key(slot)) == 0, "record consumed"
 
 
 class TestPlantedRecordIsNotClaimedByADifferentTool:
@@ -1195,6 +1196,7 @@ class TestClaudeBackendResolvesTheTool:
         spy = await _drive(state, slot, self._claude_turn(), monkeypatch)
         spy.assert_called_once()
         assert spy.call_args.args[3] == "monitor_start"
+        assert directive_queue.depth(effective_session_key(slot)) == 0, "record consumed"
 
     @pytest.mark.asyncio
     async def test_a_claude_childs_call_with_no_card_is_refused(self, tmp_path, monkeypatch):

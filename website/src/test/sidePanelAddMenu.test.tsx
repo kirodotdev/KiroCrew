@@ -50,6 +50,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -174,6 +175,44 @@ describe('side panel Dashboard view', () => {
       </QueryClientProvider>,
     )
     expect(screen.getByRole('tab', { name: /Dashboard/ })).toBeTruthy()
+  })
+})
+
+describe('side panel Crew tab with the Crew Mode preview off', () => {
+  beforeEach(() => { localStorage.clear() })
+  // A bucket restored from storage, as `usePanelTabs` does on a reload.
+  const Seeded = () => {
+    const tabsCtl = usePanelTabs('slot-a')
+    panelController = tabsCtl
+    if (!tabsCtl.tabs.some(t => t.kind === 'workers')) tabsCtl.openView('workers')
+    return <SidePanel tabsCtl={tabsCtl} slot="slot-a" onFileSave={async () => {}} onClose={() => {}} />
+  }
+  const renderSeeded = () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <Seeded />
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('withholds a stored Crew tab, keeps it in the bucket, and neither the strip nor the + menu offers it', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Crew/ })).toBeNull()
+    expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    // Withheld, not closed: the stored tab is still there for when the preview comes back.
+    expect(panelController.tabs.some(t => t.kind === 'workers')).toBe(true)
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Crew' })).toBeNull()
+  })
+
+  it('shows the stored Crew tab again when the preview is turned on', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Crew/ })).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    expect(screen.getByRole('tab', { name: /^Crew/ })).toBeTruthy()
   })
 })
 

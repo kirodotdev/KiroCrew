@@ -143,7 +143,8 @@ class TestConversationLog:
 
     def test_mark_consolidated_nonexistent(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        log.mark_consolidated("nonexistent", 5)  # should not raise
+        log.mark_consolidated("nonexistent", 5)
+        assert not log._path("nonexistent").exists()
 
     def test_caches_refresh_after_mtime_preserving_external_rewrite(self, tmp_path):
         writer = ConversationLog(base_dir=tmp_path)
