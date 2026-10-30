@@ -953,7 +953,13 @@ def _prepare_messages(
     hosts a reader allowed there, the same hosts the segment flush relaxed, so
     an allowed link reaches the page it was kept for.
     """
-    with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+    # Imported here so the chat_utils facade serves no new name.
+    from kiro_crew.security.exfil import allowed_host_audit_epoch
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    # The epoch is read before the hosts, so a revoke between them marks it stale.
+    epoch = allowed_host_audit_epoch()
+    with scoped_exempt_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace), epoch):
         return _prepare_messages_scoped(messages, running, live_child=live_child)
 
 

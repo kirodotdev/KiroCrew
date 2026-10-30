@@ -322,6 +322,7 @@ _ENDPOINT_EXTENSION_CAP = 50
 # rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
 # backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
 # The lookahead bounds total length to the DNS maximum.
+# ``redaction_allow`` validates allowed link hosts with this same regex.
 _OAUTH_EXTENSION_HOST_RE = re.compile(
     r"\A(?=.{1,253}\Z)"
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
@@ -458,35 +459,54 @@ def _emit_oauth_extension_used_event(host: str, path: str) -> None:
     if (host, path) in _OAUTH_EXTENSION_AUDITED:
         return
     _OAUTH_EXTENSION_AUDITED.add((host, path))
-    try:
+
+    def metadata() -> dict:
         # Function-local for the same loader-cycle reason as
         # _load_operator_oauth_endpoints.
         from kiro_crew.config import loader as config_loader
 
+        return {
+            "host": host,
+            "path": path,
+            "file": str(config_loader.oauth_endpoints_path()),
+            "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+        }
+
+    _log_operator_list_use(
+        "oauth_endpoint_extension_used", "oauth_banner_check", f"{host}{path}", metadata
+    )
+
+
+def _log_operator_list_use(
+    event_type: str,
+    operation: str,
+    resources: str,
+    metadata: Callable[[], dict],
+    outcome: str = "allowed",
+) -> None:
+    """Write one best-effort SEL event for an operator-list use or change.
+
+    Shared by the OAuth endpoint extension and the allowed link hosts (their
+    use, and entries dropped on load). A failed write, ``metadata()`` included,
+    is logged at debug and never raised, so the audit never changes the outcome.
+    """
+    try:
         SecurityEventLog().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
+                event_type=event_type,
                 caller_identity="",
                 agent="kirocrew",
                 source="security",
-                operation="oauth_banner_check",
-                outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
+                operation=operation,
+                outcome=outcome,
+                resources=resources,
+                metadata=metadata(),
             )
         )
     except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
-        )
+        logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
 def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:

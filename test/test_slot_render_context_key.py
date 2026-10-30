@@ -81,3 +81,33 @@ def test_oauth_endpoint_revocation_is_checked_on_every_read(monkeypatch):
     assert url not in expected
     assert wire_render.prepare_messages_json(rows, False, live_child="c") == expected
     assert wire_render.render_memo_info()[0] == 0
+
+
+def test_a_re_allow_after_a_revoke_misses_the_memo_and_audits_again(monkeypatch):
+    """A memo hit skips the restore, so a revoke must make the next render miss."""
+    logged = []
+
+    class _Log:
+        def log(self, event) -> None:
+            logged.append(event)
+
+    host = "wiki.example.org"
+    url = f"https://{host}/page?state=" + "a" * 260
+    saved, _, records = exfil.redact_exfiltration_urls_with_records(url)
+    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
+    monkeypatch.setattr(cu, "allowed_hosts_for", lambda _: frozenset({host}))
+    rows = [{"role": "assistant", "content": saved, "meta": {"blocked_links": records}}]
+
+    def render(ws: str = "ws1") -> str:
+        return wire_render.prepare_messages_json(rows, False, live_child="", workspace=ws)
+
+    assert url in render() and url in render()
+    assert [e.metadata["workspace"] for e in logged] == ["ws1"]
+    # Another workspace's allowance of the same host is its own audit.
+    render("ws2")
+    assert [e.metadata["workspace"] for e in logged] == ["ws1", "ws2"]
+    # The revoke's bookkeeping alone, without touching the store.
+    exfil.forget_allowed_host_use(host)
+    assert url in render()
+    assert [e.metadata["workspace"] for e in logged] == ["ws1", "ws2", "ws1"]
