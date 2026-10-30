@@ -26,6 +26,9 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 
 - One task per line (no multiline support)
 - Lines starting with `#`, empty lines, and HTML comments (`<!-- -->`) are ignored
+- A closed comment (ended by `-->` or `--!>`, as in HTML) hides only what is inside it, even across lines; text before `<!--` or after `-->` on the same line is still a task
+- A deliver tag inside a comment is part of that comment, so commenting out a task together with its tag keeps it hidden
+- A `<!--` that is never closed hides only the rest of its own line, and logs a warning naming that line. It never hides later lines. This is a choice of "run them and warn" over "skip them" (how HTML reads it): the rewrite keeps only parsed tasks, so skipped lines would be erased from the file for good
 - List markers (`-`, `*`, `- [ ]`, `- [x]`) are stripped
 - File is auto-created on first start with an empty template
 
