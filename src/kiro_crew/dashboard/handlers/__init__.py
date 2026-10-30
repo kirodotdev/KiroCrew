@@ -489,6 +489,9 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.skill_budget import (  # noqa: E402, F401
     api_skills_budget,
 )
+
+# ── Skill overlap audit (handlers/skills_audit.py) ──
+from kiro_crew.dashboard.handlers.skills_audit import api_skills_audit  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
     api_sso_login_ws,
 )

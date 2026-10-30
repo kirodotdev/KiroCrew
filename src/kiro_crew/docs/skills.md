@@ -70,6 +70,12 @@ Ask Kiro Crew: "Create a skill called X that does Y"
 
 Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
+## Audit Pending and Live Skills
+
+**Find overlapping skills** on the Skills page compares pending candidates and live skills pairwise (at most 400 skills, pending first, and 2,000 matching pairs) and reports what overlaps. A package-owned builtin is never paired with another live skill, because neither side can be merged. Clusters are labeled **duplicate** at 0.85 similarity, **subsumed** when a live description covers at least 85% of a candidate's description words or contains its trigger set, and **overlapping** at 0.5 similarity when human judgment is still needed. Each pending candidate also lists its related live skills, one per line; selecting one opens the audit for that pair.
+
+The audit only reports. It never stages, approves, dismisses or edits a skill, so acting on a result stays with the existing **Approve** and **Dismiss** buttons and the skill editor. The comparison is deterministic and local: it caps untrusted descriptions and triggers before comparing, reports how many skills and relationships it left out, and uses description and trigger word overlap without an LLM call. An update candidate is not reported against the skill it updates, and skills of a disabled app are left out, as on the Skills page.
+
 ## Built-in Skills
 
 Kiro Crew ships with built-in skills that are synced from the packaged skills directory on startup. These cover common workflows like URL shortening, code search, and writing assistance.
