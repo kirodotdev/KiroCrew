@@ -434,15 +434,17 @@ that already has a parent can be adopted, and the parent it had is kept in the
 record.
 
 What you may adopt depends on who you are. A fenced session (one an agent
-created, a crewmate's chat, a scheduled run or a channel session) may adopt only
+created, a crewmate's chat, a scheduled run, a channel session, or the owner's
+Conductor while `agent.session_control` is off) may adopt only
 a session it already manages: one it created and has not handed away, or one that
 was handed to it with `session_handoff`. With `agent.session_manager_chain` on,
 it also reaches a session managed by a session it manages. Any other target is
 refused `not_creator` (403), and that includes a session another conductor
 opened. To take that over, the session that manages it must first hand it to
-you. When that session is no longer open, no agent can take the target over, and
-only the person can reach it. An agent in a person's own tab, which no session
-created, is not held to this rule.
+you. When that session is no longer open, no fenced session can take the target
+over. An agent in a person's own tab, which no session created, is not held to
+this rule and can still adopt it, except the Conductor while
+`agent.session_control` is off, which is fenced like the rest.
 
 | Refusal | Why |
 |---|---|
@@ -467,8 +469,13 @@ own.
 
 Takes `target` and `to`. It makes `to` the session that MANAGES `target`: from then
 on `to` can send to, read, summarize, stop, close, adopt, release and hand on the
-target, and you can no longer do those on it. Use it after opening a conductor and
-its workers: hand each worker to the conductor.
+target. With `agent.session_manager_chain` off (the default), a fenced session
+(see the `not_creator` row below) can no longer do those on a session it handed
+away; with it on, it keeps that reach while it still manages `to`. An agent in a person's own tab is not fenced for
+send, read, stop, close and adopt; `session_handoff` still needs it to manage the
+target and `to`, or it is refused `not_manager`.
+Use it after opening a conductor and its workers: hand each worker to the
+conductor.
 
 Only the target's current manager may hand it over (the session that created it,
 until a handoff names another), and `to` must be a session you manage too. Who
@@ -479,16 +486,16 @@ sidebar, and its transcript gets one note saying who manages it now.
 
 The new manager cannot hand the session back to the one that gave it. `to` must
 be a session the caller manages, and the giver manages the new manager, not the
-other way round, so the call is refused `not_creator`. The giver reaches the
-session again only with `agent.session_manager_chain` on, by handing it to
-itself while it still manages the new manager. With the switch off, only the
-person can return it. The new manager may hand it on to a session it manages
-itself.
+other way round, so the call is refused `not_creator`. A fenced
+giver takes direct management back only with `agent.session_manager_chain` on, by
+handing the session to itself while it still manages the new manager. With the
+switch off, no fenced session can. The new manager may hand it on to a session it
+manages itself.
 
 | Refusal | Why |
 |---|---|
-| `not_creator` | HTTP 403. You are a session an agent created and you do not manage the target or `to`. The ownership fence answers first, with this code. |
-| `not_manager` | HTTP 403. The same rule for an agent in a person's own tab, which the ownership fence does not cover: it cannot hand another of the person's tabs, which has no manager, to anyone. |
+| `not_creator` | HTTP 403. You are a fenced session (one an agent created, a crewmate's chat, a scheduled run, a channel session, or the owner's Conductor while `agent.session_control` is off) and you do not manage the target or `to`. The ownership fence answers first, with this code. |
+| `not_manager` | HTTP 403. The same rule for an agent in a person's own tab, which the ownership fence does not cover (the Conductor while `agent.session_control` is off is covered, and gets `not_creator`): it cannot hand another of the person's tabs, which has no manager, to anyone. |
 | `self_manager` | `to` is the target itself. |
 | `already_manager` | `to` already manages the target. |
 | `would_cycle` | The target manages `to`, directly or up the line, so the handoff would make a loop. |

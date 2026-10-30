@@ -963,14 +963,16 @@ and `set_model` among them, and `session_create`'s delegation lineage, still rea
 `_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
 handed and cannot fork them or open sessions against the creator's memory.
 
-The reach moves: once a session is handed on, the giver is refused the widened verbs
-on it. Both sides of a handoff go through `authorize_target` with the `handoff`
+The reach moves: once a session is handed on, a fenced giver is refused the widened
+verbs on it, unless `agent.session_manager_chain` is on and the giver still manages
+the new manager (see the chain paragraph below). Both sides of a handoff go through `authorize_target` with the `handoff`
 operation, so only the current manager can hand a session on, and the recipient must
 be a session the caller manages too. A fenced caller that fails either check is
 refused there with 403 `not_creator`, the ownership fence's code, so a fenced caller
 never sees `not_manager`. The verb then holds EVERY caller, fenced or not, to that
 manager rule (403 `not_manager`), and for an unfenced caller this is the only check
-that applies: an unfenced agent in one of the person's own tabs cannot hand another
+that applies: an unfenced agent in one of the person's own tabs (not the Conductor
+while `agent.session_control` is off, which is fenced) cannot hand another
 of the person's tabs, which has no manager, to a fenced session. Refusals of its own,
 all 409: `self_manager` (the
 recipient is the target), `already_manager`, and `would_cycle` (the target manages the
@@ -979,7 +981,8 @@ with nothing changed.
 
 The same reach rule bounds `session_adopt` and sets what a handoff can and cannot
 undo, for a fenced caller (every agent-created session, crewmate, cron and channel
-session). Probed on main `87986c501a` with the real gate:
+session, and the owner's Conductor while `agent.session_control` is off, see
+`_conductor_fenced`). Probed with the real gate:
 
 - `adopt` succeeds only on a session the caller manages: the manager of record (the
   creator until a handoff names another) and, with the chain switch on, a session
@@ -991,7 +994,7 @@ session). Probed on main `87986c501a` with the real gate:
   caller manages, and the giver is the caller's own manager, so the call is refused
   `not_creator` with the switch off or on. With the switch on, the giver can take the
   session back by handing it to itself while it still manages the new manager; with
-  it off, no agent can.
+  it off, no fenced caller can.
 - A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
   compares `_created_by`, so the new manager is refused `worker_not_owned` while the
   giver can still bind. Tracked in #19103.

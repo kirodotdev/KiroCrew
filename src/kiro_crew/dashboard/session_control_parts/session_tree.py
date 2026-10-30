@@ -705,7 +705,8 @@ async def adopt_target(
     replaces is recorded on the entry. A fenced caller still reaches only the sessions
     it manages (``_outside_reach``), so it cannot take over the workers another
     conductor opened until that conductor, or its manager, hands them over with
-    ``session_handoff``; an unfenced agent in a person's own tab is not held to that.
+    ``session_handoff``; an unfenced agent in a person's own tab is not held to that
+    (the owner's Conductor with ``agent.session_control`` off is fenced).
 
     Refused when the target is an ANCESTOR of the caller. The tree would then hold a
     cycle, and a cycle is not a shape the fold can present: it marks every slot on it
