@@ -1662,11 +1662,23 @@ against sweep completeness, and are torn down at `close_all`.
   `self._lock` after the acquire releases the semaphore before propagating, so
   the key never stays permanently locked. The helper records itself as the
   permit's holder (`turn_owner`) the moment the acquire completes, before the
-  lock wait: a `reset` that pops the session during that wait records this task
+  lock wait: a teardown that pops the session during that wait records this task
   as the orphaned holder and releases the permit to wake the parked claimants,
   so the refusal paths give the permit back through `_release_reacquired`,
   which absorbs that record (`absorb_orphaned_release`) instead of releasing a
-  second time when the session is no longer registered. Liveness uses
+  second time when the session is no longer registered, and which clears
+  `turn_owner` whichever way the permit goes back. Every teardown verb that pops
+  a session (`reset`, `discard_conversation`, `remove`, `destroy`,
+  `_evict_stale_session`, and `get_or_create`'s own dead-provider eviction) settles the popped permit through one helper,
+  `retire_turn_permit`, in the same lock hold as the pop: it records a named
+  holder and wakes the parked claimants only then. A locked permit with no named
+  holder was just handed to a claimant that has not run yet; that claimant
+  gives it back itself, so the helper leaves it alone. A recorded holder stays
+  recorded across later teardowns of the key (none of them clears
+  `orphaned_holders`) until its owed release is absorbed or the same task
+  adopts the successor's permit (`adopt_turn`). Every holder that releases
+  its permit directly rather than by key (the compaction and background
+  recycle paths) asks `absorb_orphaned_release` first. Liveness uses
   `_provider_effectively_alive` (a dead Claude-Code `per_session` process
   counts as alive — it reconnects lazily on the next `stream()`).
   Consolidating this acquire→relock→revalidate dance in ONE place is

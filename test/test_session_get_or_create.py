@@ -1183,6 +1183,41 @@ class TestGetOrCreateDeadProvider:
         assert new_provider is not provider
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_a_dead_provider_evicted_mid_turn_cannot_unlock_the_successors_turn(self, cfg):
+        """Turn T still holds the permit of a session whose provider died. The
+        next claim evicts it and starts a successor, whose turn B is running when
+        T finally releases by key: that late release must not free B's permit."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        t_done = asyncio.Event()
+        t_holds = asyncio.Event()
+
+        async def _turn() -> None:
+            await mgr.get_or_create("k1")
+            t_holds.set()
+            await asyncio.wait_for(t_done.wait(), timeout=30)
+            mgr.release("k1")
+
+        t_task = asyncio.ensure_future(_turn())
+        try:
+            await await_until(t_holds, what="T holds the first session")
+            dead = mgr._sessions["k1"].provider
+            dead.is_alive = lambda: False
+            dead.is_process_alive = lambda: False
+
+            successor_provider, is_new, _ = await mgr.get_or_create("k1")  # B's turn
+            assert is_new and successor_provider is not dead
+            successor = mgr._sessions["k1"]
+            t_done.set()
+            await await_until(t_task, what="T's late release")
+            assert successor.semaphore.locked(), "T's release unlocked B's turn on the successor"
+            mgr.release("k1")
+            assert not successor.semaphore.locked()
+        finally:
+            t_done.set()
+            await await_until(asyncio.gather(t_task, return_exceptions=True), what="T")
+            await mgr.close_all()
+
 
 class TestConcurrentAccess:
     @pytest.mark.asyncio
