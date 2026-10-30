@@ -105,7 +105,7 @@ def test_setup_paths_default_to_not_configured_and_not_in_this_build():
     assert set(paths) == set(access.SETUP_PATHS)
     assert paths["tailscale"] == {"state": "unavailable", "reason": "not_configured"}
     assert paths["kiro_login"]["reason"] == "not_in_this_build"
-    assert paths["systems_manager"]["reason"] == "not_in_this_build"
+    assert "systems_manager" not in paths
 
 
 @pytest.mark.parametrize(

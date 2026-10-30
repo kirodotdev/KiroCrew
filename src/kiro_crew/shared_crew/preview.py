@@ -22,4 +22,9 @@ def preview_enabled() -> bool:
     return os.environ.get(PREVIEW_ENV, "") == "1"
 
 
-__all__ = ["PREVIEW_ENV", "preview_enabled"]
+def no_maintenance() -> None:
+    """The post-bind maintenance starter a server uses while the preview is off."""
+    return None
+
+
+__all__ = ["PREVIEW_ENV", "no_maintenance", "preview_enabled"]

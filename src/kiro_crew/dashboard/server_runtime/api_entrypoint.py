@@ -329,6 +329,21 @@ async def start_api_server(
         tailnet_trust=_tailnet_trust,
     )
 
+    # Shared Crew is preview-only: without KIROCREW_SHARED_CREW_PREVIEW=1 none of
+    # its modules is imported on the boot path (no-new-work-on-gateway-boot-path).
+    from kiro_crew.shared_crew.preview import no_maintenance, preview_enabled
+
+    _shared_crew_preview = preview_enabled()
+    start_shared_crew_maintenance: Callable[[], None] = no_maintenance
+    if _shared_crew_preview:
+        from kiro_crew.dashboard import tailnet_direct_listener
+        from kiro_crew.shared_crew import lifecycle
+
+        # The same access set as the dashboard: owner-only before the bind, read
+        # after it. The headless server never runs the direct listener.
+        tailnet_direct_listener.prepare_access_set(_cfg)
+        lifecycle.install(app)
+        start_shared_crew_maintenance = lifecycle.install_lifecycle(app)
     _register_mcp_routes(app)
 
     # Probe parity with the full dashboard server. Headless gateways are often
@@ -390,6 +405,9 @@ async def start_api_server(
     # Same listener guard as start_dashboard: a headless gateway loses its
     # listener to a failed accept() exactly the same way.
     _arm_listener_guard(state, runner, site)
+    start_shared_crew_maintenance()
+    if _shared_crew_preview:
+        await tailnet_direct_listener.finish_access_set()
     _kick_pinned_order_load(state)
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).

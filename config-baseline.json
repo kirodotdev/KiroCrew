@@ -8084,7 +8084,6 @@
           "containment_enabled": true,
           "hard_limits": false,
           "tailnet_direct": false,
-          "local_authorization": false,
           "typing_idle_seconds": 10
         },
         "restore_sessions": false,
@@ -8244,7 +8243,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Allowed Tailnet Logins",
-      "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied.",
+      "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied. Under the Shared Crew preview (requires KIROCREW_SHARED_CREW_PREVIEW=1) this list only seeds, at the first start, who may get in alongside you and accepted Crew invites; after that adding a login admits nobody, and removing one removes that person at the next start.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": [],
@@ -8327,7 +8326,6 @@
         "containment_enabled": true,
         "hard_limits": false,
         "tailnet_direct": false,
-        "local_authorization": false,
         "typing_idle_seconds": 10
       },
       "requiresRestart": true
@@ -8411,22 +8409,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Direct Tailnet Link",
-      "help": "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in the people Tailscale names (all of them, or only those Crew admits when local_authorization is on), without a dashboard token. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false,
-      "requiresRestart": true
-    },
-    {
-      "path": "dashboard.shared_crew.local_authorization",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Approve People In Crew",
-      "help": "Not active in this build yet. Off: Tailscale decides who gets in. Every person Tailscale lets reach this machine is admitted on the direct tailnet link and through tailscale serve, and is still named by Tailscale. On: only you, people who accepted a Crew invite and people you approved on People get in, and People shows Approve, Remove and the waiting list. Tagged nodes are refused unless carried over in both modes. A value that is not true or false reads as on. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
+      "help": "Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in every person Tailscale names, without a dashboard token. Tailscale (the tailnet ACL and device sharing) decides who can reach it. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off. Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment; without it this reads as its default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,

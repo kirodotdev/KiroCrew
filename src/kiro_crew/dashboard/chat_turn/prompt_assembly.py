@@ -753,6 +753,15 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # mirror — avoids leaking injected context to the linked thread.
         _user_msg_for_mirror = message
         turn._user_msg_for_mirror = _user_msg_for_mirror
+        # Shared Crew: tell the agent who sent this message (prompt only).
+        from kiro_crew.shared_crew.attribution import sender_line
+
+        _sender = sender_line(
+            slot, _current_replay_message, owner_id=str(getattr(state, "owner_id", "") or "")
+        )
+        if _sender:
+            message = _sender + message
+            turn.message = message
         # Drain pending context injections (silent background context
         # from apps/subagents).  Expired entries are discarded.
         _ctx_prefix = drain_pending_context(slot)

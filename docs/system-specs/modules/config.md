@@ -1497,10 +1497,8 @@ file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
 
 `config/sections_shared_crew.py` owns the section. Every integer is clamped to
 `SHARED_CREW_BOUNDS` and a wrong-typed value reads as its default, so an edit can
-narrow or widen a limit but never remove one. The two exposure switches read
-fail-narrow: `tailnet_direct` turns on only for a literal `true`, and
-`local_authorization` reads a missing key or a literal `false` as off and any other
-non-boolean value as on. No code reads the section in this build yet, so the
+narrow or widen a limit but never remove one. The exposure switch `tailnet_direct`
+reads fail-narrow: it turns on only for a literal `true`. No code reads the section in this build yet, so the
 section is marked `restart=True` and every help text says it is not active. `effective_limits`
 resolves `0` (auto) values against a caller-supplied automatic Crew width and caps
 per-person limits at the Crew's. Every switch that changes behaviour is off by

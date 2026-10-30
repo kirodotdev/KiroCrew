@@ -21,7 +21,6 @@ def test_defaults_keep_every_switch_off():
     assert cfg.admission_enabled is False
     assert cfg.hard_limits is False
     assert cfg.tailnet_direct is False
-    assert cfg.local_authorization is False
     assert cfg.containment_enabled is True
     assert (cfg.principal_concurrency, cfg.crew_concurrency, cfg.typing_idle_seconds) == (4, 0, 10)
 
@@ -65,11 +64,6 @@ def test_tailnet_direct_turns_on_only_for_literal_true(raw, want, caplog):
     assert warned is (not isinstance(raw, bool))
 
 
-@pytest.mark.parametrize(("raw", "want"), [(False, False), (True, True), ("off", True), (0, True)])
-def test_local_authorization_turns_off_only_for_literal_false(raw, want):
-    assert sc.shared_crew_config_from({"local_authorization": raw}).local_authorization is want
-
-
 def test_effective_limits_resolve_auto_and_cap_per_person():
     auto = sc.effective_limits(
         sc.SharedCrewConfig(principal_concurrency=8), auto_crew_concurrency=3
@@ -88,7 +82,7 @@ def test_effective_limits_resolve_auto_and_cap_per_person():
 
 
 #: The keys whose behaviour is not in this build: their help text says so.
-_NOT_ACTIVE = {"tailnet_direct", "local_authorization"}
+_NOT_ACTIVE: frozenset[str] = frozenset()
 
 
 def test_every_key_needs_a_restart_and_says_whether_it_is_active():

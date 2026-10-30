@@ -92,30 +92,13 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Direct Tailnet Link",
-            "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this "
+            "Off by default. On: while Tailscale runs, also listen on this "
             "machine's own Tailscale addresses (100.x and fd7a:) on the dashboard "
-            "port, and let in the people Tailscale names (all of them, or only "
-            "those Crew admits when local_authorization is on), without a "
-            "dashboard token. Never binds any other address. Off keeps the "
+            "port, and let in every person Tailscale names, without a "
+            "dashboard token. Tailscale (the tailnet ACL and device sharing) "
+            "decides who can reach it. Never binds any other address. Off keeps the "
             "loopback-only listener. A value that is not true or false reads as "
             "off."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
-            restart=True,
-        ),
-    )
-    local_authorization: bool = field(
-        default=False,
-        metadata=_meta(
-            "Approve People In Crew",
-            "Not active in this build yet. "
-            "Off: Tailscale decides who gets in. Every person Tailscale lets reach "
-            "this machine is admitted on the direct tailnet link and through "
-            "tailscale serve, and is still named by Tailscale. On: only you, "
-            "people who accepted a Crew invite and people you approved on People "
-            "get in, and People shows Approve, Remove and the waiting list. "
-            "Tagged nodes are refused unless carried over in both modes. A value "
-            "that is not true or false reads as on."
             " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
             " without it this reads as its default.",
             restart=True,
@@ -150,9 +133,9 @@ PRINCIPAL_MEMORY_MAX_MB = 24576
 PRINCIPAL_TASKS_MAX = 8192
 CREW_CPU_QUOTA_PERCENT = 2400
 
-#: The boolean knobs read with ``_safe_bool``. ``tailnet_direct`` and
-#: ``local_authorization`` are booleans read fail-narrow on their own; every other
-#: field is an integer bounded by SHARED_CREW_BOUNDS.
+#: The boolean knobs read with ``_safe_bool``. ``tailnet_direct`` is a boolean
+#: read fail-narrow on its own; every other field is an integer bounded by
+#: SHARED_CREW_BOUNDS.
 SHARED_CREW_FLAGS = ("admission_enabled", "containment_enabled", "hard_limits")
 #: Flags that widen what can reach this machine. A value that is not a boolean
 #: reads as False, so a typo can only narrow exposure.
@@ -163,8 +146,7 @@ def shared_crew_config_from(raw: object) -> SharedCrewConfig:
     """Build a bounded :class:`SharedCrewConfig` from a raw ``dashboard.shared_crew`` value.
 
     A non-object reads as every default. A wrong-typed key reads as its default,
-    except the two exposure switches, which read toward less exposure:
-    ``tailnet_direct`` as off and ``local_authorization`` as on. An out-of-range
+    except the exposure switch ``tailnet_direct``, which reads as off. An out-of-range
     integer is clamped into :data:`SHARED_CREW_BOUNDS`, so a hand edit can narrow
     or widen a limit but never disable one.
     """
@@ -186,8 +168,6 @@ def shared_crew_config_from(raw: object) -> SharedCrewConfig:
                 type(raw).__name__,
             )
         values[name] = raw is True
-    # Turning it off widens who gets in, so only a literal false does that.
-    values["local_authorization"] = data.get("local_authorization", False) is not False
     for name in SHARED_CREW_BOUNDS:
         lo, hi = SHARED_CREW_BOUNDS[name]
         values[name] = section.read(name, _safe_int, lo, hi)

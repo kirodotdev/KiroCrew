@@ -55,7 +55,11 @@ class TailscaleConfig:
             "Tailscale logins permitted when trust_identity is on. Mandatory: "
             "a shared tailnet can have hundreds of members, so identity trust "
             "without an allowlist would hand each of them the dashboard. A "
-            "verified peer whose login is not listed is denied.",
+            "verified peer whose login is not listed is denied. Under the Shared "
+            "Crew preview (requires KIROCREW_SHARED_CREW_PREVIEW=1) this list only "
+            "seeds, at the first start, who may get in alongside you and accepted "
+            "Crew invites; after that adding a login admits nobody, and removing "
+            "one removes that person at the next start.",
             restart=True,
         ),
     )

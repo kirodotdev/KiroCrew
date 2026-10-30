@@ -390,7 +390,6 @@ test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py
-test/test_dashboard_route_table.py
 test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
 test/test_dashboard_themes_coverage.py

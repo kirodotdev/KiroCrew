@@ -15,6 +15,8 @@ Evidence, strongest first:
   principal;
 * a tailnet peer the local daemon resolved behind ``tailscale serve``
   (``tailscale_serve``), already resolved and allowlisted by the middleware;
+* a tailnet peer the direct tailnet listener admitted through its access set
+  (``tailscale_listener``);
 * a tailnet peer connected to the gateway's tailnet address directly, resolved
   here through the daemon's ``whois`` of the socket address
   (``tailscale_direct``, attribution only);
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.dashboard.tailnet import ForwardedPeer, TailnetTrust
+    from kiro_crew.dashboard.tailnet_direct import DirectPeer
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,17 @@ def tailnet_principal(
         subject=subject,
         provenance=provenance,
         display=DisplaySnapshot(name=(display_name or login).strip(), login=login.strip()),
+    )
+
+
+def direct_principal(peer: DirectPeer) -> Principal:
+    """The principal of a peer the direct tailnet listener verified and admitted."""
+    return tailnet_principal(
+        peer.login,
+        peer.node,
+        Provenance.TAILSCALE_LISTENER,
+        display_name=peer.display_name,
+        tagged=peer.tagged,
     )
 
 
@@ -258,8 +272,21 @@ async def _derive_actor(
 ) -> ActorContext:
     from kiro_crew.dashboard.origin import is_proxied_request
     from kiro_crew.dashboard.tailnet import resolve_direct_peer
+    from kiro_crew.dashboard.tailnet_direct import DIRECT_PEER_REQUEST_KEY, DirectPeer
 
     app = str(request.get("app") or "")
+    verified = request.get(DIRECT_PEER_REQUEST_KEY)
+    if not internal and not app and isinstance(verified, DirectPeer):
+        principal = direct_principal(verified)
+        request[DEVICE_REQUEST_KEY] = f"node:{verified.node_key}"
+        request_id = uuid.uuid4().hex
+        return ActorContext(
+            principal=principal,
+            request_id=request_id,
+            transport=_transport_of(request),
+            correlation_id=_correlation_of(request, request_id),
+            auth=_auth_snapshot(request, "" if trust is None else trust.pin_scope),
+        )
     direct_peer: ForwardedPeer | None = None
     if not internal and not app and serve_peer is None and trust is not None:
         direct_peer = await resolve_direct_peer(request, trust)
