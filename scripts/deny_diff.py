@@ -161,8 +161,7 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     # variable. Same reasoning as the entry above, and the source test pins this tuple
     # against the harness declarations so a new override cannot be forgotten here.
     "DSH_HOME",
-    # GitHub Copilot CLI relocates its whole home, plaintext token file included.
-    "COPILOT_HOME",
+    "VIBE_HOME",
 )
 
 

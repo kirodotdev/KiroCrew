@@ -25,6 +25,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -36,13 +37,13 @@ FIELD = "agent.acp_backend"
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
 #: reason in ``test_baseline_ships_every_known_backend``. An entry is a reasoned
 #: exclusion rather than a defect, and it earns its place by naming what the id fails.
-#: Empty today: no id is excluded. ``deepseek`` was the one member while it failed the
-#: ROUTING half of the selectability bar -- its sandbox decides its own tool calls and
-#: its ``session/request_permission`` carries only a model-initiated escalation, so
-#: Crew's PreToolUse gate never ran for what a session did. It left the set when Crew
-#: composed its own gate plugin into the harness and read the plugin's load marker
-#: back before the first prompt (``Routing.VERIFIED_GATE_EXTENSION``), which is the
-#: routing half met the way the exclusion said it had to be.
+#: Empty today: no id is excluded. Vibe was the one member while its routing was
+#: ``UNVERIFIED``; it left the set when its routing became
+#: ``VERIFIED_SEEDED_SETTINGS`` -- Crew seeds ``VIBE_DEFAULT_AGENT=ask`` plus the
+#: auto-approve clamp variables into the child's environment (a layer Vibe resolves
+#: above its config files) and reads the resolved profile back off the session
+#: response's ``modes`` block before the first prompt, refusing unless the advertised
+#: mode list is exactly ``ask`` (``test/fixtures/acp_frames/vibe/routing-live.jsonl``).
 NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
 
 
@@ -200,6 +201,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_COPILOT,
+            ACP_BACKEND_VIBE,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

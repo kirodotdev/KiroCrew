@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -148,6 +149,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -342,11 +344,14 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # -- the refusal exists only on ``AcpClient``, so nothing refuses on a codex session
 # even though its ``Routing.SESSION_CONFIG`` is itself enforced.
 #
-# copilot is NOT a member although it is mirrored, ``AcpClient``-served and its
-# ``Routing.SESSION_CONFIG`` is enforced: Copilot CLI 1.0.100 reads a file inside the
-# session's own directory WITHOUT a permission request (measured -- its ``view``
-# ran unasked), so ``_deny_zero_tools`` never sees that call and a total ban cannot
-# be honoured.
+# vibe IS a member, on the same shape as pi: enforced routing
+# (``VERIFIED_SEEDED_SETTINGS``, so every tool call raises
+# ``session/request_permission`` under the ``ask`` seed) plus a ``broker-only``
+# projection, so ``AcpClient._mirrorless_member_mounts`` reads the spec's
+# ``"tools": []`` beside the pooled stubs and ``_deny_zero_tools`` answers each
+# request with the reject option. Measured shape, not a live drive:
+# ``test/fixtures/acp_frames/vibe/routing-live.jsonl`` holds the
+# ``session/request_permission`` emission on mistral-vibe 3.0.3.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -355,6 +360,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_VIBE,
     }
 )
 

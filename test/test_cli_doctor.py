@@ -999,10 +999,10 @@ class TestSelectedBackendProjectionRow:
         asserts -- but it IS the state an operator gets told about, so the set is
         pinned by name and a new one is a deliberate change to this assertion.
 
-        No backend ships as one: pi, whose adapter drops the ``session/new`` array,
-        receives Crew's servers through its gate extension instead and is declared
-        ``broker-only`` like deepseek. The case that follows pins that pi's row is
-        therefore silent.
+        No backend declares ``no-channel`` today: Vibe was the one while it was
+        dormant, and it is now ``broker-only`` like pi and deepseek, because its
+        ``session/new`` array measurably mounts Crew's pooled stubs (captured on
+        mistral-vibe 3.0.3).
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 

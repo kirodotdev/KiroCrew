@@ -58,6 +58,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KNOWN,
@@ -262,8 +263,9 @@ class TestEveryKnownBackendIsClassified:
     """
 
     #: Known backends deliberately outside all three compaction sets, each with why.
-    #: Empty: every known backend is classified.
-    UNCLASSIFIED: frozenset = frozenset()
+    #: * ``vibe`` -- onboarding has no driven compaction capture; production
+    #:   routing remains unverified, so no compaction or recycle claim is made.
+    UNCLASSIFIED: frozenset = frozenset({ACP_BACKEND_VIBE})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

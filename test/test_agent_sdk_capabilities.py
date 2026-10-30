@@ -368,6 +368,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "kas",
         "opencode",
         "pi",
+        "vibe",
     ]
 
 
@@ -768,6 +769,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
         sdk_backends.ACP_BACKEND_GOOSE,
         sdk_backends.ACP_BACKEND_DEEPSEEK,
         sdk_backends.ACP_BACKEND_PI,
+        sdk_backends.ACP_BACKEND_VIBE,
     }
 
 
@@ -795,6 +797,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_KIRO,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_VIBE,
         ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     )
@@ -818,6 +821,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_VIBE,
     }, (
         "the set of backends this pool trusts changed -- decide the effort "
         "channel for whichever member is new or missing deliberately, then "
@@ -834,6 +838,9 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     # pi carries effort as its ``thought_level`` config option.
     assert capabilities_for(ACP_BACKEND_PI).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_PI).effort_via_slash_command is False
+    # vibe carries effort as its ``thinking`` config option.
+    assert capabilities_for(ACP_BACKEND_VIBE).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_VIBE).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:

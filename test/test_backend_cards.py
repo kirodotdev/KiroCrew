@@ -51,8 +51,11 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
-    Routing,
 )
+from kiro_crew.agent_sdk.backends_launch import ACP_BACKENDS_INTERNAL_SANDBOX
+from kiro_crew.agent_sdk.backends_models import ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+from kiro_crew.agent_sdk.backends_routing import Routing
+from kiro_crew.agent_sdk.backends_turns import ACP_BACKENDS_STEER
 
 VOCABULARY_MODULE = Path(sdk_backends.__file__)
 
@@ -138,12 +141,12 @@ def test_a_new_backend_renders_a_complete_card_with_no_card_edit(
     monkeypatch.setattr(
         sdk_backends,
         "ACP_BACKENDS_STEER",
-        frozenset({*sdk_backends.ACP_BACKENDS_STEER, STRANGER}),
+        frozenset({*ACP_BACKENDS_STEER, STRANGER}),
     )
     monkeypatch.setattr(
         sdk_backends,
         "ACP_BACKENDS_INTERNAL_SANDBOX",
-        frozenset({*sdk_backends.ACP_BACKENDS_INTERNAL_SANDBOX, STRANGER}),
+        frozenset({*ACP_BACKENDS_INTERNAL_SANDBOX, STRANGER}),
     )
 
     by_id = {card.backend: card for card in _every_card()}
@@ -369,6 +372,10 @@ def test_core_counts_per_harness_are_pinned() -> None:
         "kiro": 6,
         "opencode": 6,
         "pi": 6,
+        # 1 -> 3: selectable routing (security line) plus the model and effort
+        # channels it now advertises (``model`` and ``thinking`` selects on
+        # ``session/new``, captured on mistral-vibe 3.0.3).
+        "vibe": 3,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 
@@ -405,7 +412,7 @@ def test_effort_reads_available_on_the_harness_that_uses_a_slash_command() -> No
     card = cards_mod.card_for(ACP_BACKEND_KIRO)
     line = next(x for x in card.capabilities if x.id == cards_mod.LINE_REASONING_EFFORT)
     assert line.available is True
-    assert ACP_BACKEND_KIRO not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+    assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
 
 
 def test_the_command_channel_reaches_no_card_line_at_all() -> None:

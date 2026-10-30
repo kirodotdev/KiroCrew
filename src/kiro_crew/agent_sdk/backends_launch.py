@@ -15,8 +15,9 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import FrozenSet, Mapping
+from typing import FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -28,6 +29,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -226,6 +228,18 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         install_command=f"npm i -g @github/copilot@{COPILOT_VERIFIED_VERSION}",
         protocol_version=1,
         missing_hint="No adapter package is needed: this harness serves ACP itself.",
+    ),
+    ACP_BACKEND_VIBE: SelfServedLaunch(
+        label="Mistral Vibe",
+        binary="vibe-acp",
+        acp_args=(),
+        bin_env_var="VIBE_ACP_BIN",
+        install_command="pip install mistral-vibe",
+        protocol_version=1,
+        missing_hint=(
+            "This is a Python package, not an npm adapter: install it with "
+            "pip or uv (uv tool install mistral-vibe)."
+        ),
     ),
 }
 

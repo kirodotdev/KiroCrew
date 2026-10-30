@@ -342,6 +342,8 @@ ACP_BACKEND_DEEPSEEK = "deepseek"
 # (``test/fixtures/acp_frames/copilot/``). Its ``allow_all`` option and its
 # ``session/request_permission`` per tool call are wire facts of that release.
 ACP_BACKEND_COPILOT = "copilot"
+# Mistral Vibe serves ACP from the mistral-vibe Python package's vibe-acp binary.
+ACP_BACKEND_VIBE = "vibe"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -372,6 +374,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -387,7 +390,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -503,6 +506,14 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # Vibe's routing is verified seeded settings: Crew supplies
+        # ``VIBE_DEFAULT_AGENT=ask`` (plus the auto-approve clamp variables) in the
+        # child's environment, which Vibe resolves above its own config files, and
+        # reads the resolved profile back off the ``modes`` block of the session
+        # response before the first prompt -- refusing the session when the
+        # advertised mode list is not exactly ``ask``. Live captures at
+        # ``test/fixtures/acp_frames/vibe/routing-live.jsonl`` (mistral-vibe 3.0.3).
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -529,6 +540,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
+    ACP_BACKEND_VIBE: ACP_BACKEND_VIBE,
 }
 
 #: The backend a deployment policy may never deny.
