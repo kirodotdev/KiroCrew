@@ -452,7 +452,7 @@ async def test_claim_waits_for_the_op_fence_and_cancels_the_op_inside_it(hub) ->
 
     async def op() -> None:
         try:
-            await asyncio.sleep(3600)
+            await asyncio.Event().wait()  # never set: only the cancel ends it
         except asyncio.CancelledError:
             cancelled.set()
             raise

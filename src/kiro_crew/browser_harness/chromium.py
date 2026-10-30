@@ -222,6 +222,8 @@ def _fetch(url: str, dest: Path, opener: Callable[[str, float], object] | None) 
 def _default_opener(url: str, timeout: float) -> object:
     if not url.startswith("https://"):
         raise ChromiumDownloadError(f"refusing a non-HTTPS download: {url}")
+    # The scheme is checked to be https just above, so no file:// URL reaches here.
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
     return urllib.request.urlopen(url, timeout=timeout)  # noqa: S310 - https pinned above
 
 

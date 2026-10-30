@@ -285,15 +285,17 @@ class Recorder:
 
 
 @pytest.fixture(autouse=True)
-def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    monkeypatch.setattr(live_mod, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None))
+def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    _floor_monkeypatch.setattr(
+        live_mod, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+    )
 
     async def _keep_streams(_app: web.Application) -> None:
         return None
 
     # Each answer runs its own test server; its cleanup must not stop the hub's stream.
-    monkeypatch.setattr(route_slice, "_close_live_hub", _keep_streams)
+    _floor_monkeypatch.setattr(route_slice, "_close_live_hub", _keep_streams)
     lh.reset_live_hub()
     yield
     lh.reset_live_hub()

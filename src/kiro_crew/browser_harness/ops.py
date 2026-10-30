@@ -811,6 +811,8 @@ def _screenshot_path(ctx: OpContext) -> Path:
     directory = ctx.screenshot_dir
     directory.mkdir(parents=True, exist_ok=True)
     try:
+        # 0o700 is owner-only, the tightest mode a directory the owner reads can have.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         os.chmod(directory, 0o700)
     except OSError:  # pragma: no cover - Windows ACLs
         pass

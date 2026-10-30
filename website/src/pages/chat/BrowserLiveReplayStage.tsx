@@ -89,6 +89,8 @@ function loadImage(url: string): Promise<HTMLImageElement> {
       imageLoading.delete(url)
       reject(new Error('frame'))
     }
+    // An image element, not a script: url is a recorded frame on the gateway's own API.
+    // nosemgrep: semgrep.kirocrew.frontend-external-script-inject
     img.src = url
   })
   imageLoading.set(url, load)
@@ -216,20 +218,7 @@ export function ReplayOverlay({ event, space }: { event: ReplayEvent | null; spa
         </span>
       )}
       {event.op === 'drag' && event.path && space.w > 0 && (
-        <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${space.w} ${space.h}`} preserveAspectRatio="none" data-testid="browser-replay-overlay-path">
-          <motion.polyline
-            points={event.path.map(p => `${p.x},${p.y}`).join(' ')}
-            fill="none"
-            stroke={tone}
-            strokeWidth={Math.max(2, space.w / 300)}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-            initial={reduce ? false : { pathLength: 0 }}
-            animate={{ pathLength: 1 }}
-            transition={reduce ? { duration: 0 } : { duration: 0.6, ease: 'easeOut' }}
-          />
-        </svg>
+        <DragPath path={event.path} space={space} tone={tone} reduce={!!reduce} />
       )}
       {at && (event.op === 'click' || event.op === 'drag') && (
         <span className="absolute" style={{ left: `${at.left}%`, top: `${at.top}%` }} data-testid="browser-replay-overlay-point" data-left={at.left.toFixed(2)} data-top={at.top.toFixed(2)}>
@@ -264,5 +253,45 @@ export function ReplayOverlay({ event, space }: { event: ReplayEvent | null; spa
       )}
       {at && (event.op === 'click' || event.op === 'drag' || event.op === 'scroll') && chip(at.left, at.top)}
     </div>
+  )
+}
+
+/** A drag's path over the replayed frame, drawn on a canvas sized to the
+ *  frame's own coordinate space and stretched over it like the frame. */
+function DragPath({ path, space, tone, reduce }: {
+  path: { x: number; y: number }[]
+  space: { w: number; h: number }
+  tone: string
+  reduce: boolean
+}) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const c = ref.current
+    const ctx = c?.getContext('2d')
+    if (!c || !ctx || path.length < 2) return
+    ctx.clearRect(0, 0, c.width, c.height)
+    // The tone is a CSS variable; the canvas needs the colour it resolves to.
+    ctx.strokeStyle = getComputedStyle(c).color
+    ctx.lineWidth = Math.max(2, space.w / 300)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(path[0].x, path[0].y)
+    for (const p of path.slice(1)) ctx.lineTo(p.x, p.y)
+    ctx.stroke()
+  }, [path, space.w, space.h])
+  return (
+    <motion.canvas
+      ref={ref}
+      width={space.w}
+      height={space.h}
+      aria-hidden="true"
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      style={{ color: tone }}
+      data-testid="browser-replay-overlay-path"
+      initial={reduce ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={reduce ? { duration: 0 } : { duration: 0.3, ease: 'easeOut' }}
+    />
   )
 }

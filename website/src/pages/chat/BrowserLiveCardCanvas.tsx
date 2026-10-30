@@ -89,6 +89,8 @@ export async function decode(frame: DecodedBrowserFrame): Promise<ImageBitmap | 
     const img = new Image()
     img.onload = () => { URL.revokeObjectURL(url); resolve(img) }
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')) }
+    // An image, not a script: url is a blob: URL made from the frame bytes above.
+    // nosemgrep: semgrep.kirocrew.frontend-external-script-inject
     img.src = url
   })
 }
@@ -574,7 +576,7 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
       tabIndex={interactive ? 0 : -1}
       data-testid="browser-live-canvas"
       data-interactive={interactive ? 'true' : undefined}
-      className={`block w-full h-full object-contain bg-[var(--card)] outline-none select-none ${interactive ? 'cursor-default touch-none [-webkit-touch-callout:none]' : onClaim ? 'cursor-pointer' : ''} ${className ?? ''}`}
+      className={`block w-full h-full object-contain bg-[var(--card)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-inset select-none ${interactive ? 'cursor-default touch-none [-webkit-touch-callout:none]' : onClaim ? 'cursor-pointer' : ''} ${className ?? ''}`}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onPointerMove={onPointerMove}

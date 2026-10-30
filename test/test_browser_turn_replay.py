@@ -56,8 +56,8 @@ class Clock:
 
 
 @pytest.fixture(autouse=True)
-def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     rc.reset_recorder()
     lh.reset_live_hub()
     yield

@@ -26,8 +26,8 @@ from kiro_crew.dashboard.handlers import browser_ops as mod
 
 
 @pytest.fixture(autouse=True)
-def _quiet_sel(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mod, "_sel", lambda: MagicMock())
+def _quiet_sel(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setattr(mod, "_sel", lambda: MagicMock())
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +204,7 @@ async def test_an_op_past_its_budget_is_timeout(monkeypatch: pytest.MonkeyPatch)
     _install(monkeypatch, _Supervisor())
 
     async def _hang(op: str, args: dict[str, Any], ctx: Any) -> dict[str, Any]:
-        await asyncio.sleep(3600)  # flake-ok: cancelled by the wait_for budget below
+        await asyncio.Event().wait()  # never set: the wait_for budget below cancels it
         return {"ok": True}
 
     monkeypatch.setattr(harness_ops, "run_op", _hang)
@@ -623,7 +623,7 @@ async def test_status_is_read_off_the_event_loop(monkeypatch: pytest.MonkeyPatch
 
         def ensure_in_background(self) -> Any:
             async def _never() -> None:
-                await asyncio.sleep(3600)  # flake-ok: cancelled below
+                await asyncio.Event().wait()  # never set: cancelled below
 
             return asyncio.ensure_future(_never())
 

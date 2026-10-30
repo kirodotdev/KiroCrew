@@ -38,6 +38,7 @@ from kiro_crew.config.sections import (
 )
 from kiro_crew.decisions import gate
 from kiro_crew.decisions.types import Answer, Choice, Noul
+from kiro_crew.testing.clock import ManualClock
 
 SESSION = "dashboard:chat-1"
 
@@ -374,8 +375,8 @@ def test_the_step_budget_stops_it(seam, tmp_path):
 
 
 def test_the_time_budget_stops_it(seam, tmp_path, monkeypatch):
-    clock = iter(float(i) for i in range(10_000))
-    monkeypatch.setattr(reflex.time, "monotonic", lambda: next(clock))
+    # Every read moves the clock a second, so the 30 s budget runs out mid-loop.
+    ManualClock(tick=1.0).install(monkeypatch, reflex)
     result = _run({**GAME, "max_seconds": 30, "max_steps": 300}, _ctx(Game(), tmp_path)[0])
     assert result["stop"] == "budget" and 0 < result["steps"] < 30
 

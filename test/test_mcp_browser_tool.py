@@ -28,12 +28,12 @@ from kiro_crew.mcp_tools import browser as mod
 
 
 @pytest.fixture(autouse=True)
-def _tool_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def _tool_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     # The header encodability guard is orthogonal to what these tests exercise.
-    monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
+    _floor_monkeypatch.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
     # Default: governance permits browsing (its own deny is covered separately).
-    monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: None)
-    monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1-2")
+    _floor_monkeypatch.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: None)
+    _floor_monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1-2")
 
 
 def _capture_post(recorder: list[tuple[str, str, dict, str, float]], status: int, payload: dict):

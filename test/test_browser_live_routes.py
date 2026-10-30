@@ -44,9 +44,11 @@ RECORDING_ROUTES = (
 
 
 @pytest.fixture(autouse=True)
-def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    monkeypatch.setattr(mod, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None))
+def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    _floor_monkeypatch.setattr(
+        mod, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+    )
     lh.reset_live_hub()
     yield
     lh.reset_live_hub()

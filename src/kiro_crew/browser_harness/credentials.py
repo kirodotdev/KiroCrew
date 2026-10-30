@@ -294,6 +294,8 @@ async def _provider_cookies(
         # A missing or refused source file is a state the person can fix.
         return [], exc.code
     except Exception as exc:  # noqa: BLE001 - its text could carry a value; reduced to a code
+        # Logs an exception class name or a state and two counts, never a cookie value.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.warning("browser credentials: provider failed (%s)", type(exc).__name__)
         return [], "provider_failed"
     if not isinstance(raw, (list, tuple)):
@@ -364,6 +366,8 @@ async def apply(
         status.state = STATE_ERROR
     else:
         status.state = STATE_APPLIED
+    # Logs an exception class name or a state and two counts, never a cookie value.
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info("browser credentials: %s (%d/%d)", status.state, status.applied, len(cookies))
     return status
 

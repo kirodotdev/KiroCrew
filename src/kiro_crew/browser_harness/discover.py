@@ -56,7 +56,8 @@ _CHROME_LINUX_BINS: tuple[str, ...] = (
     "chromium",
     "chromium-browser",
 )
-_CHROME_LINUX_PATHS: tuple[str, ...] = ("/opt/google/chrome/chrome",)
+#: Under :data:`_SYSTEM_ROOT`, so a test can point the lookups at a fake root.
+_CHROME_LINUX_PATHS: tuple[Path, ...] = (Path("opt", "google", "chrome", "chrome"),)
 _EDGE_LINUX_BINS: tuple[str, ...] = ("microsoft-edge", "microsoft-edge-stable")
 _CHROME_WIN_TAIL = Path("Google") / "Chrome" / "Application" / "chrome.exe"
 _EDGE_WIN_TAIL = Path("Microsoft") / "Edge" / "Application" / "msedge.exe"
@@ -71,9 +72,9 @@ _SNAP_PREFIX = "/snap/"
 
 #: Chrome's enterprise policy that turns the debugging port off.
 _POLICY_KEY = "RemoteDebuggingAllowed"
-_LINUX_POLICY_DIRS: tuple[str, ...] = (
-    "/etc/opt/chrome/policies/managed",
-    "/etc/chromium/policies/managed",
+_LINUX_POLICY_DIRS: tuple[Path, ...] = (
+    Path("etc", "opt", "chrome", "policies", "managed"),
+    Path("etc", "chromium", "policies", "managed"),
 )
 _MAC_MANAGED_PLIST = "/Library/Managed Preferences/com.google.Chrome.plist"
 _WIN_POLICY_KEY = r"SOFTWARE\Policies\Google\Chrome"
@@ -209,7 +210,7 @@ def _find_chrome(key: str, home: Path, env: Mapping[str, str]) -> Path | None:
             found = shutil.which(name)
             if found:
                 return Path(found)
-        return _first_file([_SYSTEM_ROOT / p.lstrip("/") for p in _CHROME_LINUX_PATHS])
+        return _first_file([_SYSTEM_ROOT / p for p in _CHROME_LINUX_PATHS])
     return None
 
 
@@ -267,7 +268,7 @@ def _policy_off(key: str, env: Mapping[str, str]) -> bool:
 
 def _linux_policy_off() -> bool:
     for policy_dir in _LINUX_POLICY_DIRS:
-        root = Path(policy_dir)
+        root = _SYSTEM_ROOT / policy_dir
         if not root.is_dir():
             continue
         for path in sorted(root.glob("*.json")):

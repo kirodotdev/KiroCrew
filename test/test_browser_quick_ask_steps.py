@@ -42,9 +42,9 @@ SIGN_IN = {"kind": "credentials", "reason": "Sign in to read the inbox"}
 
 
 @pytest.fixture(autouse=True)
-def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa, "STEP_POLL_S", 0.0)
-    monkeypatch.setattr(qa, "STEP_WAIT_S", 0.3)
+def _fast(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setattr(qa, "STEP_POLL_S", 0.0)
+    _floor_monkeypatch.setattr(qa, "STEP_WAIT_S", 0.3)
 
 
 class LoginPage(FakePage):

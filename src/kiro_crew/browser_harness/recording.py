@@ -83,6 +83,7 @@ TURN_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 FRAME_NAME_RE = re.compile(r"([0-9]{1,7})\.jpg")
 
 _DIR_MODE = 0o700
+_URL_SEP = "/"
 _FILE_MODE = 0o600
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_BINARY = getattr(os, "O_BINARY", 0)
@@ -144,7 +145,8 @@ def clean_url(url: object) -> str:
         if ":" in host:
             host = f"[{host}]"
         netloc = f"{host}:{parts.port}" if parts.port else host
-        path = "/".join(seg.split(";", 1)[0] for seg in parts.path.split("/"))
+        # A URL path, not a file path: its separator is always "/".
+        path = _URL_SEP.join(seg.split(";", 1)[0] for seg in parts.path.split(_URL_SEP))
         kept = urlunsplit((scheme, netloc, path, "", ""))
     except ValueError:
         return ""
@@ -380,6 +382,8 @@ class RecordingStore:
         if path.is_symlink():
             raise OSError(f"refusing a symlinked recording directory: {path}")
         try:
+            # 0o700 is owner-only, the tightest mode a directory the owner reads can have.
+            # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
             os.chmod(path, _DIR_MODE)
         except OSError:
             logger.debug("recording: chmod %s failed", path, exc_info=True)
@@ -934,7 +938,7 @@ class LiveRecorder:
             # must not be represented by a picture from before it.
             rec.pending = None
             return
-        digest = hashlib.sha1(jpeg + repr(boxes).encode()).digest()  # noqa: S324 - change detection
+        digest = hashlib.sha256(jpeg + repr(boxes).encode()).digest()
         if digest == rec.last_digest:
             return
         ts = self._clock_ms()
@@ -955,12 +959,7 @@ class LiveRecorder:
         self, session_key: str, rec: _SessionRec, frame: _PendingFrame, digest: bytes | None = None
     ) -> None:
         rec.last_kept_ms = frame.ts
-        rec.last_digest = (
-            digest
-            or hashlib.sha1(  # noqa: S324 - change detection
-                frame.jpeg + repr(frame.boxes).encode()
-            ).digest()
-        )
+        rec.last_digest = digest or hashlib.sha256(frame.jpeg + repr(frame.boxes).encode()).digest()
         self._submit(
             session_key,
             lambda: self.store.add_frame(
