@@ -375,6 +375,11 @@
     "newMessagesDivider": {
       "new_messages_one": "{{count}} नया संदेश",
       "new_messages_other": "{{count}} नए संदेश"
+    },
+    "chatPanel": {
+      "session_unavailable": "यह सत्र अब उपलब्ध नहीं है।",
+      "session_unavailable_detail": "यह वर्कस्पेस सत्र बंद कर दिया गया। जारी रखने के लिए इसे ऐप से फिर से खोलो।",
+      "starting_session": "सत्र शुरू हो रहा है…"
     }
   },
   "apps": {
@@ -6258,7 +6263,8 @@
       "no_active_session_for_this_artifact": "इस आर्टिफ़ैक्ट के लिए कोई सक्रिय सत्र नहीं है.",
       "open_in_chat_page": "चैट पेज में खोलें",
       "start_chat": "चैट शुरू करें",
-      "starting_session": "सत्र शुरू हो रहा है…"
+      "starting_session": "सत्र शुरू हो रहा है…",
+      "session_unavailable": "यह सत्र अब उपलब्ध नहीं है।"
     },
     "artifactFolderDeleteDialog": {
       "artifact_one": "{{count}} आर्टिफ़ैक्ट",

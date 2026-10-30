@@ -375,6 +375,11 @@
     "newMessagesDivider": {
       "new_messages_one": "{{count}}টি নতুন বার্তা",
       "new_messages_other": "{{count}}টি নতুন বার্তা"
+    },
+    "chatPanel": {
+      "session_unavailable": "এই সেশন আর নেই।",
+      "session_unavailable_detail": "এই ওয়ার্কস্পেস সেশন বন্ধ করা হয়েছে। চালিয়ে যেতে অ্যাপ থেকে এটি আবার খোলো।",
+      "starting_session": "সেশন শুরু হচ্ছে…"
     }
   },
   "apps": {
@@ -6258,7 +6263,8 @@
       "no_active_session_for_this_artifact": "এই আর্টিফ্যাক্টের জন্য কোনও সক্রিয় সেশন নেই।",
       "open_in_chat_page": "চ্যাট পৃষ্ঠায় খুলুন",
       "start_chat": "চ্যাট শুরু করুন",
-      "starting_session": "সেশন শুরু হচ্ছে…"
+      "starting_session": "সেশন শুরু হচ্ছে…",
+      "session_unavailable": "এই সেশন আর নেই।"
     },
     "artifactFolderDeleteDialog": {
       "artifact_one": "{{count}}টি আর্টিফ্যাক্ট",

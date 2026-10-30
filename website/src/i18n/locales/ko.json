@@ -360,6 +360,11 @@
     },
     "newMessagesDivider": {
       "new_messages_other": "새 메시지 {{count}}개"
+    },
+    "chatPanel": {
+      "session_unavailable": "이 세션은 더 이상 사용할 수 없습니다.",
+      "session_unavailable_detail": "이 워크스페이스 세션이 닫혔습니다. 계속하려면 앱에서 다시 여세요.",
+      "starting_session": "세션 시작 중…"
     }
   },
   "apps": {
@@ -6153,7 +6158,8 @@
       "no_active_session_for_this_artifact": "이 아티팩트에 활성 세션이 없습니다.",
       "open_in_chat_page": "채팅 페이지에서 열기",
       "start_chat": "채팅 시작",
-      "starting_session": "세션 시작 중…"
+      "starting_session": "세션 시작 중…",
+      "session_unavailable": "이 세션은 더 이상 사용할 수 없습니다."
     },
     "artifactFolderDeleteDialog": {
       "artifact_other": "아티팩트 {{count}}개",

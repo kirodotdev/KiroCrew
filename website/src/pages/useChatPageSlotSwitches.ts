@@ -232,16 +232,33 @@ export function useSignedLinkAnchor({
 interface OpenFollowupSessionOptions {
   mode?: string
   dispatch: AppDispatch
+  /**
+   * Opt IN to sending a follow-up's "start elsewhere" action to the full chat
+   * page instead of switching the active slot in place. Default off.
+   *
+   * It is NOT `embedded`: every embedded ChatPage sets that, including the
+   * iframe `/embed/chat` and `/embed/sessions` routes and Papyrus's
+   * CoAuthorPanel, where a `navigate('/chat')` would load the whole dashboard
+   * inside the frame. Only the hosts that bind ChatPage to ONE fixed slot with
+   * no sidebar — ArtifactChatPanel, and the app-SDK ChatPanel in chat-only mode
+   * — have the guard that a slot switch under the panel trips, so only they set
+   * this. The full SDK panel keeps its sidebar and its in-place switch.
+   */
+  followupOpensFullPage?: boolean
+  /** The host router's navigate, used only on the full-page hand-off. */
+  navigate?: (path: string) => void
 }
 
 /**
  * A follow-up card's "start elsewhere" target: creates (or reuses) the session the follow-up
- * runs in and switches to it with the follow-up pre-filled.
+ * runs in and switches to it with the follow-up pre-filled. When
+ * `followupOpensFullPage` is set (a fixed-slot host panel), it navigates to the
+ * full chat page instead of switching under the panel (see the prop above).
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useOpenFollowupSession({
-  mode, dispatch,
+  mode, dispatch, followupOpensFullPage, navigate,
 }: OpenFollowupSessionOptions) {
   // The post-create half both spawn routes share: open a session (scoped to
   // `project` when there is one), hand it the prompt, take the user to it, and
@@ -300,6 +317,20 @@ export function useOpenFollowupSession({
     // (empty) draft, and the prompt vanishes. Seeding the prefill makes the
     // restore itself apply the prompt, so there is nothing left to race.
     writePrefill(slotKey, item.prompt)
+    // A fixed-slot host panel (followupOpensFullPage): do NOT switchSlot under
+    // the panel. The panel shows only its own bound slot and reads the active
+    // slot moving off it as the session vanishing, so switching here would blank
+    // it with a false "session unavailable". Hand the new session to the full
+    // chat page instead, where it legitimately becomes the active chat. The
+    // prefill is already seeded above, so the full page restores the prompt into
+    // its composer on arrival. The card clears on a successful hand-off, exactly
+    // as the switch path clears it below.
+    if (followupOpensFullPage) {
+      if (!navigate) throw new Error(fail.notOpened)
+      navigate('/chat')
+      if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
+      return
+    }
     if (store.getState().chat.activeSlot !== slotKey) {
       try {
         await dispatch(switchSlot(slotKey)).unwrap()
@@ -310,7 +341,7 @@ export function useOpenFollowupSession({
     if (store.getState().chat.activeSlot !== slotKey) throw new Error(fail.notFocused)
     dispatch(setPendingInput(item.prompt))
     if (originSlot) dispatch(clearFollowupCard({ slot: originSlot, ts: originTs }))
-  }, [dispatch, mode])
+  }, [dispatch, mode, followupOpensFullPage, navigate])
   return {
     openFollowupSession,
   }
