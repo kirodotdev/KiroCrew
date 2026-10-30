@@ -39,9 +39,9 @@ const intervalText = (minutes: number) =>
  * column wide enough that a two-word label does not wrap, values on the label's
  * baseline.
  */
-export function CardRow({ label, children, id }: { label: string; children: React.ReactNode; id?: string }) {
+export function CardRow({ label, children, id, testId }: { label: string; children: React.ReactNode; id?: string; testId?: string }) {
   return (
-    <div data-card-row="" className="grid grid-cols-1 @min-[480px]:grid-cols-[8.5rem_minmax(0,1fr)] gap-x-4 gap-y-0.5 items-baseline py-2">
+    <div data-card-row="" data-testid={testId} className="grid grid-cols-1 @min-[480px]:grid-cols-[8.5rem_minmax(0,1fr)] gap-x-4 gap-y-0.5 items-baseline py-2">
       <div className="min-w-0 text-[12px] leading-5 text-muted break-words" id={id}>{label}</div>
       <div className="min-w-0 text-[13px] leading-5 text-text break-words">{children}</div>
     </div>

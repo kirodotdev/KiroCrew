@@ -2431,6 +2431,33 @@ names only (`history.md`, "Card rows"). Every owner
 mutation through the hooked routes, card or manual, appends one names-only line
 to Global memory history.
 
+Every kind shares one card layout (`website/src/cards/ChangeCard.tsx`). The
+header row holds the kind on the left and the card's clock on the right, in the
+same muted 12px text: when it is due for a one-shot reminder, else when it
+expires, worded as what runs out: "Answer within 22h" (`answerWindow`, one
+truncated narrow unit). The kind beside it is not what expires, so the line names
+the answer, and it carries no second sentence. A narrow card wraps the clock under the kind; it never sits alone under
+the title. The change rows, the scope, the kind's own body and the proposer's
+reason are rows of ONE label | value grid (`kindBodies.CardRow`), so the reason
+uses the same label column and divider as Goal or Affects. Its label names the
+card's proposer, read from the card rather than the page showing it: a card whose
+`slot_key` is a crewmate's own chat (the roster row bound to that slot) reads
+"<display name>'s reason" (`cardAuthor.cardProposer`, `{{name}}'s reason` in each
+catalog); a card from the main assistant, or one whose roster row is not loaded
+yet, keeps the page's author, "Kiro Crew" outside a crewmate chat. The Affects row is
+left out when it would only repeat the title: the gateway marks its one member as
+the card's own subject (`scope.only_this_member`) and the title names that member
+(`cardRegistry.scopeRepeatsTitle`). An unmarked scope (a template's users, whose
+name can equal the template's) or one reaching more members keeps its row. A
+failed read of the crewmate list shows an inline notice under the card, which
+stays usable with the page's author. A row whose previous
+value is absent or would only print "(empty)" is an add and shows the new value
+alone (`CardChanges.isAddChange`); a real edit shows old → new, and a field that
+names its empty value (an inherited effort) keeps its old side. The decline
+button is a bare verb ("Decline", catalog key `components.changeCards.cancel`)
+unless the kind names its own (`decline` in `cardRegistry`), so it has the same
+short shape as the kind's accept label.
+
 `kiro_crew/change_card_catalog.py` keeps the evidence, undo and result code
 (`extract_evidence`, `build_undo`, `result_summary`) and the manual-change memory
 lines (`describe_manual_change`, `HOOKED_ROUTES`, `MEMORY_ROUTES`), and is a mirror

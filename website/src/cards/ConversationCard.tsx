@@ -30,8 +30,11 @@ import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
 import { CheckCircle2, AlertTriangle, RotateCcw, X, Clock } from 'lucide-react'
 import { CARD_FINISHED_STATUSES, type CardStatus } from '../api/cards'
+import { useQuery } from '@tanstack/react-query'
+import { membersRosterQuery } from '../api/membersQuery'
 import { useChangeCards } from './useChangeCards'
 import ChangeCard from './ChangeCard'
+import { CardAuthorContext, cardProposer, useCardAuthor } from './cardAuthor'
 import { useCardCorners } from './cardCorners'
 import GuideOfferCard from '../guide/GuideOfferCard'
 import ErrorNotice from '../components/ErrorNotice'
@@ -148,7 +151,30 @@ function ChangeCardRow({ card, slot }: { card: CardRef; slot: string | null }) {
   const own = !!slot && card.slot === slot
   const { cards, error, isFetched, store, refresh, remove } = useChangeCards(own ? slot : null)
   const live = own ? cards.find(c => c.id === card.id && c.slot_key === slot) : undefined
-  if (live) return <ChangeCard card={live} store={store} refresh={() => void refresh()} remove={remove} />
+  // The reason is labelled with whoever proposed the card: the crewmate whose
+  // chat it came from, on any page, else the name this page already gives.
+  const { data: roster, error: rosterError } = useQuery({ ...membersRosterQuery, enabled: !!live })
+  const proposer = cardProposer(live?.slot_key, roster)
+  // Always the same provider element, so the roster resolving only changes its
+  // value: swapping a bare card for a wrapped one would remount it and drop
+  // anything typed into it (a secret's value).
+  const pageAuthor = useCardAuthor()
+  if (live) {
+    return (
+      <>
+        <CardAuthorContext.Provider value={proposer ?? pageAuthor}>
+          <ChangeCard card={live} store={store} refresh={() => void refresh()} remove={remove} />
+        </CardAuthorContext.Provider>
+        {/* No hand-off: the card may hold a typed secret, and the composer beside it an unsent draft. */}
+        <ErrorNotice
+          className="mt-2"
+          variant="inline"
+          testId="change-card-roster-error"
+          message={rosterError ? (rosterError instanceof Error && rosterError.message ? rosterError.message : String(rosterError)) : ''}
+        />
+      </>
+    )
+  }
   const finished = CARD_FINISHED_STATUSES.has(card.status as CardStatus)
   if (own && error) {
     // The store could not be read, so its silence says nothing: an unfinished

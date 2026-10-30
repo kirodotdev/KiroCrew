@@ -387,7 +387,17 @@ export function CardChanges({ changes }: { changes: CardChange[] }) {
   )
 }
 
+/** True when the row has no previous value to show, so it reads as an add:
+ *  the gateway sent no `before`, or one that would only print "(empty)". A
+ *  field that names its empty value (an inherited effort) keeps old → new. */
+export function isAddChange(c: CardChange): boolean {
+  if (c.before === undefined) return true
+  const empty = c.before === null || c.before === '' || (Array.isArray(c.before) && c.before.length === 0)
+  return empty && changeValue(c, c.before) === i18nT('components.changeCards.empty_value')
+}
+
 function ChangeRow({ c }: { c: CardChange }) {
+  const showBefore = !isAddChange(c)
   return (
     <CardRow label={changeLabel(c)}>
       {isListChange(c) ? (
@@ -410,9 +420,9 @@ function ChangeRow({ c }: { c: CardChange }) {
       ) : (c.before !== undefined || c.after !== undefined) && (
         <>
           <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5" data-testid="change-card-value">
-            {c.before !== undefined && <span className="text-muted [overflow-wrap:anywhere]">{changeValue(c, c.before)}</span>}
-            {c.before !== undefined && <span aria-hidden="true" className="text-muted">→</span>}
-            {c.before !== undefined && <span className="sr-only">{i18nT('components.changeCards.becomes')}</span>}
+            {showBefore && <span className="text-muted [overflow-wrap:anywhere]">{changeValue(c, c.before)}</span>}
+            {showBefore && <span aria-hidden="true" className="text-muted">→</span>}
+            {showBefore && <span className="sr-only">{i18nT('components.changeCards.becomes')}</span>}
             {c.after !== undefined && (
               <span className={`font-medium [overflow-wrap:anywhere]${c.field && FULL_TEXT_FIELDS.has(c.field) ? ' whitespace-pre-wrap' : ''}`}>
                 {changeValue(c, c.after)}

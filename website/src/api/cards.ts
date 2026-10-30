@@ -113,7 +113,8 @@ export interface Card {
   widen?: boolean
   title: string
   changes: CardChange[]
-  scope?: { members: string[]; count: number }
+  /** `only_this_member`: the gateway's mark that the one member IS the card's own subject. */
+  scope?: { members: string[]; count: number; only_this_member?: boolean }
   reason?: string
   editable: string[]
   params: Record<string, unknown>

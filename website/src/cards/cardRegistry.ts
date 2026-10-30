@@ -20,7 +20,7 @@ export interface CardKindSpec {
   label: () => string
   /** The primary button: the concrete action, never a bare "OK". */
   primary: (card?: Card) => string
-  /** The decline button, when "Decline change" does not say what declining means here. */
+  /** The decline button, when a bare "Decline" does not say what declining means here. */
   decline?: () => string
   /** One line beside the primary button: what the press does and how to take it back. */
   pressNote?: () => string
@@ -213,6 +213,23 @@ export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'change
   if (!label) return card.title
   const key = list.op === 'add' ? 'components.changeCards.list_title_add' : 'components.changeCards.list_title_remove'
   return i18nT(key, { item: list.item, label })
+}
+
+/** True when the Affects row would only repeat the title: the gateway marks the
+ *  one member as the card's own subject (`only_this_member`) and the title names
+ *  that member as a whole word. A scope the gateway does not mark (a template's
+ *  users, whose name can equal the template's) keeps its row. */
+export function scopeRepeatsTitle(title: string, scope: Card['scope']): boolean {
+  if (!scope || scope.only_this_member !== true || scope.count !== 1 || scope.members.length !== 1) return false
+  const name = scope.members[0].trim()
+  if (!name) return false
+  const word = /[\p{L}\p{N}_]/u
+  for (let at = title.indexOf(name); at !== -1; at = title.indexOf(name, at + 1)) {
+    const before = title[at - 1] ?? ''
+    const after = title[at + name.length] ?? ''
+    if (!word.test(before) && !word.test(after)) return true
+  }
+  return false
 }
 
 /** A one-shot schedule's rows: no recurrence row, and its `at` row reads

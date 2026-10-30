@@ -11,7 +11,7 @@ import { effortLabel } from '../lib/effort'
 import type { Card } from '../api/cards'
 import { CardChanges, FIELD_LABELS, changeLabel, formatCardValue } from './CardChanges'
 import { fmtCron } from '../utils/cronUtils'
-import { cardChanges, cardTitle } from './cardRegistry'
+import { cardChanges, cardTitle, scopeRepeatsTitle } from './cardRegistry'
 
 const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.changeCards.${k}`, v)
 const LIST_ROW = { label: 'Selectable Models', before: ['other-2', 'fable-1'], after: ['other-2'], add: [], remove: ['fable-1'] }
@@ -306,6 +306,33 @@ describe('CardChanges', () => {
     const value = screen.getByTestId('change-card-value')
     expect(value.textContent).toContain('Radar')
     expect(value.textContent).not.toContain('→')
+  })
+
+  it('treats the Affects row as a repeat of the title only for the same one member, as a whole word', () => {
+    const own = (members: string[], count = members.length) => ({ count, members, only_this_member: true })
+    expect(scopeRepeatsTitle('Add a goal for "Scout"', own(['Scout']))).toBe(true)
+    expect(scopeRepeatsTitle('给 Scout 设定目标', own(['Scout']))).toBe(true)
+    expect(scopeRepeatsTitle('Add a goal for Alex', own(['Al']))).toBe(false)
+    // A template's users: the gateway does not mark them as the card's subject,
+    // so a template named like its one crewmate still shows who is affected.
+    expect(scopeRepeatsTitle('Change template “scout”', { count: 1, members: ['scout'] })).toBe(false)
+    expect(scopeRepeatsTitle('Add a goal for Scout', { count: 2, members: ['Scout', 'Pebble'] })).toBe(false)
+    expect(scopeRepeatsTitle('Add a goal for Scout', { count: 2, members: ['Scout'] })).toBe(false)
+    expect(scopeRepeatsTitle('Shorter replies', { count: 1, members: ['Scout'] })).toBe(false)
+    expect(scopeRepeatsTitle('Add a goal for Scout', undefined)).toBe(false)
+  })
+
+  it('shows an add as its new value alone, never "(empty) →", and keeps old → new for an edit', () => {
+    const adds = [null, '', []].map((before, i) => ({ field: 'goal', label: `Goal ${i + 1}`, number: i + 1, before, after: `Ship v${i}` }))
+    render(<CardChanges changes={[...adds, { field: 'goal', label: 'Goal 9', number: 9, before: 'Old goal', after: 'New goal' }]} />)
+    const values = screen.getAllByTestId('change-card-value').map(v => v.textContent ?? '')
+    for (const [i, text] of values.slice(0, 3).entries()) {
+      expect(text).toBe(`Ship v${i}`)
+      expect(text).not.toContain(L('empty_value'))
+    }
+    expect(values[3]).toContain('Old goal')
+    expect(values[3]).toContain('→')
+    expect(values[3]).toContain('New goal')
   })
 })
 
