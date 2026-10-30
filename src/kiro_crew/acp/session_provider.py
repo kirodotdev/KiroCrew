@@ -450,6 +450,18 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_registered_agents(self) -> list[dict[str, Any]]:
+        """A copy of ``AcpSessionHandle.kas_registered_agents``: the batch KAS holds."""
+        value = getattr(self._handle, "kas_registered_agents", None)
+        return [dict(a) for a in value if isinstance(a, dict)] if isinstance(value, list) else []
+
+    @property
+    def kas_active_mode_id(self) -> str:
+        """The last mode id KAS reported for this session, or ``""`` before any switch."""
+        value = getattr(self._handle, "_last_kas_mode_id", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def kas_agent_prompt_notice(self) -> str:
         """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
         value = getattr(self._handle, "kas_agent_prompt_notice", "")

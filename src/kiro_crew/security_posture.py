@@ -676,6 +676,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",
+        # The /model, /tools and /mcp replies the KAS slash gate in
+        # dashboard/chat_turn/slash_commands.py appends: scrubbed before the gate writes
+        # them as a transcript row, which reaches the browser through the runner's surfaces.
+        "dashboard/kas_local_commands.py",
         "dashboard/chat_nav.py",
         "dashboard/chat_persistence_parts/member_store.py",
         "dashboard/chat_persistence_parts/restore_drivers.py",

@@ -827,7 +827,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_answer_slash_without_channel",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', command: 'str') -> 'str'",
+            "(state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', command: 'str', "
+            "message: 'str' = '') -> 'str'",
         ),
         (
             "_handle_workflow_command",

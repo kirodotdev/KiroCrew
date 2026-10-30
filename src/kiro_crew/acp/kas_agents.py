@@ -1500,6 +1500,24 @@ def _switched_entry(custom_agents: Any, mode_id: str) -> Any:
     return next((a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == mode_id), None)
 
 
+def active_registered_entry(
+    custom_agents: Any, agent_id: str, mode_id: str
+) -> dict[str, Any] | None:
+    """The registered entry the session runs now, or ``None`` when Crew registered none for it.
+
+    *mode_id* is the last mode KAS reported (``""`` before any switch); it is
+    matched by wire id, as :func:`switched_auto_approved` matches it, so a KAS
+    built-in mode never reads a crewmate's entry of the same name. Before any
+    switch the entry is the batch's own *agent_id*, matched exactly.
+    """
+    entry = (
+        _switched_entry(custom_agents, mode_id)
+        if mode_id
+        else _registered_entry(custom_agents, agent_id)
+    )
+    return entry if isinstance(entry, dict) else None
+
+
 def projected_crew_answered_commands(custom_agents: Any, agent_id: str) -> tuple[str, ...]:
     """The ``allowedCommands`` patterns Crew answers for *agent_id*'s registered
     entry, matched like :func:`projected_crew_answered`."""

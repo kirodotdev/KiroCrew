@@ -149,7 +149,7 @@ class TestKasClear:
 
 class TestKasOtherCommands:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/help", "/tools", "/context add x", "/model", "/mcp"])
+    @pytest.mark.parametrize("command", ["/help", "/context add x", "/usage"])
     async def test_unrunnable_command_is_refused_not_prompted(self, tmp_path, command) -> None:
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
 
@@ -281,10 +281,10 @@ class TestKasMenuMatchesTheGate:
     async def test_every_command_left_out_of_the_menu_is_one_the_gate_refuses(
         self, tmp_path
     ) -> None:
-        """RED on main: the KAS menu listed /context, /help, /tools and the rest."""
+        """RED on main: the KAS menu listed /context, /help and the rest."""
         listed = await _menu_names(ACP_BACKEND_KAS)
         left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - listed
-        assert {"/context", "/help", "/mcp", "/model", "/tools", "/usage"} <= left_out
+        assert {"/context", "/help", "/usage"} <= left_out
 
         for command in sorted(left_out):
             state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
@@ -297,7 +297,18 @@ class TestKasMenuMatchesTheGate:
     @pytest.mark.asyncio
     async def test_the_menu_keeps_what_the_dashboard_serves_on_kas(self) -> None:
         listed = await _menu_names(ACP_BACKEND_KAS)
-        assert listed == {"/agent", "/clear", "/compact", "/goal", "/prompts", "/side", "/workflow"}
+        assert listed == {
+            "/agent",
+            "/clear",
+            "/compact",
+            "/goal",
+            "/mcp",
+            "/model",
+            "/prompts",
+            "/side",
+            "/tools",
+            "/workflow",
+        }
 
     @pytest.mark.asyncio
     async def test_the_gate_reads_the_set_not_the_backend_name(
