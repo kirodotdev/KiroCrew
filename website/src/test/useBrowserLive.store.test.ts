@@ -468,3 +468,15 @@ describe('reopen: the finished card goes live again', () => {
     expect(writes.close).toHaveBeenCalledWith(S)
   })
 })
+
+describe('card actions that fail', () => {
+  it('a refused Open in browser or Close live is kept as the control error', async () => {
+    browserLiveStore.applyEvent(ev())
+    writes.open.mockRejectedValueOnce(new Error('open refused'))
+    await browserLiveStore.openInBrowser(S)
+    expect(browserLiveStore.current(S)?.controlError).toContain('open refused')
+    writes.close.mockRejectedValueOnce(new Error('close refused'))
+    await browserLiveStore.closeLive(S)
+    expect(browserLiveStore.current(S)?.controlError).toContain('close refused')
+  })
+})

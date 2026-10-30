@@ -60,7 +60,7 @@ import { useChatEventBridges, useColdFileTabHydration } from '../pages/chat/page
 import { __resetBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import { openActivityPanel, setPendingInput } from '../store/chatSlice'
-import type { ChatMessage, ChatSlot } from '../types'
+import type { ChatMessage } from '../types'
 import { api, type SlotEnvironment } from '../api/client'
 import { slotEnvironmentQueryKey } from '../components/sessionEnvironmentHooks'
 import { i18nT } from '../i18n/t'

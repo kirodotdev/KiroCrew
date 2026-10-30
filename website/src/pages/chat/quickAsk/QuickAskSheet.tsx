@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, typ
 import { EyeOff, Lock, Unlock, X } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
+import Clickable from '../../../components/Clickable'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { OverlayPortal, useInsideDialog } from '../../../components/overlayRoot'
 import { i18nT } from '../../../i18n/t'
@@ -157,7 +158,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
   const bottom = (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50" data-testid="quick-ask-bottom">
       {/* The backdrop folds the sheet like Esc; it is not a control of its own. */}
-      <div aria-hidden="true" className="flex-1" onClick={onCollapse} />
+      <Clickable aria-hidden="true" tabIndex={-1} className="flex-1" onClick={onCollapse} />
       {panel}
     </div>
   )

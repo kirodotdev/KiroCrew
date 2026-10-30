@@ -647,8 +647,9 @@ class BrowserLiveStore {
     })
   }
 
-  openInBrowser(sessionKey: string): void {
-    quiet(this.writes.open(sessionKey))
+  /** Bring the agent's browser window forward. A failure is kept as the card's control error. */
+  openInBrowser(sessionKey: string): Promise<void> {
+    return this.writes.open(sessionKey).then(() => undefined, (e: unknown) => this.failControl(sessionKey, e))
   }
 
   /** Whether `turnId` is the session's newest record: only that card can reopen. */
@@ -708,8 +709,14 @@ class BrowserLiveStore {
   }
 
   /** Fold a reopened view back to its done line (the server's event does the folding). */
-  closeLive(sessionKey: string): void {
-    quiet(this.writes.close(sessionKey))
+  closeLive(sessionKey: string): Promise<void> {
+    return this.writes.close(sessionKey).then(() => undefined, (e: unknown) => this.failControl(sessionKey, e))
+  }
+
+  /** Keep a refused card action on the current record, where the card's ErrorNotice reads it. */
+  private failControl(sessionKey: string, e: unknown): void {
+    const s = this.session(sessionKey)
+    if (s.current) this.setState(sessionKey, s.current.state, errorText(e))
   }
 
   private setState(sessionKey: string, state: BrowserLiveState, controlError?: string): void {

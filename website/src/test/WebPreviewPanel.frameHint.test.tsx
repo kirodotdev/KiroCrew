@@ -56,15 +56,6 @@ async function renderPanel(ui: React.ReactElement) {
 
 const HINT = 'web-preview-frame-hint'
 
-/** What the panel's cookie isolation turns a loopback host into: a preview host
- *  equal to the dashboard host is swapped onto the other alias. Computed rather
- *  than hardcoded so the expected address does not depend on the test
- *  environment's own `window.location.hostname`. */
-const iso = (h: string): string =>
-  window.location.hostname === h ? (h === 'localhost' ? '127.0.0.1' : 'localhost') : h
-
-/** The quick-pick target as it reaches the frame and the hint's link. */
-const PICKED = `http://${iso('localhost')}:3000/`
 /** The address as the person picked it: links outside the dashboard keep it. */
 const PICKED_AS_TYPED = 'http://localhost:3000/'
 

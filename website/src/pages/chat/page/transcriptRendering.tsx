@@ -604,7 +604,7 @@ export function useTranscriptRendering({
         })() : renderMessage(item.idx, item.msg)}
       </div>
     )
-  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage])
+  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage, activeSlot])
   const renderFarmItem = useCallback((i: number): React.ReactNode => {
     farmPassRef.current = true
     try { return buildFarmItem(i) } finally { farmPassRef.current = false }

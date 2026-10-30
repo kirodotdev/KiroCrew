@@ -571,7 +571,8 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     <>
     <canvas
       ref={canvasRef}
-      role="img"
+      // Taking keys and pointer input while held, a picture otherwise.
+      role={interactive ? 'application' : 'img'}
       aria-label={ariaLabel}
       tabIndex={interactive ? 0 : -1}
       data-testid="browser-live-canvas"
