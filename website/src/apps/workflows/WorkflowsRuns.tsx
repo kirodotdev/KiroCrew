@@ -338,62 +338,61 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
         <ul className="flex flex-col gap-1.5">
           {rows.map(row => (
             <li key={row.run_id}>
+              {/* The row is a plain container holding two sibling buttons:
+                  "open this run" and Cancel. Nesting Cancel inside a
+                  role="button" row was invalid, and the row's key handler
+                  swallowed Enter/Space meant for Cancel. */}
               <div
-                className={`flex items-center gap-2 px-3 py-2 rounded border text-[12px] cursor-pointer ${
+                className={`flex items-center gap-2 pr-3 rounded border text-[12px] ${
                   row.run_id === selectedId
                     ? 'border-accent bg-card'
                     : 'border-border hover:bg-bg-hover'
                 }`}
-                onClick={() => select(row.run_id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    select(row.run_id)
-                  }
-                }}
               >
-                {row.badge.active ? (
-                  <Loader2 size={14} className="text-accent animate-spin shrink-0" />
-                ) : row.status === 'finished' ? (
-                  <CheckCircle2 size={14} className="text-ok shrink-0" />
-                ) : row.status === 'paused' ? (
-                  <PauseCircle size={14} className="text-warn shrink-0" />
-                ) : row.status === 'failed' ? (
-                  <XCircle size={14} className="text-danger shrink-0" />
-                ) : (
-                  <Ban size={14} className="text-muted shrink-0" />
-                )}
-                <div className="flex flex-col min-w-0">
-                  <span className="font-medium truncate">{row.name}</span>
-                  <span className="font-mono text-[10px] text-muted truncate">
-                    {row.run_id}
-                    {row.author ? ` · ${row.author}` : ''}
-                  </span>
-                </div>
-                <div className="ml-auto flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] text-muted tabular-nums">
-                    {row.agentCount > 0
-                      ? `${row.agentCount} ${i18nT('pages.channelPage.agents')} · `
-                      : ''}
-                    {row.eventCount} {i18nT('apps.workflows.workflowsRuns.events')}
-                  </span>
-                  <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
-                  {row.cancellable && (
-                    <button
-                      onClick={e => {
-                        e.stopPropagation()
-                        cancelRun(row.run_id)
-                      }}
-                      disabled={cancellingId === row.run_id}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border disabled:opacity-50"
-                      aria-label={i18nT('apps.workflows.workflowsRuns.cancel')}
-                    >
-                      <Ban size={12} /> {cancellingId === row.run_id ? i18nT('apps.workflows.workflowsRuns.cancelling') : i18nT('apps.workflows.workflowsRuns.cancel')}
-                    </button>
+                <button
+                  type="button"
+                  onClick={() => select(row.run_id)}
+                  className="flex flex-1 min-w-0 items-center gap-2 pl-3 py-2 text-left cursor-pointer"
+                >
+                  {row.badge.active ? (
+                    <Loader2 size={14} className="text-accent animate-spin shrink-0" />
+                  ) : row.status === 'finished' ? (
+                    <CheckCircle2 size={14} className="text-ok shrink-0" />
+                  ) : row.status === 'paused' ? (
+                    <PauseCircle size={14} className="text-warn shrink-0" />
+                  ) : row.status === 'failed' ? (
+                    <XCircle size={14} className="text-danger shrink-0" />
+                  ) : (
+                    <Ban size={14} className="text-muted shrink-0" />
                   )}
-                </div>
+                  <span className="flex flex-col min-w-0">
+                    <span className="font-medium truncate">{row.name}</span>
+                    <span className="font-mono text-[10px] text-muted truncate">
+                      {row.run_id}
+                      {row.author ? ` · ${row.author}` : ''}
+                    </span>
+                  </span>
+                  <span className="ml-auto flex items-center gap-2 shrink-0">
+                    <span className="text-[10px] text-muted tabular-nums">
+                      {row.agentCount > 0
+                        ? `${row.agentCount} ${i18nT('pages.channelPage.agents')} · `
+                        : ''}
+                      {row.eventCount} {i18nT('apps.workflows.workflowsRuns.events')}
+                    </span>
+                    <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
+                  </span>
+                </button>
+                {row.cancellable && (
+                  <button
+                    type="button"
+                    onClick={() => cancelRun(row.run_id)}
+                    disabled={cancellingId === row.run_id}
+                    className="flex shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border disabled:opacity-50"
+                    aria-label={i18nT('apps.workflows.workflowsRuns.cancel')}
+                  >
+                    <Ban size={12} /> {cancellingId === row.run_id ? i18nT('apps.workflows.workflowsRuns.cancelling') : i18nT('apps.workflows.workflowsRuns.cancel')}
+                  </button>
+                )}
               </div>
             </li>
           ))}
