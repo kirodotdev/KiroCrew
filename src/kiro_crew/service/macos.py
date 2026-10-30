@@ -26,6 +26,7 @@ from kiro_crew.service.common import (
     launchd_live_program,
     service_environment,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +188,8 @@ def _launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess[s
     return subprocess.run(
         ["launchctl", *args],
         capture_output=True,
-        text=True,
+        # launchctl writes labels and plist paths as UTF-8 whatever the locale.
+        **UTF8_TEXT,
         check=check,
     )
 
