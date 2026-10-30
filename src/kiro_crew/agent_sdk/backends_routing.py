@@ -233,7 +233,10 @@ ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 #: ``_kiro/mcp/resetServer``. Membership makes the handshake-declared channel
 #: live: the reader loop answers that request and the session starts sign-ins.
 #: KAS is the only member; it declares ``openExternalUrl`` in
-#: ``KAS_CLIENT_CAPABILITIES``.
+#: ``KAS_CLIENT_CAPABILITIES``. KAS 0.66.70 (kiro-cli 2.36.0) live: after
+#: ``_kiro/mcp/resetServer`` with ``startOAuth`` on an OAuth-gated http server, the
+#: engine sent the consent URL as ``_kiro/openExternalUrl`` {url}
+#: (acp_frames/kas/open-external-url-live.jsonl).
 #: kiro-cli is not a member: its engine runs the OAuth flow itself and reports the
 #: URL as ``_kiro.dev/mcp/oauth_request``.
 #: claude, codex, opencode, pi, goose and deepseek are not members: none of them

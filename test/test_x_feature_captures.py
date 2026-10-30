@@ -24,7 +24,7 @@ _spec.loader.exec_module(gate)
 # The ceiling only moves down. Raising it is the change this test exists to stop.
 X_CAPTURE_CEILING = 4
 KIRO_KAS_PAIR_CEILING = 0
-X_REGISTRATION_PENDING_CEILING = 9
+X_REGISTRATION_PENDING_CEILING = 6
 
 
 def test_tree_passes() -> None:
@@ -480,3 +480,63 @@ def test_spec_servers_off_wire_captures_run_the_spec_server_off_an_empty_array()
         assert "probe_codeword" in json.dumps(call), rel
         reply = "".join(u["content"]["text"] for u in _updates(rel, "agent_message_chunk"))
         assert reply.strip() == "tangerine-42", rel
+
+
+def _info(rel: str, kind: str) -> list[dict]:
+    """The ``_meta.kiro`` blob of every KAS ``session_info_update`` of *kind*."""
+    out = []
+    for u in _updates(rel, "session_info_update"):
+        kiro = (u.get("_meta") or {}).get("kiro") or {}
+        if kiro.get("kind") == kind:
+            out.append(kiro)
+    return out
+
+
+def test_open_external_url_capture_shows_the_consent_url_request() -> None:
+    """After a resetServer sign-in, KAS asks the client to open the server's consent URL."""
+    rel = "kas/open-external-url-live.jsonl"
+    (ask,) = _methods(rel, "_kiro/openExternalUrl")
+    assert "id" in ask, "it is a request the client answers, so it carries an id"
+    assert set(ask["params"]) == {"url"}
+    url = ask["params"]["url"]
+    assert "/authorize?" in url and "response_type=code" in url
+    assert "code_challenge_method=S256" in url and "redirect_uri=" in url
+
+
+def test_auto_compaction_capture_shows_the_engine_summarizing_on_its_own() -> None:
+    """One prompt, no compact request: KAS sends started then completed, then ends the turn."""
+    rel = "kas/auto-compaction-live.jsonl"
+    frames = _frames(rel)[1:]
+    assert not any(str(f.get("method", "")).startswith("_kiro/session/compact") for f in frames)
+    kinds = [
+        ((f["params"]["update"].get("_meta") or {}).get("kiro") or {}).get("kind")
+        for f in frames
+        if (f.get("params") or {}).get("update", {}).get("sessionUpdate") == "session_info_update"
+    ]
+    started = kinds.index("summarization_started")
+    assert kinds[started + 1] == "summarization_completed"
+    (done,) = _info(rel, "summarization_completed")
+    assert done["summarization"]["status"] == "success"
+    assert frames[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_report_usage_captures_each_carry_the_turn_bill() -> None:
+    """kiro and KAS bill in credits; claude, opencode and goose in prompt-result tokens."""
+    rel = "kiro/compaction-live.jsonl"
+    metered = [
+        e
+        for f in _methods(rel, "_kiro.dev/metadata")
+        for e in (f["params"].get("meteringUsage") or [])
+    ]
+    assert metered and all(e["unit"] == "credit" and e["value"] > 0 for e in metered)
+    (done,) = _info("kas/turn-usage-live.jsonl", "turn_completion")
+    (entry,) = done["promptTurnSummaries"]
+    assert entry["unit"] == "credit" and entry["usage"] > 0
+    for rel in (
+        "claude/session.jsonl",
+        "opencode/session-live.jsonl",
+        "goose/turn-live.jsonl",
+    ):
+        results = [r.get("result") or {} for r in _responses(rel).values()]
+        ends = [r for r in results if "stopReason" in r]
+        assert ends and all(e["usage"]["outputTokens"] > 0 for e in ends), rel
