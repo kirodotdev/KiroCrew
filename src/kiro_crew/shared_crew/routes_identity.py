@@ -112,7 +112,35 @@ async def api_shared_crew_people(request: web.Request) -> web.Response:
 
     rows = [r for r in await _catalog_rows(request) if not _machine_only(str(r.get("key") or ""))]
     body = people_view(viewer_principal(request), rows)
-    return web.json_response(await asyncio.to_thread(decorate_people, body))
+    body = await asyncio.to_thread(decorate_people, body)
+    _attach_live(request, body, rows)
+    return web.json_response(body)
+
+
+def _attach_live(request: web.Request, body: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Mark who is connected now, and where, from the in-memory presence.
+
+    ``live`` is ``{activity, session_key, session_title}`` for a person with an
+    open tab, and absent otherwise. A title is given only for a session in this
+    catalog, which the reader may already list.
+    """
+    from kiro_crew.shared_crew.presence import presence_for
+
+    state = request.app.get("state")
+    if state is None:
+        return
+    live = presence_for(state).live_by_principal()
+    titles = {str(r.get("key") or ""): str(r.get("title") or "") for r in rows}
+    for row in body.get("people") or []:
+        hit = live.get(str((row.get("principal") or {}).get("id") or ""))
+        if hit is None:
+            continue
+        activity, session_key = hit
+        row["live"] = {
+            "activity": activity.value,
+            "session_key": session_key if session_key in titles else "",
+            "session_title": titles.get(session_key, ""),
+        }
 
 
 def _observed_principals() -> list[Principal]:

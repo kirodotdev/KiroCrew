@@ -653,6 +653,7 @@ Audited sites, all through `schedule_action_audit`:
 | `cancel` | `routes_admission.api_work_cancel`, target the work id | request actor | | `applied`, or `conflict` on a stale or illegal revision |
 | `approval`, `question_answer` | `DecisionRegistry.resolve` (`decisions.audit_decision_response`), target the decision id | the decision's initiator | the verified responder | `applied` for the winner, `conflict` for a different response that lost, including one that reaches the settled decision after its wait ended (`DecisionRegistry.classify_late`, from the question answer and approval routes); a replay of the winner and a response to nothing pending add no record |
 | `memory_change` | `cron.api_lessons_create` (`memory_changes.announce_replacement`), target `lesson:<category>` | the lesson's writer | | `applied`; only for a write that replaced stored lessons |
+| `person_display` | `routes_people.api_set_display`, target `person:<user_id>` | the person who made the change | | `applied`; `display_change` in `extra` and the event metadata: `{user_id, login, old_name, new_name, avatar_changed}` |
 
 ### Memory changes
 
@@ -1242,6 +1243,7 @@ that never learned a revision sends none and is not compared.
 | `POST` / `DELETE /api/shared-crew/tailscale/credential` | owner: connect `{key}` or remove the key; the status body, never the key |
 | `POST /api/shared-crew/tailscale/avatars` `{data_base64}` | owner: `{avatar_id}` |
 | `GET /api/shared-crew/tailscale/avatars/{avatar_id}` | any dashboard user: the image |
+| `PUT /api/shared-crew/people/{user_id}/display` `{alias, avatar_data_base64?, clear_avatar?}` | any admitted dashboard person (no app token, no restricted session): `{user_id, alias, avatar_id, audited}`; `404 unknown_person` for a user id this Crew has no login for; avatar refusals as for invites (`avatar_type`, `avatar_too_large`) |
 
 Browser-bound principals use `to_public_dict` (no issuer or subject); browser-bound
 work uses `AcceptedWork.to_public_dict` (no idempotency scope, lease or fencing ids).
@@ -1260,7 +1262,9 @@ all pages; `hidden_by_filter` counts the sessions it excluded.
 
 The server pushes whole-value frames: `shared_crew.presence`, `shared_crew.work`,
 `shared_crew.decision`, `shared_crew.capacity`, `shared_crew.send_state`,
-`shared_crew.typing_lease` and `shared_crew.memory_change` (`collab.SERVER_FRAMES`). The
+`shared_crew.typing_lease`, `shared_crew.memory_change` and `shared_crew.people`
+(`{type, user_id}`: someone changed a person's display name or picture, and People
+refetches) (`collab.SERVER_FRAMES`). The
 client sends `shared_crew.activity` with a session, an `Activity` and, when the
 tab's draft is empty, `draft: "empty"`. The activity frame carries no principal and
 no text; the server stamps the connection's actor and ignores anything else. On reconnect the client refetches the HTTP state and treats the next frames as
@@ -1393,31 +1397,44 @@ A source answers from state it already holds; it does no I/O on the request path
   `unknown`), from `host_power.note_host`, which `host_power.probe_after_start`
   runs in a background task after the listener is up (see Access set, Keep awake).
 
-In network mode the People page reads, top to bottom: How people connect, Seen in
-this Crew, Assigned users (only when the directory lists people), Share this Crew
-(only while the direct listener is active), Invite over Tailscale and Remote
-Control. Each section keeps its heading, its controls and links, and at most one
-short line; every longer explanation sits in an `InfoTip` beside the heading
-(`PeopleModes.headingTip`). Seen in this Crew's tip holds the not-a-full-list note,
-the usage, device-owner and daemon notes; Share this Crew's holds who can open the
-link; Invite over Tailscale's holds the invite explanation and, without a key, the
-by-hand share steps; the API key label has its own tip; Remote Control's holds its
-personal-only note.
+In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
 
-How people connect lists Tailscale first, then Kiro login (still "Not available in
-this build"). Systems Manager is not listed. The Tailscale row's badge reads
-"Listening on your tailnet" while `tailnet_direct.state` is `active`, and the
-adapter's setup state otherwise; it reports the gateway's own listener and never
-claims the viewer can reach it. Its tip carries what the former "Who can connect"
-section said: who reaches the Crew and that access is changed in Tailscale. Its one
-line says the Crew is shared only inside the owner's tailnet (messages still go to
-the model service, so it does not say the data stays on owned machines); that
-"tailnet" carries a tip defining it as the private network of devices signed in to
-the owner's Tailscale account (the catalog marks the word with `<tip>`, rendered
-through `Trans`). Next to the sharing docs link sits "Manage people in Tailscale"
-(`https://login.tailscale.com/admin/users`, a fixed URL, new tab, `noopener
-noreferrer`): removing a person from this Crew is removing them in Tailscale. The
-People page has no approval list: who gets in is decided in Tailscale.
+1. The share card. A green dot and "Shared on your tailnet" while
+   `tailnet_direct.state` is `active`, else the Tailscale setup path's status badge;
+   it reports the gateway's own listener and never claims the viewer can reach it.
+   Its ⓘ says who can open the Crew (people Tailscale lets reach this machine) and
+   that messages still go to the AI model service. On the right, the faces of the
+   people connected now and "N here now", from presence. Below, the share link with
+   a primary "Copy link" and, for the owner only (the invite read answered), a
+   secondary "Invite...", then "Manage people in Tailscale"
+   (`https://login.tailscale.com/admin/users`, a fixed URL, new tab, `noopener
+   noreferrer`): removing a person is removing them in Tailscale.
+2. "People · N" with an ⓘ (everyone who connected; Tailscale names the device
+   owner; names and photos are display only; remove people in Tailscale). Each row:
+   picture, name (with You), the login and one activity (typing in a session from
+   presence, else the running count, else here now or last seen), a green dot while
+   connected, and ✎ when the row has a `tailscale_user_id`. Invites nobody accepted
+   yet follow, dimmed, offering only Revoke.
+3. Remote Control with an ⓘ and its "Set up" button.
+
+"Invite..." opens a dialog with the invite form (email or link, name, picture).
+Without a connected Tailscale API key the dialog asks for the key first, beside the
+by-hand share path. The People page has no approval list, no Systems Manager or
+Kiro login row and no Assigned users section; the capability code for those paths
+is unchanged.
+
+✎ opens a name-and-picture dialog. Any admitted person may change any person's
+display name and picture, their own included (`routes_people`): equal rights, no
+owner check. The record is keyed by stable Tailscale user id in the invite store's
+`display` map, so it follows a renamed login and works for a person who was never
+invited (the user id comes from the daemon's whois, `tailnet_live_allowlist`).
+`decorate_people` attaches `tailscale_user_id` and lets a display record win over
+the alias an invite carried. It is display only: no access path reads `display`,
+the member record admission reads is untouched, and the verified login stays on the
+row. Each change is audited as a `person_display` action and pushed as a
+`shared_crew.people` frame. `GET /api/shared-crew/people` also carries `live`
+(`{activity, session_key, session_title}`, the person's strongest activity across
+sessions from `PresenceRegistry.live_by_principal`) for a person with a tab open.
 
 The People surface (Settings > People) shows one setup empty state while no setup
 path is `available` and no one but the viewer has been seen: it names the three paths, each with the availability its

@@ -12,6 +12,9 @@ a fake accepted invite, or swap a teammate's avatar:
 * ``invites.json`` holds the device id, the key's expiry, each invite Crew made
   and each person who accepted one, keyed by Tailscale's stable user id;
 * ``avatars/`` holds uploaded avatar images, named by content digest.
+* ``invites.json``'s ``display`` map holds the name and picture any admitted
+  person gave someone, keyed by the same stable user id. It is display only:
+  nothing that decides access reads it.
 
 The key is never written to ``invites.json``, never logged and never returned
 by any route; :func:`credential_present` is all a status read learns.
@@ -109,6 +112,7 @@ def _empty() -> dict[str, Any]:
         "connected_at": 0.0,
         "invites": {},
         "members": {},
+        "display": {},
         "backoff_until": 0.0,
         "backoff_secs": 0.0,
         "last_sync_at": 0.0,
@@ -125,7 +129,7 @@ def load_state() -> dict[str, Any]:
         return _empty()
     out = _empty()
     out.update({k: v for k, v in data.items() if k in out})
-    for key in ("invites", "members"):
+    for key in ("invites", "members", "display"):
         if not isinstance(out[key], dict):
             out[key] = {}
     return out
@@ -155,6 +159,53 @@ def clean_alias(raw: object, limit: int = MAX_ALIAS_CHARS) -> str:
         return ""
     text = "".join(ch for ch in raw if ch.isprintable()).strip()
     return text[:limit]
+
+
+#: A Tailscale stable user id: the daemon's numeric ``UserProfile.ID``, as text.
+_USER_ID_RE = re.compile(r"\A[0-9A-Za-z_-]{1,64}\Z")
+
+
+def valid_user_id(user_id: object) -> bool:
+    return isinstance(user_id, str) and bool(_USER_ID_RE.match(user_id))
+
+
+def display_overrides() -> dict[str, dict[str, Any]]:
+    """Each display record, keyed by stable user id."""
+    return {
+        uid: row
+        for uid, row in (load_state().get("display") or {}).items()
+        if isinstance(row, dict) and valid_user_id(uid)
+    }
+
+
+def set_display(
+    user_id: str, *, login: str, alias: str, avatar_id: str, actor: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Store *user_id*'s display name and picture; return ``(old, new)``.
+
+    The old values are what the People page showed: this record, else the
+    member record an accepted invite wrote. Display only, never an identity.
+    """
+    before: dict[str, str] = {}
+    after: dict[str, str] = {}
+
+    def _mutate(s: dict[str, Any]) -> None:
+        prior = s["display"].get(user_id)
+        if not isinstance(prior, dict):
+            member = s["members"].get(user_id)
+            prior = member if isinstance(member, dict) else {}
+        before.update(alias=str(prior.get("alias") or ""), avatar_id=str(prior.get("avatar_id") or ""))
+        after.update(alias=alias, avatar_id=avatar_id)
+        s["display"][user_id] = {
+            "login": login,
+            "alias": alias,
+            "avatar_id": avatar_id,
+            "updated_at": now(),
+            "updated_by": actor,
+        }
+
+    update_state(_mutate)
+    return before, after
 
 
 def email_hash(email: str) -> str:

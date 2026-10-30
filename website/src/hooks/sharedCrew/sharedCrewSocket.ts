@@ -102,6 +102,9 @@ export function applySharedCrewFrame(queryClient: QueryClient, data: unknown): v
       setFrameData<TypingLease | null>(queryClient, sharedCrewKeys.typingLease(frame.session_key), typingLeaseOf(frame))
       return
     }
+    case 'shared_crew.people':
+      void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.people })
+      return
     case 'shared_crew.memory_change': {
       const change = frame.change
       if (!change || typeof change.new !== 'string') return

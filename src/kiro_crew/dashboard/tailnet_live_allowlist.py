@@ -227,6 +227,16 @@ def logins_for(user_id: str) -> frozenset[str]:
         return frozenset(_LOGINS_BY_USER.get(user_id, ()))
 
 
+def user_id_for(login: str) -> str:
+    """The stable user id :func:`note_login` recorded for *login*, or ``""``."""
+    key = _norm(login)
+    with _LOCK:
+        for user_id, logins in _LOGINS_BY_USER.items():
+            if key in logins:
+                return user_id
+    return ""
+
+
 def seen_logins() -> frozenset[str]:
     """Every login :func:`note_login` recorded, for any user id."""
     with _LOCK:

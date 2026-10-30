@@ -88,6 +88,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
   'PeoplePanel.tsx': 'read-only list of who has used this Crew and where access is managed; no setting and no control writes a config path',
+  'PeopleCrew.tsx': 'the People share card, People list and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes, Remote Control button); no setting and no control writes a config path',
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
   'TailscaleAccess.tsx': 'the People card listing who may open this Crew and who is waiting, with Approve, Dismiss and Remove actions; access is computed, no setting and no control writes a config path',
@@ -282,6 +283,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason:
       'the per-crew on/off switch rendered once per runtime-fetched crew row, a field of that ' +
       'crew\'s record, not a global setting',
+  },
+  'PeopleCrew.tsx': {
+    counts: { Input: 2, input: 1 },
+    reason:
+      'the read-only share link field and the name-and-picture dialog (name, picture file) ' +
+      'are a copy target and display-only edits saved by their own route: nothing here ' +
+      'writes a config path, so there is no row for settings search to find',
   },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },

@@ -57,6 +57,25 @@ export interface PeopleRow {
   /** The alias and avatar the owner gave an invited teammate, bound by the
    *  server to this row's verified tailnet login. Display only. */
   member?: { alias: string; avatar_id: string; profile_pic_url: string }
+  /** The stable Tailscale user id, when this Crew knows it: the key the
+   *  display route edits. Absent rows cannot be renamed here. */
+  tailscale_user_id?: string
+  /** Set while the person has a tab open, from live presence. */
+  live?: { activity: 'viewing' | 'typing' | 'idle'; session_key: string; session_title: string }
+}
+
+/** `PUT /api/shared-crew/people/{user_id}/display`. */
+export interface PersonDisplayBody {
+  alias: string
+  avatar_data_base64?: string
+  clear_avatar?: boolean
+}
+
+export interface PersonDisplay {
+  user_id: string
+  alias: string
+  avatar_id: string
+  audited: boolean
 }
 
 /** `GET /api/shared-crew/people`. The directory is a separate, authoritative list. */

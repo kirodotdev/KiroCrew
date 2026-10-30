@@ -19,6 +19,7 @@ from kiro_crew.shared_crew import (
     routes_collab,
     routes_identity,
     routes_invites,
+    routes_people,
 )
 
 
@@ -60,3 +61,4 @@ def register(app: web.Application) -> None:
     )
     app.router.add_delete("/api/shared-crew/access/approved/{user_id}", routes_access.api_remove)
     routes_access.install_closer(app)
+    app.router.add_put("/api/shared-crew/people/{user_id}/display", routes_people.api_set_display)

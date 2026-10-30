@@ -91,6 +91,10 @@ beforeEach(() => {
 afterEach(() => { for (const qc of clients.splice(0)) qc.clear() })
 
 async function enterInviteDraft() {
+  // A network Crew keeps the invite form in the share card's Invite... dialog.
+  await waitFor(() => expect(screen.queryByTestId('invite-form') ?? screen.queryByTestId('share-hero-invite')).not.toBeNull())
+  const opener = screen.queryByTestId('share-hero-invite')
+  if (opener && !screen.queryByTestId('invite-form')) fireEvent.click(opener)
   const form = await screen.findByTestId('invite-form')
   fireEvent.change(screen.getByTestId('invite-emails'), { target: { value: 'draft@example.test' } })
   fireEvent.change(screen.getByTestId('invite-alias'), { target: { value: 'Draft name' } })

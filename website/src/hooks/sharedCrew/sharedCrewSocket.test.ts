@@ -183,3 +183,12 @@ describe('activity frames', () => {
     expect(sendActivity('', 'viewing')).toBe(false)
   })
 })
+
+describe('shared_crew.people frames', () => {
+  it('marks the People list stale so an open page refetches the new name', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(sharedCrewKeys.people, { schema_version: 1, directory: { state: 'unavailable' }, people: [] })
+    applySharedCrewFrame(qc, { type: 'shared_crew.people', user_id: '4102' })
+    expect(qc.getQueryState(sharedCrewKeys.people)?.isInvalidated).toBe(true)
+  })
+})

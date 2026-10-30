@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { ALL_UNAVAILABLE, type PeopleResponse } from '../../api/sharedCrewUi'
@@ -7,7 +7,7 @@ import type { CrewModeResponse } from '../../api/sharedCrewMode'
 import { PeoplePanel } from './PeoplePanel'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), mobileConnectMethods: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewAccess: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), mobileConnectMethods: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewAccess: vi.fn(), sharedCrewSetPersonDisplay: vi.fn() },
 }))
 const people = vi.mocked(api.sharedCrewPeople)
 const caps = vi.mocked(api.sharedCrewCapabilities)
@@ -81,13 +81,12 @@ describe('PeoplePanel', () => {
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
     expect(screen.getByText('Alice')).toBeInTheDocument()
     expect(screen.getByText('You')).toBeInTheDocument()
-    expect(screen.getByText('Seen connecting')).toBeInTheDocument()
-    expect(screen.getByText('Created sessions')).toBeInTheDocument()
-    expect(screen.getAllByTestId('person-usage')[0].textContent).toBe('1 running · 2 waiting')
-    // An empty directory renders no section; the Tailscale users link is the row's.
+    expect(screen.getByText('People · 2')).toBeInTheDocument()
+    expect(screen.getAllByTestId('person-activity')[0]).toHaveTextContent('p_a@example.test · 1 running')
     expect(screen.queryByText('Assigned users')).toBeNull()
-    expect(screen.getByTestId('adapter-tailscale-manage')).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
-    expect(tipText('people-seen-tip')).toMatch(/not a full list of who can connect/)
+    expect(screen.queryByText('Who can connect')).toBeNull()
+    expect(screen.getByTestId('share-hero-manage')).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
+    expect(tipText('people-tip')).toMatch(/remove them in Tailscale/)
     // Nothing on this surface manages membership.
     expect(actionButtons()).toHaveLength(0)
     expect(screen.queryByText(/add|remove|role|admin/i, { selector: 'button' })).toBeNull()
@@ -98,7 +97,7 @@ describe('PeoplePanel', () => {
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
     expect(await screen.findByTestId('console-pointer')).toBeInTheDocument()
-    expect(tipText('people-seen-tip')).toMatch(/cannot report how much work/)
+    expect(tipText('people-tip')).toMatch(/cannot report how much work/)
   })
 
   it('shows a capabilities read failure with agent recovery, never unavailable attribution', async () => {
@@ -141,8 +140,8 @@ describe('PeoplePanel', () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'degraded', reasons: { attribution: 'daemon_not_found' } })
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
-    await screen.findByTestId('people-seen-tip')
-    expect(tipText('people-seen-tip')).toMatch(/not running/i)
+    await screen.findByTestId('people-tip')
+    expect(tipText('people-tip')).toMatch(/not running/i)
     expect(screen.getByTestId('people-panel')).toBeInTheDocument()
   })
 
@@ -228,18 +227,17 @@ describe('PeoplePanel', () => {
 describe('PeoplePanel modes', () => {
   const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] }
 
-  it('network: adapters are read-only, SSM points to IAM and Session Manager and says its work is credited to whoever runs this Crew, Remote Control shows', async () => {
+  it('network: the share card, the People list and Remote Control; no adapter rows', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
-    expect(screen.getByTestId('adapter-tailscale')).toHaveAttribute('data-state', 'available')
-    expect(screen.getByTestId('adapter-tailscale-docs')).toHaveAttribute('href', 'https://tailscale.com/kb/1084/sharing')
-    // Systems Manager is not offered on this surface.
+    expect(screen.getByTestId('share-hero-state')).toHaveTextContent('Available')
+    expect(screen.queryByTestId('adapter-tailscale')).toBeNull()
     expect(screen.queryByTestId('adapter-systems_manager')).toBeNull()
+    expect(screen.queryByTestId('adapter-kiro_login')).toBeNull()
     expect(tipText('remote-control-tip')).toMatch(/for you only/)
-    expect(screen.getByTestId('adapter-kiro_login').textContent).toContain('Not available in this build')
     expect(screen.getByTestId('remote-control-setup')).toBeInTheDocument()
     expect(await screen.findByTestId('remote-control-unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('people-console')).toBeNull()
@@ -320,37 +318,118 @@ describe('PeoplePanel modes', () => {
   })
 })
 
-describe('PeoplePanel direct tailnet link', () => {
+describe('PeoplePanel layout C', () => {
   const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] }
   const DIRECT = {
     state: 'active' as const, reason: '', method: 'localapi_unix', owner_login: 'owner@example.test',
     urls: ['http://crew.tail1234.ts.net:5476/', 'http://100.64.0.1:5476/'], addresses: ['100.64.0.1'],
   }
+  const INVITES = {
+    connected: true, tailnet: 'example', key_expires: '', key_expires_soon: false, key_expired: false,
+    admin_share_url: '', invites: [{ id: 'inv1', kind: 'email' as const, email: 'pat@example.test', multi_use: false, alias: 'Pat', avatar_id: '', created_at: 0, status: 'pending' as const, accepted_login: '' }],
+  }
 
-  it('shows the plain link with copy, the who-can-open note and the device-owner caveat', async () => {
+  it('shows the live state, the link with Copy link, who is here now and what they are doing', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', attribution_via: 'tailscale_direct', tailnet_direct: DIRECT })
-    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
+    people.mockResolvedValue({ ...EMPTY, people: [
+      row('p_b', 'Bob', { live: { activity: 'typing', session_key: 's1', session_title: 'Release plan' } }),
+      row('p_c', 'Cleo', { last_seen_at: null }),
+    ] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    const link = await screen.findByTestId('tailnet-direct-link')
-    const field = link.querySelector('input') as HTMLInputElement
-    expect(field.value).toBe('http://crew.tail1234.ts.net:5476/')
-    expect(field.value).not.toMatch(/token/)
-    // The who-can-open note sits in the section heading's ⓘ, not under the link.
-    expect(link).not.toHaveTextContent('By default, anyone allowed by Tailscale access rules')
-    expect(tipText('direct-share-tip')).toMatch(/By default, anyone allowed by Tailscale access rules/)
-    expect(screen.getAllByRole('button', { name: 'Copy' }).length).toBeGreaterThan(0)
-    expect(tipText('people-seen-tip')).toMatch(/owns each device/)
+    const hero = await screen.findByTestId('share-hero')
+    expect(screen.getByTestId('share-hero-state')).toHaveTextContent('Shared on your tailnet')
+    expect(tipText('share-hero-tip')).toMatch(/Messages still go to the AI model service/)
+    expect(screen.getByTestId('share-hero-link')).toHaveValue('http://crew.tail1234.ts.net:5476/')
+    expect(screen.getByTestId('share-hero-copy')).toHaveTextContent('Copy link')
+    expect(screen.getByTestId('share-hero-here')).toHaveTextContent('1 here now')
+    expect(hero.textContent).not.toMatch(/reachable/i)
+    const bob = screen.getByTestId('person-p_b')
+    expect(bob).toHaveTextContent('typing in Release plan')
+    expect(bob.querySelector('[aria-label="Here now"]')).not.toBeNull()
+    expect(screen.getByTestId('person-p_c').querySelector('[aria-label="Here now"]')).toBeNull()
+    expect(tipText('people-tip')).toMatch(/Tailscale names the person who owns each device/)
   })
 
-  it('shows no link when the direct listener is not active', async () => {
-    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: { ...DIRECT, state: 'unavailable', reason: 'tailscale_not_running', urls: [] } })
+  it('shows the setup state and no link while the listener is off', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: { ...DIRECT, state: 'off', urls: [] } })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
-    expect(screen.queryByTestId('tailnet-direct-link')).toBeNull()
-    expect(tipText('people-seen-tip')).not.toMatch(/owns each device/)
+    expect(await screen.findByTestId('share-hero-state')).toHaveTextContent('Available')
+    expect(screen.queryByText('Shared on your tailnet')).toBeNull()
+    expect(screen.queryByTestId('share-hero-link')).toBeNull()
+    expect(screen.queryByTestId('share-hero-here')).toBeNull()
+  })
+
+  it('offers Invite... to the owner, opens the dialog, and lists a pending invite dimmed with Revoke', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    invitesApi.mockResolvedValue(INVITES as never)
+    mount()
+    const pending = await screen.findByTestId('invite-inv1')
+    expect(pending.className).toMatch(/opacity-60/)
+    expect(pending).toHaveTextContent('Revoke')
+    expect(pending).not.toHaveTextContent('Resend')
+    fireEvent.click(screen.getByTestId('share-hero-invite'))
+    expect(await screen.findByTestId('invite-dialog')).toBeInTheDocument()
+    expect(screen.getByTestId('invite-form')).toBeInTheDocument()
+  })
+
+  it('asks for the API key first inside the dialog when none is connected', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    invitesApi.mockResolvedValue({ ...INVITES, connected: false, invites: [] } as never)
+    mount()
+    fireEvent.click(await screen.findByTestId('share-hero-invite'))
+    const dialog = await screen.findByTestId('invite-dialog')
+    expect(dialog).toHaveTextContent('Connect a Tailscale API key first')
+    expect(screen.getByTestId('invite-key-input')).toBeInTheDocument()
+    expect(screen.queryByTestId('invite-form')).toBeNull()
+  })
+
+  it('hides Invite... from a teammate (the invite read refuses)', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    await screen.findByTestId('share-hero')
+    expect(screen.queryByTestId('share-hero-invite')).toBeNull()
+  })
+
+  it('lets anyone edit a person with a known Tailscale user id, and saves name and picture', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [
+      row('p_b', 'Bob', { tailscale_user_id: '4102', member: { alias: 'Bobby', avatar_id: '', profile_pic_url: '' } }),
+      row('p_c', 'Cleo'),
+    ] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    vi.mocked(api.sharedCrewSetPersonDisplay).mockResolvedValue({ user_id: '4102', alias: 'Robert', avatar_id: '', audited: true })
+    mount()
+    const bob = await screen.findByTestId('person-p_b')
+    expect(bob).toHaveTextContent('Bobby')
+    expect(screen.getByTestId('person-p_c').querySelector('[data-testid="person-edit"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Bobby' }))
+    const dialog = await screen.findByTestId('person-edit-dialog')
+    expect(dialog).toHaveTextContent('p_b@example.test')
+    expect(dialog).toHaveTextContent('It does not change who can connect.')
+    fireEvent.change(screen.getByTestId('person-edit-name'), { target: { value: 'Robert' } })
+    fireEvent.click(screen.getByTestId('person-edit-save'))
+    await waitFor(() => expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledWith('4102', { alias: 'Robert' }))
+    await waitFor(() => expect(screen.queryByTestId('person-edit-dialog')).toBeNull())
+  })
+
+  it('refuses a picture of the wrong type before uploading', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob', { tailscale_user_id: '4102' })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    fireEvent.click(await screen.findByTestId('person-edit'))
+    fireEvent.change(await screen.findByTestId('person-edit-picture-input'), { target: { files: [new File(['x'], 'x.svg', { type: 'image/svg+xml' })] } })
+    expect(await screen.findByTestId('person-edit-hint')).toBeInTheDocument()
+    expect(api.sharedCrewSetPersonDisplay).not.toHaveBeenCalled()
   })
 
   it('points the macOS empty state at the direct link', async () => {
@@ -359,62 +438,5 @@ describe('PeoplePanel direct tailnet link', () => {
     mount()
     expect(await screen.findByTestId('people-unnamed')).toBeInTheDocument()
     expect(screen.getByText(/Share the direct Tailscale link instead to see their names/)).toBeInTheDocument()
-  })
-})
-
-describe('PeoplePanel Tailscale row', () => {
-  const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] }
-  const ACTIVE = {
-    state: 'active' as const, reason: '', method: 'localapi_unix', owner_login: 'owner@example.test',
-    urls: ['http://crew.tail1234.ts.net:5476/'], addresses: ['100.64.0.1'],
-  }
-
-  it('opens the page, says it stays in the tailnet, and links to Tailscale users', async () => {
-    caps.mockResolvedValue({ ...SHARED, attribution: 'available', membership_link: 'tailscale_admin' })
-    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
-    modeApi.mockResolvedValue(modeBody('network'))
-    mount()
-    const panel = await screen.findByTestId('people-panel')
-    const sections = panel.querySelectorAll('[data-testid^="adapter-"], [data-testid^="person-"]')
-    expect(sections[0]).toHaveAttribute('data-testid', 'adapter-tailscale')
-    expect(screen.getByTestId('adapter-tailscale-scope')).toHaveTextContent('Shared only inside your own tailnet.')
-    const manage = screen.getByTestId('adapter-tailscale-manage')
-    expect(manage).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
-    expect(manage).toHaveAttribute('target', '_blank')
-    expect(manage).toHaveAttribute('rel', 'noopener noreferrer')
-    expect(manage).toHaveTextContent('Manage people in Tailscale')
-  })
-
-  it('shows the live listener only while the direct listener is active', async () => {
-    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: ACTIVE })
-    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
-    modeApi.mockResolvedValue(modeBody('network'))
-    mount()
-    expect(await screen.findByTestId('adapter-tailscale-listening')).toHaveTextContent('Listening on your tailnet')
-    expect(screen.getByTestId('adapter-tailscale').textContent).not.toMatch(/reachable/i)
-  })
-
-  it('falls back to the setup state when the listener is off', async () => {
-    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: { ...ACTIVE, state: 'off', urls: [] } })
-    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
-    modeApi.mockResolvedValue(modeBody('network'))
-    mount()
-    await screen.findByTestId('people-panel')
-    expect(screen.queryByTestId('adapter-tailscale-listening')).toBeNull()
-    expect(screen.getByTestId('adapter-tailscale')).toHaveTextContent('Available')
-  })
-
-  it('defines tailnet in the row line and folds who-can-connect into the row tip', async () => {
-    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
-    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
-    modeApi.mockResolvedValue(modeBody('network'))
-    mount()
-    const scope = await screen.findByTestId('adapter-tailscale-scope')
-    expect(scope).toHaveTextContent('Shared only inside your own tailnet.')
-    expect(scope.textContent).not.toContain('<tip>')
-    expect(tipText('adapter-tailscale-scope')).toBe('Your tailnet is the private network of devices signed in to your Tailscale account.')
-    expect(tipText('adapter-tailscale-tip')).toMatch(/To change who can connect, manage people and access rules in Tailscale/)
-    expect(screen.queryByText('Who can connect')).toBeNull()
-    expect(screen.queryByText('Who can open this Crew')).toBeNull()
   })
 })

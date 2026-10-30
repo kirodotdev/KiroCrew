@@ -187,6 +187,22 @@ class PresenceRegistry:
             self._expire_locked(self._clock())
             return self._fold_locked(session_key)
 
+    def live_by_principal(self) -> dict[str, tuple[Activity, str]]:
+        """Each connected principal's strongest activity and the session it is in.
+
+        Crew-wide: a person with tabs in several sessions reports the session of
+        their strongest activity (typing over viewing over idle), newest first.
+        """
+        with self._lock:
+            self._expire_locked(self._clock())
+            best: dict[str, _Connection] = {}
+            for conn in self._conns.values():
+                prior = best.get(conn.principal.id)
+                rank = (_ACTIVITY_RANK[conn.activity], conn.refreshed)
+                if prior is None or rank > (_ACTIVITY_RANK[prior.activity], prior.refreshed):
+                    best[conn.principal.id] = conn
+            return {pid: (c.activity, c.session_key) for pid, c in best.items()}
+
     def _expire_locked(self, now: float) -> list[str]:
         stale = [cid for cid, c in self._conns.items() if now - c.refreshed >= self._ttl]
         sessions = []

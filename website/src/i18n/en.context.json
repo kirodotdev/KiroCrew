@@ -954,7 +954,6 @@
     "sharedCrew.waitlist_approved_at": "When the owner approved this person. {{when}} is a date and time.",
     "sharedCrew.invite_alias_label": "Label of the optional display name for the invited teammate.",
     "sharedCrew.waitlist_unreadable": "Error shown when the access list file cannot be read; only the owner gets in.",
-    "sharedCrew.direct_share_title": "People settings section heading above the plain Tailscale share link of this Crew.",
     "sharedCrew.team_access_title": "Settings > People section heading for an organization-managed team Crew.",
     "sharedCrew.team_access_note": "Explanation under the Team access heading: the list is only people seen signing in; membership lives in the Console.",
     "sharedCrew.waitlist_waiting_empty": "Shown when nobody is waiting for approval.",
@@ -993,7 +992,6 @@
     "sharedCrew.invite_err_avatar_type": "Error: the picture is not an allowed image type.",
     "sharedCrew.invite_send": "Button that sends email invites.",
     "sharedCrew.invite_copy_link": "Button that copies the invite link.",
-    "sharedCrew.adapters_title": "Settings > People section heading listing the network paths (Tailscale, AWS Systems Manager, Kiro login) people use to reach this Crew.",
     "sharedCrew.first_share_audience_local": "First-share warning: who can open this Crew while local authorization is on.",
     "sharedCrew.direct_link_title": "Label above the plain Tailscale URL that opens this Crew without a token.",
     "sharedCrew.trigger_system": "Session-list byline for a session the app started on its own (startup, maintenance), not a person.",
@@ -1015,7 +1013,6 @@
     "sharedCrew.send_race_dismiss": "Button in the lost-send notice that hides the notice and keeps the draft in the composer for editing.",
     "sharedCrew.invite_status_pending": "Badge: the invite was not accepted yet.",
     "sharedCrew.setup_kiro_login_body": "One-line description of the Kiro login setup method.",
-    "sharedCrew.people_direct_caveat": "Note under the People list: Tailscale identifies a device's owner, so people sharing a device look like one person.",
     "sharedCrew.send_race_send_now": "Button in the lost-send notice that sends the kept draft now, as a new message after the one that was accepted first.",
     "sharedCrew.waitlist_title": "Section title: who can open this Crew over Tailscale (owner only).",
     "sharedCrew.invite_copied": "Button label after the link was copied.",
@@ -1033,10 +1030,8 @@
     "sharedCrew.first_share_laptop_no_keep_awake": "Laptop warning when this computer cannot be kept awake.",
     "sharedCrew.setup_status_available": "Status badge on a setup method the gateway reports as ready to use.",
     "sharedCrew.direct_link_copy_failed": "Error shown when copying the Tailscale URL to the clipboard failed.",
-    "sharedCrew.remote_control_open": "Button opening the existing connect-your-phone dialog.",
     "sharedCrew.invite_err_auth": "Error: Tailscale refused the key.",
     "sharedCrew.invite_key_remove_body": "Explains that removing the API key cannot be undone.",
-    "sharedCrew.adapter_tailscale_docs": "Link to Tailscale's public documentation about sharing.",
     "sharedCrew.remote_control_body": "Explanation under the Remote Control heading: personal, grants nobody else access.",
     "sharedCrew.mode_invalid_title": "Heading of the Settings > People error state when a team-access configuration exists but is invalid.",
     "sharedCrew.you": "Badge beside the viewer's own row in the People list: marks the person reading the screen.",
@@ -1062,6 +1057,7 @@
     "sharedCrew.waitlist_approved_badge": "Badge on a person the owner approved.",
     "sharedCrew.console_link_missing": "Note in Settings > People when the Crew is organization-managed but no Console link was provided.",
     "sharedCrew.first_share_title": "Title of the one-time warning before the first person gets access.",
-    "sharedCrew.invite_reusable_help": "Help next to the reusable toggle."
+    "sharedCrew.invite_reusable_help": "Help next to the reusable toggle.",
+    "sharedCrew.remote_control_open": "Button opening the existing connect-your-phone dialog."
   }
 }

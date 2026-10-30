@@ -16,7 +16,7 @@
  *  The surface follows the Crew's mode (`GET /api/shared-crew/mode`), and the
  *  modes never mix (`PeopleModes.tsx`): a personal Crew shows the setup empty
  *  state (`SharedAccessSetup`) and personal Remote Control; a network Crew shows
- *  who has been seen, each network adapter read-only and Remote Control; a
+ *  the share card, the People list and Remote Control (`PeopleCrew.tsx`); a
  *  Console Crew shows read-only Team Access and its Console link only; an
  *  invalid team setup shows an error, never the personal surface. */
 import { Users } from 'lucide-react'
@@ -25,14 +25,14 @@ import { Badge, Btn, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
 import { SharedAccessSetup } from './SharedAccessSetup'
-import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TeamConfigInvalid, headingTip } from './PeopleModes'
+import { ConsoleAccess, RemoteControlCard, TeamConfigInvalid } from './PeopleModes'
+import { PeopleList, ShareHero, useCanInvite } from './PeopleCrew'
 import { TailscaleInvites } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
 import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { TailnetDirectLink, tailnetDirectActive } from '../../components/TailnetDirectLink'
 
 function sourceLabel(source: PeopleSource): string {
   switch (source) {
@@ -114,6 +114,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   modeData: ReturnType<typeof useSharedCrewMode>['data']
 }) {
   const pointer = membershipPointer(capabilities.membership_link)
+  const canInvite = useCanInvite()
   // Someone other than the viewer already connected: sharing works, whatever the
   // setup paths say (Tailscale Serve set up by hand, for one).
   const othersSeen = (data?.people ?? []).some(row => !row.is_viewer)
@@ -150,79 +151,45 @@ function PeopleContent({ capabilities, data, modeData }: {
   }
   const attributionReason = capabilities.reasons?.attribution
   const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
-  const direct = capabilities.tailnet_direct
-  const adaptersSection = <NetworkAdapters adapters={adapters} direct={direct} />
-  const networkExtras = (
-    <>
-      {tailnetDirectActive(direct) && (
-        <SettingsSection title={i18nT('sharedCrew.direct_share_title')} badge={headingTip(i18nT('sharedCrew.direct_link_note'), 'direct-share-tip')}>
-          <SettingsCard>
-            {/* No hand-off: the invite form below holds unsaved emails, name, picture and API key. */}
-            <TailnetDirectLink direct={direct} askAgent={false} showNote={false} />
-          </SettingsCard>
-        </SettingsSection>
-      )}
-      <TailscaleInvites />
-      <RemoteControlCard />
-    </>
-  )
+  const rows = data?.people ?? []
+  const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} />
   if (!data || !capabilityUsable(capabilities.attribution)) {
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'
     return (
       <div className="flex flex-col gap-4" data-testid="people-network-unattributed">
-      {adaptersSection}
-      <EmptyState
-        icon={<Users size={20} />}
-        title={i18nT(unnamed ? 'sharedCrew.people_unnamed_title' : 'sharedCrew.people_unavailable_title')}
-        subtitle={i18nT(
-          attributionReason === 'daemon_same_user' ? 'sharedCrew.people_unnamed_same_user_body'
-            : unnamed ? 'sharedCrew.people_unnamed_platform_body'
-              : 'sharedCrew.people_unavailable_body',
-        )}
-        testId={unnamed ? 'people-unnamed' : 'people-unavailable'}
-      />
-      {networkExtras}
+        {hero}
+        <EmptyState
+          icon={<Users size={20} />}
+          title={i18nT(unnamed ? 'sharedCrew.people_unnamed_title' : 'sharedCrew.people_unavailable_title')}
+          subtitle={i18nT(
+            attributionReason === 'daemon_same_user' ? 'sharedCrew.people_unnamed_same_user_body'
+              : unnamed ? 'sharedCrew.people_unnamed_platform_body'
+                : 'sharedCrew.people_unavailable_body',
+          )}
+          testId={unnamed ? 'people-unnamed' : 'people-unavailable'}
+        />
+        <RemoteControlCard />
       </div>
     )
   }
   const usageAvailable = !!data.usage_available
-  const directoryOn = capabilityUsable(data.directory.state) && capabilityUsable(capabilities.authoritative_directory)
-  const directoryPeople = directoryOn ? (data.directory.people ?? []) : []
-  // The section's longer notes, in the ⓘ beside its heading.
-  const seenTip = [
-    i18nT('sharedCrew.people_seen_note'),
+  // The list's own notes, in the ⓘ beside its heading.
+  const tipExtra = [
     !usageAvailable && i18nT('sharedCrew.usage_unavailable'),
-    capabilities.attribution_via === 'tailscale_direct' && i18nT('sharedCrew.people_direct_caveat'),
     attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),
   ].filter(Boolean).join(' ')
   return (
     <div className="flex flex-col gap-4" data-testid="people-panel">
-      {adaptersSection}
-      <SettingsSection title={i18nT('sharedCrew.people_seen_title')} badge={headingTip(seenTip, 'people-seen-tip')}>
-        <SettingsCard>
-          {data.people.length === 0 ? (
-            <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_empty')}</p>
-          ) : (
-            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.people_seen_title')}>
-              {data.people.map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={usageAvailable} />)}
-            </ul>
-          )}
-          {pointer === 'console' && (
-            <p className="text-[13px] text-muted pt-1" data-testid="console-pointer">{i18nT('sharedCrew.access_console')}</p>
-          )}
-        </SettingsCard>
-      </SettingsSection>
-      {/* Shown only when the directory has people: an empty one says nothing useful. */}
-      {directoryPeople.length > 0 && (
-        <SettingsSection title={i18nT('sharedCrew.directory_title')}>
-          <SettingsCard>
-            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.directory_title')}>
-              {directoryPeople.map(row => <PersonRow key={row.principal.id} row={row} usageAvailable={usageAvailable} />)}
-            </ul>
-          </SettingsCard>
-        </SettingsSection>
-      )}
-      {networkExtras}
+      {hero}
+      <PeopleList
+        people={data.people}
+        usageAvailable={usageAvailable}
+        tipExtra={tipExtra}
+        footer={pointer === 'console' && (
+          <p className="text-[13px] text-muted pt-1" data-testid="console-pointer">{i18nT('sharedCrew.access_console')}</p>
+        )}
+      />
+      <RemoteControlCard />
     </div>
   )
 }

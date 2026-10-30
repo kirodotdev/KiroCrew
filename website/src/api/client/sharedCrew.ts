@@ -14,6 +14,8 @@ import type {
   DecisionsResponse,
   Maybe,
   PeopleResponse,
+  PersonDisplay,
+  PersonDisplayBody,
   PresenceResponse,
   SharedCrewSessionPage,
   WorkListResponse,
@@ -35,7 +37,7 @@ export type CancelWorkResult =
   | { ok: true; work: AcceptedWork | null }
   | { ok: false; conflict: true; current: AcceptedWork | null; code: string }
 
-export function createSharedCrewEndpoints({ get, post, del, j }: ClientTransport) {
+export function createSharedCrewEndpoints({ get, post, put, del, j }: ClientTransport) {
   const read = async <T,>(url: string): Promise<Maybe<T>> => {
     const r = await get(url)
     if (r.status === 404) return null
@@ -90,6 +92,10 @@ export function createSharedCrewEndpoints({ get, post, del, j }: ClientTransport
       await j(await del('/api/shared-crew/tailscale/invites/' + encodeURIComponent(id))) as { revoked: string; member_removed: boolean },
     tailscaleUploadAvatar: async (dataBase64: string): Promise<{ avatar_id: string }> =>
       await j(await post('/api/shared-crew/tailscale/avatars', { data_base64: dataBase64 })) as { avatar_id: string },
+    /** Set the name and picture shown for a person, by stable Tailscale user id.
+     *  Any admitted person may set them for anyone. Display only. */
+    sharedCrewSetPersonDisplay: async (userId: string, body: PersonDisplayBody): Promise<PersonDisplay> =>
+      await j(await put('/api/shared-crew/people/' + encodeURIComponent(userId) + '/display', body)) as PersonDisplay,
     /** Who may open this Crew: waiting, approved and the first-share warning. Owner-only. */
     sharedCrewAccess: () => read<AccessView>('/api/shared-crew/access'),
     sharedCrewAckFirstShare: async (): Promise<void> => {

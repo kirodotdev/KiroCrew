@@ -200,7 +200,7 @@ const API_KEY_ORDER = [
   'tipsFeedback', 'sharedCrewCapabilities', 'sharedCrewSessions', 'sharedCrewPeople', 'sharedCrewMode', 'sharedCrewViewer',
   'sharedCrewCapacity', 'sharedCrewWork', 'sharedCrewPresence', 'sharedCrewDecisions', 'sharedCrewSendState', 'sharedCrewTypingLease',
   'tailscaleInvites', 'tailscaleConnect', 'tailscaleDisconnect', 'tailscaleCreateInvites', 'tailscaleResendInvite',
-  'tailscaleRevokeInvite', 'tailscaleUploadAvatar',
+  'tailscaleRevokeInvite', 'tailscaleUploadAvatar', 'sharedCrewSetPersonDisplay',
   'sharedCrewAccess', 'sharedCrewAckFirstShare', 'sharedCrewApprove', 'sharedCrewDismiss', 'sharedCrewRemoveApproved',
   'sharedCrewCancelWork',
 ]

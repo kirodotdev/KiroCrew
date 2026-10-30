@@ -352,6 +352,8 @@ export type SharedCrewServerFrame =
   | ({ type: 'shared_crew.send_state' } & SendState)
   | ({ type: 'shared_crew.typing_lease' } & TypingLease)
   | { type: 'shared_crew.memory_change'; schema_version: number; change: MemoryChange }
+  /** Someone changed a person's display name or picture: People refetches. */
+  | { type: 'shared_crew.people'; user_id: string }
 
 /** `memory_changes.MemoryChange.payload`: a lesson write that replaced stored
  *  ones (newest wins). Summaries are clipped and redacted by the server. */

@@ -31,6 +31,7 @@ import { SettingsCard, SettingsSection } from '../../components/settings'
 import { headingTip } from './PeopleModes'
 import { Badge, Btn, Input, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import Modal from '../../components/Modal'
 import { copyToClipboard } from '../../utils/clipboard'
 import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { useGuardedMutation } from '../../hooks/sharedCrew/useGuardedMutation'
@@ -64,7 +65,7 @@ export function inviteErrorText(code: string): string {
   }
 }
 
-function useInvites() {
+export function useInvites() {
   return useQuery({
     queryKey: tailscaleInvitesKey,
     queryFn: () => api.tailscaleInvites(),
@@ -260,7 +261,9 @@ function InviteForm({ disabled }: { disabled: boolean }) {
   )
 }
 
-function InviteRow({ invite }: { invite: TailscaleInvite }) {
+/** One invite. `inPeople` is the People list's form: a not-yet-joined row,
+ *  dimmed, offering only Revoke. */
+export function InviteRow({ invite, inPeople = false }: { invite: TailscaleInvite; inPeople?: boolean }) {
   const qc = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const refresh = () => void qc.invalidateQueries({ queryKey: tailscaleInvitesKey })
@@ -272,7 +275,7 @@ function InviteRow({ invite }: { invite: TailscaleInvite }) {
   const who = invite.accepted_login || invite.email || i18nT('sharedCrew.invite_link_row')
   const name = invite.alias || who
   return (
-    <li className="flex flex-wrap items-center gap-3 py-2 min-w-0" data-testid={`invite-${invite.id}`} data-status={invite.status}>
+    <li className={`flex flex-wrap items-center gap-3 py-2 min-w-0${inPeople ? ' opacity-60' : ''}`} data-testid={`invite-${invite.id}`} data-status={invite.status}>
       {invite.avatar_id ? (
         <img src={avatarUrl(invite.avatar_id)} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
       ) : (
@@ -286,7 +289,7 @@ function InviteRow({ invite }: { invite: TailscaleInvite }) {
           {invite.status === 'accepted'
             ? <Badge variant="ok">{i18nT('sharedCrew.invite_status_accepted')}</Badge>
             : <Badge variant="warn">{i18nT('sharedCrew.invite_status_pending')}</Badge>}
-          {invite.kind === 'link' && <Badge variant="muted">{invite.multi_use ? i18nT('sharedCrew.invite_reusable') : i18nT('sharedCrew.invite_single_use')}</Badge>}
+          {!inPeople && invite.kind === 'link' && <Badge variant="muted">{invite.multi_use ? i18nT('sharedCrew.invite_reusable') : i18nT('sharedCrew.invite_single_use')}</Badge>}
         </div>
         {name !== who && <span className="text-[12px] text-muted truncate" title={who}>{who}</span>}
         {invite.status === 'accepted' && invite.email && invite.accepted_login && invite.email.toLowerCase() !== invite.accepted_login.toLowerCase() && (
@@ -295,7 +298,7 @@ function InviteRow({ invite }: { invite: TailscaleInvite }) {
         {invite.created_at > 0 && <span className="text-[12px] text-muted">{i18nT('sharedCrew.invite_sent_at', { when: fmtDateTime(invite.created_at * 1000) })}</span>}
       </div>
       <div className="flex flex-wrap gap-2">
-        {!confirming && invite.kind === 'email' && invite.status === 'pending' && (
+        {!inPeople && !confirming && invite.kind === 'email' && invite.status === 'pending' && (
           <Btn type="button" onClick={() => resend.mutate()} disabled={resend.isPending || resend.isSuccess} data-testid="invite-resend">
             <RefreshCw size={14} className="lucide-inline" aria-hidden /> {resend.isSuccess ? i18nT('sharedCrew.invite_resent') : i18nT('sharedCrew.invite_resend')}
           </Btn>
@@ -319,7 +322,7 @@ function InviteRow({ invite }: { invite: TailscaleInvite }) {
   )
 }
 
-function Connected({ status }: { status: TailscaleInvitesStatus }) {
+function Connected({ status, showList = true }: { status: TailscaleInvitesStatus; showList?: boolean }) {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const disconnect = useMutation({
@@ -352,7 +355,7 @@ function Connected({ status }: { status: TailscaleInvitesStatus }) {
         <p className="text-[12px] text-warn" data-testid="invite-restart">{i18nT('sharedCrew.invite_restart_needed')}</p>
       )}
       <InviteForm disabled={removal.isPending} />
-      <div className="pt-2 border-t border-border">
+      {showList && <div className="pt-2 border-t border-border">
         {status.invites.length === 0 ? (
           <p className="text-[13px] text-muted" data-testid="invite-empty">{i18nT('sharedCrew.invite_empty')}</p>
         ) : (
@@ -360,7 +363,7 @@ function Connected({ status }: { status: TailscaleInvitesStatus }) {
             {status.invites.map(i => <InviteRow key={i.id} invite={i} />)}
           </ul>
         )}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -393,5 +396,33 @@ export function TailscaleInvites() {
         </div>
       </SettingsCard>}
     </SettingsSection>
+  )
+}
+
+/** The People page's "Invite..." dialog. Without a Tailscale API key it asks for
+ *  one first (with the by-hand share path beside it); with one, it is the
+ *  invite form. Invites not yet accepted show in the People list. */
+export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const query = useInvites()
+  const status = query.data
+  const code = query.isError ? inviteErrorCode(query.error) : ''
+  return (
+    <Modal open={open} onClose={onClose} title={i18nT('sharedCrew.invite_dialog_title')} maxWidth={520} guardAccidentalDismiss>
+      <div className="flex flex-col gap-3 min-w-0" data-testid="invite-dialog">
+        {query.isError && (
+          <div>
+            {/* No hand-off: the dialog holds the unsaved key or invite draft. */}
+            <ErrorNotice message={inviteErrorText(code || 'error')} askAgent={false} testId="invite-dialog-error" />
+            <Btn onClick={() => { void query.refetch() }}>{i18nT('components.mobileConnect.try_again')}</Btn>
+          </div>
+        )}
+        {status && (status.connected ? <Connected status={status} showList={false} /> : (
+          <>
+            <p className="text-[13px] text-muted">{i18nT('sharedCrew.invite_dialog_key_first')}</p>
+            <ConnectForm />
+          </>
+        ))}
+      </div>
+    </Modal>
   )
 }
