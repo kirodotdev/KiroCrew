@@ -1061,17 +1061,33 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
     (``governance.confirm_tools_unknown_now``): while the file it cannot read
     may hold the list, the call asks.
     """
+    call = facts.call
+    return operator_confirms_names(
+        facts.config,
+        (*grant_targets, call.title, facts.normalized),
+        mcp_server=call.mcp_server,
+        mcp_tool=call.mcp_tool,
+    )
+
+
+def operator_confirms_names(
+    config: HooksConfig, names: Sequence[str], *, mcp_server: str = "", mcp_tool: str = ""
+) -> bool:
+    """:func:`_operator_confirms` for a caller that holds names, not gate facts.
+
+    *names* are matched as given; an MCP call also adds its ``@server/tool``
+    identity, that identity's ``Running:`` form and the bare ``@server``.
+    """
     from kiro_crew.platform.governance import confirm_tools_unknown_now
 
-    if getattr(facts.config, "confirm_tools_unknown", False):
+    if getattr(config, "confirm_tools_unknown", False):
         return True
-    patterns = facts.config.confirm_tools
+    patterns = config.confirm_tools
     if patterns:
-        call = facts.call
-        targets = [*grant_targets, call.title, facts.normalized]
-        if call.mcp_server:
-            tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
-            targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")]
+        targets = list(names)
+        if mcp_server:
+            tool_ref = mcp_identity_ref(mcp_server, mcp_tool)
+            targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(mcp_server, "")]
         if any(
             target and _tool_matches(pattern, target) for pattern in patterns for target in targets
         ):

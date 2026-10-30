@@ -117,6 +117,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_write_protected,
     gate_tier_problems,
     grant_spec_builtin,
+    operator_confirms_names,
     shell_rules,
 )
 from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401

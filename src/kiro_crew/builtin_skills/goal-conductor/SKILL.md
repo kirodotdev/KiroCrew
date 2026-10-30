@@ -186,7 +186,7 @@ For each item in the round, call `work_dispatch` with the item's `title`, its
 `acceptance`, the `agent`, the `folder` and the `seed` described in the steps
 below. One call runs the four steps in order, sends the seed only after the bind
 succeeded, and on a failure names the step, the refusal code and what it cleaned
-up. It prompts for approval once per item, as `session_send` does. It never
+up. It prompts for approval once per item. It never
 opens your ledger: Round 0's `action=goal` does, and without it the first step is
 refused `no_ledger`. A reply with
 `outcome=outcome_unknown` lost a reply rather than being refused: read the board
@@ -776,10 +776,9 @@ what the composer renders:
   to its own parent, so for it they answer — `work_brief` without a prompt,
   `work_report` through the approval gate. See "When a conductor dispatched you"
   for what to report and when.
-- **A `question` costs a human click.** Answering means `session_send`, which
-  prompts by design. So you cannot answer a worker's question unattended, and a
-  question-heavy goal is that much less autonomous. Plan for it rather than
-  waiting on an approval nobody is there to give.
+- **Answering your own worker costs no click.** A `session_send` to a session
+  you created yourself (by its exact key) is approved per call; a send to any
+  other session still prompts.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be
   stood up and driven from a schedule instead of only from a live chat session.
   Session control is on by default: the agent config is the grant.
@@ -809,12 +808,11 @@ what the composer renders:
   every core call this procedure asks you to make; **any other core tool is
   mounted but prompts**, including `task_run`, `workflow_run` and the `spawn_*`
   family, which this charter forbids you to route a work item to in the first
-  place. **`session_send` and `session_stop` are deliberately NOT
-  auto-approved**, because each writes to a session that is not yours: a seed
-  runs as the target's own turn, and a stop discards the target's in-flight work.
-  You ingest external content by design, so the prompt is the only call-time
-  check on both. Expect one approval per item at dispatch (the seed), one per
-  question you answer, and one if you ever stop an item. `session_close` sits on
+  place. **`session_send` is granted only to your own workers**, checked per
+  call against the target's key: a send to any other session prompts.
+  **`session_stop` is deliberately NOT auto-approved**: it discards the target's
+  in-flight work. Expect one approval per item at dispatch (`work_dispatch`) and
+  one if you ever stop an item. `session_close` sits on
   the same footing — it writes to a session that is not yours, even though it
   archives rather than deletes — so budget one approval per child you close out.
   `execute_bash` also still prompts, so **each patrol cycle that verifies

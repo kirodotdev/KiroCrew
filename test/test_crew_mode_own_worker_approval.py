@@ -4,9 +4,9 @@ Only the verified ``kirocrew-dashboard`` session_status / session_read_message
 identity with a verified ``target`` that is the exact key of a live session whose
 GATEWAY-VOUCHED creator is the calling conductor qualifies: the settled session
 tree's edge, else a birth stamp this process minted, never the saved ``created_by``
-a restore reads from editable transcript metadata. A ``session_send`` is never on
-the list (the conductor skill pins that a send is not auto-approved). Everything
-else asks.
+a restore reads from editable transcript metadata. A ``session_send`` is not on
+that list; it is granted only to a Conductor agent, to its own worker, by the same
+target rule. Everything else asks.
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import crew_mode
-from kiro_crew.dashboard.chat_turn.tool_approval import _crew_root_own_worker_call
+from kiro_crew.dashboard.chat_turn.tool_approval import (
+    _conductor_own_worker_send,
+    _crew_root_own_worker_call,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -55,10 +58,16 @@ def _slot(
     )
 
 
-def _state() -> SimpleNamespace:
+def _state(
+    confirm_tools: tuple[str, ...] = (), *, confirm_unknown: bool = False
+) -> SimpleNamespace:
     root = _slot("root-1", agent="kirocrew-conductor")
     other_root = _slot("root-2", agent="kirocrew-conductor")
+    hooks_config = SimpleNamespace(
+        confirm_tools=list(confirm_tools), confirm_tools_unknown=confirm_unknown
+    )
     return SimpleNamespace(
+        context_builder=SimpleNamespace(hooks=SimpleNamespace(_config=hooks_config)),
         _slots={
             "root-1": root,
             "w-1": _slot("w-1", agent="kirocrew-worker", created_by="root-1"),
@@ -76,12 +85,13 @@ def _state() -> SimpleNamespace:
             ),
             "trusted": _slot("trusted", agent="kirocrew-worker", created_by="root-1", trust=True),
             "reads": _slot("reads", agent="kirocrew-worker", created_by="root-1", trust_reads=True),
-        }
+        },
     )
 
 
 def _event(tool: str = "session_status", target: object = "w-1", **over: object) -> SimpleNamespace:
     fields = dict(
+        title=f"Running: @kirocrew-dashboard/{tool}",
         sub_session_id="",
         mcp_identity_trusted=True,
         raw_params_trusted=True,
@@ -173,3 +183,103 @@ def test_the_rule_is_off_until_the_crew_panel_part_turns_it_on(_floor_monkeypatc
     _floor_monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", False)
     state = _state()
     assert _crew_root_own_worker_call(state, state._slots["root-1"], _event()) is False
+
+
+@pytest.mark.parametrize("agent", ["kirocrew-conductor", "kirocrew-ledger-conductor"])
+@pytest.mark.parametrize("routing_live", [True, False])
+def test_a_conductor_send_to_its_own_worker_is_granted(
+    _floor_monkeypatch, _confirm_list_readable, agent: str, routing_live: bool
+) -> None:
+    _floor_monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", routing_live)
+    state = _state()
+    root = state._slots["root-1"]
+    assert _conductor_own_worker_send(state, root, _event("session_send"), agent) is True
+
+
+@pytest.mark.parametrize(
+    "agent, event",
+    [
+        ("kirocrew-worker", _event("session_send")),  # not a Conductor agent
+        ("default", _event("session_send")),
+        ("kirocrew-conductor", _event("session_send", target="w-2")),  # another's worker
+        ("kirocrew-conductor", _event("session_send", target="plain")),
+        ("kirocrew-conductor", _event("session_send", target="root-1")),  # itself
+        ("kirocrew-conductor", _event("session_send", target="restored")),
+        ("kirocrew-conductor", _event("session_send", target="unminted")),
+        ("kirocrew-conductor", _event("session_send", sub_session_id="sub-1")),
+        ("kirocrew-conductor", _event("session_send", mcp_identity_trusted=False)),
+        ("kirocrew-conductor", _event("session_send", raw_params_trusted=False)),
+        ("kirocrew-conductor", _event("session_stop")),  # only the send is granted
+        ("kirocrew-conductor", _event("session_broadcast")),
+    ],
+)
+def test_any_other_send_still_asks(agent: str, event: SimpleNamespace) -> None:
+    state = _state()
+    assert _conductor_own_worker_send(state, state._slots["root-1"], event, agent) is False
+
+
+@pytest.fixture
+def _confirm_list_readable(_floor_monkeypatch):
+    # No config watcher in a unit test: the files are not torn, so the list the
+    # hook config holds is the whole answer.
+    from kiro_crew.platform import governance
+
+    _floor_monkeypatch.setattr(governance, "confirm_tools_unknown_now", lambda: False)
+
+
+@pytest.mark.parametrize(
+    "confirm_tools",
+    [
+        ("@kirocrew-dashboard/session_send",),
+        ("@kirocrew-dashboard",),
+        ("@kirocrew-dashboard/*",),
+        ("*session_send*",),
+        ("*",),
+    ],
+)
+def test_a_confirm_listed_send_to_its_own_worker_still_asks(
+    _confirm_list_readable, confirm_tools: tuple[str, ...]
+) -> None:
+    state = _state(confirm_tools)
+    root = state._slots["root-1"]
+    assert (
+        _conductor_own_worker_send(state, root, _event("session_send"), "kirocrew-conductor")
+        is False
+    )
+
+
+def test_a_confirm_list_naming_another_tool_keeps_the_grant(_confirm_list_readable) -> None:
+    state = _state(("@kirocrew-dashboard/session_stop", "execute_bash"))
+    root = state._slots["root-1"]
+    assert (
+        _conductor_own_worker_send(state, root, _event("session_send"), "kirocrew-conductor")
+        is True
+    )
+
+
+def test_an_unreadable_confirm_list_asks(_confirm_list_readable, _floor_monkeypatch) -> None:
+    root_send = _event("session_send")
+    state = _state(confirm_unknown=True)
+    assert (
+        _conductor_own_worker_send(state, state._slots["root-1"], root_send, "kirocrew-conductor")
+        is False
+    )
+    # The watcher holding a torn overlay asks too, whatever the loaded list says.
+    from kiro_crew.platform import governance
+
+    _floor_monkeypatch.setattr(governance, "confirm_tools_unknown_now", lambda: True)
+    state = _state()
+    assert (
+        _conductor_own_worker_send(state, state._slots["root-1"], root_send, "kirocrew-conductor")
+        is False
+    )
+
+
+def test_no_hook_config_asks() -> None:
+    state = _state()
+    state.context_builder = None
+    root = state._slots["root-1"]
+    assert (
+        _conductor_own_worker_send(state, root, _event("session_send"), "kirocrew-conductor")
+        is False
+    )

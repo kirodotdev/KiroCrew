@@ -274,11 +274,18 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     )
 
 
-#: The reads a conductor makes of its own crew members. ``session_send`` is NOT here:
-#: the conductor skill pins that a send is never auto-approved (it runs text as the
-#: target's user turn under the target's grants, and a conductor reads untrusted
-#: content), so a send keeps prompting as it does on every other session.
+#: The reads a conductor makes of its own crew members. A send is
+#: :data:`_CONDUCTOR_OWN_WORKER_SENDS`, keyed on the Conductor agent instead.
 _CREW_ROOT_OWN_WORKER_VERBS = frozenset({"session_status", "session_read_message"})
+
+#: The write a Conductor makes to a worker session it created itself. Granted per
+#: call, never as a spec ``allowedTools`` name: the same spec runs the owner's own
+#: Conductor tab, which keeps the owner's whole reach while ``agent.session_control``
+#: is on, so a name grant would auto-approve a send to ANY session. Here the target
+#: must be this caller's own worker, so reach is unchanged and only the click goes.
+#: The text still runs under the worker's own grants. ``session_broadcast`` is not
+#: here: it names no single target to check.
+_CONDUCTOR_OWN_WORKER_SENDS = frozenset({"session_send"})
 
 
 def _vouched_creator_of(target: str, slots: Mapping[str, Any]) -> str:
@@ -320,11 +327,57 @@ def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
 
     if not crew_mode.APPROVAL_ROUTING_LIVE:
         return False
+    if not _own_worker_target(state, slot, event, _CREW_ROOT_OWN_WORKER_VERBS):
+        return False
+    return crew_mode.slot_is_crew_mode_root(slot)
+
+
+def _conductor_own_worker_send(state: Any, slot: Any, event: Any, agent: str) -> bool:
+    """A Conductor's ``session_send`` to a worker session it created itself.
+
+    *agent* is the agent that actually served the turn, and must be one of
+    ``CONDUCTOR_AGENTS``. The target rule is :func:`_own_worker_target`'s; anything
+    else (another agent, another session, a subagent's call, a call the operator's
+    ``hooks.confirm_tools`` names) keeps asking.
+    """
+    from kiro_crew.dashboard.session_control_parts.caller_access import CONDUCTOR_AGENTS
+
+    if agent not in CONDUCTOR_AGENTS:
+        return False
+    if not _own_worker_target(state, slot, event, _CONDUCTOR_OWN_WORKER_SENDS):
+        return False
+    return not _operator_confirms_call(state, event)
+
+
+def _operator_confirms_call(state: Any, event: Any) -> bool:
+    """Whether the operator's ``hooks.confirm_tools`` names this MCP call, or may.
+
+    The gate's own matcher (``operator_confirms_names``). This can only withhold
+    an exemption, so a missing hook config answers ``True``, toward a confirmation.
+    """
+    from kiro_crew.hooks import operator_confirms_names
+
+    builder = getattr(state, "context_builder", None)
+    config = getattr(getattr(builder, "hooks", None), "_config", None)
+    if config is None:
+        return True
+    return operator_confirms_names(
+        config,
+        (str(getattr(event, "title", "") or ""),),
+        mcp_server=event.mcp_server_name,
+        mcp_tool=event.tool_name,
+    )
+
+
+def _own_worker_target(state: Any, slot: Any, event: Any, verbs: frozenset[str]) -> bool:
+    """Whether *event* is a verified ``kirocrew-dashboard`` call to one of *verbs* whose
+    verified ``target`` is the exact key of a live session *slot* created, by
+    gateway-vouched lineage (:func:`_vouched_creator_of`)."""
     if event.sub_session_id or not (event.mcp_identity_trusted and event.raw_params_trusted):
         return False
     if event.mcp_server_name != "kirocrew-dashboard":
         return False
-    if event.tool_name not in _CREW_ROOT_OWN_WORKER_VERBS:
+    if event.tool_name not in verbs:
         return False
     params = event.raw_tool_params or {}
     # A deferred tool runs through tool_search's ``tool_call``: the real arguments
@@ -334,8 +387,6 @@ def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
     target = params.get("target")
     slots = getattr(state, "_slots", {}) or {}
     if not isinstance(target, str) or target == slot.key or target not in slots:
-        return False
-    if not crew_mode.slot_is_crew_mode_root(slot):
         return False
     return _vouched_creator_of(target, slots) == slot.key
 
@@ -860,8 +911,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # read as the conductor's own.
     _claude_backend = is_claude_backend_name(capabilities_of(client).backend)
     _own_worker_call = not _claude_backend and _crew_root_own_worker_call(state, slot, event)
+    _own_worker_send = not _claude_backend and _conductor_own_worker_send(
+        state, slot, event, read_effective_agent(client)
+    )
     if (
         _own_worker_call
+        or _own_worker_send
         or (not _claude_backend and _native_crew_should_auto_approve(_native_tracker, state, slot))
     ) and _child_grant_eligible:
         logger.debug(
@@ -905,7 +960,13 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             tool_kind=event.tool_kind,
             outcome="auto_approved",
             request_id=event.request_id,
-            metadata={"reason": "crew_mode_own_worker" if _own_worker_call else "native_crew"},
+            metadata={
+                "reason": (
+                    "crew_mode_own_worker"
+                    if _own_worker_call
+                    else "conductor_own_worker_send" if _own_worker_send else "native_crew"
+                )
+            },
         )
         return _Flow.CONTINUE
     # Session-trusted patterns: auto-approve commands matching user globs.

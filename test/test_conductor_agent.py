@@ -963,7 +963,8 @@ class TestConductorInstaller:
         """
         text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Reads and creates do not prompt" in text
-        assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
+        assert "`session_send` is granted only to your own workers" in text
+        assert "`session_stop` is deliberately NOT auto-approved" in text
         assert "accept_eval.py` invocation" in text
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
