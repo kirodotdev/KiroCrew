@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
-  gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere,
+  gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
 } from './crewMode'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { crewMemberKeys } from '../store/dashboard/unread'
+import { selectPersonSlots } from '../store/personSlots'
+import { selectUnreadByMode } from '../store/dashboardSlice'
+import { crewModePreviewOn } from '../test/crewModePreview'
 
 afterEach(() => resetCrewModeCatalog())
 
@@ -199,3 +204,93 @@ describe('crewApprovalDecidableHere', () => {
     }
   })
 })
+
+describe('the Crew Mode preview', () => {
+  const rows = [
+    { key: 'root', crew_mode_root: true, agent: 'kirocrew-conductor' },
+    { key: 'member', crew_root: 'root' },
+    { key: 'plain' },
+  ]
+  // The file turns the preview on for every test; these turn it off again.
+  beforeEach(() => {
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+    setCrewModeCatalog('kirocrew-conductor', GATEWAY_CONDUCTORS)
+  })
+
+  it('is off by default', () => {
+    expect(crewModeEnabled()).toBe(false)
+  })
+
+  it('off, answers as a gateway without Crew Mode: no conductor, no switch, every picker row', () => {
+    expect(gatewayRunsCrewMode()).toBe(false)
+    expect(isConductorAgent('kirocrew-conductor')).toBe(false)
+    expect(runsCrewMode('kirocrew-conductor', 'template')).toBe(false)
+    const picker = [{ name: 'kirocrew' }, { name: 'kirocrew-conductor' }]
+    expect(withoutConductors(picker)).toEqual(picker)
+  })
+
+  it('off, the chord never moves a plain chat onto a conductor the gateway would run as Crew Mode', () => {
+    const picker = [{ name: 'kirocrew' }, { name: 'kirocrew-conductor' }, { name: 'research' }]
+    expect(agentCycleTarget(picker, 'kirocrew', 'template', 1)).toBe('research')
+    expect(agentCycleTarget(picker, 'kirocrew', 'template', -1)).toBe('research')
+    expect(agentCycleTarget(picker, 'research', 'template', 1)).toBe('kirocrew')
+    expect(agentCycleTarget([{ name: 'kirocrew-conductor' }], 'kirocrew', 'template', 1)).toBeNull()
+    // A crewmate is kept whatever its name.
+    const withMate = [{ name: 'kirocrew' }, { name: 'kirocrew-conductor', selection_kind: 'member' }]
+    expect(agentCycleTarget(withMate, 'kirocrew', 'template', 1)).toBe('kirocrew-conductor')
+  })
+
+  it('off, the chord stops only on a chat the gateway locks: the raw crew_mode_root stamp', () => {
+    const picker = [{ name: 'kirocrew' }, { name: 'kirocrew-conductor' }, { name: 'research' }]
+    // A Crew Mode root (the server's own stamp): the gateway refuses every switch.
+    expect(agentCycleTarget(picker, 'kirocrew-conductor', 'template', 1, undefined, true)).toBeNull()
+    expect(agentCycleTarget(picker, 'kirocrew-conductor', 'template', -1, undefined, true)).toBeNull()
+    // A conductor chat that is no root (Incognito, Temporary, dispatched): the gateway
+    // lets it switch, so the chord moves it, never onto a conductor.
+    expect(agentCycleTarget(picker, 'kirocrew-conductor', 'template', 1)).toBe('kirocrew')
+    expect(agentCycleTarget(picker, 'kirocrew-conductor', 'template', -1)).toBe('research')
+  })
+
+  it('off, reads every Crew Mode stamp as absent, so a crew member is an ordinary chat', () => {
+    expect(crewModeRoot(rows[0])).toBe(false)
+    expect(crewRootOf(rows[1])).toBe('')
+    expect(crewModeView(rows)).toBe(rows)
+    expect(crewModeView(rows, true)).toEqual([])
+    expect(autoOpenRows(rows).map(r => r.key)).toEqual(['root', 'member', 'plain'])
+    expect(openingHidesSessionList(rows[1], rows)).toBe(false)
+    for (const surface of CREW_APPROVAL_SURFACES) expect(crewApprovalDecidableHere(rows[1], surface)).toBe(true)
+    expect(crewMemberKeys(rows).size).toBe(0)
+  })
+
+  it('on, is Crew Mode exactly as before the flag', () => {
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    expect(gatewayRunsCrewMode()).toBe(true)
+    expect(isConductorAgent('kirocrew-conductor')).toBe(true)
+    expect(crewModeRoot(rows[0])).toBe(true)
+    expect(crewRootOf(rows[1])).toBe('root')
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['root', 'plain'])
+    expect([...crewMemberKeys(rows)]).toEqual(['member'])
+  })
+
+  it('the chat unread count follows a flip without a new slot list', () => {
+    const dashboard = { slots: rows, unreadSlots: ['member', 'plain'] }
+    const state = { dashboard } as unknown as Parameters<ReturnType<typeof selectUnreadByMode>>[0]
+    const select = selectUnreadByMode('')
+    expect(select(state)).toBe(2)
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    // The crew member is its root's Crew panel's to show, so it no longer counts.
+    expect(select(state)).toBe(1)
+    setPreviewFlag(PREVIEW_CREW_MODE, false)
+    expect(select(state)).toBe(2)
+  })
+
+  it('the person\'s list follows a flip without a new slot list', () => {
+    const state = { dashboard: { slots: rows }, chat: {} } as unknown as Parameters<typeof selectPersonSlots>[0]
+    expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'member', 'plain'])
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'plain'])
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

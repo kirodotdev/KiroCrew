@@ -22,7 +22,8 @@ import { useActiveSlotState } from './chat/page/activeSlotState'
 import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMainComposerHandoff, useComposerVoiceHost } from './chat/page/composerHost'
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
-import { runsCrewMode } from '../lib/crewMode'
+import UltraModeEffect from '../components/crew/UltraModeEffect'
+import { crewRootOf, runsCrewMode } from '../lib/crewMode'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -668,8 +669,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
-  const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentSlot?.crew_root || '')
-  const crewRootClosed = !!currentSlot?.crew_root && crewRootClosedRaw
+  const currentCrewRoot = crewRootOf(currentSlot)
+  const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentCrewRoot)
+  const crewRootClosed = !!currentCrewRoot && crewRootClosedRaw
   // From the chip press to the first message the transcript shows the Crew Mode
   // welcome without a break: a slot reload in that window (the switch's own reads,
   // or a re-fetch of the same empty chat, `slotLoading`) and a slot record that has
@@ -678,6 +680,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // entrance twice. Sending, a running reply or a question card still end it.
   const crewWelcomeHeld = crewModeChosen && messages.length === 0 && !slotRunning && !sendingRef.current && !pendingQuestion
   const transcriptWelcome = isWelcomeState || crewWelcomeHeld
+  // on a brand-new chat the Ultra Mode chip is a toggle until the first
+  // message: on, it stays in place pressed. A chat with messages never shows it.
+  const crewChipPressed = crewModeEligible && crewModeChosen && !hasUserMessage && transcriptWelcome
   // App-contributed session controls and the folder context they are handed.
   const sessionControlState = useComposerSessionControls({ activeSlot, currentSlot, queryClient })
   const {
@@ -1112,6 +1117,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
+            <UltraModeEffect />
             <ComposerDockView
               embedded={embedded} mode={mode} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} isTouch={isTouch} navigate={navigate} provider={provider}
               activityOpen={activityOpen} composerBusy={composerBusy} contextPct={contextPct} contextTokens={contextTokens} knowledgeFetch={knowledgeFetch} messages={messages}
@@ -1155,10 +1161,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // is still loading: drawn alone first, the Crew Mode chip would slide
               // across the memory chip arriving beside it.
               crewModeOffered={crewModeEligible && !crewModeChosen && !slotLoading && showComposerMemoryChip} turnOnCrewMode={turnOnCrewMode}
+              crewChipPressed={crewChipPressed}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
+              // With the preview off too: the raw `crew_mode_root` stamp is the gateway's
+              // own lock (`crew_mode_locked` once the chat has a message), so no switch.
+              agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
               turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}
-              steerWorker={currentSlot?.crew_root ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
-              steerWorkerRoot={currentSlot?.crew_root || ''}
+              steerWorker={currentCrewRoot && currentSlot ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
+              steerWorkerRoot={currentCrewRoot}
             />
           </div>
           </SearchHighlightContext.Provider>

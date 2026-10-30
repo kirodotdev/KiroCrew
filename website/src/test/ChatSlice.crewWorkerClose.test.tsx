@@ -11,6 +11,7 @@ import dashboardReducer, { addSlotOptimistic, setSidebarOrder } from '../store/d
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { ChatSlot } from '../types'
+import { crewModePreviewOn } from './crewModePreview'
 
 const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
@@ -77,3 +78,6 @@ describe('closing a Crew Mode conductor', () => {
     expect(store.getState().chat.activeSlot).toBe('plain')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

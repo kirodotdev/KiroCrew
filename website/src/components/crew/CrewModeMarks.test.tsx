@@ -16,7 +16,7 @@ describe('CrewModeMarks', () => {
     const eyebrow = screen.getByTestId('crew-eyebrow')
     expect(eyebrow.className).toContain('crew-eyebrow-text')
     expect(eyebrow.className).toContain('tracking-[1px]')
-    expect(eyebrow.textContent).toBe('Crew Mode')
+    expect(eyebrow.textContent).toBe('Ultra Mode')
   })
 
   it('the status dot names the state in its tone, as text or for screen readers only', () => {
@@ -54,7 +54,7 @@ describe('CrewModeMarks', () => {
     const chip = screen.getByTestId('crew-mode-composer-chip')
     expect(chip.tagName).toBe('BUTTON')
     expect(chip.getAttribute('aria-pressed')).toBe('true')
-    expect(chip.getAttribute('title')).toContain('Turn off Crew Mode')
+    expect(chip.getAttribute('title')).toContain('Turn off Ultra Mode')
     fireEvent.click(chip)
     expect(onTurnOff).toHaveBeenCalledTimes(1)
 
@@ -62,8 +62,8 @@ describe('CrewModeMarks', () => {
     const mark = screen.getByTestId('crew-mode-composer-chip')
     expect(mark.tagName).toBe('SPAN')
     expect(mark.getAttribute('role')).toBe('img')
-    expect(mark.getAttribute('aria-label')).toBe('Crew Mode is on for this chat')
-    expect(mark.textContent).toBe('Crew Mode')
+    expect(mark.getAttribute('aria-label')).toBe('Ultra Mode is on for this chat')
+    expect(mark.textContent).toBe('Ultra Mode')
   })
 
   it('the mark source wraps the chip it hands to the composer mark', () => {

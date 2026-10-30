@@ -1,7 +1,7 @@
 /**
  * The worker breadcrumb on a phone: the root's name keeps a readable minimum and
- * a tooltip, the worker's name stays, the status is a dot with its word for
- * readers, and Back keeps its 44x44 target. jsdom has no layout, so the rules are
+ * a tooltip, the worker's name stays, and the status is a dot with its word for
+ * readers. The crumbs are plain text with no control. jsdom has no layout, so the rules are
  * pinned on the classes that carry them; the pod check measures the pixels.
  */
 import { afterEach, describe, it, expect, vi } from 'vitest'
@@ -30,17 +30,17 @@ function renderCrumb() {
 describe('CrewWorkerBreadcrumb on a phone', () => {
   afterEach(() => { vi.useRealTimers() })
 
-  it('clips the gradient to the title, never the crumb containing the ghost', () => {
+  it('is plain text: no ghost, no accent, and no control of its own', () => {
     renderCrumb()
     const root = screen.getByTestId('crew-breadcrumb-root')
-    expect(root).not.toHaveClass('crew-grad-text', 'crew-eyebrow-text')
-    expect(screen.getByText('New Teammate Welcome Kit')).toHaveClass('crew-grad-text')
-    const badge = screen.getByTestId('crew-ghost-badge')
-    expect(badge.closest('.crew-grad-text, .crew-eyebrow-text')).toBeNull()
-    expect(screen.getByTestId('kiro-ghost-mark').closest('.crew-grad-text, .crew-eyebrow-text')).toBeNull()
+    expect(root).toHaveTextContent('New Teammate Welcome Kit')
+    expect(root).not.toHaveClass('crew-grad-text')
+    expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
+    // The one way back is the Crew tab's "Back to main chat" bar.
+    expect(screen.getByTestId('crew-worker-breadcrumb').querySelector('button')).toBeNull()
   })
 
-  it('keeps the root readable, names both, and keeps Back a 44px target', () => {
+  it('keeps the root readable and names both', () => {
     renderCrumb()
     const rootCrumb = screen.getByTestId('crew-breadcrumb-root')
     expect(rootCrumb).toHaveClass('min-w-0', '@[18rem]/crumb:min-w-[5.5rem]')
@@ -48,8 +48,6 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
     const worker = screen.getByTestId('crew-breadcrumb-worker')
     expect(worker).toHaveTextContent('First-week checklist')
     expect(worker).toHaveAttribute('title', 'First-week checklist')
-    const back = screen.getByTestId('crew-back-to-conductor')
-    expect(back).toHaveClass('min-h-11', 'min-w-11', 'md:min-h-8', 'md:min-w-0')
     // The status word is for readers only on a phone; the dot carries it.
     expect(screen.getByTestId('crew-status').querySelector('.sr-only')).not.toBeNull()
   })
@@ -62,7 +60,6 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
       expect(label).toHaveTextContent('Waiting')
       expect(screen.getByTestId('crew-status')).toHaveClass('[&>span:last-child]:sr-only', '@[40rem]/crumb:[&>span:last-child]:not-sr-only')
       expect(screen.getByTestId('crew-breadcrumb-worker')).not.toHaveClass('@[30rem]/crumb:shrink-0')
-      expect(screen.getByTestId('crew-back-to-conductor').querySelector('span')).toHaveClass('hidden', '@[40rem]/crumb:inline')
     } finally {
       mobile.value = true
     }
@@ -161,7 +158,7 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
 })
 
 describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
-  it('reads main chat > sub-conductor > member, with Back its one control', async () => {
+  it('reads main chat > sub-conductor > member, as labels with no control', async () => {
     mobile.value = false
     fail.on = false
     fail.workers = [
@@ -180,13 +177,11 @@ describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
     expect(crumbs.map(c => c.textContent)).toEqual(['New Teammate Welcome Kit', 'Sub conductor', 'First-week checklist'])
     // The middle crumb gives way first on a narrow header.
     expect(via.className).toContain('shrink-[3]')
-    // The crumbs are labels; Back is the breadcrumb's one control, so the header
-    // row (with the title row's side panel button) holds at most two actions.
+    // The crumbs are labels; the way back is the Crew tab's bar.
     expect(via.tagName).toBe('SPAN')
     expect(screen.getByTestId('crew-breadcrumb-root').tagName).toBe('SPAN')
-    expect(screen.getByTestId('crew-worker-breadcrumb').querySelectorAll('button')).toHaveLength(1)
-    act(() => { screen.getByTestId('crew-back-to-conductor').click() })
-    expect(store.getState().chat.activeSlot).toBe('root')
+    expect(screen.getByTestId('crew-worker-breadcrumb').querySelectorAll('button')).toHaveLength(0)
+    expect(store.getState().chat.activeSlot).not.toBe('root')
     fail.workers = []
     mobile.value = true
   })

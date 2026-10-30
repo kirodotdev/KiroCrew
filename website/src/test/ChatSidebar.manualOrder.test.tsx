@@ -17,6 +17,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { turnOnCrewModePreview } from './crewModePreview'
 import { ThemeProvider } from '../hooks/useTheme'
 
 const dnd = vi.hoisted(() => ({
@@ -787,7 +788,8 @@ describe('with "Group by kind" on', () => {
     slot('b', '2026-02-01T00:00:00Z', { crew_mode_root: true } as Partial<ChatSlot>),
     slot('c', '2026-01-01T00:00:00Z'),
   ]
-  beforeEach(() => { localStorage.setItem('mc-session-group-by-kind', '1') })
+  // b is a Crew Mode chat only with the Ultra Mode preview on.
+  beforeEach(() => { localStorage.setItem('mc-session-group-by-kind', '1'); turnOnCrewModePreview() })
 
   it('takes no manual move on an unpinned row: no Alt+Arrow, no drop target, nothing written', async () => {
     renderSidebar(MIXED_KINDS, 'manual')

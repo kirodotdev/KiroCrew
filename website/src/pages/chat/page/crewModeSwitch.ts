@@ -14,13 +14,14 @@
  * `openView`), and only for a ROOT session (`isRootSession`): any other session
  * has no Overview of its own, and the gateway would refuse the read.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChatSlot } from '../../../types'
-import type { ViewKind } from '../../../hooks/usePanelTabs'
-import { useAppDispatch } from '../../../store'
-import { openActivityPanel } from '../../../store/chatSlice'
+import { dropPanelViews, type ViewKind } from '../../../hooks/usePanelTabs'
+import { useAppDispatch, useAppSelector } from '../../../store'
+import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, runsCrewMode } from '../../../lib/crewMode'
 import { isRootSession } from '../command-center/model'
+import { useIsMobile } from '../../../hooks/useIsMobile'
 
 const EMPTY: ReadonlySet<string> = new Set()
 const withKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => (set.has(key) ? set : new Set(set).add(key))
@@ -74,6 +75,21 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // clears, and on a refused switch (which `switchAgent` reports as its own
   // notice) the chat never turned on and its chips come back.
   const [turningOn, setTurningOn] = useState<ReadonlySet<string>>(EMPTY)
+  const activityOpen = useAppSelector(s => s.chat.activityOpen)
+  const panelWasClosed = useRef(false)
+  // entering an Ultra Mode root (new or existing) opens the side
+  // panel on the Crew tab, once per visit. Not on a phone: there the panel is
+  // a sheet over the chat, and a phone always lands on the chat.
+  const isMobile = useIsMobile()
+  const enteredKey = useRef<string | null>(null)
+  const rootKey = crewModeOn && isRootSession(currentSlot) ? currentSlot!.key : null
+  useEffect(() => {
+    if (!rootKey || enteredKey.current === rootKey) { if (!rootKey) enteredKey.current = null; return }
+    enteredKey.current = rootKey
+    if (isMobile) return
+    dispatch(openActivityPanel())
+    openView('workers')
+  }, [rootKey, dispatch, openView, isMobile])
   // The chats whose switch back to the default agent is in flight: their chips
   // come back the moment the mark is pressed, the same way they leave on turning on.
   const [turningOff, setTurningOff] = useState<ReadonlySet<string>>(EMPTY)
@@ -84,13 +100,17 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     const key = currentSlot.key
     setTurningOn(set => withKey(set, key))
     void switchAgent(crewModeAgent(), 'template').finally(() => setTurningOn(set => withoutKey(set, key)))
+    // the side panel opens on its own with the Crew tab in front
+    // (SidePanel pins it first). Remember whether it was closed, so turning
+    // Ultra Mode off again before the first message puts it back.
     if (taskBoardOffered) {
-      openTaskBoard()
-      // The Workers tab lands beside the board and in front: it is where the
-      // chats this one opens are listed (they are not rows of the session list).
+      panelWasClosed.current = !activityOpen
+      dispatch(openActivityPanel())
+      // The Dashboard tab still opens as before; Crew (pinned first) is in front.
+      openView('command-center')
       openView('workers')
     }
-  }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, openTaskBoard, openView])
+  }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, dispatch, openView, activityOpen])
   const crewModeLeaving = !!currentSlot && turningOff.has(currentSlot.key)
   const crewModeArriving = !!currentSlot && turningOn.has(currentSlot.key)
   /** Crew Mode is on, or being turned on, for this chat: the composer then shows
@@ -111,8 +131,10 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     if (!crewModeCancellable || !currentSlot) return
     const key = currentSlot.key
     setTurningOff(set => withKey(set, key))
+    if (panelWasClosed.current) { dispatch(closeActivityPanel()); panelWasClosed.current = false }
+    dropPanelViews(key, ['workers', 'command-center'])
     void switchAgent(defaultAgent || 'kirocrew', 'template').finally(() => setTurningOff(set => withoutKey(set, key)))
-  }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent])
+  }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
   return {
     crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode,
     turnOffCrewMode: crewModeCancellable ? turnOffCrewMode : undefined,

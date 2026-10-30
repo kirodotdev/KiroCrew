@@ -83,6 +83,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
+import { crewModePreviewOn, turnOnCrewModePreview } from './crewModePreview'
 
 
 const ROWS = [
@@ -117,6 +118,7 @@ describe('ChatPage — the sessions list steps aside for a Crew Mode worker', ()
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1280 })
     localStorage.clear()
+    turnOnCrewModePreview()
     __resetPanelTabs()
   })
 
@@ -149,3 +151,6 @@ describe('ChatPage — the sessions list steps aside for a Crew Mode worker', ()
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

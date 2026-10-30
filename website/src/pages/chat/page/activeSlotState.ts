@@ -14,6 +14,7 @@ import { useKnowledgeFetch } from '../useKnowledgeFetch'
 import { closeCrewWindow, useCrewWindow } from '../crew-window/crewWindowStore'
 import { useGuideRevealScope } from '../../../guide/GuideRevealScope'
 import { slotRowByKey } from '../../../store/slotIndex'
+import { crewRootOf } from '../../../lib/crewMode'
 import { useEnvironmentStartLabel } from '../../../components/sessionEnvironmentHooks'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
@@ -235,7 +236,7 @@ export function useActiveSlotState({
   }, [activeSlot])
   // A Crew Mode worker opened from its root's Workers panel leaves Split View, as
   // a sidebar pick does: the grid never shows a worker, so it would hide it.
-  const activeIsCrewWorker = useAppSelector(s => !!s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.crew_root)
+  const activeIsCrewWorker = useAppSelector(s => !!crewRootOf(s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)))
   useEffect(() => { if (activeIsCrewWorker) setSplitMode(false) }, [activeIsCrewWorker, activeSlot])
   /** Same contract as `clearSplitOnSelect`, for the `embedMode === 'sessions'`
    *  frame where the sidebar IS the whole page. */

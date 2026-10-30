@@ -90,6 +90,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { crewModePreviewOn } from './crewModePreview'
 
 const SLOT = 'pane-slot'
 
@@ -257,3 +258,6 @@ describe('pane voice auto-submit follows the busy-send mode', { timeout: 20_000 
     expect(input.value).toBe('dictated words')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

@@ -870,6 +870,26 @@ def test_a_worker_line_is_one_plain_line_cut_to_the_card():
     assert crew_workers._worker_line({"last_message": 3}, "") == ""
 
 
+def test_a_relayed_seed_is_not_a_worker_line_its_last_reply_is():
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    slot = SimpleNamespace(
+        messages=[
+            {"role": "assistant", "content": "**Menu drafted**\nnext"},
+            {"role": "user", "content": "[sent by session chat-1 via session_send]\n\nRetry"},
+        ]
+    )
+    for seed in (
+        "[sent by session chat-1 via session_send] Retry",
+        "[quoted: sent by session chat-1 via session_send] Retry",
+    ):
+        assert crew_workers._worker_line({"last_message": seed}, "", slot) == "Menu drafted"
+    assert (
+        crew_workers._worker_line({"last_message": "[sent by session x via session_send]"}, "")
+        == ""
+    )
+
+
 # ── the board and the per-turn block follow the family ───────────────────────
 
 
@@ -892,6 +912,27 @@ async def test_the_board_is_adopted_for_a_swapped_in_conductor(monkeypatch):
 
 # A fake AWS key id, split so no scanner reads it as a real one.
 _FAKE_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
+
+
+def test_a_long_last_reply_is_redacted_before_it_is_cut():
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    secret = "AKIA" + "Q" * 16
+    text = "x" * 140 + " **AKIA**" + secret[4:] + " done"
+    slot = SimpleNamespace(messages=[{"role": "assistant", "content": text}])
+    seed = "[sent by session c via session_send] go"
+    line = crew_workers._worker_line({"last_message": seed}, "", slot)
+    assert "Q" * 8 not in line
+
+
+def test_a_last_reply_standing_in_for_a_seed_is_redacted():
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    secret = "AKIA" + "Z" * 16
+    slot = SimpleNamespace(messages=[{"role": "assistant", "content": f"key {secret} saved"}])
+    seed = "[sent by session c via session_send] go"
+    line = crew_workers._worker_line({"last_message": seed}, "", slot)
+    assert line and secret not in line
 
 
 def test_a_workers_item_comes_from_the_roots_own_ledger_through_the_board_seam(monkeypatch):

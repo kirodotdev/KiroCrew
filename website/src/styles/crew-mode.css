@@ -1,81 +1,65 @@
-/* ── Crew Mode surfaces ──
-   One gradient ties every Crew Mode surface together: the session list root
-   row's ghost badge and "CREW MODE" eyebrow (the row itself stays a plain
-   session row), the filter chip and the composer's Crew Mode chip. It runs from the theme's own `--aim` (the
-   crew's purple) to `--info` (its blue), so a theme that moves either token
-   moves Crew Mode with it, light and dark alike. Nothing here covers other UI:
-   each rule colours the element it is set on. Cards and chips wear a fill and
-   a border, never a glow or a shadow. */
+/* ── Ultra Mode surfaces (code name: Crew Mode) ──
+   No gradients. One solid accent from the theme,
+   `--ultra-accent`, is the ghost's colour and the eyebrow's text colour. It is
+   the theme's `--aim` pulled 30% toward the strongest text colour so it holds
+   contrast on idle, hover and selected rows in light and dark. Nothing here
+   covers other UI: each rule colours the element it is set on. */
 
+:root {
+  --ultra-accent: color-mix(in srgb, var(--aim) 72%, var(--text-strong, var(--text)));
+}
+
+/* The ghost badge: a solid accent disc. */
 .crew-grad {
-  background-image: linear-gradient(90deg, var(--aim), var(--info));
+  background-color: var(--aim);
   color: var(--aim-fg);
 }
 
-.crew-grad-text {
-  background-image: linear-gradient(90deg, var(--aim), var(--info));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.crew-grad-text,
+.crew-eyebrow-text,
+.crew-chip-text {
+  color: var(--ultra-accent);
 }
 
-/* The session list's "CREW MODE" eyebrow sits on a plain row. The raw stops
-   fall under 4.5:1 there (the blue on a light row, either stop on a hover or
-   selected dark row), so each stop is pulled 30% toward the strongest text
-   colour: measured >= 4.9:1 on idle, hover and selected rows in light, dark,
-   kiro-light and kiro-dark. */
-.crew-eyebrow-text {
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--aim) 70%, var(--text-strong, var(--text))),
-    color-mix(in srgb, var(--info) 70%, var(--text-strong, var(--text)))
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.ultra-accent {
+  color: var(--ultra-accent);
 }
 
-/* The current worker in the command center's lists: a tinted card with a
-   border. No glow and no shadow. */
+/* The current worker in a list: a flat accent tint with an accent border. */
 .crew-card {
-  background-image: linear-gradient(
-    120deg,
-    color-mix(in srgb, var(--aim) 18%, transparent) 0%,
-    color-mix(in srgb, var(--info) 8%, transparent) 60%,
-    transparent 100%
-  );
+  background-color: color-mix(in srgb, var(--aim) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--aim) 45%, var(--border));
   border-radius: var(--radius-lg, 12px);
 }
 
-/* The new chat's "Crew Mode" chip: a purple-to-blue tinted fill, a purple
-   edge and the gradient on the label. Panes are solid by default (and under
-   the glass fallbacks, liquid-glass.css), where a pane's fill and outline are
-   `!important`, so the fill and edge here are too; the keyboard ring
-   (`:focus-visible`) is left alone. On glass the lit edges take the purple.
-   The label's stops are pulled halfway toward the strongest text colour, so
-   they hold 4.5:1 on every stop of the fill at rest, hover and pressed, light
-   and dark. No glow, no shadow, no motion. */
+/* The composer's Ultra Mode chip. Off: a quiet glass chip with accent text.
+   Pressed (`aria-pressed="true"`): a solid accent tint and an accent border.
+   Panes are solid by default (liquid-glass.css forces fill and outline with
+   `!important`), so the fill and edge here are too; the keyboard ring is left
+   alone. */
 html:root .liquid-glass.crew-chip {
-  --glass-band: color-mix(in srgb, var(--aim) 45%, var(--glass-band-plain));
-  --glass-edge: color-mix(in srgb, var(--aim) 70%, transparent);
-  --crew-chip-mix: 22%;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--aim) var(--crew-chip-mix), var(--bg-elevated)),
-    color-mix(in srgb, var(--info) var(--crew-chip-mix), var(--bg-elevated))
-  ) !important;
-  border-color: color-mix(in srgb, var(--aim) 70%, var(--border));
+  --glass-band: color-mix(in srgb, var(--aim) 30%, var(--glass-band-plain));
+  --glass-edge: color-mix(in srgb, var(--aim) 55%, transparent);
+  --crew-chip-mix: 10%;
+  background: color-mix(in srgb, var(--aim) var(--crew-chip-mix), var(--bg-elevated)) !important;
+  border-color: color-mix(in srgb, var(--aim) 50%, var(--border));
+}
+
+html:root .liquid-glass.crew-chip[aria-pressed="true"] {
+  --crew-chip-mix: 24%;
+  border-color: var(--aim);
 }
 
 html:root .liquid-glass.crew-chip:not(:focus-visible) {
-  outline-color: color-mix(in srgb, var(--aim) 70%, var(--border)) !important;
+  outline-color: color-mix(in srgb, var(--aim) 60%, var(--border)) !important;
 }
 
-/* Busy (a reply is running): unavailable, not pressed. The accent leaves the
-   fill and the border, and the chip dims (the component adds opacity-60). */
+html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:focus-visible) {
+  outline-color: var(--aim) !important;
+}
+
 html:root .liquid-glass.crew-chip[aria-disabled="true"] {
-  --crew-chip-mix: 8%;
+  --crew-chip-mix: 4%;
   --glass-edge: var(--border);
   border-color: var(--border);
 }
@@ -85,32 +69,20 @@ html:root .liquid-glass.crew-chip[aria-disabled="true"]:not(:focus-visible) {
 }
 
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):hover {
-  --crew-chip-mix: 28%;
+  --crew-chip-mix: 18%;
   border-color: var(--aim);
+}
+
+html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):hover {
+  --crew-chip-mix: 30%;
 }
 
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):active {
   --crew-chip-mix: 34%;
 }
 
-.crew-chip-text {
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--aim) 50%, var(--text-strong, var(--text))),
-    color-mix(in srgb, var(--info) 50%, var(--text-strong, var(--text)))
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-/* Status text on a card or row: the state's hue mixed toward the theme's strongest
-   text colour, which is near black on a light theme and near white on a dark one,
-   so one rule darkens a light theme's yellow and lightens a dark theme's green.
-   Measured against the darkest surface each sits on (the command center's crew
-   card and the session list's selected row), 12px labels stay at or above
-   4.5:1 in both themes; the ghosts and dots wear the same tone. `crew-tone-muted`
-   is the quiet line ("Done 2/3", "Waiting"), held to the same floor. */
+/* Status text on a card or row: the state's hue mixed toward the theme's
+   strongest text colour, so 12px labels stay at or above 4.5:1. */
 .crew-tone-warn {
   color: color-mix(in srgb, var(--warn) 45%, var(--text-strong, var(--text)));
 }
@@ -120,19 +92,37 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):act
 }
 
 .crew-tone-aim {
-  color: color-mix(in srgb, var(--aim) 50%, var(--text-strong, var(--text)));
+  color: var(--ultra-accent);
 }
 
 .crew-tone-muted {
   color: color-mix(in srgb, var(--muted) 50%, var(--text-strong, var(--text)));
 }
 
-/* The session list's Crew Mode root row while the chat pane shows one of its
-   workers. Workers are not listed, so the root stays marked as the worker's
-   parent: a light tint and a purple edge, weaker than the active row's fill.
+/* The session list's Ultra Mode root row while the chat pane shows one of its
+   crew members. They are not listed, so the root stays marked as the member's
+   parent: a light tint and an accent edge, weaker than the active row's fill.
    No glow, no shadow. */
 .session-row.session-crew-parent {
   background-color: color-mix(in srgb, var(--aim) 10%, transparent);
   outline: 1px solid color-mix(in srgb, var(--aim) 45%, var(--border));
   outline-offset: -1px;
+}
+
+/* Progress bars (Ultra panel and V3 row): a flat track and fill. */
+.ultra-track {
+  background-color: color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.ultra-fill {
+  background-color: var(--aim);
+  height: 100%;
+  border-radius: 999px;
+}
+
+.ultra-fill-running {
+  background-color: color-mix(in srgb, var(--aim) 40%, transparent);
+  height: 100%;
 }

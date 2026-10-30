@@ -309,5 +309,12 @@
   "pages.mcpManagement.reload_confirm_title",
   "pages.mcpManagement.approval_title",
   "pages.mcpManagement.confirm_will_share",
-  "apps.issueRadar.components.threads.show_earlier"
+  "apps.issueRadar.components.threads.show_earlier",
+  "components.crewMode.ultra_row_sessions",
+  "components.crewMode.ultra_done_line_merged",
+  "components.crewMode.ultra_done_line_merged_rest",
+  "components.crewMode.ultra_done_line_green",
+  "components.crewMode.ultra_done_line_green_rest",
+  "components.crewMode.ultra_done_line_files",
+  "components.crewMode.ultra_done_line_files_rest"
 ]

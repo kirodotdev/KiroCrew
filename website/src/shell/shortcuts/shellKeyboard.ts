@@ -139,7 +139,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
       // The picker's own conductor-free list (lib/crewMode): a chord never moves a
       // normal chat onto a conductor, and a conductor chat does not cycle at all.
-      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, 1, currentSlot?.crew_mode_agent)
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, 1, currentSlot?.crew_mode_agent, !!currentSlot?.crew_mode_root)
       if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCyclePrevAgent: () => {
@@ -149,7 +149,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleAgent above.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, -1, currentSlot?.crew_mode_agent)
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, -1, currentSlot?.crew_mode_agent, !!currentSlot?.crew_mode_root)
       if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCycleReasoningEffort: async () => {

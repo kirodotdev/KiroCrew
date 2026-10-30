@@ -1,18 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { createTestStore } from '../../../test/helpers'
 
-const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), resumeChatSlot: vi.fn() }))
+const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), resumeChatSlot: vi.fn(), crewBoard: vi.fn(), sessionSummary: vi.fn() }))
 vi.mock('../../../api/client', () => ({ api }))
 const panel = vi.hoisted(() => ({ openPanelView: vi.fn() }))
 vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelView }))
 
-import { switchSlot } from '../../../store/chatSlice'
+import { setQuestionCard, switchSlot } from '../../../store/chatSlice'
 import { ApiError } from '../../../api/apiError'
-import CrewWorkerList, { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewWorkersTab, crewWorkerQueryKey, reopenCrewSession } from './CrewWorkerList'
-import { searchCrewWorkers } from '../../../lib/crewWorkers'
+import { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import UltraCrewPanel from './UltraCrewPanel'
+import { crewModePreviewOn } from '../../../test/crewModePreview'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -29,9 +30,11 @@ const WORKERS = {
   ],
 }
 
-/** Opens the folded Done group (closed by default) once the list has loaded. */
-async function openFinished() {
-  fireEvent.click(await screen.findByTestId('crew-finished-toggle'))
+const BOARD = { conductor: { schema: 1, slot_key: 'root-1', goal: 'Plan the launch. Then more.', round: 1, depth: 0, parent_item: null, created_at: '' }, conductor_alive: 'idle', items: [], take_over_available: false }
+
+/** The Crew tab opens on Status; most tests here read the List. */
+async function toList() {
+  fireEvent.click(await screen.findByTestId('ultra-view-list'))
 }
 
 function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
@@ -41,168 +44,86 @@ function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
   return store
 }
 
-describe('CrewWorkerList (design B)', () => {
-  afterEach(() => { vi.clearAllMocks(); localStorage.clear() })
+describe('Ultra Mode Crew tab', () => {
+  beforeEach(() => {
+    api.crewBoard.mockResolvedValue(BOARD)
+    api.sessionSummary.mockResolvedValue({ enabled: false, stale: false, intents: [], constraints: [], generated_at: null, user_turns: null, last_activity: null })
+  })
+  afterEach(() => vi.clearAllMocks())
 
-  it('C: a sub-conductor\'s crew sits one step in under it with a "from" note, at any depth', async () => {
-    const D = (key: string, title: string, by: string) => ({ ...W(key, title, 'idle', 'done'), created_by: by, dispatched_by: by })
-    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('g1', 'Grandchild', 'sub'), D('top', 'Top worker', 'root-1'), D('g2', 'Great-grandchild', 'g1'), D('sub', 'Sub conductor', 'root-1')] })
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
+  it('opens on Status: Overview from the ledger goal, Needs your input, Milestones and Recap', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(screen.getByTestId('ultra-view-status')).toHaveAttribute('aria-pressed', 'true')
+    expect(await screen.findByText('Plan the launch.')).toBeInTheDocument()
+    expect(screen.getByTestId('ultra-needs-you')).toBeInTheDocument()
+    expect(screen.getByTestId('ultra-milestones')).toBeInTheDocument()
+    expect(screen.getByTestId('ultra-recap')).toBeInTheDocument()
+    // Session counts live in List, not Status.
+    expect(screen.getByTestId('ultra-status')).not.toHaveTextContent(/sessions ·/)
+    expect(screen.queryByText(/Timeline/)).toBeNull()
+  })
+
+  it('List: sub-teams sit under their lead, finished members fold away', async () => {
+    const D = (key: string, title: string, by: string, group = 'working') => ({ ...W(key, title, 'idle', group), created_by: by, dispatched_by: by })
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('g1', 'Grandchild', 'sub'), D('top', 'Top worker', 'root-1'), D('sub', 'Sub team', 'root-1'), D('old', 'Old one', 'root-1', 'done')] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
     await screen.findByText('Grandchild')
-    const rows = screen.getAllByTestId('crew-worker-row')
-    // The sub-conductor's crew right under it; deeper crew under its own dispatcher.
-    expect(rows.map(r => r.getAttribute('data-worker'))).toEqual(['top', 'sub', 'g1', 'g2'])
-    const byKey = Object.fromEntries(rows.map(r => [r.getAttribute('data-worker'), r]))
-    // One indent step only, and the note names the direct dispatcher.
-    expect(byKey.top).not.toHaveAttribute('data-indent')
-    expect(byKey.sub).not.toHaveAttribute('data-indent')
-    expect(byKey.g1).toHaveAttribute('data-indent', '1')
-    expect(byKey.g2).toHaveAttribute('data-indent', '1')
-    expect(byKey.g1.className).toBe(byKey.g2.className)
-    expect(within(byKey.g1).getByTestId('crew-worker-from')).toHaveTextContent('From Sub conductor')
-    expect(within(byKey.g2).getByTestId('crew-worker-from')).toHaveTextContent('From Grandchild')
-    // The note is in the button's name, so the indent is not the only signal.
-    expect(within(byKey.g1).getByRole('button')).toHaveAccessibleName(/From Sub conductor/)
-    expect(within(byKey.top).queryByTestId('crew-worker-from')).toBeNull()
+    const rows = within(screen.getByTestId('ultra-list')).getAllByTestId('ultra-member')
+    expect(rows.slice(0, 3).map(r => r.textContent?.split('Working')[0])).toEqual(['Top worker', 'Sub team', 'Grandchild'])
+    expect(rows[2]).toHaveAttribute('data-depth', '1')
+    const finished = screen.getByTestId('ultra-finished')
+    expect(finished).not.toHaveAttribute('open')
+    expect(within(finished).getByText('Old one')).toBeInTheDocument()
   })
 
-  it('groups cards Approval needed, Working, Waiting on conductor, Waiting, Done; never Needs you', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    const groups = screen.getAllByTestId('crew-worker-group')
-    expect(groups.map(g => g.getAttribute('data-group'))).toEqual(['approval', 'working', 'with_conductor', 'waiting', 'done'])
-    expect(within(groups[0]).getByRole('heading')).toHaveTextContent('Approval needed · 1')
-    // A worker's question waits on its conductor, never on the person (owner decision A).
-    expect(within(groups[2]).getByRole('heading')).toHaveTextContent('Waiting on conductor · 1')
-    expect(screen.queryByText(/Needs you/)).toBeNull()
-    expect(within(groups[4]).getByRole('heading')).toHaveTextContent('Done · 2')
-    expect(screen.getByTestId('crew-projects-soon')).toHaveTextContent('Projects tab · coming soon')
+  it('List: a finished member whose lead is still open is not indented under nothing', async () => {
+    const D = (key: string, title: string, by: string, group: string) => ({ ...W(key, title, 'idle', group), created_by: by, dispatched_by: by })
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('sub', 'Sub team', 'root-1', 'working'), D('kid', 'Kid', 'sub', 'done')] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const kid = (await screen.findByText('Kid')).closest('[data-testid="ultra-member"]') as HTMLElement
+    expect(kid).toHaveAttribute('data-depth', '0')
   })
 
-  it('folds finished workers under one Done toggle, closed by default, with the right count', async () => {
+  it('List: clicking a member opens it in the main pane, with no drawer step', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    const toggle = screen.getByTestId('crew-finished-toggle')
-    expect(toggle.tagName).toBe('BUTTON')
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(toggle).toHaveTextContent('Done · 2')
-    // Done is the last group: the live ones stay on top, always shown.
-    const groups = screen.getAllByTestId('crew-worker-group')
-    expect(groups[groups.length - 1]).toHaveAttribute('data-group', 'done')
-    expect(screen.queryByText('Worker D')).toBeNull()
-    expect(screen.queryByText('Worker E')).toBeNull()
-    for (const live of ['Worker A', 'Worker B', 'Worker C', 'Worker F']) expect(screen.getByText(live)).toBeInTheDocument()
-    expect(screen.getAllByTestId('crew-worker-row')).toHaveLength(4)
-  })
-
-  it('one click opens and closes the Done group, and the choice is kept', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    const toggle = await screen.findByTestId('crew-finished-toggle')
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Worker D')).toBeInTheDocument()
-    expect(screen.getByText('Worker E')).toBeInTheDocument()
-    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('1')
-    // A fresh mount (reload, another chat) keeps it open.
-    cleanup()
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    expect(await screen.findByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(await screen.findByText('Worker D')).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId('crew-finished-toggle'))
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('Worker D')).toBeNull()
-    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('0')
-  })
-
-  it('a folded Done group still shows the finished worker on screen, marked current', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="w-done" active />)
-    const card = await screen.findByRole('button', { name: /Worker D/ })
-    expect(card).toHaveAttribute('aria-current', 'true')
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 2')
-    expect(screen.queryByText('Worker E')).toBeNull()
-  })
-
-  it('a finished worker in the open Done group still opens like today', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
-    fireEvent.click(screen.getByRole('button', { name: /Worker D/ }))
-    expect(panel.openPanelView).toHaveBeenCalledWith('w-done', 'workers')
-    expect(store.getState().chat.activeSlot).toBe('w-done')
-  })
-
-  it('a worker that finishes leaves the live list and joins the folded count', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const store = createTestStore({ dashboard: { slots: [] } } as never)
-    render(<QueryClientProvider client={qc}><Provider store={store}><CrewWorkerList root="root-1" viewing="root-1" active /></Provider></QueryClientProvider>)
-    await screen.findByText('Worker A')
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 2')
-    const next = { ...WORKERS, workers: WORKERS.workers.map(w => (w.key === 'w-work' ? { ...w, status: 'idle', group: 'done' } : w)) }
-    api.crewWorkers.mockResolvedValue(next)
-    await qc.refetchQueries({ queryKey: ['crew-workers', 'root-1'] })
-    await waitFor(() => expect(screen.getByTestId('crew-finished-toggle')).toHaveTextContent('Done · 3'))
-    expect(screen.queryByText('Worker A')).toBeNull()
-    expect(document.querySelector('[data-group="working"]')).toBeNull()
-  })
-
-  it('opens a worker in the main pane with the Workers tab in front, and marks the one on screen', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />)
-    const current = await screen.findByRole('button', { name: /Worker B/ })
-    expect(current).toHaveAttribute('aria-current', 'true')
-    fireEvent.click(screen.getByRole('button', { name: /Worker A/ }))
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    fireEvent.click(await screen.findByRole('button', { name: /Worker A/ }))
+    expect(screen.queryByTestId('ultra-member-drawer')).toBeNull()
     expect(panel.openPanelView).toHaveBeenCalledWith('w-work', 'workers')
-    // A plain switch, like a tab click: the main pane now shows that worker.
     expect(store.getState().chat.activeSlot).toBe('w-work')
-    // On desktop the Workers panel stays beside it (U2): the target's own,
-    // usually closed, panel state is not restored over it.
-    expect(store.getState().chat.activityOpen).toBe(true)
   })
 
-  it('a card says the task in one line under its title', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    const card = (await screen.findByText('Worker A')).closest('[data-testid="crew-worker-row"]') as HTMLElement
-    expect(within(card).getByTestId('crew-worker-summary')).toHaveTextContent('Writing a 3-line welcome note')
-    const plain = screen.getByText('Worker C').closest('[data-testid="crew-worker-row"]') as HTMLElement
-    expect(within(plain).queryByTestId('crew-worker-summary')).toBeNull()
+  it('List: shows the open rows from the slot store when the gateway does not serve the list', async () => {
+    api.crewWorkers.mockRejectedValue(new ApiError(404, 'not found', ''))
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />, [
+      { key: 'w-live', title: 'Live worker', agent: 'kirocrew-worker', messages: 2, running: true, crew_root: 'root-1', created_by: 'root-1' },
+    ])
+    await toList()
+    expect(await screen.findByRole('button', { name: /Live worker/ })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('reopens a worker whose tab has closed from its saved transcript (X4)', async () => {
+  it('List: from six members up, a search filters live and finished members and unfolds finished matches', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.resumeChatSlot.mockResolvedValue({ ok: true, key: 'w-gone', messages: [] })
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
-    fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
-    await vi.waitFor(() => expect(store.getState().chat.activeSlot).toBe('w-gone'))
-    expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_w-gone', 'Worker E')
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const box = await screen.findByTestId('crew-search')
+    fireEvent.change(box, { target: { value: 'Worker E' } })
+    const list = screen.getByTestId('ultra-list')
+    await waitFor(() => expect(within(list).getAllByTestId('ultra-member')).toHaveLength(1))
+    expect(screen.getByTestId('ultra-finished')).toHaveAttribute('open')
+    fireEvent.change(box, { target: { value: 'nobody' } })
+    expect(await screen.findByTestId('crew-search-empty')).toBeInTheDocument()
   })
 
-  it('a reopen that answers after the person opened another chat does not take them away', async () => {
+  it('the Crew tab finds the root from a crew member row', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    let answer: (v: unknown) => void = () => {}
-    api.resumeChatSlot.mockReturnValue(new Promise(resolve => { answer = resolve }))
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
-    fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
-    await vi.waitFor(() => expect(api.resumeChatSlot).toHaveBeenCalled())
-    // The person moves on while the reopen is still in flight.
-    store.dispatch(switchSlot({ key: 'elsewhere' }))
-    expect(store.getState().chat.activeSlot).toBe('elsewhere')
-    answer({ ok: true, key: 'w-gone', messages: [] })
-    // The thunk settles: its pending entry is gone.
-    await vi.waitFor(() => expect(Object.keys(store.getState().chat.pendingResumes ?? {})).toHaveLength(0))
-    // Reopened as a tab, but the late answer leaves the view where the person went.
-    expect(store.getState().chat.activeSlot).toBe('elsewhere')
-    expect(panel.openPanelView).not.toHaveBeenCalledWith('w-gone', 'workers')
-    expect(screen.queryByText('Could not reopen that session. Try again.')).toBeNull()
+    renderWith(<CrewWorkersTab slot="w-need" active />, [{ key: 'w-need', crew_root: 'root-1', messages: 1 }, { key: 'plain' }])
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledWith('root-1'))
   })
 
   it('reopenCrewSession says whether the reopened session took the view', async () => {
@@ -225,111 +146,26 @@ describe('CrewWorkerList (design B)', () => {
     await expect(reopenCrewSession(store.dispatch, store.getState, 'w-three', 'Worker G')).resolves.toEqual({ ok: false, activated: false, key: 'w-three' })
   })
 
-  it('says so when a closed worker cannot be reopened', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    api.resumeChatSlot.mockRejectedValue(new Error('gone'))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
-    fireEvent.click(await screen.findByRole('button', { name: 'Reopen Worker E to read it' }))
-    expect(await screen.findByText('Could not reopen that session. Try again.')).toBeInTheDocument()
-  })
-
-  it('shows a loading line while the first read is in flight (X6)', () => {
-    api.crewWorkers.mockReturnValue(new Promise(() => {}))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    expect(screen.getByTestId('crew-workers-loading')).toHaveTextContent('Loading the crew…')
-  })
-
-  it('shows no raw ledger id on a card', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await openFinished()
-    const card = (await screen.findByText('Worker E')).closest('[data-testid="crew-worker-row"]') as HTMLElement
-    expect(card).not.toHaveTextContent('it_9')
-  })
-
-  it('lists a root\'s open workers from the slot store when the gateway does not serve the list, says nothing is wrong, and stops asking', async () => {
-    // The worker list route lands in a later part. A 404 must not leave a crew
-    // member unreachable and is not a failure: the rows the store already stamps
-    // `crew_root` are the list, no notice hands the person to the agent, and the
-    // route is not polled again.
-    api.crewWorkers.mockRejectedValue(new ApiError(404, 'not found', ''))
-    const slots = [
-      { key: 'root-1', title: 'Root', messages: 1, running: false, crew_mode_root: true },
-      { key: 'w-live', title: 'Live worker', agent: 'kirocrew-worker', messages: 2, running: true, crew_root: 'root-1', created_by: 'root-1' },
-      { key: 'w-wait', title: 'Waiting worker', messages: 1, running: false, crew_root: 'root-1', pending_approval: true, created_by: 'root-1' },
-    ]
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
-    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalled())
-    await waitFor(() => expect(screen.queryByTestId('crew-workers-loading')).toBeNull())
-    expect(screen.queryByRole('alert')).toBeNull()
-    const groups = screen.getAllByTestId('crew-worker-group')
-    expect(groups.map(g => g.getAttribute('data-group'))).toEqual(['approval', 'working'])
-    expect(screen.queryByTestId('crew-workers-loading')).toBeNull()
-    expect(screen.queryByText('No crew yet.')).toBeNull()
-    // The card opens the live worker like any other.
-    fireEvent.click(screen.getByRole('button', { name: /Live worker/ }))
-    expect(store.getState().chat.activeSlot).toBe('w-live')
-    // The one read is the only one: `refetchInterval` is off once the route
-    // answered 404, so nothing is scheduled after the read above.
-    expect(api.crewWorkers).toHaveBeenCalledTimes(1)
-  })
-
-  it('says there is no crew yet, not that a read failed, when the route is not served and no row is a worker', async () => {
-    api.crewWorkers.mockRejectedValue(new ApiError(404, 'not found', ''))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    expect(await screen.findByText('No crew yet.')).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-
-  it('still says so when the list read fails for a real reason', async () => {
-    api.crewWorkers.mockRejectedValue(new ApiError(500, 'down', ''))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, [
-      { key: 'w-live', title: 'Live worker', messages: 2, running: true, crew_root: 'root-1', created_by: 'root-1' },
-    ])
-    expect(await screen.findByText('Could not load the crew list; its open crew members are shown.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Live worker/ })).toBeInTheDocument()
-  })
-
-  it('shows the live rows under no loading line while the first read is in flight', () => {
-    api.crewWorkers.mockReturnValue(new Promise(() => {}))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, [
-      { key: 'w-live', title: 'Live worker', messages: 2, running: true, crew_root: 'root-1', created_by: 'root-1' },
-    ])
-    expect(screen.getByRole('button', { name: /Live worker/ })).toBeInTheDocument()
-    expect(screen.queryByTestId('crew-workers-loading')).toBeNull()
-  })
-
-  it('says when the list cannot be read', async () => {
-    api.crewWorkers.mockRejectedValue(new Error('nope'))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
-  })
-
-  it('the Workers tab finds the root from a worker row and says so on a plain chat', async () => {
-    api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkersTab slot="w-need" active />, [{ key: 'w-need', crew_root: 'root-1' }, { key: 'plain' }])
-    await screen.findByText('Worker B')
-    expect(api.crewWorkers).toHaveBeenCalledWith('root-1')
-  })
-
   it('the Workers tab on a plain chat lists nothing', () => {
-    renderWith(<CrewWorkersTab slot="plain" active />, [{ key: 'plain' }])
+    // A plain chat with messages: a brand-new one shows its (empty) panel while
+    // its Ultra Mode switch lands.
+    renderWith(<CrewWorkersTab slot="plain" active />, [{ key: 'plain', messages: 2 }])
     expect(screen.getByTestId('crew-workers-none')).toBeInTheDocument()
     expect(api.crewWorkers).not.toHaveBeenCalled()
   })
 
   it('viewing a worker: a Back row returns to the root and keeps the panel open', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="w-need" active />, [
       { key: 'root-1', title: 'Sample goal', crew_mode_root: true },
       { key: 'w-need', title: 'Worker B', crew_root: 'root-1' },
     ])
-    await screen.findByText('Worker A')
+    await screen.findByTestId('ultra-crew-panel')
     const back = screen.getByTestId('crew-panel-back')
     expect(back).toHaveTextContent('Back to main chat')
-    expect(back).toHaveTextContent('Sample goal')
-    expect(back).toHaveAccessibleName('Back to main chat · Sample goal')
+    // One label, no title chip beside it.
+    expect(back).not.toHaveTextContent('Sample goal')
+    expect(back).toHaveAccessibleName('Back to main chat')
     // A real button, so Tab and Enter reach it.
     expect(back.tagName).toBe('BUTTON')
     fireEvent.click(back)
@@ -340,8 +176,8 @@ describe('CrewWorkerList (design B)', () => {
 
   it('viewing the root itself: no Back row', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
-    await screen.findByText('Worker A')
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalled())
     expect(screen.queryByTestId('crew-panel-back')).toBeNull()
   })
 
@@ -349,12 +185,14 @@ describe('CrewWorkerList (design B)', () => {
     api.crewWorkers.mockResolvedValue({ ...WORKERS, root_closed: true, root_title: 'Saved goal' })
     api.resumeChatSlot.mockResolvedValue({ ok: true, key: 'root-1', messages: [] })
     // No 'root-1' row: the root's tab is closed.
-    const store = renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
-    await screen.findByText('Worker A')
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
+    await screen.findByTestId('ultra-crew-panel')
     const back = screen.getByTestId('crew-panel-back')
     expect(back).toHaveAttribute('data-root-closed', 'true')
     expect(back).toHaveTextContent('Open main chat')
-    await waitFor(() => expect(back).toHaveTextContent('Saved goal'))
+    // The saved title arrives with the crew list; Back reopens under it.
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalled())
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
     fireEvent.click(back)
     await vi.waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
     expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_root-1', 'Saved goal')
@@ -363,141 +201,119 @@ describe('CrewWorkerList (design B)', () => {
   it('a failed reopen of a closed root says so under the Back row', async () => {
     api.crewWorkers.mockResolvedValue({ ...WORKERS, root_closed: true, root_title: 'Saved goal' })
     api.resumeChatSlot.mockResolvedValue({ ok: false })
-    renderWith(<CrewWorkerList root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
-    await screen.findByText('Worker A')
+    renderWith(<UltraCrewPanel root="root-1" viewing="w-need" active />, [{ key: 'w-need', title: 'Worker B', crew_root: 'root-1' }])
+    await screen.findByTestId('ultra-crew-panel')
     fireEvent.click(screen.getByTestId('crew-panel-back'))
     expect(await screen.findByText('Could not reopen that session. Try again.')).toBeInTheDocument()
   })
-})
 
-describe('CrewWorkerList search', () => {
-  afterEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear() })
-
-  const SEARCH = { ...WORKERS, workers: [...WORKERS.workers, { ...W('w-zh', '修复登录页面', 'idle', 'done'), summary: '已合并' }] }
-  const shown = () => screen.queryAllByTestId('crew-worker-row').map(r => r.getAttribute('data-worker'))
-  const type = (text: string) => fireEvent.change(screen.getByRole('textbox', { name: 'Search the crew' }), { target: { value: text } })
-
-  it('filters cards by title as the person types, case-insensitive', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('worker a')
-    expect(shown()).toEqual(['w-work'])
-    expect(screen.getAllByTestId('crew-worker-group').map(g => g.getAttribute('data-group'))).toEqual(['working'])
+  const ITEM = (over: Record<string, unknown>) => ({
+    schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
+    decision: '', round: 1, fails: 0, status: 'progress', summary: '', artifacts: {}, pr: null, last_report_at: '2026-10-30T00:00:00Z',
+    created_at: '2026-10-30T00:00:00Z', closed_at: null, decided_at: null, orphaned: false, stale: false,
+    acceptance_concrete: true, outstanding: false, terminal: false, alive: 'idle', events: [], ...over,
   })
 
-  it('matches the task line too', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('WELCOME note')
-    expect(shown()).toEqual(['w-work'])
+  it('Status: a failed board read says so instead of an empty milestone list', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockRejectedValue(new ApiError(500, 'board down', ''))
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByText('board down')).toBeInTheDocument()
+    expect(screen.queryByText('No milestones yet.')).toBeNull()
   })
 
-  it('matches CJK titles, finished ones included', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('登录')
-    expect(shown()).toEqual(['w-zh'])
-    type('已合并')
-    expect(shown()).toEqual(['w-zh'])
+  it('List: a failed crew read says so', async () => {
+    api.crewWorkers.mockRejectedValue(new ApiError(500, 'boom', ''))
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
   })
 
-  it('shows finished matches while the Done group is folded, under a plain heading', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    expect(await screen.findByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
-    type('Worker')
-    expect(shown()).toEqual(expect.arrayContaining(['w-done', 'w-gone', 'w-work']))
-    expect(screen.queryByTestId('crew-finished-toggle')).toBeNull()
-    const done = document.querySelector('[data-group="done"]') as HTMLElement
-    expect(within(done).getByRole('heading')).toHaveTextContent('Done · 2')
-    // The search leaves the person's fold choice alone.
-    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('0')
+  it('Status: the pulse reads the board stale flag on open work', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', stale: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stalled/i)
   })
 
-  it('clearing the search folds Done back as it was', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByTestId('crew-finished-toggle')
-    type('Worker D')
-    expect(shown()).toEqual(['w-done'])
-    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
-    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('')
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('Worker D')).toBeNull()
-    // An open Done stays open after a search too.
-    fireEvent.click(screen.getByTestId('crew-finished-toggle'))
-    type('Worker A')
-    type('')
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Worker D')).toBeInTheDocument()
+  it('Status: a blocked milestone opens its crew member, and shows no "moving" pulse', async () => {
+    api.crewWorkers.mockResolvedValue({ ...WORKERS, workers: [{ ...W('w-sup', 'Supplies', 'idle', 'waiting'), ledger_item: 'b1' }] })
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b1', title: 'Supplies list', status: 'blocked' })] })
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const open = await screen.findByTestId('ultra-milestone-open')
+    expect(screen.queryByTestId('ultra-pulse')).toBeNull()
+    fireEvent.click(open)
+    expect(store.getState().chat.activeSlot).toBe('w-sup')
   })
 
-  it('says so when nothing matches', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('  no such task ')
-    expect(shown()).toEqual([])
-    expect(screen.getByTestId('crew-search-empty')).toHaveTextContent('No crew member matches “no such task”.')
-    expect(screen.queryByText('No crew yet.')).toBeNull()
+  it('Status: blocked work with no approval says where it is, and its row says what blocks it', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b2', title: 'Supplies list', status: 'blocked', summary: 'The file save was declined. Retry next.' })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('ultra-milestone')).toHaveTextContent('The file save was declined.')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Blocked work is under Milestones.')
+    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
   })
 
-  it('Esc clears the search and restores the list', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('Worker C')
-    expect(shown()).toEqual(['w-wait'])
-    const box = screen.getByRole('textbox', { name: 'Search the crew' })
-    fireEvent.keyDown(box, { key: 'Escape' })
-    expect(box).toHaveValue('')
-    expect(shown()).toHaveLength(4)
-    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+  it('Status: an unstarted milestone says Not started, never a made-up order', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'r1', title: 'Menu', alive: 'running' }), ITEM({ item_id: 'n1', title: 'Decor', status: null, last_report_at: null, created_at: '2026-10-30T00:01:00Z' })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const rows = await screen.findAllByTestId('ultra-milestone')
+    const next = rows.find(r => r.getAttribute('data-state') === 'next') as HTMLElement
+    expect(next).toHaveTextContent('Not started')
+    expect(next).not.toHaveTextContent('Starts after')
   })
 
-  it('keeps the query when opening a match remounts the list', async () => {
-    api.crewWorkers.mockResolvedValue(SEARCH)
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    type('Worker D')
-    fireEvent.click(screen.getByRole('button', { name: /Worker D/ }))
-    cleanup()
-    renderWith(<CrewWorkerList root="root-1" viewing="w-done" active />)
-    expect(await screen.findByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
-    await waitFor(() => expect(shown()).toEqual(['w-done']))
-    // Clearing forgets it.
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search the crew' }), { key: 'Escape' })
-    expect(sessionStorage.getItem(crewWorkerQueryKey('root-1'))).toBe('')
+  it('Status: a finished crew shows no pulse', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b', state: 'accepted', terminal: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await screen.findAllByTestId('ultra-milestone')
+    expect(screen.queryByTestId('ultra-pulse')).toBeNull()
   })
 
-  it('says nothing matches only once the list is read, not while it is pending or failed', async () => {
-    sessionStorage.setItem(crewWorkerQueryKey('root-1'), 'Worker D')
-    const live = { key: 'w-live', title: 'Live one', crew_root: 'root-1', running: true }
-    const slots = Array.from({ length: CREW_WORKER_SEARCH_MIN }, (_, i) => ({ ...live, key: `w-live-${i}` }))
-    api.crewWorkers.mockReturnValue(new Promise(() => {}))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
-    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
-    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
-    cleanup()
-    api.crewWorkers.mockRejectedValue(new Error('boom'))
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
-    expect(await screen.findByText(/Could not load the crew list/)).toBeInTheDocument()
-    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
+  it('Needs your input: the main chat question is one row that points at its card in the chat', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="w-work" active />)
+    act(() => { store.dispatch(switchSlot('w-work')) })
+    act(() => { store.dispatch(setQuestionCard({ slot: 'root-1', card_id: 'card-1', questions: [{ question: 'Which tea?', options: [{ label: 'Oolong' }] }] } as never)) })
+    const row = await screen.findByTestId('ultra-main-question')
+    expect(row).toHaveTextContent('Which tea?')
+    expect(screen.queryByText('Oolong')).toBeNull()
+    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 1')
+    fireEvent.click(screen.getByTestId('ultra-answer-in-chat'))
+    expect(store.getState().chat.activeSlot).toBe('root-1')
   })
 
-  it('has no search box under the minimum crew size', async () => {
-    api.crewWorkers.mockResolvedValue({ ...WORKERS, workers: WORKERS.workers.slice(0, CREW_WORKER_SEARCH_MIN - 1) })
-    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
-    await screen.findByText('Worker B')
-    expect(screen.queryByTestId('crew-search')).toBeNull()
+  it('Milestones: the open done fold reads "N done" alone; folded it names them', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'd1', title: 'Drinks menu', state: 'accepted', terminal: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const fold = await screen.findByTestId('ultra-milestones-done')
+    const summary = fold.querySelector('summary') as HTMLElement
+    expect(summary).toHaveTextContent('1 done · Drinks menu')
+    act(() => { (fold as HTMLDetailsElement).open = true; fireEvent(fold, new Event('toggle')) })
+    expect(summary).toHaveTextContent(/^1 done$/)
   })
 
-  it('searchCrewWorkers folds case and full-width forms; a blank query matches all', () => {
-    const rows = SEARCH.workers as never as Parameters<typeof searchCrewWorkers>[0]
-    expect(searchCrewWorkers(rows, 'ＷＯＲＫＥＲ Ｅ').map(w => w.key)).toEqual(['w-gone'])
-    expect(searchCrewWorkers(rows, '   ')).toBe(rows)
+  it('Status: a failed summary read and a failed crew read say so', async () => {
+    api.crewWorkers.mockRejectedValue(new ApiError(500, 'boom', ''))
+    api.sessionSummary.mockRejectedValue(new ApiError(500, 'summary down', ''))
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByText('summary down')).toBeInTheDocument()
+    expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
+  })
+
+  it('Status: a worker question waiting on the main chat does not ask the person', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'q', title: 'Menu', status: 'question', outstanding: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const row = await screen.findByTestId('ultra-milestone')
+    expect(row).toHaveTextContent('Waiting on the main chat')
+    expect(screen.getByTestId('ultra-recap')).not.toHaveTextContent(/on you/)
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Ultra Mode is a feature preview.
+crewModePreviewOn()

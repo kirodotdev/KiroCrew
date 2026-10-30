@@ -89,7 +89,7 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
         transition={{ duration: 0.2 }}
         className="inline-flex items-center gap-1.5 h-7 px-1.5 -mx-1.5 rounded-md text-[12px] font-semibold shrink-0 cursor-pointer hover:bg-bg-hover"
       >
-        <KiroGhostMark size={13} className="inline-block shrink-0 text-aim" />
+        <KiroGhostMark size={13} className="inline-block shrink-0 ultra-accent" />
         <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
       </motion.button>
     )
@@ -105,7 +105,7 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
       transition={{ duration: 0.2 }}
       className="inline-flex items-center gap-1.5 h-7 text-[12px] font-semibold shrink-0 cursor-default select-none"
     >
-      <KiroGhostMark size={13} className="inline-block shrink-0 text-aim" />
+      <KiroGhostMark size={13} className="inline-block shrink-0 ultra-accent" />
       <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
     </motion.span>
   )

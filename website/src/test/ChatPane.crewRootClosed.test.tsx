@@ -70,6 +70,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { crewModePreviewOn } from './crewModePreview'
 
 const SLOT = 'chat-1-worker'
 
@@ -114,3 +115,6 @@ describe('Crew Mode L1: a worker in a Split View pane under a closed conductor',
     expect(box.getAttribute('placeholder') ?? '').toBe('')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()
