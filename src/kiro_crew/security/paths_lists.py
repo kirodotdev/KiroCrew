@@ -1056,6 +1056,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
 
 
 _WRITE_PROTECTED_HOME_PATHS += [
+    # This install's ``kirocrew`` link (``env.OWN_KIROCREW_DIR``), ahead of ~/.local/bin
+    # on every PATH Kiro Crew builds: a write would choose the ``kirocrew`` agents run.
+    f"{prefix}/kirocrew-bin"
+    for prefix in _CREW_HOME_PREFIXES
+]
+
+
+_WRITE_PROTECTED_HOME_PATHS += [
     # The decision log (``decisions/decisions-YYYYMMDD.jsonl``, written by
     # ``decisions.log``). Another instance of the input-to-an-authorization-decision
     # class, reached through the record rather than through the grant: the day-file

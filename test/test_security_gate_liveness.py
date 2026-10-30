@@ -614,7 +614,10 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#: Plus 8 for the ``kirocrew-bin`` entry in
+#: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
+#: link that decides which ``kirocrew`` an agent shell runs. Deny-only. Re-measured.
+_PACKAGE_LINE_BUDGET = 33_515
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

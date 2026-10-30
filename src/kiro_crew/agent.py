@@ -89,6 +89,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _stale_mcp_purge_marker,
     _through_stable_link,
     ensure_kirocrew_on_path,
+    refresh_own_kirocrew_link,
     run_first_run_setup,
 )
 from kiro_crew.agent_parts.shared_home import (
