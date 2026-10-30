@@ -1925,7 +1925,8 @@
       "pathBar": {
         "click_to_edit_path": "点击编辑路径",
         "folder_path": "文件夹路径",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "刷新文件夹"
       },
       "searchPanel": {
         "capped": "（已截断）",

@@ -2021,7 +2021,8 @@
       "pathBar": {
         "click_to_edit_path": "Clique para editar o caminho",
         "folder_path": "Caminho da pasta",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Atualizar pasta"
       },
       "searchPanel": {
         "capped": "(limitado)",

@@ -1973,7 +1973,8 @@
       "pathBar": {
         "click_to_edit_path": "পাথ সম্পাদনা করতে ক্লিক করুন",
         "folder_path": "ফোল্ডার পাথ",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "ফোল্ডার রিফ্রেশ করো"
       },
       "searchPanel": {
         "capped": "(সীমিত)",

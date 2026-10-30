@@ -2062,7 +2062,8 @@
       "pathBar": {
         "click_to_edit_path": "Klicken, um den Pfad zu bearbeiten",
         "folder_path": "Ordnerpfad",
-        "path_to_folder": "/pfad/zum/ordner"
+        "path_to_folder": "/pfad/zum/ordner",
+        "refresh_folder": "Ordner aktualisieren"
       },
       "searchPanel": {
         "capped": "(begrenzt)",

@@ -2111,7 +2111,8 @@
       "pathBar": {
         "click_to_edit_path": "Cliquer pour modifier le chemin",
         "folder_path": "Chemin du dossier",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Actualiser le dossier"
       },
       "searchPanel": {
         "capped": "(tronqué)",

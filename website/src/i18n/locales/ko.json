@@ -2013,7 +2013,8 @@
       "pathBar": {
         "click_to_edit_path": "클릭해서 경로 편집",
         "folder_path": "폴더 경로",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "폴더 새로 고침"
       },
       "searchPanel": {
         "capped": "(상한 도달)",

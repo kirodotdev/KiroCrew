@@ -2021,7 +2021,8 @@
       "pathBar": {
         "click_to_edit_path": "Clicca per modificare il percorso",
         "folder_path": "Percorso della cartella",
-        "path_to_folder": "/percorso/della/cartella"
+        "path_to_folder": "/percorso/della/cartella",
+        "refresh_folder": "Aggiorna cartella"
       },
       "searchPanel": {
         "capped": "(limitato)",

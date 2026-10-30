@@ -2021,7 +2021,8 @@
       "pathBar": {
         "click_to_edit_path": "Clic para editar la ruta",
         "folder_path": "Ruta de la carpeta",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Actualizar carpeta"
       },
       "searchPanel": {
         "capped": "(limitado)",

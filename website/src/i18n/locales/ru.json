@@ -2069,7 +2069,8 @@
       "pathBar": {
         "click_to_edit_path": "Нажмите, чтобы изменить путь",
         "folder_path": "Путь к папке",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Обновить папку"
       },
       "searchPanel": {
         "capped": "(усечено)",

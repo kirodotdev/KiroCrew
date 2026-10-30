@@ -1108,7 +1108,8 @@
       "pathBar": {
         "click_to_edit_path": "Click to edit path",
         "folder_path": "Folder path",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Refresh folder"
       },
       "searchPanel": {
         "close_esc": "Close (Esc)",
