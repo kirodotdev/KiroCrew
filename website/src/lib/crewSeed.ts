@@ -10,7 +10,7 @@
  *
  * The line is for the receiving agent. A person reading the worker's transcript
  * needs who sent it, not a slot key, so the view drops the line and names the
- * sender instead ("From conductor").
+ * sender instead ("From the main chat").
  */
 import { crewRootOf } from './crewMode'
 

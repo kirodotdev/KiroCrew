@@ -51,9 +51,9 @@ describe('crewSeed', () => {
 })
 
 describe('a delivered message in a worker view', () => {
-  it('reads "From conductor" when the Crew Mode root sent it', () => {
+  it('reads "From the main chat" when the Crew Mode root sent it, never "conductor"', () => {
     withSlots(<UserMessage content={SEED} renderContent={renderContent} slotKey="chat-15" />)
-    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From conductor')
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From the main chat')
     expect(screen.getByTestId('content')).toHaveTextContent('Write a welcome note.')
     expect(screen.getByTestId('content').textContent).not.toContain('sent by session')
   })
@@ -86,7 +86,7 @@ describe('a delivered message in a worker view', () => {
         { key: 'chat-15', crew_root: 'chat-14-1792551959' },
       ] as never))
     })
-    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From conductor')
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From the main chat')
   })
 
   it('a message without the line has no label', () => {

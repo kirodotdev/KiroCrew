@@ -928,6 +928,6 @@
     "crewWorkerKit.done_replaced": "Sentence in the confirmation after an add succeeds, shown when it replaced the crewmate's behavior directions. May follow the \"Added N to NAME.\" sentence or stand alone.",
     "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again.",
     "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant.",
-    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row in the Ultra Mode Crew tab (Status view): the work is happening at this moment. Not a request to act now."
+    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row on the Ultra Mode Board tab (Status view): the work is happening at this moment. Not a request to act now."
   }
 }

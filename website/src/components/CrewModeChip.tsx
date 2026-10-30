@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { Glass } from './Glass'
-import { KiroGhostMark } from './KiroGhostMark'
+import { Zap } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import { fireUltraEffect } from '../lib/ultraModeEffect'
@@ -55,7 +55,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       onClick={click}
       className={`crew-chip inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] font-semibold transition-colors cursor-pointer ${state}`}
     >
-      <KiroGhostMark size={13} className="inline-block shrink-0 ultra-accent" />
+      <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
       <span className="crew-chip-text">{i18nT('components.crewMode.chip_off')}</span>
     </Glass>
   )

@@ -107,7 +107,7 @@
       "decision_rejected_once": "今回のみ拒否 {{n}} 件",
       "decision_unknown": "不明 {{n}} 件"
     },
-    "workers": "クルー",
+    "workers": "ボード",
     "workers_error": "クルーを読み込めませんでした。",
     "workers_error_live": "クルーの一覧を読み込めませんでした。開いているクルーメンバーを表示しています。",
     "worker_status_working": "実行中",
@@ -9843,6 +9843,7 @@
       "steer_not_recorded_crew_log_off": "{{name}} に届けましたが、台帳には記録されていません: クルーログがオフです。",
       "steer_not_recorded_ledger_failed": "{{name}} に届けましたが、台帳には記録されていません: 台帳への書き込みに失敗しました。",
       "ultra_needs_you": "対応が必要",
+      "ultra_paused": "一時停止",
       "ultra_needs_you_none": "今は対応が必要な項目はありません。",
       "ultra_needs_you_none_blocked": "承認待ちはありません。ブロック中の作業はマイルストーンにあります。",
       "ultra_answer_in_chat": "チャットで回答",
@@ -11967,7 +11968,7 @@
         "quote_message": "メッセージを引用",
         "more_actions": "その他の操作",
         "edit_replaces_below": "送信すると下の返信が置き換わります",
-        "seed_from_conductor": "コンダクターから",
+        "seed_from_conductor": "メインチャットから",
         "seed_from_worker": "クルーメンバーから",
         "seed_from_session": "別のチャットから"
       },
@@ -13722,7 +13723,7 @@
         "crewmate_harness": "クルーメイトごとのエージェントハーネス",
         "crewmate_harness_desc": "各クルーメイトのプロフィールにエージェントハーネスの設定を追加し、1 人を Claude Code などの別の AI コーディングツールとそのモデルで動かし、ほかは既定のままにできるようにします。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "チャットがタスクをクルーに任せ、Crew タブで追跡できるようにします。"
+        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",

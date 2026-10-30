@@ -116,7 +116,7 @@
       "decision_rejected_once": "{{n}} इस बार अस्वीकार",
       "decision_unknown": "{{n}} अज्ञात"
     },
-    "workers": "टीम",
+    "workers": "बोर्ड",
     "workers_error": "टीम लोड नहीं हो सकी।",
     "workers_error_live": "टीम सूची लोड नहीं हो सकी; उसके खुले टीम सदस्य दिखाए गए हैं।",
     "worker_status_working": "काम कर रहा है",
@@ -9988,6 +9988,7 @@
       "steer_not_recorded_crew_log_off": "{{name}} को भेजा गया, पर लेजर में दर्ज नहीं हुआ: क्रू लॉग बंद है।",
       "steer_not_recorded_ledger_failed": "{{name}} को भेजा गया, पर लेजर में दर्ज नहीं हुआ: लेजर में लिखना विफल रहा।",
       "ultra_needs_you": "तुम्हारी ज़रूरत है",
+      "ultra_paused": "रुका हुआ",
       "ultra_needs_you_none": "अभी तुम्हारे लिए कुछ नहीं है।",
       "ultra_needs_you_none_blocked": "कोई मंज़ूरी तुम्हारा इंतज़ार नहीं कर रही। रुका हुआ काम माइलस्टोन में है।",
       "ultra_answer_in_chat": "चैट में जवाब दो",
@@ -12158,7 +12159,7 @@
         "quote_message": "संदेश उद्धृत करो",
         "more_actions": "अधिक क्रियाएँ",
         "edit_replaces_below": "भेजने पर नीचे के जवाब बदल जाएंगे",
-        "seed_from_conductor": "कंडक्टर से",
+        "seed_from_conductor": "मुख्य चैट से",
         "seed_from_worker": "एक टीम सदस्य से",
         "seed_from_session": "दूसरी चैट से"
       },
@@ -13956,7 +13957,7 @@
         "crewmate_harness": "हर साथी का एजेंट हार्नेस",
         "crewmate_harness_desc": "हर साथी की प्रोफ़ाइल में एजेंट हार्नेस सेटिंग जोड़ता है, ताकि कोई एक साथी Claude Code जैसे किसी दूसरे AI कोडिंग टूल और उसके मॉडल पर चल सके, जबकि बाकी डिफ़ॉल्ट पर रहें।",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "एक चैट को काम एक crew को सौंपने और उन्हें Crew टैब में देखने देता है।"
+        "crew_mode_desc": "एक चैट को काम एक crew को सौंपने और उन्हें बोर्ड पर देखने देता है।"
       },
       "kasBundleCard": {
         "toggle_label": "KAS को {{productName}} के अपने इंजन पर चलाओ",

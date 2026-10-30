@@ -107,7 +107,7 @@
       "decision_rejected_once": "{{n}} 个仅拒绝本次",
       "decision_unknown": "{{n}} 个结果未知"
     },
-    "workers": "团队",
+    "workers": "看板",
     "workers_error": "无法加载团队。",
     "workers_error_live": "无法加载团队列表；已显示其打开的团队成员。",
     "worker_status_working": "运行中",
@@ -9843,6 +9843,7 @@
       "steer_not_recorded_crew_log_off": "已发送给 {{name}}，但未记入台账：crew 日志已关闭。",
       "steer_not_recorded_ledger_failed": "已发送给 {{name}}，但未记入台账：写入台账失败。",
       "ultra_needs_you": "需要你",
+      "ultra_paused": "已暂停",
       "ultra_needs_you_none": "现在没有需要你处理的事。",
       "ultra_needs_you_none_blocked": "没有等你批准的事项。受阻的工作在“里程碑”下。",
       "ultra_answer_in_chat": "在聊天中回答",
@@ -11967,7 +11968,7 @@
         "quote_message": "引用消息",
         "more_actions": "更多操作",
         "edit_replaces_below": "发送会替换下方的回复",
-        "seed_from_conductor": "来自指挥",
+        "seed_from_conductor": "来自主对话",
         "seed_from_worker": "来自团队成员",
         "seed_from_session": "来自另一个对话"
       },
@@ -13722,7 +13723,7 @@
         "crewmate_harness": "按队友设置代理运行框架",
         "crewmate_harness_desc": "在每个队友的资料中添加“代理运行框架”设置，让某个队友使用另一种 AI 编程工具（例如 Claude Code）及其模型，其他队友保持默认。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "让一个对话把任务交给一个团队，并在 Crew 标签页里跟踪它们。"
+        "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",

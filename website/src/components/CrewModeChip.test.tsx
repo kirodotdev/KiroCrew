@@ -4,6 +4,13 @@ import { CrewModeChip } from './CrewModeChip'
 import CrewModeWelcome, { CREW_WELCOME_PLAY_SECS } from './CrewModeWelcome'
 
 describe('CrewModeChip', () => {
+  it('wears the lightning bolt, not the ghost', () => {
+    render(<CrewModeChip onTurnOn={vi.fn()} />)
+    const chip = screen.getByTestId('crew-mode-chip')
+    expect(chip.querySelector('.lucide-zap')).not.toBeNull()
+    expect(chip.querySelector('[data-testid="kiro-ghost-mark"]')).toBeNull()
+  })
+
   it('reads off and reports it through aria-pressed', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     const chip = screen.getByTestId('crew-mode-chip')

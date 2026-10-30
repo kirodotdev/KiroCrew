@@ -125,7 +125,7 @@
       "decision_rejected_once": "rifiutate una volta: {{n}}",
       "decision_unknown": "sconosciute: {{n}}"
     },
-    "workers": "Squadra",
+    "workers": "Bacheca",
     "workers_error": "Impossibile caricare la squadra.",
     "workers_error_live": "Impossibile caricare l'elenco della squadra; i suoi membri aperti sono mostrati.",
     "worker_status_working": "In corso",
@@ -10133,6 +10133,7 @@
       "steer_not_recorded_crew_log_off": "Consegnato a {{name}}, ma non registrato nel registro: il log della crew è disattivato.",
       "steer_not_recorded_ledger_failed": "Consegnato a {{name}}, ma non registrato nel registro: la scrittura nel registro non è riuscita.",
       "ultra_needs_you": "Richiede la tua attenzione",
+      "ultra_paused": "In pausa",
       "ultra_needs_you_none": "Al momento nulla richiede la tua attenzione.",
       "ultra_needs_you_none_blocked": "Nessuna approvazione ti attende. Il lavoro bloccato è in Traguardi.",
       "ultra_answer_in_chat": "Rispondi in chat",
@@ -12349,7 +12350,7 @@
         "quote_message": "Cita messaggio",
         "more_actions": "Altre azioni",
         "edit_replaces_below": "L'invio sostituisce le risposte sotto",
-        "seed_from_conductor": "Dal conductor",
+        "seed_from_conductor": "Dalla chat principale",
         "seed_from_worker": "Da un membro della squadra",
         "seed_from_session": "Da un’altra chat"
       },
@@ -14190,7 +14191,7 @@
         "crewmate_harness": "Harness dell’agente per compagno",
         "crewmate_harness_desc": "Aggiunge un’impostazione Harness dell’agente al profilo di ogni compagno, così uno può usare un altro strumento di programmazione IA, come Claude Code, con i suoi modelli, mentre gli altri restano su quello predefinito.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle in una scheda Crew."
+        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",

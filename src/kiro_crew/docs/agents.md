@@ -75,7 +75,7 @@ listed there, not as rows of your list.
 
 Off, the dashboard looks as it did before Crew Mode:
 
-- no Crew Mode switch, welcome, filter, Crew tab or crew member breadcrumb;
+- no Crew Mode switch, welcome, filter, Board tab or crew member breadcrumb;
 - the Crew Mode agent templates are in the agent picker like any agent;
 - a chat already in Crew Mode is an ordinary chat on its agent, and each of its
   crew members is an ordinary row of your list, whose approvals and finished

@@ -116,7 +116,7 @@
       "decision_rejected_once": "{{n}} rejected once",
       "decision_unknown": "{{n}} unknown"
     },
-    "workers": "Crew",
+    "workers": "Board",
     "workers_error": "Could not load the crew.",
     "workers_error_live": "Could not load the crew list; its open crew members are shown.",
     "worker_status_working": "Working",
@@ -4102,6 +4102,7 @@
       "steer_not_recorded_crew_log_off": "Delivered to {{name}}, but not recorded on the ledger: the crew log is off.",
       "steer_not_recorded_ledger_failed": "Delivered to {{name}}, but not recorded on the ledger: the ledger write failed.",
       "ultra_needs_you": "Needs you",
+      "ultra_paused": "Paused",
       "ultra_needs_you_none": "Nothing needs you right now.",
       "ultra_needs_you_none_blocked": "No approval waits on you. Blocked work is under Milestones.",
       "ultra_answer_in_chat": "Answer in chat",
@@ -5588,7 +5589,7 @@
         "turn_ended_before_this_applied_runs_as_its_own_message": "Turn ended before this applied — runs as its own message.",
         "quote_message": "Quote message",
         "more_actions": "More actions",
-        "seed_from_conductor": "From conductor",
+        "seed_from_conductor": "From the main chat",
         "seed_from_worker": "From a crew member",
         "seed_from_session": "From another chat"
       },
@@ -9253,7 +9254,7 @@
         "crewmate_harness": "Agent harness per mate",
         "crewmate_harness_desc": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Lets a chat hand tasks to a crew and track them in a Crew tab."
+        "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board."
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",

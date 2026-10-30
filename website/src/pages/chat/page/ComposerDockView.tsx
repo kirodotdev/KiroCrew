@@ -522,8 +522,8 @@ export default function ComposerDockView({
                   {(crewModeOffered || crewChipPressed) && (
                     // Busy while a reply runs; disabled while a memory-mode switch is
                     // replacing this session.
-                    // Wrapped in the mark's layout id: pressed, the chip moves into the
-                    // composer's Crew Mode mark instead of vanishing.
+                    // Rendered in place: no shared layout id, so it never slides in on
+                    // mount or on a session switch; pressed, it stays where it is.
                     <CrewModeChip onTurnOn={turnOnCrewMode} pressed={crewChipPressed} onTurnOff={turnOffCrewMode} busy={crewModeBusy} disabled={memorySwitching || !!crewModeSwitching} describedBy={crewModeNote ? crewModeNoteId : undefined} />
                   )}
                   {crewModeNote && (

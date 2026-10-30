@@ -125,7 +125,7 @@
       "decision_rejected_once": "rechazadas una vez: {{n}}",
       "decision_unknown": "desconocidas: {{n}}"
     },
-    "workers": "Equipo",
+    "workers": "Tablero",
     "workers_error": "No se pudo cargar el equipo.",
     "workers_error_live": "No se pudo cargar la lista del equipo; se muestran sus miembros abiertos.",
     "worker_status_working": "Trabajando",
@@ -10133,6 +10133,7 @@
       "steer_not_recorded_crew_log_off": "Entregado a {{name}}, pero no registrado en el libro: el registro de la crew está desactivado.",
       "steer_not_recorded_ledger_failed": "Entregado a {{name}}, pero no registrado en el libro: no se pudo escribir en el libro.",
       "ultra_needs_you": "Requiere tu atención",
+      "ultra_paused": "En pausa",
       "ultra_needs_you_none": "Ahora mismo nada requiere tu atención.",
       "ultra_needs_you_none_blocked": "Ninguna aprobación te espera. El trabajo bloqueado está en Hitos.",
       "ultra_answer_in_chat": "Responder en el chat",
@@ -12349,7 +12350,7 @@
         "quote_message": "Citar mensaje",
         "more_actions": "Más acciones",
         "edit_replaces_below": "Al enviar se reemplazan las respuestas de abajo",
-        "seed_from_conductor": "Del conductor",
+        "seed_from_conductor": "Del chat principal",
         "seed_from_worker": "De un miembro del equipo",
         "seed_from_session": "De otro chat"
       },
@@ -14190,7 +14191,7 @@
         "crewmate_harness": "Harness del agente por compañero",
         "crewmate_harness_desc": "Añade un ajuste Harness del agente al perfil de cada compañero, para que uno pueda usar otra herramienta de programación con IA, como Claude Code, con sus modelos, mientras los demás siguen con el predeterminado.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permite que un chat entregue tareas a un equipo y las siga en una pestaña Crew."
+        "crew_mode_desc": "Permite que un chat entregue tareas a un equipo y las siga en un tablero."
       },
       "kasBundleCard": {
         "toggle_label": "Ejecutar KAS con el motor propio de {{productName}}",

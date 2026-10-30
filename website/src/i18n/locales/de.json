@@ -116,7 +116,7 @@
       "decision_rejected_once": "{{n}} einmal abgelehnt",
       "decision_unknown": "{{n}} unbekannt"
     },
-    "workers": "Crew",
+    "workers": "Board",
     "workers_error": "Die Crew konnte nicht geladen werden.",
     "workers_error_live": "Die Crew-Liste konnte nicht geladen werden; ihre offenen Crew-Mitglieder werden angezeigt.",
     "worker_status_working": "Arbeitet",
@@ -9988,6 +9988,7 @@
       "steer_not_recorded_crew_log_off": "An {{name}} zugestellt, aber nicht im Ledger erfasst: das Crew-Log ist aus.",
       "steer_not_recorded_ledger_failed": "An {{name}} zugestellt, aber nicht im Ledger erfasst: das Schreiben ins Ledger ist fehlgeschlagen.",
       "ultra_needs_you": "Wartet auf dich",
+      "ultra_paused": "Pausiert",
       "ultra_needs_you_none": "Gerade wartet nichts auf dich.",
       "ultra_needs_you_none_blocked": "Keine Freigabe wartet auf dich. Blockierte Arbeit findest du unter Meilensteine.",
       "ultra_answer_in_chat": "Im Chat antworten",
@@ -12158,7 +12159,7 @@
         "quote_message": "Nachricht zitieren",
         "more_actions": "Weitere Aktionen",
         "edit_replaces_below": "Senden ersetzt die Antworten darunter",
-        "seed_from_conductor": "Vom Conductor",
+        "seed_from_conductor": "Aus dem Haupt-Chat",
         "seed_from_worker": "Von einem Crew-Mitglied",
         "seed_from_session": "Aus einem anderen Chat"
       },
@@ -13956,7 +13957,7 @@
         "crewmate_harness": "Agent-Harness pro Crewmate",
         "crewmate_harness_desc": "Fügt dem Profil jedes Crewmates eine Einstellung Agent-Harness hinzu, damit ein Crewmate mit einem anderen KI-Coding-Tool wie Claude Code und dessen Modellen laufen kann, während die übrigen beim Standard bleiben.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Lässt einen Chat Aufgaben an eine Crew übergeben und sie in einem Crew-Tab verfolgen."
+        "crew_mode_desc": "Lässt einen Chat Aufgaben an eine Crew übergeben und sie auf einem Board verfolgen."
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",

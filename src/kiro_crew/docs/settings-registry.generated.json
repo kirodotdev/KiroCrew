@@ -1148,7 +1148,7 @@
       "label": "Ultra Mode",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.ultra-mode",
-      "description": "Lets a chat hand tasks to a crew and track them in a Crew tab."
+      "description": "Lets a chat hand tasks to a crew and track them on a Board."
     },
     {
       "id": "developer.webhooks",
