@@ -1875,8 +1875,10 @@ each rule in the table on its own, so a classification nothing reads cannot go u
 
 ### `cancel_for_teardown(agent_ids) -> stopped`
 The CANCELLATION half. Takes ids rather than a parent key, because a key would be
-re-resolved here and that is the defect the snapshot exists to avoid. Each run is
-marked `_teardown_cancelled`, has its stop cause and origin written on it
+re-resolved here and that is the defect the snapshot exists to avoid. Every id is
+added to the manager's `_teardown_cancelled_ids` set before anything is stopped (a
+queued run has no `_agents` row to carry a flag, and the delivery gate reads the set).
+Each run has its stop cause and origin written on it
 (`_reap_reason = "parent_end"`, `_stop_origin = "parent conversation ended (<verb>)"`,
 which `cancel` carries into the reap and the tombstone — see the Terminal-State Contract)
 and is then stopped through the ordinary `cancel` machinery; no second reap path
