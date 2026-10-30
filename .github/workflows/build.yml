@@ -299,6 +299,12 @@ jobs:
   desktop-matrix:
     name: Resolve desktop matrix
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # The work is seconds: a shallow checkout, a depth-1 fetch of one base SHA
+    # and a paths-filter. 5, not the 15 ci.yml's `changes` resolver carries --
+    # that one's `fetch-depth: 0` full-history fetch is what has run past 5 on
+    # a slow hosted runner, and this job never does one. Without any cap a hung
+    # job holds its runner until GitHub's own limit, which is hours.
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
