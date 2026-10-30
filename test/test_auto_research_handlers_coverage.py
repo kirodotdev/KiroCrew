@@ -571,6 +571,26 @@ class TestWatchdogLoop:
         assert "needs_input" in sse.types()
 
     @pytest.mark.asyncio
+    async def test_expired_trust_clears_the_session_policy_children_read(
+        self, _isolate: Path, fast_watchdog, sse
+    ):
+        """Turn admission caches ``_trust`` as the session's ``approval_policy``; the
+        spawn gate and each child's tool approval read that, not the flag."""
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+        cid = _campaign()
+        _running(cid, started_at=time.time() - (h._TRUST_TTL_SECS + 60))
+        slot = SimpleNamespace(key=f"research-{cid}", _trust=True, running=False)
+        policies = {effective_session_key(slot): "auto"}
+        sessions = SimpleNamespace(set_approval_policy=policies.__setitem__)
+        state = SimpleNamespace(_slots={slot.key: slot}, sessions=sessions)
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and "needs_input" in sse.types(),
+        )
+        assert policies == {effective_session_key(slot): ""}
+
+    @pytest.mark.asyncio
     async def test_trust_is_reestablished_and_a_paused_loop_rearmed(
         self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
     ):

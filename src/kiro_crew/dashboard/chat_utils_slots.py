@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 
@@ -275,6 +276,47 @@ def effective_session_key(slot: _ChatSlot) -> str:
     :func:`session_key_for` for the ones that have no slot YET.
     """
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
+
+
+def revoke_slot_trust(state: Any, slot: Any) -> None:
+    """Clear *slot*'s standing trust AND the session policy cached from it.
+
+    Turn admission copies ``slot._trust`` into the session store as
+    ``approval_policy="auto"``, and the subagent spawn gate and each child's tool
+    approval read that stored value, not the flag. Clearing only the flag leaves
+    the cached ``"auto"`` in place until the parent's next turn admission, so a
+    spawn later in the running turn is still admitted and its child still
+    auto-approves every tool call after a revocation. Every revocation therefore
+    has to clear both halves.
+
+    The policy is per SESSION and the flag is per slot, and several slots can
+    address one session (a rehydrated owner slot and the alias its turns run
+    under). So the flag is cleared on every resident slot sharing *slot*'s
+    session key, as the dashboard revoke does; otherwise the next turn admission
+    on a sibling would write ``"auto"`` back from its stale flag.
+
+    The stored value is ``""`` even while yolo is active: both readers consult
+    yolo live and fall back to ``"auto"`` on their own, so caching it here would
+    only let it outlive a later yolo revocation.
+
+    Never raises: callers are stop paths that still have a loop to deactivate
+    after this, and a failed policy write must not skip that.
+    """
+    slot._trust = False
+    try:
+        key = effective_session_key(slot)
+        for sibling in list((getattr(state, "_slots", None) or {}).values()):
+            if sibling is not slot and effective_session_key(sibling) == key:
+                sibling._trust = False
+        sessions = getattr(state, "sessions", None)
+        if sessions is not None:
+            sessions.set_approval_policy(key, "")
+    except Exception:
+        logger.warning(
+            "could not clear the shared trust or cached approval policy for %s",
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
 
 
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:

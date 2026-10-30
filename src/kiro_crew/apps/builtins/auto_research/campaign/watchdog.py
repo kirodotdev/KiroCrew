@@ -178,7 +178,9 @@ async def _suspend_research_loops_while_disabled(state: Any) -> None:
                 logger.warning("auto_research: could not deactivate loop %s on disable", loop.id)
         slot = state._slots.get(loop.slot_key) if state is not None else None
         if slot is not None and getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
 
 
 def _stalled_campaign_verdict(
@@ -454,7 +456,9 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 # 24h auto-approve cap: expire trust and require re-authorization.
                 if started and time.time() - started > _TRUST_TTL_SECS:
                     if slot is not None:
-                        slot._trust = False
+                        from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+                        revoke_slot_trust(state, slot)
                     await _expire_trust(cid, started)
                     continue
                 # Re-establish worker trust each cycle (restart-durable; bounded above).

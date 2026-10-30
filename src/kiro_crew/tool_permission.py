@@ -648,12 +648,20 @@ class SpecHooks:
 
 
 class ParentPolicyAuto:
-    """``parent_policy=auto``: an unconditional grant, read once at run start."""
+    """``parent_policy=auto``: an unconditional grant, read once at run start.
 
-    def __init__(self, parent_policy: str) -> None:
+    *revoked*, when given, is asked on every request: once it answers true the
+    grant is withdrawn for the rest of the run, so a revocation of the trust the
+    policy was read from reaches a run that is already going.
+    """
+
+    def __init__(self, parent_policy: str, revoked: Callable[[], bool] | None = None) -> None:
         self._on = parent_policy == "auto"
+        self._revoked = revoked
 
     async def offer(self, ask: Ask) -> Hit | None:
+        if self._on and self._revoked is not None and self._revoked():
+            self._on = False
         return Hit("parent_policy_auto", Evidence.NONE) if self._on else None
 
 

@@ -636,6 +636,7 @@ class SessionManager:
     clear_queue = _claims.clear_queue
     is_provider_alive = _claims.is_provider_alive
     get_approval_policy = _claims.get_approval_policy
+    approval_revocation_generation = _claims.approval_revocation_generation
     get_agent = _claims.get_agent
     get_agent_selection = _claims.get_agent_selection
     set_approval_policy = _claims.set_approval_policy

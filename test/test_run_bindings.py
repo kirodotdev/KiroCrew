@@ -255,7 +255,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_permission_policy": (
         "function",
-        "(self, info: 'SubagentInfo', *, spec: 'Any', parent_policy: 'str', consult: 'Callable[[LLMEvent], object]', sel: 'Callable[[], Any]', log: '_logging.Logger') -> 'Policy'",
+        "(self, info: 'SubagentInfo', *, spec: 'Any', parent_policy: 'str', consult: 'Callable[[LLMEvent], object]', parent_revoked: 'Callable[[], bool] | None' = None, sel: 'Callable[[], Any]', log: '_logging.Logger') -> 'Policy'",
         "run",
     ),
     "_run_inner_impl": (

@@ -183,6 +183,10 @@ class SessionRegistryState:
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
+    #: How many times each key's approval policy has left ``"auto"``. Kept here,
+    #: not on the session, so the count outlives the session's eviction: a child
+    #: that read ``"auto"`` compares this against the count it saw at its start.
+    approval_revocations: dict[str, int] = field(default_factory=dict)
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
     subagent_runtime_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     #: Busy wrong-account companion runtimes displaced out of
@@ -1386,6 +1390,15 @@ class SessionAllocationService:
         session = self._sessions.get(self._owner._fold_key(key))
         return session.approval_policy if session else ""
 
+    def approval_revocation_generation(self, key: str) -> int:
+        """How many times *key*'s approval policy has been moved off ``"auto"``.
+
+        A sub-agent reads its parent's policy once at run start; it re-reads this
+        count on each tool request, and a count that moved means the trust it
+        started under was revoked.
+        """
+        return self.state.approval_revocations.get(self._owner._fold_key(key), 0)
+
     def get_agent(self, key: str) -> str:
         session = self._sessions.get(self._owner._fold_key(key))
         return session.agent if session else ""
@@ -1407,6 +1420,12 @@ class SessionAllocationService:
     def set_approval_policy(self, key: str, policy: str) -> None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
+        # A non-"auto" write on a key with no resident session is counted too: a
+        # child that read "auto" can outlive its parent's residency, and the
+        # missing session cannot say whether the key still held "auto".
+        if policy != "auto" and (session is None or session.approval_policy == "auto"):
+            revocations = self.state.approval_revocations
+            revocations[key] = revocations.get(key, 0) + 1
         if session:
             previous = session.approval_policy
             session.approval_policy = policy

@@ -90,6 +90,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "advance_ownership_generation": ("function", False, "028659ce42ac", "facade"),
     "allocation_predecessor": ("function", False, "f1d40e624ae4", "facade"),
     "any_active_turn": ("function", False, "a6632a57e602", "facade"),
+    "approval_revocation_generation": ("function", False, "028659ce42ac", "facade"),
     "aws_profile_differs_from_parent": ("function", False, "76593e568eac", "companions"),
     "aws_profile_split_possible": ("function", False, "3780bd272b7a", "companions"),
     "begin_ending": ("function", False, "958babeb61c8", "facade"),
