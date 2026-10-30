@@ -20,6 +20,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact
 
@@ -130,7 +131,13 @@ def materialize_queued_diff(
 
     base_ref_local = _BASE_REF
     if remote_url:
-        fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        # A fetch killed by `_git`'s timeout leaves its in-progress
+        # ``tmp_pack_*`` behind in this clone. Reap it in a ``finally`` so both
+        # the failure return and the raised ``TimeoutExpired`` are covered.
+        try:
+            fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        finally:
+            reap_stale_tmp_packs(clone)
         if fetch.returncode != 0:
             return {
                 "ok": False,

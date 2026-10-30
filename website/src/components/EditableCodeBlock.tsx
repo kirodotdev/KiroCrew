@@ -4,6 +4,7 @@ import { copyCode } from '../utils/clipboard'
 import { CodeBlock } from './CodeBlock'
 import { PierreEditor } from '../pierre'
 import RunInTerminalBtn, { SHELL_LANGS } from './RunInTerminalBtn'
+import RunYourselfCard, { RUN_YOURSELF_LANG, runYourselfSummary } from './RunYourselfCard'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 
 import { i18nT } from '../i18n/t'
@@ -15,8 +16,17 @@ import { contentHash } from '../lib/contentHash'
  *  is written back to the message), useful for tweaking a snippet before
  *  copying or running it. */
 const EditableCodeBlock = memo(function EditableCodeBlock(
-  { code, lang, complete, sourceStartLine }: {
+  { code, lang, complete, sourceStartLine, runYourselfCard = false, info, unclosed = false }: {
     code: string; lang?: string; complete: boolean
+    /** Draw a ```run-yourself fence as RunYourselfCard. Only the assistant
+     *  chat transcript sets it (MarkdownRenderer `runYourselfCards`); on any
+     *  other surface the fence is someone else's text and stays a code block. */
+    runYourselfCard?: boolean
+    /** The fence's info string after the tag; RunYourselfCard reads its `summary`. */
+    info?: string
+    /** The fence never closed (`ContentBlock.unclosed`): its body may be a cut-off
+     *  command or the rest of the reply, so it is never drawn as a runnable card. */
+    unclosed?: boolean
     /** Forwarded to `CodeBlock` — the block's first content line in the raw
      *  markdown source, the handle for line-anchored code commenting (see
      *  codeComments.ts). Only set on sourcepos surfaces (artifact pages). */
@@ -83,6 +93,10 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   // reader scrolled to.
   const headerActions = complete ? <>{showRunBtn && <RunInTerminalBtn code={code} lang={lang} />}{editBtn}</> : undefined
   const footerActions = complete ? editBtn : undefined
+
+  // A command the agent could not run itself, handed to the person as a card
+  // (RunYourselfCard). Until the fence closes it streams as a plain block.
+  if (runYourselfCard && complete && !unclosed && lang === RUN_YOURSELF_LANG) return <RunYourselfCard code={code} summary={runYourselfSummary(info)} />
 
   if (!editing) {
     return <CodeBlock code={code} lang={lang} complete={complete} headerActions={headerActions} footerActions={footerActions} sourceStartLine={sourceStartLine} />

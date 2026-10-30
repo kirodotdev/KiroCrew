@@ -11,6 +11,10 @@ import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
+import { crewModePreviewOn } from '../../../test/crewModePreview'
+
+const mobile = vi.hoisted(() => ({ value: false }))
+vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
 
@@ -64,3 +68,32 @@ describe('useCrewModeSwitch pending switches', () => {
     expect(hook.result.current.crewModeSwitching).toBeNull()
   })
 })
+
+describe('useCrewModeSwitch entering an Ultra Mode root', () => {
+  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+  afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
+
+  const enter = () => {
+    const store = createTestStore()
+    const openView = vi.fn()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    renderHook(() => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView }), { wrapper })
+    return { store, openView }
+  }
+
+  it('opens the side panel on the Crew tab on a desktop', () => {
+    const { store, openView } = enter()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+
+  it('leaves a phone on the chat', () => {
+    mobile.value = true
+    const { store, openView } = enter()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

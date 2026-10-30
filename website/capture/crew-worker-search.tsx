@@ -12,7 +12,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../src/api/client'
 import { store } from '../src/store'
 import { initI18n } from '../src/i18n/all'
-import CrewWorkerList, { CREW_FINISHED_OPEN_KEY } from '../src/pages/chat/command-center/CrewWorkerList'
+import { CREW_FINISHED_OPEN_KEY } from '../src/pages/chat/command-center/CrewWorkerList'
+import UltraCrewPanel from '../src/pages/chat/command-center/UltraCrewPanel'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
@@ -41,7 +42,7 @@ createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={qc}>
       <div style={{ width: 360, height: 640 }} className="bg-bg text-text border border-border" data-testid="capture-frame">
-        <CrewWorkerList root="root" viewing="root" active />
+        <UltraCrewPanel root="root" viewing="root" active />
       </div>
     </QueryClientProvider>
   </Provider>,

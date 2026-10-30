@@ -236,6 +236,7 @@ class _ChatTurn:
     _turn_elapsed_ms: "int"
     _turn_emitted: "bool"
     _turn_flushed_visible_text: "bool"
+    _turn_footer_attached: "bool"
     _turn_is_completion: "bool"
     _turn_landed: "bool"
     _turn_model: "str"

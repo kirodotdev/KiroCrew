@@ -5,6 +5,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { withMarkdownBlocks } from '../lib/markdownAgents'
 import { jsonEqual } from '../utils/structuralEqual'
 import { setCrewModeCatalog, withoutConductors } from '../lib/crewMode'
+import { useCrewMode } from './usePreviewFlag'
 
 /**
  * Reads the execution-choice catalog (`GET /api/agents/catalog`): configured
@@ -106,6 +107,8 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // unchanged, so without this a new `agent.crew_mode_agent` left the picker
   // hiding the old conductor and offering the new one.
   const [crewCatalogKey, setCrewCatalogKey] = useState('')
+  // The Crew Mode preview decides whether a conductor is hidden from the picker.
+  const crewMode = useCrewMode()
   const reload = useCallback(() => {
     setReloading(true)
     setReloadTick(t => t + 1)
@@ -174,14 +177,14 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   const pickerChoices = useMemo(
     () => withoutConductors(memberChoices ? choices : withoutCoveredCrewmates(choices)),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- crewCatalogKey stands for the conductor set withoutConductors reads from lib/crewMode
-    [choices, memberChoices, crewCatalogKey],
+    [choices, memberChoices, crewCatalogKey, crewMode],
   )
   // The picker's rows as of the last successful load, for display-only labels
   // that must agree with the picker on when a same-name pair exists (#19472).
   const displayPickerChoices = useMemo(
     () => withoutConductors(memberChoices ? displayChoices : withoutCoveredCrewmates(displayChoices)),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- same conductor-set dependency as pickerChoices
-    [displayChoices, memberChoices, crewCatalogKey],
+    [displayChoices, memberChoices, crewCatalogKey, crewMode],
   )
 
   return { agents, displayAgents, choices: pickerChoices, displayChoices: displayPickerChoices, defaultAgent, error, reload, reloading }

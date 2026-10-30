@@ -15,10 +15,10 @@ import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
-import { fmtRelative, toDate } from '../i18n/format'
+import { fmtRelative, fmtUnit, toDate, type FormatUnit } from '../i18n/format'
 import { cardsApi, CARD_FINISHED_STATUSES, WORKFLOW_DEFINITIONS_QUERY_KEY, type Card } from '../api/cards'
 import { CardChanges, reachNames } from './CardChanges'
-import { cardChanges, cardTitle, FALLBACK_ICON, isToolAccessCard, specFor } from './cardRegistry'
+import { cardChanges, cardTitle, FALLBACK_ICON, isToolAccessCard, scopeRepeatsTitle, specFor } from './cardRegistry'
 import { oneShotRunAt } from './oneShot'
 import { CardRow, UserInputs } from './kindBodies'
 import CardResultLine from './CardResultLine'
@@ -44,6 +44,18 @@ export function isCardExpired(card: Card, now = Date.now()): boolean {
   if (card.status !== 'pending') return false
   const at = toDate(card.expires_at)
   return !!at && at.getTime() <= now
+}
+
+const ANSWER_WINDOW_UNITS: Array<[number, FormatUnit]> = [[86_400_000, 'day'], [3_600_000, 'hour'], [60_000, 'minute']]
+
+/** How long the person has left to answer, as one narrow unit ("22h", "45m",
+ *  "2d"), truncated like the relative times elsewhere so it never promises more
+ *  time than is left. Under a minute it reads "1m": the card is still live. */
+export function answerWindow(ms: number): string {
+  for (const [size, unit] of ANSWER_WINDOW_UNITS) {
+    if (ms >= size) return fmtUnit(Math.trunc(ms / size), unit)
+  }
+  return fmtUnit(1, 'minute')
 }
 
 function safeHttpUrl(value: string): string {
@@ -301,33 +313,37 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
         // divider runs the card's full width.
         <div className="flex flex-col">
           <div className="px-4 pt-4 pb-3" data-testid="change-card-body">
-            <div className="flex items-center gap-2 text-[12px] leading-4 font-medium text-muted" data-testid="change-card-kind">
-              <Icon size={16} className="shrink-0" aria-hidden="true" />
-              <span className="min-w-0 break-words">{spec?.label() ?? card.kind}</span>
-            </div>
-            <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-0.5">
-              <h3 id={headingId} className="m-0 min-w-0 flex-1 basis-[14rem] text-[14px] font-semibold leading-5 text-text break-words">
-                {title}
-                {isToolAccessCard(card) && (
-                  // A preview opt-in: the same badge the Profile card's switch wears.
-                  <span
-                    className="ml-2 inline-block rounded-md bg-accent/15 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wide text-accent"
-                    data-testid="change-card-preview"
-                  >
-                    {i18nT('pages.membersPage.profile_preview_tag')}
-                  </span>
-                )}
-              </h3>
+            {/* The header row: the kind on the left, the card's clock (when it
+                is due, or when it expires) on the right in the same muted size.
+                A narrow card wraps the clock under the kind, still left-aligned,
+                so it never floats alone under the title. */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[12px] leading-4 text-muted" data-testid="change-card-header">
+              <div className="flex min-w-0 items-center gap-2 font-medium" data-testid="change-card-kind">
+                <Icon size={16} className="shrink-0" aria-hidden="true" />
+                <span className="min-w-0 break-words">{spec?.label() ?? card.kind}</span>
+              </div>
               {runAt !== null && !timePassed && !expired && card.status === 'pending' ? (
-                <span className="text-[12px] leading-5 text-muted @min-[480px]:ml-auto" data-testid="change-card-due">
+                <span className="min-w-0 break-words @min-[480px]:ml-auto @min-[480px]:text-right" data-testid="change-card-due">
                   {i18nT('components.changeCards.due', { when: fmtRelative(runAt, { now, style: 'long' }) })}
                 </span>
               ) : expiresAt && !expired && !timePassed && card.status === 'pending' && (
-                <span className="text-[12px] leading-5 text-muted @min-[480px]:ml-auto" data-testid="change-card-expires">
-                  {i18nT('components.changeCards.expires', { when: fmtRelative(expiresAt, { now }) })}
+                <span className="min-w-0 break-words @min-[480px]:ml-auto @min-[480px]:text-right" data-testid="change-card-expires">
+                  {i18nT('components.changeCards.answer_within', { when: answerWindow(expiresAt.getTime() - now) })}
                 </span>
               )}
             </div>
+            <h3 id={headingId} className="m-0 mt-1 min-w-0 text-[14px] font-semibold leading-5 text-text break-words">
+              {title}
+              {isToolAccessCard(card) && (
+                // A preview opt-in: the same badge the Profile card's switch wears.
+                <span
+                  className="ml-2 inline-block rounded-md bg-accent/15 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wide text-accent"
+                  data-testid="change-card-preview"
+                >
+                  {i18nT('pages.membersPage.profile_preview_tag')}
+                </span>
+              )}
+            </h3>
 
             {(card.risk === 'widen' || card.risk === 'code_exec') && (
               <div className="mt-3 rounded-md border border-warn/30 bg-warn-subtle px-3 py-2 text-[13px] leading-5 text-text" data-testid="change-card-risk">
@@ -362,7 +378,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
 
             <div className="mt-2 [&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border" data-testid="change-card-rows">
               <CardChanges changes={cardChanges(card)} />
-              {card.scope && (
+              {/* Affects only when it says more than the title already does. */}
+              {card.scope && !scopeRepeatsTitle(title, card.scope) && (
                 <CardRow label={i18nT('components.changeCards.scope_label')}>
                   {/* A complete name list already says how many; the count is
                       shown only when some affected members go unnamed. */}
@@ -376,14 +393,16 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               )}
               {spec && <spec.Body card={card} disabled={busy || expired} />}
               <UserInputs fields={fields} values={inputs} disabled={busy || expired} onChange={(f, v) => setInputs(prev => ({ ...prev, [f]: v }))} />
+              {/* The reason is one more row of the same grid: same label
+                  column, same divider, so it reads like Goal or Affects. */}
+              {card.reason && (
+                <CardRow label={i18nT('components.changeCards.reason_label', { name: author })} testId="change-card-reason">
+                  <p className="m-0 whitespace-pre-wrap">{card.reason}</p>
+                </CardRow>
+              )}
             </div>
 
-            {card.reason && (
-              <div className="mt-2" data-testid="change-card-reason">
-                <div className="text-[12px] leading-4 text-muted">{i18nT('components.changeCards.reason_label', { name: author })}</div>
-                <p className="m-0 mt-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-text">{card.reason}</p>
-              </div>
-            )}
+            {spec?.Option && <spec.Option card={card} disabled={busy || expired} preview={preview} />}
 
             {/* No hand-off: a typed secret may be unsaved here. */}
             <ErrorNotice

@@ -200,21 +200,16 @@ def find_brew() -> str | None:
 #: distinction between "you turned this off" and "this cannot run here".
 CODE_DISABLED = "stt_disabled"
 
-#: The ``stt.provider`` value that selects no recogniser. Spelled here rather
-#: than imported, for the same reason ``dashboard.stt_stream`` spells
-#: ``PROVIDER_LOCAL``: this module keeps ``kiro_crew.config`` off its import path
-#: (every config read here is inside a function, off the event loop).
+#: The ``stt.provider`` value that selects no recogniser.
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
-#: ``config.sections.STT_PROVIDER_LOCAL``, spelled here for the same reason.
-_STT_PROVIDER_LOCAL = "local"
 
 
 def _registered_provider(provider: object) -> Any:
     """The edition-registered STT provider named *provider* (``PlatformContext.speech``).
 
-    ``None`` for every built-in name, so the built-in branches below keep running
-    exactly as before; a registered name is looked up only when it is not one.
+    ``None`` for every built-in name, so a built-in name always runs a built-in
+    branch below; a registered name is looked up only when it is not one.
     """
     from kiro_crew import speech_providers
 

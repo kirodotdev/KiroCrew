@@ -432,6 +432,68 @@ describe('onCycleReasoningEffort keyboard shortcut (#5120)', () => {
   })
 })
 
+describe('onCycleReasoningEffort follows the session\'s harness', () => {
+  it('steps over the levels the harness takes, not at all where it takes none, and by the model where it cannot say yet', async () => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', reasoning_effort: 'low' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: true, effort_supported: true, effort_levels: ['low', 'high'] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).toHaveBeenCalledWith('slot-1', 'high')
+
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: true, effort_supported: false, effort_levels: [] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    expect(store.getState().chat.agentSwitchNotice?.message).toMatch(/takes no reasoning effort/)
+
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: false })
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', model: 'claude-haiku-4.5', reasoning_effort: 'low' }] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).not.toHaveBeenCalled()
+
+    // Unknown is not "takes none": a cold codex thread's model answers, as in its composer.
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: false, model_effort_pair_ids: true, effort_supported: null, effort_levels: [] })
+    store.dispatch({ type: 'chat/setAgentSwitchNotice', payload: null })
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', model: 'openai.gpt-6.1-sol', reasoning_effort: 'low' }] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
+
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', model: 'claude-haiku-4.5', reasoning_effort: 'low' }] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    expect(store.getState().chat.agentSwitchNotice?.message).toMatch(/takes no reasoning effort/)
+
+    // An app-owned slot with no pin runs what the composer resolved its crew to, under the
+    // composer's own key (app included): a crew resolved to a no-effort model does not cycle.
+    ;(api.chatSlotReasoningEffort as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'chat/setAgentSwitchNotice', payload: null })
+    queryClient.setQueryData(['resolved-model', 'kirocrew', 'acp', 'my-app'], 'claude-haiku-4.5')
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', app: 'my-app', model: '', reasoning_effort: 'low' }] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    expect(store.getState().chat.agentSwitchNotice?.message).toMatch(/takes no reasoning effort/)
+  })
+})
+
 describe('onCyclePrevAgent edge cases', () => {
   it('does not cycle prev agent when no active slot', async () => {
     const { api } = await import('../api/client')
@@ -624,6 +686,49 @@ describe('Alt+Shift+S/X model cycling via React Query cache', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'S', code: 'KeyS', altKey: true, shiftKey: true, bubbles: true }))
     })
     expect(api.chatSlotModel).toHaveBeenCalledWith('slot-1', 'opus')
+  })
+
+  it('asks the slot for its effort answer again after a cycled model lands', async () => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotModel as ReturnType<typeof vi.fn>).mockClear()
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, model: 'auto' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'opus' }, { name: 'sonnet' }])
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: false, effort_supported: false, effort_levels: [] })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'S', code: 'KeyS', altKey: true, shiftKey: true, bubbles: true }))
+    })
+    expect(api.chatSlotModel).toHaveBeenCalledWith('slot-1', 'opus')
+    await waitFor(() => expect(queryClient.getQueryState(['slot-selection-capabilities', 'slot-1'])?.isInvalidated).toBe(true))
+  })
+
+  it.each([
+    ['forward', 'A', 'KeyA', 'reviewer'],
+    ['backward', 'Z', 'KeyZ', 'oracle'],
+  ])('asks the slot for its effort answer again after a cycled agent lands (%s)', async (_direction, key, code, agent) => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    vi.mocked(api.chatSlotAgent).mockReset().mockResolvedValue({ agent })
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false, agent: 'kirocrew', model: '' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['resolved-model', 'kirocrew', 'acp', ''], 'claude-haiku-4.5')
+    queryClient.setQueryData(['resolved-model', agent, 'acp', ''], 'claude-opus-4.6')
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-1'], { known: false, effort_supported: false, effort_levels: [] })
+    queryClient.setQueryData(['slot-selection-capabilities', 'slot-2'], { known: false, effort_supported: false, effort_levels: [] })
+    try {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key, code, altKey: true, shiftKey: true, bubbles: true }))
+      })
+      expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-1', agent)
+      await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')?.agent).toBe(agent))
+      await waitFor(() => expect(queryClient.getQueryState(['slot-selection-capabilities', 'slot-1'])?.isInvalidated).toBe(true))
+      expect(queryClient.getQueryState(['slot-selection-capabilities', 'slot-2'])?.isInvalidated).toBe(false)
+    } finally {
+      vi.mocked(api.chatSlotAgent).mockReset().mockResolvedValue({})
+    }
   })
 
   it('cycles to previous model on Alt+Shift+X', async () => {

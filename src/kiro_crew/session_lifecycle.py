@@ -687,6 +687,7 @@ class SessionLifecycleService:
     absorb_orphaned_release = _turn_stop.absorb_orphaned_release
     adopt_turn = _turn_stop.adopt_turn
     _wake_turn_waiters = staticmethod(_turn_stop._wake_turn_waiters)
+    retire_turn_permit = _turn_stop.retire_turn_permit
     await_replay_gap = _turn_stop.await_replay_gap
     cancel_current = _turn_stop.cancel_current
     cancel_owned_turn = _turn_stop.cancel_owned_turn

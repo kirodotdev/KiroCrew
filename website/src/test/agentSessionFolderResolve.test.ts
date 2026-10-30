@@ -42,9 +42,17 @@ const createdSlotArgs = () =>
     .filter(a => a.type === 'createSlot')
     .map(a => a.arg)
 
+// The create answers with the slot's own row. By default the session lands in
+// the folder it asked for; `answeredFolder` stands in for a create that filed it
+// somewhere else, or left it unfiled (`''`).
+let answeredFolder: string | undefined
+
 function happyPath() {
-  dispatch.mockImplementation((action: { type: string }) => ({
-    unwrap: () => (action.type === 'createSlot' ? Promise.resolve({ key: 'slot-1' }) : Promise.resolve(undefined)),
+  answeredFolder = undefined
+  dispatch.mockImplementation((action: { type: string; arg?: { folder_id?: string } }) => ({
+    unwrap: () => (action.type === 'createSlot'
+      ? Promise.resolve({ key: 'slot-1', folder_id: answeredFolder ?? action.arg?.folder_id ?? '' })
+      : Promise.resolve(undefined)),
   }))
   sendTurn.mockResolvedValue({ status: 'dispatched', body: {} })
   apiMock.createChatFolder.mockImplementation(async (name: string) => ({ id: 'made', name, parent_id: '' }))
@@ -109,6 +117,27 @@ describe.each([
     const asked = dispatch.mock.calls.map(c => c[0]).find(a => (a as { type: string }).type === 'requestSlotFolderOpen')
     expect(asked).toEqual({ type: 'requestSlotFolderOpen', arg: { key: 'slot-1', folder_id: 'f1', onlyIfActive: true } })
     expect(types.lastIndexOf('switchSlot')).toBeLessThan(types.indexOf('requestSlotFolderOpen'))
+  })
+
+  it('opens no folder when the create answers the session unfiled', async () => {
+    // The requested folder still exists, but the session sits at the top level:
+    // opening the requested folder would expand a folder that does not hold it.
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    answeredFolder = ''
+    const { record } = await open()
+    expect(record).not.toBeNull()
+    expect(createdSlotArgs()[0]?.folder_id).toBe('f1')
+    const types = dispatch.mock.calls.map(c => (c[0] as { type: string }).type)
+    expect(types).toContain('switchSlot')
+    expect(types).not.toContain('requestSlotFolderOpen')
+  })
+
+  it('opens the folder the create answered, not the one it asked for', async () => {
+    apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])
+    answeredFolder = 'elsewhere'
+    await open()
+    const asked = dispatch.mock.calls.map(c => c[0]).find(a => (a as { type: string }).type === 'requestSlotFolderOpen')
+    expect(asked).toEqual({ type: 'requestSlotFolderOpen', arg: { key: 'slot-1', folder_id: 'elsewhere', onlyIfActive: true } })
   })
 
   it('keeps finding the repo folder after the reader nests it under another one', async () => {

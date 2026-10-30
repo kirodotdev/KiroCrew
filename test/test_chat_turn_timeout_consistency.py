@@ -299,7 +299,7 @@ def _is_create_task_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
 
 
 def test_dispatch_site_count_matches_expectation() -> None:
-    """Pin the expected number of helper-visible ``_run_chat`` sites at 4.
+    """Pin the expected number of helper-visible ``_run_chat`` sites at 3.
 
     If a new dispatch lands (or one is removed), this fails loudly so the
     contributor updates the PR description, the spec doc
@@ -318,8 +318,8 @@ def test_dispatch_site_count_matches_expectation() -> None:
             if "_run_chat(" in body:
                 total += 1
 
-    assert total == 4, (
-        f"Expected 4 helper-visible _run_chat dispatch sites, found {total}.  "
+    assert total == 3, (
+        f"Expected 3 helper-visible _run_chat dispatch sites, found {total}.  "
         "If you added or removed one, update:\n"
         "  - the PR description\n"
         "  - docs/system-specs/modules/learn-cron-dashboard.md (Per-turn timeout section)\n"

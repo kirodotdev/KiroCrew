@@ -57,6 +57,7 @@ import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
 import { api } from '../api/client'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
+import { __resetPreviewFlagServerSyncForTests, usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import DeveloperPage from '../pages/DeveloperPage'
 
 const TEST_ICON: ReactElement = <span />
@@ -383,6 +384,27 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(toggleState()).toBe('true')
   })
 
+  it('says why a switch went back when the gateway refuses the write', async () => {
+    __resetPreviewFlagServerSyncForTests()
+    vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
+    function WithSync() {
+      usePreviewFlagServerSync()
+      return <FeaturePreviewsSection />
+    }
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><WithSync /></MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByTestId('feature-previews-save-error')).toBeNull()
+    await act(async () => {
+      screen.getByRole('switch', { name: /webhooks/i }).click()
+    })
+    await waitFor(() => expect(screen.getByTestId('feature-previews-save-error').textContent)
+      .toMatch(/only the owner of this Kiro Crew can change feature previews, so “Webhooks” was switched back/i))
+    act(() => { __resetPreviewFlagServerSyncForTests() })
+  })
+
   it('offers no ingress button besides the webhooks link', async () => {
     // `webhooks` is `hiddenFromNav`, so its card is that page's ONLY door and
     // carries a link once on. No other card here does.
@@ -513,7 +535,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(7)
+      expect(screen.getAllByRole('switch')).toHaveLength(9)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -529,7 +551,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(7) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(9) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })

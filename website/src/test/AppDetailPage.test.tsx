@@ -7,12 +7,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 const getApp = vi.fn()
 const listRegistry = vi.fn()
 const system = vi.fn()
+const appContributors = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
     getApp: (...a: unknown[]) => getApp(...a),
     listRegistry: (...a: unknown[]) => listRegistry(...a),
     system: (...a: unknown[]) => system(...a),
+    appContributors: (...a: unknown[]) => appContributors(...a),
   },
 }))
 
@@ -353,5 +355,104 @@ describe('AppDetailPage — version reported for an installed app', () => {
     await screen.findByTestId('app-icon')
     expect(screen.getByText(/v1\.2\.0/)).toBeTruthy()
     expect(screen.queryByText(/v0\.0\.0/)).toBeNull()
+  })
+})
+
+// --- Source-repo + issue-tracker links in the Details card (#9912) ----------
+//
+// The repo string is third-party manifest/registry input. It is rendered as an
+// outbound link ONLY when it is a safe http(s) URL, the host is shown beside it,
+// and the "Report an issue" link points at a GitHub repo's /issues tracker page
+// (a plain link, never an in-app filing flow). A non-GitHub repo still links to
+// its source but gets no issues link; an unsafe value stays plain text.
+describe('AppDetailPage — source repo and issue links', () => {
+  beforeEach(() => {
+    getApp.mockReset()
+    listRegistry.mockReset()
+    system.mockReset()
+    appContributors.mockReset()
+    system.mockResolvedValue({ hostname: '' })
+    appContributors.mockResolvedValue({ contributors: [] })
+  })
+
+  const INSTALLED = {
+    name: 'some-app',
+    version: '1.2.0',
+    displayName: 'Some App',
+    enabled: true,
+    origin: 'registry',
+    resources: 'gateway',
+    lifecycle: 'gateway',
+    installed: true,
+    manifest: { displayName: 'Some App', description: 'An external app.' },
+  }
+
+  const rowWithRepo = (repo: string) => ({
+    apps: [{ name: 'some-app', displayName: 'Some App', version: '1.2.0', repo, installed: true, origin: 'registry' }],
+    serverPlatform: { os: 'linux', arch: 'x86_64' },
+  })
+
+  it('renders a GitHub repo as a source link and a Report an issue tracker link', async () => {
+    getApp.mockResolvedValue(INSTALLED)
+    listRegistry.mockResolvedValue(rowWithRepo('https://github.com/octocat/some-app'))
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    const source = await screen.findByRole('link', { name: /github\.com\/octocat\/some-app/ })
+    expect(source.getAttribute('href')).toBe('https://github.com/octocat/some-app')
+    expect(source.getAttribute('rel')).toContain('noopener')
+    expect(source.getAttribute('target')).toBe('_blank')
+
+    const report = await screen.findByRole('link', { name: /report an issue/i })
+    expect(report.getAttribute('href')).toBe('https://github.com/octocat/some-app/issues')
+    expect(report.getAttribute('rel')).toContain('noopener')
+  })
+
+  it('links a non-GitHub https repo to source but shows no issue tracker link', async () => {
+    getApp.mockResolvedValue(INSTALLED)
+    listRegistry.mockResolvedValue(rowWithRepo('https://gitlab.com/group/some-app'))
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    const source = await screen.findByRole('link', { name: /gitlab\.com\/group\/some-app/ })
+    expect(source.getAttribute('href')).toBe('https://gitlab.com/group/some-app')
+    expect(screen.queryByRole('link', { name: /report an issue/i })).toBeNull()
+  })
+
+  it('normalizes a .git / trailing-slash repo into a clean issues URL', async () => {
+    getApp.mockResolvedValue(INSTALLED)
+    listRegistry.mockResolvedValue(rowWithRepo('https://github.com/octocat/some-app.git/'))
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    const report = await screen.findByRole('link', { name: /report an issue/i })
+    expect(report.getAttribute('href')).toBe('https://github.com/octocat/some-app/issues')
+  })
+  it('does not crash when the registry repo is an array rather than a string', async () => {
+    getApp.mockResolvedValue(INSTALLED)
+    // Third-party registry data typed as a string can actually arrive as an
+    // array; it must degrade to no link, never throw and blank the page.
+    listRegistry.mockResolvedValue({
+      apps: [{ name: 'some-app', displayName: 'Some App', version: '1.2.0', repo: ['https://github.com/octocat/some-app'] as unknown as string, installed: true, origin: 'registry' }],
+      serverPlatform: { os: 'linux', arch: 'x86_64' },
+    })
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    // Page rendered (the Author row is present) and no link was built from the array.
+    expect(screen.getByText(/octocat/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /report an issue/i })).toBeNull()
+  })
+
+
+  it('renders an unsafe repo value as plain text with no link', async () => {
+    getApp.mockResolvedValue(INSTALLED)
+    listRegistry.mockResolvedValue(rowWithRepo('javascript:alert(1)'))
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    expect(screen.getByText(/javascript:alert\(1\)/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /javascript:alert/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /report an issue/i })).toBeNull()
   })
 })

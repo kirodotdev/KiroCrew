@@ -19,6 +19,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../components/FeaturePreviewIntroDialog'
 import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection'
+import { crewModeEnabled } from '../lib/crewMode'
 import { api } from '../api/client'
 
 const INTRO: FeaturePreviewIntro = {
@@ -106,7 +107,7 @@ describe('FeaturePreviewIntroButton', () => {
 
 describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   beforeEach(() => {
-    for (const k of ['mc-preview-webhooks', 'mc-preview-remote-crew-chat']) localStorage.removeItem(k)
+    for (const k of ['mc-preview-webhooks', 'mc-preview-remote-crew-chat', 'mc-preview-crew-mode']) localStorage.removeItem(k)
     // The Decisions card reads `config.json`; stubbed so these capture-button
     // cases do not wait on a fetch that cannot succeed under vitest.
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
@@ -186,6 +187,17 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     // Fail-open while the schema is in flight, then gone once it says no KAS.
     await waitFor(() => expect(screen.queryByTestId('kas-bundle-card')).toBeNull())
     expect(screen.queryByRole('switch', { name: /Run KAS on .*own engine/ })).toBeNull()
+  })
+
+  it('offers Ultra Mode as a plain switch, off by default, that writes the one Crew Mode flag', () => {
+    renderSection()
+    const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')
+    expect(crewModeEnabled()).toBe(true)
   })
 
   it('the button stays offered while the flag is on, beside the ingress link', () => {

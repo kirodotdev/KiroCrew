@@ -33,6 +33,7 @@ from dashboard_approval_helpers import (
     _permission_event,
     _set_stream,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
@@ -346,7 +347,14 @@ class TestBuildRefusalRecoveryPrompt:
     """build_refusal_recovery_prompt hands a tool-refusal reason back to the
     model so it can adapt, instead of the turn stalling silently."""
 
-    def test_empty_returns_empty(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_empty_returns_empty"),
+            *named_cases("test_empty_refusals_still_yield_nothing"),
+        ],
+    )
+    def test_no_refusals_yield_an_empty_prompt(self):
         assert build_refusal_recovery_prompt([]) == ""
 
     def test_single_refusal_includes_title_and_reason(self):

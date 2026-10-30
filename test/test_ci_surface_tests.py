@@ -432,7 +432,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_pid_lifecycle_provider_tree.py",
         "test_pid_lifecycle_teardown.py",
         "test_pid_lifecycle_tracking_integrity.py",
-        "test_pid_sweep_helpers.py",
         "test_process_tree_kill.py",
         "test_source_providers.py",
         "test_source_providers_app_contributors.py",

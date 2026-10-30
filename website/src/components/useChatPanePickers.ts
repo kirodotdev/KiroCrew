@@ -1,14 +1,14 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { JEV_ROUTE_MODEL, jevRouteOffered, withJevRoute } from '../lib/jevRoute'
@@ -77,13 +77,16 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
   const agentDD = useFilteredDropdown(agentChoices)
-  const effectiveModels = useAvailableModels()
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
     enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
     refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
   })
+  const ownModelsQuery = useAvailableModelsQuery({ backend: selectionCapabilitiesQ.data?.models_backend })
+  const ownModelsFailed = selectionCapabilitiesQ.data?.models_backend !== undefined
+    && (ownModelsQuery.isError || ownModelsQuery.isDegraded)
+  const effectiveModels = ownModelsQuery.data
   const selectionCapabilities = selectionCapabilitiesQ.data?.known ? selectionCapabilitiesQ.data : undefined
   const codexPairModels = shouldSeparateModelEffort(
     selectionCapabilitiesQ.data?.model_effort_pair_ids, effectiveModels,
@@ -131,7 +134,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // a cached list served while /api/models fails is stale and cannot disprove
   // entitlement — and is subscribed to, since it can flip while the served list
   // stays identical.
-  const _modelsDegraded = useModelsDegraded(provider.id)
+  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -142,12 +145,14 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     paneSlot?.model_withheld,
     codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
+  // An unknown effort verdict leaves the currently shown model to answer.
+  const effortCaps = selectionCapabilities ?? selectionCapabilitiesQ.data
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
-    selectionCapabilities
-      ? selectionCapabilities.effort_supported === true
+    effortCaps?.effort_supported != null
+      ? effortCaps.effort_supported
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities?.effort_levels
+  const effortLevelsOverride = effortCaps?.effort_levels?.length ? effortCaps.effort_levels : undefined
   const readKirocrewConfig = useKirocrewConfigReader()
   const { data: defaultEffort = '' } = useQuery({
     queryKey: ['default-effort', provider.id],
@@ -180,7 +185,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
 
   return {
     installedAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
-    selectionCapabilitiesQ, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
+    selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
     effortSupported, effortLevelsOverride, defaultEffort, effectiveEffort, chipDefault, modelMarker,
   }
@@ -208,12 +213,14 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // on the coalesced slots rebroadcast to see its own pick.
       // performAgentSlotSwitch mirrors exactly what the response names.
       await performAgentSlotSwitch(slotKey, name, dispatch, kind)
+      // The cold effort answer was judged on the previous crew's model.
+      void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slotKey] })
     } catch (e) {
       const notice = agentSwitchFailureNotice(e, name)
       dispatch(setAgentSwitchNotice(notice))
       setSwitchError(notice.message)
     }
-  }, [dispatch, slotKey])
+  }, [dispatch, queryClient, slotKey])
   const switchModel = useCallback(async (name: string) => {
     setSwitchError('')
     try {

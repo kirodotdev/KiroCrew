@@ -113,7 +113,9 @@ on:
     # since this status is the branch-protection handle for the entire
     # fan-out, armed auto-merge can merge a revision whose lane is at that
     # moment failing. A sweep cannot close that: its evidence is COMPLETED
-    # checks, and a running lane has none yet. The event does, in seconds.
+    # checks, and a running lane has none yet. The event does, as soon as its
+    # hold job reaches a runner -- see the `runs-on` note below for what that
+    # depends on.
     #
     # What an `in_progress` run does is therefore deliberately minimal: it
     # resolves the pull request, confirms the run the event names is still
@@ -303,13 +305,29 @@ jobs:
     # bursts. A same-repository PR's `pull_request_target` run from a listed
     # actor uses the CodeBuild fleet so it stays out of the shared hosted
     # queue. The job never checks out or runs PR code (see `on:`), so every PR
-    # activity may use it, as for Sensitive Change Review. A fork stays hosted.
-    # `workflow_run` stays hosted: it carries the `in_progress` merge-guard
-    # hold, and a hold stuck on a fleet runner would leave a green verdict up
-    # over a re-running lane. `workflow_dispatch` stays hosted: its payload
-    # names no head to check. Unset CODEBUILD_ACTOR_IDS to send every new run
-    # back to hosted.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # activity may use it, as for Sensitive Change Review. Unset
+    # CODEBUILD_ACTOR_IDS to send every new run off the fleet.
+    #
+    # Every other run EXECUTING in this repository takes the `kirocrew-runners`
+    # group's own label, which keeps this lane's bursts off the standard pool
+    # whose concurrency is shared enterprise-wide. A fork repository running its
+    # own copy of this workflow cannot reach an organization runner group at
+    # all, so it stays on the hosted image -- a label no runner there carries
+    # would leave the job queued until GitHub cancelled it. A fork pull
+    # request's runs here are base-repository runs, so they take the group like
+    # any other.
+    #
+    # The `workflow_run` leg takes the group as well, and that is a trade rather
+    # than a free move. It carries the `in_progress` merge-guard hold, so for as
+    # long as the hold is queued for a runner the pre-re-run `success` stands
+    # over a lane that is running, and armed auto-merge can act on it. NOTHING
+    # ELSE CLOSES THAT WINDOW: the sweep's evidence is COMPLETED checks (see
+    # "Why `in_progress` stays" above), so it corrects the verdict only once the
+    # re-running lane finishes, and `merge-queue-readiness.yml` polls neither the
+    # review lanes nor Issue Gate nor Security Scope Review. What the move
+    # changes is which queue that window's length comes from: the group's own
+    # cap instead of the enterprise-shared pool.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       # The same-repo workflow-run lanes of the verdict step's spec list, read

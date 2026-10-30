@@ -19,6 +19,7 @@ import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
+import { crewRootOf } from '../../lib/crewMode'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -89,7 +90,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // and no toast for the person. Gated like the mute above: a worker that
         // paused on a question or errored has stopped, and until the conductor's
         // own routing lands nothing else would say so, so those still sound.
-        const crewWorkerQuiet = !!soundSlot?.crew_root && !completionNeedsInput && !turnErrored
+        const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,

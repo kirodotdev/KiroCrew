@@ -157,6 +157,7 @@ class TaskRunner:
     _workflow_delete_link = _workflow_port._workflow_delete_link
     # ── Durable task queue (taskq_bridge) ──
     attach_task_admission = _taskq_bridge.attach_task_admission
+    end_recovery_wait = _taskq_bridge.end_recovery_wait
     adopt_task_rows = _taskq_bridge.adopt_task_rows
     _taskq_lane_inputs = _taskq_bridge._taskq_lane_inputs
     _taskq_begin_run = _taskq_bridge._taskq_begin_run
@@ -206,6 +207,7 @@ class TaskRunner:
     _reserve_start = _run_lifecycle._reserve_start
     _release_start = _run_lifecycle._release_start
     run = _run_lifecycle.run
+    mint_task_id = _run_lifecycle.mint_task_id
     start_background = _run_lifecycle.start_background
     delete_run = _run_lifecycle.delete_run
     cancel = _run_lifecycle.cancel
@@ -327,6 +329,11 @@ class TaskRunner:
         self._task_admission: _runner_adapter.RunnerAdmission | None = None
         self._run_handles: dict[str, _runner_adapter.Admitted] = {}
         self._adopt_inflight: asyncio.Task[Any] | None = None
+        # Runs ``_load_runs`` recovered as ``paused`` from a stop mid-run, until the
+        # adoption sweep decides whether to resume them (fair admission's probe
+        # holds their records meanwhile).
+        self._recovery_pending: set[str] = set()
+        self._last_id_suffix = 0  # ``mint_task_id``'s last suffix
         self._load_runs()
 
     @property

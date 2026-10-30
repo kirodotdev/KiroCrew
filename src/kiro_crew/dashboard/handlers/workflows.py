@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
@@ -51,12 +52,24 @@ def _redact_obj(obj):
     …}``) and a values-only walk would pass it through untouched. Two distinct
     credential-shaped keys can collapse into one redacted key — losing a
     pathological key is strictly preferable to leaking the secret.
+
+    A non-finite float (``inf``, ``-inf``, ``nan``) becomes ``None``: Python's
+    ``json`` writes it as a bare ``Infinity``/``NaN`` token, which no browser
+    ``JSON.parse`` accepts. A script reaches one through ``ctx.budget.remaining()``
+    on a run without a budget.
+
+    A tuple is walked like a list and comes back as one. The live
+    ``workflow_run_event`` broadcast passes a run's raw result through here, so
+    a script that returns a tuple holding ``inf`` would otherwise reach
+    ``json.dumps`` untouched.
     """
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)
         return s
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
         return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}

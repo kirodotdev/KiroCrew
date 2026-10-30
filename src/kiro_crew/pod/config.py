@@ -109,6 +109,36 @@ def _env_int(key: str, default: int) -> int:
     return default
 
 
+def default_gateway_path(home: Path, standard: list[str]) -> str:
+    """The ``PATH`` a booted pod's gateway gets when ``KIROCREW_POD_PATH`` is unset.
+
+    *standard* is the pod's base list: ``~/.local/bin`` followed by the system
+    dirs. The host's user tool-manager bins go in front of it, duplicates dropped.
+
+    A pod starts from the service manager's clean environment, so this list is
+    ALL the gateway can find tools on: Issue Radar's ``glab``/``gh``/``az``, the
+    source-provider panels, and every shell its agent runs. Without the
+    tool-manager bins, a CLI the operator installed through a user-level tool
+    manager would be missing in every pod while the host gateway, whose
+    ``augmented_path`` covers those managers, finds it.
+
+    The added entries are exactly the host's own tool-manager list
+    (``env.user_tool_bin_dirs``, i.e. ``env._EXTRA_PATH_DIRS``), so a directory
+    added there for the host reaches pods too and the two cannot drift. They are
+    fixed, home-rooted install locations, never the operator's live ``PATH``:
+    copying that would carry whatever happened to lead it at ``pod install``
+    time (a worktree venv, a project ``node_modules/.bin``) into every pod. That
+    list already starts with ``~/.local/bin``, and *standard*'s system dirs close
+    the result. A tool resolved from here still goes through its own provenance
+    check (``_validate_provider_executable`` for provider CLIs), so being on
+    ``PATH`` does not make a binary trusted.
+    """
+    # Deferred: kiro_crew.env pulls in heavier optional imports than this module.
+    from kiro_crew.env import user_tool_bin_dirs
+
+    return os.pathsep.join(dict.fromkeys([*user_tool_bin_dirs(str(home)), *standard]))
+
+
 def environment_vars(cfg: PodConfig) -> dict[str, str]:
     """The pod-plane env a service-manager-booted gateway must be given.
 
@@ -210,13 +240,14 @@ class PodConfig:
         # pod registry into the pod's throwaway home.
         pods_dir = _env_path("KIROCREW_POD_ENV_DIR", _default_home() / "pods")
         artifacts_dir = _env_path("KIROCREW_POD_ARTIFACTS_DIR", pod_root / ".e2e-artifacts")
-        default_path = os.pathsep.join(
+        default_path = default_gateway_path(
+            home,
             [
                 str(home / ".local" / "bin"),
                 "/usr/local/bin",
                 "/usr/bin",
                 "/bin",
-            ]
+            ],
         )
         return cls(
             pod_root=pod_root,

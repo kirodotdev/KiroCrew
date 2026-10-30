@@ -250,3 +250,68 @@ def test_every_crewmate_only_tool_is_named_in_the_assembled_conductor_prompt() -
     prompt = _conductor_prompt()
     missing = sorted(t for t in _crewmate_tools() if not re.search(rf"\b{t}\b", prompt))
     assert missing == [], f"the crewmate conductor prompt never names: {missing}"
+
+
+# Bug-bash H4: a crewmate said "Yes, I'll install Rust", hit a safety rule, then
+# offered the chip "Ask for a card to let you install it", which no card kind can
+# honour. These pin the guidance that stops each step.
+
+#: Internal words a reply written in the user's voice must not carry.
+_CHIP_JARGON = ("card", "propose_change", "worker", "helper")
+
+
+def _all_pieces() -> dict[str, str]:
+    return {key: crewmate_prompts.text(key) for key in crewmate_prompts.keys()}
+
+
+def test_the_conductor_prompt_hedges_a_gated_action_instead_of_promising_it() -> None:
+    prompt = _conductor_prompt()
+    assert "Promise only what you can do." in prompt
+    assert "say you will try" in prompt
+    assert "Never offer to ask for a permission or a card to get past a safety rule." in prompt
+
+
+def test_a_blocked_command_is_handed_over_as_the_run_yourself_card() -> None:
+    """The fence the chat draws as RunYourselfCard (website/src/components)."""
+    prompt = _conductor_prompt()
+    assert "```run-yourself" in prompt
+    assert '```run-yourself summary="<what it installs or does, and from where>"' in prompt
+    assert "facts only, no persuasion" in prompt
+    card = (ROOT / "website" / "src" / "components" / "RunYourselfCard.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "export const RUN_YOURSELF_LANG = 'run-yourself'" in card
+
+
+def test_no_piece_makes_a_flat_promise_of_a_gated_action() -> None:
+    flat = re.compile(r"\bI(?:'|’)?ll (?:install|run the install|set (?:it|that) up)\b", re.I)
+    offenders = sorted(key for key, text in _all_pieces().items() if flat.search(text))
+    assert offenders == []
+
+
+def test_the_chip_guidance_offers_only_what_the_mate_can_do() -> None:
+    prompt = _conductor_prompt()
+    assert "offer only what you can then do" in prompt
+    assert "never ask you for a card" in prompt
+    for word in _CHIP_JARGON:
+        assert word in prompt.split("no internal word:", 1)[1], word
+
+
+def test_no_piece_carries_an_example_chip_with_jargon() -> None:
+    """An example [OPTIONS:] line in a prompt is copied verbatim by the model."""
+    offenders = []
+    for key, text in _all_pieces().items():
+        for labels in re.findall(r"\[OPTIONS?:([^\]]*)\]", text):
+            for label in labels.split("|"):
+                if any(re.search(rf"\b{w}s?\b", label, re.I) for w in _CHIP_JARGON):
+                    offenders.append(f"{key}: {label.strip()}")
+    assert offenders == []
+
+
+def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
+    text = crewmate_prompts.text("worker.principles")
+    assert "When a safety rule blocks a command" in text
+    assert "do not look for a way around it" in text
+    assert "exact command in a code block" in text
+    assert "what it installs or does, and from where" in text
+    assert "no persuasion" in text

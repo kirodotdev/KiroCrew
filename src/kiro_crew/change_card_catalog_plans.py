@@ -49,6 +49,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SCHEDULE_UPDATE,
     KIND_SECRET_SAVE,
     KIND_SETTING_CHANGE,
+    KIND_TEMPLATE_MCP_SERVER,
     KIND_TEMPLATE_UPDATE,
     KIND_TRUST_APP,
     KIND_WORKFLOW_SAVE,
@@ -607,8 +608,41 @@ def build_preview(
                 "after": p["long_term"],
             }
         ]
+        offer = _goal_heartbeat_offer(p, snapshot)
+        if offer is not None:
+            # The Heartbeat checkbox: the card's own row, drawn as a checkbox the
+            # user flips (a re-preview with ``heartbeat``), never as a change line.
+            every = offer["interval"]
+            out["changes"].append(
+                {
+                    "label": "Heartbeat (each run uses credits)",
+                    "field": GOAL_HEARTBEAT_FIELD,
+                    "after": offer["checked"],
+                    "interval": every,
+                    "per_day": _goals.wakes_per_day(every),
+                }
+            )
+            goal_body["heartbeat_offer"] = (
+                _goals.HEARTBEAT_OFFER_ACCEPTED
+                if offer["checked"]
+                else _goals.HEARTBEAT_OFFER_DECLINED
+            )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [step("PUT", _goal_path(str(snapshot["slug"])), goal_body)]
+        if offer is not None and offer["checked"]:
+            # The same write a ``crewmate.check_ins`` card makes, through the same
+            # hooked schedules route, after the goal it needs is in place.
+            out["apply"].append(
+                step(
+                    "PUT",
+                    _check_ins_path(str(snapshot["slug"])),
+                    {
+                        "member": p["member"],
+                        _goals.CADENCE_HEARTBEAT: True,
+                        "expected": {_goals.CADENCE_HEARTBEAT: False, "interval": every},
+                    },
+                )
+            )
     elif kind == KIND_CREWMATE_KEY_RESULTS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
             raise _fail("not_found", f"no mate named '{p['member']}'")
@@ -802,6 +836,8 @@ def build_preview(
         elif tighten:
             out["risk"] = RISK_TIGHTEN
         out["apply"] = [step("PATCH", f"/api/agents/detail/{_q(p['template'])}", changed)]
+    elif kind == KIND_TEMPLATE_MCP_SERVER:
+        _template_server_preview(p, snapshot, context, out)
     elif kind == KIND_MCP_INSTALL:
         if snapshot.get("exists"):
             raise _fail("already_exists", f"an MCP server '{snapshot.get('name')}' already exists")
@@ -1029,6 +1065,144 @@ def build_preview(
     if offers_no_undo(kind, p):
         out["undo_unavailable_reason"] = UNDO_NO_IDENTITY_CHECK
     return out
+
+
+def template_additions_path(template: str, server: str | None = None) -> str:
+    """The owner route a ``template.mcp_server`` card writes (and its Undo deletes)."""
+    base = f"/api/agents/detail/{_q(template)}/mcp-additions"
+    return base if server is None else f"{base}/{_q(server)}"
+
+
+#: What a ``template.mcp_server`` card says about its tools' approvals. It claims
+#: no prompt: an existing permission on the agent still applies.
+TEMPLATE_SERVER_TOOLS_NOTE = (
+    "nothing is auto-approved; this agent's existing permissions still apply"
+)
+#: The ``Undo`` row: the owner can take the server back off from this card.
+TEMPLATE_SERVER_UNDO_NOTE = "remove it from this card any time"
+#: The ``What it does`` row: what adding a server means, in plain words, before
+#: its tool names (a server is a helper program the agent calls for those tasks).
+TEMPLATE_SERVER_DOES_NOTE = (
+    "lets the agent ask a helper program to do the tasks below for it, on this machine"
+)
+#: The ``Open chats`` row when the change cannot apply live: the session reset is
+#: the MCP page's, which restarts every open chat, not only the listed agents'.
+TEMPLATE_SERVER_RESTART_NOTE = (
+    "every open chat restarts to pick it up, including chats on other agents"
+)
+#: Tool names a ``template.mcp_server`` card shows before "and N more".
+_TOOLS_SHOWN = 12
+
+
+def _template_chips(templates: list[str], aliases: dict[str, str]) -> list[str]:
+    """One chip per agent: an old name rides on the agent it names, never its own chip."""
+    old_names: dict[str, list[str]] = {}
+    for old, new in aliases.items():
+        old_names.setdefault(new, []).append(old)
+    chips = []
+    for t in templates:
+        if t in aliases and aliases[t] in templates:
+            continue
+        olds = sorted(old_names.get(t, []))
+        chips.append(f"{t} (also its old name, {', '.join(olds)})" if olds else t)
+    return chips
+
+
+def _template_server_preview(
+    p: dict[str, Any],
+    snapshot: dict[str, Any],
+    context: dict[str, Any],
+    out: dict[str, Any],
+) -> None:
+    """The ``template.mcp_server`` card: one server, where it comes from, and its reach.
+
+    The card adds a server and nothing else: no row grants a tool, and the
+    ``Each tool`` row says nothing is auto-approved and that existing permissions
+    still apply; an ``allowedTools`` grant it can read is named in ``Already
+    approved``. ``Its tools`` names what the
+    server can do. Every template the addition reaches is listed (an alias marked
+    as the old name it is), and the open sessions it reaches are the card's
+    scope, which the card shows once as its "Affects" line. A registry server runs code new to this gateway
+    (``code_exec``); one this gateway already runs does not.
+    """
+    if snapshot.get("present"):
+        raise _fail(
+            "already_exists",
+            f"'{p['server']}' is already added to '{p['template']}'",
+        )
+    if snapshot.get("template_has"):
+        raise _fail(
+            "already_exists",
+            f"the '{p['template']}' agent already has a server named '{p['server']}'",
+        )
+    origin = p["origin"]
+    registry = origin.get("source") == "registry"
+    where = (
+        f"from the MCP registry ({origin.get('registry_id')}), new to this machine"
+        if registry
+        else "already installed on this machine"
+    )
+    reach = context.get("reach") or {}
+    templates = [str(t) for t in reach.get("templates") or [p["template"]]]
+    aliases = {str(k): str(v) for k, v in (reach.get("aliases") or {}).items()}
+    sessions = [str(s) for s in reach.get("sessions") or []]
+    members = [str(m) for m in reach.get("members") or []]
+    tools = [str(t) for t in context.get("tools") or []]
+    # What the server can do: the tool names this gateway saw it advertise. A
+    # server not yet probed (or new from the registry) says so instead.
+    if tools:
+        shown = ", ".join(tools[:_TOOLS_SHOWN])
+        more = len(tools) - _TOOLS_SHOWN
+        can_do = shown + (f" and {more} more" if more > 0 else "")
+    elif registry:
+        can_do = "shown once it first runs; see its registry page"
+    else:
+        can_do = "shown once it first runs"
+    rows: list[dict[str, Any]] = [
+        {"label": "Adds", "after": _display(f"“{p['server']}”, a helper program {where}")},
+        {"label": "What it does", "after": TEMPLATE_SERVER_DOES_NOTE},
+        {"label": "Its tools", "after": _display(can_do)},
+        {"label": "Agents", "add": _template_chips(templates, aliases)},
+    ]
+    if members:
+        rows.append({"label": "Crew members", "add": members})
+    rows.append(
+        {
+            "label": "Open chats",
+            "after": (
+                "pick it up at their next turn"
+                if context.get("live")
+                else TEMPLATE_SERVER_RESTART_NOTE
+            ),
+        }
+    )
+    # The card grants nothing, and it makes no promise about prompts: an approval
+    # the agent already holds (an ``allowedTools`` grant, or a harness's own allow
+    # rule) still applies once the server is mounted.
+    grants = [str(g) for g in context.get("grants") or []]
+    if grants:
+        rows.append({"label": "Already approved", "after": _display(", ".join(grants))})
+    rows.append({"label": "Each tool", "after": TEMPLATE_SERVER_TOOLS_NOTE})
+    rows.append({"label": "Undo", "after": TEMPLATE_SERVER_UNDO_NOTE})
+    rows += [{**row, "detail": True} for row in _server_spec_rows(p["server"], p["entry"])]
+    agents = [t for t in templates if t not in aliases]
+    out["title"] = (
+        f"Let “{p['template']}” use the “{p['server']}” helper program"
+        if len(agents) <= 1
+        else f"Let {len(agents)} agents use the “{p['server']}” helper program"
+    )
+    out["changes"] = rows
+    reached = sessions + members
+    out["scope"] = {"members": reached, "count": len(reached), "templates": templates}
+    if registry:
+        out["risk"] = RISK_CODE_EXEC
+    out["apply"] = [
+        step(
+            "POST",
+            template_additions_path(p["template"]),
+            {"server": p["server"], "entry": p["entry"]},
+        )
+    ]
 
 
 #: Undo reason for kinds whose reverse is a delete their store cannot bind to the
@@ -1327,6 +1501,27 @@ def _create_schedule_index(evidence: list[dict[str, Any]]) -> int:
     """
     legacy = len(evidence) > 1 and isinstance(evidence[1], dict) and "id" in evidence[1]
     return LEGACY_CREWMATE_CREATE_SCHEDULE_STEP if legacy else CREWMATE_CREATE_SCHEDULE_STEP
+
+
+#: The ``field`` of a ``crewmate.goal`` card's Heartbeat checkbox row.
+GOAL_HEARTBEAT_FIELD = "heartbeat_offer"
+
+
+def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
+
+    Offered while the snapshot reads the Heartbeat off and never declined
+    (the record's ``heartbeat_offer`` is not ``declined``). A snapshot taken
+    before the checkbox existed carries no ``heartbeat`` and offers nothing, so a
+    stored card rebuilds to the plan it was shown with.
+    """
+    hb = snapshot.get("heartbeat")
+    if not isinstance(hb, dict) or hb.get("on") or hb.get("declined"):
+        return None
+    every = hb.get("interval")
+    if not _goals.is_heartbeat_interval(every):
+        every = _goals.DEFAULT_HEARTBEAT_INTERVAL
+    return {"checked": p.get("heartbeat", True) is not False, "interval": every}
 
 
 def _goal_path(slug: str) -> str:

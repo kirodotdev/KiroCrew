@@ -112,8 +112,6 @@ class DashboardState:
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
     _chat_pins_lock: LoopBoundLock
-    _chat_reactions_lock: LoopBoundLock
-    _chat_reactions_loaded: bool
     _folders_lock: LoopBoundLock
     _folders_generation: int
     _tags_generation: int
@@ -573,6 +571,8 @@ class DashboardState:
         # away fallback live in the transcript.
         self._warm_task_brief_last_seen: dict[str, float] = {}
         self._warm_task_brief_not_before: dict[str, float] = {}
+        # Per owner view, the thread its explicit page hide left (Crew Mode gate).
+        self._warm_task_brief_hidden_left: dict[int, str] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
         self._warm_task_brief_model_active: set[str] = set()
         # Threads whose in-flight model call was dropped by a real cancel.
@@ -634,17 +634,6 @@ class DashboardState:
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
         # single event loop (in-process gateway restart, test loops).
         self._chat_pins_lock = LoopBoundLock()
-        self._chat_reactions: list[dict[str, Any]] = []  # message reactions
-        # Malformed chat_reactions.json entries dropped at load time, kept
-        # verbatim so save_chat_reactions round-trips them back instead of
-        # erasing bytes a hand-edit left in a shape the loader could not
-        # validate (mirrors the chat-pins unparsed-entry preservation).
-        self._unparsed_chat_reaction_entries: list[Any] = []
-        # Reactions load lazily on first request, not on the gateway boot path
-        # (no-new-work-on-gateway-boot-path); this guards the one-time load.
-        self._chat_reactions_loaded = False
-        # Serializes reaction mutation + persistence; see _chat_pins_lock.
-        self._chat_reactions_lock = LoopBoundLock()
         # Serializes read-modify-write of the folder store; see
         # mutate_folders(). Constructed here rather than lazily so two
         # concurrent first-callers cannot each make their own lock and
@@ -1017,7 +1006,6 @@ class DashboardState:
     # ── Chat message pin persistence ──
 
     _CHAT_PINS_FILE = "chat_pins.json"
-    _CHAT_REACTIONS_FILE = "chat_reactions.json"
 
     @staticmethod
     def _atomic_write_json(path: Path, data: Any) -> None:
@@ -1168,9 +1156,6 @@ class DashboardState:
     load_chat_pins = _sidebar_stores.load_chat_pins
     save_chat_pins = _sidebar_stores.save_chat_pins
     remove_chat_pins_for_slots = _sidebar_stores.remove_chat_pins_for_slots
-    load_chat_reactions = _sidebar_stores.load_chat_reactions
-    save_chat_reactions = _sidebar_stores.save_chat_reactions
-    ensure_chat_reactions_loaded = _sidebar_stores.ensure_chat_reactions_loaded
     folders_generation = _sidebar_stores.folders_generation
     tags_generation = _sidebar_stores.tags_generation
     bump_tags_generation = _sidebar_stores.bump_tags_generation

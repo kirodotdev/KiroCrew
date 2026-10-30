@@ -134,12 +134,38 @@ def _discard_replay_gap(self: SessionLifecycleService, gap_key: str) -> None:
         gap.closed.set()
 
 
-def _orphan_turn_holder(self: SessionLifecycleService, key: str, session: Any) -> None:
-    """Remember the task holding a popped session's permit; see ``orphaned_holders``."""
+def _orphan_turn_holder(self: SessionLifecycleService, key: str, session: Any) -> bool:
+    """Remember the task holding a popped session's permit; see ``orphaned_holders``.
+
+    Returns whether a holder was recorded. A locked permit with no named holder
+    is one a release has just handed to a parked claimant that has not run yet
+    (``release`` clears ``turn_owner`` in the same step): nobody here owes it a
+    release, and the claimant gives it back itself when it finds the session
+    gone. Records of holders that already finished are dropped on the way in,
+    so a holder that never made its owed release cannot pin the entry.
+    """
     holder = getattr(session, "turn_owner", None)
     if holder is None or not getattr(session, "semaphore").locked():
-        return
-    self.state.orphaned_holders.setdefault(canonical_key(key), set()).add(holder)
+        return False
+    holders = self.state.orphaned_holders.setdefault(canonical_key(key), set())
+    holders.difference_update([task for task in holders if task.done()])
+    holders.add(holder)
+    return True
+
+
+def retire_turn_permit(self: SessionLifecycleService, key: str, session: Any) -> None:
+    """Settle the turn permit of a session every teardown verb has just popped.
+
+    Run in the same lock hold as the pop, before any await. When a turn still
+    holds the popped permit, the holder is recorded first, so its late
+    key-only release is absorbed rather than landing on a successor, and the
+    permit is then released once so the claimants parked on it wake, find the
+    session gone and re-enter the claim. A permit nobody holds, or one already
+    handed to a claimant that has not run yet, is left alone: releasing it
+    again would over-release the semaphore.
+    """
+    if self._orphan_turn_holder(key, session):
+        self._wake_turn_waiters(session)
 
 
 def _calling_task() -> asyncio.Task[Any] | None:
@@ -196,6 +222,7 @@ def _wake_turn_waiters(session: Any) -> None:
     release wakes the next. Called in the same tick as the pop, so the
     woken task's validation cannot observe the session still registered.
     A permit nobody holds has nobody waiting on it and is left alone.
+    Reached only through ``retire_turn_permit``, once a holder is recorded.
     """
     semaphore = getattr(session, "semaphore", None)
     if semaphore is not None and semaphore.locked():

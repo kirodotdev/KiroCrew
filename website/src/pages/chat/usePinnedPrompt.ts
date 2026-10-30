@@ -18,6 +18,7 @@ import {
 } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
+import { afterSlideSettles, releaseReadingPosition, slideSettling } from '../../utils/panelSlide'
 
 /**
  * Whether `node` is one of the transcript's own row wrappers. Rows are never
@@ -121,6 +122,14 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   const updatePinnedPrompt = useCallback(() => {
     const el = scrollerRef.current
     if (!el) return
+    // A side panel sliding, or the transcript settling its place after it
+    // (utils/panelSlide): the rows rewrap and the reading position is put
+    // back within the frame, so a read now can see one in-between layout.
+    // The prompt in a reflowing column measured taller for that frame, failed
+    // the tall-prompt gate below and dropped the card, which came back a frame
+    // later: the flash at the top of the chat. The reader has not moved, so
+    // the card holds and is worked out once, when the place has settled.
+    if (slideSettling(el)) { afterSlideSettles(el, () => updatePinnedPromptRef.current()); return }
     // Measure with getBoundingClientRect (viewport-relative) so the origin
     // matches the scroller regardless of which ancestor is the items'
     // offsetParent — consistent with useScrollManager, which also deliberately
@@ -413,6 +422,8 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       stripUncovered,
     }))
   }, [requiresMountedHandoff, scrollerRef])
+  const updatePinnedPromptRef = useRef(updatePinnedPrompt)
+  updatePinnedPromptRef.current = updatePinnedPrompt
   // The card grows at rest with no scroll to run the recompute — the hover peek
   // and the expansion — and the strip test above reads the card's live bottom,
   // so it has to re-run when that bottom moves. Observe the card's size for as
@@ -537,6 +548,8 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     if (first == null) return
     const reduced = typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // This jump owns the position from here (utils/panelSlide).
+    releaseReadingPosition(sc0)
     const detach = attachUserScrollIntent(sc0, () => { jumpCancelRef.current?.() })
     const cancelGlide = runConvergingGlide({
       goal,

@@ -945,12 +945,59 @@ class TestOutboxDownload:
     normalized away by the URL layer before the handler ever sees it."""
 
     @staticmethod
-    def _request(filename: str):
+    def _request(filename: str, query: dict[str, str] | None = None):
         req = MagicMock()
         req.match_info = {"filename": filename}
         # A bare MagicMock answers headers.get("Range") with a truthy mock.
         req.headers = {}
+        req.query = query or {}
         return req
+
+    @staticmethod
+    def _write_pdf(outbox) -> bytes:
+        # Not valid UTF-8, so the route takes the binary branch a real PDF takes.
+        body = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\n%%EOF\n"
+        (outbox / "report.pdf").write_bytes(body)
+        return body
+
+    @pytest.mark.asyncio
+    async def test_pdf_is_served_inline_by_default(self, outbox, mock_sel):
+        body = self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(self._request("report.pdf"))
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/pdf"
+        assert resp.headers["Content-Disposition"] == "inline; filename*=UTF-8''report.pdf"
+        assert resp.body == body
+
+    @pytest.mark.asyncio
+    async def test_download_flag_serves_an_inline_type_as_attachment(self, outbox, mock_sel):
+        body = self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(
+            self._request("report.pdf", {"download": "1"})
+        )
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/pdf"
+        assert resp.headers["Content-Disposition"] == "attachment; filename*=UTF-8''report.pdf"
+        assert resp.body == body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["0", "true", "", "yes"])
+    async def test_only_download_1_changes_the_disposition(self, outbox, mock_sel, value):
+        self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(
+            self._request("report.pdf", {"download": value})
+        )
+        assert resp.headers["Content-Disposition"].startswith("inline;")
+
+    @pytest.mark.asyncio
+    async def test_download_flag_keeps_every_refusal(self, outbox, mock_sel):
+        (outbox.parent / "escape.txt").write_text("secret", encoding="utf-8")
+        (outbox / "leak.txt").write_text("ghp_" + "b" * 36, encoding="utf-8")
+        flag = {"download": "1"}
+        escaped = await files_mod.api_outbox_download(self._request("../escape.txt", flag))
+        assert escaped.status == 403
+        leaked = await files_mod.api_outbox_download(self._request("leak.txt", flag))
+        assert leaked.status == 400
 
     @pytest.mark.asyncio
     async def test_traversal_out_of_outbox_is_403(self, outbox, mock_sel):

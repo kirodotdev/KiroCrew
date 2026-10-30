@@ -22,10 +22,11 @@ class TestRunMarker:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.instances import run_marker
 
-        # Fabricate a venv layout: <venv>/bin/{python,kirocrew}
+        # Fabricate a venv layout: <venv>/bin/{python,kirocrew}, with the
+        # launcher named as this OS's pip names it (kirocrew.exe on Windows).
         bindir = tmp_path / "venv" / "bin"
         bindir.mkdir(parents=True)
-        launcher = bindir / "kirocrew"
+        launcher = bindir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
         launcher.write_text("#!/bin/sh\n")
         launcher.chmod(0o755)
         monkeypatch.setattr(sys, "executable", str(bindir / "python"))

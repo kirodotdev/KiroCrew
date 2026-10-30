@@ -17,7 +17,7 @@ Coverage targets:
   * push authentication detection, which is what lets the UI say "log in" instead
     of "something broke";
   * that a spawn routes through the sandbox chokepoint with a resource ceiling, and
-    that a timeout kills the process tree.
+    that a timeout or a cancel kills the process tree.
 """
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import sandbox
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import await_until
 
 
 def _hermetic_git_env() -> dict[str, str]:
@@ -566,6 +568,90 @@ class TestGitSpawn:
                 await gitops._git(["push"], cwd=repo, timeout=0.01)
         assert kill.await_args is not None
         assert kill.await_args.args[0] == 9876
+
+    @staticmethod
+    def _git_that_runs_until_killed(started: asyncio.Event) -> mock.AsyncMock:
+        """A git child whose output read blocks until the call is cancelled.
+
+        The first ``communicate()`` is ``_git``'s read and never returns on its
+        own. Later calls are the reap after the kill, and return at once.
+        """
+
+        async def read_then_drain() -> tuple[bytes, bytes]:
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            return b"", b""
+
+        proc = mock.AsyncMock()
+        proc.communicate = mock.AsyncMock(side_effect=read_then_drain)
+        proc.kill = mock.Mock()
+        proc.returncode = None
+        proc.pid = UNALLOCATABLE_PID
+        return proc
+
+    async def test_a_cancel_kills_the_process_tree(self, repo: Path) -> None:
+        """Cancelling a git call must not orphan the git child.
+
+        The child runs in its own session, so nothing else stops it once ``_git``
+        stops awaiting it. A cancel (app stop, gateway shutdown or restart) that
+        skipped the kill would leave a clone, pull or push running against a
+        remote with no deadline left.
+        """
+        started = asyncio.Event()
+        proc = self._git_that_runs_until_killed(started)
+        with mock.patch.object(
+            gitops, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            gitops.platform_compat, "kill_process_tree_async", mock.AsyncMock(return_value=True)
+        ) as kill:
+            task = asyncio.create_task(gitops._git(["pull"], cwd=repo, timeout=60))
+            await await_until(started, what="the git read starting")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled git call finishing")
+        assert kill.await_args is not None, "a cancelled git call left the child running"
+        assert kill.await_args.args[0] == UNALLOCATABLE_PID
+        assert proc.communicate.await_count >= 2, "the killed git child was not reaped"
+
+    async def test_a_second_cancel_cannot_skip_the_kill(self, repo: Path) -> None:
+        """A repeated cancel while the kill is in flight must not abandon it.
+
+        Shutdown can cancel a task more than once. If the kill were awaited
+        unshielded, the second cancel would land inside it and the child would
+        survive anyway.
+        """
+        started = asyncio.Event()
+        killing = asyncio.Event()
+        release_kill = asyncio.Event()
+
+        async def slow_kill(*_args: object) -> bool:
+            killing.set()
+            await release_kill.wait()
+            return True
+
+        proc = self._git_that_runs_until_killed(started)
+        with mock.patch.object(
+            gitops, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            gitops.platform_compat, "kill_process_tree_async", mock.AsyncMock(side_effect=slow_kill)
+        ) as kill:
+            task = asyncio.create_task(gitops._git(["pull"], cwd=repo, timeout=60))
+            await await_until(started, what="the git read starting")
+            task.cancel()
+            await await_until(killing, what="the cancel starting the kill")
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "the second cancel abandoned the in-flight kill"
+            release_kill.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled git call finishing")
+        assert kill.await_count == 1
+        assert proc.communicate.await_count >= 2, "the killed git child was not reaped"
 
     async def test_a_missing_git_binary_is_a_clear_error(self, repo: Path) -> None:
         with mock.patch.object(

@@ -21,14 +21,18 @@ import { applyCardUpdate, cardsQueryKey, CARD_KINDS, type Card } from '../api/ca
 import { CARD_REGISTRY } from './cardRegistry'
 import { fillBody } from './runPlan'
 import ConversationCard, { readCardRef } from './ConversationCard'
+import { answerWindow } from './ChangeCard'
 import type { ChatMessage } from '../types'
-import { CardAuthorContext } from './cardAuthor'
+import { CardAuthorContext, cardProposer } from './cardAuthor'
 
 const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.changeCards.${k}`, v)
 const SLOT = 'slot-A'
 /** The frozen wall clock every test runs at (noon UTC, so "tomorrow" is a day out in every zone). */
 const NOW = Date.UTC(2026, 0, 15, 12)
 const SECRET = 'sk-live-THE-VALUE-123'
+/** The proposer label waits on two reads in a row: the card store, then the
+ *  roster the live card enables. Each wait on it names this bound. */
+const ROSTER_CHAIN = { timeout: 5_000 }
 
 const card = (over: Partial<Card> = {}): Card => ({
   id: 'c1',
@@ -195,8 +199,8 @@ describe('card layout', () => {
     expect(footer.className).toMatch(/(^|\s)px-4(\s|$)/)
     expect(footer.className).toContain('border-t')
     const blocks = [
-      screen.getByTestId('change-card-kind'),
-      screen.getByRole('heading', { level: 3 }).parentElement as HTMLElement,
+      screen.getByTestId('change-card-header'),
+      screen.getByRole('heading', { level: 3 }),
       screen.getByTestId('change-card-rows'),
       screen.getByTestId('change-card-reason'),
       ...screen.getAllByTestId('change-card-rows').flatMap(r => Array.from(r.querySelectorAll<HTMLElement>('[data-card-row]'))),
@@ -221,6 +225,152 @@ describe('card layout', () => {
     const root = await screen.findByTestId('conversation-card')
     expect(root.className).not.toMatch(INSET)
     expect(root.contains(await screen.findByTestId('change-card'))).toBe(true)
+  })
+})
+
+describe('shared change card layout', () => {
+  it('puts the expiry in the header row beside the kind, not alone under the title', async () => {
+    pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for Pebble' })]
+    renderCards()
+    const expires = await screen.findByTestId('change-card-expires')
+    const header = screen.getByTestId('change-card-header')
+    expect(expires.parentElement).toBe(header)
+    expect(header.contains(screen.getByTestId('change-card-kind'))).toBe(true)
+    // The title is below the header row and holds no clock of its own.
+    const heading = screen.getByRole('heading', { level: 3 })
+    expect(header.contains(heading)).toBe(false)
+    expect(heading.parentElement).toBe(screen.getByTestId('change-card-body'))
+    // Muted small text, pushed right only once the card is wide enough.
+    expect(header.className).toMatch(/text-\[12px\]/)
+    expect(header.className).toContain('text-muted')
+    expect(header.className).toContain('flex-wrap')
+    expect(expires.className).toContain('@min-[480px]:ml-auto')
+    // The clock names what runs out (the chance to answer), in one short line.
+    expect(expires.textContent).toBe('Answer within 1h')
+  })
+
+  it('words the answer window as one truncated narrow unit', () => {
+    expect(answerWindow(22 * 3_600_000 + 59 * 60_000)).toBe('22h')
+    expect(answerWindow(2 * 86_400_000 + 5 * 3_600_000)).toBe('2d')
+    expect(answerWindow(45 * 60_000 + 30_000)).toBe('45m')
+    expect(answerWindow(20_000)).toBe('1m')
+  })
+
+  it('draws the reason as one more label | value row of the same grid as the change rows', async () => {
+    pending = [card({ reason: 'You asked for shorter replies.' })]
+    renderCards()
+    const reason = await screen.findByTestId('change-card-reason')
+    const rows = screen.getByTestId('change-card-rows')
+    expect(reason.parentElement).toBe(rows)
+    expect(reason.hasAttribute('data-card-row')).toBe(true)
+    const changeRow = within(rows).getByTestId('change-card-value').closest('[data-card-row]') as HTMLElement
+    expect(reason.className).toBe(changeRow.className)
+    const [label, value] = Array.from(reason.children) as HTMLElement[]
+    expect(label.textContent).toBe(L('reason_label', { name: 'Kiro Crew' }))
+    expect(label.className).toBe((changeRow.children[0] as HTMLElement).className)
+    expect(value.textContent).toBe('You asked for shorter replies.')
+  })
+
+  it('shows an add without "(empty) →" on the card itself', async () => {
+    pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for Pebble', changes: [{ field: 'goal', label: 'Goal 1', number: 1, before: null, after: 'Ship the beta' }] })]
+    renderCards()
+    const value = await screen.findByTestId('change-card-value')
+    expect(value.textContent).toBe('Ship the beta')
+  })
+
+  it("labels the reason with the crewmate that proposed the card, read from the card's slot", async () => {
+    server.use(http.get('*/api/members', () => HttpResponse.json({ members: [
+      { name: 'scout-agent', slug: 'scout', slot_key: SLOT, running: false, display_name: 'Scout' },
+      { name: 'pebble', slug: 'pebble', slot_key: 'slot-other', running: false },
+    ] })))
+    pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for "Scout"', reason: 'You asked for it.' })]
+    renderCards()
+    // Not inside any crewmate chat: the proposer still comes from the card.
+    expect(await screen.findByText(L('reason_label', { name: 'Scout' }), {}, ROSTER_CHAIN)).toBeInTheDocument()
+    expect(screen.queryByText(L('reason_label', { name: 'Kiro Crew' }))).toBeNull()
+  })
+
+  it('keeps a typed secret when the proposer resolves after the card is drawn', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    server.use(http.get('*/api/members', async () => {
+      await gate
+      return HttpResponse.json({ members: [{ name: 'scout', slug: 'scout', slot_key: SLOT, running: false, display_name: 'Scout' }] })
+    }))
+    pending = [card({
+      kind: 'secret.save',
+      title: 'Save GITHUB_TOKEN',
+      reason: 'You asked me to store it.',
+      editable: ['value'],
+      params: { name: 'GITHUB_TOKEN' },
+      plan: {
+        apply: [{ method: 'POST', path: '/api/secrets', body: { name: 'GITHUB_TOKEN', value: '{{user:value}}' }, fill: [{ field: 'value', source: 'user' }] }],
+        undo: [{ method: 'DELETE', path: '/api/secrets/GITHUB_TOKEN' }],
+      },
+    })]
+    renderCards()
+    const input = await screen.findByTestId('change-card-input-value') as HTMLInputElement
+    expect(screen.getByText(L('reason_label', { name: 'Kiro Crew' }))).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: SECRET } })
+    release()
+    expect(await screen.findByText(L('reason_label', { name: 'Scout' }), {}, ROSTER_CHAIN)).toBeInTheDocument()
+    // The same input element, still holding what was typed: nothing remounted.
+    expect(screen.getByTestId('change-card-input-value')).toBe(input)
+    expect(input.value).toBe(SECRET)
+  })
+
+  it('says so beside the card when the crewmate list cannot be read, and keeps the card', async () => {
+    server.use(http.get('*/api/members', () => HttpResponse.json({ error: 'roster down' }, { status: 500 })))
+    pending = [card({ reason: 'You asked for shorter replies.' })]
+    renderCards()
+    expect(await screen.findByTestId('change-card-roster-error', {}, ROSTER_CHAIN)).toBeInTheDocument()
+    expect(screen.getByTestId('change-card-apply')).toBeInTheDocument()
+    expect(screen.getByText(L('reason_label', { name: 'Kiro Crew' }))).toBeInTheDocument()
+  })
+
+  it('keeps the product name for a card the main assistant proposed, and while the roster is unknown', async () => {
+    server.use(http.get('*/api/members', () => HttpResponse.json({ members: [
+      { name: 'scout', slug: 'scout', slot_key: 'member-scout', running: false, display_name: 'Scout' },
+    ] })))
+    pending = [card({ reason: 'You asked for shorter replies.' })]
+    renderCards()
+    expect(await screen.findByText(L('reason_label', { name: 'Kiro Crew' }))).toBeInTheDocument()
+    await waitFor(() => expect(qc.getQueryData(MEMBERS_ROSTER_QUERY_KEY)).toBeTruthy(), ROSTER_CHAIN)
+    expect(screen.getByText(L('reason_label', { name: 'Kiro Crew' }))).toBeInTheDocument()
+    expect(cardProposer(SLOT, undefined)).toBeNull()
+    expect(cardProposer('', [])).toBeNull()
+  })
+
+  it('hides Affects when it names only the member the title already names', async () => {
+    pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for "Scout"', scope: { count: 1, members: ['Scout'], only_this_member: true } })]
+    renderCards()
+    await screen.findByTestId('change-card-rows')
+    expect(screen.queryByText(L('scope_label'))).toBeNull()
+    expect(screen.queryByText('Scout')).toBeNull()
+  })
+
+  it('keeps Affects when it reaches anyone the title does not name', async () => {
+    for (const scope of [
+      { count: 1, members: ['Scout'] },
+      { count: 2, members: ['Scout', 'Pebble'] },
+      { count: 1, members: ['Pebble'], only_this_member: true },
+      { count: 3, members: ['Scout'] },
+    ]) {
+      pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for "Scout"', scope })]
+      const view = renderCards()
+      await screen.findByTestId('change-card-rows')
+      expect(screen.getByText(L('scope_label'))).toBeTruthy()
+      view.unmount()
+    }
+  })
+
+  it('labels the generic decline as a bare verb, the same shape as the accept button', async () => {
+    pending = [card({ kind: 'crewmate.goal', title: 'Add a goal for Pebble' })]
+    renderCards()
+    const decline = await screen.findByTestId('change-card-cancel')
+    expect(decline.textContent).toBe(L('cancel'))
+    expect(L('cancel')).toBe('Decline')
+    expect(screen.getByTestId('change-card-apply').textContent).toBe(L('primary_crewmate_goal'))
   })
 })
 

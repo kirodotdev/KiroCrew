@@ -276,7 +276,13 @@ def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
     if not line:
         return None  # EOF
     terminated = line.endswith(b"\n")
-    body_len = len(line) - (2 if line.endswith(b"\r\n") else 1 if terminated else 0)
+    if line.endswith(b"\r\n"):
+        terminator_len = 2
+    elif terminated:
+        terminator_len = 1
+    else:
+        terminator_len = 0
+    body_len = len(line) - terminator_len
     if body_len > MAX_CONTENT_LENGTH_BYTES:
         head = line[:ID_PROBE_BYTES]
         tail = line[-ID_PROBE_BYTES:]

@@ -897,8 +897,10 @@ The CI workflow requires this repository, a push, a merge-group event or an
 `contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)`.
 A `merge_group` run's actor is the person who queued the pull request, so the
 same list admits it without a new entry.
-Other PR activities (reopens, ready-for-review, labels and edits) stay hosted
-even for an admitted actor. The check reads `github.actor_id`, which names the
+Other PR activities (reopens, ready-for-review, labels and edits) stay off the
+fleet even for an admitted actor, and the `changes` resolver sends their Linux
+consumers to the `kirocrew-runners` group instead. The check reads
+`github.actor_id`, which names the
 account that triggered the event, never the accounts that pushed the commits
 on the head, so the gate does not prove who supplied the head code. On
 `synchronize` the actor is the account that pushed the newest commit, and on
@@ -912,8 +914,9 @@ branch or opens a pull request on it is submitting that branch for CI. The
 admitted scope stops at those two events so that reopening, marking ready,
 labelling or editing, which a listed account can do on any same-repository
 pull request it never pushed or opened, does not also start that head on the
-fleet. The cost of the exclusion is that runs on those activities use
-GitHub-hosted runner minutes. Fork pull requests stay hosted either way. The
+fleet. The cost of the exclusion is that `ci.yml`'s Linux matrix runs those
+activities on the `kirocrew-runners` group, whose minutes are billed. Fork pull
+requests never reach the fleet either way, and take that same group. The
 same restriction applies to every inline PR route and both platform resolvers.
 The same actor check covers the existing inline routes, including every
 unconditional Fast Gate. Pages and the main ratchet audit also admit manual
@@ -1059,24 +1062,37 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 
 ### Larger runners for the review lanes and CodeQL
 
-Twenty-five `runs-on` sites draw on the `kirocrew-runners` larger-runner group
-by `group:` rather than `ubuntu-latest`, and fifteen more reach it conditionally
-by label (see **Five sites reach the group by LABEL**, **Four PR-time sites
-reach the group by LABEL** and **Six `ci.yml` lanes reach the group by LABEL**
-below), so forty sites in all can land on its cap -- which is the figure
-**Capacity** below is about. The twenty-five are the
-six fork review lanes (`fork-opus-review`,
-`fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
-`fork-ux-review`, and the three credentialed jobs of
-`fork-security-scope-review` -- `generate`, `validate` and `publish`), the five
-same-repo review lanes (`codex-review`, `claude-review`,
-`first-principles-review`, `design-review`, `ux-review`), `codeql.yml`, both
-`docker-smoke.yml` jobs, five jobs of `release.yml` (`version`,
-`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`), and
-the four fork helpers (`fork-internal-content-scan`, `fork-pr-description`'s
-`describe`, and `fork-workflow-guard`'s `guard` and `strip-stale-override`).
+Some `runs-on` sites draw on the `kirocrew-runners` larger-runner group by
+`group:` rather than `ubuntu-latest`, and others reach it conditionally by label
+(the label-route sections below name them, along with the matrix legs in
+`denial-differential.yml` and `fork-security-scope-review.yml` covered with
+them). Every one of them can land on the group's cap, which is what
+**Capacity** below is about. `ci.yml`'s `changes` resolver reaches the same group
+a third way, conditionally and by label, and is treated separately throughout
+this section because one resolver output fans out to many consumers: see
+**One site cannot use the group** below.
 
-**Why those five release jobs.** They are the release path's coordination jobs,
+The sites that target the group with `group:` are, by workflow:
+
+- the fork review lanes: `fork-opus-review`, `fork-gpt-review`,
+  `fork-first-principles-review`, `fork-design-review`, `fork-ux-review`, and
+  the credentialed jobs of `fork-security-scope-review` -- `generate`,
+  `validate` and `publish`
+- the same-repo review lanes: `codex-review`, `claude-review`,
+  `first-principles-review`, `design-review`, `ux-review`
+- `codeql.yml`
+- `docker-smoke.yml`, both jobs
+- `release.yml`: `version`, `resolve-promotion`, `stable-gate`,
+  `github-release`, `record-promotion`
+- the fork helpers: `fork-internal-content-scan`, `fork-pr-description`'s
+  `describe`, and `fork-workflow-guard`'s `guard` and `strip-stale-override`
+
+A change that adds or removes a site edits that workflow's own entry and its own
+subsection, never a shared total. Do not reintroduce one: a total in prose is
+checked by no test, so it drifts, and every concurrent change to this section
+collides on it.
+
+**Why those release jobs.** They are the release path's coordination jobs,
 and they are here for capacity rather than isolation. A fleet route is gated on
 the actor appearing in `CODEBUILD_ACTOR_IDS`, so a tagger outside that list
 lands on the shared standard pool, and the tagger rotates with the on-call;
@@ -1106,17 +1122,17 @@ context -- `internal-content-scan.yml`'s header promises any org repository can
 call it at "no repo-specific configuration". Both shapes bar the `group:` form
 only. A label inside a `github.repository == 'kirodotdev/KiroCrew'` conditional
 degrades to the hosted image wherever the group is unreachable, which is how the
-five fleet-fallback sites, the four PR-time sites and the two matrix jobs below
-reach it. The four fork helpers
+fleet-fallback sites, the PR-time sites and the matrix jobs below
+reach it. The fork helpers
 pass both tests outright, each carrying an `if` requiring
 `head.repo.full_name != github.repository` that is false inside a fork, which is
 why they took the `group:` form.
 
 **This test governs what may be ADDED; it does not describe what the group
-already holds.** Thirteen of the sites listed above can be started by a
-personal fork: the five same-repo review lanes, `codeql.yml`'s `analyze` and
+already holds.** Several of the sites listed above can be started by a
+personal fork: the same-repo review lanes, `codeql.yml`'s `analyze` and
 both `docker-smoke.yml` jobs all fire on `pull_request` with no head-repository
-check, and `release.yml`'s five jobs start on a `v*` tag push, which a fork
+check, and `release.yml`'s jobs start on a `v*` tag push, which a fork
 owner can make in their own fork. None of them was admitted under this test,
 and their fork-side queueing is accepted, on the same ground as the fork
 helpers' own narrower gap (a pull request opened from a third repository INTO a
@@ -1149,10 +1165,13 @@ also permanent for an unrelated reason: GitHub's CodeQL default setup, which
 this workflow replaced, is off, so there is no second scan to fall back to.
 
 **Every review lane and CodeQL moved here can hold merges, so treat any stuck
-run as an immediate rollback.** (The five label-routed fallbacks below hold no
-merge: none is polled by `pr-readiness.yml` or `merge-queue-readiness.yml`, and
-none fires on `pull_request` or `merge_group`. The rollback rule still covers
-them.) `pr-readiness.yml` resolves them all through one per-lane loop:
+run as an immediate rollback.** (The label-routed fallbacks below hold no merge,
+apart from `pr-readiness.yml`'s own `readiness` job: the rest are not polled by
+`pr-readiness.yml` or `merge-queue-readiness.yml`, and none fires on
+`pull_request` or `merge_group`. The rollback rule still covers them. The
+`readiness` job does hold every merge -- see **PR Readiness reaches the group by
+LABEL** below, and roll that one back first.)
+`pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
 same-repo path, and on a fork pull request the fork lanes are read as
@@ -1164,14 +1183,16 @@ status pending and holds every merge for up to the 24-hour queue timeout.
 CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
-once rather than waiting to see whether the queue clears -- for any of the
-twenty-five group-targeted sites, not just CodeQL. The five fleet-fallback label
-sites below are covered by the same rule but have their own recipe, since a
-whole-line replacement there would take the fleet route out with it; the four
-PR-time label sites take the plain replacement, since they carry no fleet route
-to preserve; and of the six `ci.yml` label sites, the four single-OS lanes take
-the plain replacement while the two matrix lanes go back to
-`runs-on: ${{ matrix.os }}`.
+once rather than waiting to see whether the queue clears -- for any
+group-targeted site, not just CodeQL. The fleet-fallback label sites below are
+covered by the same rule but have their own recipe, since a whole-line
+replacement there would take the fleet route out with it; the PR-time label
+sites take the plain replacement, since they carry no fleet route to preserve;
+and among the `ci.yml` label sites, the single-OS lanes take the plain
+replacement while the matrix lanes go back to
+`runs-on: ${{ matrix.os }}`. The `changes` resolver is rolled back in its own
+step rather than on a `runs-on` line; see **One site cannot use the group**
+below.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
@@ -1246,8 +1267,8 @@ reading one leg per pull request off the matrix. A stuck leg rolls back the same
 way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
-**Five sites reach the group by LABEL instead, because they must choose at run
-time.** `build-wheel.yml`, `dependency-vulnerability.yml`,
+**The fleet-fallback sites reach the group by LABEL instead, because they must
+choose at run time.** `build-wheel.yml`, `dependency-vulnerability.yml`,
 `pr-merge-conflict-label.yml` and both `pages.yml` jobs keep their CodeBuild
 fleet route and changed only what happens when the fleet does not admit the run.
 A conditional cannot name the group: the fleet's runners are REPOSITORY-level
@@ -1293,7 +1314,53 @@ the truth table alone would not catch it: that table derives its expected value
 from the expression under test, so a change editing the constant and the
 workflow together carries the expectation along and passes.
 
-**Four PR-time sites reach the group by LABEL instead, because they can execute
+**PR Readiness reaches the group by LABEL too, and it is the one site whose own
+queueing holds every merge.** `pr-readiness.yml`'s `readiness` job keeps its
+CodeBuild fleet route -- a same-repository `pull_request_target` run from a
+listed actor -- and changed only what happens when the fleet does not admit the
+run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the five above and the
+same rename exposure applies to its line. It is the exception to **Why these
+five were kept to a non-PR-time batch**: it fires on `pull_request_target`, and
+it publishes the required `PR Readiness` status itself rather than being polled
+for one, so when it queues there is no other lane to be waiting behind.
+
+It is also the busiest site on the cap. A representative weekday half-hour saw
+585 runs, of which 322 were skipped by the job-level `if` and never asked for a
+runner. The 205 that succeeded put about 410 runner-allocating runs an hour onto
+this line, and that is a FLOOR: 58 more were cancelled, and a run cancelled
+after its job started held a runner while one cancelled from the queue did not,
+so the true rate is between 410 and 526 an hour. Their work is small -- a sampled
+median of 8 seconds of execution, with none of 30 sampled jobs over 60 seconds --
+so this site consumes cap in run COUNT, not in minutes held. Size its occupancy
+from the count, and note that every one of those runs bills a full minute,
+because GitHub rounds a job up to the whole minute.
+
+Its `workflow_run` leg is a trade taken on purpose. That leg carries the
+`in_progress` merge-guard hold, and for as long as the hold is queued for a
+runner the pre-re-run `success` stands over a lane that is running, where armed
+auto-merge can act on it. Nothing else closes that window: the sweep's evidence
+is COMPLETED checks, so it corrects the verdict only after the re-running lane
+finishes, and `merge-queue-readiness.yml` polls neither the review lanes nor
+`Issue Gate` nor `Security Scope Review`. The move does not create that window --
+the hosted route queues too, at a sampled median of 37 seconds and a worst case
+of 156 seconds on this leg -- it changes which queue sets its length. **The
+group's own queue depth for this leg has not been measured**; measure it from the
+jobs API filtered on `runner_group_name` as **Capacity** below asks, and treat a
+lengthening hold window as the rollback trigger rather than waiting for a wrong
+verdict to be acted on.
+
+Rollback is the fleet-preserving recipe the five above use, and **this is the
+line to restore first** when the group is at its cap, because every merge is
+behind it: drop the middle branch so the expression's tail is `|| 'ubuntu-latest'
+}}` again, and in `_CANONICAL_READINESS_EXPR` REPLACE `_GROUP_THEN_HOSTED_TAIL`
+with the literal `"|| 'ubuntu-latest' }}"` -- deleting it rather than replacing
+it leaves the constant ending at `format(...)` with no tail at all.
+Unlike the three `_CANONICAL_PUSH_EXPR` sites, this policy has one site, so the
+revert is per site and per policy at once. `test_readiness_route_truth_table`
+pins all three destinations as literals rather than reading them off the
+expression, so the revert has to edit the expectation on purpose.
+
+**The PR-time sites reach the group by LABEL instead, because they can execute
 somewhere the group does not exist.** `client-py.yml`'s `test`,
 `crew-image-build.yml`'s `build`, `fork-pr-label.yml`'s `label` and
 `internal-content-scan.yml`'s `scan` use
@@ -1328,8 +1395,8 @@ whole-line replacement, since
 these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
 the affected line.
 
-**Six `ci.yml` lanes reach the group by LABEL too, for the same reason.** Six
-jobs in `ci.yml` that were pinned to a default hosted runner now reach the
+**The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
+in `ci.yml` that were pinned to a default hosted runner now reach the
 group through its `kirocrew-linux-4-core` label instead of through group
 targeting: `wheel-closure`, `native-redaction-gate`,
 `backend-test-kernel-lock-owner`, `e2e-private-namespace`, and the Linux leg of
@@ -1395,6 +1462,39 @@ the `runs-on` of `wheel-closure`, `native-redaction-gate` or
 the fallback from each line in turn reds exactly one test for the first three
 and nothing for the last three.
 
+**One site cannot use the group, and uses the label instead:** `ci.yml`'s
+`changes` resolver, whose `linux_runner` and `linux_runner_large` outputs carry
+the whole PR test matrix. That value has to choose at run time between the
+CodeBuild fleet and this group, and no single `runs-on` can name both, because
+the fleet's runners are REPOSITORY-level self-hosted runners and are not members
+of this organization group. So the resolver emits the definition's label, and
+the rename exposure that group targeting avoids is concentrated in its `Pick the
+Linux runner label` step: **rename this definition and that step must move with
+it.** In exchange, the label appears in one step for eighteen consumers rather
+than once per job.
+
+That step has THREE branches, not two, and the third is load-bearing. A run
+executing in another repository -- a fork running its own CI on its `main` --
+cannot reach an organization runner group, so it stays on `ubuntu-latest`. Give
+it the group's label and every one of the eighteen consumers sits queued in that
+fork until GitHub's pending limit cancels it, and the consumers' own
+`|| 'ubuntu-latest'` cannot rescue it, because that fires only on an EMPTY
+output: a non-empty label no runner carries is worse than none. A fork
+*pull request* against this repository is the opposite case, since it executes
+here, and it is most of what this site moves.
+
+This site adds the PR matrix to the group's `maximum_runners` cap, up to
+eighteen jobs per non-admitted run, so read **Capacity** below before adding
+more. The measured occupancy behind that decision belongs in the pull request
+that makes it, not here, where it would go stale.
+
+Rollback for this site is that step's non-fleet branches back to
+`ubuntu-latest`, with no AWS or runner-group change. The hosted
+`|| 'ubuntu-latest'` on each consumer expression is left in place on purpose: an
+empty resolver output means the `changes` job failed, which is not the same
+condition as a run being found ineligible, and a paid runner is the wrong answer
+to a broken resolver.
+
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
 `in_scope=true` while giving the model no shell, flow or cron surface to propose
@@ -1428,7 +1528,7 @@ wrong shows up as slower merges rather than as a broken check.
 Rollback is per site and needs no AWS or runner-group change: restore
 `runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
 matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
-so the rollback does not send the Windows leg to Linux. The five fleet-fallback
+so the rollback does not send the Windows leg to Linux. The six fleet-fallback
 sites are the exception twice over. It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
 `|| 'ubuntu-latest' }}` again, and drop `_GROUP_THEN_HOSTED_TAIL` from that
@@ -1614,7 +1714,9 @@ Details worth knowing:
   **Backend shards also use large compute**, with the in-job non-root boundary
   described in [Linux and Windows CodeBuild migration](#linux-and-windows-codebuild-migration).
   `test/test_ci_fleet_routing_expression_parity.py` pins each complete resolver
-  consumer expression, including its hosted fallback and OS mapping.
+  consumer expression, including its hosted fallback and OS mapping, and
+  `test/test_ci_windows_canary.py` runs the resolver's own shell to check the
+  value it emits on each path.
   Root semantics and the measured jq/lsof/libpython gaps are handled there;
   namespace enforcement jobs still require their hosted kernel capabilities.
   At peak hours the hosted backend and frontend shards each queue for many
@@ -1627,9 +1729,13 @@ Details worth knowing:
     that runs after `changes` failed (`coverage-gate` fails closed with
     `if: always()`) still gets a runner instead of erroring out before its own
     checks execute: a run in any
-    repository other than `kirodotdev/KiroCrew` (a fork's own CI on its `main`),
-    or a `pull_request` whose head repository is not this one, gets
-    `ubuntu-latest`; every other run still needs the event and actor checks
+    repository other than `kirodotdev/KiroCrew` (a fork's own CI on its `main`)
+    gets `ubuntu-latest`, because an organization runner group is not reachable
+    from a fork and a label it cannot serve would leave every consumer queued.
+    A `pull_request` whose head repository is not this one EXECUTES here, so it
+    gets `kirocrew-linux-4-core`, the `kirocrew-runners` group's own runner
+    label, keeping this matrix off the enterprise-shared standard pool. Every
+    other run still needs the event and actor checks
     in [the migration contract](#linux-and-windows-codebuild-migration) before
     receiving the CodeBuild label. The webhook on the AWS side is
     additionally filtered to runs triggered by accounts that can push to this

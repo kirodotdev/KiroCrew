@@ -6,12 +6,16 @@ message of a completed turn, so the dashboard footer can show the same
 end-of-turn elapsed/credits line kiro-cli prints natively.
 """
 
+import ast
+import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
+import kiro_crew
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.chat_runner import _attach_owned_turn_stats, _attach_turn_stats
+from kiro_crew.dashboard.chat_runner import _attach_turn_stats
 from kiro_crew.dashboard.handlers import usage
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -143,27 +147,6 @@ class TestAttachTurnStats:
         assert "turn_stats" not in slot.messages[0].get("meta", {})
         assert slot.messages[1]["meta"]["turn_stats"]["credits"] == 0.5
 
-    def test_reply_mids_skips_a_row_another_writer_appended(self):
-        # A workflow result lands after this turn's reply: with reply_mids the
-        # stats stay on the reply the runner appended.
-        from kiro_crew.dashboard.state import row_mid
-
-        slot = _ChatSlot("test-reply-mids")
-        reply = slot.append("assistant", "this turn", "msg msg-a", broadcast=False)
-        slot.append("assistant", "workflow result", "msg msg-a", broadcast=False)
-        _attach_owned_turn_stats(
-            slot,
-            3000,
-            0.5,
-            0.0,
-            turn_boundary=0,
-            model="",
-            ttft_ms=0,
-            reply_mids=[row_mid(reply)],
-        )
-        assert slot.messages[0]["meta"]["turn_stats"]["credits"] == 0.5
-        assert "turn_stats" not in slot.messages[1].get("meta", {})
-
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
         # Regression (Codex MEDIUM): a clear-conversation turn empties
         # slot.messages then appends a "Conversation cleared" confirmation.
@@ -198,6 +181,49 @@ class TestAttachTurnStats:
         meta = slot.messages[-1]["meta"]
         assert meta["file_changes"] == [{"path": "/tmp/x"}]
         assert meta["turn_stats"]["elapsed_ms"] == 2000
+
+    def test_lands_on_the_recorded_reply_not_a_row_another_writer_appended(self):
+        # A workflow completion is appended into the shared window by another
+        # writer after this turn's reply: newer, assistant-role, and not the reply.
+        from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
+
+        slot = _ChatSlot("test-recorded-reply")
+        slot.append("user", "hello", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        start = chat_runner.row_mid(slot.messages[-1])
+        reply = slot.append("assistant", "this turn", "msg msg-a", broadcast=False)
+        _note_reply_row(slot, reply)
+        slot.append("assistant", "[Workflow completion event]", "msg msg-a", broadcast=False)
+
+        assert _attach_turn_stats(
+            slot, 3000, 0.5, 0.0, turn_boundary=boundary, turn_start_mid=start
+        )
+        assert reply["meta"]["turn_stats"]["credits"] == 0.5
+        assert "turn_stats" not in slot.messages[-1].get("meta", {})
+
+    def test_a_turn_that_recorded_no_reply_keeps_the_position_rule(self):
+        # A slash command's confirmation is appended as a plain assistant row,
+        # never recorded as a reply: the newest assistant row of the turn takes
+        # the stats, as before.
+        slot = _ChatSlot("test-unrecorded-reply")
+        slot.append("user", "/clear", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a", broadcast=False)
+
+        assert _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=boundary)
+        assert slot.messages[-1]["meta"]["turn_stats"]["credits"] == 0.5
+
+    def test_passes_over_a_system_notice_after_the_reply(self):
+        slot = _ChatSlot("test-notice-after-reply")
+        boundary = len(slot.messages)
+        slot.append("assistant", "the reply", "msg msg-a", broadcast=False)
+        slot.append(
+            "assistant", "notice", "msg msg-a", meta={"kind": "compaction"}, broadcast=False
+        )
+
+        assert _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=boundary)
+        assert slot.messages[-2]["meta"]["turn_stats"]["credits"] == 0.5
+        assert "turn_stats" not in slot.messages[-1]["meta"]
 
 
 class TestTurnStatsTtft:
@@ -354,3 +380,145 @@ async def test_recovery_turn_without_a_carried_clock_stores_no_ttft(tmp_path, mo
     ]
     assert stats, "the turn attached no stats"
     assert "ttft_ms" not in stats[-1]
+
+
+# ── Which row carries the figures ─────────────────────────────────────────────
+#
+# The page reads ``meta["turn_stats"]`` on a reply as the end of its turn
+# (``isTurnEnd``, ``answerEndIndex``, ``findResumedReplyRows``; see
+# docs/system-specs/modules/turn-stats-footer.md), so a writer that stamps a row
+# other than the turn's last reply moves the answer's end and the fold to that
+# row. The scan below reads every ``X["turn_stats"] = ...`` in the backend and
+# requires ``X`` to come from one of the two selectors. A ``{"turn_stats": ...}``
+# built anywhere else is listed here with the reason it is not such a write, so
+# a new one fails by name until it is traced.
+
+_TURN_STATS_ROW_SELECTORS = frozenset({"_completed_reply_row", "_last_reply_row"})
+
+_TURN_STATS_KEY_BUILDERS_OK = frozenset(
+    {
+        # The live patch frame, keyed on the stamped row's mid: a payload, not a row.
+        ("dashboard/chat_turn/turn_stats.py", "_broadcast_turn_stats"),
+        # A cron run's result row is appended with the run's own figures: the row it
+        # creates is that run's reply, so the stamp sits on the row that ends it.
+        ("dashboard/cron_inject.py", "inject_cron_result_to_dashboard"),
+    }
+)
+
+
+def _base_name(node: ast.AST) -> str | None:
+    """The local name a subscript / attribute / call chain starts from."""
+    while not isinstance(node, ast.Name):
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return None
+    return node.id
+
+
+def _row_selector(fn: ast.AST, name: str, hops: int = 3) -> str | None:
+    """The selector ``name`` is bound from in ``fn``, through aliases, or ``None``."""
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not (isinstance(target, ast.Name) and target.id == name):
+            continue
+        value = node.value
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            if value.func.id in _TURN_STATS_ROW_SELECTORS:
+                return value.func.id
+        alias = _base_name(value)
+        if alias and alias != name and hops:
+            chosen = _row_selector(fn, alias, hops - 1)
+            if chosen:
+                return chosen
+    return None
+
+
+def _turn_stats_writes(tree: ast.Module) -> tuple[list[tuple[str, int, str | None]], list[str]]:
+    """``(writes, builders)`` of one module.
+
+    A write is ``X["turn_stats"] = ...``: (enclosing function, line, the selector
+    ``X`` was bound from, or ``None``). A builder is a function holding a
+    ``{"turn_stats": ...}`` literal.
+    """
+    writes: list[tuple[str, int, str | None]] = []
+    builders: list[str] = []
+
+    def visit(node: ast.AST, fn: ast.AST | None) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fn = node
+        where = fn.name if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<module>"
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if not (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "turn_stats"
+                ):
+                    continue
+                row = _base_name(target.value)
+                chosen = _row_selector(fn, row) if fn is not None and row else None
+                writes.append((where, node.lineno, chosen))
+        if isinstance(node, ast.Dict) and any(
+            isinstance(key, ast.Constant) and key.value == "turn_stats" for key in node.keys
+        ):
+            builders.append(where)
+        for child in ast.iter_child_nodes(node):
+            visit(child, fn)
+
+    visit(tree, None)
+    return writes, builders
+
+
+def test_turn_stats_lands_only_on_the_row_the_two_selectors_chose() -> None:
+    root = Path(kiro_crew.__file__).resolve().parent
+    writes: list[tuple[str, str, int, str | None]] = []
+    builders: set[tuple[str, str]] = set()
+    for path in sorted(root.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "turn_stats" not in text:
+            continue
+        rel = path.relative_to(root).as_posix()
+        found, built = _turn_stats_writes(ast.parse(text))
+        writes.extend((rel, *write) for write in found)
+        builders.update((rel, name) for name in built)
+
+    unselected = [write for write in writes if write[3] is None]
+    assert not unselected, f"turn_stats written onto a row no selector chose: {unselected}"
+    # Both selectors are in use: the completed turn's stamp and the abnormal end's.
+    assert {write[3] for write in writes} == set(_TURN_STATS_ROW_SELECTORS), writes
+    assert builders == _TURN_STATS_KEY_BUILDERS_OK
+
+
+def test_the_turn_stats_write_scan_reads_each_shape_it_claims() -> None:
+    source = textwrap.dedent("""
+        def stamps_the_row_a_selector_chose(slot):
+            row = _completed_reply_row(slot, 0, None)
+            row.setdefault("meta", {})["turn_stats"] = {"elapsed_ms": 1}
+
+        def stamps_through_an_alias(slot):
+            row = None
+            row = _last_reply_row(slot, 0, None)
+            meta = row.setdefault("meta", {})
+            meta["turn_stats"] = {"elapsed_ms": 1}
+
+        def stamps_the_newest_row(slot):
+            row = slot.messages[-1]
+            row["meta"]["turn_stats"] = {"elapsed_ms": 1}
+
+        def builds_a_frame(stats):
+            return {"meta": {"turn_stats": stats}}
+        """)
+
+    writes, builders = _turn_stats_writes(ast.parse(source))
+
+    assert [(where, chosen) for where, _line, chosen in writes] == [
+        ("stamps_the_row_a_selector_chose", "_completed_reply_row"),
+        ("stamps_through_an_alias", "_last_reply_row"),
+        ("stamps_the_newest_row", None),
+    ]
+    assert builders == ["builds_a_frame"]

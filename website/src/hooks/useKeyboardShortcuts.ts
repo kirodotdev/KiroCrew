@@ -251,8 +251,14 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'chat-8': 'hooks.useKeyboardShortcuts.jump_to_chat',
   'chat-9': 'hooks.useKeyboardShortcuts.jump_to_chat',
   'chat-letters': 'hooks.useKeyboardShortcuts.jump_to_chat_letters',
-  'chat-prev': 'hooks.useKeyboardShortcuts.previous_chat',
-  'chat-next': 'hooks.useKeyboardShortcuts.next_chat',
+  // The Alt+arrow rows name their focus rule: the handler leaves those chords
+  // to a focused text field (word-jump / paragraph movement on macOS), so
+  // without it the list advertises a chord that silently does nothing in the
+  // composer. The bracket chat rows below are the twin that works while
+  // typing, and keep the plain label; turn-prev/turn-next carry the rule in
+  // their own (unshared) catalog values.
+  'chat-prev': 'hooks.useKeyboardShortcuts.previous_chat_outside_text_fields',
+  'chat-next': 'hooks.useKeyboardShortcuts.next_chat_outside_text_fields',
   'chat-prev-bracket': 'hooks.useKeyboardShortcuts.previous_chat',
   'chat-next-bracket': 'hooks.useKeyboardShortcuts.next_chat',
   'chat-mru': 'hooks.useKeyboardShortcuts.last_visited_chat_mru',

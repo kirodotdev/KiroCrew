@@ -1620,8 +1620,8 @@ installer would add a second copy.
 
 ## Client Port Resolution
 
-`kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
-the gateway is actually bound to. `port_resolution.resolve_client_port()`
+`kirocrew token` / `status` / `logout` / `stop` / `restart` / `spawn` /
+`artifact` must find the port the gateway is actually bound to. `port_resolution.resolve_client_port()`
 (re-exported by `cli_server`) resolves it
 in this order, first hit wins. The MCP stdio servers (`mcp_core` /
 `mcp_computer`) resolve their gateway API base through the same helper —

@@ -23,6 +23,8 @@ from kiro_crew.cron import (
     CronStoreUnreadable,
     _job_tz,
     _RunClaim,
+    apply_job_update,
+    build_job,
     compute_next_run_ts,
     cron_expr_matches,
     validate_cron_expr,
@@ -76,6 +78,27 @@ class TestValidateCronExpr:
         assert not validate_cron_expr("bad")
         assert not validate_cron_expr("* * *")
         assert not validate_cron_expr("")
+
+    def test_alias_valid(self) -> None:
+        assert validate_cron_expr("@daily")
+        assert validate_cron_expr("@yearly")
+        assert validate_cron_expr("@midnight")
+
+    def test_seconds_field_rejected(self) -> None:
+        # Six fields: croniter reads one, but is_due never fires a job twice
+        # in the same UTC minute, so the second run the expression advertises
+        # would never happen.
+        assert not validate_cron_expr("* * * * * *")
+        assert not validate_cron_expr("0 0 * * * *")
+
+    def test_seconds_expr_refused_at_create_and_update(self) -> None:
+        # The writers funnel through validate_cron_expr (fields.py); both
+        # creation and update must refuse the shape the scheduler cannot run.
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            build_job(name="t", message="m", cron_expr="* * * * * *")
+        job = build_job(name="t", message="m", cron_expr="*/5 * * * *")
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            apply_job_update(job, {"cron_expr": "* * * * * *"}, None)
 
 
 class TestCronService:

@@ -876,6 +876,36 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     expect(await within(dialog).findByTestId('next-general-model')).toBeInTheDocument()
     await waitFor(() => expect(mockApi.agentResolvedModel).toHaveBeenCalled())
   })
+
+  it('names the resolved fallback when a foreign pin is unserved', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, model: 'claude-fable-5' }], default_agent: 'kirocrew',
+    })
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'openai.gpt-5.6-terra', pinned: true, kiro_agent: 'oncall-agent', reasoning_effort: '', effort_pinned: false,
+      models_backend: 'codex', pin_served_as: '',
+    })
+    const dialog = await openNew()
+    const readout = await within(dialog).findByText(/Using openai\.gpt-5\.6-terra/)
+    expect(within(dialog).queryByTestId('next-model-pin-unserved')).toBeNull()
+    expect(readout.parentElement).toHaveTextContent('taken from the custom agent it is built from.')
+    expect(readout.parentElement).not.toHaveTextContent('chosen for this mate.')
+  })
+
+  it('does not claim a stored pin is in use when its harness serves it under no id', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, model: 'claude-opus-5.5' }], default_agent: 'kirocrew',
+    })
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5.5', pinned: true, kiro_agent: 'oncall-agent', reasoning_effort: '', effort_pinned: false,
+      models_backend: 'codex', pin_served_as: '',
+    })
+    const dialog = await openNew()
+    const readout = await within(dialog).findByTestId('next-model-pin-unserved')
+    // The session leaves the pin unsent and stays on the harness's default model.
+    expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this mate's sessions run on .+'s default model instead/)
+    expect(within(dialog).queryByText(/Using claude-opus-5\.5/)).toBeNull()
+  })
 })
 
 describe('CrewEditorNextDialog — General edits, footer, danger', () => {

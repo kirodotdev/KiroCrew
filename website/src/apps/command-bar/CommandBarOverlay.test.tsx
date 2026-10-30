@@ -8,6 +8,7 @@ import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegis
 import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsSubtitle, settingsTabLabel } from '../../components/commandPalette/settingsTabLabel'
 import CommandBarOverlay from './CommandBarOverlay'
+import { crewModePreviewOn } from '../../test/crewModePreview'
 
 /**
  * Row-level behaviour of the launcher: what a row DOES when activated, and what the
@@ -1561,3 +1562,6 @@ describe('Crew Mode workers stay out of the Command Bar (edge review R1 X3)', ()
     expect(row?.textContent).toContain('Approve')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

@@ -1036,6 +1036,22 @@ def _default_session_folder_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _feature_previews(value: object, default: dict) -> dict:
+    """``dashboard.feature_previews`` as ``{name: bool}`` over the known preview names.
+
+    A non-object reads as *default* (nothing on). Inside it, a name this build does
+    not know and a value that is not a literal ``true``/``false`` are dropped, so a
+    hand-edited ``"yes"`` or ``1`` reads as absent (off) rather than as on.
+    """
+    if not isinstance(value, dict):
+        return default
+    return {
+        name: flag
+        for name, flag in value.items()
+        if name in _sections.FEATURE_PREVIEW_FLAGS and isinstance(flag, bool)
+    }
+
+
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
     section = _sections.SectionReader(DashboardConfig, dashboard_data)
     gitlab_hosts = _coerce_gitlab_hosts(section.get("gitlab_hosts"))
@@ -1058,6 +1074,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         restore_sessions=section.get("restore_sessions"),
         crewmate_threads=section.read("crewmate_threads", _safe_bool),
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
+        feature_previews=section.read("feature_previews", _feature_previews),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(

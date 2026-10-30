@@ -30,6 +30,7 @@ from aiohttp import web
 from kiro_crew import crew_mode
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
+from kiro_crew.dashboard.slot_projection import summary_rows
 
 logger = logging.getLogger(__name__)
 
@@ -311,12 +312,50 @@ def _one_line(text: str) -> str:
     return ""
 
 
-def _worker_line(row: Mapping[str, Any], ledger_line: str) -> str:
-    """What a worker card says under its title: its task line, else its last reply."""
+#: How a message another session delivered opens (``session_messaging``): the
+#: relay's provenance line, or the server's defanged copy of a forged one.
+_SEED_PREFIXES = ("[sent by session ", "[quoted: sent by session ")
+
+
+def _is_seed(text: str) -> bool:
+    return text.lstrip().startswith(_SEED_PREFIXES)
+
+
+def _last_reply(slot: Any) -> str:
+    """The newest assistant line in *slot*'s transcript, ``""`` when it has none.
+
+    The live window holds raw content, so the line goes through the same display
+    redaction as the sidebar preview: its first line, markdown stripped, then
+    redacted.
+    """
+    # circular import: chat_utils_display imports dashboard.state.
+    from kiro_crew.dashboard.chat_utils_display import _redacted_preview
+
+    for message in reversed(summary_rows(slot) if slot is not None else []):
+        if isinstance(message, Mapping) and message.get("role") == "assistant":
+            text = message.get("content")
+            if isinstance(text, str) and text.strip():
+                # The whole first line: _redacted_preview strips markdown,
+                # redacts, and only then cuts, so a cut never splits a secret.
+                first = next(line for line in text.splitlines() if line.strip())
+                return _redacted_preview(first.strip(), WORKER_LINE_MAX)
+    return ""
+
+
+def _worker_line(row: Mapping[str, Any], ledger_line: str, slot: Any = None) -> str:
+    """What a worker card says under its title: its task line, else its last reply.
+
+    A message another session delivered (its seed or a steer) is not the worker's
+    own line, so its newest assistant line stands in for it.
+    """
     if ledger_line:
         return ledger_line
     last = row.get("last_message")
-    return _one_line(last) if isinstance(last, str) else ""
+    if not isinstance(last, str):
+        return ""
+    if _is_seed(last):
+        return _last_reply(slot)
+    return _one_line(last)
 
 
 async def api_crew_workers(request: web.Request) -> web.Response:
@@ -342,6 +381,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
         _crew_ledger_items, root, [*(str(row.get("key")) for row in live), *closed]
     )
     workers: list[dict[str, Any]] = []
+    get_slot = getattr(state, "get_slot", None)
     for row in live:
         key = str(row.get("key"))
         status = _status(row)
@@ -356,7 +396,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "group": _group(status, facts.progress),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
-                "summary": _worker_line(row, line),
+                "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
                 "created_by": str(row.get("created_by") or ""),
                 "dispatched_by": str(row.get(crew_mode.DISPATCHER_FIELD) or ""),
                 "approval": _approval_of(row),

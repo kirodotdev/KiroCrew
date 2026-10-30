@@ -7,9 +7,14 @@ _subagent_done routes cron-spawned subagent results via session injection.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.session_map import SessionMap
@@ -104,6 +109,7 @@ def _use_real_slots(gateway) -> dict:
     def get_or_create_slot(name=None, agent="", origin=""):
         if name not in slots:
             slot = MagicMock()
+            open_idle_tab(slot)
             slot.key = name
             slot.linked_session_key = ""
             slot.messages = []
@@ -550,6 +556,7 @@ class TestDashboardInjectionRoutesRunChat:
         """Idle slot triggers _run_chat with the announce message."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-123"
         slot.task = None
@@ -561,7 +568,7 @@ class TestDashboardInjectionRoutesRunChat:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock),
             p1, p2,
         ):
             await subagent_done(info)
@@ -593,10 +600,13 @@ class TestDashboardInjectionRoutesRunChat:
 
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         _done_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         _done_future.set_result(None)
-        # First access: True (enters busy branch), second access: False (re-check passes)
-        type(slot).running = PropertyMock(side_effect=[True, False])
+        # First access: True (enters busy branch), then False (the re-checks pass)
+        type(slot).running = PropertyMock(
+            side_effect=itertools.chain([True], itertools.repeat(False))
+        )
         slot.task = _done_future
         slot.key = "chat-1-busy"
         gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -608,7 +618,7 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         _mock_run_chat = AsyncMock(return_value=None)
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)
@@ -621,6 +631,7 @@ class TestDashboardInjectionRoutesRunChat:
         """If busy slot doesn't finish within timeout, result is queued."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = True  # stays busy even after timeout
         _stuck = asyncio.get_running_loop().create_future()
         slot.task = _stuck
@@ -650,6 +661,7 @@ class TestDashboardInjectionRoutesRunChat:
         """_on_inject_done calls notify_injection_failed with redacted reason."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-err"
         slot.task = None
@@ -663,7 +675,7 @@ class TestDashboardInjectionRoutesRunChat:
         _mock_run_chat = AsyncMock(side_effect=RuntimeError("provider crashed"))
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)

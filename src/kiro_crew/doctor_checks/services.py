@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -158,6 +159,193 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
+
+
+#: Seconds ``kiro-cli-chat --version`` may take. A local read of a resolved
+#: binary, so it gets the same short leash as the ``kiro-cli --version`` row.
+_CHAT_DELEGATE_PROBE_TIMEOUT_SECS = 5
+
+#: The one remedy for a chat delegate that will not launch. Every observed case
+#: (a ``~/.local/bin/kiro-cli-chat`` link left pointing at a removed release, a
+#: partial upgrade) was fixed by reinstalling, and nothing Crew can change helps.
+CHAT_DELEGATE_BROKEN_FIX = "reinstall Kiro CLI (rerun its installer), then rerun kirocrew doctor"
+
+
+def _chat_delegate_target(kiro: str) -> str | None:
+    """The ``kiro-cli-chat`` a session started through *kiro* will exec, or ``None``.
+
+    ``kiro-cli --version`` is answered by the launcher itself, so it passes while
+    the chat binary every session actually runs cannot start (the field report:
+    ``failed to launch kiro-cli-chat``, surfaced as ``process exited (rc=None)``).
+    The launcher finds the chat binary in ``$HOME/.local/bin`` and then on
+    ``PATH``, never in its own directory (see ``kiro_cli.BUNDLED_KIRO_CLI_ENTRY``),
+    so this looks in the same two places in the same order. A path that merely
+    EXISTS as a link counts -- a dangling link is the broken install this check
+    is for, and ``os.path.lexists`` keeps it in view where a PATH lookup would
+    skip past it to a different copy the launcher never reaches.
+
+    The exception is a macOS launcher inside ``Kiro CLI.app/Contents/MacOS``: it
+    finds ``.app/Contents/MacOS/`` in its own path and execs the chat binary
+    beside it (``kiro_prerequisite_candidate``), so that sibling is the target.
+
+    *kiro* already named ``kiro-cli-chat`` (the desktop bundle, or an operator's
+    ``KIROCREW_KIRO_BIN``) is probed as itself. Any other name is a wrapper whose
+    delegate is unknown, and Windows ships one self-contained ``kiro-cli.exe``;
+    both return ``None`` so the row stays silent rather than guessing. A
+    ``kiro-cli`` launcher with no chat binary anywhere returns ``""``: that
+    launcher fails every ``chat``/``acp`` start, so the caller reports it broken.
+    """
+    if sys.platform == "win32" or not kiro:
+        return None
+    name = os.path.basename(kiro)
+    if name == "kiro-cli-chat":
+        return kiro
+    if name != "kiro-cli":
+        return None
+    launcher_dir = os.path.dirname(kiro)
+    if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
+        return os.path.join(launcher_dir, "kiro-cli-chat")
+    local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
+    if os.path.lexists(local_chat):
+        return local_chat
+    # Sessions launch with the augmented search path (``acp.launch`` sets it on
+    # the spawn env), so the fallback searches that path too: a delegate in
+    # ``/usr/local/bin`` is found by sessions even when doctor's own shell
+    # leaves it off ``PATH``. Read at call time: a doctor family binds no
+    # project name at module scope.
+    from kiro_crew import env
+
+    search_path = env.augmented_path(os.environ.get("PATH", ""))
+    return shutil.which("kiro-cli-chat", path=search_path) or ""
+
+
+def kas_relay_entry(kiro: str | None) -> str | None:
+    """The ``kiro-cli-chat`` a relay KAS spawn execs in place of *kiro*, or ``None``.
+
+    Mirrors the swap in ``KasHarness.resolve_spawn``: when Crew's vault holds a
+    usable identity, the relay enters through the ``kiro-cli-chat`` beside the
+    resolved launcher (:func:`kiro_cli.chat_sibling`) rather than through the
+    launcher, so the launcher's ``~/.local/bin`` delegate is not on that path.
+    ``None`` whenever the spawn keeps the launcher: no usable vault identity,
+    the operator's own ``KIROCREW_KIRO_BIN`` (never swapped), or no executable
+    sibling. A plain read of the vault and a ``stat``; never raises.
+    """
+    if not kiro:
+        return None
+    try:
+        # Local imports: the vault reader pulls in cryptography, which the rest
+        # of doctor's import graph does not need. The override rule is the
+        # harness's own, so the two cannot drift.
+        from kiro_crew.agent_sdk.kas_bundle import kas_operator_override
+        from kiro_crew.auth.bridge import vault_holds_identity
+        from kiro_crew.kiro_cli import chat_sibling
+
+        if kas_operator_override(kiro, os.environ):
+            return None
+        sibling = chat_sibling(kiro)
+        if not sibling or not vault_holds_identity(warn=False):
+            return None
+    except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
+        return None
+    return sibling
+
+
+def _probe_chat_binary(probe: str) -> tuple[str | None, str]:
+    """Run ``<probe> --version``: ``(None, version)`` when it launches, else ``(reason, "")``."""
+    if not probe:
+        return "no kiro-cli-chat in ~/.local/bin or on PATH", ""
+    try:
+        result = subprocess.run(
+            [probe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CHAT_DELEGATE_PROBE_TIMEOUT_SECS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"{probe} --version did not answer in {_CHAT_DELEGATE_PROBE_TIMEOUT_SECS}s", ""
+    except OSError as exc:
+        # A dangling link lands here as FileNotFoundError: the link exists, the
+        # release it points at was removed.
+        return f"{probe} cannot be launched ({exc.strerror or type(exc).__name__})", ""
+    if result.returncode != 0:
+        return f"{probe} --version exited {result.returncode}", ""
+    return None, (result.stdout or result.stderr).strip()
+
+
+def _doctor_kiro_chat_delegate(
+    kiro: str | None,
+    issues: list[str],
+    *,
+    required: bool,
+    relay_entry: str | None = None,
+    kiro_role: bool = False,
+) -> None:
+    """Run ``kiro-cli-chat --version`` and report it when it cannot launch.
+
+    *required* is whether the harness selected for either role (the main
+    backend or the crewmate backend) spawns kiro-cli at all. When one does, a
+    broken delegate fails every session on that role, so it is appended to ``issues``
+    and doctor exits non-zero. When it does not (Claude, a KAS bundle, any other
+    harness), the same failure is printed as advisory and left out of
+    ``issues``, like the ``kiro-cli --version`` row: failing doctor over an
+    unused backend would make a working host red. Silent when there is no
+    kiro-cli, on Windows, and for a wrapper whose delegate cannot be named
+    (:func:`_chat_delegate_target`).
+
+    *relay_entry* is the binary relay KAS sessions exec when Crew's vault signs
+    them in (:func:`kas_relay_entry`), passed whenever relay KAS is selected for
+    either role. *kiro_role* is whether the Kiro CLI backend is selected too.
+    Each binary a selected role runs is probed on its own: the launcher's
+    delegate when *kiro_role* is set or there is no *relay_entry*, and
+    *relay_entry* whenever it is given. Any of those failing is fatal, so a
+    healthy delegate never hides a broken relay entry. A broken delegate that
+    no selected role runs (relay KAS alone, entering through a working
+    *relay_entry*) is reported as advisory, since only the launcher's own
+    non-session paths still reach it.
+    """
+    if not kiro:
+        return
+    target = _chat_delegate_target(kiro)
+    if target is None:
+        return
+    relay = relay_entry if required and relay_entry else None
+    delegate_reason, version = _probe_chat_binary(target)
+    relay_reason: str | None = None
+    if relay and relay != target:
+        relay_reason, relay_version = _probe_chat_binary(relay)
+        version = version or relay_version
+    elif relay:
+        relay_reason = delegate_reason
+    delegate_needed = required and (relay is None or kiro_role)
+    fatal = [r for r in (delegate_reason if delegate_needed else None, relay_reason) if r]
+    if fatal:
+        print(f"  kiro-cli-chat: ❌ Kiro CLI is broken: {'; '.join(fatal)}")
+        print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+        issues.append("Kiro CLI is broken (kiro-cli-chat will not launch): reinstall Kiro CLI")
+        return
+    reason = delegate_reason
+    if reason is None:
+        print(f"  kiro-cli-chat: ✅ {version or target}")
+        return
+    if relay:
+        print(
+            f"  kiro-cli-chat: ⚠️  Kiro CLI is broken: {reason} (sessions signed in "
+            f"through Kiro Crew launch {relay}, which works)"
+        )
+        print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+        return
+    if not required:
+        print(
+            f"  kiro-cli-chat: ⚠️  Kiro CLI is broken: {reason} (not used by the selected backends)"
+        )
+        print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+        return
+    print(f"  kiro-cli-chat: ❌ Kiro CLI is broken: {reason}")
+    print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+    issues.append("Kiro CLI is broken (kiro-cli-chat will not launch): reinstall Kiro CLI")
 
 
 class DashboardBinding(NamedTuple):

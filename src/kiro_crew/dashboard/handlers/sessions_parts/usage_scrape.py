@@ -202,7 +202,13 @@ def _normalize_text_usage(parsed: dict[str, object]) -> dict[str, object]:
     return out
 
 
-def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bool:
+def _same_identity(
+    cached: dict[str, object],
+    identity: dict[str, object],
+    *,
+    cached_user_id: str | None = None,
+    user_id: str | None = None,
+) -> bool:
     """True only when ``cached`` provably belongs to the current ``identity``.
 
     Matches on BOTH the account email AND the SSO ``start_url`` (the IAM
@@ -218,6 +224,13 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
     B's refresh) from keeping A's usage AND A's email on screen — including the
     same-email-different-org case — without it, preserving the prior cache would
     leak the previous account's data.
+
+    Two users of ONE Identity Center org can still match on both fields, so the
+    IdC userId decides as well: ``cached_user_id`` is the one the cached reading
+    was published for, ``user_id`` the one kiro-cli's own store holds now (both
+    from :attr:`kiro_usage_api.UsageResult.user_id`). When both are non-empty
+    they must be equal. When either side has none, email and ``start_url``
+    decide alone, as before: kiro-cli's store does not always carry a userId.
     """
 
     def _red(v: object) -> object:
@@ -228,6 +241,8 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
         b = _red(identity.get(key))
         if not (isinstance(a, str) and isinstance(b, str) and a and a == b):
             return False
+    if cached_user_id and user_id and cached_user_id != user_id:
+        return False
     return True
 
 
@@ -312,7 +327,12 @@ def _account_type_only(identity: dict[str, object]) -> bool:
 
 
 def _text_scrape_regresses_api_value(
-    prev: object, new: dict[str, object], identity: dict[str, object]
+    prev: object,
+    new: dict[str, object],
+    identity: dict[str, object],
+    *,
+    prev_user_id: str | None = None,
+    user_id: str | None = None,
 ) -> bool:
     """True when a fresh text-scrape would clobber a richer API-sourced value.
 
@@ -338,7 +358,7 @@ def _text_scrape_regresses_api_value(
     """
     if not isinstance(prev, dict) or prev.get("source") != "api":
         return False
-    if not _same_identity(prev, identity):
+    if not _same_identity(prev, identity, cached_user_id=prev_user_id, user_id=user_id):
         return False
     # Preserve ONLY within the same, provable billing cycle: both reset dates
     # must be present, non-empty, and equal. A missing date on either side

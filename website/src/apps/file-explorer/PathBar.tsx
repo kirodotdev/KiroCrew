@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FolderTree, Folder, File, GitBranch } from 'lucide-react'
+import { FolderTree, Folder, File, GitBranch, RefreshCw } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import { fileExplorerApi } from './api'
 import { crumbLabel, parentChain } from './utils'
@@ -15,9 +15,11 @@ interface PathBarProps {
   gitInfo: GitInfo | null
   onChangeRoot: (path: string) => void
   onNavigate: (path: string) => void
+  /** Re-read the folder from disk: the tree is cached until asked. */
+  onRefresh: () => void
 }
 
-export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }: PathBarProps) {
+export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate, onRefresh }: PathBarProps) {
   const ime = useImeGuard()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(rootPath)
@@ -139,6 +141,15 @@ export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }:
             )}
           </span>
         )}
+        <button
+          type="button"
+          className="mc-fe-iconbtn"
+          onClick={onRefresh}
+          title={i18nT('apps.fileExplorer.pathBar.refresh_folder')}
+          aria-label={i18nT('apps.fileExplorer.pathBar.refresh_folder')}
+        >
+          <RefreshCw size={12} aria-hidden="true" />
+        </button>
       </div>
     </div>
   )

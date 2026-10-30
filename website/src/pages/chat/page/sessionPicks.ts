@@ -22,6 +22,25 @@ interface ModelPickerModelsOptions {
   slots: ChatSlot[]
   activeSlot: string | null
   effectiveModels: ModelInfo[]
+  /** The active slot's selection-capabilities read, from {@link useSlotSelectionCapabilitiesQuery}. */
+  selectionCapabilitiesQ: ReturnType<typeof useSlotSelectionCapabilitiesQuery>
+}
+
+/**
+ * The active slot's ACP selection capabilities. Read before the rosters, because
+ * its `models_backend` decides which harness's model list the pickers offer.
+ */
+export function useSlotSelectionCapabilitiesQuery(activeSlot: string | null) {
+  return useQuery({
+    queryKey: ['slot-selection-capabilities', activeSlot],
+    queryFn: () => api.chatSlotSelectionCapabilities(activeSlot!),
+    enabled: !!activeSlot && typeof api.chatSlotSelectionCapabilities === 'function',
+    // A new ACP session may not exist when its slot first appears. Recheck
+    // until the agent reports its config options, then refresh less often.
+    // A missing/non-ACP peer can remain unknown indefinitely. Probe quickly
+    // during session startup, then back off instead of proxying every 2s.
+    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
+  })
 }
 
 /**
@@ -32,18 +51,8 @@ interface ModelPickerModelsOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useModelPickerModels({
-  slots, activeSlot, effectiveModels,
+  slots, activeSlot, effectiveModels, selectionCapabilitiesQ,
 }: ModelPickerModelsOptions) {
-  const selectionCapabilitiesQ = useQuery({
-    queryKey: ['slot-selection-capabilities', activeSlot],
-    queryFn: () => api.chatSlotSelectionCapabilities(activeSlot!),
-    enabled: !!activeSlot && typeof api.chatSlotSelectionCapabilities === 'function',
-    // A new ACP session may not exist when its slot first appears. Recheck
-    // until the agent reports its config options, then refresh less often.
-    // A missing/non-ACP peer can remain unknown indefinitely. Probe quickly
-    // during session startup, then back off instead of proxying every 2s.
-    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
-  })
   const selectionCapabilities = selectionCapabilitiesQ.data?.known
     ? selectionCapabilitiesQ.data
     : undefined
@@ -215,6 +224,9 @@ export function useSessionChoices({
       // depend on the coalesced slots rebroadcast to see its own pick.
       // performAgentSlotSwitch mirrors exactly what the response names.
       await performAgentSlotSwitch(activeSlot, agentName, dispatch, kind)
+      // The cold effort answer was judged on the previous crew's model; without
+      // this it holds until the next poll, up to 30 s once the poll backs off.
+      void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
     } catch (error) {
       // Closing the picker is the call sites' job and already happens
       // synchronously alongside this call, so a failure surfaces as the shared
@@ -222,11 +234,11 @@ export function useSessionChoices({
       dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agentName)))
     }
     // The setPending* setters are useState setters, so they are stable and cost
-    // nothing to list. `installedAgents`, `provider` and `queryClient` are
-    // deliberately absent: this body reads none of them, and `installedAgents` is
+    // nothing to list, as is `queryClient`. `installedAgents` and `provider` are
+    // deliberately absent: this body reads neither, and `installedAgents` is
     // a fresh array on every agents refetch, so naming it would rebuild the
     // callback — and every picker holding it — for no behavioral gain.
-  }, [activeSlot, dispatch, setPendingAgent, setPendingModel])
+  }, [activeSlot, dispatch, queryClient, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
     // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
     // provider behaviour server-side, but '' is also the "never chosen" state,

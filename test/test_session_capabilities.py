@@ -1479,6 +1479,7 @@ async def test_the_member_confirmation_covers_only_a_live_member_session(
     client._confirm_member_projection = MagicMock()
     await client.confirm_member_projection()
     assert client._confirm_member_projection.called is confirms
+    assert client._confirmed_capability_session == (session_id if confirms else "")
 
 
 @pytest.mark.asyncio
@@ -1532,10 +1533,12 @@ async def test_a_confirmed_session_is_not_judged_again(tmp_path):
     await client.confirm_member_projection()
 
     assert client._confirm_member_projection.call_count == 1
+    assert client._confirmed_capability_session == "claude-live"
     # A new session is judged afresh.
     client._session_id = "claude-next"
     await client.confirm_member_projection()
     assert client._confirm_member_projection.call_count == 2
+    assert client._confirmed_capability_session == "claude-next"
 
 
 @pytest.mark.asyncio

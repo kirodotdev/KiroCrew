@@ -2225,10 +2225,16 @@ names one REGISTERED kind (`change_card_catalog.KINDS`: `setting.change`,
 `template.update`, `mcp.install`/`.add_custom`/`.toggle`, `connection.connect`,
 `secret.save`, `trust.app`, `denied_command`, `folder.steering`,
 `workflow.save`/`.update`); trust-root files have no kind.
+`template.mcp_server` is not one of them: its server entry is the gateway's own, so
+only `request_server` raises it (see *Asking for an MCP server mid-chat*).
 `setting.change` takes a Settings-registry `setting_id` (found with
 `find_setting(query)`, which returns up to ten matches with `writable`,
 the current value and the allowed values, never a credential value) or a raw
-config `path`. The write target is resolved from data: the dashboard-config
+config `path`. `find_setting` matches a query word at the start of a word in a
+setting's id, label, help or config key, after dropping question words such as
+`how`, `do` and `I` (kept when nothing else is left); a setting ranks by the
+words it holds, a word in its id or label counting three times, and a word found
+on many settings counting for little. The write target is resolved from data: the dashboard-config
 controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
@@ -2285,7 +2291,18 @@ because none of them can change anything: the strict-internal
 a card in the caller's own slot. `search_docs(query? | page, offset?)` on the
 same server is a read of the packaged user docs (`kiro_crew/docs/*.md`, pages
 named from the directory's own listing so no caller string becomes a path; up to
-5 results with 3 matching lines, pages in 12,000-character chunks); it calls no
+5 results with 3 matching lines, pages in 12,000-character chunks). A query is
+matched word by word at the start of a word, after dropping question words such
+as `how`, `do` and `I` (kept when nothing else is left) and one common ending
+(`reminder` finds `reminders` and `remind`, `reply` and `replies` find each other;
+`_` starts a word, so `cycles` finds
+`max_cycles`). A page ranks by the query words it holds, each worth more the
+fewer pages hold it, twice as much in the page name and half again in its
+opening lines, then by how often it says them; a word found on nearly every page
+(`use`, `set`) counts for little. The word itself, with a common ending
+(`updat` + `e`, `automatic` + `ally`), counts full; only the start of a longer
+word (`mode` in `model`, `run` in `runner`) counts half. A tie goes to the
+shorter page name. It calls no
 gateway route, needs no caller identity, and is granted as
 part of `agent._GUIDE_AUTO_GRANTS`; so is `find_ui`, the read of the packaged
 dashboard location index described in
@@ -2431,6 +2448,33 @@ names only (`history.md`, "Card rows"). Every owner
 mutation through the hooked routes, card or manual, appends one names-only line
 to Global memory history.
 
+Every kind shares one card layout (`website/src/cards/ChangeCard.tsx`). The
+header row holds the kind on the left and the card's clock on the right, in the
+same muted 12px text: when it is due for a one-shot reminder, else when it
+expires, worded as what runs out: "Answer within 22h" (`answerWindow`, one
+truncated narrow unit). The kind beside it is not what expires, so the line names
+the answer, and it carries no second sentence. A narrow card wraps the clock under the kind; it never sits alone under
+the title. The change rows, the scope, the kind's own body and the proposer's
+reason are rows of ONE label | value grid (`kindBodies.CardRow`), so the reason
+uses the same label column and divider as Goal or Affects. Its label names the
+card's proposer, read from the card rather than the page showing it: a card whose
+`slot_key` is a crewmate's own chat (the roster row bound to that slot) reads
+"<display name>'s reason" (`cardAuthor.cardProposer`, `{{name}}'s reason` in each
+catalog); a card from the main assistant, or one whose roster row is not loaded
+yet, keeps the page's author, "Kiro Crew" outside a crewmate chat. The Affects row is
+left out when it would only repeat the title: the gateway marks its one member as
+the card's own subject (`scope.only_this_member`) and the title names that member
+(`cardRegistry.scopeRepeatsTitle`). An unmarked scope (a template's users, whose
+name can equal the template's) or one reaching more members keeps its row. A
+failed read of the crewmate list shows an inline notice under the card, which
+stays usable with the page's author. A row whose previous
+value is absent or would only print "(empty)" is an add and shows the new value
+alone (`CardChanges.isAddChange`); a real edit shows old → new, and a field that
+names its empty value (an inherited effort) keeps its old side. The decline
+button is a bare verb ("Decline", catalog key `components.changeCards.cancel`)
+unless the kind names its own (`decline` in `cardRegistry`), so it has the same
+short shape as the kind's accept label.
+
 `kiro_crew/change_card_catalog.py` keeps the evidence, undo and result code
 (`extract_evidence`, `build_undo`, `result_summary`) and the manual-change memory
 lines (`describe_manual_change`, `HOOKED_ROUTES`, `MEMORY_ROUTES`), and is a mirror
@@ -2544,6 +2588,8 @@ answers `tools/list` from):
     climbs process ancestors, so a sub-agent would resolve to its parent and
     deliver into the parent's chat window. An unresolvable identity refuses the
     call rather than guessing.
+- **Capability requests:** `request_server` (any template session asks the user
+  for an MCP server it lacks; see *Asking for an MCP server mid-chat*)
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `nothing_to_do`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
@@ -2688,6 +2734,95 @@ matters:
 
 `test_moved_tool_rules_live_in_their_own_descriptions` pins the moved rules to
 their descriptions.
+
+### Asking for an MCP server mid-chat (`request_server`)
+
+A session on any agent template (the default `kirocrew`, a custom or third-party
+agent, the worker, a conductor) asks for a server it lacks with `request_server`
+on `kirocrew-core`, the one server every session carries
+(`mcp_tools/server_request.py`). The user approves one `template.mcp_server`
+change card, and the server is written to the template's additions record
+(`template_mcp_additions`), never into the spec file. A crewmate keeps
+`request_capabilities`, which edits its own file.
+
+- **The agent names a server, never a launch line.** The tool sends
+  `{server?, source, registry_id?, reason?}` and nothing else; the route answers
+  `400 invalid_body` to any other field (a `command`, `url`, `entry`, `template`
+  or session). The gateway builds the entry
+  (`member_capability_catalog.resolve_server`, shared with
+  `request_capabilities`): `source: "gateway"` copies a server this gateway runs
+  and has switched on, `source: "registry"` takes the official registry's
+  install plan. A gateway entry that carries env, headers or credential
+  arguments is refused `carries_settings`, because a card's params reach the
+  agent that asked; such a server is added on the MCP page, where secrets come
+  from the existing store. The entry then passes
+  `template_mcp_additions.validate_entry`, so no `autoApprove`, `allowedTools`
+  or other trust key can ride on it. `propose_change` cannot raise the kind at
+  all (`change_card_catalog.GATEWAY_RESOLVED_KINDS`, `403 use_request_server`),
+  and `list_change_kinds` leaves it out.
+- **The caller and its template come from the attested session.**
+  `POST /api/cards/agent/request-server` sits under the strict `/api/cards/agent`
+  prefix and resolves the caller with `handlers.guide._resolve_agent_caller`;
+  `cards.request_server` is a user-turn operation. A subagent, a schedule or
+  workflow slot, a messaging-channel turn, and any turn the user did not send
+  (a patrol or loop wake, a `session_send`, a subagent's result) are refused
+  with a reason that says what to do instead (`subagent_caller`,
+  `unattended_caller`, `channel_caller`, `not_user_turn`). Unlike the crewmate
+  route there is no own-thread exemption: a card nobody sees is never raised.
+  The template is the caller's execution record's `template_id`; the record
+  folds an alias onto its target on every read and write.
+- **The default agent and the worker are refused, with no card.** The default
+  `kirocrew` agent carries every server installed on the MCP page, and the
+  worker mirrors it (`template_mcp_additions.DEFAULT_TEMPLATES`). The MCP page's
+  add would also approve every tool of the server, so a request from either is
+  refused by `template_mcp_additions.addition_support` (`409 unsupported`, its
+  `DEFAULT_REASON` pointing to the MCP page). The card therefore
+  covers only conductors and third-party agents, where nothing auto-approves.
+- **A harness that cannot apply it is refused with the record's reason.**
+  `template_mcp_additions.addition_support(template, backend)` answers for the
+  caller's backend; a template Crew does not own on a harness that loads its
+  agent off disk (kiro-cli) is refused `409 unsupported` with
+  `UNSUPPORTED_REASON`.
+- **The card lists the whole reach and grants nothing.** Its rows name every
+  template the addition reaches (`template_mcp_additions.addition_reach`: an
+  addition to the goal conductor also reaches its deprecated alias, labelled as
+  its old name) and the crew members built from them; the tool names this
+  gateway last saw the server advertise (`mcp_discovery_probe_state.probe_metadata`),
+  or that they are not known yet; and, as its Affects line, every open session
+  on those templates; whether running
+  sessions pick it up at their next turn (the live gate,
+  `mcp_hot_reload.live_sessions_apply_mcp_live`) or restart; and that it adds
+  no tool approval while existing permissions on the agent still apply
+  (`TEMPLATE_SERVER_TOOLS_NOTE`). The card makes no promise that each tool asks:
+  a harness's own allow rule can approve a tool the card cannot see. An
+  `allowedTools` grant any reached template already holds for that server is
+  named, with its template, on an "Already approved" row. A registry server
+  reads `code_exec`.
+- **Only the owner applies it, and its Undo removes only its own record.** The
+  apply step is `POST /api/agents/detail/{name}/mcp-additions` and the Undo is
+  `DELETE /api/agents/detail/{name}/mcp-additions/{server}?card_id=<card>`, both
+  card-hooked routes that refuse any internal caller `403 owner_only`; the POST
+  also refuses a request with no card (`403 card_required`), so the only entry
+  ever recorded is one a card showed. The Undo calls `remove_addition` with the
+  card id, so a later approval of the same server on another card survives it.
+  The Apply records with `only_if_absent=True` too: a server another card added
+  after this card's own check answers `409 already_added` and is left as it is.
+  Each write rebuilds the agent specs and then applies live or resets sessions,
+  as an MCP page change does. The card writes only the record, under the
+  record lock, and asks for one ordinary rebuild; it owns no spec write and no
+  rebuild lock. Every rebuild, the MCP page's included, merges the record, so a
+  concurrent rebuild that commits an older snapshot is corrected by the next
+  rebuild. Only a conductor (alias resolved) reads an
+  addition from a spec the rebuild writes; every other covered template reads
+  the record at spawn, so for those a declined rebuild is not a failure. For a
+  conductor, a rebuild that raises, is refused, or holds a
+  conductor spec back leaves a spec that disagrees with the record, so the
+  write is put back (an Undo's restore only while the server is still absent,
+  decided under the record lock by `add_addition(only_if_absent=True)`, so a
+  newer card's approval is never overwritten), the specs are rebuilt once more from the restored record
+  (so a spec the failed rebuild already wrote converges back), and the step
+  answers `503 spec_not_rewritten`: the card stays as it was (an Undo stays
+  available to retry).
 
 ### A `kirocrew-core` tool has two halves
 
@@ -3951,7 +4086,9 @@ session for as long as the session lives — whether or not that session will ev
 use it. With `agent.tool_search` on (the default), kiro defers MCP specs once they
 cross `agent.tool_search_min_pct` or `agent.tool_search_min_tokens`, and Crew's own
 servers defer like any other when the spawn runs the pinned kiro-cli install or its
-`kiro-cli-chat`, and both are >= 2.27.0. For any other executable (a pod bundle, a `kiro-cli`
+`kiro-cli-chat`, and both are >= 2.27.0. Both the spawned path and the pin are first
+passed through the edition's `agent_executable` resolver, the one the OS sandbox applies
+to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle, a `kiro-cli`
 found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
 "tools list differs" rejection that bricks a session. KAS ignores the toggle and the

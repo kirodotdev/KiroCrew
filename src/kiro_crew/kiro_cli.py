@@ -143,8 +143,10 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
     invoked directory must match the pin's directory. Both pinned executables
     must meet the version floor; only those paths are probed. Missing spawn
     paths, pod bundles, and non-pinned launchers keep Crew's servers resident.
-    An edition companion swapping in a direct executable is trusted gateway
-    code and is not compared. Any failure keeps the servers resident; never raises.
+    Every check runs on the executables the sandbox wrap will run: the spawned
+    path and the pin both pass through the edition's agent-executable resolver
+    first, so a managed launcher is judged by the install it is swapped for,
+    never by the launcher itself. Any failure keeps the servers resident; never raises.
 
     An operator ``KIROCREW_KIRO_BIN`` override also keeps them resident: its
     directory is the operator's choice, not a known install directory, so no path
@@ -155,6 +157,15 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
     try:
         pinned = pin_kiro_cli()[0]
         if pinned is None:
+            return False
+        # The same resolver sandbox_argv applies to argv[0] before it execs: an
+        # edition may swap a managed launcher (one with no kiro-cli-chat beside it)
+        # for the direct install behind it. Identity on the public build.
+        from kiro_crew.sandbox_argv import _resolve_agent_executable  # noqa: PLC0415
+
+        pinned = _resolve_agent_executable(pinned)
+        spawned_binary = _resolve_agent_executable(spawned_binary)
+        if not pinned or not spawned_binary:
             return False
         sibling = chat_sibling(pinned)
         # A POSIX launcher with no sibling in its own directory execs whatever

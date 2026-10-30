@@ -240,6 +240,18 @@ export default function FileExplorerPage() {
     queryClient.invalidateQueries({ queryKey: ['file-explorer', 'read', activeFile.path] })
   }, [activeFile, queryClient])
 
+  // The tree is cached with no filesystem push behind it, so a folder that
+  // changed on disk (a clone, an agent's writes) stays stale until re-read.
+  // Every tree-node and git-status query is invalidated, not only this root's:
+  // only the mounted ones (this folder tab's open nodes) refetch, the rest are
+  // just marked stale and re-read when next shown.
+  const refreshTree = useCallback(() => {
+    if (!activeFolder) return
+    queryClient.invalidateQueries({ queryKey: ['file-explorer', 'tree', activeFolder.rootPath] })
+    queryClient.invalidateQueries({ queryKey: ['file-explorer', 'tree-node'] })
+    queryClient.invalidateQueries({ queryKey: ['file-explorer', 'git-status'] })
+  }, [activeFolder, queryClient])
+
   const downloadFile = useCallback(() => {
     if (!activeFile || !fileData) return
     const content = fileData.content || ''
@@ -523,7 +535,7 @@ export default function FileExplorerPage() {
           </button>
         </div>
       )}
-      <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
+      <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} onRefresh={refreshTree} />
       <div className={`mc-fe-split${isMobile ? ' is-stacked' : ''}`}>
         {/* Narrow: the control that reaches the tree sits at the TOP, so no
             horizontal space is reserved for it and the viewer gets the full

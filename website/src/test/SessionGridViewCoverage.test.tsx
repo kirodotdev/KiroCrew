@@ -24,6 +24,7 @@ import { renderWithProviders } from './helpers'
 import { api, ApiError } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
 import type { GridNode } from '../hooks/useSessionGrid'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client')
 
@@ -957,3 +958,6 @@ describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
     expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

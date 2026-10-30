@@ -12,7 +12,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
-import { sseToolResult } from '../store/chatSlice'
+import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -185,6 +185,37 @@ describe('ToolCallLine — shell activity line threshold', () => {
     const row = screen.getByTestId('wait-countdown')
     expect(row.textContent).toContain('Waiting · ')
     expect(row.textContent).not.toContain('Waiting for your answer')
+  })
+
+  it('measures from the approval, not the issue time, on the frame the approval resolves', () => {
+    // Approved after a 15s wait, before execution_started_at arrives: the
+    // first resolved frame must not count the wait and flash the line.
+    freezeClock()
+    const perm: ChatMessage = {
+      role: 'permission', content: 'Approve?', cls: '',
+      meta: { tool_call_id: 'tc_long', approval_id: 'app-long' },
+    }
+    const store = createTestStore({
+      chat: {
+        messages: [shellMsg(), perm],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'sleep 30 && echo done', tool_call_id: 'tc_long', is_shell: true, ts: NOW_MS - 15_000 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={shellMsg()} running={true} />, { store })
+    expect(screen.getByRole('button', { name: /Awaiting approval/i })).toBeTruthy()
+    expect(screen.queryByTestId('shell-activity')).toBeNull()
+
+    act(() => {
+      store.dispatch(resolveByApprovalId({ id: 'app-long', slot: 'S', decision: 'approved' }))
+    })
+    expect(screen.queryByTestId('shell-activity')).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(THRESHOLD_MS - 1_000) })
+    expect(screen.queryByTestId('shell-activity')).toBeNull()
+    act(() => { vi.advanceTimersByTime(1_000) })
+    expect(screen.getByText(/Running · 10s/)).toBeTruthy()
   })
 
   it('never shows the line for a tool that was ALREADY done at mount', () => {

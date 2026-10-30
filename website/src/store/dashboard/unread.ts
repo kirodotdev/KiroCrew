@@ -1,6 +1,7 @@
 import { safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { newerTs } from '../../lib/slotReadRelay'
 import { slotListHoldTest } from '../../utils/slotListHold'
+import { crewRootOf } from '../../lib/crewMode'
 import type { DashboardState } from '../dashboardSlice'
 
 /** The unread record behind the session badges: its Web Storage persistence,
@@ -296,7 +297,7 @@ const statusHeldOrphanTest = (state: DashboardState): ((key: string) => boolean)
  *  again, so it counts. */
 export const crewMemberKeys = (slots: readonly { key: string; crew_root?: string }[]): ReadonlySet<string> => {
   const keys = new Set(slots.map(s => s.key))
-  return new Set(slots.filter(s => !!s.crew_root && keys.has(s.crew_root)).map(s => s.key))
+  return new Set(slots.filter(s => { const root = crewRootOf(s); return !!root && keys.has(root) }).map(s => s.key))
 }
 
 /** The unread keys an embedded instance reports to the Instances hub. */

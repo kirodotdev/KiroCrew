@@ -43,8 +43,11 @@ export function CrewmatesSection() {
 
   return (
     <SettingsSection title={i18nT('pages.settings.crewmatesSection.title')}>
-      {/* A config read that failed leaves the switch disabled; say so, rather
-          than showing a control that cannot move. The retry is the query's own. */}
+      {/* Sits right after Feature Previews, so the line says what kind of group
+          this is: server settings that apply on every device, not previews. */}
+      <p className="text-[13px] text-muted mb-2" data-testid="crewmates-section-description">
+        {i18nT('pages.settings.crewmatesSection.description')}
+      </p>
       {/* A config read that failed leaves the switch disabled; say so, with the
           query's own retry, rather than showing a control that cannot move.
           askAgent: a toggle holds no draft, so the hand-off loses nothing. */}

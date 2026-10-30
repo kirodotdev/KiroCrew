@@ -522,6 +522,22 @@ async def revive_session(
 
         if not await state.read_folders(_exists):
             raise deny("folder not found", "folder_not_found", status=400)
+        # A mate's home takes sessions only from that mate, as in `create_session`,
+        # and a session archived in one leaves it only by that mate.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(
+                state,
+                slot_history_key(caller_slot),
+                folder_id,
+                _bounded_folder_id(meta.get("folder_id")),
+            )
+        except MateHomeLockedError:
+            raise deny("this folder belongs to a mate", "mate_home_locked", status=403) from None
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller

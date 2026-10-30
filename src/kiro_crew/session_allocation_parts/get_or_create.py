@@ -128,14 +128,20 @@ async def _reacquire_and_validate(
 
 
 def _release_reacquired(self: SessionAllocationService, key: str, session: Any) -> None:
-    """Give back the permit :meth:`_reacquire_and_validate` took, unless a reset already did.
+    """Give back the permit :meth:`_reacquire_and_validate` took, unless a teardown already did.
 
-    A reset that pops the session while this task waits for the lock records
+    A teardown that pops the session while this task waits for the lock records
     this task as the permit's holder and releases the permit to wake the
-    claimants parked on it (``session_lifecycle._wake_turn_waiters``), so a
+    claimants parked on it (``session_lifecycle.retire_turn_permit``), so a
     second release here would over-release it. Only a popped session can
     carry that record, so a session still registered is always released.
     """
+    # The holding ends here whichever branch gives the permit back, so the record
+    # goes first: a teardown that pops the session later must not name this task
+    # as the holder of a permit it has given back (or one already handed to the
+    # next claimant), or it would release that permit a second time.
+    if session.turn_owner is asyncio.current_task():
+        session.turn_owner = None
     if self._sessions.get(key) is not session and self._owner.absorb_orphaned_release(key):
         return
     session.semaphore.release()
@@ -149,6 +155,10 @@ async def _evict_stale_session(self: SessionAllocationService, key: str, session
             del self._sessions[key]
             self.advance_ownership_generation(key)
             dead = session.provider
+            # Same lock hold as the removal, before any await: a turn still
+            # holding this permit is recorded and its parked claimants woken,
+            # exactly as every lifecycle teardown verb does.
+            self._owner.retire_turn_permit(key, session)
             # Same tick as the removal. Left unrecorded, the start crumb
             # survives and the next boot calls this a crash.
             await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -488,6 +498,11 @@ async def _get_or_create_impl(
                         stale_session = session
                         del self._sessions[key]
                         self.advance_ownership_generation(key)
+                        # Same lock hold as the removal, before any await: a
+                        # turn still holding the dead session's permit is
+                        # recorded and its parked claimants woken, as in
+                        # ``_evict_stale_session``.
+                        owner.retire_turn_permit(key, session)
                         # Same tick as the removal. Left unrecorded, the
                         # start crumb survives and the next boot calls this
                         # a crash rather than an eviction.

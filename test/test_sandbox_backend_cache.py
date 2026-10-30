@@ -23,11 +23,13 @@ import errno
 import os
 import shlex
 import threading
+import time
 import types
 
 import pytest
 
 import kiro_crew.sandbox as sb
+from kiro_crew.testing.clock import ManualClock
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
 # so the shared macOS handle caches are put back after each one (see conftest.py).
@@ -650,15 +652,49 @@ def test_warm_backend_is_a_noop_off_linux(monkeypatch):
 # ── Off-loop behaviour preserved ──
 
 
+def _pin_clock(monkeypatch) -> ManualClock:
+    """A clock only the sandbox modules read, recording their retry sleeps.
+
+    Installed through the facade's own ``time`` binding, which the mirror passes
+    to every sandbox owner. That binding IS the stdlib module, so recording by
+    patching ``sb.time.sleep`` would also record every other thread's sleep.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, sb)
+    return clock
+
+
+def test_another_thread_does_not_reach_the_retry_clock(monkeypatch):
+    """A neighbour thread's sleep and clock read stay off the test's clock.
+
+    ``clean_backend`` already swaps the stdlib sleep for a no-op, so this checks
+    what a recorder depends on: the neighbour's sleep is not recorded and its
+    monotonic reading is not the clock's.
+    """
+    clock = _pin_clock(monkeypatch)
+    clock.advance(10_000_000.0)
+    seen: dict[str, float] = {}
+
+    def _neighbour() -> None:
+        time.sleep(0)
+        seen["monotonic"] = time.monotonic()
+
+    thread = threading.Thread(target=_neighbour, daemon=True)
+    thread.start()
+    thread.join(30.0)
+    assert not thread.is_alive()
+    assert clock.sleeps == (), "another thread's sleep reached the test's clock"
+    assert seen["monotonic"] != clock.monotonic(), "another thread read the test's clock"
+    assert sb.time.monotonic() == clock.monotonic()
+
+
 def test_off_loop_transient_retry_sleeps(monkeypatch):
     """When no event loop is running, time.sleep IS called for the retry."""
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))  # hermetic: gate precedes the mocked probe
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(sb.time, "sleep", lambda s: sleep_calls.append(s))
+    clock = _pin_clock(monkeypatch)
     monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, True, "EAGAIN", ""))
     sb._probe_unshare()
-    assert len(sleep_calls) == 1
-    assert sleep_calls[0] == sb._PROBE_TRANSIENT_RETRY_DELAY_SECS
+    assert clock.sleeps == (sb._PROBE_TRANSIENT_RETRY_DELAY_SECS,)
 
 
 def test_off_loop_does_not_kick_background_warm(monkeypatch):

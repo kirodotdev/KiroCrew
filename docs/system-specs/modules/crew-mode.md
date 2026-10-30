@@ -1104,7 +1104,10 @@ line pointing at these tools.
 In a dashboard turn, a change to Kiro Crew itself that the user asked for (settings,
 schedules, mates and their capabilities, templates, MCP servers, connections, secrets,
 app trust, denied-command rules) is preferably offered as a change card, which the user
-confirms; a card is never a way around a denial. Cards do not replace the direct tools:
+confirms; a card is never a way around a denial. No kind lifts a built-in denied-command
+rule (`denied_command` adds a user rule or toggles one), so an agent never offers the user
+a card, or a suggested reply asking for one, to run a refused command; a crewmate chat
+drops such a chip ([A mate's chat](#a-mates-chat)). Cards do not replace the direct tools:
 an agent that schedules its own work, a conductor or a scheduled run keeps using
 `cron_add` and the other tools it is granted, under their own approvals. An agent proposes
 one registered kind with `propose_change`, after
@@ -1371,10 +1374,12 @@ it has no guide plan, and one such step refuses the whole guide. That reply ends
 When the user agrees, the mate reads its memory, the user's recent sessions and chat
 history, names two or three areas of what it saw that it could own, and asks which
 to track as its goal (or, with nothing to go on, what part of their work to hand
-it), naming only work it saw. On a pick it proposes the goal with `set_goal`. Saving
-the goal starts the ordinary goal setup, whose `[Goal set]` turn asks, while the
-Heartbeat is off, whether the mate should keep track of the goal on its own, and then
-hands the milestone research to a worker (see the goal-setup nudge below).
+it), naming only work it saw. On a pick it proposes the goal with `set_goal`, whose
+card carries the Heartbeat checkbox (checked by default) while the Heartbeat is off,
+so setting the goal and keeping it moving is one press. Saving the goal starts the
+ordinary goal setup, whose `[Goal set]` turn asks nothing more about the Heartbeat
+after a goal card, and then hands the milestone research to a worker (see the
+goal-setup nudge below).
 When the user answers with a name, that later turn says plainly that the mate now
 goes by it and calls the `kirocrew-mate` tool `update_self` with `display_name`
 (`POST /api/member/self/update`, `handlers/member_self.py`), which renames ONLY the calling
@@ -2373,7 +2378,32 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`duplicate_goal`). A goal is numbered by its place in the list, and that
   number is what the tab, the card and the mate's context all show. The
   mate only proposes one (`set_goal` -> a `crewmate.goal` card: add, or a
-  new text for one goal by id). A record written before goals were a list holds
+  new text for one goal by id). While the mate's Heartbeat is off and was never
+  declined (the raw record's `heartbeat_offer` is not `declined`), the goal
+  card also carries a **Heartbeat checkbox**, checked by default: "Keep this
+  moving on its own (Heartbeat)", with a note naming the mate's own interval
+  ("Runs about every 1 hr", the default 60) and that each run uses credits and can
+  be turned off any time. It is the card's editable `heartbeat` param (default
+  true; the gateway sends it as a `heartbeat_offer` change row with `interval` and
+  `per_day`, which the dashboard draws as the checkbox in `GoalBody`, never as a
+  change line), and flipping it re-previews the card. Checked, the apply plan is
+  the goal write then the same schedules-route write a `crewmate.check_ins` card
+  makes (`heartbeat: true`, `expected: {heartbeat: false, interval}`), so the
+  Heartbeat turns on through the same hooked route and governance; its Undo turns
+  the Heartbeat off first (`expected: {heartbeat: true}`), then takes the goal
+  back. A Heartbeat the user already turned off counts as that step done
+  (`set_schedules(held_is_done=True)`, armed only on a goal card's Undo steps),
+  so the goal still comes back; on Apply the same mismatch stays a 409, so a
+  Heartbeat the user turned on by hand is never recorded as the card's and its
+  Undo never turns it off. Unchecked, only the goal is written. Either way the goal write carries
+  `heartbeat_offer` (`accepted` / `declined`), stored as the record's
+  `heartbeat_offer` in the same write: a decline means no later goal card shows
+  the checkbox, and with the Heartbeat already on there is none either. A
+  Heartbeat accepted and later turned off is offered again. The Heartbeat state
+  is left out of the goal card's compared snapshot (`comparable_state`), since
+  its own step is a compare-and-set; a goal card stored before the checkbox has
+  no `heartbeat` in its snapshot, offers nothing, and still rebuilds
+  (`change_cards_records.rebuild_record` accepts its old `editable` list). A record written before goals were a list holds
   one `long_term` string: it reads as a one-goal list under
   `member_goals.LEGACY_GOAL_ID` and is written in the list shape on its next
   write;
@@ -2529,14 +2559,20 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   mate one hidden turn once its thread is idle (waiting at most ten
   minutes; a newer save, of that goal or another, replaces a waiting nudge).
   It names the goal that changed by number and id, lists every goal, and asks
-  the crewmate to say back that goal in a sentence and, while the Heartbeat is off,
+  the crewmate to say back that goal in a sentence. A goal set on a `crewmate.goal`
+  card already answered the Heartbeat on its checkbox (the record's
+  `heartbeat_offer`, written with the goal, so the nudge sees it even before the
+  card's Heartbeat step lands), and so does a Heartbeat that is on or was once
+  declined there: then it asks nothing else (`goal_setup.kickoff_ask_nothing`), and
+  never proposes a second `set_check_ins` card for the Heartbeat. Only a goal saved
+  on the Goals tab with the Heartbeat off and unanswered makes it
   ask once in plain words whether to keep track of the goal on its own between
   chats (a wake every so often that keeps the work moving while the user is away,
   the chat quiet, the Dashboard tab showing what it did, each run using credits),
   naming the Heartbeat only after the user answers, since they do not know the word
   yet; on yes it proposes `set_check_ins` with the Heartbeat on
   (`goal_setup.kickoff_heartbeat_tools`, or without the mate tools a pointer to the
-  Schedules tab; with the Heartbeat on it asks nothing else). It then hands the research to ONE
+  Schedules tab). `set_check_ins` stays the way to change the Heartbeat later. It then hands the research to ONE
   worker session (`session_create`, a self-contained brief with `session_send`)
   and end the turn so the chat stays free -- nothing waits or polls -- then
   propose milestones with `set_key_results` (each linked with `goal_ids`) when
@@ -2724,7 +2760,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   docs/request-for-change; its switch is the Schedules tab's row, not a Goals
   tab check-in), off by default and
   disabled without a goal like the other three. A record written before it reads
-  with `heartbeat` off and `interval` 60. Its `interval` is one of
+  with `heartbeat` off and `interval` 60, and with no `heartbeat_offer` (the
+  answer to a goal card's Heartbeat checkbox, `accepted` or `declined`; any
+  other stored value reads as none). Its `interval` is one of
   `member_goals.HEARTBEAT_INTERVALS` (30, 60, 120, 240 minutes; anything
   else is refused `invalid_interval`, and a stored value outside the list reads
   as 60), and its one schedule (`goal-heartbeat:<slug>`, removed with the
@@ -2941,7 +2979,8 @@ a milestone is reached is the mate's own word in that reading, never judged by t
 gateway), and
 `dashboard/waiting_changed` when `waiting_items` differs from the last list
 recorded, checked after each growth of that DM log (`emit.add_growth_listener`,
-coalesced for 0.4 s), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
+coalesced for 0.4 s; only a session's first growth in that window walks the open
+slots to learn which thread it is, and a retired question looks its slot up by key), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands
@@ -3309,6 +3348,39 @@ own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
 branches under that prefix, to rebase onto the default branch itself when it
 needs that branch's changes, and to check a branch with `git merge-tree` before
 it pushes.
+
+A crewmate promises only what it knows it can do (bug-bash H4: it said "I'll
+install Rust", hit the `pipe-to-shell` rule, then offered the chip "Ask for a
+card to let you install it", which no card kind can raise).
+`conductor.how_you_work` item 1 tells it to hedge an action a safety rule or an
+approval can stop ("I'll try; if a safety rule blocks it I'll give you the
+command"), and when one is blocked to put the exact command in a
+`run-yourself` fence whose info string carries `summary="…"`, one factual line of what it
+installs or does and from where (no persuasion; `worker.principles` asks the worker for the
+same line), never offering to ask for a permission, setting or
+card to get past it. An assistant chat turn draws that fence as the run-it-yourself card
+(`RunYourselfCard`, [learn-cron-dashboard](learn-cron-dashboard.md#direct-terminal-commands-from-the-composer)):
+the command verbatim, the crewmate's summary when given, the fixed line "I can't run this, but you can.", Run in
+terminal through the existing confirm dialog, and Copy, so a new user need not know where a terminal is. Any other surface draws the fence
+as a plain code block, so text from outside the agent cannot pose as its hand-over.
+The `denied_command` change-card kind was not used for this: it adds or toggles a
+user deny rule, a settings change, while this is the person running one command. Item 5 says a suggested reply (an `[OPTIONS:]` chip) offers only
+what the crewmate can then do, never asks it for a card (a card that fits is
+raised directly, since the card is the question), and carries no internal word
+(card, worker, helper, a tool name such as `propose_change`).
+`worker.principles` tells the worker to report a blocked command with the exact
+command in a code block rather than look for a way around it. The refusal
+itself also says this to any session: the `pipe-to-shell` category has its own
+remediation class ([security](security.md), `deny_guidance.DENY_CLASS_REMOTE_SCRIPT`).
+No gate moves. `test_crewmate_prompts.py` pins the wording, and
+`website/src/components/chat/crewmateChips.ts` is the render-time backstop: in a
+crewmate chat (`ChatPane` with `crewmate`) a chip that asks for a card is not
+offered. It matches narrowly: one of our card names after an article ("a change card",
+"an approval card", and the same names per language), `propose_change`, or the H4 shape
+"ask for a card" / "raise a card". A generic verb with a card noun ("Give me the card
+number", "Make the cards bigger", "Change card colors") is the user's own task and is
+kept; the matcher errs toward keeping. It is display only; the
+transcript keeps the reply as written.
 
 `scripts/crewmate_prompt_preview.py --fixture <name> [--piece <p>] [--diff | --write]`
 runs the real assembly over a fixture in a throwaway data home and prints
@@ -4783,15 +4855,35 @@ members** are the rows stamped `crew_root: <root key>`, the root carries
 and the live slot frame carries them all) and leaves crew members out of the
 person's lists on the client.
 
+**The dashboard's Crew Mode is a feature preview, default off**
+(`PREVIEW_CREW_MODE` in `website/src/utils/previewFlags.ts`, the **Ultra Mode** card
+in Settings > Developer > Feature Previews, a plain switch with no preview dialog). `crewModeEnabled()` in
+`website/src/lib/crewMode.ts` is the one read of it, and `useCrewMode()` subscribes
+to the same key for a component or memo that must redraw on a flip. Every rule in
+this section and in [Crew Mode](#crew-mode)'s client half reads through it:
+
+| Preview | What the client does |
+|---|---|
+| on | Everything below, unchanged |
+| off | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without Crew Mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a Crew Mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no Crew Mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored Crew Mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
+
+A chat already in Crew Mode, read with the preview off, is an ordinary chat on its
+conductor agent: its transcript, composer and agent label as for any chat, and its
+crew members are rows of the list. Once it has a message it offers no agent switch,
+since the gateway keeps it on its conductor. Nothing is hidden or unreachable. The gateway
+does not read the flag: the Crew Mode lock (`409 crew_mode_locked`), the unfiled
+crew members and the stamps all stay, so turning the preview back on shows the same
+Crew Mode chat.
+
 | Rule | Where |
 |---|---|
 | The one client filter is `crewModeView(rows, rootsOnly?)`: drop every `crew_root` row whose root is a row of the same list; `rootsOnly` keeps the roots alone. A crew member whose root is closed keeps its row -- no Crew panel lists it, the server keeps its stamp, and its own approval or question must still reach the person -- so the sidebar, All Dashboards and the Command Bar's Needs You show it and its approval as any chat's. `selectPersonSlots` is the memoized store read of it. The `crew_root` drop went live with the Crew panel (the side panel's Crew tab), which lists a root's crew members; the part before wired every person-facing list through this one function with the drop inert, so no list ever lost a row it could not reach elsewhere | `website/src/lib/crewMode.ts`, `website/src/store/personSlots.ts` |
 | Neither a close nor the page's own pick lands on a crew member: `deleteSlot` leaves `crew_root` rows out of both landing sets (the sidebar's displayed order and recency), and the chat page's auto-open reads `autoOpenRows`, so a first visit or a close with only crew members left creates an ordinary chat. A crew member opened on purpose stays open | `store/chatSlice.ts`, `lib/crewMode.ts`, `pages/chat/useChatPageSessionController.ts` |
-| `website/src/lib/crewMode.ts`, `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `website/src/pages/chat/command-center/CrewTimeline.tsx`, `website/src/lib/crewTimeline.ts`, `website/src/components/crew/` | The dashboard's Crew Mode helpers (`runsConductor`, `withoutConductors`, `crewModeView`, `agentCycleTarget`, the worker groups), the side panel's Crew tab with its List \| Timeline switch, the timeline's layout, and the crew marks (badge, eyebrow, ghost stack, breadcrumb) |
+| `website/src/lib/crewMode.ts`, `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `website/src/pages/chat/command-center/UltraCrewPanel.tsx`, `website/src/components/crew/` | The dashboard's Crew Mode helpers (`runsConductor`, `withoutConductors`, `crewModeView`, `agentCycleTarget`, the worker groups), the side panel's Crew tab (shown as Ultra Mode) with its Status \| List switch, and the crew marks (badge, eyebrow, breadcrumb, the turn-on effect) |
 | The Crew tab's list has two sources. The slot store's own rows -- every open slot stamped `crew_root` for the root, a peer's left out -- are shaped as list rows (`liveCrewWorkers`: state to status and group, lineage from `created_by`) and are always in, so a crew member the person's lists leave out is reachable from the tab whether or not the gateway serves `GET /api/chat/slots/{root}/crew-workers`. That route adds what the store has not (closed crew members, the ledger item, the summary, the server's own group) and its rows win where both name a key (`mergeCrewWorkers`). A 404 on a crew route (an older gateway, or the part that serves it has not landed) is NO DATA, not a failure (`crewRouteNotServed`): the list, the sidebar row's crew summary and the Timeline say nothing is wrong and hand nothing to the agent -- the list shows the open crew members or "No crew yet", the Timeline one muted line that this gateway has no timeline yet -- and the route is not polled again. A read that fails for a real reason still says so | `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx` |
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts a Crew Mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/apps/command-bar/CommandBarOverlay.tsx`, `website/src/apps/command-bar/CommandBarOverlayRootRows.tsx` |
-| Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`), the root summary, the sub-dispatcher order, the timeline window and scale, and the steer receipt notice | `lib/crewWorkers.ts`, `lib/crewTimeline.ts`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
+| Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/UltraCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
 | `withoutConductors(choices)` is the one filter a normal chat's agent picker and the Split View pane picker read their rows through: every conductor template left out, since the composer's Crew Mode switch is the way onto one (crewmates kept whatever their name). The part before wired both pickers through it with the rule inert; the part that added the switch turned it on in this one function. The agent chords (`agentCycleTarget`) skip every conductor whatever this filter does, so a chord never turns Crew Mode on by accident. `useAgents` keys both picker memos on the catalog's Crew Mode fields (`crewCatalogKey`), so a catalog read that changes only `agent.crew_mode_agent` re-filters the picker even when the roster is unchanged. A chat already on a conductor has no picker to mirror, so the chords do nothing there (the server refuses to move a Crew Mode root) | `website/src/lib/crewMode.ts`, `website/src/hooks/useAgents.ts` |
 | A crew member's pending tool approval is decided only on its conductor's approval card (`crewApprovalDecidableHere`); every other surface in `CREW_APPROVAL_SURFACES` (the crew member's own composer in the main pane or a Split View pane, the conductor side panel's Approvals, All Dashboards' Needs you) shows it as information with a way to that card; when the conductor is closed, that way reopens it from its saved transcript first, since its key is no live slot. A crew member's approval always alerts the person (`docs/decisions/2026-10-29-crew-member-approvals-notify.md`): while its conductor is open the chime, unread mark, bell note, banner and OS toast point at the conductor, under the crew member's name, and the note offers no Approve or Reject (`crewWorkerRoot`); the conductor's row shows the wait even while it runs, unless the conductor itself owes the person a decision (`crewWaitingApprovals`). With the conductor closed there is no card to show it, so it alerts like any chat's. A session that is no crew member keeps its usual controls everywhere | `lib/crewMode.ts`, `pages/chat/page/ComposerDockView.tsx`, `components/ChatPane.tsx`, `pages/chat/command-center/model.ts`, `pages/chat/command-center/AttentionCard.tsx`, `hooks/websocket/approvals.ts`, `hooks/websocket/chatStream.ts`, `components/notifications/NotificationFeed.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | The chat page keeps TWO lists (`pages/chat/page/pageEnvironment.ts`): `chatPageSlots`, every chat-surface row with crew members included, which the page's active-slot rules read so a crew member opened from its root's Crew panel stays the active chat in the main pane; and `personChatPageSlots`, the same list through `crewModeView`, which the collapsed-sidebar flyout lists and the unread count counts (`surfaceUnreadKeys`). The global counts skip crew members the same way: the Sessions badge and the tab title (`selectUnreadByMode`) and the count relayed to the Instances hub (`relayedUnreadKeys`) leave out every crew member whose root is open (`crewMemberKeys`, the same rule as `crewModeView`), while its unread entry stays for its root's Crew panel. The sidebar component applies `crewModeView` at its own `slots` door, so no lane, the Broadcast dialog, the bulk model switch or any other reader of that collection sees a crew member; the Sessions page, Recents, the Command Bar, Send-to-session and Split View read `selectPersonSlots`. A crew member opened from its root's Crew panel is the active chat without a sidebar row; on a screen narrower than `CREW_WORKER_ROOMY_PX` the sessions list steps aside while it is open | `website/src/pages/ChatSidebar.tsx`, `website/src/pages/SessionsPage.tsx`, `commandPalette/providers/recentsProvider.ts`, `apps/command-bar/CommandBarOverlay.tsx`, `components/SessionGridView.tsx`, `pages/chat/page/sessionsDrawer.ts`, `store/dashboardSlice.ts`, `store/dashboard/unread.ts` |

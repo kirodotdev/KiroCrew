@@ -171,6 +171,7 @@ class TestSlotFocusedFrame:
         state.sessions.resumable_hint = MagicMock(return_value=False)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        assert chat_runner._armed_prefetches == {}
         state.sessions.get_or_create.assert_not_awaited()
 
     @pytest.mark.asyncio

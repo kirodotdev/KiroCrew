@@ -163,10 +163,6 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
-    # A reaction create body is a slot key, a message id and one fixed-set
-    # emoji -- all short control fields, like the pin create above -- so the
-    # shared default ceiling sits far above any legitimate body.
-    "chat_reactions.py::api_chat_reactions_create": ("<default>", _BOUNDED_BY_DEFAULT),
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
@@ -218,6 +214,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # store itself accepts. The cap is owned in kiro_crew/ui_prefs.py beside the
     # limits it has to cover, so the two cannot drift apart again.
     "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
+    # A browser-built download: one artifact export, at most the largest stored
+    # artifact plus the export around it, with room for JSON escaping.
+    "handlers/artifact_download.py::api_stash_artifact_download": (
+        "_MAX_REQUEST_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
     "handlers/prompts_skill_catalog.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),

@@ -902,6 +902,82 @@ class TestSpawnCliAuth:
         assert len(out.strip().splitlines()) == 1
 
 
+class TestGatewayApiClientPort:
+    """``spawn`` and ``artifact`` find the gateway the way ``status`` does.
+
+    With nothing configured and one gateway on a non-default port, the run
+    marker names that port; both commands must call it rather than 5476.
+    """
+
+    def _called_urls(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        body: bytes,
+        *,
+        config_url: str = "",
+        env_port: str | None = None,
+    ) -> list:
+        """Run *argv* with one gateway on 6776 and return each call as ``"<port> <url>"``."""
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+        if env_port is None:
+            monkeypatch.delenv("KIROCREW_PORT", raising=False)
+        else:
+            monkeypatch.setenv("KIROCREW_PORT", env_port)
+        mock_cfg = MagicMock()
+        mock_cfg.dashboard.url = config_url
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load", MagicMock(return_value=mock_cfg)
+        )
+        monkeypatch.setattr("kiro_crew.cli_server.run_marker.marker_ports", lambda: [6776])
+        monkeypatch.setattr("kiro_crew.cli_server._gateway_owns_port", lambda p: p == 6776)
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _p, **_kw: "s")
+        urls: list[str] = []
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, port: int, *_a: object) -> MagicMock:
+            urls.append(f"{port} {req.full_url}")
+            return resp
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+        monkeypatch.setattr(sys, "argv", ["kirocrew", *argv])
+        from kiro_crew import cli
+
+        cli.main()
+        return urls
+
+    def test_spawn_list_calls_the_marker_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(monkeypatch, ["spawn", "list"], b'{"agents": []}')
+        assert urls == ["6776 http://127.0.0.1:6776/api/spawn?queued=1"]
+
+    def test_spawn_port_flag_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["spawn", "--port", "7001", "list"], b'{"agents": []}'
+        )
+        assert urls == ["7001 http://127.0.0.1:7001/api/spawn?queued=1"]
+
+    def test_spawn_honours_the_configured_dashboard_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["spawn", "list"], b'{"agents": []}', config_url="http://localhost:7778"
+        )
+        assert urls == ["7778 http://127.0.0.1:7778/api/spawn?queued=1"]
+
+    def test_artifact_list_calls_the_marker_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(monkeypatch, ["artifact", "list"], b'{"artifacts": []}')
+        assert urls == ["6776 http://127.0.0.1:6776/api/artifacts"]
+
+    def test_artifact_honours_kirocrew_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["artifact", "list"], b'{"artifacts": []}', env_port="6900"
+        )
+        assert urls == ["6900 http://127.0.0.1:6900/api/artifacts"]
+
+
 class TestArtifactCli:
     """CLI-side coverage for security-critical paths in `_artifact`.
 

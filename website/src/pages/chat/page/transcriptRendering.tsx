@@ -13,6 +13,7 @@ import { api, type PlanStepInput } from '../../../api/client'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { isSystemNoticeRow } from '../CompactionCard'
+import { replyShowsFooter } from '../replyFooter'
 import { decisionStripFieldOf } from '../decisionRecord'
 import type { TurnItem, DisplayItem } from '../types'
 import { canForkAtWindow } from '../pagination'
@@ -20,7 +21,6 @@ import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageCo
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
 import { UserMessage, AssistantMessage } from '..'
-import type { ReactionError } from '../../../hooks/useChatReactions'
 import type { TurnStats } from '../AssistantMessage'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
 import { prevUserTextFor } from '../share/shareSupport'
@@ -50,7 +50,6 @@ interface MessageRowHandlers {
   role: 'user' | 'assistant'
   togglePin: () => void
   quote: (shown: string) => void
-  toggleReaction: (emoji: string) => void
 }
 
 interface TranscriptRenderingOptions {
@@ -137,10 +136,6 @@ interface TranscriptRenderingOptions {
   steerActionPending: Readonly<Record<string, SteerRetractAction>>
   steerActionRefusals: Readonly<Record<string, SteerRetractRefusalNotice>>
   steerActionRequestFailures: Readonly<Record<string, true>>
-  reactionsFor: (mid: string) => ReadonlySet<string>
-  handleToggleReactionForMessage: (mid: string, emoji: string) => void
-  reactionErrorFor: (mid: string) => ReactionError | null
-  clearReactionError: () => void
 }
 
 /**
@@ -161,8 +156,7 @@ export function useTranscriptRendering({
   approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
-  handleTogglePinForMessage, reactionsFor, handleToggleReactionForMessage, reactionErrorFor, clearReactionError,
-  handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
+  handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
 }: TranscriptRenderingOptions) {
   // Precomputed O(n) map from message index → visible (user/assistant) index,
   // used by the fork button. Avoids a per-row O(i) filter that would make the
@@ -251,9 +245,8 @@ export function useTranscriptRendering({
   const {
     handleEditResend: stableEditResend, handleJumpToQuote: stableJumpToQuote, handleRegenerate: stableRegenerate,
     handleTogglePinForMessage: stableTogglePin, quoteWholeMessage: stableQuoteMessage,
-    handleToggleReactionForMessage: stableToggleReaction,
-  } = useStableCallbackProps({ handleEditResend, handleJumpToQuote, handleRegenerate, handleTogglePinForMessage, quoteWholeMessage, handleToggleReactionForMessage })
-  // One pin, one quote and one reaction-toggle handler per message row. Keyed by the row object,
+  } = useStableCallbackProps({ handleEditResend, handleJumpToQuote, handleRegenerate, handleTogglePinForMessage, quoteWholeMessage })
+  // One pin and one quote handler per message row. Keyed by the row object,
   // which the store keeps by reference while it is unchanged, so a settled row
   // gets the same pair on every render and a replaced row gets a fresh pair
   // over its new content. Weak, so rows that leave the store take theirs along.
@@ -266,12 +259,11 @@ export function useTranscriptRendering({
         role,
         togglePin: () => { if (mid && m.ts) stableTogglePin(mid, m.ts, role, m.content) },
         quote: (shown: string) => stableQuoteMessage(role, shown, m.ts, mid),
-        toggleReaction: (emoji: string) => { if (mid) stableToggleReaction(mid, emoji) },
       }
       rowHandlersRef.current.set(m, h)
     }
     return h
-  }, [stableTogglePin, stableQuoteMessage, stableToggleReaction])
+  }, [stableTogglePin, stableQuoteMessage])
 
   // ── Registry-driven row dispatch (chat-core P5-a) ──
   // Every transcript row on this page resolves through the SAME renderer
@@ -347,10 +339,6 @@ export function useTranscriptRendering({
               mode={mode}
               pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false}
               onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'user').togglePin : undefined}
-              activeReactions={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionsFor((m.meta as Record<string, unknown>).mid as string) : undefined}
-              onToggleReaction={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'user').toggleReaction : undefined}
-              reactionError={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionErrorFor((m.meta as Record<string, unknown>).mid as string) : null}
-              onClearReactionError={clearReactionError}
               onQuoteMessage={activeSlot && !activeSlotRemoteBound ? rowHandlersFor(m, 'user').quote : undefined}
               onJumpToQuote={stableJumpToQuote}
               onSteerAction={activeSlotRemoteBound ? undefined : handleSteerAction}
@@ -391,38 +379,7 @@ export function useTranscriptRendering({
             <div className={`flex flex-col gap-0${beingReplaced ? ' opacity-60' : ''}`} data-testid={beingReplaced ? 'regenerate-previous-reply' : undefined}>
               {beingReplaced && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1">{i18nT(newReplyStarted ? 'pages.chatPage.regenerate_previous_reply_kept_as_version' : 'pages.chatPage.regenerate_previous_reply')}</span>}
               {startsNewReply && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 border-t border-border pt-2" data-testid="regenerate-new-reply">{i18nT('pages.chatPage.regenerate_new_reply')}</span>}
-              <AssistantMessage body={warmBriefBodyOf(m)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} activeReactions={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionsFor((m.meta as Record<string, unknown>).mid as string) : undefined} onToggleReaction={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').toggleReaction : undefined} reactionError={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? reactionErrorFor((m.meta as Record<string, unknown>).mid as string) : null} onClearReactionError={clearReactionError} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={(() => {
-                // Show footer on the last assistant message of each completed turn
-                if (isStreaming) return false
-                // Find next message after this one that's assistant, user, or streaming
-                for (let j = i + 1; j < messagesRef.current.length; j++) {
-                  const later = messagesRef.current[j]
-                  if (later.role === 'user') return true // end of turn — show footer
-                  // A hidden invisible-only row draws nothing, so it cannot
-                  // host the footer; pass over it to the row that renders.
-                  if (isHiddenInvisibleAssistantRow(later)) continue
-                  // A system-notice row (compaction / session reload) draws a
-                  // system card, not a reply, so it cannot end the turn either.
-                  if (isSystemNoticeRow(later)) continue
-                  if (later.role === 'assistant' || later.role === 'streaming') return false // not last assistant in turn
-                }
-                // End of messages. A run still in progress has not produced this
-                // turn's footer yet — but a message that already CARRIES turn
-                // stats is a turn that finished, and a LATER run (a cron, a
-                // monitor cycle, another tab, a background job) must not retract
-                // the footer of a turn it has nothing to do with.
-                //
-                // Retracting it removed the stats line, the timestamp row and the
-                // overflow trigger — measured frame by frame from a phone
-                // recording: ~108px, gone for 3 frames at 60fps, at the very
-                // bottom edge of the transcript. Content shrinking there makes
-                // the engine clamp a bottom-parked reader down, and nothing ever
-                // pushes them back up when the footer returns, so each flicker
-                // cost the reader their position permanently.
-                const stats = (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined
-                if (stats && (stats.elapsed_ms ?? 0) > 0) return true
-                return !slotRunning
-              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              <AssistantMessage body={warmBriefBodyOf(m)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
@@ -516,7 +473,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, reactionsFor, reactionErrorFor, clearReactionError, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

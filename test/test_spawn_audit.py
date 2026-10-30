@@ -271,7 +271,11 @@ BENIGN_SPAWNS: frozenset[str] = BENIGN_PACKAGE_SPAWNS | BENIGN_APP_SPAWNS
 # on a backend-less host (the carve-out), so "first-party" must be a
 # reviewed property, not a copy-pasteable kwarg: a new site must be added here
 # WITH a justification proving the full argv is derived inside this package
-# with zero agent/repo/user-config influence. Keyed by
+# with zero agent/repo/user-config influence, OR that it runs the kiro-cli
+# Kiro Crew already launches for every ACP session -- resolved only by
+# ``kiro_cli.find_kiro_cli_candidates`` -- with a fixed argv. That binary is
+# already trusted and run on every ACP launch, so the carve-out adds no new
+# trust (owner decision, enterprise sign-in check). Keyed by
 # ``<relpath>::<enclosing function>``, same discipline as ``BENIGN_SPAWNS``.
 FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
     {
@@ -305,6 +309,25 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # because the scan is deliberately value-blind, so a future caller
         # passing True here would still have to be reviewed as its own entry.
         "voice_reply.py::_run_tts_subprocess",
+        # The enterprise sign-in check (owner decision, enterprise smoke test
+        # P9; owner-approved widening of this rule). ``_probe`` claims the flag
+        # with a literal ``True`` only inside ``edition.is_enterprise()``, only
+        # after the sandboxed ``--version`` was refused, and only for two fixed
+        # argvs: ``--version`` (via ``_audited_probe``) and ``whoami`` (via
+        # ``_audited_identity_probe``, real-home branch of ``_run_auth_command``
+        # only; the isolated-home branch raises on the flag). The binary is the
+        # candidate ``kiro_cli.find_kiro_cli_candidates`` resolved -- the same
+        # kiro-cli ACP launches on every session, so already trusted and run --
+        # made absolute with ``abspath``. No agent, repo or user text reaches the
+        # args. ``_run_process`` and ``_prepare_sandboxed_spawn`` only forward
+        # the flag to ``sandboxed_spawn_argv``; their other callers pass the
+        # default False.
+        "kiro_prerequisite_probe.py::_probe",
+        "kiro_prerequisite_probe.py::_audited_probe",
+        "kiro_prerequisite_probe.py::_audited_identity_probe",
+        "kiro_prerequisite_probe.py::_run_auth_command",
+        "kiro_prerequisite_process.py::_run_process",
+        "kiro_prerequisite_process.py::_prepare_sandboxed_spawn",
     }
 )
 
@@ -367,8 +390,9 @@ def test_every_first_party_spawn_is_allowlisted():
     The flag buys an unconfined spawn on a backend-less host, so passing it
     from an unreviewed site is a sandbox bypass. Add the ``file::function`` key
     to ``FIRST_PARTY_SPAWNS`` ONLY after confirming the full argv is derived
-    inside this package with zero agent/repo/user-config influence, and record
-    that reasoning in the allowlist comment.
+    inside this package with zero agent/repo/user-config influence, or that it
+    runs the ACP kiro-cli (resolved only by ``find_kiro_cli_candidates``) with a
+    fixed argv, and record that reasoning in the allowlist comment.
     """
     unexpected = _collect_first_party_flag_sites() - FIRST_PARTY_SPAWNS
     assert not unexpected, (
@@ -377,7 +401,8 @@ def test_every_first_party_spawn_is_allowlisted():
         + "\n  ".join(sorted(unexpected))
         + "\n\nThis flag permits an UNCONFINED spawn on a host with no sandbox "
         "backend (issue #1563 carve-out). Confirm the full argv is derived "
-        "inside this package with zero agent/repo/user-config influence, then "
+        "inside this package with zero agent/repo/user-config influence (or is "
+        "the ACP kiro-cli from find_kiro_cli_candidates with a fixed argv), then "
         "add the file::function key to FIRST_PARTY_SPAWNS with a justification."
     )
 

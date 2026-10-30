@@ -251,9 +251,9 @@ class TestCredentialSelectionIsAnchored:
         published: list[dict] = []
         real_publish = sessions_mod._publish_usage
 
-        def recording_publish(payload):
+        def recording_publish(payload, **kwargs):
             published.append(dict(payload))
-            real_publish(payload)
+            real_publish(payload, **kwargs)
 
         spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
         with (
@@ -345,9 +345,9 @@ class TestCredentialSelectionIsAnchored:
             events.append("spawn")
             return _mock_proc(stdout)
 
-        def recording_publish(payload):
+        def recording_publish(payload, **kwargs):
             published.append(dict(payload))
-            real_publish(payload)
+            real_publish(payload, **kwargs)
 
         if prior is not None:
             sessions_mod._usage_cache = dict(prior)

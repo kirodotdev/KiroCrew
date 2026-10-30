@@ -886,6 +886,9 @@ async def _close_slot(
     cancel_warm_task_brief(state, name)
     state._warm_task_brief_not_before.pop(name, None)
     state._warm_task_brief_last_seen.pop(name, None)
+    _marks = getattr(state, "_warm_task_brief_hidden_left", {})
+    for _conn in [c for c, key in _marks.items() if key == name]:
+        _marks.pop(_conn, None)
     # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
     # whose snapshot predates this close reads these after its last await, so
     # it cannot re-surface the tab this handler is dismissing (see

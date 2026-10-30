@@ -44,6 +44,38 @@ def _mock_state(slot: _ChatSlot | None = None, provider: object = None) -> Dashb
 
 class TestSlotSelectionCapabilities:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["template", "member"])
+    async def test_cold_selection_preserves_template_member_namespace(self, monkeypatch, kind):
+        from kiro_crew.config import loader
+
+        cfg = loader.KiroCrewConfig.load()
+        cfg.agent.acp_backend = "claude"
+        cfg.agents["shared-name"] = loader.KiroCrewAgentConfig(
+            kiro_agent="kirocrew",
+            workspace="default",
+            memory_store="default",
+            model="claude-opus-5.5",
+        )
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", lambda: cfg)
+        monkeypatch.setattr(loader, "_materialized_kiro_agent", lambda name, _project: name)
+        monkeypatch.setattr(
+            loader.KiroCrewConfig,
+            "_resolve_named_agent_model",
+            lambda _self, name: "claude-haiku-4.5" if name == "shared-name" else "",
+        )
+        slot = _ChatSlot("test", agent="shared-name")
+        slot.agent_kind = kind
+        state = _mock_state(slot)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/test/selection-capabilities")
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["effort_supported"] is (kind == "member")
+        assert bool(data["effort_levels"]) is (kind == "member")
+
+    @pytest.mark.asyncio
     async def test_live_effort_levels_use_the_shared_cap(self, monkeypatch, caplog):
         levels = [f"level{i:02d}" for i in range(33)]
         monkeypatch.setattr(chat_handlers, "get_reasoning_effort_values", lambda: set(levels))
@@ -91,6 +123,7 @@ class TestSlotSelectionCapabilities:
             "effort_supported": True,
             "effort_levels": levels,
             "model_effort_pair_ids": pair_ids,
+            "models_backend": backend,
         }
 
     @pytest.mark.asyncio
@@ -108,13 +141,20 @@ class TestSlotSelectionCapabilities:
             "load",
             load_config,
         )
+        monkeypatch.setattr(chat_handlers, "resolve_effective_model", lambda _cfg, _agent, **_k: "")
         state = _mock_state(_ChatSlot("test"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/test/selection-capabilities")
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
+        assert data == {
+            "known": False,
+            "backend": "codex",
+            "model_effort_pair_ids": True,
+            "effort_supported": None,
+            "effort_levels": [],
+        }
 
     @pytest.mark.asyncio
     async def test_cold_member_session_uses_member_backend_for_pair_ids(self, monkeypatch):
@@ -126,13 +166,21 @@ class TestSlotSelectionCapabilities:
                 agents={},
             ),
         )
+        monkeypatch.setattr(chat_handlers, "resolve_effective_model", lambda _cfg, _agent, **_k: "")
         state = _mock_state(_ChatSlot("member-test"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/member-test/selection-capabilities")
             data = await resp.json()
 
         assert resp.status == 200
-        assert data == {"known": False, "backend": "codex", "model_effort_pair_ids": True}
+        assert data == {
+            "known": False,
+            "backend": "codex",
+            "model_effort_pair_ids": True,
+            "models_backend": "codex",
+            "effort_supported": None,
+            "effort_levels": [],
+        }
 
     @pytest.mark.asyncio
     async def test_live_provider_can_report_effort_unsupported(self):
@@ -152,6 +200,7 @@ class TestSlotSelectionCapabilities:
             "effort_supported": False,
             "effort_levels": [],
             "model_effort_pair_ids": False,
+            "models_backend": "opencode",
         }
         provider.get_valid_effort_levels.assert_not_called()
 

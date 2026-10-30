@@ -1,14 +1,12 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
-import { invalidateReactionsForSlotOn } from './reactionToggleLedger'
-import { recoverableQueryClients } from '../api/queryClient'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -90,7 +88,7 @@ export { DASHBOARD_FIELDS_FRAME, subscribeDashboardFields } from './websocket/da
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
-export { emitSlotFocused } from './websocket/attention'
+export { emitSlotFocused, endSplitPaneFocus } from './websocket/attention'
 // The revision ledger is module state, so it has one home and is reached through
 // this facade like every other owner binding.
 // The crew-log panel's cache key and frame applier, reached through this facade
@@ -333,27 +331,6 @@ export function useWebSocket() {
             const slotKey = (data as { slot_key?: string }).slot_key
             if (slotKey) {
               queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
-            }
-            break
-          }
-          case 'reactions_changed': {
-            // A reaction was toggled on another tab or pop-out (or via the
-            // API). Mirror pins_changed: invalidate only the affected slot's
-            // ['chat-reactions', slotKey] cache so a second view updates
-            // without a remount, instead of holding stale reactions behind the
-            // app-wide staleTime: Infinity. The payload carries slot_key only
-            // — no reaction content crosses the WebSocket.
-            const slotKey = (data as { slot_key?: string }).slot_key
-            if (slotKey) {
-              // Refetch this slot's reactions — but hold it back if a local
-              // toggle is still in flight, or it would drop that toggle's
-              // optimistic entry and a queued off-toggle would then read the
-              // identity as absent and POST instead of DELETE. The deferred
-              // refresh is flushed when the last local toggle settles, so the
-              // other tab's change still lands (reactionToggleLedger).
-              // Every registered app client too: an embedded app chat holds
-              // its own copy of this slot's reactions on its own client.
-              invalidateReactionsForSlotOn([queryClient, ...recoverableQueryClients()], slotKey)
             }
             break
           }
@@ -668,7 +645,7 @@ export function useWebSocket() {
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.
-            const snapData = data as { id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }
+            const snapData = data as { id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean }
             buffers.dropSubagentKey(snapData.slot, snapData.id)
             dispatch(sseSubagentSnapshot(snapData))
             break
@@ -711,6 +688,10 @@ export function useWebSocket() {
             }
             break
           }
+          case 'subagent_replay_done':
+            // The replay above is complete: drop the cards it did not name.
+            dispatch(subagentReplayDone())
+            break
           case 'spawn_batch_started':
           case 'batch_finished':
             // Wave lifecycle markers — no dedicated UI yet; the chip derives

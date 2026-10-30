@@ -403,7 +403,7 @@ def test_server_route_table_matches_the_card_module():
     )
     server = set(
         re.findall(
-            r'\("(GET|POST)", "(/api/(?:cards|members)/[a-z0-9_{}/]+)", "api_(?:cards|members)_[a-z_]+"\)',
+            r'\("(GET|POST)", "(/api/(?:cards|members)/[a-z0-9_{}/-]+)", "api_(?:cards|members)_[a-z_]+"\)',
             text,
         )
     )

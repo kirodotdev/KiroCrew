@@ -1989,6 +1989,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.ultra-mode",
+    "label": "Ultra Mode",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
+    "description": "Lets a chat hand tasks to a crew and track them on a Board.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.webhooks",
     "label": "Webhooks",
     "labelKey": "pages.developer.featurePreviewsTab.webhooks",

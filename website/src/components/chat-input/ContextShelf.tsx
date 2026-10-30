@@ -26,8 +26,14 @@ import { useGuidePredicate } from '../../guide/guidePredicates'
 export function useShelfMeasure() {
   // Shelf responsiveness: measure the shelf row width and collapse chips to
   // icon-only (agent/project) + drop the model effort label when space is tight.
-  // Truncation handles the in-between cases.
-  const [shelfWidth, setShelfWidth] = useState(9999)
+  // Truncation handles the in-between cases. Only the width's band is state,
+  // not the width: the shelf resizes on every frame a side panel slides, and
+  // a new number each frame re-rendered the whole composer each frame. The
+  // last values are also kept in a ref and a setter runs only on a change: an
+  // equal setState still schedules a composer render when React cannot bail
+  // out early, which it often cannot mid-slide.
+  const [shelfBand, setShelfBand] = useState<'wide' | 'compact' | 'tiny'>('wide')
+  const lastShelf = useRef<{ band: string; h: number }>({ band: 'wide', h: 32 })
   // Border-box height of the shelf, handed to `.glass-shelf::before` as
   // `--glass-shelf-h`: the fade under the shelf is positioned against the
   // dock's input-area wrapper (so it spans exactly the dock root, which already
@@ -42,21 +48,25 @@ export function useShelfMeasure() {
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect.width
-      if (typeof w === 'number') setShelfWidth(w)
+      // Below ~340px the labels no longer fit comfortably alongside the context
+      // bar + model chip, so the chips (agent/project) collapse to icon-only.
+      // A two-column split can leave under 200px per composer. The effort level
+      // on the model chip is the only at-a-glance readout of what a turn runs
+      // at, so it survives the compact collapse and drops only when even a
+      // short word has no room (the picker the chip opens always shows the
+      // level in force).
+      if (typeof w === 'number') {
+        const band = w < 220 ? 'tiny' : w < 340 ? 'compact' : 'wide'
+        if (band !== lastShelf.current.band) { lastShelf.current.band = band; setShelfBand(band) }
+      }
       const h = entries[0]?.borderBoxSize?.[0]?.blockSize ?? entries[0]?.target.getBoundingClientRect().height
-      if (typeof h === 'number' && h > 0) setShelfHeight(h)
+      if (typeof h === 'number' && h > 0 && h !== lastShelf.current.h) { lastShelf.current.h = h; setShelfHeight(h) }
     })
     ro.observe(el)
     shelfRoRef.current = ro
   }, [])
-  // Below ~340px the labels no longer fit comfortably alongside the context bar
-  // + model chip, so collapse the chips (agent/project) to icon-only.
-  const shelfCompact = shelfWidth < 340
-  // A two-column split can leave under 200px per composer. The effort level on
-  // the model chip is the only at-a-glance readout of what a turn runs at, so
-  // it survives the compact collapse and drops only when even a short word has
-  // no room (the picker the chip opens always shows the level in force).
-  const shelfTiny = shelfWidth < 220
+  const shelfCompact = shelfBand !== 'wide'
+  const shelfTiny = shelfBand === 'tiny'
   return { shelfRef, shelfHeight, shelfCompact, shelfTiny }
 }
 

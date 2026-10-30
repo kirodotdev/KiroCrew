@@ -4,6 +4,7 @@
 import type { Slot } from './types'
 import { i18nT } from '../../i18n/t'
 import { isCrewmateChat } from '../../lib/agentMemorySource'
+import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
 
 /** A session's kind, in section order. */
 export type SessionKind = 'crew' | 'normal' | 'mate'
@@ -36,7 +37,8 @@ export function makeKindOf(liveSlots: readonly Slot[], agents: Roster = []): (s:
     const hit = cache.get(s)
     if (hit) return hit
     let kind: SessionKind = 'normal'
-    if (s.crew_mode_root || s.crew_root) kind = 'crew'
+    // Through the preview-gated reads: with Ultra Mode off a crew row is a normal one.
+    if (crewModeRoot(s) || crewRootOf(s)) kind = 'crew'
     else if (isCrewmateRow(s, agents)) kind = 'mate'
     else if (!s.peer_id) {
       // Bounded by the live population; `seen` stops a cycle.

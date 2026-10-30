@@ -742,10 +742,11 @@ class TestExpireIdle:
         mgr._active_dashboard_slots = {"dashboard:live"}
         _register(mgr, "dashboard:live")
 
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
+        with patch.object(mgr, "reset", wraps=mgr.reset) as reset:
             await mgr._expire_idle(10_000)
 
         assert [c.args[0] for c in reset.await_args_list] == ["dashboard:gone"]
+        assert set(mgr._sessions) == {"dashboard:live"}
 
     @pytest.mark.asyncio
     async def test_uninitialised_slot_set_orphans_nothing(self, mgr) -> None:

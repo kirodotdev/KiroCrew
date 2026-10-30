@@ -871,6 +871,20 @@ class TestReadSurfaces:
         rows = mgr.running_agents_for("dash:1")
         assert [r["id"] for r in rows] == ["a"]
 
+    def test_running_agents_for_marks_spawn_approval_park(self) -> None:
+        """Only a row parked on the spawn approval says so; a tool prompt does not."""
+        mgr = _manager()
+        parked = _info("parked", parent_session_key="dash:1")
+        parked._awaiting_approval = True
+        tool_prompt = _info("tool", parent_session_key="dash:1")
+        tool_prompt._awaiting_approval = True
+        tool_prompt._exec_started = 1.0
+        mgr._agents["parked"] = parked
+        mgr._agents["tool"] = tool_prompt
+        mgr._agents["plain"] = _info("plain", parent_session_key="dash:1")
+        rows = {r["id"]: r["awaitingSpawnApproval"] for r in mgr.running_agents_for("dash:1")}
+        assert rows == {"parked": True, "tool": False, "plain": False}
+
     def test_running_agents_for_redacts_task(self) -> None:
         mgr = _manager()
         mgr._agents["a"] = _info(

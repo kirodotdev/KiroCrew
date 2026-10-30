@@ -470,13 +470,17 @@ class TestAcpSessionProviderErrorPropagation:
     def test_touch_activity_stamps_its_own_handle(self):
         """The keepalive also reaches this session's handle, the clock the
         tool-stall watchdog reads (the runtime clock is process-wide)."""
-        handle = _make_handle()
+        import asyncio
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
         runtime = _make_runtime()
+        handle = AcpSessionHandle("test-session-1", asyncio.Queue(), runtime)
         provider = AcpSessionProvider(handle, runtime)
 
         provider.touch_activity()
 
-        assert handle.note_keepalive.call_args_list == [call()]
+        assert handle._keepalive_ts > 0.0
 
 
 class TestAcpSessionProviderClientCompat:

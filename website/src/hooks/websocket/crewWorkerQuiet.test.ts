@@ -12,7 +12,7 @@ const read = (name: string) => readFileSync(path.join(__dirname, name), 'utf-8')
 describe('Crew Mode crew members stay quiet for the person when a turn finishes', () => {
   it('a finished crew member turn raises no turn-done chime or toast; a paused or errored one still does', () => {
     const src = read('turnCompletion.ts')
-    expect(src).toContain('const crewWorkerQuiet = !!soundSlot?.crew_root && !completionNeedsInput && !turnErrored')
+    expect(src).toContain('const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored')
     expect(src).toMatch(/&& !muteSuppresses && !crewWorkerQuiet/)
   })
 })

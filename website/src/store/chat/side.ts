@@ -97,6 +97,58 @@ export function takeSideSteerDroppedByClose(slot: string, steerId: string): bool
   return takeSideQueueCardDroppedByClose(slot, card => card.steerId === steerId)
 }
 
+/** Queue cards a socket-open re-read dropped because the gateway did not hold
+ *  them. The read cannot say whether a card ran or was cancelled, so its text is
+ *  kept here until a cancel for it arrives: this tab's own cancel can be answered
+ *  after the read landed, and its text must still reach the composer once. */
+type SideQueueCardDroppedByResync = { content: string; raw: boolean }
+const sideQueueCardsDroppedByResync = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
+
+function noteSideQueueDroppedByResync(slot: string, entries: readonly SideQueueEntry[]): void {
+  if (entries.length === 0) return
+  const dropped = sideQueueCardsDroppedByResync.get(slot) ?? new Map<string, SideQueueCardDroppedByResync>()
+  for (const entry of entries) {
+    dropped.delete(entry.id)
+    dropped.set(entry.id, { content: entry.content, raw: entry.raw === true })
+  }
+  while (dropped.size > MAX_RETIRED_QUEUE_IDS) dropped.delete(dropped.keys().next().value as string)
+  sideQueueCardsDroppedByResync.set(slot, dropped)
+}
+
+function takeSideQueueDroppedByResync(slot: string, queueId: string): SideQueueCardDroppedByResync | undefined {
+  const dropped = sideQueueCardsDroppedByResync.get(slot)
+  const card = dropped?.get(queueId)
+  if (!dropped || !card) return undefined
+  dropped.delete(queueId)
+  if (dropped.size === 0) sideQueueCardsDroppedByResync.delete(slot)
+  return card
+}
+
+/** Cards a re-read dropped from a conversation that was then closed. A close
+ *  ends the reducer's handling of the slot, so this tab's own cancel answered
+ *  after the close reads the text from here instead, once. Kept apart from the
+ *  live record so a later conversation's frames never consult it. */
+const sideQueueCardsDroppedByResyncThenClosed = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
+
+/** Replaces, never merges: each close describes only the conversation it ended,
+ *  so a card from an earlier one cannot answer a cancel after a later close. */
+function keepSideQueueDroppedByResyncAcrossClose(slot: string): void {
+  const dropped = sideQueueCardsDroppedByResync.get(slot)
+  sideQueueCardsDroppedByResync.delete(slot)
+  if (dropped) sideQueueCardsDroppedByResyncThenClosed.set(slot, dropped)
+  else sideQueueCardsDroppedByResyncThenClosed.delete(slot)
+}
+
+/** Consume the text of a card a re-read dropped before its conversation closed. */
+export function takeSideQueueDroppedByResyncThenClose(slot: string, queueId: string): SideQueueCardDroppedByResync | undefined {
+  const kept = sideQueueCardsDroppedByResyncThenClosed.get(slot)
+  const card = kept?.get(queueId)
+  if (!kept || !card) return undefined
+  kept.delete(queueId)
+  if (kept.size === 0) sideQueueCardsDroppedByResyncThenClosed.delete(slot)
+  return card
+}
+
 /** Monotonic tick, so an observation can be ordered against a request already in flight.
  *  A bare boolean cannot: it could have been set by an earlier, unrelated edit. */
 let queueEditBroadcastSeq = 0
@@ -536,7 +588,16 @@ export const sideReducers = {
       return
     }
     if (at < 0) {
-      if (kind === 'cancel' || kind === 'drain') retireQueueId()
+      if (kind === 'cancel' || kind === 'drain') {
+        // A card a socket-open re-read dropped: a cancel for it releases its text
+        // as the card would have, so a cancel answered after the read is not lost.
+        const dropped = takeSideQueueDroppedByResync(slot, queue_id)
+        const released = dropped && kind === 'cancel' ? (raw ? content : '') || dropped.content || content || '' : ''
+        if (released && (!suppressRelease || dropped?.raw)) {
+          side.releasedText = mergeIntoDraft(side.releasedText, released)
+        }
+        retireQueueId()
+      }
       // Another tab edited an entry this tab has no card for, while this tab's
       // restore read is in flight. The read may have been answered before the
       // edit, so its copy would show the old text. The frame's `rev` lets the
@@ -667,6 +728,11 @@ export const sideReducers = {
     const slot = action.payload
     if (isUnsafeKey(slot)) return
     noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
+    // Queue ids are unique only within one conversation, so what a re-read dropped
+    // from this one must not answer a cancel in the next. It moves to a record only
+    // this tab's own cancel answer reads. A close of a slot already closed (the
+    // gateway's frame for a close this tab made) leaves that record as it is.
+    if (!state.slotSideClosed[slot]) keepSideQueueDroppedByResyncAcrossClose(slot)
     delete state.slotSide[slot]
     state.slotSideClosed[safeKey(slot)] = true
     // Closed here, so this page knows the gateway holds nothing for the slot: a
@@ -705,14 +771,17 @@ export const sideReducers = {
     const local = draft && isDraft(draft) ? current(draft) : draft
     state.slotSide[safeKey(slot)] = restoredSide(local, snapshot)
   },
-  /** Correct a restored panel still waiting on a turn from a socket-open read of
-   *  the gateway's copy (`resyncWaitingSideConversations`). The read speaks only
+  /** Correct a restored panel from a socket-open read of the gateway's copy
+   *  (`resyncWaitingSideConversations`), so it shows what happened while the tab
+   *  could not hear its frames. The read speaks only
    *  for the panel as it was when the read was sent (`readFor`). A read that finds
    *  no open conversation, or another conversation (it shares none of the runs
    *  `readFor` shows), stops the wait for the turns the read covers, settles the
    *  questions accepted into them, and otherwise leaves the rows alone. A read
    *  that shares one of those runs settles optimistic questions already stored by
-   *  the gateway, then is merged as a restore merges it. A read
+   *  the gateway, then is merged as a restore merges it, queue included: a queued
+   *  card the read lacks goes if the panel showed it when the read was sent, and
+   *  stays if it was added after. A read
    *  whose conversation this tab closed and replaced while the read was
    *  out (the panel carries another `createdAt`) changes nothing. */
   sideResync(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot; readFor: SideState }>) {
@@ -739,8 +808,23 @@ export const sideReducers = {
       return
     }
     const local = isDraft(side) ? current(side) : side
-    const merged = restoredSide(settleStoredOptimisticRows(local, snapshot), snapshot)
+    // A queued question the read lacks but the panel already showed when the read
+    // was sent ran or was cancelled before the gateway answered, so its card goes.
+    // One added after the read was sent is newer than the read, so it stays.
+    const readIds = new Set((snapshot.queue ?? []).map(entry => entry.id))
+    const shownAtRead = new Set((readFor.queue ?? []).map(entry => entry.id))
+    const goneIds = (local.queue ?? []).filter(entry => shownAtRead.has(entry.id) && !readIds.has(entry.id)).map(entry => entry.id)
+    const kept = goneIds.length ? { ...local, queue: local.queue?.filter(entry => !goneIds.includes(entry.id)) } : local
+    const merged = restoredSide(settleStoredOptimisticRows(kept, snapshot), snapshot)
     side.messages = merged.messages
+    if (merged.queue) side.queue = merged.queue
+    if (goneIds.length) {
+      // Retired like a drain or cancel frame retires it, so a late push for the
+      // entry cannot bring the card back.
+      const retired = (side.removedQueueIds ?? []).filter(id => !goneIds.includes(id))
+      side.removedQueueIds = [...retired, ...goneIds].slice(-MAX_RETIRED_QUEUE_IDS)
+      noteSideQueueDroppedByResync(slot, (local.queue ?? []).filter(entry => goneIds.includes(entry.id)))
+    }
     side.pending = merged.pending
     side.streaming = merged.streaming
     if (merged.lastRunId) side.lastRunId = merged.lastRunId

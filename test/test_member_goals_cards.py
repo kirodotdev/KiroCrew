@@ -987,7 +987,13 @@ def test_a_goal_card_never_shows_an_unscrubbed_previous_goal(tmp_path: Path, _ca
     rec = _propose_card(
         state,
         catalog.KIND_CREWMATE_GOAL,
-        {"member": ORDINARY, "long_term": "Ship", "goal_id": _gid(slug, ORDINARY)},
+        # Only the goal write: the Heartbeat checkbox is test_member_goals_heartbeat_card.py's.
+        {
+            "member": ORDINARY,
+            "long_term": "Ship",
+            "goal_id": _gid(slug, ORDINARY),
+            "heartbeat": False,
+        },
     )
     store = state._change_card_store
     assert TOKEN not in json.dumps(store.public(rec))

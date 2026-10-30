@@ -618,3 +618,52 @@ def test_the_doctor_row_lists_each_templates_additions(home, capsys):
     out = capsys.readouterr().out
     assert "mcp additions: 'kirocrew-conductor'" in out
     assert "'fetch' (card 'card-9'," in out
+
+
+def _page_switches(monkeypatch, switched: dict[str, list[str]]) -> None:
+    """The MCP page's ``disabledTools`` switch, as ``list_servers`` reports it."""
+    from types import SimpleNamespace
+
+    from kiro_crew import mcp_discovery
+
+    rows = [SimpleNamespace(name=n, disabled_tools=list(t)) for n, t in switched.items()]
+    monkeypatch.setattr(mcp_discovery, "list_servers", lambda: rows)
+
+
+def test_an_addition_never_brings_back_a_tool_the_page_switched_off(home, monkeypatch):
+    tma.add_addition(
+        "kirocrew-conductor", "github", {"command": "gh-mcp"}, approved_by="u", card_id="c"
+    )
+    _page_switches(monkeypatch, {"github": ["delete_repo"], "other": ["x"]})
+    merged = tma.merge_into("kirocrew-conductor", {})
+    assert merged["github"]["disabledTools"] == ["delete_repo"]
+    assert merged["github"]["command"] == "gh-mcp"
+    # A tool switched off after the approval is off on the next merge too.
+    _page_switches(monkeypatch, {"github": ["delete_repo", "push"]})
+    assert tma.merge_into("kirocrew-conductor", {})["github"]["disabledTools"] == [
+        "delete_repo",
+        "push",
+    ]
+
+
+def test_a_restriction_and_the_page_switch_both_apply(home, monkeypatch):
+    tma.add_addition(
+        "kirocrew-conductor", "github", {"command": "gh-mcp"}, approved_by="u", card_id="c"
+    )
+    _page_switches(monkeypatch, {"github": ["delete_repo"]})
+    merged = tma.merge_into("kirocrew-conductor", {"github": {"disabledTools": ["push"]}})
+    assert merged["github"]["disabledTools"] == ["push", "delete_repo"]
+
+
+def test_an_unreadable_page_adds_no_switch(home, monkeypatch):
+    from kiro_crew import mcp_discovery
+
+    tma.add_addition(
+        "kirocrew-conductor", "github", {"command": "gh-mcp"}, approved_by="u", card_id="c"
+    )
+
+    def boom():
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(mcp_discovery, "list_servers", boom)
+    assert "disabledTools" not in tma.merge_into("kirocrew-conductor", {})["github"]

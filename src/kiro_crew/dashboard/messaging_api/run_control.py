@@ -622,6 +622,9 @@ async def _retry_failed_run(
             app=execution.app,
             _memory_mode=execution.memory_mode,
             _execution_context=execution.to_record(),
+            # The replacement sits where the failed run sat in its tree, even when
+            # the parent's record is gone and admission cannot read it.
+            _depth=getattr(old, "depth", None),
         )
         import contextlib
 

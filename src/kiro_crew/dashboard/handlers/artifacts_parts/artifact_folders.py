@@ -316,16 +316,25 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         f = fstore.get(fid)
         if f is None:
             raise ArtifactNotFoundError(f"folder not found: {fid}")
+        # A refused field must leave the folder untouched, so every check runs
+        # before the first write. name, color and order are checked here from the
+        # body alone; reparent is the one check that reads the tree, so it is the
+        # first write -- once it lands, no later write can be refused as invalid.
         if "name" in body:
-            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
+            fstore.clean_name(str(body["name"]))
+        if "color" in body:
+            fstore.clean_color(str(body.get("color") or ""))
+        order = body_int(body["order"]) if "order" in body else None
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
+        if "name" in body:
+            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "icon" in body:
             f = fstore.set_icon(fid, str(body.get("icon") or ""))
         if "color" in body:
             f = fstore.set_color(fid, str(body.get("color") or ""))
-        if "order" in body:
-            fstore.reorder([{"id": fid, "order": body_int(body["order"])}])
+        if order is not None:
+            fstore.reorder([{"id": fid, "order": order}])
             ref = fstore.get(fid)
             if ref is not None:
                 f = ref

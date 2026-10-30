@@ -207,7 +207,7 @@ def test_boundary_issue_belongs_to_the_previous_report(runner: Runner) -> None:
 
 
 def test_an_inbound_spike_does_not_fail_the_run(runner: Runner) -> None:
-    """Unlike the 300-PR cap, overflow here must NOT withhold the report.
+    """Overflow here must NOT withhold the report.
 
     Failing would leave the window unadvanced, so a quiet inbound spike would
     suppress the shipping half it has nothing to do with.

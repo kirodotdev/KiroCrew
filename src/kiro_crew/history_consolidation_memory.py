@@ -10,7 +10,10 @@ lessons through :func:`_save_lessons`, which drops a lesson with a malformed sco
 forwards its authored tier, and semantic and episodic rows through
 :func:`_write_structured_memory`, which refuses to delete a standing lesson
 (:func:`_lesson_delete_decision`) and whose inline embeddings :class:`_EmbedBudget` bounds
-per pass. :func:`_is_plausible_memory_file` refuses placeholder text before it replaces a V1
+per pass. That writer, and the pass's member-store branch before ``apply_consolidation``,
+refuse whole a semantic value over the consolidation size bound, after kind routing
+(:func:`_refuse_oversized_semantic`); a lesson is not held to it.
+:func:`_is_plausible_memory_file` refuses placeholder text before it replaces a V1
 memory file, and :func:`_session_facets` gives every row the session's carve axes. Each
 writer publishes inside ``HistoryConsolidator._publication_hold_checked``, which reads
 ``memory.persistence_enabled`` and ``memory.writes_enabled`` through
@@ -38,7 +41,7 @@ import logging
 import math
 import time as _time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.history_consolidation_span import _RunCommitState
 from kiro_crew.lesson_validation import (
@@ -48,6 +51,7 @@ from kiro_crew.lesson_validation import (
 )
 from kiro_crew.project_scope import scope_is_admissible
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -242,6 +246,278 @@ def _withhold_unseen_deletes(
     if not withheld:
         return result, 0
     return {**result, "semantic": kept}, len(withheld)
+
+
+def _v1_consolidation_confidence(item: dict) -> float | None:
+    """The confidence :func:`_write_structured_memory` writes *item* at, or ``None`` if it skips.
+
+    That writer skips a confidence ``float()`` cannot read, one that is not finite and one
+    outside ``0..1``. An integer too large for a float raises ``OverflowError``, which the
+    writer does not catch. :func:`_refuse_oversized_semantic` reads the same answer for an
+    item this writer reads, so the two cannot disagree on skipping an item for its
+    confidence.
+    """
+    try:
+        confidence = float(item.get("confidence", 0.5))
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        return None
+    return confidence
+
+
+def _v1_consolidation_metadata(item: dict, vector_store: VectorMemoryStore) -> Any:
+    """The metadata :func:`_write_structured_memory` hands ``set_semantic`` for *item*.
+
+    Only a member store takes model metadata on this path, so this is ``None`` for a V1
+    store and for an item that carries none. ``set_semantic`` validates it with
+    ``memory_record_metadata.normalize_metadata`` after ``validate_semantic`` and refuses
+    the item as ``conflict_skip`` when that raises. :func:`_refuse_oversized_semantic`
+    passes the same answer to that same function, so the two agree on refusing an item
+    for its metadata; that call is the screen's copy of the one ``set_semantic`` makes,
+    kept in step by hand.
+    """
+    if getattr(vector_store, "algorithm_version", "v1") != "v2":
+        return None
+    return item.get("metadata")
+
+
+class _OversizedItem(NamedTuple):
+    """A semantic value the consolidation size bound refused: key, value, length, place.
+
+    ``place`` is the value's index in the writers' window, where the V1 writer gives it
+    its turn (:func:`_write_structured_memory`).
+    """
+
+    key: str
+    value: object
+    chars: int
+    place: int
+
+
+def _refuse_oversized_semantic(
+    result: dict,
+    logger: logging.Logger,
+    *,
+    vector_store: VectorMemoryStore,
+    source: str,
+    member: bool,
+) -> tuple[dict, tuple[_OversizedItem, ...]]:
+    """Refuse every semantic value in the writers' window that is over the size bound.
+
+    The bound is :data:`_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS` characters, inclusive,
+    of the value as the per-turn facts block renders it (``get_semantic_context``, on
+    both store versions): ``len()`` of a string, of the JSON text of a dict or list with
+    every non-ASCII character as written (``ensure_ascii=False``, as that block renders
+    it), and of ``str()`` of any other value. So a Cyrillic letter inside a list counts
+    as the one character the block shows. It is measured apart from the byte ceiling in
+    ``validate_semantic``. An item over it is refused whole and
+    never split or shortened: no split point keeps each piece true on its own key, and a
+    cut value would read as the fact itself. The prompt states the bound so the model
+    draws that boundary itself, as separate keys.
+
+    An item is refused for size only when every check its writer applies to the item
+    alone would let it through, so the size code takes the place of none of them: not
+    ``validate_semantic``'s refusal, not the writer's confidence or metadata check, not
+    the writer's skip rules, and not kind routing. Each item over the bound first meets,
+    in its writer's order, that writer's confidence reader, then *vector_store*'s own
+    ``validate_semantic`` with the writers' *source* and that confidence, then the
+    writer's metadata check.
+    *member* says the member store's ``apply_consolidation`` reads the result, through
+    ``vector_memory_member._member_consolidation_confidence`` and
+    ``vector_memory_member._member_consolidation_metadata``, rather than
+    ``_write_structured_memory``, through :func:`_v1_consolidation_confidence` and
+    :func:`_v1_consolidation_metadata`, whose answer ``set_semantic`` validates with
+    ``memory_record_metadata.normalize_metadata``. Each writer calls those functions
+    itself, so the screen and its writer cannot disagree on skipping an item for its
+    confidence, on the confidence it is validated at, on the member store's metadata
+    check or on which metadata the V1 writer hands over. What is copied
+    rather than shared must be kept in step by hand: the V1 check itself,
+    ``normalize_metadata``, which ``set_semantic`` calls rather than a function the
+    screen shares; the screen's skip rules (an item that is not an object, a key that is
+    not a string, a delete, an item with no value), which copy the writers' own tests;
+    and its ``lesson.*`` rule, which copies the reroute's. A test drives an item under
+    each skip rule, its value over the bound where it has one, through both writers in a
+    whole pass. In a pass the reroute has already moved or dropped every ``lesson.*``
+    create, so a ``lesson.*`` item reaches the screen only as a delete. An item
+    those checks refuse or skip (a malformed or unallowed key, a low confidence, a value
+    over the byte ceiling or one the injection check flags, metadata that is not an
+    object or holds an invalid field) is left untouched, and its writer refuses or skips
+    it under its own code and counts it as it would without the bound: the member
+    receipt's ``metadata_rejected``, the V1 ``conflict_skip`` line. So no key that fails
+    ``_validate_key`` is ever refused for size. Every check here only reads, so the
+    screen writes no row and counts nothing for an item it leaves.
+
+    The writers' checks that read stored rows are not consulted, so the size code does
+    take their place, and that is known. An over-bound overwrite of a ``user_explicit``
+    row, which the V1 store refuses as ``conflict_skip``, is refused as
+    ``consolidation_value_size`` instead: no fact is stored either way, but the report
+    differs (the log line, and the ``memory_events`` row ``conflict_skip`` writes), and
+    so does the run's commit: that write commits nothing, and the refused value's turn
+    commits the run (the exception stated below). A
+    value the store would save as a review proposal rather than write (a member-store
+    update of an existing key, a V1 write to a deleted key) is refused for size too, so
+    that proposal, a ``memory_revisions`` row the owner would review, is never made: no
+    proposal asks the owner to approve a value over the bound. And a refused value is
+    never written, so a later item in the same pass that names its key (or, on a member
+    store, the same fact identity) meets the stored row without it: it can be written
+    where, after the refused write, the store would have refused it as ``conflict_skip``
+    or saved it as a proposal. Nothing else that write would do in the store happens
+    either: no ``create`` or ``update`` row for the value is logged in ``memory_events``,
+    the value is not embedded, so it spends none of the V1 pass's inline embedding
+    budget, and the store retires no episode that asserted the value it would have
+    replaced. The size code reads no stored row, so a value over the bound
+    is refused even when the store already holds the same value.
+
+    A refused value still takes its write's turn in the pass. The V1 writer reaches it
+    where it would write it, takes the publication hold that write takes, and marks the
+    run committed as a write the store accepts does, writing nothing. The member store
+    writes the whole answer in one ``apply_consolidation`` call under one hold, which
+    commits the run whatever the answer holds. So on both paths the pass takes the
+    holds it takes without the bound, and whether a later write passes the hold, and
+    whether a restricted or locked transcript later in the pass refuses the pass or
+    marks its span consolidated, are decided as they are without the bound whenever the
+    store would accept the refused write. Where a stored row would make the V1 store
+    refuse that write with a reject code (a ``conflict_skip``), the write would have
+    committed nothing, and the refused value's turn still commits the run.
+
+    Unknown metadata field names are judged as each writer judges them. The member
+    store's ``apply_consolidation`` drops them and writes the fact, so on that path an
+    over-bound item whose metadata holds only those is refused for size, and its
+    receipt counts no ``metadata_fields_dropped`` for it. The V1 writer hands a member
+    store's ``set_semantic`` the metadata whole, and ``normalize_metadata`` refuses an
+    unknown name, so there the item keeps ``conflict_skip``. A V1 store is handed no
+    metadata, so on it any metadata is no refusal and the item is refused for size.
+
+    Each write path calls this at the same point, on the answer kind routing returned
+    (``memory_kind_routing.route_consolidation_by_kind``, which runs right after the
+    unseen-delete fence) and before the path's first write: :func:`_write_structured_memory`,
+    and ``_consolidate``'s member-store branch before ``apply_consolidation``. Both run
+    after the write-boundary recheck, so a discarded result refuses and logs nothing.
+    Routing therefore reads the model's answer as it would without the bound, in every
+    ``memory.kind_routing`` mode: every item it routes keeps its decision, counted and,
+    under ``shadow``, sampled, and a ``state`` item ``enforce`` keeps out is refused as
+    ``work_state``, never for size, because routing has already taken it out of the list
+    this reads. So the size code never takes the place of routing's refusal either.
+
+    Only the window the writer reads is screened: the first
+    ``_MAX_SEMANTIC_PER_CONSOLIDATION`` items of that list, which the fence and routing
+    have already shaped. An item past the window is never written, so it is neither
+    measured nor logged. A refused item keeps its place as ``None``, which the member
+    store skips like any item that is not an object; the V1 writer gives the refused
+    value its turn at that place, found by its ``place`` rather than by reading the
+    ``None``, so a refusal never moves a later item into the window.
+
+    Only consolidation is bound: owner edits, imports and the dashboard never reach it.
+    A delete, a ``lesson.*`` key (the reroute owns those)
+    and an item with no value pass through untouched for the writers to judge.
+
+    Returns the result (a shallow copy when anything was refused) and every refused
+    value in window order, for its write path to audit in ``memory_events``
+    (:func:`_audit_oversized_semantic`). Each is logged once, naming its key, the reject
+    code, the length and the bound; the value itself is never logged. The same key may
+    be refused one value and written another in one pass, so a line reports a refused
+    value, not a refused key.
+    """
+    items = result.get("semantic")
+    if not isinstance(items, list):
+        return result, ()
+    from kiro_crew import memory_record_metadata, vector_memory_member
+
+    read_confidence = (
+        vector_memory_member._member_consolidation_confidence
+        if member
+        else _v1_consolidation_confidence
+    )
+    screened = list(items)
+    refused: list[_OversizedItem] = []
+    for index, item in enumerate(items[:_MAX_SEMANTIC_PER_CONSOLIDATION]):
+        key = item.get("key") if isinstance(item, dict) else None
+        if (
+            not isinstance(key, str)
+            or key.startswith("lesson.")
+            or item.get("delete")
+            or item.get("value") is None
+        ):
+            continue
+        value = item["value"]
+        # The facts block's own rendering of a value (``get_semantic_context``), so the
+        # bound measures the value as that block shows it; a test pins the two.
+        chars = len(
+            json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+        )
+        if chars <= _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS:
+            continue
+        # The writer's own reader, so an item it skips is never refused for size. Neither
+        # writer catches OverflowError (an integer too large for a float), so that item is
+        # left for its writer to raise on, like one it skips.
+        try:
+            confidence = read_confidence(item)
+        except OverflowError:
+            continue
+        if confidence is None:
+            continue
+        if vector_store.validate_semantic(key, value, confidence, source) is not None:
+            continue
+        # The writer's own metadata check, after validate_semantic as the writer runs it,
+        # so an item it skips or refuses for its metadata keeps that answer.
+        try:
+            if member:
+                vector_memory_member._member_consolidation_metadata(item)
+            elif (metadata := _v1_consolidation_metadata(item, vector_store)) is not None:
+                memory_record_metadata.normalize_metadata(metadata)
+        except ValueError:
+            continue
+        from kiro_crew.vector_memory import SemanticRejectCode
+
+        screened[index] = None
+        refused.append(_OversizedItem(key, value, chars, index))
+        logger.warning(
+            "Semantic consolidation refused a value for %r: %s: %d characters, over the"
+            " %d-character consolidation bound",
+            key,
+            SemanticRejectCode.CONSOLIDATION_VALUE_SIZE.value,
+            chars,
+            _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
+        )
+    if not refused:
+        return result, ()
+    logger.info(
+        "Consolidation refused %d semantic value(s) over the %d-character bound",
+        len(refused),
+        _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
+    )
+    return {**result, "semantic": screened}, tuple(refused)
+
+
+def _audit_oversized_semantic(
+    vector_store: VectorMemoryStore,
+    oversized: tuple[_OversizedItem, ...],
+    key: str,
+) -> None:
+    """Write one ``memory_events`` row for each value :func:`_refuse_oversized_semantic` refused.
+
+    It takes no publication hold of its own: each caller writes the rows inside a hold
+    the pass takes without the bound too, so the rows land exactly when that hold lets
+    the pass write. :func:`_write_structured_memory` writes a refused value's row in
+    that value's own turn, under the hold its write would take, on the pool thread it
+    runs on; ``_consolidate``'s member-store branch writes them under the hold
+    ``apply_consolidation`` runs under, on the background pool, before that call opens
+    its transaction. So writes turned off before the run's first commit, or a lost
+    lease, write no row, and writes turned off after it (an earlier write, or on the V1
+    path the history entry ``append_history`` appends before the writer runs) do not
+    stop one, as they do not stop that write without the bound.
+    """
+    from kiro_crew.vector_memory import SemanticRejectCode
+
+    for oversized_item in oversized:
+        vector_store.log_reject_event(
+            SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
+            oversized_item.key,
+            oversized_item.value,
+            f"consolidation:{key}",
+            value_json=json.dumps(oversized_item.value, ensure_ascii=False),
+        )
 
 
 #: The keys a rerouted ``lesson.*`` semantic item may carry into a lesson, mapped
@@ -767,6 +1043,12 @@ def _write_structured_memory(
     result, withheld = _withhold_unseen_deletes(result, visible_keys, self._logger)
     routing = route_consolidation_by_kind(result, self._logger)
     result = routing.result
+    # The consolidation size bound, on the answer routing returned, so routing reads and
+    # logs every item as it would without the bound (_refuse_oversized_semantic).
+    result, oversized = _refuse_oversized_semantic(
+        result, self._logger, vector_store=vector_store, source=source, member=False
+    )
+    refused_at = {refusal.place: refusal for refusal in oversized}
 
     # Semantic entries
     semantic_items = result.get("semantic")
@@ -779,7 +1061,15 @@ def _write_structured_memory(
         absent = 0
         unreadable = 0
         stale_skipped = 0
-        for item in semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]:
+        for index, item in enumerate(semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]):
+            if index in refused_at:
+                # The value the size bound refused takes its write's turn: the hold that
+                # write takes, and the commit it makes when the store accepts it, so the
+                # rest of the pass meets the run as it would without the bound.
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    _audit_oversized_semantic(vector_store, (refused_at[index],), key)
+                    publication.mark_committed()
+                continue
             if not isinstance(item, dict) or not isinstance(item.get("key"), str):
                 continue
             # Handle deletion of stale keys
@@ -867,12 +1157,8 @@ def _write_structured_memory(
                     "Semantic consolidation skipped %r: item carries no value", item["key"]
                 )
                 continue
-            try:
-                conf = float(item.get("confidence", 0.5))
-            except (ValueError, TypeError):
-                skipped += 1
-                continue
-            if not math.isfinite(conf) or not 0 <= conf <= 1:
+            conf = _v1_consolidation_confidence(item)
+            if conf is None:
                 skipped += 1
                 continue
             # Always our own source, never "user_explicit": a confidence of 1.0 is the
@@ -881,8 +1167,9 @@ def _write_structured_memory(
             # a genuine user-stated row from a re-summarization (conflict_skip) while
             # still letting consolidation create new keys and update its own.
             extra = {}
-            if private_policy and item.get("metadata") is not None:
-                extra["metadata"] = item["metadata"]
+            metadata = _v1_consolidation_metadata(item, vector_store)
+            if metadata is not None:
+                extra["metadata"] = metadata
             if private_policy and snapshot and messages and item["key"] in snapshot:
                 from kiro_crew.memory_record_metadata import verified_correction
 

@@ -44,6 +44,7 @@ import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
+import { useSecondClock } from '../../hooks/useSecondClock'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk.
 const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
@@ -167,6 +168,30 @@ function StatusRow({ show, snap = false, children }: { show: boolean; snap?: boo
       )}
     </AnimatePresence>
   )
+}
+
+/** The live shell line's "Ns" figure. Its own component so the 1 Hz clock
+ *  repaints this text, not the whole tool row. */
+function ShellElapsedLabel({ anchor }: { anchor: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.floor((now - anchor) / 1000)))
+  return <>{fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']], { dropZero: true })}</>
+}
+
+/** Remaining time on a sleeping `wait`, ticking in its own leaf.
+ *
+ *  Ceil so the label reads "1s" for the final fractional second instead of
+ *  flashing "0s" while the tool is still asleep, and clamp at zero: the sleep
+ *  can outlast its own deadline by up to one poll interval, and a negative
+ *  countdown is worse than a parked "0s". Minutes are dropped below 60s but
+ *  the seconds place is NEVER dropped above it, so the label steps 2m 1s →
+ *  2m 0s → 59s instead of collapsing to a bare "2m" for one tick. Same
+ *  reasoning as fmtTurnElapsed's "2m 0s" comment. */
+function WaitRemainingLabel({ deadlineTs }: { deadlineTs: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.ceil((deadlineTs * 1000 - now) / 1000)))
+  const label = secs < 60
+    ? fmtUnit(secs, 'second', { maximumFractionDigits: 0 })
+    : fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']])
+  return <>{i18nT('pages.chat.toolCallLine.wait_remaining', { time: label })}</>
 }
 
 type ToolCallLineProps = { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; appInPanel?: boolean; onOpenApp?: (toolCallId: string) => void;
@@ -560,16 +585,27 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // identity that resolves per RUNTIME rather than per ACP session; the cure is
   // tracked in https://github.com/kirodotdev/KiroCrew/issues/2347.
   const showWaitCountdown = !!waitState && waitState.deadline_ts > 0
-  const [activityNow, setActivityNow] = useState(() => Date.now())
-  // Seed from execution_started_at (persisted in Redux, survives remount) when
-  // available — it records when execution actually began after approval. Falls
-  // back to ts (tool issuance time) then Date.now() for brand-new calls.
-  const activityStartRef = useRef(executionStartedAt || ts || Date.now())
-  const wasPendingRef = useRef(hasPendingPerm)
-  // Tracks whether approval resolved during this mount — once set, the ts
-  // re-anchor effect is suppressed so the post-approval Date.now() anchor
-  // is not overwritten by the pre-approval ts.
-  const approvalResolvedRef = useRef(false)
+  // When this mount first saw the row, the anchor of last resort.
+  const [mountedAt] = useState(() => Date.now())
+  // When an approval resolved during this mount. Once set it outranks the
+  // pre-approval `ts`, which would inflate the clock by the whole approval wait.
+  // Stamped during render on the pending -> resolved transition, not in an
+  // effect: an effect runs after the first resolved frame commits, and that
+  // frame would measure from `ts` and flash the activity line for an approval
+  // that waited past the threshold. The durable anchor arrives separately:
+  // the approval_resolved frame sets execution_started_at on the tool entry
+  // in Redux (see sseActivityEvent), which survives remount.
+  const [approvalResolvedAt, setApprovalResolvedAt] = useState<number | null>(null)
+  const [prevPending, setPrevPending] = useState(hasPendingPerm)
+  if (prevPending !== hasPendingPerm) {
+    setPrevPending(hasPendingPerm)
+    if (prevPending && !hasPendingPerm) setApprovalResolvedAt(Date.now())
+  }
+  // The elapsed clock's start. execution_started_at is persisted in Redux,
+  // survives remount, and records when execution actually began after
+  // approval, so it wins. Then the in-mount approval instant, then the tool
+  // log ts (tool issuance time), then the mount for brand-new calls.
+  const activityStart = executionStartedAt || approvalResolvedAt || ts || mountedAt
   const [endingWait, setEndingWait] = useState(false)
   // The refused End-wait press. Previously the button only rolled back to its
   // idle label, so a transport failure looked like a press that did nothing.
@@ -601,76 +637,21 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
     })
   }, [waitSlotKey, waitState, endingWait])
 
-  useEffect(() => {
-    if (hasPendingPerm) {
-      wasPendingRef.current = true
-      return
-    }
-    if (wasPendingRef.current) {
-      const now = Date.now()
-      activityStartRef.current = now
-      wasPendingRef.current = false
-      approvalResolvedRef.current = true
-      setActivityNow(now)
-      // The durable anchor is stamped server-side: the approval_resolved
-      // frame sets execution_started_at on the tool entry in Redux (see
-      // sseActivityEvent), which the re-anchor effect below reads on remount.
-    }
-  }, [hasPendingPerm])
-
-  // When the tool log timestamp arrives (or on remount with a persisted ts),
-  // re-anchor the elapsed clock so it reflects real wall time since the tool
-  // started — not time since the component mounted. Skip if approval just
-  // resolved in this mount — the post-approval Date.now() is the correct anchor
-  // for approved commands (the pre-approval ts would inflate the timer by the
-  // entire approval wait). Also skip if executionStartedAt is set — it persists
-  // in Redux and is the authoritative anchor that survives remount.
-  useEffect(() => {
-    if (executionStartedAt) {
-      activityStartRef.current = executionStartedAt
-    } else if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
-      activityStartRef.current = ts
-    }
-  }, [ts, hasPendingPerm, executionStartedAt])
-
-  useEffect(() => {
-    if (!liveShellActivity && !showWaitCountdown) return
-    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [liveShellActivity, showWaitCountdown])
-
-  const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
-  const elapsedLabel = fmtDurationParts(
-    [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
-    { dropZero: true },
-  )
   // Live only, and only once the command has run long enough to be worth a
   // line. The clock is anchored to the tool's own start (execution_started_at,
   // then the log ts), so a row that mounts mid-command — the virtualizer
   // re-mounting a scrolled-back row, a reload — shows the line at once when
   // the command is already past the threshold rather than waiting another
   // ten ticks.
-  const showShellActivity = liveShellActivity && elapsedSeconds >= SHELL_ACTIVITY_MIN_SECS
+  // The row subscribes to a BOOLEAN of the shared clock, so it re-renders once,
+  // when the threshold passes; the figure itself ticks in ShellElapsedLabel.
+  const showShellActivity = useSecondClock(
+    now => now - activityStart >= SHELL_ACTIVITY_MIN_SECS * 1000,
+    liveShellActivity,
+  ) && liveShellActivity
   const activityLabel = isAskTool
     ? i18nT('pages.chat.toolCallLine.ask_wait_status')
     : i18nT('pages.chat.activityViewer.running')
-
-  // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
-  // final fractional second instead of flashing "0s" while the tool is still
-  // asleep, and clamp at zero: the sleep can outlast its own deadline by up to
-  // one poll interval, and a negative countdown is worse than a parked "0s".
-  const remainingSeconds = waitState
-    ? Math.max(0, Math.ceil((waitState.deadline_ts * 1000 - activityNow) / 1000))
-    : 0
-  // Minutes are dropped below 60s but the seconds place is NEVER dropped above
-  // it, so the label steps 2m 1s → 2m 0s → 59s instead of collapsing to a bare
-  // "2m" for one tick. Same reasoning as fmtTurnElapsed's "2m 0s" comment.
-  const remainingLabel = remainingSeconds < 60
-    ? fmtUnit(remainingSeconds, 'second', { maximumFractionDigits: 0 })
-    : fmtDurationParts([
-      [Math.floor(remainingSeconds / 60), 'minute'],
-      [remainingSeconds % 60, 'second'],
-    ])
 
   // Inline expansion state.
   //
@@ -1382,7 +1363,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{activityLabel}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {activityLabel} · {elapsedLabel}
+            {activityLabel} · <ShellElapsedLabel anchor={activityStart} />
           </span>
         </div>
       </StatusRow>
@@ -1398,7 +1379,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
               stops the label jittering as it ticks, but a mono FACE next to the
               pill's body-font label reads as a different kind of text. */}
           <span aria-hidden="true" className="tabular-nums">
-            {i18nT('pages.chat.toolCallLine.wait_status')} · {i18nT('pages.chat.toolCallLine.wait_remaining', { time: remainingLabel })}
+            {i18nT('pages.chat.toolCallLine.wait_status')} · {waitState && <WaitRemainingLabel deadlineTs={waitState.deadline_ts} />}
           </span>
           {/* stopPropagation is defensive, not load-bearing for the pill: this
               row is a SIBLING of the pill button, not inside its click target.

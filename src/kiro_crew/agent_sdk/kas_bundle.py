@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +37,28 @@ from kiro_crew.acp import kas_pin as _pin
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from kiro_crew.acp.kas_bundle import InstalledKasBundle
+    # The lazy names below, typed for the checker only. Without them mypy reads
+    # each one through ``__getattr__``, and in an import cycle it can do that
+    # before the hook's own ``-> Any`` is analysed: the call then fails as
+    # ``Any? not callable``, but only for runs that reach this module in that
+    # order. Nothing here runs, so the lazy import stays lazy. Keep this list
+    # equal to ``_OWNED`` (``test_kas_bundle_facade_types_every_owned_name``).
+    from kiro_crew.acp.kas_bundle import (  # noqa: F401 - typed re-exports
+        KAS_BUNDLE_INSTALL_RECORD_NAME,
+        KAS_BUNDLE_MANIFEST_NAME,
+        InstalledKasBundle,
+        KasBundleError,
+        KasBundleManifest,
+        fetch_manifest,
+        host_node_key,
+        host_platform_key,
+        install_bundle,
+        install_pinned,
+        installed_bundle,
+        installed_versions,
+        kas_engines_root,
+        parse_manifest,
+    )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
@@ -151,6 +172,18 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     from kiro_crew.acp.kas_transport import build_kas_bundle_argv
 
     return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
+
+
+def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
+    """Whether the KAS harness treats *binary* as the operator's ``KIROCREW_KIRO_BIN``.
+
+    The harness's own rule (``KasHarness.resolve_spawn`` never swaps that binary
+    for its ``kiro-cli-chat`` sibling), read at call time, so ``kirocrew doctor``
+    predicts the relay spawn with the same comparison instead of a copy.
+    """
+    from kiro_crew.acp.harness.kas import _is_operator_override
+
+    return _is_operator_override(binary, environ)
 
 
 def kas_bundle_route() -> bool:

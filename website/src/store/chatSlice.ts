@@ -58,6 +58,7 @@ import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
 import { addSlotRefreshCases, withRefreshRevision } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
+import { crewRootOf } from '../lib/crewMode'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
  *
@@ -635,9 +636,9 @@ export const deleteSlot = createAsyncThunk<
       // A Crew Mode worker is its conductor's, never where a close lands: not by
       // the sidebar's displayed order (where it may sit right under its root) and
       // not by recency. Both sets leave it out.
-      const sameSurface = new Set(root.dashboard.slots.filter(s => !s.crew_root && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
+      const sameSurface = new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const sidebarSurface = isChatPageSurface(deletedSurface)
-        ? new Set(root.dashboard.slots.filter(s => !s.crew_root && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
+        ? new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
         : sameSurface
       // Land on the sidebar row below the closed one (above at the bottom): the
       // tab-strip landing rule, applied to the sidebar's displayed order. The
@@ -1067,7 +1068,7 @@ export const {
   setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
+  toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, subagentReplayDone, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
@@ -1202,12 +1203,15 @@ export const awaitSideRestore = createAsyncThunk<'restored' | 'failed' | 'timeou
 const latestSideResyncRead = new Map<string, object>()
 
 /**
- * A side turn can end while this tab cannot hear it: before its socket first
- * connects, when the restore read was answered first, or while the socket is
- * down. Its final frame then reaches no socket of this tab, and a panel waiting
- * on the turn would wait until the next reload. So each time the socket opens,
- * every restored panel still waiting on a turn reads the gateway's copy again
- * (`sideResync`), once any restore read still in flight has landed. A 404 means
+ * Side Chat frames reach only the sockets connected when they are sent. While
+ * this tab cannot hear them -- before its socket first connects, when the
+ * restore read was answered first, or while the socket is down -- a side turn
+ * can end, another tab can ask and be answered, and queued questions can be
+ * added, run or cancelled. A panel waiting on a turn would wait until the next
+ * reload, and an idle one would show a conversation and a queue the gateway no
+ * longer holds. So each time the socket opens, every restored panel reads the
+ * gateway's copy again (`sideResync`), whether or not it waits on a turn, once
+ * any restore read still in flight has landed. A 404 means
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
@@ -1221,7 +1225,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
       const side = slotSide[slot]
-      if (!slotSideRestored?.[slot] || !side || !(side.pending || side.streaming || side.awaitingFinalRunId)) return
+      if (!slotSideRestored?.[slot] || !side) return
       const thisRead = {}
       latestSideResyncRead.set(slot, thisRead)
       let snapshot: SideSnapshot | undefined
@@ -1255,7 +1259,7 @@ export {
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
-export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
+export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,

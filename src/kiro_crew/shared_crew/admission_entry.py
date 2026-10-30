@@ -481,8 +481,6 @@ _TASKRUNNER_TERMINAL: dict[str, OperationState] = {
     "done": OperationState.COMPLETED,
     "failed": OperationState.FAILED,
     "cancelled": OperationState.CANCELLED,
-    # A paused run holds no runtime; a restart is new work.
-    "paused": OperationState.CANCELLED,
 }
 
 _WORKFLOW_TERMINAL: dict[str, OperationState] = {
@@ -493,13 +491,31 @@ _WORKFLOW_TERMINAL: dict[str, OperationState] = {
 }
 
 
+def _starting(runner: Any, task_id: str) -> bool:
+    """The run is being started, or the restart's adoption sweep may still resume it."""
+    for attr in ("_start_ids_in_flight", "_recovery_pending"):
+        ids = getattr(runner, attr, None)
+        if isinstance(ids, set) and task_id in ids:
+            return True
+    tasks = getattr(runner, "_tasks", None)
+    task = tasks.get(task_id) if isinstance(tasks, dict) else None
+    return task is not None and not task.done()
+
+
 def taskrunner_probe(runner: Any) -> Callable[[str], OperationState | None]:
     def probe(task_id: str) -> OperationState | None:
         runs = getattr(runner, "_runs", None)
         run = runs.get(task_id) if isinstance(runs, dict) else None
         if run is None:
             return OperationState.UNKNOWN_OUTCOME
-        return _TASKRUNNER_TERMINAL.get(str(getattr(run, "status", "")))
+        status = str(getattr(run, "status", ""))
+        if status in ("planned", "paused"):
+            if _starting(runner, task_id):
+                return None  # execute, retry and a resume pass through these states
+            # Neither holds a runtime: an execute cut before it set the run
+            # running, or a pause. A later start is new work.
+            return OperationState.CANCELLED
+        return _TASKRUNNER_TERMINAL.get(status)
 
     return probe
 

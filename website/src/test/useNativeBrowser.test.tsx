@@ -171,6 +171,31 @@ describe('useNativeBrowser', () => {
     await waitFor(() => expect(calls.overlay.at(-1)?.active).toBe(false))
   })
 
+  it('hides the native view while its panel slides, and re-reports the rect once it docks', async () => {
+    const { calls } = installBridge()
+    const { result } = renderHook(() => useNativeBrowser(PANEL, true))
+    // The panel the view sits in: a trackpad drag marks its column.
+    const column = document.createElement('div')
+    const host = document.createElement('div')
+    column.appendChild(host)
+    document.body.appendChild(column)
+    let rect = { x: 900, y: 42, width: 460, height: 800 }
+    host.getBoundingClientRect = () => ({ ...rect, top: rect.y, left: rect.x, right: rect.x + rect.width, bottom: rect.y + rect.height, toJSON: () => ({}) }) as DOMRect
+    act(() => { result.current.hostRef.current = host })
+    await waitFor(() => expect(calls.overlay.at(-1)).toEqual({ panelId: PANEL, active: false }))
+    // The slide: same size, moving. The view is hidden for all of it.
+    act(() => { column.setAttribute('data-native-overlay', '') })
+    await waitFor(() => expect(calls.overlay.at(-1)).toEqual({ panelId: PANEL, active: true }))
+    // Docked somewhere else: shown again, at the panel's new rect.
+    rect = { x: 940, y: 42, width: 460, height: 800 }
+    const reported = calls.setBounds.length
+    act(() => { column.removeAttribute('data-native-overlay') })
+    await waitFor(() => expect(calls.overlay.at(-1)).toEqual({ panelId: PANEL, active: false }))
+    await waitFor(() => expect(calls.setBounds.length).toBeGreaterThan(reported))
+    expect(calls.setBounds.at(-1)!.rect).toEqual({ x: 940, y: 42, width: 460, height: 800 })
+    column.remove()
+  })
+
   it('never leaves the view hidden when unmounting with an overlay up', async () => {
     const { calls } = installBridge()
     const dialog = document.createElement('div')

@@ -3,6 +3,7 @@
 Uses recursive separator splitting (LightRAG style): split by separators in
 priority order, enforce token limit per chunk, with overlap for context.
 """
+
 from __future__ import annotations
 
 import re
@@ -22,9 +23,51 @@ def _skip_space(text: str, pos: int) -> int:
     return pos
 
 
+# Scripts written without spaces between words (Thai, Lao, Myanmar, Khmer, CJK
+# punctuation, kana, ideographs and full-width forms). A whole paragraph in one is
+# a single space-separated "word", so each of these characters is counted as a
+# token of its own. Hangul is left out: Korean separates its words with spaces.
+_UNSPACED = re.compile(
+    "[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3000-\u30ff"
+    "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+)
+
+
+def _char_tokens(ch: str) -> float:
+    """Approximate tokens one character adds to a run holding unspaced script."""
+    if _UNSPACED.match(ch):
+        return 1.0
+    return 0.0 if ch.isspace() else 0.25
+
+
 def _word_count(text: str) -> int:
-    """Approximate token count using word splitting (1 word ≈ 1.3 tokens)."""
-    return int(len(text.split()) * 1.3)
+    """Approximate token count: 1 word ≈ 1.3 tokens, with unspaced runs counted.
+
+    Only a run holding unspaced script is priced per character (other characters
+    in it at about 4 per token); every other run is one word, however long.
+    """
+    words = 0
+    extra = 0.0
+    for run in text.split():
+        unspaced = len(_UNSPACED.findall(run))
+        if unspaced:
+            extra += unspaced + (len(run) - unspaced) / 4
+        else:
+            words += 1
+    return int(words * 1.3 + extra)
+
+
+def _tail_within(text: str, budget: int) -> str:
+    """The longest suffix of *text* whose characters cost at most *budget* tokens."""
+    cost = 0.0
+    start = len(text)
+    while start > 0:
+        step = _char_tokens(text[start - 1])
+        if cost + step > budget and start < len(text):
+            break
+        cost += step
+        start -= 1
+    return text[start:].lstrip()
 
 
 def _span(text: str, piece: str, cursor: int) -> tuple[int, int]:
@@ -95,16 +138,22 @@ class HeadingAwareChunker:
                 # prev_words[-0:] is prev_words[0:] — i.e. the ENTIRE previous chunk,
                 # which would silently duplicate it into every subsequent chunk.
                 overlap_word_count = max(1, int(self.overlap / 1.3))
-                overlap_words = prev_words[-overlap_word_count:]
-                content = " ".join(overlap_words) + "\n" + content
+                overlap_text = " ".join(prev_words[-overlap_word_count:])
+                # One unspaced "word" can be the whole previous chunk, so the tail
+                # is cut to the overlap budget instead of copying that chunk again.
+                if _word_count(overlap_text) > max(self.overlap, int(overlap_word_count * 1.3)):
+                    overlap_text = _tail_within(overlap_text, self.overlap)
+                content = overlap_text + "\n" + content
 
-            result.append({
-                "content": content,
-                "section_title": None,
-                "chunk_index": i,
-                "line_start": line_start,
-                "line_end": line_end,
-            })
+            result.append(
+                {
+                    "content": content,
+                    "section_title": None,
+                    "chunk_index": i,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                }
+            )
         return result
 
     def _recursive_split(self, text: str, separators: list[str]) -> list[str]:
@@ -113,14 +162,36 @@ class HeadingAwareChunker:
             return [text.strip()] if text.strip() else []
 
         if not separators:
-            # No more separators — force split by words
-            words = text.split()
-            target_words = int(self.target_size / 1.3)
+            # No more separators: group whole words, at most target/1.3 per piece.
+            # A run of unspaced script too large for one piece on its own is cut
+            # by character cost into slices of the source instead.
+            target_words = max(1, int(self.target_size / 1.3))
             chunks = []
-            for i in range(0, len(words), target_words):
-                chunk = " ".join(words[i:i + target_words])
-                if chunk.strip():
-                    chunks.append(chunk.strip())
+            group: list[str] = []
+            words = 0
+            extra = 0
+            for run in text.split():
+                run_cost = _word_count(run)
+                if run_cost > self.target_size:
+                    if group:
+                        chunks.append(" ".join(group))
+                        group, words, extra = [], 0, 0
+                    chunks.extend(self._cut_run(run))
+                    continue
+                plain = not _UNSPACED.search(run)
+                next_words = words + (1 if plain else 0)
+                next_extra = extra + (0 if plain else run_cost)
+                if group and (
+                    next_words > target_words or next_words * 1.3 + next_extra > self.target_size
+                ):
+                    chunks.append(" ".join(group))
+                    group, words, extra = [], 0, 0
+                    next_words = 1 if plain else 0
+                    next_extra = 0 if plain else run_cost
+                group.append(run)
+                words, extra = next_words, next_extra
+            if group:
+                chunks.append(" ".join(group))
             return chunks
 
         sep = separators[0]
@@ -147,6 +218,20 @@ class HeadingAwareChunker:
         if current.strip():
             chunks.append(current.strip())
         return chunks
+
+    def _cut_run(self, run: str) -> list[str]:
+        """Cut one separator-free run into contiguous slices under target_size."""
+        pieces = []
+        start = 0
+        cost = 0.0
+        for i, ch in enumerate(run):
+            step = _char_tokens(ch)
+            if cost + step > self.target_size and i > start:
+                pieces.append(run[start:i])
+                start, cost = i, 0.0
+            cost += step
+        pieces.append(run[start:])
+        return pieces
 
     def chunk_code(self, text: str, language: str | None = None) -> list[dict]:
         """Split code by function/class boundaries.
@@ -228,7 +313,7 @@ class HeadingAwareChunker:
 
         # Include any text before the first heading
         if splits[0].start() > 0:
-            preamble = text[:splits[0].start()].strip()
+            preamble = text[: splits[0].start()].strip()
             if preamble:
                 sections.insert(0, (None, 1, preamble))
 
@@ -265,13 +350,15 @@ class HeadingAwareChunker:
                     at, end = _span(text, sub, cursor)
                     sub_line_start = line + text.count("\n", cursor, at)
                     cursor, line = end, sub_line_start + text.count("\n", at, end)
-                    results.append({
-                        "content": sub,
-                        "section_title": current_title,
-                        "chunk_index": idx,
-                        "line_start": sub_line_start,
-                        "line_end": sub_line_start + sub.count("\n"),
-                    })
+                    results.append(
+                        {
+                            "content": sub,
+                            "section_title": current_title,
+                            "chunk_index": idx,
+                            "line_start": sub_line_start,
+                            "line_end": sub_line_start + sub.count("\n"),
+                        }
+                    )
                     idx += 1
             else:
                 # line_end tracks the last SOURCE line of the merged sections,
@@ -279,13 +366,15 @@ class HeadingAwareChunker:
                 # bodies with a synthetic "\n" that the source never had, so
                 # counting newlines in current_body would inflate the end by one
                 # line per merged section and cite past the section's real text.
-                results.append({
-                    "content": current_body.strip(),
-                    "section_title": current_title,
-                    "chunk_index": idx,
-                    "line_start": current_start,
-                    "line_end": current_end,
-                })
+                results.append(
+                    {
+                        "content": current_body.strip(),
+                        "section_title": current_title,
+                        "chunk_index": idx,
+                        "line_start": current_start,
+                        "line_end": current_end,
+                    }
+                )
                 idx += 1
 
         for title, line_start, body in sections:
@@ -322,7 +411,7 @@ class HeadingAwareChunker:
             if line.startswith("## Slide"):
                 if current or current_title is not None:
                     slides.append((current_title, current_start, current))
-                current_title = line.lstrip('#').lstrip()
+                current_title = line.lstrip("#").lstrip()
                 current_start = i + 1
                 current = []
             else:

@@ -4,7 +4,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import reducer, {
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideOptimisticAppend, sideOptimisticRollback,
-  sideClose as sideCloseAction,
+  sideClose as sideCloseAction, sideResync,
 } from '../store/chatSlice'
 import { renderWithProviders, createTestStore } from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
@@ -222,6 +222,83 @@ describe('SideChat queue cards', () => {
     // cleared" is no longer observable on the button; the card's absence is the
     // post-success state to assert.
     await waitFor(() => expect(screen.queryByLabelText('Cancel queued message')).not.toBeInTheDocument())
+  })
+
+  it('a cancel answered after a re-read dropped its card and the side then closed still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: 'queued text', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    // The re-read lands before the cancel's answer, and its queue lacks the card.
+    const readFor = store.getState().chat.slotSide[SLOT]
+    act(() => {
+      store.dispatch(sideResync({ slot: SLOT, readFor, snapshot: {
+        open: true, created_at: readFor.createdAt, last_run_id: 'r1', running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q1', ts: '2026-05-20T00:00:00Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'partial', ts: '2026-05-20T00:00:01Z' },
+        ],
+        queue: [],
+      } }))
+    })
+    expect(store.getState().chat.slotSide[SLOT].queue).toEqual([])
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+    // The gateway's frame for the same close reaches this tab too.
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+
+    await act(async () => { release() })
+    await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('queued text'))
+    // A later frame for the same cancel adds nothing.
+    act(() => { store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-1', content: 'queued text' })) })
+    expect(readSideChatDraft(SLOT)).toBe('queued text')
+  })
+
+  it('a cancel answered after a re-read dropped its card, the side closed and a new question was sent still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: '[REDACTED]', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    const readFor = store.getState().chat.slotSide[SLOT]
+    act(() => {
+      store.dispatch(sideResync({ slot: SLOT, readFor, snapshot: {
+        open: true, created_at: readFor.createdAt, last_run_id: 'r1', running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q1', ts: '2026-05-20T00:00:00Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'partial', ts: '2026-05-20T00:00:01Z' },
+        ],
+        queue: [],
+      } }))
+    })
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+    // A new question opens the next conversation before the cancel is answered.
+    act(() => {
+      store.dispatch(sideOptimisticAppend({ slot: SLOT, message: { role: 'user', content: 'next question', ts: '2026-05-20T00:00:05Z' } }))
+    })
+    expect(store.getState().chat.slotSideClosed[SLOT]).toBeFalsy()
+
+    await act(async () => { release() })
+    await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('queued text'))
+    // The cancel belongs to the closed conversation, so the open one is unchanged.
+    expect(store.getState().chat.slotSide[SLOT].removedQueueIds ?? []).not.toContain('q-1')
+    expect(store.getState().chat.slotSide[SLOT].releasedText).toBeUndefined()
   })
 
   it('a cancel frame with no HTTP response still releases the text', async () => {

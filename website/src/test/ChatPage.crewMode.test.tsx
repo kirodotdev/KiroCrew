@@ -79,7 +79,7 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {} }))
+vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {}, endSplitPaneFocus: () => {} }))
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -95,6 +95,8 @@ import { openCrewSession } from '../pages/chat/command-center/CrewWorkerList'
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+import { crewModePreviewOn } from './crewModePreview'
+import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
 
 type Slot = {
   messages: Msg[]; mode?: string; agent?: string; agentKind?: string; origin?: string; memoryMode?: string; slotKeys?: string[]
@@ -103,6 +105,8 @@ type Slot = {
   instanceId?: string
   /** The Crew Mode root this slot is a worker of. */
   crewRoot?: string
+  /** The server's `crew_mode_root` stamp on this slot. */
+  crewModeRootStamp?: boolean
   slotRunning?: boolean
   /** The listed slot's `running`, which follows the server. */
   listedRunning?: boolean
@@ -114,14 +118,14 @@ type Slot = {
   connected?: boolean
 }
 
-function makeStore({ messages, mode = '', agent = 'default', agentKind = '', origin = 'user', memoryMode = 'persistent', slotKeys = ['slot-a'], createdBy, instanceId, crewRoot, slotRunning = false, listedRunning = false, slotLoading = false, activityOpen = false, pendingApproval = false, connected = false }: Slot) {
+function makeStore({ messages, mode = '', agent = 'default', agentKind = '', origin = 'user', memoryMode = 'persistent', slotKeys = ['slot-a'], createdBy, instanceId, crewRoot, crewModeRootStamp, slotRunning = false, listedRunning = false, slotLoading = false, activityOpen = false, pendingApproval = false, connected = false }: Slot) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null,
         ...(connected ? { connected: true } : {}),
-        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
+        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp ? { crew_mode_root: true } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -159,7 +163,7 @@ async function renderWith(slot: Slot) {
   return store
 }
 
-describe('Crew Mode on ChatPage', () => {
+describe('Ultra Mode on ChatPage', () => {
   // `useAgents` is mocked here, so seed what its catalog read records in the
   // app: a gateway that runs Crew Mode on the shipped conductor. A test that
   // names another conductor set re-seeds it.
@@ -182,8 +186,9 @@ describe('Crew Mode on ChatPage', () => {
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     expect(await screen.findByTestId('crew-mode-welcome')).toBeInTheDocument()
-    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
-    expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
+    // The chip stays where it was, pressed: the same chip turns it off again.
+    expect(screen.getByTestId('crew-mode-chip')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
   })
 
   it('switches to the conductor the gateway names, so swapping one config key swaps it', async () => {
@@ -194,43 +199,46 @@ describe('Crew Mode on ChatPage', () => {
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'better-conductor', 'template'))
   })
 
-  it('shows the Crew Mode chip, not a picker, on a conductor chat', async () => {
+  it('shows the Ultra Mode chip, not a picker, on a conductor chat', async () => {
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Crew Mode')
+    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Ultra Mode')
     const mark = screen.getByTestId('crew-mode-composer-chip')
     expect(mark.tagName).not.toBe('BUTTON')
     // A read-only status: named for what it says, not focusable, no pointer.
-    expect(mark).toHaveAttribute('aria-label', 'Crew Mode is on for this chat')
+    expect(mark).toHaveAttribute('aria-label', 'Ultra Mode is on for this chat')
     expect(mark).not.toHaveAttribute('tabindex')
     expect(mark).not.toHaveAttribute('title')
     expect(mark.className).toContain('cursor-default')
     expect(mark.className).not.toMatch(/\bborder\b|rounded|hover:/)
   })
 
-  it('shows the Crew Mode badge on every conductor, the pipeline conductor included', async () => {
+  it('shows the Ultra Mode badge on every conductor, the pipeline conductor included', async () => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor', 'kirocrew-pipeline-conductor'])
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-pipeline-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Crew Mode')
+    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Ultra Mode')
   })
 
   it('keeps the crew badge clear of the stationary sessions toggle', async () => {
     await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
     expect(screen.getByRole('button', { name: 'Show sessions sidebar' })).toBeInTheDocument()
     expect(screen.getByTestId('crew-worker-header')).toHaveClass('pl-[60px]')
-    expect(within(screen.getByTestId('crew-worker-header')).getByTestId('crew-ghost-badge').closest('.crew-grad-text')).toBeNull()
+    // The breadcrumb is plain text: no ghost badge, no accent text.
+    expect(within(screen.getByTestId('crew-worker-header')).queryByTestId('crew-ghost-badge')).toBeNull()
+    expect(screen.getByTestId('crew-worker-header').querySelector('.crew-grad-text')).toBeNull()
   })
 
-  it('opens a worker like a session: breadcrumb and Back to main chat', async () => {
+  it('opens a worker like a session: a plain breadcrumb and no header Back button', async () => {
     const store = await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
     const crumb = screen.getByTestId('crew-worker-breadcrumb')
     expect(crumb).toHaveTextContent('Sample goal')
     expect(crumb).toHaveTextContent('Worker B')
     expect(screen.getByTestId('crew-steer-composer')).toBeInTheDocument()
-    // Owner ruling: the button names the main chat, and its accessible name says the same.
-    const back = screen.getByRole('button', { name: 'Back to main chat' })
-    expect(back).toHaveTextContent('Back to main chat')
+    // Owner ruling: the one way back is the Crew tab's "Back to main chat" bar,
+    // so the header has no Back button of its own.
+    expect(within(crumb).queryByRole('button')).toBeNull()
+    expect(screen.queryByTestId('crew-back-to-conductor')).toBeNull()
     expect(screen.queryByText(/Back to conductor/)).toBeNull()
-    fireEvent.click(back)
+    await act(async () => { openCrewSession(store.dispatch, 'root-1', true) })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
   })
 
@@ -256,7 +264,7 @@ describe('Crew Mode on ChatPage', () => {
   it('V1: a worker opened from Workers while Split View is on leaves the split and shows the worker', async () => {
     dashboardConfig.mockResolvedValue({ session_grid: true })
     const store = await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
-    fireEvent.click(screen.getByTestId('crew-back-to-conductor'))
+    await act(async () => { openCrewSession(store.dispatch, 'root-1', true) })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
     // Split View on the conductor: the grid replaces the single chat.
     await act(async () => { fireEvent.keyDown(document, { key: 'd', ctrlKey: true }) })
@@ -305,10 +313,8 @@ describe('Crew Mode on ChatPage', () => {
     const gate = await screen.findByTestId('crew-worker-root-closed')
     expect(gate).toHaveTextContent('Main chat is closed. Open it again to message Worker B.')
     expect(screen.getByTestId('crew-worker-reopen-root')).toHaveTextContent('Open main chat')
-    // The breadcrumb's button names the main chat too, in its text and accessible name.
-    const crumbReopen = screen.getByTestId('crew-back-to-conductor')
-    expect(crumbReopen).toHaveAccessibleName('Open main chat')
-    expect(crumbReopen).toHaveTextContent('Open main chat')
+    // The breadcrumb carries no reopen control of its own.
+    expect(screen.queryByTestId('crew-back-to-conductor')).toBeNull()
     expect(screen.queryByText(/Reopen conductor/)).toBeNull()
     const box = within(screen.getByTestId('crew-steer-composer')).getByRole('textbox')
     expect(box).toHaveAttribute('aria-disabled', 'true')
@@ -344,19 +350,21 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
   })
 
-  it('hides both chips the moment it is pressed, before the switch lands', async () => {
+  it('shows the chip pressed the moment it is pressed, before the switch lands', async () => {
     let land: (v: { agent: string; workspace: string }) => void = () => {}
     chatSlotAgent.mockImplementationOnce(() => new Promise(r => { land = r }))
     const store = await renderWith({ messages: [] })
     fireEvent.click(screen.getByTestId('crew-mode-chip'))
-    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
-    expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
+    expect(screen.getByTestId('crew-mode-chip')).toHaveAttribute('aria-pressed', 'true')
+    // The memory-mode chip stays, unchanged, directly left of it.
+    const memory = screen.getByTestId('memory-mode-chip')
+    expect(memory.compareDocumentPosition(screen.getByTestId('crew-mode-chip')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // The switch reaches the API a tick later (a lazily loaded helper); land it then.
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await act(async () => { land({ agent: 'kirocrew-conductor', workspace: 'default' }) })
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
-    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
-    expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
+    expect(screen.getByTestId('crew-mode-chip')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
   })
 
   it('holds the composer, draft kept, for the one round-trip of turning on', async () => {
@@ -370,13 +378,13 @@ describe('Crew Mode on ChatPage', () => {
     // send that reached the server first would run on the agent the chat is
     // leaving and the switch would be refused. The draft stays in the box.
     expect(box).toHaveAttribute('aria-disabled', 'true')
-    expect(box).toHaveAttribute('placeholder', 'Turning Crew Mode on…')
+    expect(box).toHaveAttribute('placeholder', 'Turning Ultra Mode on…')
     expect(box).toHaveValue('plan the release')
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await act(async () => { land({ agent: 'kirocrew-conductor', workspace: 'default' }) })
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     await waitFor(() => expect(box).not.toHaveAttribute('aria-disabled', 'true'))
-    expect(box.getAttribute('placeholder')).not.toBe('Turning Crew Mode on…')
+    expect(box.getAttribute('placeholder')).not.toBe('Turning Ultra Mode on…')
     expect(box).toHaveValue('plan the release')
   })
 
@@ -407,14 +415,14 @@ describe('Crew Mode on ChatPage', () => {
     chatSlotAgent.mockImplementationOnce(() => new Promise((_r, j) => { refuse = j }))
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
     const box = within(screen.getByTestId('composer-dock')).getByRole('textbox')
-    fireEvent.click(screen.getByRole('button', { name: 'Crew Mode', pressed: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ultra Mode', pressed: true }))
     expect(box).toHaveAttribute('aria-disabled', 'true')
-    expect(box).toHaveAttribute('placeholder', 'Turning Crew Mode off…')
+    expect(box).toHaveAttribute('placeholder', 'Turning Ultra Mode off…')
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'default', 'template'))
     await act(async () => { refuse(new Error('refused')) })
     // The chat never left Crew Mode; the box is back, not held for good.
     await waitFor(() => expect(box).not.toHaveAttribute('aria-disabled', 'true'))
-    expect(box.getAttribute('placeholder')).not.toBe('Turning Crew Mode off…')
+    expect(box.getAttribute('placeholder')).not.toBe('Turning Ultra Mode off…')
   })
 
   it('keeps one welcome mounted from the press on, before and after the switch lands', async () => {
@@ -454,10 +462,11 @@ describe('Crew Mode on ChatPage', () => {
   it('turns off from the mark before the first message, back to the agent it had', async () => {
     chatSlotAgent.mockClear()
     const store = await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
-    const mark = screen.getByRole('button', { name: 'Crew Mode', pressed: true })
-    expect(mark).toHaveAttribute('title', 'Turn off Crew Mode. You can do this until you send your first message.')
-    fireEvent.click(mark)
-    // The chips come back at once, the mark goes, and the switch is the ordinary one.
+    const chip = screen.getByRole('button', { name: 'Ultra Mode', pressed: true })
+    expect(chip).toHaveAttribute('data-testid', 'crew-mode-chip')
+    expect(chip).toHaveAttribute('title', 'Ultra Mode is on. Click to turn it off before your first message.')
+    fireEvent.click(chip)
+    // The chip reads off at once and the switch is the ordinary one.
     expect(screen.getByTestId('crew-mode-chip')).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
     expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
@@ -472,7 +481,7 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
     expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
     expect(screen.queryByTestId('crew-mode-note')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Crew Mode' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ultra Mode' })).toBeNull()
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
 
@@ -484,8 +493,8 @@ describe('Crew Mode on ChatPage', () => {
     detail.hold = true
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', slotLoading: true })
     const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark).toHaveAttribute('aria-label', 'Crew Mode is on for this chat')
-    expect(screen.queryByRole('button', { name: 'Crew Mode', pressed: true })).toBeNull()
+    expect(mark).toHaveAttribute('aria-label', 'Ultra Mode is on for this chat')
+    expect(screen.queryByRole('button', { name: 'Ultra Mode', pressed: true })).toBeNull()
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
 
@@ -512,7 +521,7 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.getByTestId('crew-mode-chip')).toBeInTheDocument()
   })
 
-  it('is not offered when the agent catalog carries no Crew Mode fields (a gateway without it)', async () => {
+  it('is not offered when the agent catalog carries no Ultra Mode fields (a gateway without it)', async () => {
     setCrewModeCatalog(undefined, undefined)
     await renderWith({ messages: [] })
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
@@ -585,9 +594,15 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
   })
 
-  it('offers no memory-mode switch on a Crew Mode chat, so it stays on the conductor', async () => {
+  it('keeps the memory-mode chip, unchanged, directly left of the pressed Ultra Mode chip', async () => {
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
-    expect(screen.queryByText('Choose memory mode')).toBeNull()
+    const row = screen.getByTestId('composer-memory-chip')
+    const memory = within(row).getByTestId('memory-mode-chip')
+    const chip = within(row).getByTestId('crew-mode-chip')
+    expect(memory).toHaveTextContent('Choose memory mode')
+    expect(memory).not.toBeDisabled()
+    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    expect(memory.nextElementSibling).toBe(chip)
   })
 
   it('keeps a plain chat on its agent when it switches to Incognito', async () => {
@@ -622,8 +637,8 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.getByTestId('crew-mode-welcome')).toBeInTheDocument()
     expect(screen.getByTestId('crew-mode-open-board')).toBeInTheDocument()
     expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Crew Mode', pressed: true })).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Crew Mode')
+    expect(screen.queryByRole('button', { name: 'Ultra Mode', pressed: true })).toBeNull()
+    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Ultra Mode')
   })
 
   it('is not offered on a legacy orchestrator-mode session', async () => {
@@ -631,3 +646,46 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
   })
 })
+
+describe('ChatPage with the Ultra Mode preview off', () => {
+  // The gateway still runs Crew Mode; the device has the preview off.
+  beforeEach(() => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+  })
+  afterEach(() => { localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
+
+  it('offers no Ultra Mode chip and no Ultra Mode welcome on a new chat', async () => {
+    await renderWith({ messages: [] })
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-welcome')).toBeNull()
+  })
+
+  it('shows a Ultra Mode root with no Ultra Mode mark and no agent switch, since the gateway keeps it on its conductor', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    // The gateway refuses every switch of a root (`crew_mode_locked`), so none is offered.
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the agent picker on a conductor chat with a message that is no Ultra Mode root (Incognito)', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', memoryMode: 'incognito' })
+    expect(screen.queryByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+
+  it('still offers the agent picker on a conductor chat with no message yet', async () => {
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+
+  it('opens a crew member as an ordinary chat: no breadcrumb, no steer composer', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
+    expect(screen.queryByTestId('crew-worker-header')).toBeNull()
+    expect(screen.queryByTestId('crew-steer-composer')).toBeNull()
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

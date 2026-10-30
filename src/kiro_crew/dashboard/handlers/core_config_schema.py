@@ -47,6 +47,7 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
     EXTERNAL_TERMINAL_APPS,
+    FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     SESSION_SORT_MODES,
@@ -427,7 +428,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     # Background work on battery. Explicit adds never run through the sweeps it gates.
     "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
-    "knowledge.extraction_model": {"type": "str"},
+    # Settings → Knowledge lists the same advertised model names as the role-model
+    # pickers and the installer writes the value into the knowledge agent's spec,
+    # so it shares their grammar. No entitlement check: the picker lists the
+    # default harness's models, while the pool's zero-tool workers may run on
+    # another backend (``llm_pool._get_acp_backend``), so neither catalog can judge
+    # every id the picker offers. ``agent.model`` takes the same grammar-only spec.
+    "knowledge.extraction_model": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+    },
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {
         "type": "int",
@@ -527,6 +538,15 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     }
+
+
+# The Feature previews switches (Settings > Developer > Feature previews), one
+# boolean per known preview name. The dashboard keeps a browser copy of each as a
+# cache and writes the switch here, so it holds on every browser and address of
+# this gateway. Only the names in ``FEATURE_PREVIEW_FLAGS`` are writable, so the
+# route cannot grow the section with arbitrary keys.
+for _preview in FEATURE_PREVIEW_FLAGS:
+    _EDITABLE_CONFIG[f"dashboard.feature_previews.{_preview}"] = {"type": "bool"}
 
 
 # The wake judge's two per-point settings. In the editable set where

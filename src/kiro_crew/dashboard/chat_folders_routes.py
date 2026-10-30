@@ -28,9 +28,11 @@ from kiro_crew.dashboard.chat_folders_paths import (
 )
 from kiro_crew.dashboard.chat_folders_records import (
     CREATED_BY_SESSION,
+    LAYOUT_ONLY_FIELDS,
     MAX_CHAT_FOLDERS,
     FolderCapError,
     FolderCreateError,
+    FolderMateHomeLockedError,
     FolderNameExistsError,
     FolderOwnershipError,
     _audit_origin,
@@ -54,6 +56,15 @@ from kiro_crew.dashboard.folder_ownership import (
     _subtree_holds_foreign_folder,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.mate_folders import (
+    MateFolderError,
+    home_create_target,
+    in_mate_home,
+    is_mate_home,
+    is_mate_principal,
+    mate_home_id,
+    refuses_write_into,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.dashboard.token_auth import effective_request_app as _effective_request_app
@@ -65,10 +76,15 @@ from kiro_crew.sel import sel
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
 
 
-#: PATCH fields that change how the sidebar draws a folder rather than what the
-#: folder is. A person changing only these has not claimed the folder:
-#: collapsing it to look past it, or a drag that renumbers its siblings.
-_LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+def _mate_home_locked() -> web.Response:
+    """The refusal for a write a mate's home folder does not take."""
+    return web.json_response(
+        {
+            "error": "this folder belongs to a mate and is managed for you",
+            "code": "mate_home_locked",
+        },
+        status=403,
+    )
 
 
 async def api_chat_folders(request: web.Request) -> web.Response:
@@ -205,12 +221,28 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     if refused is not None:
         return refused
     parent_id = str(body.get("parent_id") or "")
+    project_dir = str(body.get("project_dir") or "")
+    if refuses_write_into(state._folders, parent_id, request_app):
+        return _mate_home_locked()
+    if is_mate_principal(request_app):
+        # A mate's folders live inside its own home folder: a create at
+        # the top level or under a folder outside that home is filed under it,
+        # keeping the project a person's folder it named inherits.
+        try:
+            parent_id, project_dir = await home_create_target(
+                state, request_app, parent_id, project_dir
+            )
+        except MateFolderError:
+            return web.json_response(
+                {"error": f"folder cap reached ({MAX_CHAT_FOLDERS})", "code": "folder_cap_reached"},
+                status=429,
+            )
     try:
         folder = await create_folder_record(
             state,
             name=str(body.get("name") or ""),
             parent_id=parent_id,
-            project_dir=str(body.get("project_dir") or ""),
+            project_dir=project_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
             default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
             color=str(body.get("color") or ""),
@@ -237,6 +269,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             error="a folder with this name already exists under that parent",
         )
         return web.json_response({"error": str(exc), "code": exc.code}, status=409)
+    except FolderMateHomeLockedError:
+        return _mate_home_locked()
     except FolderOwnershipError as exc:
         sel().log_api_access(
             caller=request_app,
@@ -300,6 +334,19 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             {"error": "request body must be a JSON object", "code": "invalid_json"},
             status=400,
         )
+    # A mate's home folder is managed by the gateway: it can be collapsed and
+    # reordered, never renamed, moved or reconfigured. Nothing outside the
+    # mate may move a folder into it either.
+    layout_only = set(body) <= LAYOUT_ONLY_FIELDS
+    if (
+        (is_mate_home(folder) and not layout_only)
+        or (refuses_write_into(state._folders, fid, request_app) and not layout_only)
+        or (
+            "parent_id" in body
+            and refuses_write_into(state._folders, str(body["parent_id"] or ""), request_app)
+        )
+    ):
+        return _mate_home_locked()
     # Validate ALL submitted fields into a pending-changes dict BEFORE mutating
     # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
     # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
@@ -358,6 +405,21 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                     {"error": "cannot move a folder into its own descendant"},
                     status=400,
                 )
+        if is_mate_principal(request_app) and (
+            fid == mate_home_id(state._folders, request_app)
+            or not in_mate_home(state._folders, fid, request_app)
+            or not in_mate_home(state._folders, new_parent, request_app)
+        ):
+            # A mate's folders stay inside its own home folder, and the home
+            # itself stays at the top level. A folder outside the home is not
+            # moved in: the person's chats filed there would be locked in too.
+            return web.json_response(
+                {
+                    "error": "a mate's folders stay inside its own folder",
+                    "code": "mate_folder_scope",
+                },
+                status=403,
+            )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
         pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
@@ -489,7 +551,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # is counted here by name. A person moving a folder INTO another also
     # claims that destination, the same as nesting a new folder under it.
     by_person = origin_source == "dashboard"
-    claims_for_person = by_person and (regenerate_icon or bool(set(changes) - _LAYOUT_ONLY_FIELDS))
+    claims_for_person = by_person and (regenerate_icon or bool(set(changes) - LAYOUT_ONLY_FIELDS))
     claims_parent_for_person = by_person and reparenting and bool(new_parent)
     # An agent rename or restyle from a session a channel can drive is refused
     # here, not only in the MCP tool: a conversation resumed from a channel into
@@ -987,6 +1049,9 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     target = next((f for f in state._folders if f["id"] == fid), None)
     if target is None:
         return web.json_response({"error": "not found"}, status=404)
+    principal = folder_principal(state, request)
+    if is_mate_home(target) or refuses_write_into(state._folders, fid, principal):
+        return _mate_home_locked()
     request_app = _effective_request_app(state, request)
     # Answered before a single slot is unfiled, so the common refusal costs no
     # rollback. Sound pre-lock because ``owner_app`` is stamped at create and no

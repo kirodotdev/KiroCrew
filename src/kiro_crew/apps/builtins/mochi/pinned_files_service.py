@@ -108,6 +108,15 @@ class PinsCorruptError(Exception):
     """
 
 
+class PinsWriteError(Exception):
+    """A user-driven pin mutation could not be saved, so it was rolled back.
+
+    Raised by :meth:`PinnedFilesService.remove_pin` and
+    :meth:`PinnedFilesService.mark_seen` from inside the mutation lock, so a
+    caller never has to infer the failure from a later read of the list.
+    """
+
+
 def read_pins_for_update(file_path: str) -> list[Any] | None:
     """Read the stored pin list for a read-modify-write, REFUSING on corruption.
 
@@ -366,8 +375,9 @@ class PinnedFilesService:
     def remove_pin(self, file_path: str) -> bool:
         """Remove a pin. False if not found.
 
-        Raises :class:`PinsCorruptError` when the stored list could not be read
-        -- distinct from the ``False`` above, which means the pin was not there.
+        Raises :class:`PinsCorruptError` when the stored list could not be read,
+        and :class:`PinsWriteError` when the removal could not be saved -- both
+        distinct from the ``False`` above, which means the pin was not there.
         """
         with pins_mutation(self._file_path):
             self._reload_pins_for_update()
@@ -381,7 +391,7 @@ class PinnedFilesService:
                 # Write failed — restore the pin so memory matches disk and report
                 # failure rather than a success that reverts on the next restart.
                 self._pins = before
-                return False
+                raise PinsWriteError("the pin list could not be saved")
 
         self._stop_watcher(file_path)
         self._broadcast("pinned:files-changed", self.get_pins())
@@ -395,7 +405,8 @@ class PinnedFilesService:
         """Clear a file's ``updatedAt``. Persists and broadcasts even when it was
         already unset — the original assigned ``undefined`` unconditionally.
 
-        Raises :class:`PinsCorruptError` when the stored list could not be read.
+        Raises :class:`PinsCorruptError` when the stored list could not be read,
+        and :class:`PinsWriteError` when the change could not be saved.
         Returning quietly would report success for a mutation that did not
         happen, which for this method is indistinguishable from the normal
         already-unset case.
@@ -410,7 +421,7 @@ class PinnedFilesService:
             entry.pop("updatedAt", None)
             if not self._persist():
                 self._pins = before  # roll back; nothing durably changed
-                return
+                raise PinsWriteError("the pin list could not be saved")
         self._broadcast("pinned:files-changed", self.get_pins())
 
     def get_watched_paths(self) -> set[str]:

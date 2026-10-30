@@ -127,6 +127,33 @@ async def _subagent_work_pending(subagents: Any, parent_session_key: str) -> boo
     return bool(subagents.has_pending_work_for(parent_session_key))
 
 
+def _refuse_mate_move_out(
+    state: DashboardState, request: web.Request, folder_id: str, current_folder_id: str = ""
+) -> web.Response | None:
+    """A 403 when a chat would cross a mate's home folder boundary, else ``None``.
+
+    A mate files its chats only inside its own home folder, nobody else files a
+    chat into one, and nobody else moves a chat out of one.
+    """
+    from kiro_crew.dashboard.mate_folders import in_mate_home, is_mate_principal, refuses_refile
+
+    principal = folder_principal(state, request)
+    if refuses_refile(state._folders, current_folder_id, folder_id, principal):
+        return web.json_response(
+            {
+                "error": "this folder belongs to a mate and is managed for you",
+                "code": "mate_home_locked",
+            },
+            status=403,
+        )
+    if not is_mate_principal(principal) or in_mate_home(state._folders, folder_id, principal):
+        return None
+    return web.json_response(
+        {"error": "a mate's chats stay inside its own folder", "code": "mate_folder_scope"},
+        status=403,
+    )
+
+
 async def api_chat_slot_folder(request: web.Request) -> web.Response:
     """PATCH /api/chat/slots/{slot}/folder — assign slot to a folder."""
 
@@ -183,6 +210,12 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
+    if (
+        mate_refusal := _refuse_mate_move_out(
+            state, request, folder_id, str(getattr(slot, "folder_id", "") or "")
+        )
+    ) is not None:
+        return mate_refusal
     # Optional generation token. The identity re-check below covers THIS
     # request's own awaits, but a caller that resolved the slot in an earlier
     # request (``chat_folder_file_self`` reads ``/api/chat/slots`` first) has a
@@ -1295,9 +1328,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_folders_records import (  # noqa: F401
         _KNOWN_INTERNAL_CALLERS,
         CREATED_BY_SESSION,
+        LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
         FolderCapError,
         FolderCreateError,
+        FolderMateHomeLockedError,
         FolderNameExistsError,
         FolderOwnershipError,
         _caller_reaches_a_channel,
@@ -1315,9 +1350,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         live_slot_names_in_folders,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
-        _LAYOUT_ONLY_FIELDS,
         _MAX_REORDER_BODY_BYTES,
         _MAX_REORDER_ENTRIES,
+        _mate_home_locked,
         api_chat_folder_create,
         api_chat_folder_delete,
         api_chat_folder_reorder,

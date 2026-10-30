@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { crewApprovalDecidableHere, runsCrewMode } from '../lib/crewMode'
+import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards from './crew/CrewApprovalCards'
-import { CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
+import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
 import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
@@ -17,6 +17,7 @@ import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
+import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
@@ -208,7 +209,7 @@ export default function ChatPane({
   // its approval is decided only on the conductor's card (no band here), and a
   // closed conductor turns its composer off. A pane holding the conductor keeps
   // its approval cards (edge review R3 G3, Z1).
-  const paneCrewRoot = paneSlot?.crew_root || ''
+  const paneCrewRoot = crewRootOf(paneSlot)
   const { rootClosed: paneCrewRootClosedRaw } = useCrewRoot(paneCrewRoot)
   const paneCrewRootClosed = !!paneCrewRoot && paneCrewRootClosedRaw
   const noSend = useCallback(() => {}, [])
@@ -302,6 +303,9 @@ export default function ChatPane({
     () => splitPaneMessages(allMessages),
     [allMessages],
   )
+  // Whether the person has sent this chat a message: the gateway refuses to move
+  // a Crew Mode chat off its conductor from then on.
+  const paneHasUserMessage = useMemo(() => paneMessages.some(m => m.role === 'user'), [paneMessages])
   // A crewmate's chat draws only what the crewmate says (see the `crewmate`
   // prop). Filtered HERE, above the list, so the run positions the assistant
   // rows compute from their neighbours see the drawn list, and so the pinned
@@ -424,10 +428,11 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(
-    () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
-    [allMessages, busy, pendingQuestion],
-  )
+  // A crewmate chat never offers a chip that asks it for a card (crewmateChips).
+  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(() => {
+    const derived = deriveFollowUpOptions(allMessages, busy, !!pendingQuestion)
+    return crewmate ? crewmateFollowUps(derived) : derived
+  }, [allMessages, busy, pendingQuestion, crewmate])
   // Visual-only highlight state; the composer text is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
   // message) or the pane is re-bound to another slot — both signal a fresh turn.
@@ -967,6 +972,8 @@ export default function ChatPane({
               agent that asked may not be the pane the user is looking at, and
               without this its card never appears anywhere, so it waits out its
               full window. */}
+          {/* `data-question-slot`: the Crew tab's "Answer in chat" scrolls here. */}
+          <div data-question-slot={slotKey}>
           <PendingQuestionCard
             slotKey={slotKey}
             onFallbackSend={(text, questions) => {
@@ -980,6 +987,7 @@ export default function ChatPane({
             }}
             onDirectSend={onDirectQuestionSend}
           />
+          </div>
         </div>
 
         <StatusNotice
@@ -1072,10 +1080,14 @@ export default function ChatPane({
             shape as ChatPage's inputAreaRef). */}
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10 dock-inert">
-        {paneSlot?.crew_mode_root && <CrewApprovalCards root={slotKey} />}
-        {paneCrewRoot && (
+        {crewModeRoot(paneSlot) && <CrewApprovalCards root={slotKey} />}
+        {paneCrewRoot ? (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />
+        ) : (
+          // Without the gate (the Crew Mode preview off) a send the server still
+          // took as a steer can come back unrecorded: say so here.
+          <CrewSteerUnrecordedNotice worker={slotKey} workerTitle={title} />
         )}
         <Composer
           ref={composerRef}
@@ -1157,7 +1169,10 @@ export default function ChatPane({
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
-          onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          // A Crew Mode root with a message offers no switch, preview on or off: the raw
+          // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
+          onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent)
+            && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}

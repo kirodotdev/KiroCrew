@@ -15,10 +15,6 @@ from kiro_crew.dashboard.handlers import api_taskrunner_export_yaml, api_taskrun
 from kiro_crew.dashboard.handlers_project import (
     _redact,
     _run_to_project,
-    api_activities_list,
-    api_comment_add,
-    api_comment_delete,
-    api_comments_list,
     api_project_create,
     api_project_delete,
     api_project_get,
@@ -269,13 +265,27 @@ class TestProjectHandlers:
         with pytest.raises(web.HTTPNotFound):
             await api_project_delete(req)
 
-    @pytest.mark.asyncio
-    async def test_stub_endpoints(self):
-        req = _make_request(_make_app())
-        assert json.loads((await api_activities_list(req)).body) == []
-        assert (await api_comment_add(req)).status == 201
-        assert json.loads((await api_comments_list(req)).body) == []
-        assert json.loads((await api_comment_delete(req)).body) == {"ok": True}
+    def test_the_stub_activity_and_comment_routes_are_not_mounted(self):
+        """`/api/activities` and `/api/comments` were placeholders: POST answered
+        201 while saving nothing, and no client called them. They stay unmounted
+        so a request gets the normal 404 instead of a fake success."""
+        from kiro_crew.dashboard.routes import connections
+
+        app = web.Application()
+        connections.register(app)
+        mounted = {
+            (route.method, route.resource.canonical)
+            for route in app.router.routes()
+            if route.resource is not None
+        }
+        for method, path in (
+            ("GET", "/api/activities"),
+            ("GET", "/api/comments"),
+            ("POST", "/api/comments"),
+            ("DELETE", "/api/comments/{id}"),
+        ):
+            assert (method, path) not in mounted
+        assert ("GET", "/api/projects/{id}") in mounted, "fixture mounted nothing"
 
 
 # ── TaskRunner.delete_run ──

@@ -271,6 +271,17 @@ class TestReadMessageContentLength:
         assert _read_message(stdin) == good
         assert [a[0] for a, _ in answered] == [4]
 
+    def test_an_unterminated_last_line_one_past_the_cap_is_refused(self, monkeypatch):
+        """A last line with no terminator has nothing to subtract: all of it is body."""
+        answered: list = []
+        monkeypatch.setattr(mcp_shared, "respond", lambda *a, **k: answered.append((a, k)))
+        body = json.dumps({"jsonrpc": "2.0", "id": 4, "method": "ping"}).encode("utf-8")
+        monkeypatch.setattr(mcp_shared, "MAX_CONTENT_LENGTH_BYTES", len(body) - 1)
+        stdin = _make_stdin(body)
+        assert _read_message(stdin) is SKIP
+        assert _read_message(stdin) is None
+        assert [a[0] for a, _ in answered] == [4]
+
     def test_the_body_cap_is_the_gateways_read_limit(self):
         """The constant's comment says so; a copy could drift without a test."""
         from kiro_crew.mcp_gateway import pool

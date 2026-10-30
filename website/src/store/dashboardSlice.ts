@@ -12,6 +12,7 @@ import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
+import { crewModeEnabled } from '../lib/crewMode'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
 export { selectPersonSlots } from './personSlots'
 
@@ -1910,15 +1911,21 @@ const _unreadByModeCache = new Map<string, UnreadByModeSelector>()
 export function selectUnreadByMode(mode: string): UnreadByModeSelector {
   let sel = _unreadByModeCache.get(mode)
   if (!sel) {
-    sel = createSelector(
+    // The Crew Mode preview decides whether crew members count (`crewMemberKeys`).
+    // It is passed as an argument, not read inside an input selector: the
+    // selector memoizes on its arguments, so a flip with the same state would
+    // otherwise answer from the cache.
+    const count = createSelector(
       (state: { dashboard: DashboardState }) => state.dashboard.slots,
       (state: { dashboard: DashboardState }) => state.dashboard.unreadSlots,
       (state: { dashboard: DashboardState }) => state.dashboard.slotsHeldKeys,
       (state: { dashboard: DashboardState }) => state.dashboard.slotsHoldChannels,
       (state: { dashboard: DashboardState }) => state.dashboard.slotsListPartial,
+      (_state: { dashboard: DashboardState }, crewMode: boolean) => crewMode,
       (slots, unread, heldKeys, holdChannels, listPartial) =>
         countUnreadByMode(slots, unread, mode, heldKeys ?? [], holdChannels === true, listPartial === true),
     )
+    sel = state => count(state, crewModeEnabled())
     _unreadByModeCache.set(mode, sel)
   }
   return sel

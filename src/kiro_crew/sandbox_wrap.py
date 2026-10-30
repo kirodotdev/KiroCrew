@@ -571,8 +571,12 @@ def wrap_argv(
             Windows internal-sandbox delegation requires this to be exactly
             ``True``; basename inference can never grant that exception.
         first_party_fixed_argv: True ONLY for spawns whose full argv is derived
-            inside this package with zero agent/repo/user-config influence;
-            every passing site must be allowlisted in
+            inside this package with zero agent/repo/user-config influence,
+            or that run the kiro-cli Kiro Crew already launches for every ACP
+            session, resolved only by ``kiro_cli.find_kiro_cli_candidates``,
+            with a fixed argv (the enterprise sign-in check's ``--version`` /
+            ``whoami``): Crew already trusts and runs that binary, so the
+            carve-out adds no new trust. Every passing site must be allowlisted in
             ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``. On a host with
             genuinely no sandbox backend (``no_backend`` — never a transient
             probe failure or a foreign outer sandbox) and no governance
@@ -1042,7 +1046,8 @@ def wrap_argv(
                 "",
             )
             # First-party carve-out: a spawn whose full argv is
-            # derived inside this package (never agent/repo/user-config text)
+            # derived inside this package (never agent/repo/user-config text),
+            # or the ACP kiro-cli run with a fixed argv (see the docstring),
             # may proceed unconfined on a host that GENUINELY has no backend.
             # All three preconditions, structurally:
             #   * the caller vouched via ``first_party_fixed_argv`` — a reviewed

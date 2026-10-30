@@ -503,6 +503,13 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
         # A crewmate raises its own page offer through its kirocrew-mate tool, so the
         # asked-once record is kept; propose_change never raises it.
         return _refusal(CardError(403, "self_only", "only the crewmate itself can offer this"))
+    if kind in catalog.GATEWAY_RESOLVED_KINDS:
+        # The server entry on this card is one the gateway built; a caller-named
+        # entry would be a launch line the agent wrote.
+        _audit(sk, "cards.propose", "denied", "gateway_resolved")
+        return _refusal(
+            CardError(403, "use_request_server", "ask for an MCP server with request_server")
+        )
     params = body.get("params")
     if (
         kind == catalog.KIND_CREWMATE_CAPABILITIES
@@ -1827,6 +1834,9 @@ def register_change_card_routes(app: web.Application) -> None:
     app.router.add_get("/api/cards/agent/diagnose", api_cards_agent_diagnose)
     app.router.add_post("/api/cards/agent/propose", api_cards_agent_propose)
     app.router.add_get("/api/cards/agent/status", api_cards_agent_status)
+    from kiro_crew.dashboard.handlers.template_server_request import api_cards_agent_request_server
+
+    app.router.add_post("/api/cards/agent/request-server", api_cards_agent_request_server)
     app.router.add_get("/api/cards/pending", api_cards_pending)
     app.router.add_post("/api/cards/{card_id}/preview", api_cards_preview)
     app.router.add_post("/api/cards/{card_id}/cancel", api_cards_cancel)

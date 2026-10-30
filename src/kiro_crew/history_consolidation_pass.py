@@ -46,8 +46,10 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
     _SEMANTIC_OMISSION_NOTICE,
+    _audit_oversized_semantic,
     _bounded_semantic_table,
     _is_plausible_memory_file,
+    _refuse_oversized_semantic,
     _reroute_lesson_semantic_keys,
     _semantic_snapshot_in_pages,
     _session_facets,
@@ -79,6 +81,7 @@ from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.lesson_validation import LESSON_APPLIES_INSTRUCTION
 from kiro_crew.llm_helpers import ToolApprovalPolicy, background_turn
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -725,6 +728,9 @@ async def _consolidate(
                 "(e.g. pref.color, user.favorite_language, project.name). "
                 "confidence 1.0 = user stated, 0.8-0.9 = clearly implied, <0.8 = uncertain (rejected). "
                 "value must be a JSON primitive (string, number, boolean) — NOT objects or arrays. "
+                f"Each value is at most {_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS} characters: "
+                "a longer one is refused whole, never shortened, so split a long fact into "
+                "separate keys yourself, one fact per key. "
                 "IMPORTANT: Check existing semantic memory above. If a key already covers "
                 "the same topic, UPDATE that key instead of creating a new one. "
                 "Do NOT create near-duplicate keys (e.g. project.x.approach AND project.x.refined). "
@@ -941,6 +947,16 @@ async def _consolidate(
 
             kind_routing = route_consolidation_by_kind(consolidation, self._logger)
             consolidation = kind_routing.result
+            # The consolidation size bound, on the answer routing returned, as the V1
+            # writer applies it: routing reads and logs every item as it would without
+            # the bound (_refuse_oversized_semantic).
+            consolidation, oversized = _refuse_oversized_semantic(
+                consolidation,
+                self._logger,
+                vector_store=store,
+                source=f"consolidation:{key}",
+                member=True,
+            )
             # memory.lesson_extraction_enabled covers the member store too:
             # its extracted lessons are dropped from the payload, and every
             # other update still applies.
@@ -975,6 +991,9 @@ async def _consolidate(
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
+                    # One memory_events row per refused value, under this hold and
+                    # before apply_consolidation opens its transaction.
+                    _audit_oversized_semantic(store, oversized, key)
                     applied = store.apply_consolidation(
                         source_id=source_id,
                         session_key=key,

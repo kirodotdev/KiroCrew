@@ -20,6 +20,7 @@ import Clickable from '../../../components/Clickable'
 import type { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
+import { crewRootOf } from '../../../lib/crewMode'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -77,6 +78,7 @@ export default function ChatTitleOverlay({
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
 }: ChatTitleOverlayProps) {
+  const currentCrewRoot = crewRootOf(currentSlot)
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -104,9 +106,9 @@ export default function ChatTitleOverlay({
         {/* A Crew Mode worker in the main pane: the breadcrumb replaces the title
             row on every width (on a phone it sits under the shell bar), so whose
             worker this is and the way back are always on screen. */}
-        {currentSlot?.crew_root && (
+        {currentCrewRoot && currentSlot && (
           <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
-            <CrewWorkerBreadcrumb root={currentSlot.crew_root} worker={currentSlot} />
+            <CrewWorkerBreadcrumb root={currentCrewRoot} worker={currentSlot} />
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}
@@ -122,7 +124,7 @@ export default function ChatTitleOverlay({
             )}
           </div>
         )}
-        {!titleInTopbar && !currentSlot?.crew_root && (
+        {!titleInTopbar && !currentCrewRoot && (
         <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can

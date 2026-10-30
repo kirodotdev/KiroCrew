@@ -147,6 +147,7 @@ that path binding. Prefer a package where you can.
 | A desktop app on Fedora / RHEL / CentOS Stream / Amazon Linux 2023 | **`.rpm`** (d) |
 | A desktop app with no root and no package manager | **AppImage** (d) |
 | A container host | **Docker** ([guide](docker.md)) |
+| To work on Kiro Crew itself (follows a branch; `main` is Nightly) | **From source** (b) |
 
 ### a. One-line install (fastest)
 
@@ -276,6 +277,25 @@ run the gateway straight out of `src/`:
 make build                                   # npm build + editable backend install into .venv
 PYTHONPATH=src python -m kiro_crew gateway   # -> http://localhost:5476
 ```
+
+**This is the contributor layout, not an end-user install.** `make build` and
+`install.sh` both build the clone they run in, so the install follows the
+clone's checked-out branch rather than a release lane. On `main` that is the
+Nightly lane: the version reads `0.X.0.devYYYYMMDD`, ahead of the Stable
+release the desktop app and the [one-line install](#a-one-line-install-fastest)
+follow. `install.sh` says which lane it is building, at its start and at its
+end.
+
+Updating follows the same branch. `kirocrew update` (and the dashboard
+**Update** button) fetches `origin/<branch>` and hard-resets the clone to it
+when the clone is only behind. A clone that is both ahead and behind — local
+commits `origin/<branch>` lacks, plus new ones from it — is refused, because the
+reset would discard the local commits; `kirocrew update --force` discards them
+deliberately. A clone that is only ahead is reported up to date. A detached
+checkout, such as a release tag, is on no branch, and `kirocrew update` cannot
+update it. To follow a release lane on a laptop or server, use the one-line
+install: it updates from the channel's signed release feed and has no git
+history to diverge.
 
 On Windows the same targets run through `make.ps1`, because `make` is not part
 of a Windows install and the Makefile's recipes are POSIX-shaped

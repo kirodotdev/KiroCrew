@@ -409,6 +409,20 @@ class TestSubagentsHoldUserMessages:
         state = self._state([{"id": "a1", "stalled": True}, {"id": "a2", "stalled": False}])
         assert subagents_hold_user_messages(state, "dashboard:s1") is True
 
+    def test_child_parked_at_spawn_approval_does_not_hold(self):
+        """An unanswered spawn approval has no process and may never start."""
+        state = self._state([{"id": "a1", "stalled": False, "awaitingSpawnApproval": True}])
+        assert subagents_hold_user_messages(state, "dashboard:s1") is False
+
+    def test_running_sibling_of_a_parked_child_still_holds(self):
+        state = self._state(
+            [
+                {"id": "a1", "stalled": False, "awaitingSpawnApproval": True},
+                {"id": "a2", "stalled": False, "awaitingSpawnApproval": False},
+            ]
+        )
+        assert subagents_hold_user_messages(state, "dashboard:s1") is True
+
     def test_no_children_or_no_registry(self):
         assert subagents_hold_user_messages(self._state([]), "k") is False
         state = MagicMock()
@@ -499,6 +513,20 @@ class TestDrainIdleParentQueueForStall:
             await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
         finally:
             gate.set()
+
+        assert spawned == []
+        assert slot.queue_depth == 1
+
+    async def test_closing_slot_keeps_its_queue(self, tmp_path, monkeypatch):
+        """A tab that started closing after the drain was scheduled starts no turn."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        slot.queue_append("waiting user message")
+        slot._closing = 1
+        assert slot.is_closing is True
+
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
 
         assert spawned == []
         assert slot.queue_depth == 1

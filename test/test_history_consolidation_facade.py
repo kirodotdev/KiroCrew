@@ -60,10 +60,11 @@ _BASE_MODULE_NAMES = frozenset("""
     _CONSOLIDATION_PROMPT_BUDGET_CHARS _CONSOLIDATION_REFUSED
     _CONSOLIDATION_SUBOFFSET_META_KEYS _CONSOLIDATION_THRESHOLD
     _ConsolidationNotDispatched _ConsolidationRefusedSentinel _ConsolidationReplyUnusable
-    _CountClaim
+    _CountClaim _v1_consolidation_metadata
     _EMBED_BUDGET_SECS_PER_PASS _EmbedBudget _HISTORY_LOGGER _INHERIT_GLOBAL
     _InheritGlobal _LessonDeleteDecision _LESSON_PASSTHROUGH_FIELDS
-    _MAX_EPISODIC_PER_CONSOLIDATION
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS _MAX_EPISODIC_PER_CONSOLIDATION
+    _OversizedItem _audit_oversized_semantic _refuse_oversized_semantic _v1_consolidation_confidence
     _MAX_LESSONS_PER_CONSOLIDATION _MAX_SEMANTIC_PER_CONSOLIDATION _PLACEHOLDER_BODIES
     _PersistenceDisabledMidRun _RunCommitState _SEEDED_PER_SWEEP _SEED_MAX_AGE_SECS
     _SEMANTIC_OMISSION_NOTICE _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION
@@ -286,7 +287,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
+        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, rejected_scripts: \"'dict[str, list[str]] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
     ),
     "_start_counted": (
         "function",

@@ -10,6 +10,7 @@ import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
+import { jsonEqual } from '../../utils/structuralEqual'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 /** Per-slot subagent map, falling back to the global active mirror — the
@@ -25,6 +26,17 @@ export const selectSlotSubagents = (state: RootState, slot: string | null): Reco
 /** Get subagents map for a slot (read-only lookup) */
 function getSlotSubs(state: ChatState, slot: string) {
   return slot !== state.activeSlot ? state.slotActivity[slot]?.subagents : state.subagents
+}
+
+/** A replay item named this card: `subagentReplayDone` keeps it. */
+function confirmReplayed(state: ChatState, id: string) {
+  if (state.subagentReplayUnconfirmed?.[id]) delete state.subagentReplayUnconfirmed[id]
+}
+
+/** `a` without its undefined fields: a reducer that spells an absent field as
+ *  `undefined` and one that leaves it out describe the same card. */
+function withoutUndefined(a: SubagentActivity): Partial<SubagentActivity> {
+  return Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined))
 }
 
 /** Central, fail-closed accessor for a single subagent entry by wire-supplied
@@ -49,9 +61,9 @@ function getSlotSub(state: ChatState, slot: string, id: string): SubagentActivit
  *  evidence the panel gets between one spawn frame and one done frame. Dropping
  *  them when the container is missing makes the agent invisible for its whole
  *  run and then complete out of nowhere, and the gap is reachable in normal use:
- *  `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect,
- *  so every agent already running at that moment has its entry discarded while
- *  its remaining frames are all incremental ones.
+ *  the subscription starts before the replay is sent, so a tab that connects
+ *  while an agent runs can receive its incremental frames before the replay
+ *  item that would have created its card.
  *
  *  A created entry is deliberately a MINIMUM: the frame that reaches here
  *  carries no task text or agent name, so those stay empty and a later frame
@@ -120,8 +132,8 @@ export const SUBAGENT_TOOL_CALLS_CAP = 50
  *  Above the coalescing threshold the backend merges frames (latest wins), so
  *  intermediate calls never reach the client; `toolCount` still counts them,
  *  and the card reports the difference rather than implying a complete list.
- *  A reconnect clears running cards (`clearSubagentsForSnapshot`), so the
- *  timeline restarts there too.
+ *  Reconnect replay runs this same rule on a copied timeline, while
+ *  `clearSubagentsForSnapshot` keeps the running card's held timeline.
  *  Must run BEFORE the caller stores the frame's `tool_count`. */
 function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined) {
   const calls = (a.toolCalls ??= [])
@@ -129,9 +141,9 @@ function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | u
   const id = callId || undefined
   let same: boolean
   if (id && newest?.id) same = newest.id === id
-  // A replay seeds its one row without an id, so an id-bearing frame after it
-  // is a call of its own: the count cannot tell it apart, because a child's
-  // permission request does not move `tool_count`.
+  // A replay from an older gateway can seed its one row without an id, so an
+  // id-bearing frame after it is a call of its own: the count cannot tell it
+  // apart, because a child's permission request does not move `tool_count`.
   else if (id && newest) same = false
   else if (typeof toolCount === 'number') same = !!newest && toolCount === a.toolCount
   else same = newest?.tool === tool
@@ -142,6 +154,14 @@ function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | u
   }
   calls.push(id ? { tool, id } : { tool })
   if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+}
+
+/** A replayed snapshot is older than the held card when it carries a lower
+ *  tool count: every live `tool_call` frame raises the count. A call id is no
+ *  test of age, because a permission frame repeats an earlier call's id
+ *  without moving the count, so one id can sit at several timeline rows. */
+function isStaleSnapshot(a: SubagentActivity, toolCount: number | undefined) {
+  return typeof toolCount === 'number' && typeof a.toolCount === 'number' && toolCount < a.toolCount
 }
 
 /**
@@ -383,26 +403,56 @@ export const selectSidebarApprovalCounts = createSelector(
 )
 
 export const subagentReducers = {
-  /** Drop the previous connection's ephemeral subagent view before the gateway
-   *  replays its authoritative running/done snapshot. Without this reset, an
-   *  empty replay leaves agents from a restarted gateway visible indefinitely.
-   *  Pending spawn-approval cards are preserved: the subscribe_subagents replay
-   *  only re-emits native + managed running/done agents, so a card still
-   *  awaiting approval has no backend SubagentInfo to hydrate it and would be
-   *  lost (its approve/reject UI along with it) on a mid-approval reconnect. */
+  /** Start reconciling the held subagent view against the replay the gateway
+   *  sends after `subscribe_subagents`. Every card except a pending spawn
+   *  approval is marked unconfirmed rather than dropped: the replay's snapshot
+   *  and done items reconcile into the cards they name, so a reconnect that
+   *  replays what the tab already shows changes no card, and a running card
+   *  keeps its tool-call timeline. `subagentReplayDone`, sent after the last
+   *  replay item, drops the cards still unconfirmed, so an empty replay from a
+   *  restarted gateway still clears agents it no longer knows.
+   *
+   *  Pending spawn-approval cards are never marked: the replay only re-emits
+   *  native + managed running/done agents, so a card still awaiting approval
+   *  has no backend SubagentInfo to confirm it and would be lost (its
+   *  approve/reject UI along with it) on a mid-approval reconnect. */
   clearSubagentsForSnapshot(state: ChatState) {
-    const keepPending = (subs: Record<string, SubagentActivity> | undefined): Record<string, SubagentActivity> => {
-      const kept: Record<string, SubagentActivity> = {}
-      if (subs) for (const [id, a] of Object.entries(subs)) if (a.status === 'pending') kept[id] = a
-      return kept
+    const unconfirmed: Record<string, true> = { ...(state.subagentReplayUnconfirmed ?? {}) }
+    const mark = (subs: Record<string, SubagentActivity> | undefined) => {
+      if (!subs) return
+      for (const [id, a] of Object.entries(subs)) {
+        if (a.status === 'pending') continue
+        unconfirmed[id] = true
+        // The replay carries no retry state, and a recovery the old socket
+        // missed would otherwise leave "retrying" on the card. A retry frame
+        // on the new connection, which arrives after this, sets it again.
+        if (a.retrying) a.retrying = false
+      }
     }
-    state.subagents = keepPending(state.subagents)
-    for (const activity of Object.values(state.slotActivity)) activity.subagents = keepPending(activity.subagents)
+    mark(state.subagents)
+    for (const activity of Object.values(state.slotActivity)) mark(activity.subagents)
+    state.subagentReplayUnconfirmed = unconfirmed
     // Queued counts are advisory and re-emitted on the next drain — reset to
     // avoid showing a stale "waiting" count for a wave that finished during
-    // the disconnect (under-count self-heals on the next drain frame).
-    state.subagentQueued = {}
-    state.subagentQueuedReason = {}
+    // the disconnect (under-count self-heals on the next drain frame). Written
+    // only when non-empty, so an idle reconnect keeps both maps' identity.
+    if (Object.keys(state.subagentQueued ?? {}).length) state.subagentQueued = {}
+    if (Object.keys(state.subagentQueuedReason ?? {}).length) state.subagentQueuedReason = {}
+  },
+  /** The gateway's `subagent_replay_done`: drop every card the replay did not
+   *  name (see `clearSubagentsForSnapshot`). A marker with no replay in
+   *  progress (a panel subscribe on a live socket) changes nothing. */
+  subagentReplayDone(state: ChatState) {
+    const unconfirmed = state.subagentReplayUnconfirmed
+    if (!unconfirmed) return
+    state.subagentReplayUnconfirmed = null
+    const sweep = (subs: Record<string, SubagentActivity>) => {
+      for (const id of Object.keys(subs)) {
+        if (unconfirmed[id] && subs[id].status !== 'pending') delete subs[id]
+      }
+    }
+    sweep(state.subagents)
+    for (const activity of Object.values(state.slotActivity)) sweep(activity.subagents)
   },
   /** Aggregate "waiting to start" count for a slot. Agents queued behind the
    *  concurrency cap / stagger gate have no individual card; this count lets
@@ -692,6 +742,7 @@ export const subagentReducers = {
   },
   sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+    confirmReplayed(state, action.payload.id)
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
@@ -711,11 +762,16 @@ export const subagentReducers = {
       : undefined
     const doneStatus = terminalStatus(action.payload)
     if (a) {
+      // Every field below is written only when it moves: a reconnect replays
+      // the done item of every card that already shows it, and an unchanged
+      // card must keep its object.
       a.status = doneStatus
-      a.retrying = false
+      if (a.retrying !== false) a.retrying = false
       a.elapsed = action.payload.elapsed
       if (credits !== undefined) a.credits = credits
-      a.error = doneStatus === 'stopped' ? undefined : action.payload.error
+      const error = doneStatus === 'stopped' ? undefined : action.payload.error
+      // The wire sends no error as null; the card may hold it as undefined.
+      if ((a.error ?? undefined) !== (error ?? undefined)) a.error = error
       a.streaming = ''
       if (action.payload.task && !a.task) a.task = action.payload.task
       if (action.payload.agent && !a.agent) a.agent = action.payload.agent
@@ -723,9 +779,9 @@ export const subagentReducers = {
       // has resolved it by completion). Prefer a known value, but never
       // clobber a prior known id back to '' if this frame omits it.
       if (action.payload.model) a.model = action.payload.model
-      // Carry the requested pin so a reconnect that rebuilds a completed card
-      // (clearSubagentsForSnapshot drops it, then subagent_done rehydrates it)
-      // keeps the live-downgrade amber chip. Never clobber a known value to ''.
+      // Carry the requested pin so a card that subagent_done rebuilds (one a
+      // tab opened after the run ended) keeps the live-downgrade amber chip.
+      // Never clobber a known value to ''.
       if (action.payload.requested_model) a.requestedModel = action.payload.requested_model
       if (action.payload.child_session && !a.childSession) a.childSession = action.payload.child_session
       // Carry the wave id so a reconnect that rehydrates a completed card keeps
@@ -754,6 +810,9 @@ export const subagentReducers = {
         childSession: action.payload.child_session || undefined,
         batchId: action.payload.batch_id || undefined,
         status: doneStatus,
+        // Spelled out as the branch above leaves it, so a replay of this done
+        // item finds nothing to change.
+        retrying: false,
         streaming: '',
         lastTool: '',
         startedAt: Date.now() - action.payload.elapsed * 1000,
@@ -764,7 +823,7 @@ export const subagentReducers = {
       }
     }
   },
-  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
+  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
     // A snapshot without an owning slot is an orphan, not evidence that it
     // belongs to whichever chat this browser happens to show. Popout windows
@@ -773,6 +832,7 @@ export const subagentReducers = {
     // unresolved-parent agents. Fail closed: ownerless runs remain available
     // through the global spawn inventory, but never appear inside a chat.
     if (!d.slot || isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
+    confirmReplayed(state, d.id)
     const subs = d.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(d.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
@@ -780,8 +840,40 @@ export const subagentReducers = {
     // Live events can interleave with replay because subscription starts before
     // snapshots are sent. Never let a stale running snapshot demote a terminal card.
     if (existing?.status === 'done' || existing?.status === 'error') return
+    // For the same reason, a snapshot collected before a live tool frame the
+    // card already applied carries a lower tool count. Its tool and progress
+    // fields are older than the card's, so it only fills the identity a live
+    // frame cannot carry (a card a live frame created has an empty task and an
+    // assumed start time).
+    if (existing && isStaleSnapshot(existing, d.tool_count)) {
+      const hydrated: SubagentActivity = {
+        ...existing,
+        task: d.task || existing.task, agent: d.agent || existing.agent || 'kirocrew',
+        label: d.label || existing.label, model: d.model || existing.model,
+        requestedModel: d.requested_model || existing.requestedModel,
+        childSession: d.child_session || existing.childSession,
+        batchId: d.batch_id || existing.batchId,
+        startedAt: d.started * 1000, startedAtAssumed: undefined,
+      }
+      if (!jsonEqual(withoutUndefined(existing), withoutUndefined(hydrated))) subs[safeKey(d.id)] = hydrated
+      return
+    }
     const stalled = d.stalled ?? false
-    subs[safeKey(d.id)] = {
+    // A replay that repeats an unchanged stall keeps the instant the card
+    // first saw it, so the advancing idle figure does not jump back.
+    const sameStall = stalled && existing?.stalled === true && existing.idleSecs === d.idle_secs
+    let replayedToolCalls = existing?.toolCalls
+    if (replayedToolCalls?.length && d.last_tool) {
+      const scratch = {
+        toolCalls: replayedToolCalls.map(call => ({ ...call })),
+        toolCount: existing.toolCount,
+      } as SubagentActivity
+      recordToolCall(scratch, d.last_tool, d.tool_count, d.last_tool_call_id)
+      replayedToolCalls = jsonEqual(scratch.toolCalls, existing.toolCalls)
+        ? existing.toolCalls
+        : scratch.toolCalls
+    }
+    const next: SubagentActivity = {
       id: d.id, task: d.task, agent: d.agent || 'kirocrew',
       label: d.label || existing?.label || undefined,
       // Prefer the snapshot's model; fall back to any id a live frame already
@@ -792,10 +884,13 @@ export const subagentReducers = {
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
-      // A replay carries only the latest tool. On a real reconnect
-      // `clearSubagentsForSnapshot` has already dropped the running card, so the
-      // timeline restarts from that tool; an entry that survived keeps its list.
-      toolCalls: existing?.toolCalls?.length ? existing.toolCalls : (d.last_tool ? [{ tool: d.last_tool }] : undefined),
+      // Replay applies the live tool-frame rule to a copy of a held timeline.
+      // A card the replay creates seeds its timeline from the latest tool.
+      toolCalls: existing?.toolCalls?.length
+        ? replayedToolCalls
+        : (d.last_tool
+            ? [d.last_tool_call_id ? { tool: d.last_tool, id: d.last_tool_call_id } : { tool: d.last_tool }]
+            : undefined),
       startedAt: d.started * 1000, elapsed: 0,
       toolCount: d.tool_count ?? 0, stalled,
       // Same pairing rule as sseSubagentStalled: the idle span lives and dies
@@ -805,7 +900,7 @@ export const subagentReducers = {
       // Both stay undefined when the gateway omits `idle_secs`, which keeps
       // the plain "no activity" fallback reachable for an older gateway.
       idleSecs: stalled ? d.idle_secs : undefined,
-      stalledAt: stalled && typeof d.idle_secs === 'number' ? Date.now() : undefined,
+      stalledAt: stalled && typeof d.idle_secs === 'number' ? (sameStall ? existing.stalledAt : Date.now()) : undefined,
       // Snapshot rebuilds the entry from scratch, so a `retrying` flag a live
       // subagent_retrying/subagent_recovering frame set just before this
       // replay landed would be dropped — the ⟳ recovering cue would vanish
@@ -816,5 +911,10 @@ export const subagentReducers = {
       retrying: existing?.retrying,
       approval_id: existing?.approval_id, approving: existing?.approving,
     }
+    // A reconnect replays every running card. One that repeats what the card
+    // holds keeps the held object, so its card and every whole-map reader
+    // stay as they were.
+    if (existing && jsonEqual(withoutUndefined(existing), withoutUndefined(next))) return
+    subs[safeKey(d.id)] = next
   },
 }

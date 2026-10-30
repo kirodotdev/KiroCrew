@@ -7,7 +7,7 @@ import { api, ApiError } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane, { type PaneLeading } from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
-import { emitSlotFocused } from '../hooks/useWebSocket'
+import { emitSlotFocused, endSplitPaneFocus } from '../hooks/useWebSocket'
 import PaneDim from './PaneDim'
 import { byRecentActivity } from '../utils/slotRecency'
 
@@ -149,6 +149,8 @@ export default function SessionGridView({
     // matching the visibilitychange blur semantics.
     emitSlotFocused(focusedPaneSlot)
   }, [focusedPaneSlot])
+  // Leaving split view hands the reveal's re-announce back to activeSlot.
+  useEffect(() => endSplitPaneFocus, [])
   const forkSourceSlot =
     focusedLeaf?.kind === 'session' && focusedLeaf.slot
       ? focusedLeaf.slot

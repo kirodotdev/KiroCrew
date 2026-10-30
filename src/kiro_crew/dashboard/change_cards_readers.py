@@ -375,6 +375,11 @@ def after_shows_the_write(
             want = p.get("long_term")
             if not isinstance(got, str):
                 return False
+            if len(ev) > 1:
+                # The card's second step turned the Heartbeat on: it must still be.
+                hb = after.get("heartbeat")
+                if not (isinstance(hb, dict) and hb.get("on") is True):
+                    return False
             return got == want or member_goals.scrub_text(got) == member_goals.scrub_text(want)
         got_items, want_items = after.get("key_results"), p.get("items")
         records = after.get(KR_RECORDS_KEY)
@@ -407,6 +412,15 @@ def after_shows_the_write(
         # there is no Undo.
         written = ev[1].get("revision") if len(ev) > 1 else None
         return bool(written) and after.get("revision") == written
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        # Undo removes the record this card wrote: the same card id and entry.
+        written = ev[0].get("card_id") if ev else None
+        return (
+            bool(written)
+            and after.get("present") is True
+            and after.get("card_id") == written
+            and same(after.get("entry"), p.get("entry"))
+        )
     if kind == catalog.KIND_MCP_TOGGLE:
         return after.get("enabled") is bool(p.get("enabled"))
     if kind == catalog.KIND_TRUST_APP:
@@ -432,6 +446,11 @@ def comparable_state(kind: str, state: Any) -> Any:
     their readings: a fresh reading between preview, apply and Undo is not a
     conflict, but new ids or changed goal links are.
     """
+    if kind == catalog.KIND_CREWMATE_GOAL and isinstance(state, dict):
+        # The Heartbeat a goal card may offer is not the goal it writes: a switch
+        # flipped since is no conflict for the goal, and the card's own Heartbeat
+        # step is a compare-and-set of its own (``expected`` on the schedules route).
+        return {k: v for k, v in state.items() if k != "heartbeat"}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -639,6 +658,13 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         # Raw: a card Undo restores this text (REQ_CARD_RAW_RESTORE); the plan
         # and the change line carry it scrubbed.
         out["goals"] = [{"id": g["id"], "text": g["text"]} for g in rec["goals"]]
+        # What the card's Heartbeat checkbox needs: whether it may be offered
+        # (``change_card_catalog_plans._goal_heartbeat_offer``) and its interval.
+        out["heartbeat"] = {
+            "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
+            "interval": rec["schedules"].get("interval"),
+            "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
+        }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
@@ -715,6 +741,8 @@ def _sync_read_state(
             return {"exists": False, "ambiguous": len(candidates) > 1}
         spec = candidates[0][1] if isinstance(candidates[0][1], dict) else {}
         return {"exists": True, "fields": {k: _jsonable(spec.get(k)) for k in p["fields"]}}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        return _template_server_state(p)
     if kind == catalog.KIND_MCP_INSTALL:
         from kiro_crew.dashboard.handlers.mcp_discover import _derive_install_name
 
@@ -761,6 +789,26 @@ def _sync_read_state(
             return {"exists": False}
         return {"exists": True, "enabled": bool(hit.get("enabled")), "pattern": hit.get("pattern")}
     raise catalog.CardCatalogError("unknown_kind", kind)
+
+
+def _template_server_state(p: dict[str, Any]) -> dict[str, Any]:
+    """A ``template.mcp_server`` snapshot: is the server recorded, under which card.
+
+    ``template_has`` is the template's own spec declaring that name already, so
+    the card is refused rather than added behind a server of the same name.
+    """
+    from kiro_crew import template_mcp_additions as additions
+    from kiro_crew.dashboard.handlers.template_server_request import template_declares
+
+    added = additions.read_additions(p["template"]).get(p["server"])
+    out: dict[str, Any] = {
+        "present": added is not None,
+        "template_has": template_declares(p["template"], p["server"]),
+    }
+    if added is not None:
+        out["card_id"] = added.card_id
+        out["entry"] = _jsonable(dict(added.entry))
+    return out
 
 
 def _capability_service(app: Any) -> Any:
@@ -910,6 +958,12 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         # Step 1 applies the preview step 0 just took; its token and revision
         # are what the capability route checks, so nothing else to compare.
+        return False
+    if kind == catalog.KIND_CREWMATE_GOAL:
+        # A goal card that also turned the Heartbeat on undoes in two steps:
+        # the Heartbeat off, then the goal. The goal write is a compare-and-set
+        # on the text the card wrote (``expected``), so it refuses a goal edited
+        # since on its own.
         return False
     # Every other kind undoes in one step, so a resumed step is never admitted.
     return True
@@ -1224,6 +1278,20 @@ async def read_context(
             crew for crew, c in cfg.agents.items() if getattr(c, "kiro_agent", "") == p["template"]
         )
         return {"members": members}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.template_server_request import (
+            addition_reach_view,
+            existing_grants,
+            live_apply,
+            server_tools,
+        )
+
+        return {
+            "reach": await asyncio.to_thread(addition_reach_view, state, p["template"]),
+            "live": live_apply(state),
+            "tools": await asyncio.to_thread(server_tools, p["server"]),
+            "grants": await asyncio.to_thread(existing_grants, p["template"], p["server"]),
+        }
     if kind == catalog.KIND_MCP_INSTALL:
         return {"detail": await _mcp_detail(p)}
     if kind == catalog.KIND_FOLDER_STEERING:

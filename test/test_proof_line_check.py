@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 from ai_review_workflows_helpers import _bash, _child_env
+from named_cases_helpers import named_cases
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,21 +49,49 @@ def _problems(tests: str, title: str = "fix: stop the leak", extra: str = "") ->
 @pytest.mark.parametrize(
     "tests",
     [
-        PROVEN,
-        "test/test_a.py locks the boundary.\n\n" + PROVEN,
-        "- " + PROVEN,
-        "Proof: PROVEN test/test_a.py::test_x, test/test_a.py::test_y[a, b] (head 0123456789ab)",
-        "Proof: not provable -- frontend test (prove.py runs Python only)",
-        "Proof: not provable -- test-only change",
-        "Proof: not provable -- copy-only change",
-        "Proof: not provable -- docs or config only",
-        "Proof: not provable -- prove.py timed out",
-        "Proof: not provable -- other: the fix is a one-line data migration, tested by hand",
-        "Proof: not provable -- TEST-ONLY CHANGE",
-        "### Cases\n\n" + PROVEN,  # a sub-heading stays inside the section
+        *named_cases(
+            "test_well_formed_lines_pass",
+            "tests",
+            [
+                PROVEN,
+                "test/test_a.py locks the boundary.\n\n" + PROVEN,
+                "- " + PROVEN,
+                "Proof: PROVEN test/test_a.py::test_x, test/test_a.py::test_y[a, b] (head 0123456789ab)",
+                "Proof: not provable -- frontend test (prove.py runs Python only)",
+                "Proof: not provable -- test-only change",
+                "Proof: not provable -- copy-only change",
+                "Proof: not provable -- docs or config only",
+                "Proof: not provable -- prove.py timed out",
+                "Proof: not provable -- other: the fix is a one-line data migration, tested by hand",
+                "Proof: not provable -- TEST-ONLY CHANGE",
+                "### Cases\n\n" + PROVEN,  # a sub-heading stays inside the section
+            ],
+        ),
+        *named_cases(
+            "test_forms_an_author_types_pass",
+            "tests",
+            [
+                "* " + PROVEN,
+                "+ " + PROVEN,
+                "1. " + PROVEN,
+                "2) " + NOT,
+                f"`{PROVEN}`",
+                f"- `{NOT}`",
+                PROVEN + ".",
+                "Proof: PROVEN test/test_a.py::test_x (head 0123456789ab).",
+                "Proof: not provable \u2014 test-only change",  # em dash
+                "Proof: not provable \u2013 test-only change.",  # en dash, trailing period
+                "Proof: not provable -- test-only change.",
+                "Proof:\tnot provable\t--\ttest-only change",  # tabs
+                "Proof:  not  provable  --  test-only change",  # runs of spaces
+                "Proof: Not Provable -- test-only change",
+                "Proof: proven test/test_a.py::test_x (head 0123456789ab)",
+                PROVEN + "\r",  # CRLF
+            ],
+        ),
     ],
 )
-def test_well_formed_lines_pass(tests: str) -> None:
+def test_a_well_formed_proof_line_passes(tests: str) -> None:
     assert _problems(tests) == []
 
 
@@ -292,31 +321,6 @@ def test_the_step_runs_after_pattern_harvest_and_reads_the_base_script() -> None
 
 
 # ------------------------------------------- the forms an author really types
-
-
-@pytest.mark.parametrize(
-    "tests",
-    [
-        "* " + PROVEN,
-        "+ " + PROVEN,
-        "1. " + PROVEN,
-        "2) " + NOT,
-        f"`{PROVEN}`",
-        f"- `{NOT}`",
-        PROVEN + ".",
-        "Proof: PROVEN test/test_a.py::test_x (head 0123456789ab).",
-        "Proof: not provable \u2014 test-only change",  # em dash
-        "Proof: not provable \u2013 test-only change.",  # en dash, trailing period
-        "Proof: not provable -- test-only change.",
-        "Proof:\tnot provable\t--\ttest-only change",  # tabs
-        "Proof:  not  provable  --  test-only change",  # runs of spaces
-        "Proof: Not Provable -- test-only change",
-        "Proof: proven test/test_a.py::test_x (head 0123456789ab)",
-        PROVEN + "\r",  # CRLF
-    ],
-)
-def test_forms_an_author_types_pass(tests: str) -> None:
-    assert _problems(tests) == []
 
 
 @pytest.mark.parametrize(

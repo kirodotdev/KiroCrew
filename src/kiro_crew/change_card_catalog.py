@@ -64,6 +64,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SCHEDULE_CREATE,
     KIND_SECRET_SAVE,
     KIND_SETTING_CHANGE,
+    KIND_TEMPLATE_MCP_SERVER,
     KIND_TEMPLATE_UPDATE,
     LIST_OP_ADD,
     LIST_OP_REMOVE,
@@ -83,6 +84,7 @@ from kiro_crew.change_card_catalog_plans import (
     _create_schedule_index,
     _crewmate_put_body,
     _folder_steering_step,
+    _goal_heartbeat_offer,
     _goal_path,
     _key_results_path,
     _q,
@@ -98,6 +100,7 @@ from kiro_crew.change_card_catalog_plans import (
     setting_write_step,
     step,
     string_items,
+    template_additions_path,
 )
 from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
 
@@ -149,6 +152,9 @@ def extract_evidence(
         return pick("preview_token")
     if kind == KIND_CREWMATE_CAPABILITIES:
         return pick("revision")
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        # The card the addition was recorded under: its Undo removes only that one.
+        return pick("card_id")
     if kind == KIND_MCP_INSTALL:
         return pick("name")
     if kind == KIND_MCP_ADD_CUSTOM:
@@ -292,7 +298,23 @@ def _build_undo(
                 ),
                 "",
             )
-        return [
+        plan = []
+        offer = _goal_heartbeat_offer(p, before)
+        if offer is not None and offer["checked"] and applied_steps > 1:
+            # The card turned the Heartbeat on too: off again first, while the
+            # goal it needs is still there, and only if it still reads on.
+            plan.append(
+                step(
+                    "PUT",
+                    _check_ins_path(str(slug)),
+                    {
+                        "member": p["member"],
+                        _goals.CADENCE_HEARTBEAT: False,
+                        "expected": {_goals.CADENCE_HEARTBEAT: True},
+                    },
+                )
+            )
+        plan.append(
             step(
                 "PUT",
                 _goal_path(str(slug)),
@@ -304,7 +326,8 @@ def _build_undo(
                     "expected": p["long_term"],
                 },
             )
-        ], None
+        )
+        return plan, None
     if kind == KIND_CREWMATE_KEY_RESULTS:
         slug = before.get("slug")
         if not slug:
@@ -368,6 +391,14 @@ def _build_undo(
                 value = [] if k != "model" else ""
             old[k] = value
         return [step("PATCH", f"/api/agents/detail/{_q(p['template'])}", old)], None
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        # Bound to this card's own record (``remove_addition(card_id=...)``), so a
+        # later approval of the same server on another card is never taken back.
+        card_id = ev(0).get("card_id")
+        if not isinstance(card_id, str) or not card_id:
+            return None, "identity_unknown"
+        path = template_additions_path(p["template"], p["server"])
+        return [step("DELETE", path + "?" + urllib.parse.urlencode({"card_id": card_id}))], None
     if kind == KIND_MCP_TOGGLE:
         return [_toggle_step(p, bool(before.get("enabled")))], None
     if kind == KIND_FOLDER_STEERING:
@@ -590,6 +621,8 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/agents/{name}/capabilities/preview"),
         ("PUT", "/api/agents/{name}/capabilities"),
         ("PATCH", "/api/agents/detail/{name}"),
+        ("POST", "/api/agents/detail/{name}/mcp-additions"),
+        ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
         ("PUT", "/api/members/{slug}/goals/long-term"),
         ("PUT", "/api/members/{slug}/goals/key-results"),
         ("PUT", "/api/members/{slug}/goals/schedules"),
@@ -628,6 +661,10 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: saved script is code, not a setting, and an ordinary save from the Workflows
 #: tab stays off the hook entirely, so neither writes a memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
+    # A launch line is code, never described in Global memory; the card itself
+    # is the record.
+    ("POST", "/api/agents/detail/{name}/mcp-additions"),
+    ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
     ("POST", "/api/agents/{name}/capabilities/preview"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
@@ -690,6 +727,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
+        GATEWAY_RESOLVED_KINDS,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
         KIND_WORKFLOW_SAVE,
@@ -703,6 +741,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_TIGHTEN,
         RISK_WIDEN,
         SELF_ONLY_KINDS,
+        TEMPLATE_SERVER_SOURCES,
         WORKFLOW_INDENT_MAX,
         WORKFLOW_KINDS,
         WORKFLOW_LINE_MAX,
@@ -734,16 +773,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.change_card_catalog_plans import (  # noqa: F401
         _BOOL_VALUES,
+        _TOOLS_SHOWN,
         _WEEKDAY_NAMES,
         CHECK_IN_LABELS,
         DASHBOARD_LIST_KEYS,
         DASHBOARD_LIST_SETTINGS,
         DASHBOARD_SETTINGS,
+        GOAL_HEARTBEAT_FIELD,
         IMPORT_STEP_CREATE,
         LIST_SETTING_WORDING,
         PATH_FILL_VALUE,
         STORE_DASHBOARD,
         STORE_KIROCREW,
+        TEMPLATE_SERVER_DOES_NOTE,
+        TEMPLATE_SERVER_RESTART_NOTE,
+        TEMPLATE_SERVER_TOOLS_NOTE,
+        TEMPLATE_SERVER_UNDO_NOTE,
         _check_in_value,
         _create_schedule_step,
         _cron_body,
@@ -765,6 +810,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _setting_risk_key,
         _step_fill,
         _step_path_fill,
+        _template_chips,
+        _template_server_preview,
         _user_fill,
         _widening_row,
         _with_fills,
@@ -782,6 +829,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
+        FEATURE_PREVIEW_FLAGS,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,

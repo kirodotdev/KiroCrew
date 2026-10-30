@@ -19,6 +19,7 @@ from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
@@ -74,11 +75,15 @@ class FakeProvider:
 
 
 class TestExtractToolInputStrings:
-    def test_empty_string(self):
-        assert _extract_tool_input_strings("") == []
-
-    def test_none_coerced(self):
-        # In practice tool_input is "" not None, but defend anyway
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_empty_string"),
+            # In practice tool_input is "" not None, but defend anyway
+            *named_cases("test_none_coerced"),
+        ],
+    )
+    def test_an_empty_string_yields_no_strings(self):
         assert _extract_tool_input_strings("") == []
 
     def test_plain_string_not_json(self):

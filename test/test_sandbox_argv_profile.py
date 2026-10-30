@@ -131,6 +131,11 @@ class TestWrapArgv:
         # Deny-by-default: the passthrough is gated SOLELY on the explicit
         # KIROCREW_SANDBOX_ACTIVE marker (not the dual-purpose KIROCREW_HOST_PID).
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # The outer tier is unknown here, as from a launcher that exports none, so no
+        # tier downgrade can be proven and the argv passes through unchanged. A host
+        # value (a sandboxed dev shell exports `standard`) would make a `strict`
+        # request a downgrade, which wraps the argv in the stricter env scrub.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         # Fix the macOS kernel cross-check explicitly: "unanswerable" (None) is the
         # platform-neutral input, so this assertion holds on a sandboxed dev
         # machine and an unsandboxed CI runner alike.
@@ -156,6 +161,8 @@ class TestWrapArgv:
         # spawn outage (every in-sandbox MCP spawn bricked). The spawn is
         # confined by the outer namespace regardless, so we log and proceed.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # Unknown outer tier, so no downgrade wrap: see test_inside_sandbox_passes_through.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         argv = ["kiro-cli", "acp"]
         with patch("kiro_crew.sel.sel", side_effect=OSError("SEL transport down")):

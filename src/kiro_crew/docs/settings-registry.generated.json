@@ -1144,6 +1144,13 @@
       "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
     },
     {
+      "id": "developer.ultra-mode",
+      "label": "Ultra Mode",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.ultra-mode",
+      "description": "Lets a chat hand tasks to a crew and track them on a Board."
+    },
+    {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",

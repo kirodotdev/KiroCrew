@@ -32,6 +32,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.mate_folders import inherited_folder
 from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import (
@@ -39,8 +40,10 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
     DashboardState,
+    _safe_folder_tree,
     request_slot_origin,
 )
+from kiro_crew.dashboard.token_auth_callers import folder_principal
 from kiro_crew.dashboard.transcript_snapshot import (
     FORK,
     SlotView,
@@ -517,6 +520,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # ownership, which an allow-listed non-owner passes for a slot the
         # owner armed.
         jev_route_allowed=is_owner_dashboard_request(request),
+        folder_principal=folder_principal(state, request),
         audit_caller=request_app or "dashboard",
         # A person forking a pinned session gets a pinned fork, so it stays
         # beside its parent in the pinned group. Set through ``stamp`` so the
@@ -544,9 +548,19 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
 
 
 def _shape_fork_child(
-    new_slot: "_ChatSlot", slot: "_ChatSlot", *, direction: str, jev_route_allowed: bool
+    new_slot: "_ChatSlot",
+    slot: "_ChatSlot",
+    *,
+    direction: str,
+    jev_route_allowed: bool,
+    folders: list[dict[str, Any]],
+    folder_principal: str,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
+
+    *folders* is the committed folder tree and *folder_principal* the forker's
+    folder principal: a parent filed in a mate's home the forker may not write
+    into hands the child no folder.
 
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
@@ -568,8 +582,9 @@ def _shape_fork_child(
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI.
-    new_slot.folder_id = slot.folder_id
+    # Inherit the sidebar folder so the fork appears next to its parent in the UI,
+    # unless it is a mate's home (or inside one) the forker may not file into.
+    new_slot.folder_id = inherited_folder(folders, slot.folder_id, folder_principal)
     # Inherit tags (copied, so later edits to either slot's list stay independent).
     new_slot.tags = list(slot.tags)
     # "tags changed => revision changed": the slot was constructed with an empty
@@ -612,6 +627,7 @@ async def fork_slot(
     origin: str,
     count_user_session: bool,
     jev_route_allowed: bool,
+    folder_principal: str,
     audit_caller: str,
     audit_operation: str = FORK_AUDIT_OPERATION,
     stamp: "Callable[[_ChatSlot], None] | None" = None,
@@ -627,8 +643,9 @@ async def fork_slot(
     (``at_index`` against the visible-row count, ``at_message_id`` against the
     rows' ids). It has no request: the pieces the human route derives from one
     (``request_app``, ``origin``, ``count_user_session``, ``jev_route_allowed``,
-    ``audit_caller``) are passed in, so ``session_control.fork_session`` can run
-    the identical copy for an agent caller with its own answers to them.
+    ``audit_caller``, ``folder_principal``) are passed in, so
+    ``session_control.fork_session`` can run the identical copy for an agent
+    caller with its own answers to them.
 
     ``stamp``, when given, is called on the child once it is fully shaped
     (title, folder, tags, inherited memory identity) and BEFORE the transcript
@@ -1226,8 +1243,15 @@ async def fork_slot(
                     return _store_unavailable_response(inherited_store, exc)
                 raise
         try:
+            # The committed folder tree, read synchronously: nothing suspends
+            # between this read and the assignment, so no folder move can land.
             _shape_fork_child(
-                new_slot, slot, direction=direction, jev_route_allowed=jev_route_allowed
+                new_slot,
+                slot,
+                direction=direction,
+                jev_route_allowed=jev_route_allowed,
+                folders=_safe_folder_tree(state._folders),
+                folder_principal=folder_principal,
             )
             if stamp is not None:
                 stamp(new_slot)

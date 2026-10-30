@@ -450,6 +450,14 @@ class TestModelCommand:
         assert "Pick a number" in d.client.sent[-1][1]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("arg", ["²", "١", "1" * 5000])
+    async def test_a_pick_int_cannot_read_is_refused(self, arg: str) -> None:
+        """``"²".isdigit()`` is True but ``int("²")`` raises; reply, never crash."""
+        d = _dispatcher(FakeSessions(ModelProvider()), FakeCtx(), FakeClient())
+        await d.handle_message(_inbound(f"/model {arg}"))
+        assert "Pick a number between 1 and 2" in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
     async def test_a_pick_switches_the_live_conversation(self) -> None:
         """``session/set_model`` carries the conversation across.
 

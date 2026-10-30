@@ -18,6 +18,7 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
+import { useSecondClock } from '../../hooks/useSecondClock'
 import { markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, isSpawnApprovalGone, isSpawnApprovalRetired, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
@@ -170,6 +171,25 @@ function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: b
   )
 }
 
+/**
+ * The card header's elapsed figure. Its own component so the live 1 Hz clock
+ * repaints this text, not the whole card and its streamed body.
+ *
+ * A running card whose start time was only ASSUMED has no elapsed figure to
+ * show: the agent may have been running long before the frame that minted its
+ * entry, so a number here would be wrong rather than merely imprecise. A
+ * `subagent_done` or snapshot frame supplies real timing and this resolves.
+ * Whole seconds, matching the progress-bar row, so one run reads the same
+ * figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
+ */
+function CardElapsed({ running, startedAt, assumed, finalSecs }: { running: boolean; startedAt: number; assumed?: boolean; finalSecs?: number }) {
+  const live = running && !assumed
+  const liveSecs = useSecondClock(now => Math.max(0, Math.floor((now - startedAt) / 1000)), live)
+  if (running && assumed) return <>--</>
+  const secs = running ? liveSecs : Math.round(finalSecs || 0)
+  return <>{fmtElapsed(secs * 1000, { wholeSeconds: true })}</>
+}
+
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -272,16 +292,6 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   }, [livenessOpen, a.approval_id, checkLiveness])
   const shownLivenessError = livenessOpen ? livenessError : null
 
-  // Live elapsed timer for running subagents
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    if (!isRunning) return
-    const tick = () => setElapsed(Math.floor((Date.now() - a.startedAt) / 1000))
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [isRunning, a.startedAt])
-
   useEffect(() => {
     const el = bodyRef.current
     if (el && autoScroll.current) el.scrollTop = el.scrollHeight
@@ -301,14 +311,6 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
   }, [a.id])
 
-  const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
-  // A running card whose start time was only ASSUMED has no elapsed figure to
-  // show: the agent may have been running long before the frame that minted its
-  // entry, so a number here would be wrong rather than merely imprecise. A
-  // `subagent_done` or snapshot frame supplies real timing and this resolves.
-  // Whole seconds, matching the progress-bar row, so one run reads the same
-  // figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
-  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed(displayElapsed * 1000, { wholeSeconds: true })
   // What the header calls this agent. An entry recovered from an incremental
   // frame has no agent name, and showing nothing left two such cards reading as
   // the same "Running Tool" with no way to tell them apart -- the same complaint
@@ -431,7 +433,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         {!isPending && !retired && <span
           data-testid="subagent-run-stats"
           className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
-        >{shownElapsed}</span>}
+        ><CardElapsed running={isRunning} startedAt={a.startedAt} assumed={a.startedAtAssumed} finalSecs={a.elapsed} /></span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>

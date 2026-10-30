@@ -154,6 +154,34 @@ describe('ChatPanel — default model', () => {
     fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
   })
+
+  it('names config.local.json when the overlay owns the key, and keeps the stored model', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const reason = 'agent.model is set in config.local.json, which overrides this setting. Change or remove it there.'
+    patchConfigMock.mockImplementationOnce(() => Promise.reject(new ApiError(
+      409, reason, JSON.stringify({ error: reason, code: 'config_overlay_owned', overlay_override: true }),
+    )) as never)
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect('Default Model')
+    fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
+    expect(await screen.findByText(`Failed to save default model: ${reason}`)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Default Model' })).toHaveTextContent('Default (auto)')
+    )
+  })
+
+  it('keeps a plain failure message unchanged for any other refusal', async () => {
+    const { ApiError } = await import('../api/apiError')
+    patchConfigMock.mockImplementationOnce(() => Promise.reject(new ApiError(
+      409, 'agent.model is already set', JSON.stringify({ error: 'agent.model is already set', code: 'already_set' }),
+    )) as never)
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect('Default Model')
+    fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
+    expect(await screen.findByText('Failed to save default model')).toBeInTheDocument()
+  })
 })
 
 describe('ChatPanel — default reasoning effort', () => {

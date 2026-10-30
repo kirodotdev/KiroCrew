@@ -231,6 +231,71 @@ def _auto_approve(addition: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(tools))
 
 
+async def resolve_server(
+    name: Any, source: Any, registry_id: Any, *, settings_hint: str
+) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
+    """``(name, transport, origin)`` for a server an agent NAMED, built by the gateway.
+
+    The one place a named server becomes a launch line, shared by a crewmate's
+    ``request_capabilities`` and any session's ``request_server``: the agent names
+    a server, never a command. ``source: "gateway"`` copies this gateway's own
+    entry for *name* (present and switched on); ``source: "registry"`` takes the
+    official registry's install plan for *registry_id*, the spec
+    ``/api/mcp/discover/install`` would write, under the name that install would
+    give it. A gateway entry carrying env, headers or credential arguments is
+    refused (``carries_settings``, with *settings_hint* saying where the user adds
+    it), because a card's params reach the agent that asked. Raises
+    :class:`mate_capability_catalog.AdditionError`.
+    """
+    from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
+    from kiro_crew.dashboard.handlers.mcp_discover import OfficialPlanError, official_install_plan
+
+    if source == catalog_mod.SOURCE_GATEWAY:
+        if not isinstance(name, str) or not name:
+            raise catalog_mod.AdditionError("invalid_additions", "'server' names a server")
+        entry = await asyncio.to_thread(_find_server_spec_anywhere, name)
+        if not isinstance(entry, dict) or not await asyncio.to_thread(_switched_on, name):
+            raise catalog_mod.AdditionError(
+                "not_on_gateway",
+                f"this gateway runs no MCP server named {name} (absent or switched off)",
+            )
+        transport = catalog_mod.transport_for_file(entry)
+        if _carries_settings(transport):
+            # A card's params and plan reach the proposing agent, and a
+            # credential in env, headers or arguments would go with them.
+            raise catalog_mod.AdditionError(
+                "carries_settings",
+                f"{name} carries its own env, headers or credential arguments, so "
+                f"it is not copied onto a card; {settings_hint}",
+            )
+        return name, transport, {"source": catalog_mod.SOURCE_GATEWAY}
+    if source == catalog_mod.SOURCE_REGISTRY:
+        rid = registry_id
+        if not isinstance(rid, str) or not rid.strip() or len(rid) > 200:
+            raise catalog_mod.AdditionError(
+                "invalid_additions", "a registry addition names its registry_id"
+            )
+        try:
+            plan_name, plan, _method, _env = await official_install_plan(rid.strip())
+        except OfficialPlanError as exc:
+            raise catalog_mod.AdditionError("registry_unavailable", exc.message) from None
+        name = plan_name
+        if await asyncio.to_thread(_find_server_spec_anywhere, name) is not None:
+            raise catalog_mod.AdditionError(
+                "name_in_use",
+                f"this gateway already runs a server named {name}; add it from the gateway",
+            )
+        transport = catalog_mod.transport_for_file(plan)
+        return (
+            name,
+            transport,
+            {"source": catalog_mod.SOURCE_REGISTRY, "registry_id": rid.strip()},
+        )
+    raise catalog_mod.AdditionError(
+        "invalid_additions", "'source' is gateway or registry (the official registry)"
+    )
+
+
 async def additions_to_draft(
     app: Any, member: str, draft: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
@@ -246,12 +311,6 @@ async def additions_to_draft(
     a provider other than the official registry (whose install runs outside the
     crewmate's file) are refused with :class:`mate_capability_catalog.AdditionError`.
     """
-    from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
-    from kiro_crew.dashboard.handlers.mcp_discover import (
-        OfficialPlanError,
-        official_install_plan,
-    )
-
     additions = _addition_list(draft)
     if set(draft) - {"additions", "enroll"}:
         # A card of additions shows one plain line per addition and folds the
@@ -291,49 +350,14 @@ async def additions_to_draft(
             )
         name, source = addition.get("server"), addition.get("source")
         tools = _auto_approve(addition)
-        if source == catalog_mod.SOURCE_GATEWAY:
-            if not isinstance(name, str) or not name:
-                raise catalog_mod.AdditionError("invalid_additions", "'server' names a server")
-            if name in have_servers:
-                raise catalog_mod.AdditionError("already_has", f"the worker already has {name}")
-            entry = await asyncio.to_thread(_find_server_spec_anywhere, name)
-            if not isinstance(entry, dict) or not await asyncio.to_thread(_switched_on, name):
-                raise catalog_mod.AdditionError(
-                    "not_on_gateway",
-                    f"this gateway runs no MCP server named {name} (absent or switched off)",
-                )
-            transport = catalog_mod.transport_for_file(entry)
-            if _carries_settings(transport):
-                # A card's params and plan reach the proposing crewmate, and a
-                # credential in env, headers or arguments would go with them.
-                raise catalog_mod.AdditionError(
-                    "carries_settings",
-                    f"{name} carries its own env, headers or credential arguments, so "
-                    "it is not copied onto a card; tell the user to add it in your advanced "
-                    "settings",
-                )
-            origin = {"source": catalog_mod.SOURCE_GATEWAY}
-        elif source == catalog_mod.SOURCE_REGISTRY:
-            rid = addition.get("registry_id")
-            if not isinstance(rid, str) or not rid.strip() or len(rid) > 200:
-                raise catalog_mod.AdditionError(
-                    "invalid_additions", "a registry addition names its registry_id"
-                )
-            try:
-                name, plan, _method, _env = await official_install_plan(rid.strip())
-            except OfficialPlanError as exc:
-                raise catalog_mod.AdditionError("registry_unavailable", exc.message) from None
-            if await asyncio.to_thread(_find_server_spec_anywhere, name) is not None:
-                raise catalog_mod.AdditionError(
-                    "name_in_use",
-                    f"this gateway already runs a server named {name}; add it from the gateway",
-                )
-            transport = catalog_mod.transport_for_file(plan)
-            origin = {"source": catalog_mod.SOURCE_REGISTRY, "registry_id": rid.strip()}
-        else:
-            raise catalog_mod.AdditionError(
-                "invalid_additions", "'source' is gateway or registry (the official registry)"
-            )
+        if source == catalog_mod.SOURCE_GATEWAY and isinstance(name, str) and name in have_servers:
+            raise catalog_mod.AdditionError("already_has", f"the worker already has {name}")
+        name, transport, origin = await resolve_server(
+            name,
+            source,
+            addition.get("registry_id"),
+            settings_hint="tell the user to add it in your advanced settings",
+        )
         if name in have_servers:
             raise catalog_mod.AdditionError("already_has", f"the worker already has {name}")
         ops.extend(catalog_mod.addition_operations(name, transport, tools))

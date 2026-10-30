@@ -662,6 +662,65 @@ describe('FileExplorerPage tree and root navigation', () => {
   })
 })
 
+// ─── refresh ────────────────────────────────────────────────────────────────
+
+describe('FileExplorerPage refresh', () => {
+  // The app's QueryClient holds queries fresh forever (staleTime: Infinity), so
+  // nothing but an explicit re-read brings in what changed on disk.
+  function renderCached() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    render(
+      <Provider store={createTestStore()}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/file-explorer']}>
+            <FileExplorerPage />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+  }
+
+  const refreshLabel = () => i18nT('apps.fileExplorer.pathBar.refresh_folder')
+
+  it('shows a folder created on disk after the tree loaded', async () => {
+    renderCached()
+    await ready()
+    expect(treeBox().queryByText('cloned-repo')).not.toBeInTheDocument()
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: [
+      ...ENTRIES,
+      { name: 'cloned-repo', path: '/home/user/cloned-repo', type: 'dir' },
+    ] })
+    await userEvent.click(screen.getByRole('button', { name: refreshLabel() }))
+    await waitFor(() => expect(treeBox().getByText('cloned-repo')).toBeInTheDocument())
+  })
+
+  it('re-reads an expanded, lazily loaded folder too', async () => {
+    let lazy: TreeEntry[] = [{ name: 'a.txt', path: '/home/user/lazy/a.txt', type: 'file' }]
+    vi.mocked(fileExplorerApi.tree).mockImplementation((p: string) => Promise.resolve(
+      p === ROOT
+        ? { entries: [{ name: 'lazy', path: '/home/user/lazy', type: 'dir' }] }
+        : { entries: lazy },
+    ))
+    renderCached()
+    await ready()
+    await userEvent.click(treeBox().getByText('lazy'))
+    await waitFor(() => expect(treeBox().getByText('a.txt')).toBeInTheDocument())
+    lazy = [...lazy, { name: 'written-by-agent.md', path: '/home/user/lazy/written-by-agent.md', type: 'file' }]
+    await userEvent.click(screen.getByRole('button', { name: refreshLabel() }))
+    await waitFor(() => expect(treeBox().getByText('written-by-agent.md')).toBeInTheDocument())
+  })
+
+  it('re-reads git status so the branch badge follows the disk', async () => {
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue({ repoRoot: ROOT, branch: 'main', statuses: {} })
+    renderCached()
+    await ready()
+    await waitFor(() => expect(document.querySelector('.mc-fe-branch')?.textContent).toContain('main'))
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue({ repoRoot: ROOT, branch: 'feature', statuses: {} })
+    await userEvent.click(screen.getByRole('button', { name: refreshLabel() }))
+    await waitFor(() => expect(document.querySelector('.mc-fe-branch')?.textContent).toContain('feature'))
+  })
+})
+
 // ─── path resolve ───────────────────────────────────────────────────────────
 
 describe('FileExplorerPage path resolution', () => {

@@ -21,6 +21,7 @@ from discord_sessions_helpers import (
 )
 
 from kiro_crew.discord.renderer import session_provenance_tag
+from kiro_crew.discord.session_resume import DiscordSessionResume
 from kiro_crew.messaging import session_resume as session_resume_core
 from kiro_crew.messaging.link import ChannelLink
 
@@ -513,3 +514,14 @@ async def test_new_leaves_resumed_session_and_advances_native_generation() -> No
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert dispatcher._session_key("u1") != old_key
     assert "left the resumed session" in client.sent[-1][0]
+
+
+@pytest.mark.parametrize(
+    ("custom_id", "expected"),
+    [("s:abc:²", ("", -1)), ("s:abc:١", ("", -1)), ("s:abc:3", ("abc", 3))],
+)
+def test_a_picker_press_parses_only_ascii_digit_indexes(
+    custom_id: str, expected: tuple[str, int]
+) -> None:
+    """``"²".isdigit()`` is True but ``int("²")`` raises: refuse it, never crash."""
+    assert DiscordSessionResume._parse_choice(custom_id) == expected

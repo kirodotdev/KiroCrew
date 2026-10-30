@@ -49,6 +49,8 @@ import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, ty
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
+import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 
 // The panel's parts live in sibling owners that never import this module:
 // `SidePanelAddMenu.tsx` (the + menu's catalog and gates), `SidePanelTabChip.tsx`
@@ -301,14 +303,14 @@ export default function SidePanel({
     retry: false,
   })
   const summaryEnabled = summaryMeta?.enabled !== false
-  const { pinnedViews, summaryPinned } = usePinnedViews({
-    tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
-    summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
-  })
+
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side, and never list the pinned views (Changes / Files /
   // Artifacts, and Summary while Pin Summary holds it) — those are always
   // present in the strip.
+  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
+  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
+  const crewModePreview = useCrewMode()
   // A Crew Mode root or one of its workers: its panel offers Workers, and the
   // tab is put on its strip whenever the session is shown (a fresh browser, a
   // reload, a reopened browser tab). It is the tab the panel opens on until the
@@ -316,9 +318,20 @@ export default function SidePanel({
   // next visit; the + menu brings it back at any time.
   const crewMode = useAppSelector(st => {
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
-    return !!(row?.crew_mode_root || row?.crew_root)
+    return crewModeRoot(row) || !!crewRootOf(row)
+  })
+  // while a new chat's Ultra Mode switch lands (no root stamp yet),
+  // a Crew tab already on its strip is pinned first too.
+  const freshChat = useAppSelector(st => {
+    const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
+    return !!row && !row.messages && !row.crew_root
   })
   useEffect(() => { if (crewMode && slot) offerPanelView(slot, 'workers') }, [crewMode, slot])
+  const { pinnedViews, summaryPinned } = usePinnedViews({
+    tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
+    summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
+    crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModePreview && !hiddenViews?.has('workers'),
+  })
   const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
@@ -377,15 +390,15 @@ export default function SidePanel({
     return leaving?.onBeforeLeave ?? null
   }, [])
   const visibleTabs = useMemo(() => {
-    const shown = hiddenViews || terminalsPending
-      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
+    const shown = hiddenViews || terminalsPending || !crewModePreview
+      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal') && (crewModePreview || t.kind !== 'workers'))
       : tabs
     if (!viewTitles) return shown
     return shown.map(t => {
       const title = Object.prototype.hasOwnProperty.call(viewTitles, t.kind) ? viewTitles[t.kind as ViewKind] : undefined
       return title && title !== t.title ? { ...t, title } : t
     })
-  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles])
+  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles, crewModePreview])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId
@@ -666,7 +679,7 @@ export default function SidePanel({
             </div>
           )}
           {pinnedTabs.map(t => (
-            <TabChip key={t.id} chipId={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
+            <TabChip key={t.id} chipId={t.id} tab={t} active={t.id === activeId} closable={false} pinned={t.id !== 'workers'} onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
           ))}
         </div>
         {/* from-bg-elevated matches the side-panel-strip surface. */}

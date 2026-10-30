@@ -294,6 +294,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "resumable_sid": ("function", False, "4b576121a346", "claims"),
     "resume_turn_admission_after_update": ("function", True, "a6632a57e602", "claims"),
     "retire_kiro_identity_sessions": ("function", True, "0929bcd2b0e5", "teardown"),
+    "retire_turn_permit": ("function", False, "6dd7729a0f08", "teardown"),
     "runtime_pids": ("function", False, "2468fe0fd6a3", "claims"),
     "runtime_reconciler": ("function", False, "4a493fe5dab9", "sweeps"),
     "seed_conversation": ("function", False, "7b9b418f95e7", "claims"),

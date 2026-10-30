@@ -15,6 +15,7 @@ import { createTabModeForClick } from './chrome'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { isMateManaged } from '../../utils/mateFolders'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
@@ -198,10 +199,14 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}
                 <ImportSessionItem Item={DropdownMenuItem} />
-                {folders.length > 0 && (() => {
+                {/* A mate's folder (its home and everything under it) takes no
+                 *  chat a person starts, so the picker does not offer it. */}
+                {(() => {
+                  const pickable = folders.filter(f => !isMateManaged(f, folders))
+                  if (pickable.length === 0) return null
                   const folderRows = (() => {
-                    const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
-                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
+                    const roots = pickable.filter(f => !f.parent_id).sort(folderCompare)
+                    const childrenOf = (pid: string) => pickable.filter(f => f.parent_id === pid).sort(folderCompare)
                     const items: { f: ChatFolder; depth: number }[] = []
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)

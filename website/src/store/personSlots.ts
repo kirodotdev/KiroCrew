@@ -1,4 +1,4 @@
-import { crewModeView } from '../lib/crewMode'
+import { crewModeEnabled, crewModeView } from '../lib/crewMode'
 import type { ChatSlot } from '../types'
 import { selectSlotsWithLiveLastTs } from './slotLastTs'
 
@@ -14,13 +14,17 @@ import { selectSlotsWithLiveLastTs } from './slotLastTs'
  * Re-exported from `dashboardSlice`, the path callers import.
  */
 let personSlotsOf: ChatSlot[] | null = null
+let personSlotsCrewMode = false
 let personSlots: ChatSlot[] = []
 export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLastTs>[0]): ChatSlot[] {
   // Memoized on the live-row array itself, not on the state object, so a reader
   // re-renders only when the rows change and a stale state can never answer.
   const slots = selectSlotsWithLiveLastTs(state)
-  if (slots !== personSlotsOf) {
+  // And on the Crew Mode preview, which decides whether crew members are left out.
+  const crewMode = crewModeEnabled()
+  if (slots !== personSlotsOf || crewMode !== personSlotsCrewMode) {
     personSlotsOf = slots
+    personSlotsCrewMode = crewMode
     personSlots = crewModeView(slots)
   }
   return personSlots

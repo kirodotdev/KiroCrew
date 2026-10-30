@@ -375,6 +375,9 @@ export interface ChatFolder {
    *  ancestor owned by ANOTHER principal is never delivered to this folder's
    *  chats, so the inherited list filters on it. */
   owner_app?: string
+  /** True on a mate's home folder: the one folder that holds every chat and
+   *  folder the mate (`owner_app` `member:<store>`) creates. */
+  mate_home?: boolean
   /** Channel namespace when this folder was created by per-channel session filing (e.g. 'discord'). */
   channel?: string
 }
@@ -591,6 +594,9 @@ export interface ContentBlock {
   type: BlockType
   content: string
   language?: string
+  /** A code fence's info string after its language tag, trimmed (```lang title="x"
+   *  gives `title="x"`). Absent when the opening line carries only the tag. */
+  info?: string
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number

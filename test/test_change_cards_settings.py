@@ -276,6 +276,77 @@ def test_find_setting_reports_a_string_list_with_its_items(monkeypatch):
     assert row["current_value"] == ["fable-1"]
 
 
+@pytest.mark.parametrize(
+    ("query", "top"),
+    [
+        ("how do I change the verbosity", "chat.response-verbosity"),
+        ("when does auto compact kick in", "chat.auto-compact-threshold"),
+        ("how do I restore my sessions on startup", "chat.restore-sessions"),
+        ("how do I turn off automatic updates", "about.update-the-gateway-automatically"),
+        ("verbosity", "chat.response-verbosity"),
+    ],
+)
+def test_find_setting_ranks_the_setting_a_plain_question_is_about_first(monkeypatch, query, top):
+    monkeypatch.setattr(cards, "read_setting_value", lambda target: None)
+    assert cards.find_settings(query)[0]["setting_id"] == top
+
+
+def _registry(monkeypatch, entries: list[dict[str, Any]]) -> None:
+    monkeypatch.setattr(cards, "settings_registry", lambda: tuple(entries))
+    monkeypatch.setattr(cards, "resolve_setting", lambda p: None)
+
+
+def test_find_setting_matches_words_from_their_start(monkeypatch):
+    """``do`` is not found inside ``window``; ``compact`` finds ``compaction``
+    and ``auto`` the ``autocompact`` of a config key split on ``_``."""
+    _registry(
+        monkeypatch,
+        [
+            {"id": "chat.alpha", "label": "Alpha", "hint": "Open the window."},
+            {"id": "chat.beta", "label": "Beta", "configKey": "session.autocompact_pct"},
+            {"id": "chat.gamma", "label": "Gamma", "hint": "Compaction runs here."},
+        ],
+    )
+    assert cards.find_settings("do") == []
+    assert [r["setting_id"] for r in cards.find_settings("compact")] == ["chat.gamma"]
+    assert [r["setting_id"] for r in cards.find_settings("auto")] == ["chat.beta"]
+
+
+def test_find_setting_finds_a_singular_word_from_its_plural(monkeypatch):
+    """``providers`` stems to ``provider`` and ``provider`` to ``provid``: the
+    raw word in the setting's text still meets the query."""
+    _registry(monkeypatch, [{"id": "voice.provider", "label": "Provider"}])
+    for query in ("providers", "provider", "change the voice providers"):
+        assert [r["setting_id"] for r in cards.find_settings(query)] == ["voice.provider"]
+
+
+def test_find_setting_ranks_a_whole_word_above_the_start_of_a_longer_one(monkeypatch):
+    """``mode`` is the Mode setting first, not one of the many ``model`` ones."""
+    models = [{"id": f"chat.model-{i}", "label": f"Model {i}"} for i in range(12)]
+    _registry(monkeypatch, [*models, {"id": "display.mode", "label": "Mode"}])
+    assert cards.find_settings("where is the mode")[0]["setting_id"] == "display.mode"
+
+
+def test_find_setting_drops_question_words_unless_nothing_else_is_left(monkeypatch):
+    _registry(
+        monkeypatch,
+        [
+            {"id": "chat.alpha", "label": "How do I", "hint": "How do I do this, how."},
+            {"id": "chat.beta", "label": "Beta", "hint": "Slack replies."},
+        ],
+    )
+    assert [r["setting_id"] for r in cards.find_settings("how do I use slack")] == ["chat.beta"]
+    # Only question words: they are searched rather than refused.
+    assert [r["setting_id"] for r in cards.find_settings("how")] == ["chat.alpha"]
+
+
+def test_find_setting_ranks_a_rare_word_over_a_common_one(monkeypatch):
+    """A rare word in a row's help beats a word five row names share."""
+    common = [{"id": f"chat.row{i}", "label": f"Change {i}"} for i in range(5)]
+    _registry(monkeypatch, [*common, {"id": "chat.zz", "label": "Zz", "hint": "Zebrafinch."}])
+    assert cards.find_settings("change zebrafinch")[0]["setting_id"] == "chat.zz"
+
+
 def _list_world(world, monkeypatch, hidden):
     world.hidden = list(hidden)
     real_read_state = cards.read_state

@@ -33,6 +33,7 @@ import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS,
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
 import { crewWaitingApprovals } from '../../pages/chat/command-center/model'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
 import { commandBarOverlaySlotRenderer } from './CommandBarOverlaySlot'
@@ -184,7 +185,9 @@ export default function CommandBarOverlay({
   // What those hidden workers owe the person, carried by their root: a worker's
   // tool approval is counted on its conductor over the FULL slot set, so Needs
   // You still names it (the fleet page counts the same way, `crewWaitingApprovals`).
-  const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots])
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)

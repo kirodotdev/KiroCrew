@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { CrewEyebrow, CrewGhostBadge, CrewModeComposerChip, CrewModeMarkSource, CrewStatusDot, CrewWorkerStack } from './CrewModeMarks'
+import { CrewEyebrow, CrewGhostBadge, CrewModeComposerChip, CrewStatusDot, CrewWorkerStack } from './CrewModeMarks'
 
 describe('CrewModeMarks', () => {
   it('draws the ghost badge on the crew gradient at the size asked', () => {
@@ -16,7 +16,7 @@ describe('CrewModeMarks', () => {
     const eyebrow = screen.getByTestId('crew-eyebrow')
     expect(eyebrow.className).toContain('crew-eyebrow-text')
     expect(eyebrow.className).toContain('tracking-[1px]')
-    expect(eyebrow.textContent).toBe('Crew Mode')
+    expect(eyebrow.textContent).toBe('Ultra Mode')
   })
 
   it('the status dot names the state in its tone, as text or for screen readers only', () => {
@@ -54,7 +54,7 @@ describe('CrewModeMarks', () => {
     const chip = screen.getByTestId('crew-mode-composer-chip')
     expect(chip.tagName).toBe('BUTTON')
     expect(chip.getAttribute('aria-pressed')).toBe('true')
-    expect(chip.getAttribute('title')).toContain('Turn off Crew Mode')
+    expect(chip.getAttribute('title')).toContain('Turn off Ultra Mode')
     fireEvent.click(chip)
     expect(onTurnOff).toHaveBeenCalledTimes(1)
 
@@ -62,12 +62,14 @@ describe('CrewModeMarks', () => {
     const mark = screen.getByTestId('crew-mode-composer-chip')
     expect(mark.tagName).toBe('SPAN')
     expect(mark.getAttribute('role')).toBe('img')
-    expect(mark.getAttribute('aria-label')).toBe('Crew Mode is on for this chat')
-    expect(mark.textContent).toBe('Crew Mode')
+    expect(mark.getAttribute('aria-label')).toBe('Ultra Mode is on for this chat')
+    expect(mark.textContent).toBe('Ultra Mode')
   })
 
-  it('the mark source wraps the chip it hands to the composer mark', () => {
-    render(<CrewModeMarkSource><span data-testid="inner">chip</span></CrewModeMarkSource>)
-    expect(screen.getByTestId('inner').parentElement?.className).toContain('inline-flex')
+  it('marks Ultra Mode with a lightning bolt, not the ghost', () => {
+    render(<CrewModeComposerChip />)
+    const chip = screen.getByTestId('crew-mode-composer-chip')
+    expect(chip.querySelector('.lucide-zap')).not.toBeNull()
+    expect(chip.querySelector('[data-testid="kiro-ghost-mark"]')).toBeNull()
   })
 })

@@ -486,6 +486,22 @@ A background run admitted now can be cancelled while its start is still in fligh
 and `attach_child` then finds no live record and stops the new execution through
 that hook, so cancelled work never keeps running outside admission.
 
+A task run is registered and persisted by the task runner before `attach_child`,
+and the task runner resumes a run it finds running after a gateway stop. So the
+task runner's entry points (`/api/taskrunner` start, retry and execute) first write
+the run id as `extra.execution_id` on the still-`admitted` record
+(`admission_run_link.link_run`); start chooses that id itself (`mint_task_id`) and
+hands it to `start_background(task_id=...)`. If the record cannot take the id, the
+run is refused and nothing starts. The gateway installs the task runner's probe
+before reconciliation (`HostHooks.run_probes`), so a restart holds such a record
+until the probe settles it. The probe answers a `planned` or `paused` run with no
+live start as `cancelled` (it holds no runtime). A start in flight
+(`_start_ids_in_flight`), a live run task, and a run the restart recovered as
+`paused` or `planned` whose resume the task queue's adoption sweep has not decided yet
+(`TaskRunner._recovery_pending`) all answer "still running". The wait ends
+(`end_recovery_wait`) when the sweep finishes or fails, when the queue is
+detached, and at boot past the store-ready pass when no sweep was armed.
+
 Across principals the scheduler is deficit round robin. Principals with queued roots
 sit in a ring; a visit adds the quantum (1) to the principal's deficit and admits
 while the deficit covers the head ticket's weight (1) and both scopes have room. A
@@ -542,7 +558,8 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
 and the entry point's own check (a chat slot must still be live). `running` is
-written before the work launches, so `admitted` proves it never started. A queued
+written before the work launches, so `admitted` proves it never started, unless it
+names a run id an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
 queued prompt is never delivered as a steer.
@@ -576,10 +593,10 @@ reconciles every non-terminal row:
 
 | Found | Becomes | Capacity |
 |---|---|---|
-| `queued`, `admitted` | `reconciling`, then `queued` and relaunched when a relauncher is registered for its operation and payload, else `cancelled` with `extra.reconcile_detail = host_restarted_before_start` | held only if requeued |
+| `queued`, `admitted` (no linked run id) | `reconciling`, then `queued` and relaunched when a relauncher is registered for its operation and payload, else `cancelled` with `extra.reconcile_detail = host_restarted_before_start` | held only if requeued |
 | `running`, `cancelling` with no unit of its own | `reconciling` -> `unknown_outcome` (`cancelled` if a cancel was asked) | released once proven stopped |
 | `running` with a live scope unit, or a principal slice holding a populated `kirocrew-rt-*.scope` | `reconciling`; the scopes found are stopped (`extra.orphans_reaped`), and the row ends `unknown_outcome` once `systemctl is-active` says each stopped | held |
-| child or probed background run | `reconciling`; its owner reconciles the run and the probe settles the row | held |
+| child or probed background run, including an `admitted` one that names its run id | `reconciling`; its owner reconciles the run and the probe settles the row | held |
 
 Nothing that may have run is replayed. No relauncher is registered for chat turns in
 this build, so a chat turn queued across a restart ends `cancelled`, and the session

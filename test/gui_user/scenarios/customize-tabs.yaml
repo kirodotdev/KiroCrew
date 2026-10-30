@@ -30,7 +30,7 @@ preconditions:
 steps:
   - You are on the chat page. In the left rail find the item labelled "Customize" (it is in the bottom group, above "Settings") and click it.
   - The small heading above the tab rail reads "Customize". The rail's tabs are grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Mates" (first under "Agent") is not already highlighted, click it.
-  - Read the Mates tab. The pane heading reads "Mates" with "Your AI teammates" beneath it. A toolbar ("Filter mates…" box, "Cards | List" switcher, "New mate" button) comes first, then the roster listing "default" (with a "Default" badge) and "nova-sky", as cards or table rows. Note whether anything sits between the toolbar and the roster.
+  - Read the Mates tab. The pane heading reads "Mates" with "Always-on AI agents" beneath it. A toolbar ("Filter mates…" box, "Cards | List" switcher, "New mate" button) comes first, then the roster listing "default" (with a "Default" badge) and "nova-sky", as cards or table rows. Note whether anything sits between the toolbar and the roster.
   - Click the rail tab labelled "Custom agents" (second under "Agent"). The pane heading reads "Custom agents" with "What a mate is built from. Pick one when you add a mate." beneath it.
   - Read the Custom agents pane. At its top is a box with a "New sessions use" picker; under it is a row with a filter box and a "New custom agent" button; under that row the list of custom agents starts, and "kirocrew" is one of the entries. Do not click "New custom agent" and do not change the picker.
   - Click the "kirocrew" entry so its detail shows on the right; then wait a second.

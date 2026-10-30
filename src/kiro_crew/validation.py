@@ -312,6 +312,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MAX_FOLLOWUP_PROMPT,
         MAX_FOLLOWUP_TITLE,
         NOTHING_TO_DO_SCHEMA,
+        REQUEST_SERVER_SCHEMA,
         RESET_CONVERSATION_SCHEMA,
         SET_PROJECT_SCHEMA,
         SKILL_DISCOVER_SCHEMA,

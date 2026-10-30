@@ -225,6 +225,14 @@ def _register_config_watch(
         crew_mode_migration.schedule_on_config_change(state, getattr(change, "new", None))
         state.push_refresh("agents")
 
+    def _push_feature_previews(change: ConfigChange) -> None:
+        # The Feature previews switches are read from the shared config query,
+        # which never goes stale on its own; a refresh frame is what makes every
+        # other open dashboard re-read it, so a switch flipped on one surface
+        # reaches the others without a reload.
+        if change.touched("dashboard.feature_previews"):
+            state.push_refresh("config")
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -243,6 +251,11 @@ def _register_config_watch(
             "agent.crew_mode_agent",
             callback=_apply_crew_mode_agent,
             name="agent.crew_mode_agent",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_push_feature_previews,
+            name="dashboard.feature_previews",
         ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so

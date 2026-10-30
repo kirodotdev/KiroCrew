@@ -9,6 +9,7 @@ import { render, cleanup, fireEvent, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { turnOnCrewModePreview } from './crewModePreview'
 
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
@@ -66,22 +67,23 @@ const selected = () => screen.getAllByRole('tab').find(t => t.getAttribute('aria
 const chip = (name: string) => screen.getAllByRole('tab').find(t => t.textContent?.includes(name) || t.getAttribute('aria-label') === name)!
 
 describe('side panel default tab in Crew Mode', () => {
-  beforeEach(() => { cleanup(); localStorage.clear(); __resetPanelTabs() })
+  // Crew Mode surfaces are a default-off feature preview.
+  beforeEach(() => { cleanup(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
 
   it('a Crew Mode root opens on the Crew tab', () => {
     show('crew-root')
-    expect(selected()?.textContent).toContain('Crew')
+    expect(selected()?.textContent).toContain('Board')
   })
 
   it("a Crew Mode worker's view opens on the Crew tab too", () => {
     show('crew-worker')
-    expect(selected()?.textContent).toContain('Crew')
+    expect(selected()?.textContent).toContain('Board')
   })
 
   it('a normal chat still opens on Changes', () => {
     show('plain')
     expect(selected()?.getAttribute('aria-label') ?? selected()?.textContent).toContain('Changes')
-    expect(screen.queryAllByRole('tab').some(t => t.textContent?.includes('Crew'))).toBe(false)
+    expect(screen.queryAllByRole('tab').some(t => t.textContent?.includes('Board'))).toBe(false)
   })
 
   it('a tab the user picks is kept when the panel opens again', () => {
@@ -95,9 +97,9 @@ describe('side panel default tab in Crew Mode', () => {
 
   it('switching between a Crew Mode chat and a normal chat picks each default', () => {
     const st = store()
-    const a = show('crew-root', st); expect(selected()?.textContent).toContain('Crew'); a.unmount()
+    const a = show('crew-root', st); expect(selected()?.textContent).toContain('Board'); a.unmount()
     const b = show('plain', st); expect(selected()?.getAttribute('aria-label')).toBe('Changes'); b.unmount()
-    const c = show('crew-root', st); expect(selected()?.textContent).toContain('Crew'); c.unmount()
+    const c = show('crew-root', st); expect(selected()?.textContent).toContain('Board'); c.unmount()
     show('plain', st); expect(selected()?.getAttribute('aria-label')).toBe('Changes')
   })
 })

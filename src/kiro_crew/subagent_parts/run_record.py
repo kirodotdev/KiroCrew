@@ -102,6 +102,10 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # Lineage depth: 1 for a child of a root session (chat, cron, channel),
+    # its parent's depth + 1 for a child of a sub-agent. Set at admission,
+    # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.
+    depth: int = field(default=1, kw_only=True)
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -119,6 +123,7 @@ class SubagentInfo:
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
+    last_tool_call_id: str = ""  # tool_call_id of last_tool; reconnect replay matches it by id
     tool_count: int = (
         0  # count of observed tool calls (incl. auto-approved); drives running-card progress
     )

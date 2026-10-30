@@ -460,6 +460,10 @@ export interface ChatState {
    *  gateway, or nothing labelled), and the chips then keep their default
    *  "queued behind the concurrency limit" text. Cleared with the count. */
   subagentQueuedReason: Record<string, SubagentQueuedReason>
+  /** Ids of the cards held when a subagent replay began that the replay has
+   *  not named yet. `subagentReplayDone` drops what is left. Null outside a
+   *  replay. No surface reads it. */
+  subagentReplayUnconfirmed?: Record<string, true> | null
   /** The authoritative automation record for each bare slot key.
    *
    * Structured monitors remain here after reaching a terminal outcome so the
@@ -782,6 +786,7 @@ export const initialState: ChatState = {
   subagents: {},
   subagentQueued: {},
   subagentQueuedReason: {},
+  subagentReplayUnconfirmed: null,
   automations: {},
   selectedSubagentId: null,
   toolLog: [],
