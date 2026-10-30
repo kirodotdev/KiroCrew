@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,17 @@ from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_provider
 from kiro_crew.platform.update_capability import AutoUpdateEffect
 from kiro_crew.platform.update_provider import CommandProvider, UpdateCheckResult
+
+_GATEWAY_LOGGER = "kiro_crew.slack.gateway"
+_BUILDING = "Auto-update enabled for managed install — building beside it"
+_SHUTTING_DOWN = "Auto-update not started: the gateway is shutting down"
+
+
+@pytest.fixture
+def gateway_logs(caplog):
+    """The update coordinator's own log lines, read after the run."""
+    caplog.set_level(logging.INFO, logger=_GATEWAY_LOGGER)
+    return lambda: [r.getMessage() for r in caplog.records if r.name == _GATEWAY_LOGGER]
 
 
 class TestAutoApplyGuard:
@@ -109,7 +121,7 @@ class TestAutoApplyGuard:
             handlers._update_info.update(original)
         return orch
 
-    def test_managed_install_auto_applies_without_consulting_the_build_stamp(self):
+    def test_managed_install_auto_applies_without_consulting_the_build_stamp(self, gateway_logs):
         info = {
             "update_available": True,
             "can_apply": False,
@@ -137,6 +149,7 @@ class TestAutoApplyGuard:
         # The new tree builds beside the live one with admission open; only the
         # restart into it (inside the apply) pauses admission.
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _BUILDING in gateway_logs()
 
     _MANAGED_UPDATE = {
         "update_available": True,
@@ -149,16 +162,24 @@ class TestAutoApplyGuard:
         },
     }
 
-    def test_no_apply_starts_once_shutdown_is_signalled(self):
+    def test_no_apply_starts_once_shutdown_is_signalled(self, gateway_logs):
         # The first coordinator cycle runs while boot is still inside the MCP
         # probe, so a SIGTERM there reaches it before ``_shutdown`` does. An
         # installer admitted now would be stopped mid-write moments later.
+        # The effect is pinned so the managed-venv route, and its shutdown gate,
+        # is reached on every platform.
         with patch("kiro_crew.slack.gateway.shutdown_event", SimpleNamespace(is_set=lambda: True)):
-            orch = self._run(dict(self._MANAGED_UPDATE), auto_update=True, managed_venv=True)
+            orch = self._run(
+                dict(self._MANAGED_UPDATE),
+                auto_update=True,
+                managed_venv=True,
+                effect=AutoUpdateEffect("install", "wheel"),
+            )
         orch._auto_apply_wheel_update.assert_not_awaited()
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _SHUTTING_DOWN in gateway_logs()
 
-    def test_a_busy_retry_after_shutdown_is_signalled_starts_nothing(self):
+    def test_a_busy_retry_after_shutdown_is_signalled_starts_nothing(self, gateway_logs):
         orch = self._orchestrator()
         orch._pending_update_respawn = MagicMock()
         orch._restart_after_update = AsyncMock()
@@ -167,6 +188,7 @@ class TestAutoApplyGuard:
             asyncio.run(orch._retry_pending_update_restart())
         orch._restart_after_update.assert_not_awaited()
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert gateway_logs() == [_SHUTTING_DOWN]
 
     def test_finishing_while_the_pause_is_kept_schedules_no_replay(self):
         # During a shutdown the resume keeps the pause and reports it; a replay
@@ -179,7 +201,7 @@ class TestAutoApplyGuard:
         orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
         orch._schedule_inbound_replay.assert_not_called()
 
-    def test_busy_managed_install_still_builds_with_admission_open(self):
+    def test_busy_managed_install_still_builds_with_admission_open(self, gateway_logs):
         """In-flight turns delay only the restart, never the build."""
         orch = self._run(
             {
@@ -201,6 +223,7 @@ class TestAutoApplyGuard:
         )
         orch._auto_apply_wheel_update.assert_awaited_once_with("stable", "9.9.9")
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _BUILDING in gateway_logs()
 
     def test_mandatory_busy_update_keeps_deferring_after_the_grace_limit(self):
         orch = self._orchestrator()
@@ -264,7 +287,7 @@ class TestAutoApplyGuard:
         assert orch._mandatory_update_deferred_at is not None
         assert orch._mandatory_update_deferred_key == "new-floor:2.0.0"
 
-    def test_foreign_environment_never_takes_the_shadow_apply(self):
+    def test_foreign_environment_never_takes_the_shadow_apply(self, gateway_logs):
         orch = self._run(
             {
                 "update_available": True,
@@ -281,8 +304,11 @@ class TestAutoApplyGuard:
         )
         orch._auto_apply_update.assert_not_awaited()
         orch._auto_apply_wheel_update.assert_not_awaited()
+        notified = [m for m in gateway_logs() if "cannot apply it unattended" in m]
+        assert notified and "this install (kirocrew)" in notified[0]
+        assert _BUILDING not in gateway_logs()
 
-    def test_git_checkout_auto_applies_when_the_version_moved(self):
+    def test_git_checkout_auto_applies_when_the_version_moved(self, gateway_logs):
         """The git apply needs `version_newer`, not just `available`.
 
         `available` is true on commit distance alone for a checkout, and this
@@ -303,6 +329,9 @@ class TestAutoApplyGuard:
             effect=AutoUpdateEffect("install", "git"),
         )
         orch._auto_apply_update.assert_awaited_once()
+        assert "Auto-update enabled — applying update" in gateway_logs()
+        # The git apply reloads `kiro_crew`, so its queued restart is never held.
+        assert orch._pending_update_version == ""
 
     def test_a_failed_check_does_not_claim_up_to_date(self, capsys):
         orch = self._run(
