@@ -67,6 +67,7 @@ import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
+import { useConfirm } from '../../components/ConfirmDialog'
 // From the side-effect-free module, not `api/client`: test doubles of the
 // client mock only `api`, and an `instanceof` against an undefined import
 // throws instead of falling through to the generic message.
@@ -306,6 +307,7 @@ export default function NewCrewmateDialog({
   existingNames: readonly string[]
 }) {
   const { t } = useTranslation()
+  const { confirm, confirmDialog } = useConfirm()
   const reduceMotion = useReducedMotion()
 
   const [name, setName] = useState('')
@@ -705,9 +707,15 @@ export default function NewCrewmateDialog({
   // The shell keeps a SET of guards and stakes, so this form and the page's
   // other guards (an open Profile's drafts) each register their own.
   const atStake = open && (dirty || busy || (wsModalOpen && wsDirty))
-  const mayLeave = () => {
+  const mayLeave = async (): Promise<boolean> => {
     if (!atStake) return true
-    return window.confirm(busy ? t('pages.membersPage.create_leave_busy') : t('pages.membersPage.create_leave_draft'))
+    return confirm({
+      title: busy ? t('pages.membersPage.create_leave_busy') : t('pages.membersPage.create_leave_draft'),
+      confirmLabel: busy ? t('pages.membersPage.create_leave_busy_button') : t('components.markdownPanel.discard_changes_button'),
+      // A create in flight has locked the form, so there is nothing to keep editing.
+      cancelLabel: busy ? undefined : t('components.confirmDialog.keep_editing'),
+      layer: 'top',
+    })
   }
   useSidePanelLeaveGuard(mayLeave, atStake, true)
   // A reload or tab close loses the draft too.
@@ -968,6 +976,7 @@ export default function NewCrewmateDialog({
         onCancel={() => setLookOpen(false)}
         onSave={(next) => { setLook(next); setLookOpen(false) }}
       />
+      {confirmDialog}
       <WorkspaceModal
         open={wsModalOpen}
         onDirtyChange={setWsDirty}

@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
@@ -173,11 +174,12 @@ describe('?review=<slug> deep link', () => {
     mockApi.skillsPending.mockResolvedValueOnce({ pending: [ROW_B] })
     mockApi.dismissPendingSkill.mockResolvedValue({ ok: true })
     mockApi.skillsPending.mockResolvedValue({ pending: [] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderAt('/capabilities?tab=skills&review=beta-skill')
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await confirmAction('Dismiss')
     await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill'))
     // Waiting for the row to GO is what makes this pin the guard: the mock being
     // called only proves the request fired, which precedes the refetch, so the

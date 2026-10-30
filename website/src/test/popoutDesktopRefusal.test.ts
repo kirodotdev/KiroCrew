@@ -7,6 +7,8 @@ vi.mock('../lib/electron', () => ({
   get isElectron() { return shell.isElectron },
 }))
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
+const appNotice = vi.hoisted(() => vi.fn())
+vi.mock('../lib/appNotice', () => ({ appErrorNotice: appNotice, installAppNoticeFeed: () => {} }))
 
 import { isEmbeddedPane } from '../lib/embedded'
 import { setHostElectronReader } from '../lib/hostRelay'
@@ -24,10 +26,9 @@ const DESKTOP = 'utils.popoutController.desktop_app_could_not_open_pop_out_windo
 const PANE = 'utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'
 
 describe('pop-out refusal message names the real cause', () => {
-  let alert: ReturnType<typeof vi.spyOn>
   beforeEach(() => {
     vi.stubGlobal('BroadcastChannel', StubChannel as unknown as typeof BroadcastChannel)
-    alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    appNotice.mockClear()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
   afterEach(() => {
@@ -42,14 +43,14 @@ describe('pop-out refusal message names the real cause', () => {
   it('keeps the pop-up advice in a browser', () => {
     vi.spyOn(window, 'open').mockReturnValue(null)
     openPopout('chat-1')
-    expect(alert).toHaveBeenCalledWith(i18nT(BROWSER))
+    expect(appNotice).toHaveBeenCalledWith(i18nT(BROWSER))
   })
 
   it('does not tell a desktop-app user to allow pop-ups', () => {
     shell.isElectron = true
     vi.spyOn(window, 'open').mockReturnValue(null)
     openPopout('chat-1')
-    expect(alert).toHaveBeenCalledWith(i18nT(DESKTOP))
+    expect(appNotice).toHaveBeenCalledWith(i18nT(DESKTOP))
     expect(i18nT(DESKTOP)).not.toMatch(/pop-ups/i)
     expect(getSnapshot().has('chat-1')).toBe(false)
   })
@@ -60,7 +61,7 @@ describe('pop-out refusal message names the real cause', () => {
     const open = vi.spyOn(window, 'open')
     openPopout('chat-1')
     expect(open).not.toHaveBeenCalled()
-    expect(alert).toHaveBeenCalledWith(i18nT(PANE))
+    expect(appNotice).toHaveBeenCalledWith(i18nT(PANE))
     expect(getSnapshot().has('chat-1')).toBe(false)
   })
 
@@ -71,7 +72,7 @@ describe('pop-out refusal message names the real cause', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(fakeWin)
     openPopout('chat-1')
     expect(open).toHaveBeenCalledTimes(1)
-    expect(alert).not.toHaveBeenCalled()
+    expect(appNotice).not.toHaveBeenCalled()
     expect(getSnapshot().has('chat-1')).toBe(true)
   })
 })

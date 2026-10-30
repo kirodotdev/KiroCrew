@@ -74,6 +74,25 @@ describe('AskAgentButton', () => {
     expect(send.mock.calls[0][1]).toEqual({ hard: false, leaveGranted: true })
   })
 
+  it('dismisses its caller only after the asynchronous hand-off succeeds', async () => {
+    let resolve!: (value: boolean) => void
+    send.mockImplementationOnce(() => new Promise<boolean>(finish => { resolve = finish }))
+    const onHandoff = vi.fn()
+    render(<AskAgentButton message="zzq-async" onHandoff={onHandoff} />)
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(onHandoff).not.toHaveBeenCalled()
+
+    resolve(false)
+    await Promise.resolve()
+    expect(onHandoff).not.toHaveBeenCalled()
+
+    send.mockResolvedValueOnce(true)
+    fireEvent.click(screen.getByRole('button'))
+    await Promise.resolve()
+    expect(onHandoff).toHaveBeenCalledTimes(1)
+  })
+
   it('the solid variant carries the accent skin, the link variant the danger skin', () => {
     const { unmount } = render(<AskAgentButton message="zzq-a" variant="solid" />)
     expect(screen.getByRole('button').className).toContain('bg-accent')

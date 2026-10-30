@@ -777,9 +777,9 @@ under `view.localKey`.
 
 What stays in `ChatSidebar.tsx`: every hook call (the owner hooks in `CALL_ORDER`
 order, and the inline state, queries and memos between them), the row actions and
-row shell the row memo compares, the crew-window open, the native `confirm()`
-dialogs as the confirming callbacks the render owners call (eslint's native-dialog
-allowlist names this file), the scope it builds after its last hook call, and the
+row shell the row memo compares, the crew-window open, the themed confirmation
+owner (`useConfirm`) behind the confirming callbacks the render owners call and the
+row menus' one `useSessionActions` owner, the scope it builds after its last hook call, and the
 root region with its resize handle. The render owners call no hooks: the factories
 (`createLaneRows`, `createFolderBlocks`, `createListLanes`, `createBoardLane`) run
 once per render after the scope is built, so the row stamps (`orderStamp`, a view

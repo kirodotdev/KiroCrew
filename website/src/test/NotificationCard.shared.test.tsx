@@ -119,4 +119,24 @@ describe('NotificationCard is the one rendering for both mac surfaces', () => {
     expect(card.hasAttribute('data-elevation')).toBe(false)
     expect(card.className).not.toMatch(/popover|banner/)
   })
+
+  it('shows the whole title of a note with no body instead of cutting it off', () => {
+    const bodyless = { ...note, ts: '1700000000.1', title: 'Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.', body: '' }
+    renderWithProviders(<NotificationCard n={bodyless} />)
+    const title = screen.getByText(bodyless.title)
+    expect(title.className).not.toMatch(/\btruncate\b/)
+    expect(title.className).not.toMatch(/\bline-clamp-\d\b/)
+    renderWithProviders(<NotificationCard n={note} />)
+    expect(screen.getByText('Shared card note').className).toMatch(/\btruncate\b/)
+  })
+
+  it('renders a stored error note through ErrorNotice, not as an alert and without the agent hand-off', () => {
+    const failed = { ...note, ts: '1700000000.2', kind: 'error', title: 'Couldn\'t duplicate this session.', body: '' }
+    renderWithProviders(<NotificationCard n={failed} />)
+    expect(screen.getByText(failed.title).closest('.text-danger')).not.toBeNull()
+    // The status-text shade holds 4.5:1 on the light card.
+    expect(screen.getByText(failed.title)).toHaveClass('text-danger-text')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
 })

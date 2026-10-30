@@ -31,6 +31,7 @@ import SessionDocPreview from '../components/library/SessionDocPreview'
 import ArtifactScopeChips, { type ArtifactChatScopeParam } from '../components/library/ArtifactScopeChips'
 import type { SortKey, SortState, LibraryDrag, FolderActions } from '../components/library/LibraryTable'
 import { useColumnCount } from '../hooks/useColumnCount'
+import { useConfirm } from '../components/ConfirmDialog'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -723,11 +724,16 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // reported by the artifact's own page (ArtifactDetailPage).
   useGuideSelection('artifact_open', { selected: false, available: gridEntries.length > 0 })
 
-  const handleDelete = useCallback((a: Artifact) => {
-    if (window.confirm(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: a.slug }))) {
-      deleteMut.mutate(a.slug)
-    }
-  }, [deleteMut])
+  const { confirm, confirmDialog } = useConfirm()
+  const handleDelete = useCallback(async (a: Artifact) => {
+    if (deleteMut.isPending) return
+    const slug = a.slug
+    const ok = await confirm({
+      title: i18nT('pages.artifactsPage.remove_artifact_confirm', { slug }),
+      confirmLabel: i18nT('pages.artifactsPage.remove_from_library'),
+    })
+    if (ok) deleteMut.mutate(slug)
+  }, [confirm, deleteMut])
 
   const errMessage = error ? (error instanceof Error ? error.message : String(error)) : null
   const asMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -832,6 +838,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // `isLoading` early return, because hooks cannot run after it.
   return (
     <>
+      {confirmDialog}
       {/* The scroll host carries NO padding of its own: `PageHeader` brings the
         * page gutter with it, and doubling that would put the title 32px in
         * while the cards it labels stay at 16px. The gutter lives on the inner

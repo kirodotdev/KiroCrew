@@ -20,7 +20,7 @@ import { useAppSelector } from '../store'
 import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
-import { useSessionActions } from '../hooks/useSessionActions'
+import type { SessionMenuActions } from '../hooks/useSessionActions'
 import { useCopyAck } from './FilePathMenu'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
@@ -39,8 +39,6 @@ export interface SessionActionsMenuProps {
    * handlers or data props to plumb.
    */
   slotKey: string
-  /** Surface mode — forwarded to useSessionActions (scopes the copy-link URL). */
-  mode?: string
   // ── The "absolutely necessary" bubble props: surface-specific UI-state or
   //    async ownership that genuinely can't (and shouldn't) be internalised. ──
   /** Header only: scrolls the sidebar to reveal this session. */
@@ -115,6 +113,11 @@ export interface SessionActionsMenuProps {
    * as two different actions. "Bring back to main" stays: it has no other home.
    */
   omitPopout?: boolean
+  /**
+   * The surface's action owner. It renders the confirmation outside the menu
+   * content, so the dialog survives the menu closing after a destructive pick.
+   */
+  actions: SessionMenuActions
 }
 
 /**
@@ -137,8 +140,8 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * shell) in one canonical order; each caller keeps its own trigger + Content
  * wrapper (they differ in alignment, width, and open-state control).
  *
- * It connects to the store itself (useSessionActions + selectors keyed on
- * `slotKey`) and renders the colour row inline, so callers bubble in only the
+ * It takes its actions from the surface's owner and reads the store through
+ * selectors keyed on `slotKey`, and renders the colour row inline, so callers bubble in only the
  * surface-specific residue (rename/reveal + the MCP node slot + the
  * colour-pick close hook). Connected surfaces are themselves a connected
  * sub-section (keyed on `slotKey`), so they render on every surface, not just
@@ -154,13 +157,13 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false, actions,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = actions
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the

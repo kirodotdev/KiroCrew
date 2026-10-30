@@ -363,6 +363,7 @@ export function useMembersPageSchedules({
     const ok = await confirmSched({
       title: t('pages.kiroCrewAgentsPage.discard_new_schedule'),
       confirmLabel: t('pages.kiroCrewAgentsPage.discard_schedule_confirm'),
+      cancelLabel: t('components.confirmDialog.keep_editing'),
     })
     if (ok) releaseSchedRetention()
     return ok

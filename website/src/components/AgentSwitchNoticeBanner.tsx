@@ -7,7 +7,7 @@ import { createChatForView, showCreatedChat } from '../lib/createdChatView'
 import type { AgentSwitchNotice } from '../utils/agentSwitchFeedback'
 import { errMessage } from '../utils/thunkError'
 import ErrorNotice from './ErrorNotice'
-import { useGuardedLeave, useIsCurrentUrl, useMayLeaveForNavigation, useNavigationStakeNow } from './NavigationLeaveGuard'
+import { useAskingNavigate, useGuardedLeave, useIsCurrentUrl, useNavigationStakeNow } from './NavigationLeaveGuard'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -27,7 +27,7 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
   const store = useAppStore()
   const navigate = useNavigate()
   const guardedLeave = useGuardedLeave()
-  const mayLeave = useMayLeaveForNavigation()
+  const askingNavigate = useAskingNavigate()
   const stakeNow = useNavigationStakeNow()
   const isCurrentUrl = useIsCurrentUrl()
   const [creating, setCreating] = useState(false)
@@ -62,8 +62,9 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
       // runs, so ask the live guard; a refusal keeps the new chat and leaves
       // the user where they are.
       showCreatedChat(view, route => {
-        if (leaveGranted) navigate(route, { state: { leaveGranted: true } })
-        else if (mayLeave()) navigate(route)
+        if (!leaveGranted) return askingNavigate(route)
+        navigate(route, { state: { leaveGranted: true } })
+        return true
       })
     } catch (err) {
       // `unwrap()` rejects with a serialized plain object; errMessage reads it.

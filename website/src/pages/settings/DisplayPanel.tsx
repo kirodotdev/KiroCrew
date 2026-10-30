@@ -1036,8 +1036,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         maxWidth={672}
         guardAccidentalDismiss={editor.isDirty}
       >
-        <ThemeEditorPanel editor={editor} />
+        <ThemeEditorPanel editor={editor} includeConfirmDialog={false} />
       </Modal>
+      {editor.confirmDialog}
       </>
           )
 

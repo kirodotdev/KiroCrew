@@ -26,6 +26,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useTextPrompt } from '../../components/TextPromptDialog'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import SearchableSelect from '../../components/SearchableSelect'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -34,6 +35,7 @@ import { selectComposerBusy } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import type { ChatSlot } from '../../types'
 import { papyrusApi, pdfUrl, type Diagnostic } from './api'
+import { PAPYRUS_DEFAULT_COMMIT_MESSAGE } from './gitWire'
 import { companionContextLines, DEFAULT_MAIN_FILE } from './companionPrompt'
 import {
   countDiagnostics, countWords, forgetSlot, gitBranchLabel, loadLastProject, loadSlot,
@@ -152,6 +154,7 @@ const isFlushAbort = (err: Error): boolean => err.message === FLUSH_FAILED
 
 export default function PapyrusPage() {
   const { confirm, confirmDialog } = useConfirm()
+  const { textPrompt, textPromptDialog } = useTextPrompt()
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -752,14 +755,18 @@ export default function PapyrusPage() {
     onError: (err: Error) => { if (!isFlushAbort(err)) setError(err.message) },
   })
 
-  const onCommitAndPushClick = useCallback(() => {
-    // Same one-field prompt as "new file" — the right weight for one line of
-    // text, and it is what makes the `add -A` scope visible before it happens.
-    const message = window.prompt(i18nT('apps.papyrus.workspace.commit_message_prompt'))
+  const onCommitAndPushClick = useCallback(async () => {
+    const message = await textPrompt({
+      title: i18nT('apps.papyrus.workspace.commit_message_prompt'),
+      confirmLabel: i18nT('apps.papyrus.workspace.commit_and_push'),
+      allowEmpty: true,
+      // A blank message commits under gitops.DEFAULT_COMMIT_MESSAGE; show that literal.
+      placeholder: PAPYRUS_DEFAULT_COMMIT_MESSAGE,
+    })
     // `null` is Cancel and must abort; an empty string is "use the default".
     if (message === null) return
     pushMutation.mutate(message.trim())
-  }, [pushMutation])
+  }, [pushMutation, textPrompt])
 
   // ── Co-author session ─────────────────────────────────────────────────────
 
@@ -999,19 +1006,22 @@ export default function PapyrusPage() {
     setCompileMs(null)
   }, [])
 
-  const onCreateFileClick = useCallback(() => {
-    // A one-field prompt is the right weight for "name a new file"; a modal would
-    // be more chrome than the action deserves.
-    const name = window.prompt(i18nT('apps.papyrus.workspace.new_file_prompt'))
-    const trimmed = name?.trim()
-    if (trimmed) createFileMutation.mutate(trimmed)
-  }, [createFileMutation])
+  const onCreateFileClick = useCallback(async () => {
+    const name = await textPrompt({
+      title: i18nT('apps.papyrus.workspace.new_file_prompt'),
+      confirmLabel: i18nT('apps.papyrus.fileTree.new_file'),
+      requiredMessage: i18nT('apps.papyrus.workspace.new_file_name_required'),
+    })
+    if (name !== null) createFileMutation.mutate(name.trim())
+  }, [createFileMutation, textPrompt])
 
-  const onDeleteFileClick = useCallback((path: string) => {
-    if (window.confirm(i18nT('apps.papyrus.workspace.delete_file_confirm', { file: path }))) {
-      deleteFileMutation.mutate(path)
-    }
-  }, [deleteFileMutation])
+  const onDeleteFileClick = useCallback(async (path: string) => {
+    if (!(await confirm({
+      title: i18nT('apps.papyrus.workspace.delete_file_confirm', { file: path }),
+      confirmLabel: i18nT('apps.papyrus.fileTree.delete_file_button'),
+    }))) return
+    deleteFileMutation.mutate(path)
+  }, [confirm, deleteFileMutation])
 
   if (!project) {
     return (
@@ -1437,6 +1447,7 @@ export default function PapyrusPage() {
         </AnimatePresence>
       </div>
       {confirmDialog}
+      {textPromptDialog}
     </div>
   )
 }

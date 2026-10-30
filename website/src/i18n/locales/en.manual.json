@@ -3387,6 +3387,8 @@
       "change_color": "Change color of {{name}}",
       "delete_tag": "Delete tag \"{{name}}\"",
       "delete_tag_2": "Delete tag {{name}}",
+      "delete_tag_button": "Delete tag",
+      "delete_tag_confirm_title": "Delete tag “{{name}}”?",
       "filter_by_tag": "Filter by tag",
       "include_in_filter": "Include {{name}} in filter",
       "make_a_status_tag": "Make {{name}} a status tag",
@@ -3538,6 +3540,7 @@
       "stateful_app": "Stateful app",
       "static_app": "Static app",
       "tear_down_confirm": "This will tear down the deployed application and delete these resources:\n\n{{resources}}\n\nThis action is not reversible. Continue?",
+      "tear_down_question": "Tear down this deployment?",
       "tearing_down": "Tearing down..."
     },
     "webPreviewPanel": {
@@ -3802,7 +3805,8 @@
       "unsaved_in_pane": "Not saved — use Save in this section"
     },
     "confirmDialog": {
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "keep_editing": "Keep editing"
     },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Could not load webhooks, so what wakes this agent is unknown right now.",

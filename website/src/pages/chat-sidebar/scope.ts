@@ -146,7 +146,7 @@ export type FolderModalTarget = { mode: 'create'; parentId: string } | { mode: '
  *  ./listLanes, ./boardLane, ./SidebarHeader, ./SearchDock,
  *  ./HistoryPane, ./folderModal, ./sessionCleanup, ./bulkModelSwitch) for one
  *  render: its props, its own state, what its owner hooks returned and the
- *  callbacks that keep the native confirm dialogs in ChatSidebar.tsx. The shell
+ *  callbacks that invoke the confirmation owner in ChatSidebar.tsx. The shell
  *  builds it after its last hook call; owners read it and call no hooks. */
 export interface SidebarScope {
   // Its props

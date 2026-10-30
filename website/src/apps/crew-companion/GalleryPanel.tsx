@@ -13,7 +13,7 @@
  * - Listens to gallery:active-changed and gallery:packs-changed broadcasts
  */
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { PackMeta } from '../../lib/appearancePacks/types'
 import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
@@ -22,6 +22,7 @@ import { ghostPoseForKey } from './ghostEyes'
 import { GhostEyeOverlay } from './GhostEyeOverlay'
 import { LottieRenderer } from '../../components/appearancePacks/LottieRenderer'
 import { SpriteRenderer } from '../../components/appearancePacks/SpriteRenderer'
+import { useInlineStyledConfirm } from '../../components/InlineStyledConfirm'
 import { PackEditor } from './PackEditor'
 import { SpriteImporter } from './SpriteImporter'
 import { buildSpritePackData, firstFramePreview } from './petdexImport'
@@ -932,8 +933,12 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
  * tools need.
  */
 export const GalleryPanel: React.FC = () => {
+  const { confirm, confirmDialog } = useInlineStyledConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
   const [activePackId, setActivePackId] = useState<string>('')
+  // Read after an awaited confirm: another window can change the active pack while it is open.
+  const activePackIdRef = useRef(activePackId)
+  activePackIdRef.current = activePackId
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
   const [detail, setDetail] = useState<PackDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1110,9 +1115,13 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }))) return
+    const packId = detail.meta.id
+    if (!(await confirm({
+      title: i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.crewCompanion.gallery.delete'),
+    }))) return
     try {
-      const wasActive = detail.meta.id === activePackId
+      const wasActive = packId === activePackIdRef.current
       if (wasActive) {
         // Repair the reference BEFORE the delete, not after: with the delete
         // first, a failed reset or a gateway restart in between left the
@@ -1127,7 +1136,7 @@ export const GalleryPanel: React.FC = () => {
         }
         setActivePackId(DEFAULT_PACK)
       }
-      const result = await api.galleryDelete(detail.meta.id)
+      const result = await api.galleryDelete(packId)
       if (!result) {
         setError(i18nT('apps.crewCompanion.gallery.deleteFailed'))
         return
@@ -1138,7 +1147,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.deleteFailed'))
     }
-  }, [detail, fetchPacks, activePackId])
+  }, [detail, fetchPacks, confirm])
 
   const handleCreateNew = useCallback(() => {
     setEditingPack(undefined)
@@ -1191,7 +1200,8 @@ export const GalleryPanel: React.FC = () => {
   // affordance the panel provides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') api?.closeGallery?.()
+      // An Escape the open delete question already answered is marked prevented.
+      if (e.key === 'Escape' && !e.defaultPrevented) api?.closeGallery?.()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1283,6 +1293,7 @@ export const GalleryPanel: React.FC = () => {
 
   return (
     <div style={S.root}>
+      {confirmDialog}
       {/* Header — title + the two ways to add an avatar */}
       <div style={S.header}>
         <span style={S.title}>{i18nT('apps.crewCompanion.gallery.title')}</span>

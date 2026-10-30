@@ -3,6 +3,7 @@
  * store, including the explicit source reads allowed only after choosing copy. */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { renderWithProviders } from './helpers'
 import MemoryTab from '../pages/overview/MemoryTab'
 import MemberMemoryPanel from '../pages/overview/MemberMemoryPanel'
@@ -182,13 +183,13 @@ describe('private member memory lifecycle', () => {
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
-    expect(screen.getByTestId('route-location').textContent).toBe(condition === 'unsupported-version'
+    await waitFor(() => expect(screen.getByTestId('route-location').textContent).toBe(condition === 'unsupported-version'
       ? '/capabilities?tab=crews&crew=Review%20%26%20QA'
-      : '/capabilities?tab=crews')
+      : '/capabilities?tab=crews'))
   })
 
   it('asks the existing navigation guard before leaving an unavailable identity', async () => {
-    const guard = vi.fn().mockReturnValue(false)
+    const guard = vi.fn().mockResolvedValue(false)
     api.memoryStores.mockResolvedValue({ stores: [], active: 'default' })
     renderWithProviders(<NavigationLeaveGuardProvider>
       <NavigationVeto guard={guard} />
@@ -197,21 +198,21 @@ describe('private member memory lifecycle', () => {
     </NavigationLeaveGuardProvider>)
     const openManager = await screen.findByRole('button', { name: 'Open crew manager' })
     fireEvent.click(openManager)
-    expect(guard).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(guard).toHaveBeenCalledTimes(1))
     expect(screen.getByTestId('route-location').textContent).toBe('/')
-    guard.mockReturnValue(true)
+    guard.mockResolvedValue(true)
     fireEvent.click(openManager)
-    expect(guard).toHaveBeenCalledTimes(2)
-    expect(screen.getByTestId('route-location').textContent).toBe('/capabilities?tab=crews')
+    await waitFor(() => expect(guard).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByTestId('route-location').textContent).toBe('/capabilities?tab=crews'))
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
   })
 
-  it('keeps the standalone invalid-identity fallback navigable without exposing records', () => {
+  it('keeps the standalone invalid-identity fallback navigable without exposing records', async () => {
     const summary = { ...stores[2], memory_version: 3, owner_member: 'Review & QA' }
     renderWithProviders(<><MemberMemoryPanel store={MEMBER_STORE} summary={summary} /><RouteLocation /></>)
     expect(screen.getByText(/configured memory store is unavailable/i)).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
-    expect(screen.getByTestId('route-location').textContent).toBe('/capabilities?tab=crews&crew=Review%20%26%20QA')
+    await waitFor(() => expect(screen.getByTestId('route-location').textContent).toBe('/capabilities?tab=crews&crew=Review%20%26%20QA'))
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
   })
 
@@ -258,7 +259,7 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
     await screen.findByText('A fresh start for this member')
     fireEvent.click(screen.getByRole('button', { name: 'Open member conversation' }))
-    expect(screen.getByTestId('route-location')).toHaveTextContent('/members?member=Review%20%26%20QA')
+    await waitFor(() => expect(screen.getByTestId('route-location')).toHaveTextContent('/members?member=Review%20%26%20QA'))
     expect(api.memorySeed).not.toHaveBeenCalled()
     expect(api.memberMemoryPage.mock.calls.every(call => call[0] === MEMBER_STORE)).toBe(true)
   })
@@ -578,7 +579,7 @@ describe('private member memory lifecycle', () => {
     expect(api.memoryPreferences).not.toHaveBeenCalledWith(OTHER_STORE)
     expect(api.saveMemoryPreferences).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
-    expect(screen.queryByRole('dialog', { name: 'Discard changes' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard changes' })).toBeNull())
     expect(preferences).toHaveValue('Unsaved member draft')
     expect(api.memoryPreferences).not.toHaveBeenCalledWith(OTHER_STORE)
     await chooseWriter()
@@ -592,9 +593,10 @@ describe('private member memory lifecycle', () => {
   })
 
   it('describes leaving the memory panel without calling it a store switch', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     try {
       renderWithProviders(
+        <NavigationLeaveGuardProvider>
         <SidePanelLayout
           title="Settings"
           tabs={[
@@ -604,23 +606,25 @@ describe('private member memory lifecycle', () => {
           defaultTab="memory"
         >
           {tab => tab === 'memory' ? <MemoryTab refreshTrigger={0} /> : <div>Other settings</div>}
-        </SidePanelLayout>,
+        </SidePanelLayout>
+        </NavigationLeaveGuardProvider>,
       )
       await loaded()
       await openProfile()
       const preferences = screen.getByDisplayValue(`Preferences for ${MEMBER_STORE}`)
       fireEvent.change(preferences, { target: { value: 'Unsaved member draft' } })
+      await act(async () => { await Promise.resolve() })
 
-      fireEvent.click(screen.getByRole('button', { name: 'Other surface' }))
-      expect(confirmSpy).toHaveBeenCalledWith('Leaving will discard unsaved drafts and the current selection.')
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Other surface' })) })
+      expect(await screen.findByRole('dialog', { name: /Leaving will discard unsaved drafts/ })).toBeInTheDocument()
       expect(preferences).toHaveValue('Unsaved member draft')
       expect(screen.queryByText('Other settings')).toBeNull()
 
-      confirmSpy.mockReturnValue(true)
-      fireEvent.click(screen.getByRole('button', { name: 'Other surface' }))
+      await confirmAction('Keep editing')
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Other surface' })) })
+      await confirmAction('Discard changes')
       expect(await screen.findByText('Other settings')).toBeVisible()
     } finally {
-      confirmSpy.mockRestore()
     }
   })
 

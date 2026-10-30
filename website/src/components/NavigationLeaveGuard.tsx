@@ -1,14 +1,29 @@
 import React from 'react'
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { arrivedByFreshNavigation, isTrapEntry, routerEntry, type TrapEntryState } from '../lib/routeHistoryPosition'
+import { settleNavigationExit, type ClaimedNavigationExitAttempt } from '../lib/settleNavigationExit'
 
 /** The mounted page's answer to "may I navigate away from you?". `true` allows
  *  the navigation, `false` keeps the user exactly where they are. */
-export type NavigationLeaveGuard = () => boolean
+export type NavigationLeaveGuard = () => boolean | Promise<boolean>
+
+export type NavigationExitAttempt = { readonly __navigationExitAttempt: unique symbol }
+
+export type { ClaimedNavigationExitAttempt }
 
 type Channel = {
   register: (guard: NavigationLeaveGuard) => () => void
-  ask: () => boolean
+  ask: () => Promise<boolean>
+  /** The same ask, answered synchronously when every guard answers with a
+   *  plain boolean. Only a guard that actually shows a confirmation turns the
+   *  answer into a promise, so a page with nothing at stake keeps the action in
+   *  the same task as the click that asked for it. */
+  askNow: () => boolean | Promise<boolean>
+  /** Claim the one visible leave confirmation. Later exit attempts are dropped
+   *  rather than replacing the question that is already awaiting an answer. */
+  beginExitAttempt: () => NavigationExitAttempt | null
+  ownsExitAttempt: (attempt: NavigationExitAttempt) => boolean
+  endExitAttempt: (attempt: NavigationExitAttempt) => void
   /** Publish whether the page on screen is holding work an exit would destroy.
    *  Separate from `ask` because it must answer WITHOUT prompting: the browser
    *  Back guard needs to know there is something at stake before the user
@@ -67,6 +82,10 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
   // still protected. Each registration removes only its own entry on cleanup, so an
   // outgoing surface cannot clear an incoming one's guard.
   const guards = React.useRef(new Set<NavigationLeaveGuard>())
+  // The provider owns the currently visible exit question. This is intentionally
+  // separate from a caller's local pending flag: route rows, pane tabs, and
+  // browser Back have different component instances but must share one policy.
+  const exitAttempt = React.useRef<NavigationExitAttempt | null>(null)
   // Kept in refs and pushed to listeners rather than held in state: the answer
   // flips on the keystroke that first dirties a draft, and state here would
   // re-render the whole app under this provider to tell one listener.
@@ -75,11 +94,7 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
   // out on `publishStake` below.
   const stakeHolders = React.useRef(new Set<object>())
   const stakeListeners = React.useRef(new Set<(atStake: boolean) => void>())
-  const channel = React.useMemo<Channel>(() => ({
-    register: g => {
-      guards.current.add(g)
-      return () => { guards.current.delete(g) }
-    },
+  const channel = React.useMemo<Channel>(() => {
     // A page with nothing at stake registers no guard and this is a bare
     // `true`. The guard may show a confirm, so callers must only ever ask from
     // an event handler — never during render.
@@ -89,37 +104,70 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
     // has already said "stay" must not then be asked about a second draft for a
     // navigation that is no longer going to happen. Iterated over a copy, since a
     // guard's own confirm can unmount a surface and mutate the set.
-    ask: () => {
-      for (const g of [...guards.current]) {
-        if (g() === false) return false
+    const askNow = (): boolean | Promise<boolean> => {
+      const list = [...guards.current]
+      for (let i = 0; i < list.length; i++) {
+        let answer: boolean | Promise<boolean>
+        // A guard that throws counts as "stay", like one that rejects.
+        try { answer = list[i]() } catch { return false }
+        if (answer === false) return false
+        if (answer === true) continue
+        return (async () => {
+          if ((await answer) === false) return false
+          for (const g of list.slice(i + 1)) {
+            // A guard that unregistered while the first answer was pending
+            // belongs to a surface that is gone and must not be asked.
+            if (!guards.current.has(g)) continue
+            if ((await g()) === false) return false
+          }
+          return true
+        })()
       }
       return true
-    },
-    // Per PUBLISHER, for the same reason `register` keeps a set: one page can hold two
-    // drafts, and with a single shared boolean whichever surface published `false` last
-    // disarmed the Back guard for the other one's still-typed draft. The channel's answer
-    // is whether ANY publisher is holding work.
-    publishStake: (atStake, publisher) => {
-      if (atStake) stakeHolders.current.add(publisher)
-      else stakeHolders.current.delete(publisher)
-      const next = stakeHolders.current.size > 0
-      if (stake.current === next) return
-      stake.current = next
-      // Iterated over a copy: a listener may unsubscribe from inside its own
-      // callback, and mutating the live set mid-iteration would skip the next
-      // listener.
-      for (const listener of [...stakeListeners.current]) listener(next)
-    },
-    subscribeStake: listener => {
-      stakeListeners.current.add(listener)
-      // Delivered immediately, so a listener does not have to mount before the
-      // page it is listening for. Without it, a guard mounted after a dirty
-      // page (a remount, a StrictMode re-run) would sit disarmed.
-      listener(stake.current)
-      return () => { stakeListeners.current.delete(listener) }
-    },
-    stakeNow: () => stake.current,
-  }), [])
+    }
+    return {
+      register: g => {
+        guards.current.add(g)
+        return () => { guards.current.delete(g) }
+      },
+      ask: () => Promise.resolve(askNow()),
+      askNow,
+      beginExitAttempt: () => {
+        if (exitAttempt.current) return null
+        const attempt = {} as NavigationExitAttempt
+        exitAttempt.current = attempt
+        return attempt
+      },
+      ownsExitAttempt: attempt => exitAttempt.current === attempt,
+      endExitAttempt: attempt => {
+        if (exitAttempt.current === attempt) exitAttempt.current = null
+      },
+      // Per PUBLISHER, for the same reason `register` keeps a set: one page can hold two
+      // drafts, and with a single shared boolean whichever surface published `false` last
+      // disarmed the Back guard for the other one's still-typed draft. The channel's answer
+      // is whether ANY publisher is holding work.
+      publishStake: (atStake, publisher) => {
+        if (atStake) stakeHolders.current.add(publisher)
+        else stakeHolders.current.delete(publisher)
+        const next = stakeHolders.current.size > 0
+        if (stake.current === next) return
+        stake.current = next
+        // Iterated over a copy: a listener may unsubscribe from inside its own
+        // callback, and mutating the live set mid-iteration would skip the next
+        // listener.
+        for (const listener of [...stakeListeners.current]) listener(next)
+      },
+      subscribeStake: listener => {
+        stakeListeners.current.add(listener)
+        // Delivered immediately, so a listener does not have to mount before the
+        // page it is listening for. Without it, a guard mounted after a dirty
+        // page (a remount, a StrictMode re-run) would sit disarmed.
+        listener(stake.current)
+        return () => { stakeListeners.current.delete(listener) }
+      },
+      stakeNow: () => stake.current,
+    }
+  }, [])
   return (
     <NavigationLeaveGuardContext.Provider value={channel}>
       {children}
@@ -170,7 +218,7 @@ export function usePublishNavigationStake(atStake: boolean) {
   }, [channel])
 }
 
-const ALWAYS_MAY_LEAVE = () => true
+const ALWAYS_MAY_LEAVE_NOW = (): boolean => true
 const NOTHING_AT_STAKE = () => false
 
 /**
@@ -191,16 +239,51 @@ export function useNavigationStakeNow(): () => boolean {
   return channel?.stakeNow ?? NOTHING_AT_STAKE
 }
 
-/** Ask the page on screen before an action that navigates away from it. */
-export function useMayLeaveForNavigation(): () => boolean {
+/** Ask the page on screen, answered in the same task when no guard needs to
+ *  show a confirmation. */
+export function useMayLeaveNow(): () => boolean | Promise<boolean> {
   const channel = React.useContext(NavigationLeaveGuardContext)
-  return channel?.ask ?? ALWAYS_MAY_LEAVE
+  return channel?.askNow ?? ALWAYS_MAY_LEAVE_NOW
+}
+
+export { settleNavigationExit }
+
+/**
+ * Claim the provider's one in-flight leave attempt and capture the page that
+ * owns it. An approval is valid only while this full address and router location
+ * key still identify the same source. Outside a provider the claim remains a
+ * local no-op, preserving the standalone behavior of embedded surfaces.
+ */
+export function useClaimNavigationExitAttempt(): () => ClaimedNavigationExitAttempt | null {
+  const channel = React.useContext(NavigationLeaveGuardContext)
+  const location = useLocation()
+  const latest = React.useRef({ address: addressOf(location), key: location.key })
+  latest.current = { address: addressOf(location), key: location.key }
+  return React.useCallback(() => {
+    const attempt = channel?.beginExitAttempt()
+    if (channel && !attempt) return null
+    const source = latest.current
+    const browserSource = browserRouteIdentity()
+    let ended = false
+    return {
+      isSourceCurrent: () =>
+        latest.current.address === source.address
+        && latest.current.key === source.key
+        && sameRouteIdentity(browserRouteIdentity(), browserSource)
+        && (!channel || channel.ownsExitAttempt(attempt!)),
+      end: () => {
+        if (ended) return
+        ended = true
+        if (channel) channel.endExitAttempt(attempt!)
+      },
+    }
+  }, [channel])
 }
 
 /**
  * Is this target the address we are already at, in full?
  *
- * The companion to `useMayLeaveForNavigation`: a navigation that changes nothing
+ * The companion to `useMayLeaveNow`: a navigation that changes nothing
  * unmounts nothing, and asking about it pops a discard-confirm the user never
  * earned. The test is the WHOLE address — pathname AND query — because a pane is
  * routinely mounted on the query (`{tab === 'prompts' && ...}` behind
@@ -236,15 +319,24 @@ export function useIsCurrentUrl(): (target: string) => boolean {
  * over a click that unmounts nothing.
  */
 export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: string) => void {
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeaveNow = useMayLeaveNow()
   const isCurrentUrl = useIsCurrentUrl()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const pending = React.useRef(false)
   return React.useCallback((perform: () => void | Promise<void>, to?: string) => {
-    if (!(to !== undefined && isCurrentUrl(to)) && !mayLeave()) return
-    // A returned promise is deliberately not awaited: the gate answers "may this
-    // run", and the handler owns its own async failure path (each one already
-    // catches and logs).
-    void perform()
-  }, [mayLeave, isCurrentUrl])
+    if (pending.current) return
+    if (to !== undefined && isCurrentUrl(to)) {
+      void perform()
+      return
+    }
+    const attempt = claimExitAttempt()
+    if (!attempt) return
+    // The attempt covers the question only and is released before `perform`,
+    // so a perform that leaves through this hook again is not dropped. A
+    // promise from `perform` is not awaited: each handler reports its own failures.
+    pending.current = true
+    settleNavigationExit(attempt, mayLeaveNow, () => { void perform() }, () => { pending.current = false })
+  }, [mayLeaveNow, isCurrentUrl, claimExitAttempt])
 }
 
 /**
@@ -254,16 +346,18 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
  * about a page that may hold nothing yet, and the user can start a draft
  * during the seconds the create takes. A refusal leaves the user where they
  * are and returns `false`, so the caller can skip whatever depends on the
- * destination being shown.
+ * destination being shown. The answer is a promise only while a discard
+ * question is open.
  */
-export function useAskingNavigate(): (route: string) => boolean {
+export function useAskingNavigate(): (route: string) => boolean | Promise<boolean> {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeaveNow = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   return React.useCallback((route: string) => {
-    if (!mayLeave()) return false
-    navigate(route)
-    return true
-  }, [navigate, mayLeave])
+    const attempt = claimExitAttempt()
+    if (!attempt) return false
+    return settleNavigationExit(attempt, mayLeaveNow, () => { void navigate(route); return true }, undefined, false)
+  }, [navigate, mayLeaveNow, claimExitAttempt])
 }
 
 /* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the
@@ -279,6 +373,20 @@ export function useAskingNavigate(): (route: string) => boolean {
 /** The whole address, the way this guard compares two entries. */
 const addressOf = (l: { pathname: string; search: string; hash: string }): string =>
   l.pathname + l.search + l.hash
+
+type BrowserRouteIdentity = { address: string; key: string }
+
+/** Snapshot the platform entry, including React Router's per-entry key. */
+const browserRouteIdentity = (): BrowserRouteIdentity => {
+  const raw = window.history.state as { key?: unknown } | null
+  return {
+    address: window.location.pathname + window.location.search + window.location.hash,
+    key: typeof raw?.key === 'string' ? raw.key : '',
+  }
+}
+
+const sameRouteIdentity = (a: BrowserRouteIdentity, b: BrowserRouteIdentity): boolean =>
+  a.address === b.address && a.key === b.key
 
 /* `arrivedByFreshNavigation` lives in `lib/routeHistoryPosition.ts` — the arrows'
  * position store needs the same arrival distinction to decide whether a
@@ -305,23 +413,30 @@ const addressOf = (l: { pathname: string; search: string; hash: string }): strin
  */
 export function useGuardedHistoryStep(): (delta: number, onStep?: () => void) => void {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeaveNow = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const pending = React.useRef(false)
   // `delta` may be more than one step: the arrows' history menu jumps straight
   // to an entry (#17453). The trap below is built for that — it tells a pop
   // that sailed past it from one that landed on it by stack position.
   return React.useCallback((delta: number, onStep?: () => void) => {
+    if (pending.current) return
+    const attempt = claimExitAttempt()
+    if (!attempt) return
     // Read at click time, from the platform — the trap is pushed and consumed
     // outside React's render cycle, so a rendered value could be stale.
     // The trap asks only for the ONE pop that lands exactly under it; a jump
     // past it reads as "page already gone" there and asks nothing, so any
     // other move is asked about here.
     const trapWillAsk = delta === -1 && isTrapEntry(routerEntry().state)
-    if (!trapWillAsk && !mayLeave()) return
-    // Runs only once the step is allowed, so work tied to the step (a timed
-    // one-shot) neither starts during the confirm nor leaks from a veto.
-    onStep?.()
-    navigate(delta)
-  }, [navigate, mayLeave])
+    pending.current = true
+    settleNavigationExit(attempt, trapWillAsk ? true : mayLeaveNow, () => {
+      // Runs only once the step is allowed, so work tied to the step (a timed
+      // one-shot) neither starts during the confirm nor leaks from a veto.
+      onStep?.()
+      navigate(delta)
+    }, () => { pending.current = false })
+  }, [navigate, mayLeaveNow, claimExitAttempt])
 }
 
 /**
@@ -386,8 +501,8 @@ export function NavigationBackGuard() {
   const here = addressOf(location)
   // Read through a ref: the listeners below are registered once, so closing over
   // a render's values would pin the first one forever.
-  const latest = React.useRef({ here, state: location.state as unknown })
-  latest.current = { here, state: location.state as unknown }
+  const latest = React.useRef({ here, key: location.key, state: location.state as unknown })
+  latest.current = { here, key: location.key, state: location.state as unknown }
   const armed = React.useRef(false)
   // The STACK POSITION of the duplicate this guard minted, held for as long as
   // that entry exists. Position rather than address, because the duplicate shares
@@ -406,6 +521,18 @@ export function NavigationBackGuard() {
   // `forward()` fires `popstate` exactly like a press, and reading it as one is
   // what would turn a single carry-through into a walk down the stack.
   const selfMove = React.useRef(false)
+  // A Back interception first restores the duplicate, then asks. The token
+  // keeps a later pop from completing an answer that belongs to an older
+  // attempt after the browser has moved again.
+  const attempt = React.useRef<{
+    token: number
+    trap: number
+    askStarted: boolean
+    providerAttempt: NavigationExitAttempt | null
+    source: BrowserRouteIdentity | null
+  } | null>(null)
+  const nextAttemptToken = React.useRef(0)
+  const stakeAt = React.useRef(false)
   // Set while a push this guard issued is in flight, so the recalibration effect
   // does not read its own new duplicate as a stranger's entry and disown it.
   const selfPush = React.useRef(false)
@@ -442,10 +569,9 @@ export function NavigationBackGuard() {
 
   /** Move the stack ourselves, marked so the resulting `popstate` is not read as
    *  a user press. */
-  const selfGo = React.useCallback((direction: -1 | 1) => {
+  const selfGo = React.useCallback((delta: number) => {
     selfMove.current = true
-    if (direction === -1) window.history.go(-1)
-    else window.history.forward()
+    window.history.go(delta)
   }, [])
 
   const pushTrap = React.useCallback(() => {
@@ -523,6 +649,7 @@ export function NavigationBackGuard() {
   React.useEffect(() => {
     if (!channel) return
     return channel.subscribeStake(atStake => {
+      stakeAt.current = atStake
       // Compared against `armed`, not against a previous value: the immediate
       // delivery on subscribe (and StrictMode's re-subscribe) would otherwise
       // act twice on one stake.
@@ -557,16 +684,86 @@ export function NavigationBackGuard() {
   React.useEffect(() => {
     if (!channel) return
     const onPop = () => {
-      const { idx } = routerEntry()
+      const { idx, state } = routerEntry()
       const from = lastIdx.current
       const trap = trapIdx.current
       // A move this guard issued, arriving back as a `popstate`. Not a press, so
       // it decides nothing — reading it as one is what would turn a single
       // carry-through into a walk down the stack.
-      if (selfMove.current) { selfMove.current = false; lastIdx.current = idx; return }
+      if (selfMove.current) {
+        selfMove.current = false
+        lastIdx.current = idx
+        const restoring = attempt.current
+        if (
+          restoring !== null &&
+          !restoring.askStarted &&
+          idx === restoring.trap &&
+          trapIdx.current === restoring.trap &&
+          isTrapEntry(state)
+        ) {
+          restoring.askStarted = true
+          restoring.providerAttempt = channel.beginExitAttempt()
+          if (!restoring.providerAttempt) {
+            // An in-app exit already owns the visible confirmation. Keep the
+            // restored trap armed so this Back cannot create a second question.
+            attempt.current = null
+            armed.current = true
+            return
+          }
+          restoring.source = browserRouteIdentity()
+          // A rejected guard counts as "stay". The provider slot is released on
+          // every outcome, or every later exit would be refused.
+          void channel.ask().catch(() => false).then(allowed => {
+            try {
+              if (attempt.current?.token !== restoring.token) return
+              const current = routerEntry()
+              const ownsRestoredTrap =
+                current.idx === restoring.trap
+                && trapIdx.current === restoring.trap
+                && isTrapEntry(current.state)
+              const sourceStillCurrent = restoring.source !== null
+                && sameRouteIdentity(restoring.source, browserRouteIdentity())
+                && channel.ownsExitAttempt(restoring.providerAttempt!)
+              attempt.current = null
+              if (!ownsRestoredTrap || !sourceStillCurrent) {
+                armed.current = false
+                return
+              }
+              if (!allowed) {
+                // Approval may clear the stake itself (an editor's `endEditing()`),
+                // so only a veto needs a live stake to keep the trap armed.
+                if (!stakeAt.current) {
+                  armed.current = false
+                  return
+                }
+                // The restored duplicate is still ours and still on top, so the
+                // next Back is caught without creating another duplicate.
+                armed.current = true
+                return
+              }
+              armed.current = false
+              // We are back on the duplicate, so skip both it and the identical
+              // page entry beneath it to complete the one Back the user approved.
+              selfGo(-2)
+            } finally {
+              channel.endExitAttempt(restoring.providerAttempt!)
+            }
+          })
+        }
+        return
+      }
       // No duplicate of ours in play (or no index to reason with): this pop is
       // somebody else's business.
       if (trap === null || idx === null) { armed.current = false; return }
+
+      const pending = attempt.current
+      if (pending !== null) {
+        // A later user or programmatic pop belongs to the pending attempt, not
+        // to a fresh leave. Restore the same duplicate and let only that
+        // attempt's token decide what happens after the confirmation returns.
+        if (idx !== pending.trap) selfGo(pending.trap - idx)
+        return
+      }
 
       if (idx === trap) {
         // Landed ON the duplicate. It renders the same address as the entry
@@ -597,20 +794,17 @@ export function NavigationBackGuard() {
         selfGo(-1)
         return
       }
-      // Disarmed FIRST, so the programmatic moves below are not mistaken for a
-      // second Back press.
-      armed.current = false
-      if (channel.ask()) {
-        // Allowed. The duplicate absorbed the pop the user made, so the real one
-        // is still owed. (A no-op when the page's own entry is the oldest in the
-        // session — there was nowhere to go back to in the first place.)
-        selfGo(-1)
-      } else if (mayPush(1)) {
-        // Vetoed: the user stays, and a fresh duplicate makes sure the NEXT Back
-        // is caught too. The one entry above is the duplicate this pop just left —
-        // this guard's own, so replacing it truncates nothing of the user's.
-        pushTrap()
+      // Restore the duplicate BEFORE beginning the asynchronous confirmation.
+      // Leaving the browser below it while awaiting lets another Back walk past
+      // the page and makes a late answer act on stale history.
+      attempt.current = {
+        token: ++nextAttemptToken.current,
+        trap,
+        askStarted: false,
+        providerAttempt: null,
+        source: null,
       }
+      selfGo(1)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)

@@ -91,13 +91,18 @@ describe('closeBusyReasons', () => {
   })
 })
 
+const promptText = (...args: Parameters<typeof closeConfirmPrompt>): string | null => {
+  const p = closeConfirmPrompt(...args)
+  return p && `${p.title} ${p.body}`
+}
+
 describe('closeConfirmPrompt', () => {
   it('returns null when nothing is running and the setting is off', () => {
-    expect(closeConfirmPrompt(stateWith({}), KEY, { settingOn: false })).toBeNull()
+    expect(promptText(stateWith({}), KEY, { settingOn: false })).toBeNull()
   })
 
   it('names the setting as the trigger when nothing is running', () => {
-    const prompt = closeConfirmPrompt(stateWith({}), KEY, { settingOn: true })
+    const prompt = promptText(stateWith({}), KEY, { settingOn: true })
     expect(prompt).toContain(t('title'))
     expect(prompt).toContain('Nothing is running in it.')
     expect(prompt).toContain('Confirm Before Closing Session')
@@ -105,13 +110,13 @@ describe('closeConfirmPrompt', () => {
   })
 
   it('names the live work and what closing stops, not the setting', () => {
-    const prompt = closeConfirmPrompt(stateWith({ running: true }), KEY, { settingOn: true })
+    const prompt = promptText(stateWith({ running: true }), KEY, { settingOn: true })
     expect(prompt).toContain('It is still working on a reply. Closing stops that reply.')
     expect(prompt).not.toContain('Confirm Before Closing Session')
   })
 
   it('asks for live work with the setting off', () => {
-    const prompt = closeConfirmPrompt(stateWith({ pending_approval: true }), KEY, { settingOn: false })
+    const prompt = promptText(stateWith({ pending_approval: true }), KEY, { settingOn: false })
     expect(prompt).toContain(t('reason_approval'))
   })
 
@@ -119,34 +124,33 @@ describe('closeConfirmPrompt', () => {
     // Drafts survive a close (stored per session), so the line holds whether or
     // not one exists; reading the store would lag the composer's save debounce.
     for (const slot of [{}, { running: true }]) {
-      expect(closeConfirmPrompt(stateWith(slot), KEY, { settingOn: true })).toContain('the draft in your message box are kept')
+      expect(promptText(stateWith(slot), KEY, { settingOn: true })).toContain('the draft in your message box are kept')
     }
   })
 
-  it('keeps the prompt to three paragraphs and never names the dialog buttons', () => {
+  it('puts the question in the title and every reason in the body, never naming the buttons', () => {
     const busy = closeConfirmPrompt(stateWith({ running: true, subagents_running: true, queue_depth: 1 }, GOAL_LOOP), KEY, { settingOn: false })!
-    const parts = busy.split('\n\n')
-    expect(parts).toHaveLength(3)
-    expect(parts[1]).toContain(t('reason_turn'))
-    expect(parts[1]).toContain(t('reason_goal_loop'))
-    // The browser draws OK / Cancel in its own language, so the copy must not name them.
-    expect(busy).not.toMatch(/\bOK\b|\bCancel\b/)
+    expect(busy.title).toBe(t('title'))
+    expect(busy.body).toContain(t('reason_turn'))
+    expect(busy.body).toContain(t('reason_goal_loop'))
+    expect(busy.body).toContain(t('actions'))
+    expect(`${busy.title} ${busy.body}`).not.toMatch(/\bOK\b|\bCancel\b/)
   })
 
   it('names where the setting lives', () => {
-    expect(closeConfirmPrompt(stateWith({}), KEY, { settingOn: true })).toContain('“Chat › Confirm Before Closing Session” is turned on in Settings')
+    expect(promptText(stateWith({}), KEY, { settingOn: true })).toContain('“Chat › Confirm Before Closing Session” is turned on in Settings')
   })
 
   it('names a monitor in the prompt', () => {
-    expect(closeConfirmPrompt(stateWith({}, MONITOR), KEY, { settingOn: false })).toContain(t('reason_monitor'))
+    expect(promptText(stateWith({}, MONITOR), KEY, { settingOn: false })).toContain(t('reason_monitor'))
   })
 
   it('the ⌥⇧W alias (checkBusy false) asks only with the setting on, but still names live work', () => {
-    expect(closeConfirmPrompt(stateWith({ running: true }), KEY, { settingOn: false, checkBusy: false })).toBeNull()
-    const busy = closeConfirmPrompt(stateWith({ running: true }), KEY, { settingOn: true, checkBusy: false })
+    expect(promptText(stateWith({ running: true }), KEY, { settingOn: false, checkBusy: false })).toBeNull()
+    const busy = promptText(stateWith({ running: true }), KEY, { settingOn: true, checkBusy: false })
     expect(busy).toContain(t('reason_turn'))
     expect(busy).not.toContain('Nothing is running in it.')
-    const idle = closeConfirmPrompt(stateWith({}), KEY, { settingOn: true, checkBusy: false })
+    const idle = promptText(stateWith({}), KEY, { settingOn: true, checkBusy: false })
     expect(idle).toContain('Confirm Before Closing Session')
   })
 

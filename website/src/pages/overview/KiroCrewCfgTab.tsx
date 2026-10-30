@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Bot, FolderOpen, Brain, Settings, Lock, Flame, Plus } from 'lucide-react'
 import { api } from '../../api/client'
@@ -10,6 +10,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { WorkspaceModal } from '../../components/crew/crewFields'
 import { useProvider } from '../../providers'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR, DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { useAppDispatch } from '../../store'
 import { triggerRefresh } from '../../store/dashboardSlice'
@@ -251,7 +252,13 @@ export default function KiroCrewCfgTab() {
   // The create dialog's typed fields live in main's WorkspaceForm; guard them
   // against a route change the way the crew editor's host does.
   const [createDirty, setCreateDirty] = useState(false)
-  useSidePanelLeaveGuard(() => !createDirty || window.confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')), createDirty)
+  const { confirm, confirmDialog } = useConfirm()
+  const confirmDiscardCreate = useCallback(() => confirm({
+    title: i18nT('pages.overview.promptsTab.discard_unsaved_changes'),
+    confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+    cancelLabel: i18nT('components.confirmDialog.keep_editing'),
+  }), [confirm])
+  useSidePanelLeaveGuard(useCallback(() => !createDirty || confirmDiscardCreate(), [createDirty, confirmDiscardCreate]), createDirty)
 
   const reqId = useRef(0)
 
@@ -502,6 +509,7 @@ export default function KiroCrewCfgTab() {
           <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channel_agents')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channel_agents}</span></div>
         </div>
       </Card>
+      {confirmDialog}
     </>
   )
 }
@@ -558,6 +566,7 @@ export function AgentRunSettings() {
 
 function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => void }) {
   const [maxTurns, setMaxTurns] = useState(cfg.agent.subagent_max_turns ?? 100)
+  const { confirm, confirmDialog } = useConfirm()
   const [maxSubs, setMaxSubs] = useState(cfg.agent.max_subagents ?? 3)
   const [autoMax, setAutoMax] = useState(cfg.agent.subagent_auto_max ?? 16)
   const hardCap = autoMax
@@ -581,7 +590,11 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   // The drafts live only in local state until Save. On Settings > Agent Harness
   // the backend picker's error notices can hand off to the chat, which unmounts
   // this card; the guard asks before any navigation drops an unsaved draft.
-  useSidePanelLeaveGuard(() => !dirty || window.confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')), dirty)
+  useSidePanelLeaveGuard(useCallback(() => !dirty || confirm({
+    title: i18nT('pages.overview.promptsTab.discard_unsaved_changes'),
+    confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+    cancelLabel: i18nT('components.confirmDialog.keep_editing'),
+  }), [confirm, dirty]), dirty)
 
   const save = async () => {
     setSaving(true); setMsg('')
@@ -593,7 +606,8 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   }
 
   return (
-    <Card>
+    <>
+      <Card>
       <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.controls_how_many_subagents_can_run_concurrently')} /></CardTitle>
       <p className="text-muted text-[12px] mb-2">{i18nT('pages.overview.kiroCrewCfgTab.subagent_save_note')}</p>
       <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[600px]:grid-cols-1">
@@ -626,5 +640,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
         {msg && <span className={`text-[13px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
       </div>
     </Card>
+    {confirmDialog}
+    </>
   )
 }

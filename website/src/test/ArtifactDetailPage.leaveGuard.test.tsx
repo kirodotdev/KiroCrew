@@ -2,7 +2,7 @@
  * An unsaved edit buffer answers the app shell's leave check.
  *
  * Exits the page does not own — the global sidebar, the command palette, and a
- * popout's forwarded navigation intent — ask `useMayLeaveForNavigation` before
+ * popout's forwarded navigation intent — ask `useMayLeaveNow` before
  * they swap the route. A client-side route change never fires `beforeunload`,
  * so without a registered guard those exits discarded the edit silently. The
  * registry needs a synchronous answer, so a dirty buffer refuses and opens the
@@ -15,7 +15,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
 import { renderWithProviders } from './helpers'
 import { openMore, closeMore } from './artifactMoreMenu'
 import { api } from '../api/client'
@@ -42,9 +43,9 @@ const mkArtifact = (o: Partial<Artifact> = {}): Artifact => ({
   updated_at: '2026-05-21T22:30:00.000000+00:00', content: '# v1', ...o,
 })
 
-let ask: () => boolean = () => true
+let ask: () => Promise<boolean> = async () => true
 function ShellProbe() {
-  ask = useMayLeaveForNavigation()
+  ask = useMayLeaveAsPromise()
   return null
 }
 
@@ -79,41 +80,52 @@ describe('ArtifactDetailPage app-shell leave guard', () => {
   })
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('refuses a shell exit over a dirty buffer and offers the app discard dialog', async () => {
+  it('asks the app discard dialog over a dirty buffer and leaves only on discard', async () => {
     const nativeConfirm = vi.spyOn(window, 'confirm')
     const editor = await enterEditMode()
     fireEvent.change(editor, { target: { value: '# unsaved work' } })
-    let answer = true
+    let answer: Promise<boolean> = Promise.resolve(true)
     act(() => { answer = ask() })
-    expect(answer).toBe(false)
     expect(nativeConfirm).not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/discard unsaved changes/i)).toBeInTheDocument()
-    // Asking again while the dialog is open still refuses and shows one dialog.
-    act(() => { answer = ask() })
-    expect(answer).toBe(false)
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
-    fireEvent.click(within(dialog).getByRole('button', { name: /discard changes/i }))
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: /discard changes/i }))
+      await answer
+    })
+    await expect(answer).resolves.toBe(true)
     await waitFor(() => expect(screen.queryByLabelText('editor')).toBeNull())
-    // The buffer is gone, so the repeated navigation leaves without asking.
-    expect(ask()).toBe(true)
+    // The buffer is gone, so a later navigation leaves without asking.
+    let again: Promise<boolean> = Promise.resolve(false)
+    await act(async () => { again = ask(); await again })
+    await expect(again).resolves.toBe(true)
   })
 
-  it('keeps the edit when the discard dialog is cancelled', async () => {
+  it('keeps the edit and refuses the exit when Keep editing is chosen', async () => {
     const editor = await enterEditMode()
     fireEvent.change(editor, { target: { value: '# unsaved work' } })
-    act(() => { ask() })
+    let answer: Promise<boolean> = Promise.resolve(true)
+    act(() => { answer = ask() })
     const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
+    // A leave guard names what staying means instead of the generic Cancel.
+    expect(within(dialog).queryByRole('button', { name: 'Cancel' })).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+      await answer
+    })
+    await expect(answer).resolves.toBe(false)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect((screen.getByLabelText('editor') as HTMLTextAreaElement).value).toBe('# unsaved work')
-    expect(ask()).toBe(false)
   })
 
   it('lets the shell leave without asking while the buffer is clean', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm')
     await enterEditMode()
-    expect(ask()).toBe(true)
+    let answer: Promise<boolean> = Promise.resolve(false)
+    await act(async () => { answer = ask(); await answer })
+    await expect(answer).resolves.toBe(true)
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(confirmSpy).not.toHaveBeenCalled()
   })
 
@@ -126,7 +138,7 @@ describe('ArtifactDetailPage app-shell leave guard', () => {
     fireEvent.change(editor, { target: { value: '# unsaved work' } })
     fireEvent.keyDown(document, { key: 's', metaKey: true })
     await waitFor(() => expect(api.updateArtifact).toHaveBeenCalledTimes(1))
-    act(() => { ask() })
+    act(() => { void ask() })
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /discard changes/i }))
     await waitFor(() => expect(screen.queryByLabelText('editor')).toBeNull())

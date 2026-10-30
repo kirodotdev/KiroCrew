@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
+import { useEffect, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
@@ -35,6 +35,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
 import { useGuardedHistoryStep } from '../components/NavigationLeaveGuard'
+import { useConfirm } from '../components/ConfirmDialog'
 import { MOBILE_BREAKPOINT } from './useIsMobile'
 import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
@@ -724,11 +725,12 @@ interface UseKeyboardShortcutsOpts {
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, disabled }: UseKeyboardShortcutsOpts): { confirmDialog: ReactNode } {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const guardedHistoryStep = useGuardedHistoryStep()
   const appStore = useAppStore()
+  const { confirm, confirmDialog } = useConfirm()
   const mruIndexRef = useRef(-1)
   const [enabled, setEnabled] = useState(() => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0')
   const [ctrlDigits, setCtrlDigits] = useState(() => getCtrlDigitsEnabled())
@@ -1029,9 +1031,12 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
             settingOn: loadChatConfig().confirmCloseSession,
             checkBusy: modChord,
           })
-          if (prompt === null || confirm(prompt)) {
-            dispatch(deleteSlot(activeSlot))
-          }
+          void (async () => {
+            if (prompt === null || await confirm({
+              ...prompt,
+              confirmLabel: i18nT('components.sessionActionsMenu.close_session'),
+            })) dispatch(deleteSlot(activeSlot))
+          })()
         },
       }
       // Every `registry` entry has an action here (shortcutRegistry.test pins the
@@ -1153,7 +1158,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, guardedHistoryStep, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
+  }, [dispatch, navigate, guardedHistoryStep, appStore, confirm, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while
@@ -1218,4 +1223,6 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [handler])
+
+  return { confirmDialog }
 }

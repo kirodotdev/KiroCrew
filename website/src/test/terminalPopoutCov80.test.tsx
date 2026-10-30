@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+const appNotice = vi.hoisted(() => vi.fn())
+vi.mock('../lib/appNotice', () => ({ appErrorNotice: appNotice, installAppNoticeFeed: () => {} }))
+
 import { render, screen, act } from '@testing-library/react'
 
 import {
@@ -37,6 +40,7 @@ function Probe() {
 }
 
 beforeEach(() => {
+  appNotice.mockClear()
   localStorage.removeItem(BEACON_KEY)
   __resetForTests()
 })
@@ -79,13 +83,12 @@ describe('terminalPopout window control', () => {
 
   it('does NOT mark the panel popped out when the popup is blocked', () => {
     vi.spyOn(window, 'open').mockReturnValue(null)
-    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     openPopout()
 
     expect(isPopoutOpen()).toBe(false)
-    expect(alert).toHaveBeenCalled()
+    expect(appNotice).toHaveBeenCalledWith(expect.any(String))
     expect(warn).toHaveBeenCalled()
   })
 

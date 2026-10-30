@@ -97,15 +97,14 @@ describe('MeetingsPage deletion', () => {
   })
 
   it('confirms before deleting and sends the meeting id to the API', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { queryClient } = renderPage()
     queryClient.setQueryData(['meetings', 'retro', 'init'], { ok: true })
     queryClient.setQueryData(['meetings', 'retro', 'meta'], { meta: ENDED_MEETING })
     queryClient.setQueryData(['meetings', 'retro', 'outputs'], { outputs: {}, tasks: [] })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Retrospective'))
     await waitFor(() => expect(apiMocks.deleteMeeting).toHaveBeenCalledWith('retro'))
     await waitFor(() => {
       expect(queryClient.getQueryData(['meetings', 'retro', 'init'])).toBeUndefined()
@@ -115,10 +114,10 @@ describe('MeetingsPage deletion', () => {
   })
 
   it('does not delete when confirmation is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /cancel/i }))
 
     expect(apiMocks.deleteMeeting).not.toHaveBeenCalled()
   })
@@ -128,11 +127,11 @@ describe('MeetingsPage deletion', () => {
     apiMocks.deleteMeeting.mockImplementation(
       () => new Promise<void>(resolve => { finishDelete = resolve }),
     )
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     const deleteButton = await screen.findByRole('button', { name: 'Delete Retrospective' })
     fireEvent.click(deleteButton)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
 
     await waitFor(() => {
       expect(deleteButton.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
@@ -143,10 +142,10 @@ describe('MeetingsPage deletion', () => {
 
   it('shows the backend failure beside the meeting that could not be deleted', async () => {
     apiMocks.deleteMeeting.mockRejectedValue(new Error('End the meeting before deleting it'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'End the meeting before deleting it',

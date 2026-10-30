@@ -4,6 +4,7 @@ import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy, S
 import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
+import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
 import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING, FALLBACK_SUPPORTED_FORMATS, formatSupportedFormats } from './helpers'
@@ -33,6 +34,7 @@ const STATUS_LABEL_KEY = {
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
+import { useConfirm } from '../../components/ConfirmDialog'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
@@ -98,6 +100,7 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
 
 function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
   const queryClient = useQueryClient()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async (status: string) => {
@@ -163,15 +166,34 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
   }
 
   const pending = bulkArchiveMutation.isPending || bulkDeleteMutation.isPending
+  const handleBulkDelete = async () => {
+    if (pending || selectedIds.size === 0 || confirmOpen) return
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.index.permanently_delete_selected_items', { count: selectedIds.size }),
+      confirmLabel: i18nT('pages.knowledge.index.delete'),
+    })
+    if (ok) bulkDeleteMutation.mutate()
+  }
 
   return (
+    <>
+      {confirmDialog}
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
       <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} {i18nT('pages.knowledge.index.selected')}</span>
       <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>{i18nT('pages.knowledge.index.archive')}</Btn>
-      <Btn disabled={pending} onClick={() => { if (confirm(`Delete ${selectedIds.size} items permanently?`)) bulkDeleteMutation.mutate() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
+      <Btn disabled={pending} onClick={() => { void handleBulkDelete() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? i18nT('pages.knowledge.index.copied') : i18nT('pages.knowledge.index.copy_content')}</Btn>
       <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
+    <ErrorNotice
+      variant="inline"
+      askAgent
+      testId="knowledge-bulk-delete-error"
+      message={bulkDeleteMutation.error?.message}
+      onDismiss={() => bulkDeleteMutation.reset()}
+      className="mb-3"
+    />
+    </>
   )
 }
 
@@ -401,8 +423,9 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         // Modal that closes it now (bubble-phase window listener, registered
         // when the dialog opened). This branch only has to keep the PRECEDENCE
         // the chain below documents: one Escape must not both dismiss the help
-        // and clear the page's selection underneath it.
-        if (showHelp) return
+        // and clear the page's selection underneath it. A delete confirmation
+        // (bulk or item view) owns Escape the same way.
+        if (showHelp || document.querySelector('[role="dialog"][aria-modal="true"]')) return
         if (selectedId) { setSelectedId(null); e.preventDefault() }
         else if (selectedItems.size > 0) { setSelectedItems(new Set()); e.preventDefault() }
       } else if (e.key === 'ArrowRight' && !e.altKey && !e.ctrlKey) {

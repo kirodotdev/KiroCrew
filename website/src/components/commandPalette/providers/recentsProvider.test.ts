@@ -40,6 +40,8 @@ vi.mock('../../../store', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
+  // The asking navigate claims a leave attempt, which reads the current location.
+  useLocation: () => ({ pathname: '/', search: '', hash: '', key: 'default', state: null }),
 }))
 
 const apiMock = vi.hoisted(() => ({ sessions: vi.fn() }))

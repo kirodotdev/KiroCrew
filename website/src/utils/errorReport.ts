@@ -28,6 +28,7 @@
  * pulling the UI graph into `api/client.ts`.
  */
 
+import { settleNavigationExit } from '../lib/settleNavigationExit'
 import { safeSetSessionItem } from './safeStorage'
 import { errMessage } from './thunkError'
 import { withBase } from '@/lib/basePath'
@@ -652,16 +653,19 @@ recoverClaimedChatHandoffs()
 // imperative seam so non-page modules can navigate without importing a page.
 
 let _softNavigate: ((to: string) => void) | null = null
-let _maySoftNavigate: (() => boolean) | null = null
+let _maySoftNavigate: (() => boolean | Promise<boolean>) | null = null
+let _claimSoftNavigateAttempt: (() => { isSourceCurrent: () => boolean; end: () => void } | null) | null = null
 const _handoffListeners = new Set<() => void>()
 
 /** Install (or clear, with `null`) the in-app navigator and its leave guard. Called by App.tsx. */
 export function installSoftNavigate(
   fn: ((to: string) => void) | null,
-  mayNavigate: (() => boolean) | null = null,
+  mayNavigate: (() => boolean | Promise<boolean>) | null = null,
+  claimAttempt: (() => { isSourceCurrent: () => boolean; end: () => void } | null) | null = null,
 ): void {
   _softNavigate = fn
   _maySoftNavigate = fn ? mayNavigate : null
+  _claimSoftNavigateAttempt = fn ? claimAttempt : null
 }
 
 /**
@@ -697,25 +701,34 @@ export function subscribeChatHandoff(fn: () => void): () => void {
  * `true`. Cancelling it would abort a hand-off the user had just accepted.
  * Ungated callers keep the ask.
  */
-export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGranted?: boolean } = {}): boolean {
+export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGranted?: boolean } = {}): boolean | Promise<boolean> {
   // The app-level leave guard must run before staging: if the page refuses to
   // leave, a queued prompt would ambush the next chat the user opens even
   // though this click did not navigate. Hard mode is the root-boundary escape
   // hatch and deliberately bypasses the live React tree.
   const softNavigate = !opts.hard ? _softNavigate : null
-  if (softNavigate && !opts.leaveGranted && _maySoftNavigate && !_maySoftNavigate()) return false
-  if (!handoffToChat(prompt)) return false
-  if (softNavigate) {
-    // Notify before navigating: an already-mounted ChatPage drains here, and a
-    // not-yet-mounted one drains on mount instead.
-    for (const fn of _handoffListeners) {
-      try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
+  const attempt = softNavigate && !opts.leaveGranted && _claimSoftNavigateAttempt
+    ? _claimSoftNavigateAttempt()
+    : null
+  if (softNavigate && !opts.leaveGranted && _claimSoftNavigateAttempt && !attempt) return false
+  const proceed = (): boolean => {
+    if (!handoffToChat(prompt)) return false
+    if (softNavigate) {
+      // Notify before navigating: an already-mounted ChatPage drains here, and a
+      // not-yet-mounted one drains on mount instead.
+      for (const fn of _handoffListeners) {
+        try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
+      }
+      softNavigate('/chat')
+      return true
     }
-    softNavigate('/chat')
+    try { window.location.assign(withBase('/chat')) } catch { /* nothing left to try */ }
     return true
   }
-  try { window.location.assign(withBase('/chat')) } catch { /* nothing left to try */ }
-  return true
+  // Answered in the same task unless the page on screen shows a confirmation,
+  // so a hand-off with nothing at stake still completes inside the click.
+  const answer = softNavigate && !opts.leaveGranted && _maySoftNavigate ? _maySoftNavigate : true
+  return settleNavigationExit(attempt, answer, proceed, undefined, false)
 }
 
 /** Test seam — the seam is module state. */

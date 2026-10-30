@@ -7,7 +7,8 @@
  * exercise the component's actual branching, not just bump statement counts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { within, screen, waitFor, fireEvent } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import DesignTweak from '../apps/design-tweak/DesignTweakPage'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
@@ -152,10 +153,7 @@ describe('DesignTweakPage — history, archive, states', () => {
     // polling loop actually run.
     vi.useFakeTimers({ now: FROZEN_NOW, shouldAdvanceTime: true })
     vi.clearAllMocks()
-    mockNavigate.mockClear()
-    // Suppress window.confirm for delete tests
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-  })
+    mockNavigate.mockClear()  })
 
   afterEach(() => {
     vi.useRealTimers()
@@ -388,15 +386,16 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Delete request')
 
-    // window.confirm was mocked to return true
+    // The rendered dialog accepted the destructive action.
     await waitFor(() => {
       expect(mockedDeleteRequest).toHaveBeenCalledWith('req-1')
     })
   })
 
   it('does not delete when the user cancels the confirmation dialog', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
 
@@ -415,9 +414,9 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
-    // Confirm was called but returned false — deleteRequest must NOT fire
-    expect(window.confirm).toHaveBeenCalled()
     expect(mockedDeleteRequest).not.toHaveBeenCalled()
   })
 
@@ -441,6 +440,7 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Delete request')
 
     await waitFor(() => {
       expect(

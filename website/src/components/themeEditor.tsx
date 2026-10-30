@@ -8,6 +8,7 @@ import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 /* ── CSS variable groups for the color picker ── */
 
 /**
@@ -150,6 +151,7 @@ function themeJson(name: string, emoji: string, dark: Record<string, string>, li
 /** Shared theme editor state and actions */
 export function useThemeEditor() {
   const { addCustomTheme, deleteCustomTheme, loadCustomThemes } = useTheme()
+  const { confirm, confirmDialog } = useConfirm()
 
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingSlug, setEditingSlug] = useState<string | null>(null)
@@ -280,7 +282,10 @@ export function useThemeEditor() {
   const handleDelete = async (slug?: string) => {
     const target = slug || editingSlug
     if (!target) return
-    if (confirm(i18nT('components.themeEditor.delete_this_custom_theme'))) {
+    if (await confirm({
+      title: i18nT('components.themeEditor.delete_this_custom_theme'),
+      confirmLabel: i18nT('components.themeEditor.delete_theme_confirm'),
+    })) {
       try { await deleteCustomTheme(target); closeEditor() }
       catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
     }
@@ -322,7 +327,7 @@ export function useThemeEditor() {
     themeName, setThemeName, themeEmoji, setThemeEmoji,
     darkVars, lightVars, updateDarkVar, updateLightVar,
     jsonText, setJsonText, cssText, changeCss, cssImport, saving, error,
-    openNewTheme, openEditTheme, closeEditor, saveTheme, handleDelete,
+    openNewTheme, openEditTheme, closeEditor, saveTheme, handleDelete, confirmDialog,
     syncJsonToPicker, switchMode,
   }
 }
@@ -438,7 +443,11 @@ export function ThemePromptCallout() {
 }
 
 /* ── Theme editor panel (used by both DisplayTab and DisplayPanel) ── */
-export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThemeEditor> }) {
+export function ThemeEditorPanel({ editor, includeConfirmDialog = true }: {
+  editor: ReturnType<typeof useThemeEditor>
+  /** Set false when a persistent outer owner renders `editor.confirmDialog`. */
+  includeConfirmDialog?: boolean
+}) {
   const {
     creatorMode, switchMode, isEditing, editingSlug,
     themeName, setThemeName, themeEmoji, setThemeEmoji,
@@ -483,7 +492,9 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
   }
 
   return (
-    <div className="animate-rise">
+    <>
+      {includeConfirmDialog && editor.confirmDialog}
+      <div className="animate-rise">
       <div className="flex items-center gap-2 mb-3">
         <button className={tabClass('picker')} onClick={() => switchMode('picker')}>
           {i18nT('components.themeEditor.color_picker')}
@@ -584,6 +595,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
           </button>
         )}
       </div>
-    </div>
+      </div>
+    </>
   )
 }

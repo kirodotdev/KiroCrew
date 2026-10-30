@@ -24,6 +24,7 @@
  */
 
 import { i18nT } from '../i18n/t'
+import { appErrorNotice } from '../lib/appNotice'
 import { withBase } from '../lib/basePath'
 import { isElectron } from '../lib/electron'
 import { isDesktopAppPane } from '../lib/hostRelay'
@@ -221,9 +222,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   }
 
   function tellUser(message: string): void {
-    try {
-      window.alert(message)
-    } catch { /* alert unavailable (e.g. sandboxed frame) — the warn before it still records it */ }
+    appErrorNotice(message)
   }
 
   function recomputeSnapshot(): void {

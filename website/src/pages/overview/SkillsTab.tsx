@@ -21,6 +21,7 @@ import SkillContextBudget from './SkillContextBudget'
 import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
 import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 import { Trans } from 'react-i18next'
 
@@ -96,6 +97,7 @@ function sourceLabel(source: Skill['source']): string | null {
 }
 
 export default function SkillsTab() {
+  const { confirm, confirmDialog } = useConfirm()
   const provider = useProvider()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -477,6 +479,7 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
+    {confirmDialog}
     <PendingSkillsPanel sort={skillSort} />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
@@ -699,7 +702,15 @@ export default function SkillsTab() {
                           would clear the second's failure notice, and the
                           optimistic snapshots would restore each other's
                           rows. One delete at a time, like the create modal. */}
-                      <Btn danger disabled={deleteSkill.isPending} onClick={() => { if (deleteSkill.isPending) return; if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
+                      <Btn danger disabled={deleteSkill.isPending} onClick={async () => {
+                        if (deleteSkill.isPending) return
+                        const key = selectedSkill.key
+                        const ok = await confirm({
+                          title: i18nT('pages.overview.skillsTab.delete_confirm', { name: key }),
+                          confirmLabel: i18nT('pages.overview.skillsTab.delete'),
+                        })
+                        if (ok) deleteSkill.mutate(key)
+                      }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>
@@ -891,6 +902,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   onApprove: (slug: string, contentSha256: string) => void
   onDismiss: (slug: string) => void
 }) {
+  const { confirm, confirmDialog } = useConfirm()
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
   // Deliberately an effect and not a `useState(autoOpen)` initializer: the panel
@@ -921,7 +933,9 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
     staleTime: 0,
   })
   return (
-    <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
+    <>
+      {confirmDialog}
+      <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -986,7 +1000,14 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
         })()}
-        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        <Btn danger onClick={async () => {
+          const slug = p.slug
+          const ok = await confirm({
+            title: i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }),
+            confirmLabel: i18nT('pages.overview.skillsTab.dismiss'),
+          })
+          if (ok) onDismiss(slug)
+        }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {p.script_validation?.ok === false && approveRefusal?.code !== 'script_validation_failed' && (
         /* Visible everywhere the flagged badge is, collapsed AND expanded:
@@ -1154,11 +1175,13 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           ))}
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }
 
 function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
+  const { confirm, confirmDialog } = useConfirm()
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1516,7 +1539,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     },
   })
   const dismissAll = useMutation({
-    mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    mutationFn: (slugs: string[]) => api.dismissAllPendingSkills(slugs),
     onMutate: () => {
       // Unconditional, unlike the per-row mutations: Dismiss All targets EVERY
       // pending candidate, so any per-candidate failure notice is about a
@@ -1580,7 +1603,16 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
-          <Btn danger className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) dismissAll.mutate() }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
+          <Btn danger className="ml-auto text-[11px]" onClick={async () => {
+            // The list the question names: a candidate staged while it is open
+            // was not shown, so it is not dismissed.
+            const slugs = pending.map(p => p.slug)
+            const ok = await confirm({
+              title: i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: slugs.length }),
+              confirmLabel: i18nT('pages.overview.skillsTab.dismiss_all'),
+            })
+            if (ok) dismissAll.mutate(slugs)
+          }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
         </h4>
       )}
       {pending.length > 0 && (
@@ -1641,6 +1673,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
           </div>
         </Card>
       )}
+      {confirmDialog}
     </div>
   )
 }

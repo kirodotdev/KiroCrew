@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+const appNotice = vi.hoisted(() => vi.fn())
+vi.mock('../lib/appNotice', () => ({ appErrorNotice: appNotice, installAppNoticeFeed: () => {} }))
+
 import {
   applyMessage,
   pruneStale,
@@ -136,6 +139,7 @@ function setHidden(hidden: boolean): void {
 }
 
 beforeEach(() => {
+  appNotice.mockClear()
   StubChannel.instances = []
   vi.stubGlobal('BroadcastChannel', StubChannel as unknown as typeof BroadcastChannel)
 })
@@ -210,10 +214,9 @@ describe('chatPopout.openPopout (main window side)', () => {
 
   it('surfaces a blocked popup instead of failing silently, and does not mark the slot open', () => {
     vi.spyOn(window, 'open').mockReturnValue(null)
-    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     openPopout('chat-1')
-    expect(alert).toHaveBeenCalledTimes(1)
+    expect(appNotice).toHaveBeenCalledWith(expect.any(String))
     expect(warn).toHaveBeenCalledTimes(1)
     expect(getSnapshot().has('chat-1')).toBe(false)
   })

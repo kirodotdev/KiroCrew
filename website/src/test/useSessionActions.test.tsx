@@ -38,8 +38,20 @@ vi.mock('../api/client', async () => {
 
 // close() gates on loadChatConfig().confirmCloseSession — mock it so each test
 // controls the branch deterministically (no localStorage dependency).
+const appNotice = vi.hoisted(() => vi.fn())
+vi.mock('../lib/appNotice', () => ({ appErrorNotice: appNotice, installAppNoticeFeed: () => {} }))
+
 const cfgMock = vi.hoisted(() => ({ loadChatConfig: vi.fn(() => ({ confirmCloseSession: false })) }))
 vi.mock('../pages/chat/ChatSettings', () => cfgMock)
+
+// This hook-only suite has no rendered owner for confirmDialog. Component tests
+// exercise the real modal; here the shim gives close() a deterministic answer.
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({
+    confirm: (opts: { title: string; body?: unknown }) => Promise.resolve(window.confirm(opts.body ? `${opts.title}\n\n${opts.body}` : opts.title)),
+    confirmDialog: null,
+  }),
+}))
 
 import { store } from '../store'
 import { ApiError } from '../api/apiError'
@@ -348,13 +360,12 @@ describe('useSessionActions', () => {
     // the raw "slot cap reached" reason never shows.
     const guidance = 'Too many sessions are open. Close a few old sessions (they stay in History and reopen anytime), then try again.'
     mocks.forkChatSlot.mockRejectedValueOnce(refusal(429, JSON.stringify({ error: 'slot cap reached (500)', code: 'slot_cap_reached' }), guidance))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(
       "Couldn't duplicate this session. Too many sessions are open. Close a few old sessions (they stay in History and reopen anytime), then try again.",
     )
   })
@@ -365,19 +376,18 @@ describe('useSessionActions', () => {
     // retry succeeds until the user signs in, so there is no "Try again in a moment".
     const signIn = enManual.api.client.session_expired_sign_in_again
     mocks.forkChatSlot.mockRejectedValueOnce(new ApiError(403, signIn, 'invalid signature', true))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${signIn}`)
-    expect(alertSpy.mock.calls[0][0]).not.toContain('Try again in a moment')
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${signIn}`)
+    expect(appNotice.mock.calls[0][0]).not.toContain('Try again in a moment')
     // The shared text names the sign-in as what lapsed. "Session expired" right
     // after "Couldn't duplicate this session." reads as the chat session having
     // died, which sends the reader to History instead of to sign in again.
-    expect(alertSpy.mock.calls[0][0]).toContain('Your sign-in is no longer valid.')
-    expect(alertSpy.mock.calls[0][0]).not.toMatch(/session expired/i)
+    expect(appNotice.mock.calls[0][0]).toContain('Your sign-in is no longer valid.')
+    expect(appNotice.mock.calls[0][0]).not.toMatch(/session expired/i)
   })
 
   it('duplicate keeps the stale-owner explanation on a stale-owner sign-in denial', async () => {
@@ -388,15 +398,14 @@ describe('useSessionActions', () => {
     mocks.forkChatSlot.mockRejectedValueOnce(
       new ApiError(401, staleOwner, JSON.stringify({ error: 'stale session', code: 'stale_session_reauth' }), true),
     )
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${staleOwner}`)
-    expect(alertSpy.mock.calls[0][0]).toContain('predates the configured owner')
-    expect(alertSpy.mock.calls[0][0]).not.toContain('Try again in a moment')
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${staleOwner}`)
+    expect(appNotice.mock.calls[0][0]).toContain('predates the configured owner')
+    expect(appNotice.mock.calls[0][0]).not.toContain('Try again in a moment')
   })
 
   it('duplicate follows an access-proxy challenge with the proxy remedy and no retry sentence', async () => {
@@ -405,14 +414,13 @@ describe('useSessionActions', () => {
     // proxy and what to do.
     const proxy = 'Reload this browser tab — if a sign-in page appears, your access proxy’s session expired. If not, a proxy or firewall in front of this dashboard refused the request; check the proxy’s logs, or retry later.'
     mocks.forkChatSlot.mockRejectedValueOnce(new ApiError(401, proxy, '<html></html>', true, true))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${proxy}`)
-    expect(alertSpy.mock.calls[0][0]).not.toContain('Try again in a moment')
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(`Couldn't duplicate this session. ${proxy}`)
+    expect(appNotice.mock.calls[0][0]).not.toContain('Try again in a moment')
   })
 
   it('duplicate alerts the keyed not-found copy on a slot_not_found 404, not the raw "not found"', async () => {
@@ -420,41 +428,38 @@ describe('useSessionActions', () => {
     // when the session is not open on the gateway; the raw reason says neither
     // what is missing nor what to do.
     mocks.forkChatSlot.mockRejectedValueOnce(refusal(404, JSON.stringify({ error: 'not found', code: 'slot_not_found' }), 'not found'))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(
       "Couldn't duplicate this session. It's no longer open. Reload the page, or reopen it from History and try again.",
     )
-    expect(alertSpy.mock.calls[0][0]).not.toContain(': not found')
+    expect(appNotice.mock.calls[0][0]).not.toContain(': not found')
   })
 
   it('duplicate wraps an ordinary 429 reason in the subject template', async () => {
     // Only the slot-cap codes get the keyed copy; a tunnel-edge 429 still names its reason.
     mocks.forkChatSlot.mockRejectedValueOnce(refusal(429, JSON.stringify({ error: 'x', code: 'throttled' }), 'Rate limited'))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: Rate limited. Try again in a moment.")
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: Rate limited. Try again in a moment.")
   })
 
   it('duplicate wraps the server reason in the subject template on a non-429 ApiError', async () => {
     // A 404 without the slot_not_found code still names the subject; a reason's
     // own end punctuation is dropped so the sentence does not end in "..".
     mocks.forkChatSlot.mockRejectedValueOnce(refusal(404, 'not found body', 'the source session was permanently deleted.'))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe(
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe(
       "Couldn't duplicate this session. Reason: the source session was permanently deleted. Try again in a moment.",
     )
   })
@@ -463,13 +468,12 @@ describe('useSessionActions', () => {
     // A Hindi or Bengali reason ends in the danda, which the template's own
     // end mark follows; leaving it in would read "।।" in those locales.
     mocks.forkChatSlot.mockRejectedValueOnce(refusal(500, 'body', 'सर्वर त्रुटि।'))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-    expect(alertSpy.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: सर्वर त्रुटि. Try again in a moment.")
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
+    expect(appNotice.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: सर्वर त्रुटि. Try again in a moment.")
   })
 
   it('duplicate alerts the connection copy when fetch itself rejects (non-ApiError)', async () => {
@@ -477,20 +481,19 @@ describe('useSessionActions', () => {
     // so there is no server reason to wrap — the handler shows the keyed
     // connection message instead.
     mocks.forkChatSlot.mockRejectedValueOnce(new TypeError('Failed to fetch'))
-    const alertSpy = vi.fn()
-    vi.stubGlobal('alert', alertSpy)
+    appNotice.mockClear()
     seed()
     const a = renderActions()
     act(() => a.current.duplicate(SLOT))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(appNotice).toHaveBeenCalledTimes(1))
     // Real i18n string (not mocked): names Kiro Crew, and is NOT the reason template.
-    expect(alertSpy.mock.calls[0][0]).toBe(
+    expect(appNotice.mock.calls[0][0]).toBe(
       "Couldn't duplicate this session. Kiro Crew couldn't be reached. Check your connection and try again.",
     )
-    expect(alertSpy.mock.calls[0][0]).not.toContain('Failed to fetch')
+    expect(appNotice.mock.calls[0][0]).not.toContain('Failed to fetch')
   })
 
-  it('close honours confirmCloseSession', () => {
+  it('close honours confirmCloseSession', async () => {
     seed()
     // disabled -> no confirm prompt, deleteSlot dispatched
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
@@ -499,7 +502,7 @@ describe('useSessionActions', () => {
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
-    act(() => a.current.close(SLOT))
+    await act(async () => { await a.current.close(SLOT) })
     expect(skipConfirm).not.toHaveBeenCalled()
     expect(dispatchSpy).toHaveBeenCalled()
 
@@ -508,13 +511,13 @@ describe('useSessionActions', () => {
     const decline = vi.fn(() => false)
     vi.stubGlobal('confirm', decline)
     dispatchSpy.mockClear()
-    act(() => a.current.close(SLOT))
+    await act(async () => { await a.current.close(SLOT) })
     expect(decline).toHaveBeenCalled()
     expect(dispatchSpy).not.toHaveBeenCalled()
     dispatchSpy.mockRestore()
   })
 
-  it('close asks first for a session with a turn in flight, even with confirmCloseSession off', () => {
+  it('close asks first for a session with a turn in flight, even with confirmCloseSession off', async () => {
     // The sidebar row ✕ and the session menu share this close. It must ask on
     // the same busy rule Cmd+W uses, or a click stops live work with no warning.
     // Its own key: an earlier test's close of SLOT is still settling.
@@ -526,18 +529,18 @@ describe('useSessionActions', () => {
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
-    act(() => a.current.close(BUSY))
+    await act(async () => { await a.current.close(BUSY) })
     expect(decline).toHaveBeenCalledTimes(1)
     expect(dispatchSpy).not.toHaveBeenCalled()
 
     // Accepting the ask closes it.
     vi.stubGlobal('confirm', vi.fn(() => true))
-    act(() => a.current.close(BUSY))
+    await act(async () => { await a.current.close(BUSY) })
     expect(dispatchSpy).toHaveBeenCalled()
     dispatchSpy.mockRestore()
   })
 
-  it('close names why it asks: live work, or the setting when nothing is running', () => {
+  it('close names why it asks: live work, or the setting when nothing is running', async () => {
     const BUSY = 'chat-actions-reason-busy'
     const IDLE = 'chat-actions-reason-idle'
     store.dispatch(sseSlots([
@@ -549,17 +552,17 @@ describe('useSessionActions', () => {
     vi.stubGlobal('confirm', decline)
     const a = renderActions()
 
-    act(() => a.current.close(BUSY))
+    await act(async () => { await a.current.close(BUSY) })
     expect(decline.mock.calls[0][0]).toContain('It is still working on a reply. Closing stops that reply.')
     expect(decline.mock.calls[0][0]).not.toContain('Confirm Before Closing Session')
 
-    act(() => a.current.close(IDLE))
+    await act(async () => { await a.current.close(IDLE) })
     expect(decline.mock.calls[1][0]).toContain('Nothing is running in it.')
     expect(decline.mock.calls[1][0]).toContain('Confirm Before Closing Session')
     expect(decline.mock.calls[1][0]).toContain('Chat › Confirm Before Closing Session')
   })
 
-  it('close stays instant for a session waiting on the user (options card, question, interrupted turn)', () => {
+  it('close stays instant for a session waiting on the user (options card, question, interrupted turn)', async () => {
     // These read as the Waiting lane, but nothing is running in them: a close
     // retires no work. Asking here is a prompt the setting cannot turn off.
     const WAITING = 'chat-actions-waiting'
@@ -572,13 +575,13 @@ describe('useSessionActions', () => {
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
-    act(() => a.current.close(WAITING))
+    await act(async () => { await a.current.close(WAITING) })
     expect(ask).not.toHaveBeenCalled()
     expect(dispatchSpy).toHaveBeenCalled()
     dispatchSpy.mockRestore()
   })
 
-  it('close stays instant for an idle session with confirmCloseSession off', () => {
+  it('close stays instant for an idle session with confirmCloseSession off', async () => {
     seed()
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
     const ask = vi.fn(() => false)
@@ -586,7 +589,7 @@ describe('useSessionActions', () => {
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
-    act(() => a.current.close(SLOT))
+    await act(async () => { await a.current.close(SLOT) })
     expect(ask).not.toHaveBeenCalled()
     expect(dispatchSpy).toHaveBeenCalled()
     dispatchSpy.mockRestore()

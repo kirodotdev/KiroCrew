@@ -5,7 +5,7 @@ import { useAppSelector } from '../../store'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Bot } from 'lucide-react'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from '../../components/NavigationLeaveGuard'
+import { settleNavigationExit, useMayLeaveNow, useIsCurrentUrl, useClaimNavigationExitAttempt } from '../../components/NavigationLeaveGuard'
 import { motion } from 'framer-motion'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
 import { i18nT } from '../../i18n/t'
@@ -265,7 +265,8 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   // has turned shortcuts off. See useNavShortcutHint for why this resolves per
   // render rather than being written next to each row.
   const shortcut = useNavShortcutHint(path)
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const isCurrentUrl = useIsCurrentUrl()
   const activate = () => {
     // Navigating swaps the whole page, and the page leaving may hold a draft the
@@ -279,14 +280,18 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
     // ask would pop a discard-confirm over a click that was never going to
     // destroy anything.
     const asked = !onClickOverride && !isCurrentUrl(path)
-    if (asked && !mayLeave()) return
-    // `leaveGranted`: the page's guards were asked just now, in this same
-    // synchronous step (the guide's `enter` writes the same mark), so a landing
-    // page that stays mounted through this navigation and acts on it — the
-    // Crewmates page closing its open create card — must not ask the same
-    // question again. A same-address click asked nothing, so it carries no
-    // mark and that page asks for itself.
-    onClick?.(); (onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
+    const attempt = asked ? claimExitAttempt() : null
+    if (asked && !attempt) return
+    // Answered in the same task unless the page shows a confirmation.
+    settleNavigationExit(attempt, asked ? mayLeave : true, () => {
+      // `leaveGranted`: the page's guards were asked just now (the guide's
+      // `enter` writes the same mark), so a landing page that stays mounted
+      // through this navigation and acts on it — the Crewmates page closing its
+      // open create card — must not ask the same question again. A same-address
+      // click asked nothing, so it carries no mark and that page asks for itself.
+      onClick?.()
+      ;(onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
+    })
   }
   return (
     <motion.div layout={isMobileRow ? undefined : 'position'}

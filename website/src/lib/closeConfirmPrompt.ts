@@ -17,19 +17,13 @@ function reasonLine(reason: CloseBusyReason): string {
 }
 
 /**
- * The text of the confirmation a session close raises, or `null` when the
- * close should go through without asking.
+ * The title and body of the confirmation a session close raises, or `null`
+ * when the close should go through without asking.
  *
- * Every close path (sidebar ✕, session menus, ⌘W / Ctrl+W, ⌥⇧W) used to raise
- * the same bare "Close this session?", so a user could not tell whether it
- * asked because something was running or because of their own setting, nor
- * what confirming would stop. The prompt now names its trigger (each kind of
- * live work, or the "Confirm Before Closing Session" setting when nothing is
- * running, with the path to that setting) and its consequence, then one
- * closing line: the conversation and any unsent message are kept. The title
- * stays a yes/no question so the dialog's own buttons answer it; the text
- * never names those buttons, because the browser draws them in its own
- * language, which can differ from the app's.
+ * The body names the trigger (each kind of live work, or the "Confirm Before
+ * Closing Session" setting when nothing is running, with the path to that
+ * setting) and the consequence: the conversation and any unsent message are
+ * kept. The title stays a yes/no question for the dialog's buttons to answer.
  *
  * The "unsent message is kept" part is unconditional. Drafts are stored per
  * session and a close does not clear them, so it holds whether or not one
@@ -44,22 +38,19 @@ export function closeConfirmPrompt(
   state: RootState,
   slotKey: string,
   { settingOn, checkBusy = true }: { settingOn: boolean; checkBusy?: boolean },
-): string | null {
+): { title: string; body: string } | null {
   // Always read the live work for the TEXT: the alias that skips the busy
   // check still must not tell the user "nothing is running" over a live turn.
   const reasons = closeBusyReasons(state, slotKey)
   if (!settingOn && (!checkBusy || reasons.length === 0)) return null
-  // Three paragraphs at most: a native dialog has no headings or emphasis,
-  // so the reasons share one paragraph however many there are.
   const why = reasons.length > 0
     ? reasons.map(reasonLine).join(' ')
     : i18nT('hooks.useSessionActions.close_confirm.reason_setting', {
       // The path to the toggle, so the user can find it and turn it off.
       setting: `${i18nT('settings.tabs.chat.label')} › ${i18nT('pages.settings.chatPanel.confirm_before_closing_session')}`,
     })
-  return [
-    i18nT('hooks.useSessionActions.close_confirm.title'),
-    why,
-    i18nT('hooks.useSessionActions.close_confirm.actions'),
-  ].join('\n\n')
+  return {
+    title: i18nT('hooks.useSessionActions.close_confirm.title'),
+    body: `${why} ${i18nT('hooks.useSessionActions.close_confirm.actions')}`,
+  }
 }

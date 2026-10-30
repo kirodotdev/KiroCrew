@@ -47,6 +47,14 @@ vi.mock('framer-motion', async () => {
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
+// This file mocks framer-motion down to plain DOM, which the shared Modal's
+// enter/exit animation cannot run on, so the themed confirm is answered here
+// directly. The dialog itself is covered by ConfirmDialog.test.tsx.
+const confirmMock = vi.hoisted(() => vi.fn())
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({ confirm: confirmMock, confirmDialog: null }),
+}))
+
 const cfg = vi.hoisted(() => ({
   // Real saveChatConfig returns true on a persisted save, false only when the
   // write rolled back (GPT 6.1, errors-use-error-notice). The sidebar's board
@@ -658,33 +666,36 @@ describe('ChatSidebar — Older Sessions pane', () => {
   })
 
   it('deletes one history session behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
+    confirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
     renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Are you sure you want to delete this history session?', confirmLabel: 'Delete history session',
+    }))
     expect(mocks.deleteSession).not.toHaveBeenCalled()
-    confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('h1'))
-    confirmSpy.mockRestore()
+    expect(nativeConfirm).not.toHaveBeenCalled()
   })
 
   it('clears all closed sessions behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValueOnce(true)
     const { store } = renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ confirmLabel: 'Delete all' }))
     await waitFor(() => expect(mocks.sessions).toHaveBeenCalled())
     expect(store.getState().chat.undeletableHistory).toBeNull()
-    confirmSpy.mockRestore()
   })
 
   // The gateway answers a partial clear with 200 and `ok: false`. A handler
   // that only awaits the call reads that as success; the shortfall must reach
   // the shared refused-delete notice.
   it('reports a Delete all that left sessions behind', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValueOnce(true)
     mocks.clearSessions.mockResolvedValueOnce({
       ok: false, cleared: 1, skipped: 0, failed: 2, undeletable: [],
     })
@@ -694,7 +705,6 @@ describe('ChatSidebar — Older Sessions pane', () => {
     await waitFor(() => expect(store.getState().chat.undeletableHistory).toEqual({
       key: '', title: '', code: '', bulk: { left: 2, cleared: 1, rows: [] },
     }))
-    confirmSpy.mockRestore()
   })
 
   it('loads another page when more history exists', async () => {

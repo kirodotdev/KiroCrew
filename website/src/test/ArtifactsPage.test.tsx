@@ -938,12 +938,15 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const deleteBtn = screen.getByLabelText('Remove from artifacts library')
     await userEvent.click(deleteBtn)
-    expect(deleteSpy).toHaveBeenCalledWith('cr-queue')
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove from library' }))
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('cr-queue'))
+    expect(nativeConfirm).not.toHaveBeenCalled()
   })
 
   it('does not delete when user cancels', async () => {
@@ -952,10 +955,12 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn()
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     await userEvent.click(screen.getByLabelText('Remove from artifacts library'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 

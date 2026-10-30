@@ -623,22 +623,20 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('does not delete when the confirm dialog is dismissed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: t('components.confirmDialog.cancel') }))
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      t('apps.mochi.gallery.delete_confirm', { name: 'Pixel Bot' }))
     expect(fn('galleryDelete')).not.toHaveBeenCalled()
     expect(sheetNodes().length).toBeGreaterThan(0)
   })
 
   it('closes the sheet and refetches after a confirmed delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: t('apps.mochi.gallery.delete') }))
 
     await waitFor(() => expect(sheetNodes()).toHaveLength(0))
     expect(fn('galleryDelete')).toHaveBeenCalledWith('pixel-bot')
@@ -646,11 +644,11 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('keeps the sheet open and banners a refused delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     fn('galleryDelete').mockResolvedValue({ ok: false, error: 'pack in use' })
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: t('apps.mochi.gallery.delete') }))
 
     await waitFor(() => expect(screen.getByText('pack in use')).toBeTruthy())
     expect(sheetNodes().length).toBeGreaterThan(0)
@@ -658,11 +656,11 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('banners a thrown delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     fn('galleryDelete').mockRejectedValue(new Error('delete threw'))
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: t('apps.mochi.gallery.delete') }))
 
     await waitFor(() => expect(screen.getByText('delete threw')).toBeTruthy())
   })

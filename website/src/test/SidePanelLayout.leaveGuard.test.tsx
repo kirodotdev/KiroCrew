@@ -21,9 +21,11 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
+
+import { useConfirm } from '../components/ConfirmDialog'
 
 let mobile = false
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
@@ -38,14 +40,16 @@ const TABS: SidePanelTab[] = [
  *  unmount is what destroys it. Asks only when something is actually typed. */
 function DraftPane() {
   const [draft, setDraft] = React.useState('')
-  useSidePanelLeaveGuard(() => !draft || confirm('Discard unsaved changes?'))
-  return (
+  const { confirm, confirmDialog } = useConfirm()
+  useSidePanelLeaveGuard(() => !draft || confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard changes' }))
+  return <>
     <input
       aria-label="draft"
       value={draft}
       onChange={e => setDraft((e.target as HTMLInputElement).value)}
     />
-  )
+    {confirmDialog}
+  </>
 }
 
 function LocationProbe() {
@@ -74,81 +78,74 @@ const draftValue = () => (screen.getByLabelText('draft') as HTMLInputElement).va
 const loc = () => screen.getByTestId('loc').textContent
 
 describe('SidePanelLayout leave guard', () => {
+  const settleDiscard = async (confirmed: boolean) => {
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Cancel' }))
+  }
+
   beforeEach(() => { mobile = false; sessionStorage.clear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })
 
-  it('does not ask when the pane has nothing at stake', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('does not ask when the pane has nothing at stake', async () => {
     renderPage()
     clickTab('Other')
-    expect(confirmSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId('plain').textContent).toBe('other')
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
   })
 
-  it('keeps the pane mounted with its draft when the confirm is declined', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('keeps the pane mounted with its draft when the confirm is declined', async () => {
     renderPage()
     typeDraft('half-written prompt')
     clickTab('Other')
-    expect(confirmSpy).toHaveBeenCalled()
-    // The whole point: not just "the URL is unchanged" but "the text is still
-    // there". A guard that vetoed the param write while the pane unmounted
-    // anyway would pass a URL-only assertion and still lose the draft.
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
     expect(screen.queryByTestId('plain')).toBeNull()
     expect(loc()).toBe('/capabilities')
   })
 
-  it('switches once the confirm is accepted', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('switches once the confirm is accepted', async () => {
     renderPage()
     typeDraft('half-written prompt')
     clickTab('Other')
-    expect(screen.getByTestId('plain').textContent).toBe('other')
+    await settleDiscard(true)
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
     expect(loc()).toBe('/capabilities?tab=other')
   })
 
   it('never asks when the clicked tab is the one already shown', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
     typeDraft('half-written prompt')
     clickTab('Drafts')
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
     expect(draftValue()).toBe('half-written prompt')
   })
 
-  it('reads the current draft, not the one from the registering render', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('reads the current draft, not the one from the registering render', async () => {
     renderPage()
     typeDraft('typed then thrown away')
     typeDraft('')
     clickTab('Other')
-    // Emptied again: there is nothing to lose, so no ask — and the switch runs.
-    expect(confirmSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId('plain').textContent).toBe('other')
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
   })
 
-  it('drops the guard when its pane unmounts', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('drops the guard when its pane unmounts', async () => {
     renderPage()
     typeDraft('half-written prompt')
     clickTab('Other')
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    // The draft pane is gone; a switch between two plain tabs must not consult
-    // the dead guard's closure, which still closes over the abandoned text.
-    confirmSpy.mockClear()
+    await settleDiscard(true)
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
     clickTab('Third')
-    expect(confirmSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId('plain').textContent).toBe('third')
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('third'))
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
   })
 
-  it('guards the mobile back bar, which unmounts the pane just as a switch does', () => {
+  it('guards the mobile back bar, which unmounts the pane just as a switch does', async () => {
     mobile = true
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage('/capabilities?tab=drafts')
     typeDraft('half-written prompt')
     fireEvent.click(screen.getByRole('button', { name: /Capabilities/ }))
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
     expect(loc()).toBe('/capabilities?tab=drafts')
   })

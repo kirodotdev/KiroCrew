@@ -109,7 +109,6 @@ function clarifierNode(id: string, text: string, extra: Record<string, string> =
   return { id, parent: null, kind: 'clarifier', text, recommended: 'production', answer: '', origin: '', status: 'open', ...extra }
 }
 
-let alertSpy: ReturnType<typeof vi.spyOn>
 let writeText: ReturnType<typeof vi.fn>
 
 /**
@@ -127,7 +126,6 @@ beforeEach(() => {
   sessionStorage.clear()
   FakeEventSource.last = null
   vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource)
-  alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
   stubClipboard()
   vi.mocked(api.researchCampaigns).mockResolvedValue([])
   vi.mocked(api.researchCampaign).mockResolvedValue(ACTIVE)
@@ -140,7 +138,6 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  alertSpy.mockRestore()
   vi.unstubAllGlobals()
 })
 
@@ -580,16 +577,16 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
     expect(await screen.findByText(/Already in Knowledge/i)).toBeInTheDocument()
-    expect(alertSpy).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('any other library failure alerts and stays retryable', async () => {
+  it('shows a knowledge-library failure through ErrorNotice and stays retryable', async () => {
     vi.mocked(api.researchToKnowledge).mockRejectedValue({ status: 500, message: 'library offline' })
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('library offline'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('library offline')
     expect(screen.getByRole('button', { name: /Add to Knowledge/i })).toBeEnabled()
   })
 
@@ -625,13 +622,13 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     expect(screen.queryByRole('button', { name: /Export as Artifact/i })).not.toBeInTheDocument()
   })
 
-  it('a failed export alerts and leaves the button usable', async () => {
+  it('shows a failed export through ErrorNotice and leaves the button usable', async () => {
     vi.mocked(api.researchToArtifact).mockRejectedValue(new Error('no artifact store'))
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Export as Artifact/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Failed to export as artifact'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to export as artifact')
     expect(screen.getByRole('button', { name: /Export as Artifact/i })).toBeEnabled()
   })
 })

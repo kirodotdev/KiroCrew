@@ -13,6 +13,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useListDetailView } from '../../hooks/useListDetailView'
@@ -357,8 +358,14 @@ export default function PromptsTab() {
   // browser Back guard: that gesture reaches no component, so it has to be armed
   // before the press rather than asked at it. Same predicate as the guard above,
   // so the two cannot disagree about whether there is a draft.
+  const { confirm, confirmDialog } = useConfirm()
+  const confirmDiscard = useCallback(() => confirm({
+    title: i18nT('pages.overview.promptsTab.discard_unsaved_changes'),
+    confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+    cancelLabel: i18nT('components.confirmDialog.keep_editing'),
+  }), [confirm])
   useSidePanelLeaveGuard(
-    () => !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')),
+    () => !editDirty() || confirmDiscard(),
     editDirty(),
   )
 
@@ -387,7 +394,7 @@ export default function PromptsTab() {
     // detailEditing in the same commit.
   }, [editDirty])
 
-  const select = (p: Prompt) => {
+  const select = async (p: Prompt) => {
     // A write in flight owns the panes it is about to update. Switching now
     // would let its completion land on a different prompt, so the row click is
     // ignored until it settles (writes here are a single small file).
@@ -416,7 +423,7 @@ export default function PromptsTab() {
     // (guardAccidentalDismiss), so the editor — the same kind of typed work —
     // asks too rather than discarding on one misclick.
     if (key !== selectedKey && editDirty()
-        && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
+        && !(await confirmDiscard())) return
     setDetailEditing(false)
     setEditForm(EMPTY_FORM)
     setMutationError('')
@@ -454,8 +461,8 @@ export default function PromptsTab() {
         role="option"
         aria-selected={isSel}
         tabIndex={0}
-        onClick={() => select(p)}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(p) } }}
+        onClick={() => void select(p)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void select(p) } }}
         className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md cursor-pointer mb-1 transition-colors ${
           isSel ? 'list-selected bg-accent-subtle' : 'bg-bg-elevated hover:bg-bg-hover'
         }`}
@@ -481,11 +488,12 @@ export default function PromptsTab() {
     setEditForm(seeded)
     setDetailEditing(true)
   }
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!selected || !detailScope) return
-    if (confirm(i18nT('pages.overview.promptsTab.delete_confirm', { name: selected.name }))) {
-      deletePrompt.mutate({ ...selected, scope: detailScope })
-    }
+    if (await confirm({
+      title: i18nT('pages.overview.promptsTab.delete_confirm', { name: selected.name }),
+      confirmLabel: i18nT('pages.overview.promptsTab.delete'),
+    })) deletePrompt.mutate({ ...selected, scope: detailScope })
   }
   const useInChatBtn = selected ? (
     <div className="relative">
@@ -500,7 +508,7 @@ export default function PromptsTab() {
     </Btn>
   )
   const deleteBtn = (
-    <Btn danger disabled={deletePrompt.isPending} onClick={confirmDelete}>
+    <Btn danger disabled={deletePrompt.isPending} onClick={() => void confirmDelete()}>
       <Trash2 size={13} className="shrink-0" />
       {i18nT('pages.overview.promptsTab.delete')}
     </Btn>
@@ -583,10 +591,10 @@ export default function PromptsTab() {
                       {/* Cancel gets the same dirty guard as switching rows: the
                           two destroy the same draft, and this one sits a pixel
                           from Save. */}
-                      <Btn disabled={updatePrompt.isPending} onClick={() => {
-                        if (editDirty() && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
+                      <Btn disabled={updatePrompt.isPending} onClick={() => { void (async () => {
+                        if (editDirty() && !(await confirmDiscard())) return
                         setDetailEditing(false); setMutationError('')
-                      }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
+                      })() }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
                       <Btn primary disabled={!editForm.body.trim() || updatePrompt.isPending} onClick={() => { writingRef.current = selectedKey; updatePrompt.mutate(editForm) }}>{i18nT('pages.overview.promptsTab.save')}</Btn>
                     </div>
                   ) : detailScope && !detailLoading && (
@@ -665,15 +673,15 @@ export default function PromptsTab() {
         they destroy the same typed work one misclick from the adjacent Create.
         So they take the same dirty confirm as the editor's Cancel: ask only
         when a field holds something, close silently when the form is empty. */}
-    <Modal open={creating} onClose={() => {
+    <Modal open={creating} onClose={() => { void (async () => {
       if (createPrompt.isPending) return
-      if (createDirty() && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
+      if (createDirty() && !(await confirmDiscard())) return
       setCreating(false); setMutationError('')
-    }} title={i18nT('pages.overview.promptsTab.create_new_prompt')} maxWidth={560} guardAccidentalDismiss footer={<>
-      <Btn disabled={createPrompt.isPending} onClick={() => {
-        if (createDirty() && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
+    })() }} title={i18nT('pages.overview.promptsTab.create_new_prompt')} maxWidth={560} guardAccidentalDismiss footer={<>
+      <Btn disabled={createPrompt.isPending} onClick={() => { void (async () => {
+        if (createDirty() && !(await confirmDiscard())) return
         setCreating(false); setMutationError('')
-      }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
+      })() }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
       {/* Gated on the rule the SERVER applies, not on `.trim()`: a name whose
           every character is outside a-z0-9 is non-empty here but empty there,
           and a multi-byte name can exceed the filename byte cap while looking
@@ -685,5 +693,6 @@ export default function PromptsTab() {
       <PromptForm data={createForm} onChange={setCreateForm} />
       {mutationError && <p className="text-danger text-[12px] mt-2">{mutationError}</p>}
     </Modal>
+    {confirmDialog}
   </>)
 }

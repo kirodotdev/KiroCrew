@@ -34,14 +34,19 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
 import {
   NavigationLeaveGuardProvider,
   NavigationBackGuard,
-  useMayLeaveForNavigation,
+  useClaimNavigationExitAttempt,
+  usePublishNavigationStake,
+  useRegisterNavigationLeaveGuard,
 } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
+import { deferred } from './helpers'
+import { isTrapEntry, routerEntry } from '../lib/routeHistoryPosition'
 
 // Flipped per describe block: the mobile back bar reaches history through
 // `navigate(-1)`, which is the one in-app exit a duplicate entry can collide with.
@@ -79,6 +84,21 @@ function CapabilitiesLike() {
   )
 }
 
+/** `ask` receives `endEditing`, which drops the draft the way an editor's
+ *  approve handler does before its confirmation settles. */
+function AsyncDraftPane({ ask }: { ask: (endEditing: () => void) => Promise<boolean> }) {
+  const [draft, setDraft] = React.useState('')
+  useRegisterNavigationLeaveGuard(() => !draft || ask(() => setDraft('')))
+  usePublishNavigationStake(!!draft)
+  return (
+    <input
+      aria-label="draft"
+      value={draft}
+      onChange={e => setDraft((e.target as HTMLInputElement).value)}
+    />
+  )
+}
+
 /** A control that REPLACES the current entry at the same address, which is what
  *  the layout's own writes do (the tab sync, and `backToRoot`'s cold-deep-link
  *  branch). Stands in for them without dragging a second page into this harness. */
@@ -96,8 +116,20 @@ function ReplaceHere() {
  *  before it navigates, exactly as navRow.tsx's NavItem does. */
 function SidebarRow({ to, label }: { to: string; label: string }) {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
-  return <button onClick={() => { if (!mayLeave()) return; navigate(to) }}>{label}</button>
+  const mayLeave = useMayLeaveAsPromise()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  return <button onClick={() => {
+    void (async () => {
+      const attempt = claimExitAttempt()
+      if (!attempt) return
+      try {
+        if (!(await mayLeave()) || !attempt.isSourceCurrent()) return
+        navigate(to)
+      } finally {
+        attempt.end()
+      }
+    })()
+  }}>{label}</button>
 }
 
 function LocationProbe() {
@@ -115,6 +147,23 @@ const renderDashboard = () =>
         <ReplaceHere />
         <Routes>
           <Route path="/capabilities" element={<CapabilitiesLike />} />
+          <Route path="/chat" element={<div data-testid="page">chat</div>} />
+          <Route path="/schedule" element={<div data-testid="page">schedule</div>} />
+        </Routes>
+        <LocationProbe />
+      </BrowserRouter>
+    </NavigationLeaveGuardProvider>,
+  )
+
+const renderAsyncDashboard = (ask: (endEditing: () => void) => Promise<boolean>) =>
+  render(
+    <NavigationLeaveGuardProvider>
+      <BrowserRouter>
+        <NavigationBackGuard />
+        <SidebarRow to="/capabilities" label="Go to Capabilities" />
+        <SidebarRow to="/chat" label="Chat" />
+        <Routes>
+          <Route path="/capabilities" element={<AsyncDraftPane ask={ask} />} />
           <Route path="/chat" element={<div data-testid="page">chat</div>} />
           <Route path="/schedule" element={<div data-testid="page">schedule</div>} />
         </Routes>
@@ -146,6 +195,15 @@ const pressBack = async (settle: () => void) => {
   window.history.back()
   await waitFor(settle)
 }
+
+const waitForRestoredTrap = () => new Promise<void>(resolve => {
+  const onPop = () => {
+    if (!isTrapEntry(routerEntry().state)) return
+    window.removeEventListener('popstate', onPop)
+    resolve()
+  }
+  window.addEventListener('popstate', onPop)
+})
 
 describe('browser Back navigation leave guard', () => {
   beforeEach(() => { sessionStorage.clear(); startAtSchedule() })
@@ -201,6 +259,113 @@ describe('browser Back navigation leave guard', () => {
     await pressBack(() => expect(loc()).toBe('/schedule'))
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     expect(screen.queryByLabelText('draft')).toBeNull()
+  })
+
+  it('restores before an async approval and ignores a competing Back', async () => {
+    const answer = deferred<boolean>()
+    const ask = vi.fn(() => answer.promise)
+    renderAsyncDashboard(ask)
+    await enterCapabilities()
+    typeDraft('half-written prompt')
+
+    let restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+
+    // A second Back while the same confirmation is pending must restore the
+    // duplicate again, not bypass the draft or start a second confirmation.
+    restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    expect(ask).toHaveBeenCalledTimes(1)
+
+    await act(async () => { answer.resolve(true) })
+    await waitFor(() => expect(loc()).toBe('/schedule'))
+    expect(ask).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves on an approval that ends editing before the confirmation settles', async () => {
+    const answer = deferred<boolean>()
+    let endEditing!: () => void
+    const ask = vi.fn((end: () => void) => { endEditing = end; return answer.promise })
+    renderAsyncDashboard(ask)
+    await enterCapabilities()
+    typeDraft('half-written prompt')
+
+    const restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+
+    // The approval withdraws the stake first; the approved Back must still
+    // complete instead of stranding the user on the duplicate entry.
+    await act(async () => { endEditing() })
+    await act(async () => { answer.resolve(true) })
+    await waitFor(() => expect(loc()).toBe('/schedule'))
+    expect(isTrapEntry(routerEntry().state)).toBe(false)
+  })
+
+  it('releases the exit slot when the Back confirmation rejects', async () => {
+    let fail!: (err: Error) => void
+    const ask = vi.fn(() => new Promise<boolean>((_, reject) => { fail = reject }))
+    renderAsyncDashboard(ask)
+    await enterCapabilities()
+    typeDraft('half-written prompt')
+
+    const restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+    await act(async () => { fail(new Error('guard failed')) })
+    // A rejection counts as "stay"; the draft is kept.
+    expect(draftValue()).toBe('half-written prompt')
+
+    // A later in-app exit can claim the slot: the rejected attempt released it.
+    ask.mockImplementation(() => Promise.resolve(true))
+    click('Chat')
+    await waitFor(() => expect(loc()).toBe('/chat'))
+  })
+
+  it('restores Back without a second confirmation while an in-app exit owns the slot', async () => {
+    const answer = deferred<boolean>()
+    const ask = vi.fn(() => answer.promise)
+    renderAsyncDashboard(ask)
+    await enterCapabilities()
+    typeDraft('half-written prompt')
+
+    click('Chat')
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+    const restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    expect(ask).toHaveBeenCalledTimes(1)
+
+    await act(async () => { answer.resolve(true) })
+    await waitFor(() => expect(loc()).toBe('/chat'))
+  })
+
+  it('keeps the restored trap after an async denial and a competing Back', async () => {
+    const answer = deferred<boolean>()
+    const ask = vi.fn(() => answer.promise)
+    renderAsyncDashboard(ask)
+    await enterCapabilities()
+    typeDraft('half-written prompt')
+    const historyLength = window.history.length
+
+    let restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+    restored = waitForRestoredTrap()
+    window.history.back()
+    await restored
+
+    await act(async () => { answer.resolve(false) })
+    expect(isTrapEntry(routerEntry().state)).toBe(true)
+    expect(window.history.length).toBe(historyLength)
+    expect(draftValue()).toBe('half-written prompt')
+    expect(ask).toHaveBeenCalledTimes(1)
   })
 
   it('stops asking once the work is gone', async () => {
@@ -423,7 +588,7 @@ describe('browser Back guard alongside the mobile back bar', () => {
     await enterAndDrillIn()
     typeDraft('half-written prompt')
     backBar()
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
     expect(draftValue()).toBe('half-written prompt')
     // And the browser's own Back is still trapped afterwards.
     await pressBack(() => expect(confirmSpy).toHaveBeenCalledTimes(2))

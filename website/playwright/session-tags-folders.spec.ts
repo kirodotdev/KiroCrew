@@ -278,10 +278,10 @@ test.describe('Folders inside columns (deep)', () => {
     // Delete folder via its More-menu → "Delete folder" item (menu opens on hover).
     await page.locator(`[data-testid="col-${col.id}-folder-${folder.id}"]`).hover()
     await page.locator(`[data-testid="col-${col.id}-folder-${folder.id}-menu"]`).click({ force: true })
-    page.once('dialog', d => d.accept())
     // Column-context delete item has no testid (unlike the sidebar folder menu),
     // so target it by role + label — robust across both menu contexts.
     await page.getByRole('menuitem', { name: /delete folder/i }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete folder', exact: true }).click()
     // Folder gone
     await expect.poll(async () => {
       const list = await (await request.get('/api/chat/folders')).json()

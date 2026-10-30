@@ -21,6 +21,7 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { fmtDateFields } from '../../i18n/format'
 import Clickable from '../../components/Clickable'
 import {
@@ -159,6 +160,7 @@ function useNotifier(): (message: string, opts?: { type?: 'info' | 'success' | '
 const LIST_REFRESH_MS = 60_000
 
 export default function MeetingsPage() {
+  const { confirm, confirmDialog } = useConfirm()
   const notify = useNotifier()
   const queryClient = useQueryClient()
   const [route, setRoute] = useState<Route>({ view: 'list' })
@@ -239,15 +241,18 @@ export default function MeetingsPage() {
     setRoute({ view: 'meeting', eventId, title: i18nT('apps.meetings.list.adHocTitle') })
   }
 
-  const requestDelete = (event: MouseEvent<HTMLButtonElement>, row: Row) => {
+  const requestDelete = async (event: MouseEvent<HTMLButtonElement>, row: Row) => {
     event.stopPropagation()
-    if (window.confirm(i18nT('apps.meetings.list.deleteConfirm', { title: row.title }))) {
-      deleteMeeting.mutate({ eventId: row.eventId, title: row.title })
-    }
+    if (!(await confirm({
+      title: i18nT('apps.meetings.list.deleteConfirm', { title: row.title }),
+      confirmLabel: i18nT('apps.meetings.list.deleteMeetingButton'),
+    }))) return
+    deleteMeeting.mutate({ eventId: row.eventId, title: row.title })
   }
 
   return (
     <>
+      {confirmDialog}
       <PageHeader
         title={i18nT('apps.meetings.list.title')}
         subtitle={i18nT('apps.meetings.list.subtitle')}

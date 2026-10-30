@@ -917,8 +917,6 @@ export default function ChannelPage() {
   // disable the button on the one they moved to, which is a different operation.
   const clearBusyHere = channel?.id !== undefined && clearBusyTargets.includes(channel.id)
 
-  // NOT destructured as `confirm`: that shadows the global in this scope, and the close
-  // button's remaining `window.confirm` guard would then test a Promise, which is always truthy.
   const { confirm: askConfirm, cancel: cancelConfirm, confirmDialog } = useConfirm()
   // The channel the open confirm was raised for. `channel` is recomputed every render, so
   // without pinning it a close mid-dialog redirects the confirm onto one nobody chose.
@@ -1083,7 +1081,11 @@ export default function ChannelPage() {
                   : <RotateCcw className="lucide-inline" />} {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
+                const ok = await askConfirm({
+                  title: i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'),
+                  confirmLabel: i18nT('pages.channelPage.close'),
+                })
+                if (!ok) return
                 // A refused close keeps the channel in the list: removing it
                 // would show the action as done under a notice saying it failed.
                 try { await api.channelClose(channel.id) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e); return }

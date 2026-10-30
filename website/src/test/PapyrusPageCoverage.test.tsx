@@ -15,12 +15,15 @@
  * `CoAuthorPanel` is stubbed too — it mounts the entire ChatPage, and the subject
  * under test is the page's session handlers, not that chat.
  */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import PapyrusPage from '../apps/papyrus/PapyrusPage'
 import { createTestStore, renderWithProviders } from './helpers'
 import { papyrusApi } from '../apps/papyrus/api'
+import { PAPYRUS_DEFAULT_COMMIT_MESSAGE } from '../apps/papyrus/gitWire'
 import { api as client } from '../api/client'
 import { sseSlots } from '../store/dashboardSlice'
 import { LAST_PROJECT_KEY, SLOT_KEY_PREFIX } from '../apps/papyrus/lib'
@@ -173,6 +176,18 @@ async function workspaceReady() {
 
 function makeDirty(text: string) {
   fireEvent.change(screen.getByLabelText('editor'), { target: { value: text } })
+}
+
+async function submitTextPrompt(
+  user: ReturnType<typeof userEvent.setup>,
+  value: string,
+  confirmLabel: string,
+) {
+  const dialog = await screen.findByRole('dialog')
+  const input = within(dialog).getByRole('textbox')
+  await user.clear(input)
+  if (value) await user.type(input, value)
+  await user.click(within(dialog).getByRole('button', { name: confirmLabel }))
 }
 
 const compileBtn = () => screen.getByRole('button', { name: /^Compile$/ })
@@ -426,7 +441,6 @@ describe('Papyrus file tree mutations', () => {
     // The main document has no delete control, so the open-file case is reached by
     // deleting a chapter the user is currently editing.
     api.deleteFile.mockResolvedValue({ ok: true, path: CHAPTER })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { user } = openWorkspace()
     await workspaceReady()
     await user.click(screen.getByRole('button', { name: CHAPTER }))
@@ -436,6 +450,8 @@ describe('Papyrus file tree mutations', () => {
       ))
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete file' }))
 
     await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
     await waitFor(() =>
@@ -445,35 +461,48 @@ describe('Papyrus file tree mutations', () => {
   })
 
   it('does not delete when the confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
 
     expect(api.deleteFile).not.toHaveBeenCalled()
   })
 
   it('reports a failed delete', async () => {
     api.deleteFile.mockRejectedValue(new Error('file is locked'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete file' }))
 
     expect(await screen.findByText('file is locked')).toBeInTheDocument()
   })
 
   it('reports a failed create without inventing a flush error', async () => {
     api.createFile.mockRejectedValue(new Error('name already taken'))
-    vi.spyOn(window, 'prompt').mockReturnValue('methods.tex')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: 'New file' }))
+    await submitTextPrompt(user, 'methods.tex', 'New file')
 
     expect(await screen.findByText('name already taken')).toBeInTheDocument()
+  })
+
+  it('keeps the new-file dialog open for a blank name', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Enter a file name.')
+    expect(api.createFile).not.toHaveBeenCalled()
   })
 
   it('changes the main document through the picker', async () => {
@@ -553,11 +582,11 @@ describe('Papyrus git row', () => {
   it('commits with the typed message before pushing', async () => {
     // The button stages every change in the paper, so the message has to be the
     // user's, not a canned one.
-    vi.spyOn(window, 'prompt').mockReturnValue('  Tighten the abstract  ')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, '  Tighten the abstract  ', 'Commit & Push')
 
     await waitFor(() =>
       expect(api.gitCommit).toHaveBeenCalledWith(PROJECT, 'Tighten the abstract'))
@@ -565,21 +594,37 @@ describe('Papyrus git row', () => {
   })
 
   it('forwards an empty message so the backend picks the default', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, '', 'Commit & Push')
 
     await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith(PROJECT, ''))
   })
 
-  it('aborts the push when the prompt is cancelled', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue(null)
+  it('shows the backend default commit message as the placeholder, untranslated', async () => {
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    const input = within(await screen.findByRole('dialog')).getByRole('textbox')
+    expect(input).toHaveAttribute('placeholder', 'Update from Papyrus')
+    expect(PAPYRUS_DEFAULT_COMMIT_MESSAGE).toBe('Update from Papyrus')
+    // The hint must match what the backend actually commits under a blank message.
+    const gitops = readFileSync(
+      resolve(process.cwd(), '../src/kiro_crew/apps/builtins/papyrus/backend/gitops.py'),
+      'utf8',
+    )
+    expect(gitops).toMatch(new RegExp(`^DEFAULT_COMMIT_MESSAGE = "${PAPYRUS_DEFAULT_COMMIT_MESSAGE}"$`, 'm'))
+  })
+
+  it('aborts the push when the prompt is cancelled', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+
+    await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
 
     expect(api.gitCommit).not.toHaveBeenCalled()
     expect(api.gitPush).not.toHaveBeenCalled()
@@ -587,11 +632,11 @@ describe('Papyrus git row', () => {
 
   it('reports a failed push', async () => {
     api.gitPush.mockRejectedValue(new Error('remote rejected'))
-    vi.spyOn(window, 'prompt').mockReturnValue('wip')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, 'wip', 'Commit & Push')
 
     expect(await screen.findByText('remote rejected')).toBeInTheDocument()
   })
@@ -600,12 +645,12 @@ describe('Papyrus git row', () => {
     // The flush sentinel is internal plumbing: the save error is what the user
     // needs, so the abort must not overwrite it.
     api.saveFile.mockRejectedValue(new Error('disk full'))
-    vi.spyOn(window, 'prompt').mockReturnValue('wip')
     const { user } = openWorkspace()
     await workspaceReady()
     makeDirty(`${BODY}\n% unsaved`)
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, 'wip', 'Commit & Push')
 
     await waitFor(() => expect(api.saveFile).toHaveBeenCalled())
     expect(api.gitCommit).not.toHaveBeenCalled()

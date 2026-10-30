@@ -506,6 +506,7 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
 
 function ExportArtifactButton({ id }: { id: string }) {
   const qc = useQueryClient()
+  const [error, setError] = useState('')
   // Upfront status: has a report artifact already been exported (and still
   // exists)? Lets us show "View report" + "Regenerate" instead of a bare
   // "Export" on revisit.
@@ -518,26 +519,37 @@ function ExportArtifactButton({ id }: { id: string }) {
   const slug = localSlug ?? rstatus?.slug ?? null
   const go = async () => {
     setLoading(true)
+    setError('')
     try {
       const r = await api.researchToArtifact(id)
       if (r?.slug) setLocalSlug(r.slug)
       qc.invalidateQueries({ queryKey: ['research-report-status', id] })
-    } catch { alert(i18nT('apps.autoResearch.researchLabPage.failed_to_export_as_artifact')) }
-    finally { setLoading(false) }
+    } catch {
+      setError(i18nT('apps.autoResearch.researchLabPage.failed_to_export_as_artifact'))
+    } finally { setLoading(false) }
   }
-  if (slug) return (
+  const action = slug ? (
     <span className="flex items-center gap-2">
       <a href={`/artifacts/${slug}`} target="_blank" rel="noopener noreferrer" className="text-xs text-ok flex items-center gap-1"><FileText size={12} /> {i18nT('apps.autoResearch.researchLabPage.view_report')} <ExternalLink size={10} /></a>
       <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go} title={i18nT('apps.autoResearch.researchLabPage.regenerate_the_report_updates_the_same_artifact')}>
         <RefreshCw size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.regenerating') : i18nT('apps.autoResearch.researchLabPage.regenerate')}
       </button>
     </span>
+  ) : (
+    <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go}><FileText size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.exporting') : i18nT('apps.autoResearch.researchLabPage.export_as_artifact')}</button>
   )
-  return <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={loading} onClick={go}><FileText size={12} className="inline" /> {loading ? i18nT('apps.autoResearch.researchLabPage.exporting') : i18nT('apps.autoResearch.researchLabPage.export_as_artifact')}</button>
+  return (
+    <span className="flex flex-col items-start gap-1">
+      {action}
+      {/* No hand-off: this campaign can retain unsent Nudge or answer text across status changes. */}
+      <ErrorNotice message={error} variant="inline" />
+    </span>
+  )
 }
 
 function AddToKnowledgeButton({ id }: { id: string }) {
   const qc = useQueryClient()
+  const [error, setError] = useState('')
   // Upfront membership check so we render "Already in Knowledge" on mount
   // instead of only discovering it via a 409 after the user clicks.
   const { data: kstatus } = useQuery<{ in_library: boolean }>({
@@ -547,6 +559,7 @@ function AddToKnowledgeButton({ id }: { id: string }) {
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'exists'>('idle')
   const go = async () => {
     setStatus('loading')
+    setError('')
     try {
       await api.researchToKnowledge(id)
       setStatus('done')
@@ -554,12 +567,19 @@ function AddToKnowledgeButton({ id }: { id: string }) {
     } catch (e: unknown) {
       const err = e as { status?: number; message?: string } | null
       if (err?.status === 409) setStatus('exists')
-      else { setStatus('idle'); alert(err?.message || i18nT('apps.autoResearch.researchLabPage.failed_to_add_to_knowledge_library')) }
+      else {
+        setStatus('idle')
+        setError(err?.message || i18nT('apps.autoResearch.researchLabPage.failed_to_add_to_knowledge_library'))
+      }
     }
   }
   if (status === 'done') return <span className="text-xs text-ok flex items-center gap-1"><CheckCircle size={12} /> {i18nT('apps.autoResearch.researchLabPage.added_to_knowledge')}</span>
   if (status === 'exists' || kstatus?.in_library) return <span className="text-xs text-muted flex items-center gap-1"><BookOpen size={12} /> {i18nT('apps.autoResearch.researchLabPage.already_in_knowledge')}</span>
-  return <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={status === 'loading'} onClick={go}><BookOpen size={12} className="inline" /> {status === 'loading' ? i18nT('apps.autoResearch.researchLabPage.adding') : i18nT('apps.autoResearch.researchLabPage.add_to_knowledge')}</button>
+  return <span className="flex flex-col items-start gap-1">
+    <button className="text-xs px-2 py-1 rounded bg-bg-elevated disabled:opacity-50" disabled={status === 'loading'} onClick={go}><BookOpen size={12} className="inline" /> {status === 'loading' ? i18nT('apps.autoResearch.researchLabPage.adding') : i18nT('apps.autoResearch.researchLabPage.add_to_knowledge')}</button>
+    {/* No hand-off: this campaign can retain unsent Nudge or answer text across status changes. */}
+    <ErrorNotice message={error} variant="inline" />
+  </span>
 }
 
 function splitReportSections(md: string): string[] {
@@ -674,7 +694,6 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   const actionMut = useMutation({ mutationFn: (action: string) => api.researchAction(id, action), onSuccess: () => qc.invalidateQueries({ queryKey: ['research-campaign', id] }) })
   const nudgeMut = useMutation({ mutationFn: (text: string) => api.researchNudge(id, text), onSuccess: () => { setShowNudge(false); setNudgeText(''); setAnswerText(''); qc.invalidateQueries({ queryKey: ['research-campaign', id] }) } })
   const deleteMut = useMutation({ mutationFn: () => api.researchDelete(id), onSuccess: () => { setConfirmDelete(false); qc.invalidateQueries({ queryKey: ['research-campaigns'] }); onBack() } })
-
   if (!campaign) return <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.loading')}</div>
   const findings = campaign.findings || []
   const isActive = ACTIVE_STATUSES.includes(campaign.status)

@@ -96,19 +96,15 @@ async function openRun(name = 'Existing'): Promise<HTMLElement> {
     .querySelector<HTMLElement>('div.border-b')!
 }
 
-let alertSpy: ReturnType<typeof vi.spyOn>
-
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   localStorage.clear()
   resetApi()
-  alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
 })
 
 afterEach(() => {
   vi.useRealTimers()
-  alertSpy.mockRestore()
 })
 
 describe('ProjectsPage — mode tabs', () => {
@@ -143,7 +139,6 @@ describe('ProjectsPage — spec and YAML uploads', () => {
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...') as HTMLTextAreaElement
     await waitFor(() => expect(ta.value).toBe('# plan body'))
     expect(picker.value).toBe('')
-    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('refuses a YAML file on the spec tab and leaves the spec text untouched', async () => {
@@ -151,7 +146,9 @@ describe('ProjectsPage — spec and YAML uploads', () => {
     fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['a: 1'], 'flow.yaml', { type: 'text/yaml' })] } })
-    expect(alertSpy).toHaveBeenCalledWith('YAML files should be uploaded via the "From YAML" tab.')
+    const refused = await screen.findByTestId('projects-status-notice')
+    expect(refused).toHaveTextContent('YAML files should be uploaded via the "From YAML" tab.')
+    expect(refused).toHaveAttribute('data-tone', 'warn')
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...') as HTMLTextAreaElement
     await waitFor(() => expect(ta.value).toBe(''))
   })
@@ -171,14 +168,13 @@ describe('ProjectsPage — spec and YAML uploads', () => {
     fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['hi'], 'notes.md', { type: 'text/markdown' })] } })
-    expect(alertSpy).toHaveBeenCalledWith('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
+    expect(screen.getByTestId('projects-status-notice')).toHaveTextContent('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
   })
 
   it('ignores a picker change that carries no file', () => {
     renderWithProviders(<ProjectsPage />)
     fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
     fireEvent.change(screen.getByLabelText('Upload a file'), { target: { files: [] } })
-    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -600,7 +596,10 @@ describe('ProjectsPage — header actions by run status', () => {
       message: 'run __inline__:rebuild the index',
       every: 86400,
     }))
-    expect(alertSpy).toHaveBeenCalledWith('Scheduled as daily cron job')
+    const scheduled = await screen.findByTestId('projects-status-notice')
+    expect(scheduled).toHaveTextContent('Scheduled as daily cron job')
+    // A result, not a warning.
+    expect(scheduled).toHaveAttribute('data-tone', 'info')
   })
 
   it('refuses to schedule a run with nothing to re-run', async () => {
@@ -608,7 +607,7 @@ describe('ProjectsPage — header actions by run status', () => {
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
     fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('No spec/idea to schedule'))
+    await waitFor(() => expect(screen.getByTestId('projects-status-notice')).toHaveTextContent('No spec/idea to schedule'))
     expect(api.createCron).not.toHaveBeenCalled()
   })
 

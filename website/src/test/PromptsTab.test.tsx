@@ -26,6 +26,13 @@ const StubApiError = vi.hoisted(() => class ApiError extends Error {
   }
 })
 vi.mock('../api/client', () => ({ api: mockApi, ApiError: StubApiError }))
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({
+    confirm: (opts: { title: string }) => Promise.resolve(window.confirm(opts.title)),
+    confirmDialog: null,
+    confirmOpen: false,
+  }),
+}))
 
 vi.mock('../providers', () => ({
   useProvider: () => ({ labels: { pluginRegistryName: 'Packages' } }),
@@ -480,7 +487,7 @@ describe('PromptsTab authoring', () => {
 
     confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getByText('Cancel'))
-    expect(screen.queryByDisplayValue('typed work')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByDisplayValue('typed work')).not.toBeInTheDocument())
 
     // A zero-edit editor closes without asking: there is nothing to discard,
     // and a confirm the user never earned teaches them to click through it.
@@ -522,6 +529,7 @@ describe('PromptsTab authoring', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByText('Cancel'))
     confirmSpy.mockRestore()
+    await waitFor(() => expect(screen.queryByDisplayValue('my draft body')).not.toBeInTheDocument())
     fireEvent.click(screen.getByRole('option', { name: /my-prompt/ }))
     await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalledTimes(2))
 

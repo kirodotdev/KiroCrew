@@ -310,6 +310,7 @@ export function useArtifactDetailPageEditor({
     if (dirty && !(await confirm({
       title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
       confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
+      cancelLabel: i18nT('components.confirmDialog.keep_editing'),
     }))) return
     endEditing()
   }, [dirty, confirm, endEditing])
@@ -518,24 +519,20 @@ export function useArtifactDetailPageEditor({
   // In-app exits the page does not own (the global sidebar, the command
   // palette, a popout's forwarded navigation, browser Back) swap the route
   // without unloading the document, so `beforeunload` never sees them. They
-  // ask the shell's leave registry, which needs a synchronous answer, so a
-  // dirty buffer refuses the exit and opens the app's own discard dialog; after
-  // a discard the user repeats the navigation. The refused navigation cannot be
-  // resumed from here: the registry does not pass its target.
-  useRegisterNavigationLeaveGuard(() => {
+  // ask the shell's leave registry, which awaits this guard: a dirty buffer
+  // asks the app's own discard dialog, and the exit proceeds only on discard.
+  useRegisterNavigationLeaveGuard(async () => {
     if (!dirty) return true
-    // A second refusal while the dialog is up replaces it: `useConfirm`
-    // answers the pending ask "no" and shows one dialog.
-    void confirm({
+    const ok = await confirm({
       title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
       confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
-    }).then(ok => {
-      // endEditing, as Cancel does: it advances the edit generation, so a save
-      // still on the wire cannot re-arm a failure or conflict notice for the
-      // buffer the user just discarded.
-      if (ok) endEditing()
+      cancelLabel: i18nT('components.confirmDialog.keep_editing'),
     })
-    return false
+    // endEditing, as Cancel does: it advances the edit generation, so a save
+    // still on the wire cannot re-arm a failure or conflict notice for the
+    // buffer the user just discarded.
+    if (ok) endEditing()
+    return ok
   })
   usePublishNavigationStake(dirty)
 

@@ -101,26 +101,28 @@ export default [
       // The dashboard owns these decisions in-app: destructive choices go
       // through useConfirm() / ConfirmDialog, errors and acknowledgements
       // through the in-app notice and status surfaces. The window-qualified
-      // forms (`window.confirm`) reach the same globals, so no-restricted-
-      // properties pairs with no-restricted-globals to cover both spellings.
+      // forms (`window.confirm`, `globalThis.confirm`, `self.confirm`) reach the
+      // same globals, so no-restricted-properties pairs with no-restricted-globals.
       //
-      // 'error', not 'warn': like the native-<select> gate above this is a gate
-      // on a set that only shrinks, so it stays out of the --max-warnings budget
-      // where a real regression would be indistinguishable from unrelated noise.
-      // The 35 modules that still call these globals are exempted by name in the
-      // allowlist block below (see issue #15662); every other renderer file is
-      // refused a new call. Electron main-process dialogs live outside src/ and
-      // are untouched. Tests drive these globals through the harness and are
-      // exempted alongside the native-<select> rule in the test blocks below.
+      // 'error', not 'warn': like the native-<select> gate above, the renderer is
+      // at zero, so a new call fails instead of hiding in the --max-warnings
+      // budget. Electron main-process dialogs live outside src/. Tests drive
+      // these globals through the harness and are exempted in the test blocks.
       'no-restricted-globals': ['error',
         { name: 'confirm', message: 'No browser-native confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { name: 'alert', message: 'No browser-native alert() — route through the in-app notice or status surface. See issue #15662.' },
-        { name: 'prompt', message: 'No browser-native prompt() — use the native text-entry dialog. See issue #15662.' },
+        { name: 'prompt', message: 'No browser-native prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
       ],
       'no-restricted-properties': ['error',
         { object: 'window', property: 'confirm', message: 'No window.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'confirm', message: 'No globalThis.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'self', property: 'confirm', message: 'No self.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { object: 'window', property: 'alert', message: 'No window.alert() — route through the in-app notice or status surface. See issue #15662.' },
-        { object: 'window', property: 'prompt', message: 'No window.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'globalThis', property: 'alert', message: 'No globalThis.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'self', property: 'alert', message: 'No self.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'window', property: 'prompt', message: 'No window.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'prompt', message: 'No globalThis.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
+        { object: 'self', property: 'prompt', message: 'No self.prompt() — use useTextPrompt() / TextPromptDialog. See issue #15662.' },
       ],
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
@@ -143,56 +145,25 @@ export default [
       }, {
         selector: "CallExpression[callee.name='createPortal'][arguments.1.object.name='document'][arguments.1.property.name='body']",
         message: 'Portal through <OverlayPortal> or useOverlayRoot() (src/components/overlayRoot.tsx), not document.body: a layer on document.body stays on screen over a remote Crew.',
-      }],
-    },
-  },
-  {
-    // Allowlist for no-restricted-globals / no-restricted-properties: the
-    // renderer modules that still call a browser-native confirm/alert/prompt
-    // today (issue #15662). The gate above is 'error' for every OTHER renderer
-    // file, so a NEW native dialog anywhere else is refused; these 35 are the
-    // standing inventory, migrated to useConfirm() / in-app surfaces in later
-    // PRs. This list only SHRINKS: delete a path the moment its last native
-    // dialog is gone, never add one. Keep it sorted.
-    files: [
-      'src/apps/auto-improvement/AutoImprovementPage.tsx',
-      'src/apps/auto-research/ResearchLabPage.tsx',
-      'src/apps/crew-companion/GalleryPanel.tsx',
-      'src/apps/design-tweak/DesignTweakPage.tsx',
-      'src/apps/meetings/MeetingView.tsx',
-      'src/apps/meetings/MeetingsPage.tsx',
-      'src/apps/mochi/src/renderer/GalleryPanel.tsx',
-      'src/apps/papyrus/PapyrusPage.tsx',
-      'src/apps/papyrus/ProjectList.tsx',
-      'src/components/RestartButton.tsx',
-      'src/components/TagManagerList.tsx',
-      'src/components/WebAppArtifactCard.tsx',
-      'src/components/themeEditor.tsx',
-      'src/hooks/useKeyboardShortcuts.ts',
-      'src/hooks/useSessionActions.ts',
-      'src/pages/ArtifactDetailPage.tsx',
-      'src/pages/ArtifactsPage.tsx',
-      'src/pages/ChannelPage.tsx',
-      'src/pages/ChatSidebar.tsx',
-      'src/pages/ProjectsPage.tsx',
-      'src/pages/knowledge/DetailView.tsx',
-      'src/pages/knowledge/SourcesList.tsx',
-      'src/pages/knowledge/index.tsx',
-      'src/pages/members/MembersPage.tsx',
-      'src/pages/members/NewCrewmateDialog.tsx',
-      'src/pages/overview/AgentCfgTab.tsx',
-      'src/pages/overview/AgentTemplatesTab.tsx',
-      'src/pages/overview/KiroCrewCfgTab.tsx',
-      'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
-      'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
-      'src/utils/popoutController.ts',
-    ],
-    rules: {
-      'no-restricted-globals': 'off',
-      'no-restricted-properties': 'off',
+      },
+      // A leave check (`useMayLeaveNow`, a pane's
+      // `mayLeavePane*`) can answer with a Promise while a confirmation is
+      // open. `if (!mayLeave()) return` reads that Promise as truthy and runs
+      // the exit WITHOUT waiting for the answer, which silently discards the
+      // draft the guard exists to protect. TypeScript flags `if (mayLeave())`
+      // (TS2801) but not the negation. The type-aware
+      // `@typescript-eslint/no-misused-promises` would catch it by type, but a
+      // typed lint of `src/` takes about nine minutes, so this matches the
+      // naming convention instead. Await the answer, or settle it through
+      // `settleNavigationExit`.
+      ...['callee.name', 'callee.property.name'].flatMap((callee) => [
+        `UnaryExpression[operator='!'] > CallExpression.argument[${callee}=/^mayLeave/]`,
+        `IfStatement > CallExpression.test[${callee}=/^mayLeave/]`,
+        `ConditionalExpression > CallExpression.test[${callee}=/^mayLeave/]`,
+      ]).map((selector) => ({
+        selector,
+        message: 'A leave check may answer with a Promise. Await it, or pass it to settleNavigationExit, instead of testing it as a boolean.',
+      }))],
     },
   },
   {

@@ -1,7 +1,6 @@
 // Design Tweak — the page's state, for `DesignTweakPage.tsx`.
 //
-// `useDesignTweakPageState` holds the page's state, effects and actions (all but
-// `deleteReq`, which stays in the page for its native `confirm()`): the polled
+// `useDesignTweakPageState` holds the page's state, effects and actions: the polled
 // server lists (React Query), the app selector, request sealing and delivery
 // into each app's own chat session, the preview frame's lifecycle and its
 // postMessage bridge to the in-preview overlay, the dev-server controls and the
@@ -14,6 +13,7 @@ import type React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SEND_REFUSED } from '../../chat-core/transport/sendTurn'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { i18nT } from '../../i18n/t'
 // Agent-facing prompt text — deliberately untranslated, so it lives in the
 // i18n lint's sanctioned `src/apps/*/prompts.ts` home rather than inline here.
@@ -21,7 +21,7 @@ import { SESSION_TITLE, SESSION_SEED, REQUEST_PROMPT } from './prompts'
 import {
   loopbackPreviewSrc, requestPayloadPath,
   fetchProjects, fetchQueue, fetchHistory, fetchHealth, selectProject, submitComment,
-  clearRequest, setPreviewUrl, detectDevServer, chatRoute,
+  clearRequest, deleteRequest, setPreviewUrl, detectDevServer, chatRoute,
   createChatSlot, sendChatMessage, setChatSlotProject,
   addProject as apiAddProject,
   pickFolder as apiPickFolder,
@@ -120,12 +120,12 @@ const NO_REQUESTS: Request[] = []
 /**
  * The Design Tweak page's state, effects and actions, in the order the page
  * registers them. `DesignTweak` calls it as its first hook and renders from the
- * returned values; only `deleteReq`, with its native `confirm()`, stays in the
- * page.
+ * returned values.
  */
 export function useDesignTweakPageState() {
   // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
+  const { confirm, confirmDialog } = useConfirm()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -1031,6 +1031,14 @@ export function useDesignTweakPageState() {
     catch (err) { setStatus(i18nT('apps.designTweak.status.archive_failed', { error: errMsg(err) })) }
   }, [refresh])
 
+  // Delete is irreversible, so it confirms. Archive does not: the request stays in History.
+  const deleteReq = useCallback(async (req: Request) => {
+    const title = i18nT('apps.designTweak.requests.delete_confirm', { number: req.number })
+    if (!(await confirm({ title, confirmLabel: i18nT('apps.designTweak.requests.delete_request') }))) return
+    try { await deleteRequest(req.id); refresh() }
+    catch (err) { setStatus(i18nT('apps.designTweak.status.delete_failed', { error: errMsg(err) })) }
+  }, [confirm, refresh])
+
   // Remove one comment from a draft (backend refuses once the request is sent).
   const deleteComment = useCallback(async (req: Request, c: Comment) => {
     try {
@@ -1176,12 +1184,12 @@ export function useDesignTweakPageState() {
     ime, selectedId, ddOpen, setDdOpen, ddIn, ddTriggerRef, ddPanelRef, adding, setAdding, newPath,
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
-    setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
+    bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting,
     withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
-    markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,
-    useDetectedDevServer, startDevServer, setEditMode,
+    markFramed, pinItems, focusComment, openInChat, archiveReq, deleteReq, deleteComment,
+    setDevServer, useDetectedDevServer, startDevServer, setEditMode, confirmDialog,
   }
 }
 
@@ -1192,6 +1200,3 @@ function errMsg(err: unknown): string {
   if (typeof err === 'string') return err
   try { return String(err) } catch { return i18nT('apps.designTweak.status.unknown_error') }
 }
-
-// `deleteReq` in `DesignTweakPage.tsx` reports through it too.
-export { errMsg }

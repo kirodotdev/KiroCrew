@@ -15,9 +15,8 @@ import { i18nT } from '../i18n/t'
  * This dialog is the themed, non-blocking replacement: the confirm button
  * restates the action instead of "OK", and the caller awaits a boolean.
  *
- * The confirm button is always styled destructively and the cancel label is
- * always the shared one: every current caller confirms a destructive act, so
- * the knobs would ship without a consumer. Add them when a caller needs them.
+ * The confirm button is styled destructively by default, and the cancel label
+ * is the shared one unless a caller names what staying means ("Keep editing").
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -26,8 +25,10 @@ export interface ConfirmOptions {
   body?: ReactNode
   /** Restates the action ("Discard changes", "Destroy site") — never "OK". */
   confirmLabel: string
-  /** Every earlier caller confirms a destructive act, so danger styling is the
-   *  default. Pass `false` for a weighty but non-destructive confirm (a grant). */
+  /** Names what cancelling keeps ("Keep editing"). Defaults to the shared Cancel. */
+  cancelLabel?: string
+  /** Defaults to destructive styling. Pass `false` for a weighty but
+   *  non-destructive confirm (a grant). */
   danger?: boolean
   /** Paints the confirm button as the page's primary action, for a confirm whose
    *  yes is the next step rather than a risk (an export the user asked for). */
@@ -99,12 +100,13 @@ export function useConfirm(): {
       open={!!pending}
       onClose={() => settle(false)}
       title={opts.title}
+      wrapTitle
       maxWidth={440}
       layer={opts.layer}
       footer={
         <>
           <Btn onClick={() => settle(false)}>
-            {i18nT('components.confirmDialog.cancel')}
+            {opts.cancelLabel ?? i18nT('components.confirmDialog.cancel')}
           </Btn>
           {/* What a guide's destructive step waits for: this press, never a cancel. */}
           <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={() => settle(true)} {...guideConfirm()}>

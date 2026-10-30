@@ -90,9 +90,23 @@ export async function createChatForView(
  * (`useAskingNavigate`), not before the create. A `navigate` that returns
  * `false` was refused: the created chat is kept, the user stays put, and this
  * returns `false` so the caller stages nothing for a session not on screen.
+ * While a discard question is open the answer is a promise; callers that act
+ * on it go through `whenCreatedChatShown`.
  */
-export function showCreatedChat(view: CreatedChatView, navigate: (route: string) => boolean | void): boolean {
+export function showCreatedChat(
+  view: CreatedChatView,
+  navigate: (route: string) => boolean | void | Promise<boolean | void>,
+): boolean | Promise<boolean> {
   const framed = FRAME_PREFIXES.some(p => view.from.startsWith(p))
   if (!view.shown || framed || isChatPath(view.from)) return view.shown
-  return navigate('/chat') !== false
+  const went = navigate('/chat')
+  return went instanceof Promise ? went.then(ok => ok !== false, () => false) : went !== false
+}
+
+/** Run *then* once `showCreatedChat` says the chat is on screen: in the same
+ *  task for a plain answer, after the user answers when a discard question
+ *  had to be shown. */
+export function whenCreatedChatShown(shown: boolean | Promise<boolean>, then: () => void): void {
+  if (shown === true) then()
+  else if (shown !== false) void shown.then(ok => { if (ok) then() })
 }

@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import DetailView from '../pages/knowledge/DetailView'
@@ -461,10 +462,11 @@ describe('DetailView — archive and delete', () => {
   })
 
   it('deletes the item once the confirmation is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     const qc = seededList(makeClient())
     const { onBack } = renderDetail({}, qc)
     fireEvent.click(await screen.findByRole('button', { name: /Delete/ }))
+    await confirmAction('Delete')
     await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1))
     expect(callsTo('DELETE')).toHaveLength(1)
     expect(callsTo('DELETE')[0][0]).toBe('/items/i1')
@@ -472,38 +474,43 @@ describe('DetailView — archive and delete', () => {
   })
 
   it('leaves an empty cached list entry alone while deleting', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     const qc = makeClient()
     qc.setQueryData(['knowledge-items', 'page-2'], null)
     const { onBack } = renderDetail({}, qc)
     fireEvent.click(await screen.findByRole('button', { name: /Delete/ }))
+    await confirmAction('Delete')
     await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1))
     expect(qc.getQueryData(['knowledge-items', 'page-2'])).toBeNull()
   })
 
   it('does nothing when the delete confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     const { onBack } = renderDetail()
     fireEvent.click(await screen.findByRole('button', { name: /Delete/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(callsTo('DELETE')).toHaveLength(0)
     expect(onBack).not.toHaveBeenCalled()
   })
 
   it('surfaces a failed delete and rolls the cached list back', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     mutationError = new Error('delete refused')
     const qc = seededList(makeClient())
     renderDetail({}, qc)
     fireEvent.click(await screen.findByRole('button', { name: /Delete/ }))
+    await confirmAction('Delete')
     expect(await screen.findByText('delete refused', {}, { timeout: 5_000 })).toBeInTheDocument()
     expect((qc.getQueryData(['knowledge-items']) as ListCache)?.items).toHaveLength(2)
   })
 
   it('falls back to a generic message when the failure carries no text', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     mutationError = new Error('')
     renderDetail()
     fireEvent.click(await screen.findByRole('button', { name: /Delete/ }))
+    await confirmAction('Delete')
     expect(await screen.findByText('Action failed', {}, { timeout: 5_000 })).toBeInTheDocument()
   })
 })

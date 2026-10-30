@@ -206,6 +206,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
+  'components.tagManagerList.delete_tag_confirm_title', // tag-name operand of the delete question, quoted per locale
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
   'pages.artifactDeployPage.remove_profile_confirm',

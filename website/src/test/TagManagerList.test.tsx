@@ -46,7 +46,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 
 import { api } from '../api/client'
 import TagManagerList from '../components/TagManagerList'
-import SessionActionsMenu from '../components/SessionActionsMenu'
+import SessionActionsMenu from './ownedSessionActionsMenu'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../components/ui/dropdown-menu'
 import type { RootState } from '../store'
@@ -127,28 +127,26 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
   })
 
   it('deletes a tag only after confirm', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm')
     renderList({ mode: 'manage' })
     const del = await screen.findByTestId('tag-delete-t1')
 
-    confirmSpy.mockReturnValueOnce(false)
     fireEvent.click(del)
+    const dialog = await screen.findByRole('dialog', { name: 'Delete tag “Alpha”?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
     expect(api.deleteChatTag).not.toHaveBeenCalled()
 
-    confirmSpy.mockReturnValueOnce(true)
     fireEvent.click(del)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete tag' }))
     await waitFor(() => expect(api.deleteChatTag).toHaveBeenCalledWith('t1'))
-    confirmSpy.mockRestore()
   })
 
   it('surfaces delete failures through ErrorNotice', async () => {
     vi.mocked(api.deleteChatTag).mockRejectedValueOnce(new Error('Tag could not be deleted.'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderList({ mode: 'manage' })
     fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete tag' }))
     expect(await screen.findByText('Tag could not be deleted.')).toBeInTheDocument()
     expect(screen.getByTestId('tag-crud-mutation-error')).toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('creates a tag on Enter and clears the exact submitted draft after success', async () => {

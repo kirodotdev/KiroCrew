@@ -24,6 +24,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
 
 import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import ChannelPage from '../pages/ChannelPage'
 import { renderWithProviders } from './helpers'
@@ -761,9 +762,10 @@ describe('ChannelPage — New Channel dialog', () => {
 
 describe('ChannelPage — close channel', () => {
   it('closes the channel on confirm and clears the selection', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    await confirmAction('Close')
     await waitFor(() => expect(vi.mocked(api).channelClose).toHaveBeenCalledWith('ch1'))
     await waitFor(() => expect(screen.getByText('Create a channel to get started')).toBeInTheDocument())
   })
@@ -771,10 +773,11 @@ describe('ChannelPage — close channel', () => {
   it('keeps the channel and reports it when the close request fails', async () => {
     // Removing the channel under a "Failed to close channel" notice would show
     // the action as done; a refused close leaves the list as it was.
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     vi.mocked(api).channelClose = vi.fn().mockRejectedValue(new Error('already gone'))
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    await confirmAction('Close')
     const notice = await screen.findByTestId('channel-error')
     expect(notice).toHaveTextContent('Failed to close channel')
     expect(notice).toHaveTextContent('already gone')
@@ -783,9 +786,11 @@ describe('ChannelPage — close channel', () => {
   })
 
   it('does nothing when the confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(vi.mocked(api).channelClose).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { name: 'Gamma rollout' })).toBeInTheDocument()
   })

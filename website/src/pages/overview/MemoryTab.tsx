@@ -23,7 +23,6 @@ import MemoryBackupsCard from './MemoryBackupsCard'
 import MemberMemoryPanel from './MemberMemoryPanel'
 import MemoryRecordsEditor from './MemoryRecordsEditor'
 import MemoryDocCard from './MemoryDocCard'
-import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/ConfirmDialog'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
@@ -122,14 +121,25 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
     if (selectedStore !== undefined) setStore(selectedStore === 'default' ? '' : selectedStore)
   }, [selectedStore])
   const [dirty, setDirty] = useState(false)
-  useSidePanelLeaveGuard(() => !dirty || window.confirm(i18nT('memoryV2.leave_discard_explanation')), dirty)
+  const { confirm, confirmDialog } = useConfirm()
+  const confirmDiscard = useCallback(() => confirm({
+    title: i18nT('memoryV2.leave_discard_explanation'),
+    confirmLabel: i18nT('memoryV2.discard_title'),
+    cancelLabel: i18nT('components.confirmDialog.keep_editing'),
+  }), [confirm])
+  const confirmStoreChange = useCallback(() => confirm({
+    title: i18nT('memoryV2.discard_title'),
+    body: i18nT('memoryV2.discard_explanation'),
+    confirmLabel: i18nT('memoryV2.discard_title'),
+    cancelLabel: i18nT('components.confirmDialog.keep_editing'),
+  }), [confirm])
+  useSidePanelLeaveGuard(useCallback(() => !dirty || confirmDiscard(), [dirty, confirmDiscard]), dirty)
   useEffect(() => {
     if (!dirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty])
-  const [pendingStore, setPendingStore] = useState<string | null>(null)
   const selected = stores.data?.stores.find(s => s.name === store)
   // Content may already be cached while its catalog is still loading. Never
   // turn a private directory name into a member identity, or expose actions
@@ -148,13 +158,14 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
     else url.searchParams.delete('store')
     window.history.replaceState(window.history.state, '', url)
   }
-  const choose = (next: string) => {
+  const choose = async (next: string) => {
     if (next === store) return
-    if (dirty) setPendingStore(next)
-    else applyStore(next)
+    if (dirty && !(await confirmStoreChange())) return
+    applyStore(next)
+    setDirty(false)
   }
   return <>
-    <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
+    <MemoryStoreCard store={store} onStoreChange={next => void choose(next)} compact={!!store} />
     {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} /> : <Card>
       {stores.isPending ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
@@ -177,13 +188,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
         </div>
       </>}
     </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} />}
-    {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
-      <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
-      <div className="flex flex-wrap gap-2">
-        <Btn onClick={() => setPendingStore(null)}>{i18nT('pages.kiroCrewAgentsPage.keep_editing')}</Btn>
-        <Btn danger onClick={() => { applyStore(pendingStore); setPendingStore(null); setDirty(false) }}>{i18nT('memoryV2.discard_title')}</Btn>
-      </div>
-    </div></Modal>}
+    {confirmDialog}
   </>
 }
 

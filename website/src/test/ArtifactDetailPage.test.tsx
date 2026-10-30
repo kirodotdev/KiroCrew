@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MockedFunction } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import { chooseMore, commentsShown, findMoreItem, hasMoreItem } from './artifactMoreMenu'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -860,12 +860,15 @@ describe('ArtifactDetailPage', () => {
     )
     const updateSpy = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
     vi.mocked(api).updateArtifact = updateSpy
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     await pickVersion('v2')
     await waitFor(() => expect(screen.getByRole('button', { description: /Revert to v2/ })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { description: /Revert to v2/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Revert to v2\?/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revert' }))
     await waitFor(() =>
       expect(updateSpy).toHaveBeenCalledWith('cr-queue', expect.objectContaining({
         content: 'v2 content',
@@ -873,6 +876,7 @@ describe('ArtifactDetailPage', () => {
         from_version: 2,
       })),
     )
+    expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
 

@@ -6,6 +6,7 @@ import type { AgentTagPolicy, ChatTag } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 import SegmentedControl from './SegmentedControl'
 import { Btn } from './ui'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
@@ -97,6 +98,7 @@ export interface TagManagerListProps {
  * tag-delete-<id>) match the board's selectors.
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
+  const { confirm, confirmDialog } = useConfirm()
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const descriptionIdPrefix = useId()
@@ -253,6 +255,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
 
   return (
     <>
+      {confirmDialog}
       {storeDegraded && (
         <ErrorNotice
           id={policyUnavailableId}
@@ -388,9 +391,12 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 aria-describedby={tagStoreDegraded ? policyUnavailableId : undefined}
                 disabled={deleteDisabled}
                 aria-label={i18nT('components.tagManagerList.delete_tag_2', { name: t.name })}
-                onClick={() => {
+                onClick={async () => {
                   if (deleteDisabled) return
-                  if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id)
+                  if (await confirm({
+                    title: i18nT('components.tagManagerList.delete_tag_confirm_title', { name: t.name }),
+                    confirmLabel: i18nT('components.tagManagerList.delete_tag_button'),
+                  })) deleteTagMutation.mutate(t.id)
                 }}>
                 <X size={11} />
               </button>
