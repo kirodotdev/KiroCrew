@@ -196,6 +196,12 @@ def _queue_recovery(
                 getattr(state, "sessions", None), _refusal_key or session_key
             ),
         )
+    # A queued continuation means the turn is NOT a terminal dead end: it will
+    # run on this same slot. Retract any dead-turn bell a terminal arm set
+    # earlier this turn (a refusal arm whose Stop-hook continuation is queued
+    # afterward, a transient give-up that is then re-queued), so the finally
+    # choke point does not ring "a chat stopped" while the chat continues.
+    turn.died_notice = None
     return _recovery_qid
 
 

@@ -350,11 +350,18 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
         # a healthy conversation over someone else's fault.
         if _own_fault:
             slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+            turn.died_notice = (
+                "The connection to the agent kept dropping. Open the chat to start a new one."
+            )
         else:
             slot.append(
                 "error",
                 "The agent process this chat shares kept restarting — please retry.",
                 "msg msg-err",
+            )
+            turn.died_notice = (
+                "The agent process kept restarting and the turn did not finish. "
+                "Open the chat to retry."
             )
     else:
         slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
@@ -433,11 +440,20 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
         # AcpError rather than the typed death.
         if _own_fault:
             slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+            turn.died_notice = (
+                "The connection to the agent kept dropping. Open the chat to start a new one."
+                if _is_pipe_death
+                else "The chat stopped and could not recover. Open the chat to start a new one."
+            )
         else:
             slot.append(
                 "error",
                 "The agent process this chat shares kept restarting — please retry.",
                 "msg msg-err",
+            )
+            turn.died_notice = (
+                "The agent process kept restarting and the turn did not finish. "
+                "Open the chat to retry."
             )
     elif _prompt_depth == 0:
         # Single emit (see the _on_process_died note): slot.append persists +

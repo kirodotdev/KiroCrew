@@ -17838,6 +17838,7 @@
         "custom_sound_error_file_gone": "Il file di questo suono non è più salvato in questo browser, quindi non può essere ripristinato.",
         "channel_member": "Messaggi dei compagni",
         "channel_apps": "Aggiornamenti delle app",
+        "channel_turn": "Errori chat",
         "push_section": "Notifiche push",
         "push_toggle_label": "Avvisami anche quando {{productName}} è chiuso",
         "push_toggle_description": "Invia avvisi a questo dispositivo anche dopo aver chiuso {{productName}}. Le notifiche di sistema si interrompono appena lo chiudi.",

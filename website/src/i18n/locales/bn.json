@@ -17543,6 +17543,7 @@
         "custom_sound_error_file_gone": "এই শব্দের ফাইলটি আর এই ব্রাউজারে সংরক্ষিত নেই, তাই এটি ফিরিয়ে আনা যাবে না।",
         "channel_member": "সঙ্গীদের বার্তা",
         "channel_apps": "অ্যাপ আপডেট",
+        "channel_turn": "চ্যাট ত্রুটি",
         "push_section": "পুশ বিজ্ঞপ্তি",
         "push_toggle_label": "{{productName}} বন্ধ থাকলেও আমাকে জানাও",
         "push_toggle_description": "{{productName}} বন্ধ করার পরেও এই ডিভাইসে অ্যালার্ট পাঠায়। এটি বন্ধ করলেই সিস্টেম বিজ্ঞপ্তি থেমে যায়।",

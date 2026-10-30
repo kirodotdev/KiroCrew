@@ -1131,6 +1131,10 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     _refusal_card,
                     "msg msg-err",
                 )
+                turn.died_notice = (
+                    "The model declined to answer and the chat stopped. "
+                    "Open the chat to see why."
+                )
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
         # bare `refusal` stop reason (passed through by every harness), or
@@ -1187,6 +1191,9 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                 "error",
                 _refusal_card,
                 "msg msg-err",
+            )
+            turn.died_notice = (
+                "The model declined to answer and the chat stopped. " "Open the chat to see why."
             )
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by

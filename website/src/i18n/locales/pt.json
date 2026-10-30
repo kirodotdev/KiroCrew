@@ -17838,6 +17838,7 @@
         "custom_sound_error_file_gone": "O arquivo deste som não está mais salvo neste navegador, então não pode ser restaurado.",
         "channel_member": "Mensagens de colegas",
         "channel_apps": "Atualizações de apps",
+        "channel_turn": "Erros de chat",
         "push_section": "Notificações push",
         "push_toggle_label": "Notificar-me mesmo quando o {{productName}} estiver fechado",
         "push_toggle_description": "Envia alertas para este dispositivo mesmo depois de você fechar o {{productName}}. As notificações do sistema param assim que você o fecha.",

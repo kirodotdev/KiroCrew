@@ -126,6 +126,9 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("stale_recover", "exhausted", slot._stale_recovery_retries)
                 slot._stale_recovery_exhausted_emitted = True
             _emit_stale(turn, "Session stuck — please start a new chat.")
+            turn.died_notice = (
+                "The chat stalled and could not recover. Open the chat to start a new one."
+            )
         else:
             # depth>0 (nested turn) with budget remaining: reset the session
             # but don't re-queue (mirrors the pipe-death depth>0 handling);
@@ -179,6 +182,9 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("tool_stall", "exhausted", slot._tool_stall_retries)
                 slot._tool_stall_exhausted_emitted = True
             _emit_stall(turn, "Session stuck — please start a new chat.")
+            turn.died_notice = (
+                "The chat stalled and could not recover. Open the chat to start a new one."
+            )
         else:
             _emit_stall(turn, "⟳ Tool appeared stalled — please retry.")
         return _Flow.END
@@ -319,14 +325,26 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         elif _death_attempts >= SESSION_RECOVERY_MAX_ATTEMPTS:
             if _own_fault:
                 _emit_error(turn, f"Session stuck{_rc_suffix} — please start a new chat.")
+                turn.died_notice = (
+                    "The connection to the agent kept dropping. "
+                    "Open the chat to start a new one."
+                )
             else:
                 _emit_error(
                     turn,
                     f"The agent process this chat shares kept restarting{_rc_suffix}"
                     " — please retry.",
                 )
+                turn.died_notice = (
+                    "The agent process kept restarting and the turn did not finish. "
+                    "Open the chat to retry."
+                )
         else:
             _emit_error(turn, f"⟳ Connection lost{_rc_suffix} — please retry.")
+            # No bell here: this arm runs only for a NESTED turn
+            # (_prompt_depth > 0) whose parent turn is still live and may
+            # absorb the death, so ringing would report a stop the operator
+            # does not yet own.
         return _Flow.END
     return None
 

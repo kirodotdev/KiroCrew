@@ -17543,6 +17543,7 @@
         "custom_sound_error_file_gone": "Die Datei dieses Tons ist nicht mehr in diesem Browser gespeichert und kann nicht wiederhergestellt werden.",
         "channel_member": "Crewmate-Nachrichten",
         "channel_apps": "App-Aktualisierungen",
+        "channel_turn": "Chat-Fehler",
         "push_section": "Push-Benachrichtigungen",
         "push_toggle_label": "Benachrichtige mich auch, wenn {{productName}} geschlossen ist",
         "push_toggle_description": "Sendet Benachrichtigungen an dieses Gerät, auch nachdem du {{productName}} geschlossen hast. Systembenachrichtigungen enden, sobald du es schließt.",

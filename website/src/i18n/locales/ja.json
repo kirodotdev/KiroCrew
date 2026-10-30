@@ -17248,6 +17248,7 @@
         "custom_sound_error_file_gone": "このサウンドのファイルはこのブラウザーに保存されていないため、元に戻せません。",
         "channel_member": "クルーメイトからのメッセージ",
         "channel_apps": "アプリのアップデート",
+        "channel_turn": "チャットエラー",
         "push_section": "プッシュ通知",
         "push_toggle_label": "{{productName}} を閉じていても通知する",
         "push_toggle_description": "{{productName}} を閉じた後もこの端末に通知を送ります。システム通知は閉じると止まります。",
