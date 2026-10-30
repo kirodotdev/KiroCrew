@@ -726,6 +726,9 @@ def test_a_user_spec_deny_hook_still_blocks_under_a_shadowing_project_spec(
         )
     )
     assert [c for _, c, _, _ in ran] == ["user-deny.sh"] and reason is not None
+    # Read from the user-level tree, so tagged as such: the deny-list exemption
+    # and kiro-cli's exit contract key on this tag.
+    assert [h.spec_origin for h in turn.hooks] == ["user"]
     hooks, unreadable, _ = asyncio.run(
         chat_runner._prepare_spec_hooks(
             None, None, _provider(backend, str(project)), "a1", is_new=False

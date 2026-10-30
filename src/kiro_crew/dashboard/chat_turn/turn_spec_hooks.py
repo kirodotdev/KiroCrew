@@ -417,6 +417,44 @@ async def _fire(
                         "text": f"Hook {r.hook_name}: injected {len(r.stdout)} chars",
                     },
                 )
+            elif event == HOOK_EVENT_PRE_TOOL_USE and r.exit_code != 0 and not r.pre_tool_blocks:
+                # A spec hook that a policy refused, or that crashed, was killed
+                # or timed out. kiro-cli, which runs these hooks on its own
+                # backend, warns and lets the tool run; so does Crew, so one
+                # broken hook in an agent package cannot stop every tool call.
+                logger.warning(
+                    "Spec hook %s %s (%s); tool allowed",
+                    r.hook_name,
+                    "was refused by policy" if r.refused else "failed",
+                    r.failure_detail,
+                )
+                state.broadcast_ws(
+                    "activity_event",
+                    {
+                        "slot": slot.key,
+                        "kind": "hook",
+                        "text": f"Hook {r.hook_name} skipped: {r.failure_detail[:100]}",
+                    },
+                )
+            elif r.exit_code == 2 and r.refused:
+                # A policy refused the hook, so it never ran. On PreToolUse this
+                # is a Hooks-page hook (a refused spec hook took the branch
+                # above): a gate with no verdict, which blocks. Log the refusal
+                # itself, so it does not read like a hook that asked to block.
+                injected.append(f"BLOCKED:{r.hook_name}:{r.failure_detail}")
+                logger.warning(
+                    "Hook %s refused by policy: %s",
+                    r.hook_name,
+                    r.failure_detail,
+                )
+                state.broadcast_ws(
+                    "activity_event",
+                    {
+                        "slot": slot.key,
+                        "kind": "hook",
+                        "text": f"Hook {r.hook_name} BLOCKED (refused): {r.failure_detail[:100]}",
+                    },
+                )
             elif r.exit_code == 2:
                 injected.append(
                     f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
@@ -441,7 +479,8 @@ async def _fire(
                     else (r.stderr[-200:] if r.stderr else f"exited with code {r.exit_code}")
                 )
                 if event == HOOK_EVENT_PRE_TOOL_USE:
-                    # Fail closed. A PreToolUse hook has a two-valued
+                    # Fail closed (Hooks-page hooks only: a failed spec hook
+                    # took the warn branch above). A PreToolUse hook has a two-valued
                     # contract — exit 0 is a delivered allow, exit 2 a
                     # delivered deny — so every other code means the gate
                     # did not decide, and for a gate that resolves to deny.

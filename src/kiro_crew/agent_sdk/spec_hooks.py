@@ -7,9 +7,12 @@ in ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` get them from Crew instead: the turn l
 already fires the five Crew hook events for every backend, and this module turns the
 spec's field into :class:`kiro_crew.hooks.ScriptHook` records that ride the same
 ``ScriptHookStore.fire`` call. So a spec hook meets exactly the gates a Hooks-page
-hook meets -- ``capabilities.script_hooks`` and its SEL audit, the sandboxed spawn,
-the timeout, the PreToolUse fail-closed rule -- and none that a Hooks-page hook does
-not.
+hook meets -- ``capabilities.script_hooks`` and its SEL audit, the shell deny list,
+the sandboxed spawn, the timeout -- and none that a Hooks-page hook does not. One
+rule differs: on PreToolUse a spec hook keeps kiro-cli's exit-code contract, where
+only a delivered exit 2 blocks and a refused or failed hook warns
+(:attr:`kiro_crew.hook_runtime.script_hooks.ScriptHookResult.pre_tool_blocks`),
+because that is how the same spec behaves on the kiro-cli backend.
 
 Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
@@ -47,6 +50,7 @@ subagent under a KAS parent still gets nothing from Crew.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -438,6 +442,13 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
     refuse every call the session makes and leave it unusable. A spec that exists
     but cannot be read still raises, so callers keep failing closed on it.
     """
+    return _agent_spec_with_origin(agent_id, project_dir)[0]
+
+
+def _agent_spec_with_origin(
+    agent_id: str, project_dir: str | None = None
+) -> tuple[dict[str, Any], str]:
+    """:func:`_agent_spec` and where it came from: ``"project"`` or ``"user"``."""
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import agent_spec_absent, load_agent_spec
@@ -449,11 +460,38 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
         if declared:
             if spec is None:
                 raise ValueError(f"the project spec for agent {agent_id!r} could not be read")
-            return spec
+            return spec, "project"
     agents_dir = spec_dir_for(agent_id)
     if agent_spec_absent(agents_dir, agent_id):
-        return {}
-    return load_agent_spec(agents_dir, agent_id)
+        return {}, "user"
+    return load_agent_spec(agents_dir, agent_id), _user_dir_origin(agents_dir)
+
+
+def _user_dir_origin(agents_dir: Path) -> str:
+    """``"user"`` when *agents_dir* is the sealed kiro agents tree and no spec file
+    in it is a symlink, else ``"project"``.
+
+    The read-only seal covers :func:`kiro_agents_dir` itself, not a sibling tree
+    (the mates directory) nor a symlink's target, so a spec from either could be
+    agent-writable and keeps its hooks deny-list vetted. Any symlink counts, even
+    one that resolves inside the tree today: a link it passes through may be
+    agent-writable and retargeted after the spec was read. Whether an entry IS a
+    symlink cannot change, because the directory itself is read-only.
+    """
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    try:
+        root = agents_dir.resolve(strict=True)
+        if root != kiro_agents_dir().resolve(strict=True):
+            return "project"  # only the kiro agents tree is sealed read-only
+        for entry in agents_dir.iterdir():
+            if entry.suffix not in (".json", ".md"):
+                continue
+            if entry.is_symlink():
+                return "project"
+    except OSError:
+        return "project"
+    return "user"
 
 
 def kas_spec_load_error(agents_dir: Path, agent_id: str) -> str | None:
@@ -535,10 +573,13 @@ def crew_fired_spec_hooks(
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import spec_keys_without_carrier
 
-    spec = _agent_spec(agent_id, project_dir)
+    spec, origin = _agent_spec_with_origin(agent_id, project_dir)
     hooks, unconfirmable = _convert(agent_id, spec)
     lost = spec_keys_without_carrier(spec, translates_tools_settings=translates_tools_settings)
-    return list(hooks), lost, unconfirmable
+    # Copies, so the cached conversion keeps no origin: the same hooks can come
+    # from a user-level spec in one session and a project spec in another.
+    tagged = [dataclasses.replace(h, spec_origin=origin) for h in hooks]
+    return tagged, lost, unconfirmable
 
 
 def spec_hooks_run_nowhere(provider: object) -> bool:
