@@ -1127,6 +1127,31 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+**On macOS the band alone cannot keep the bar draggable.** Because the band is
+prepended, every later `no-drag` rectangle that reaches into it wins, including
+ones nobody can see there: a theme pack's decoration iframes (the exemption list
+covers every `iframe`, and a pack's top-bar strip and full-window overlays sit
+at `top: 0`) and transcript content scrolled up under the glass header (inside
+the `tabIndex={-1}` scroller, and taken from layout without clipping to it).
+Either one leaves the bar unable to move or zoom the window. So whenever the
+local header is on screen, docked or peeked in focus mode, `App.tsx` also
+renders `.host-drag-strip` divs over the band's control-free gaps, painted
+after everything else. Being last, a strip would also turn any other surface's
+control in the band into a window drag (the phone nav drawer, the image
+viewer's toolbar, an in-place notice), so the gaps come from
+`computeTitleBandDragGaps` in
+[`dragGaps.ts`](../../website/src/lib/dragGaps.ts): it pads every visible
+control whose box reaches into the band, anywhere in the document, and leaves
+out only transcript content scrolled up past the top of `#main-content`, the
+clipped content the strips exist to cover. A container that `[tabindex]`
+matches is not a control: an ancestor of the header or of `#main-content`, and
+a `tabindex="-1"` focus container with no `role` that holds controls (the main
+landmark, which starts inside the band in focus mode, and the scroller) are
+skipped, while the controls inside them still count. `observeHeaderLayout` re-measures on
+every header reflow and `observeDocumentLayout` once per frame after any other
+document change, so a control that appears later is never left under a stale
+strip.
+
 #### Focus mode: verify these seams after an Electron or Radix bump
 
 Focus mode (hide the shell chrome behind hover) rests on five mechanisms that
