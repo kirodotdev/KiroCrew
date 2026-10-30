@@ -1,0 +1,279 @@
+# The credential rule table: the only place a redaction rule is defined.
+#
+# Each row names its tier (what a matched value can do), its detector (how the
+# value is found) and what is replaced. `rules.py` validates every row at load
+# and refuses an unknown field, tier, detector or validator.
+#
+#   pattern     regex; the named group `v` is the span `replace: value` removes.
+#               Every repeat must be bounded.
+#   labels      field or parameter names. Compared lowercase with `-`, `_`, `.`
+#               and spaces removed; `labelled` matches a name or its suffix,
+#               `url_param` the exact name.
+#   pair_with   key_id_pair only: an anchor that must occur within `window`
+#               characters of the value.
+#   validate    a named check in rules.VALIDATORS.
+#   replace     `value` (default) or `match`.
+#   allow       values that look like a match but are not secrets.
+#   corpus      rules/<id>: the rule's true positives, known false positives
+#               and bypass shapes.
+#
+# There is deliberately no entropy rule, no length-only rule and no detector
+# that fires on a value's shape alone.
+
+version: 1
+
+allow:
+  values: [changeme, placeholder, example, 'true', 'false', 'null', none]
+  patterns:
+    - '\$\{[^{}\r\n]{1,200}\}'
+    # An environment-variable reference. Upper case only, so a password that
+    # starts with `$` is not mistaken for one.
+    - '\$[A-Z_][A-Z0-9_]{0,127}'
+    - '<[^<>\r\n]{1,200}>'
+    - '\{\{[^\r\n]{0,200}\}\}'
+    - '%[A-Za-z_][A-Za-z0-9_]{0,127}%'
+    - '\*{3,200}'
+    - '(?i:x{3,200})'
+    - '\.{3,200}|…{1,200}'
+    - '(?i:your[-_][A-Za-z0-9_.-]{0,200})'
+
+label_exclude:
+  - token_type
+  - expires_in
+  - next_token
+  - page_token
+  - max_tokens
+  - input_tokens
+  - output_tokens
+  - token_endpoint
+  - secret_name
+  - secret_arn
+  - key_id
+  - public_key
+  - tokenizer
+  - credential_scope
+
+rules:
+  # ── checksum_prefix ──
+  - id: github.classic
+    tier: secret
+    detector: checksum_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>gh[pousr]_[A-Za-z0-9]{36})(?![A-Za-z0-9_])'
+    validate: github_crc32
+    corpus: rules/github.classic
+
+  # ── vendor_prefix ──
+  - id: github.fine_grained
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59})(?![A-Za-z0-9_])'
+    corpus: rules/github.fine_grained
+
+  - id: slack.token
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>xox[abposr]-[A-Za-z0-9-]{10,250})(?![A-Za-z0-9_-])'
+    corpus: rules/slack.token
+
+  - id: slack.webhook
+    tier: bearer_link
+    detector: vendor_prefix
+    pattern: 'https://hooks\.slack\.com/services/T[A-Z0-9]{8,12}/B[A-Z0-9]{8,12}/(?P<v>[A-Za-z0-9]{20,40})(?![A-Za-z0-9])'
+    corpus: rules/slack.webhook
+
+  - id: discord.webhook
+    tier: bearer_link
+    detector: vendor_prefix
+    pattern: 'https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/(?P<v>[A-Za-z0-9_-]{60,80})(?![A-Za-z0-9_-])'
+    corpus: rules/discord.webhook
+
+  - id: stripe.key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,247})(?![A-Za-z0-9_])'
+    corpus: rules/stripe.key
+
+  # TODO: confirm the marker against the current project and service-account
+  # key formats before a seam relies on this row.
+  - id: openai.key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{0,200}T3BlbkFJ[A-Za-z0-9_-]{1,200})(?![A-Za-z0-9_-])'
+    corpus: rules/openai.key
+
+  - id: anthropic.key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>sk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_-]{80,200})(?![A-Za-z0-9_-])'
+    corpus: rules/anthropic.key
+
+  - id: google.api_key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>AIza[A-Za-z0-9_-]{35})(?![A-Za-z0-9_-])'
+    corpus: rules/google.api_key
+
+  - id: gitlab.pat
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>glpat-[A-Za-z0-9_-]{20,64})(?![A-Za-z0-9_-])'
+    corpus: rules/gitlab.pat
+
+  - id: npm.token
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>npm_[A-Za-z0-9]{36})(?![A-Za-z0-9_])'
+    corpus: rules/npm.token
+
+  - id: pypi.token
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_-])(?P<v>pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,1000})(?![A-Za-z0-9_-])'
+    corpus: rules/pypi.token
+
+  - id: sendgrid.key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_.-])(?P<v>SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})(?![A-Za-z0-9_-])'
+    corpus: rules/sendgrid.key
+
+  - id: twilio.api_key
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>SK[0-9a-f]{32})(?![A-Za-z0-9_])'
+    corpus: rules/twilio.api_key
+
+  - id: hashicorp.vault
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_.-])(?P<v>hv[sbr]\.[A-Za-z0-9_-]{24,250})(?![A-Za-z0-9_-])'
+    corpus: rules/hashicorp.vault
+
+  - id: hashicorp.terraform
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_.-])(?P<v>[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_-]{60,70})(?![A-Za-z0-9_-])'
+    corpus: rules/hashicorp.terraform
+
+  - id: shopify.token
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32})(?![A-Za-z0-9_])'
+    corpus: rules/shopify.token
+
+  - id: digitalocean.token
+    tier: secret
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>do[opr]_v1_[a-f0-9]{64})(?![A-Za-z0-9_])'
+    corpus: rules/digitalocean.token
+
+  - id: aws.access_key_id
+    tier: identifier
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9+/_-])(?P<v>(?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16})(?![A-Za-z0-9+=_-])'
+    corpus: rules/aws.access_key_id
+
+  - id: twilio.account_sid
+    tier: identifier
+    detector: vendor_prefix
+    pattern: '(?<![A-Za-z0-9_])(?P<v>AC[0-9a-f]{32})(?![A-Za-z0-9_])'
+    corpus: rules/twilio.account_sid
+
+  # ── structural ──
+  - id: pem.private_key
+    tier: secret
+    detector: structural
+    pattern: '-----BEGIN (?P<k>(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?)PRIVATE KEY-----[\s\S]{1,16000}?-----END (?P=k)PRIVATE KEY-----'
+    replace: match
+    corpus: rules/pem.private_key
+
+  - id: pgp.private_key
+    tier: secret
+    detector: structural
+    pattern: '-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]{1,16000}?-----END PGP PRIVATE KEY BLOCK-----'
+    replace: match
+    corpus: rules/pgp.private_key
+
+  - id: url.userinfo_password
+    tier: secret
+    detector: structural
+    pattern: '(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s:/@"''<>`]{1,256}:(?P<v>[^\s/@"''<>`]{1,256})@'
+    corpus: rules/url.userinfo_password
+
+  # ── labelled ──
+  # Short-lived tokens (access, refresh, session and bearer tokens, JWTs,
+  # session cookies, presigned signatures) are left out: the table targets
+  # leaks that cannot be undone by waiting for a token to expire.
+  - id: labelled.secret_field
+    tier: secret
+    detector: labelled
+    labels:
+      - password
+      - passwd
+      - pwd
+      - passphrase
+      - secret
+      - client_secret
+      - api_key
+      - api_secret
+      - api_token
+      - private_key
+      - secret_key
+      - secret_access_key
+      - account_key
+      - shared_access_key
+      - master_key
+      - authorization
+      - x-api-key
+      - dd_api_key
+      - dd_app_key
+      - datadog_api_key
+      - app_key
+      - auth_key
+      - signing_key
+      - encryption_key
+      - webhook_secret
+      - credential
+      - credentials
+    allow:
+      suffixes: [EXAMPLEKEY]
+    corpus: rules/labelled.secret_field
+
+  # ── key_id_pair ──
+  - id: aws.secret_access_key
+    tier: secret
+    detector: key_id_pair
+    pattern: '(?<![A-Za-z0-9/+])(?P<v>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])'
+    pair_with:
+      pattern: '(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])'
+      window: 300
+    validate: aws_secret_shape
+    allow:
+      suffixes: [EXAMPLEKEY]
+    corpus: rules/aws.secret_access_key
+
+  # ── url_param ──
+  - id: oauth.public_param
+    tier: identifier
+    detector: url_param
+    labels:
+      - client_id
+      - state
+      - nonce
+      - code_challenge
+      - code_challenge_method
+      - redirect_uri
+      - scope
+      - response_type
+    corpus: rules/oauth.public_param
+
+  - id: url.credential_param
+    tier: secret
+    detector: url_param
+    labels:
+      - api_key
+      - key
+      - secret
+      - password
+      - client_secret
+    corpus: rules/url.credential_param
