@@ -1275,4 +1275,4 @@ class TestOnDoneTimeout:
             await manager._tasks[info.id]
             await asyncio.sleep(0.05)
 
-        sessions.reset.assert_any_await("dashboard:slot-1")
+        sessions.reset.assert_any_await("dashboard:slot-1", skip_if_busy=True)
