@@ -73,7 +73,6 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_delete_in_flight_marks": ("function", "4be47402b13f", "history_locks"),
     "_deletes_in_flight": ("data", "", ""),
     "_deletes_in_flight_guard": ("data", "", ""),
-    "_dir_write_epoch": ("function", "fa6cfecd5574", "history"),
     "_dir_write_epochs": ("data", "", ""),
     "_file_lock": ("function", "bc31c6c18d74", "history_locks"),
     "_file_locks": ("data", "", ""),
@@ -187,6 +186,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "update_metadata": ("function", "5e1ab1217b61", "history"),
     "update_metadata_if": ("function", "316452efe533", "history"),
     "warm_search": ("function", "b60c5fea256e", "history"),
+    "write_epoch": ("function", "fa6cfecd5574", "history"),
 }
 
 #: Class attributes holding process-wide state. ``history_locks`` reads the lock ones as

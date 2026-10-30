@@ -982,7 +982,12 @@ class ConversationLog:
     def _bump_cache_gen(self, key: str, idents: tuple[str, ...]) -> None:
         self._cache_coordinator._bump_cache_gen(key, idents)
 
-    def _dir_write_epoch(self) -> int:
+    def write_epoch(self) -> int:
+        """How many cache invalidations this process has made over the history dir.
+
+        An unmoved value proves no write in this process invalidated the cache
+        between two reads of it. Writes made by another process do not move it.
+        """
         return self._cache_coordinator._dir_write_epoch()
 
     def _publish_if_current(
