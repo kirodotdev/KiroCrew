@@ -1610,6 +1610,10 @@ no longer destroy older turns.
   a temporary chat neither. Each sends the `direction="head"` request with
   `memory_mode`, and the new chat shows the usual incognito or temporary badge
   from the response's `memory_mode`.
+- **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
+  stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
+  (default true) gates this; when it is false the fork starts unpinned. Agent
+  `session_fork` children are never pinned either way.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
