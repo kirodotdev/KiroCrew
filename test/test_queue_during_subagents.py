@@ -384,6 +384,20 @@ class TestSubagentsHoldUserMessages:
         state = self._state([{"id": "a1", "stalled": True}, {"id": "a2", "stalled": False}])
         assert subagents_hold_user_messages(state, "dashboard:s1") is True
 
+    def test_child_parked_at_spawn_approval_does_not_hold(self):
+        """An unanswered spawn approval has no process and may never start."""
+        state = self._state([{"id": "a1", "stalled": False, "awaitingSpawnApproval": True}])
+        assert subagents_hold_user_messages(state, "dashboard:s1") is False
+
+    def test_running_sibling_of_a_parked_child_still_holds(self):
+        state = self._state(
+            [
+                {"id": "a1", "stalled": False, "awaitingSpawnApproval": True},
+                {"id": "a2", "stalled": False, "awaitingSpawnApproval": False},
+            ]
+        )
+        assert subagents_hold_user_messages(state, "dashboard:s1") is True
+
     def test_no_children_or_no_registry(self):
         assert subagents_hold_user_messages(self._state([]), "k") is False
         state = MagicMock()

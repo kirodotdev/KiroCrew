@@ -274,8 +274,14 @@ class RunEventCoordinator(ManagerComponent):
     _get_parent_runtime_impl = _run_start._get_parent_runtime_impl
 
     def running_agents_for_impl(self, parent_key: str) -> list[dict]:
-        """Return summary dicts for agents belonging to *parent_key*."""
+        """Return summary dicts for agents belonging to *parent_key*.
+
+        ``awaitingSpawnApproval`` marks a row parked on the spawn approval: it has
+        no process yet and starts only if a person answers the card.
+        """
+        # circular import: kiro_crew.subagent imports this package at module level.
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.subagent import _parked_at_spawn_approval
 
         def _r(s: str) -> str:
             s, _ = redact_exfiltration_urls(s)
@@ -292,6 +298,7 @@ class RunEventCoordinator(ManagerComponent):
                 "tool_count": a.tool_count,
                 "stalled": a.stalled,
                 "startedAt": a.started,
+                "awaitingSpawnApproval": _parked_at_spawn_approval(a),
             }
             for a in self._manager._agents.values()
             if not a.done and a.parent_session_key == parent_key

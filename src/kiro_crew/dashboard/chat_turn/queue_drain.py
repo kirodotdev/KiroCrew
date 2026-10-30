@@ -428,12 +428,20 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     before its completion path ran never sets ``done``, so counting it parks
     every user message until the wall-clock timeout. The flag clears when the
     child streams again, and the hold with it.
+
+    A child parked on its spawn approval does not hold either. It has no
+    process, and the reaper never flags it stalled, so an unanswered card
+    would otherwise park every user message indefinitely. Once approved it
+    holds like any running child.
     """
     subs = state.subagents
     if subs is None:
         return False
     agents = subs.running_agents_for(session_key) or []
-    return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
+    return any(
+        not (isinstance(a, dict) and (a.get("stalled") or a.get("awaitingSpawnApproval")))
+        for a in agents
+    )
 
 
 def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
