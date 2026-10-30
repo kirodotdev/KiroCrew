@@ -18,7 +18,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import env_node_windows, platform_compat
+from kiro_crew import env_node_windows, env_own_kirocrew, platform_compat
 from kiro_crew.config.paths import data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -910,6 +910,11 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
+def _own_kirocrew_dirs() -> list[str]:
+    """This install's ``kirocrew`` directory (:func:`env_own_kirocrew.own_kirocrew_dirs`)."""
+    return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir)
+
+
 def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
     """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
 
@@ -984,7 +989,9 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     rebind a user MCP spec's bare ``"command": "python"`` (and the spawned
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
-    else — exactly the console-script-wrapper case.
+    else — exactly the console-script-wrapper case. The one name that must
+    NOT fall through to an earlier directory is ``kirocrew`` itself, so a
+    directory holding only that link (:func:`_own_kirocrew_dirs`) goes ahead of ``~/.local/bin``.
 
     Deliberately NOT extended by ``mcp.extra_path_dirs`` /
     :func:`register_mcp_path_dirs`: callers here include the resolvers for the
@@ -1025,7 +1032,8 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
     # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
     # work-dir-relative executable shadow the configured command.
-    extra = [
+    extra = _own_kirocrew_dirs() if home is None else []
+    extra += [
         e
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
