@@ -15,7 +15,7 @@ Instance fields written: ``_claude_inline_settings``,
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
 ``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``.
+``_side_read_only``, ``_spec_zero_tools``.
 """
 
 from __future__ import annotations
@@ -407,6 +407,11 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     under it always ships beside it; excluding the tier is never the
     widening direction.
 
+    A session whose spec declares ``"tools": []`` (``_spec_zero_tools``, the
+    background ``kirocrew-lite`` helpers) gets ``strictMcpConfig``, so only the
+    wire array mounts: the harness's own user, project and plugin servers stay
+    out of a session that must run no tool.
+
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
     and inline settings that add an ``ask`` rule per read built-in, deny the host's
@@ -429,6 +434,11 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    if getattr(self, "_spec_zero_tools", False):
+        # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
+        # helpers): without this the harness mounts the user's, the project's and
+        # plugins' servers beside the wire array, and starts them on every call.
+        options["strictMcpConfig"] = True
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either
