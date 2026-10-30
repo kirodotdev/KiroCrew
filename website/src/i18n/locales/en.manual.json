@@ -2090,6 +2090,9 @@
       "unsaved_files_lost": "These files have unsaved edits that will be lost."
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "cancel_upload": "Cancel upload",
       "cancel_n_uploads_one": "Cancel {{count}} upload",
       "cancel_n_uploads_other": "Cancel {{count}} uploads",

@@ -6262,6 +6262,9 @@
       "unsaved_files_lost": "다음 파일의 저장하지 않은 변경 사항이 사라집니다."
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "자동 (Jev)",
       "auto_jev_desc": "Jev가 선택: 지금 반영하거나 나중에 실행",
       "auto_jev_enter": "자동 (Jev) — 지금 반영할지 나중에 실행할지 Jev가 결정합니다 (Enter)",
@@ -12441,6 +12444,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "대화 턴 탐색",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "대화 턴",

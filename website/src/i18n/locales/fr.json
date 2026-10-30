@@ -6484,6 +6484,9 @@
       "unsaved_files_lost": "Ces fichiers contiennent des modifications non enregistrées qui seront perdues."
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "Automatique (Jev)",
       "auto_jev_desc": "Laisser Jev choisir : agir maintenant ou exécuter ensuite",
       "auto_jev_enter": "Automatique (Jev) — Jev choisit d'agir maintenant ou d'exécuter ensuite (Entrée)",
@@ -12827,6 +12830,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "Parcourir les tours de la conversation",
       "turn_minimap_active": "{{position}} : {{prompt}}",
       "turn_minimap_landmark": "Tours de la conversation",

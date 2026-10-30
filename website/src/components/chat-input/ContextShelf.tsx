@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Trans } from 'react-i18next'
-import { Bot } from 'lucide-react'
+import { Bot, Server } from 'lucide-react'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
 import ErrorNotice from '../ErrorNotice'
@@ -209,6 +209,36 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
     >
       <Bot size={13} className="shrink-0 opacity-70" />
       {!shelfCompact && <span className="truncate max-w-[160px]">{withMemorySource(agentLabel ?? agentName, agentMemory ?? null)}</span>}
+    </button>
+  )
+}
+
+/** The slot's picked backend (`''` = gateway default). A pick applies from the
+ *  next turn, so -- like the model chip -- the chip stays enabled while a
+ *  response runs. */
+export function BackendChip({ backendName, backendIsDefault, shelfCompact, onBackendClick }: {
+  backendName: string
+  backendIsDefault?: boolean
+  shelfCompact: boolean
+  onBackendClick: NonNullable<ChatInputProps['onBackendClick']>
+}) {
+  // Opens on the mouse press (usePressActivation); keyboard and touch on click.
+  const bindPress = usePressActivation()
+  const press = bindPress<HTMLButtonElement>(el => onBackendClick(el.getBoundingClientRect(), el))
+  const isDefault = backendIsDefault || !backendName
+  const label = isDefault
+    ? i18nT('components.chatInput.backend_default')
+    : i18nT('components.chatInput.backend', { name: backendName })
+  return (
+    <button
+      className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer text-muted hover:text-text"
+      {...press}
+      data-testid="composer-backend-chip"
+      title={label}
+      aria-label={label}
+    >
+      <Server size={13} className="shrink-0 opacity-70" />
+      {!shelfCompact && <span className="truncate max-w-[120px]">{isDefault ? i18nT('components.chatInput.backend_default_short') : backendName}</span>}
     </button>
   )
 }

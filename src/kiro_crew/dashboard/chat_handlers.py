@@ -286,6 +286,9 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     api_chat_slots_cleanup,
     close_slot,
 )
+from kiro_crew.dashboard.chat_api.slot_backend import (  # noqa: F401
+    api_chat_slot_backend,
+)
 from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     _broadcast_context_reset,
     _is_jev_route_pick,

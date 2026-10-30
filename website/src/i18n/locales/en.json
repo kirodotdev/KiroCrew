@@ -7034,6 +7034,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "agent_list": "Agent list",
       "agent_selector": "Agent selector",
       "chat_messages": "Chat messages",

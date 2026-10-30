@@ -6595,6 +6595,9 @@
       "unsaved_files_lost": "В этих файлах есть несохранённые изменения, они будут потеряны."
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "Автоматически (Jev)",
       "auto_jev_desc": "Пусть Jev решит: действовать сейчас или выполнить после",
       "auto_jev_enter": "Автоматически (Jev) — Jev решает, действовать сейчас или выполнить после (Enter)",
@@ -13020,6 +13023,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "Перейти к репликам диалога",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Реплики диалога",

@@ -6373,6 +6373,9 @@
       "unsaved_files_lost": "এই ফাইলগুলোতে অসংরক্ষিত পরিবর্তন আছে, যা হারিয়ে যাবে।"
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "স্বয়ংক্রিয় (Jev)",
       "auto_jev_desc": "Jev ঠিক করুক: এখনই কাজে লাগানো, নাকি পরে চালানো",
       "auto_jev_enter": "স্বয়ংক্রিয় (Jev) — এখনই কাজে লাগানো হবে নাকি পরে চালানো হবে, Jev ঠিক করে (Enter)",
@@ -12634,6 +12637,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "কথোপকথনের পালাগুলোর মধ্যে যান",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "কথোপকথনের পালা",

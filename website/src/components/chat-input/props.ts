@@ -231,6 +231,11 @@ export interface ChatInputProps {
    *  uses it to hand focus back to the editor after a pick, and only then: a
    *  user who was not typing does not get the composer focused under them. */
   onModelClick?: (rect: DOMRect, trigger?: HTMLElement, composerHadFocus?: boolean) => void
+  /** Backend chip: the slot's picked backend id (config spelling); `''` is the
+   *  gateway default. Rendered only when `onBackendClick` is set. */
+  backendName?: string
+  backendIsDefault?: boolean
+  onBackendClick?: (rect: DOMRect, trigger?: HTMLElement) => void
   onProjectClick?: (rect: DOMRect, trigger?: HTMLElement) => void
   /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
    *  its own separated shelf group and renders nothing until profiles exist. */

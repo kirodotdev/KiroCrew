@@ -61,6 +61,13 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         /** Present when this session's harness lists other models than the configured backend. */
         models_backend?: string
       }>,
+    /** Set this chat's backend pick (`""` clears to the gateway default). The
+     *  swap applies from the next turn; a turn in flight finishes on the old
+     *  backend. Owner-only dashboard route. */
+    chatSlotBackend: (slot: string, backend: string) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/backend', { backend }).then(j) as Promise<{
+        ok?: boolean; backend?: string; changed?: boolean
+      }>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the

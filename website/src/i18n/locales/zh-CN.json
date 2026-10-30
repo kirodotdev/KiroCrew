@@ -6262,6 +6262,9 @@
       "unsaved_files_lost": "以下文件中未保存的更改将会丢失。"
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "自动 (Jev)",
       "auto_jev_desc": "由 Jev 决定：立即处理，或稍后执行",
       "auto_jev_enter": "自动 (Jev) — 由 Jev 决定立即处理还是稍后执行 (Enter)",
@@ -12441,6 +12444,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "在对话轮次间导航",
       "turn_minimap_active": "{{position}}：{{prompt}}",
       "turn_minimap_landmark": "对话轮次",

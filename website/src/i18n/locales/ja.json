@@ -6262,6 +6262,9 @@
       "unsaved_files_lost": "次のファイルの保存されていない変更は失われます。"
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "自動 (Jev)",
       "auto_jev_desc": "Jev に任せる: すぐ反映するか、後で実行するか",
       "auto_jev_enter": "自動 (Jev) — すぐ反映するか後で実行するかを Jev が決めます (Enter)",
@@ -12441,6 +12444,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "会話のターンを移動",
       "turn_minimap_active": "{{position}}：{{prompt}}",
       "turn_minimap_landmark": "会話のターン",

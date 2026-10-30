@@ -1,7 +1,10 @@
 import type { NavigateFunction } from 'react-router-dom'
 import { useId, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { OverlayPortal } from '../../../components/overlayRoot'
-import { Undo2 } from 'lucide-react'
+import { api } from '../../../api/client'
+import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
+import { Check, Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
 import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '../../../lib/crewMode'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
@@ -194,6 +197,7 @@ interface ComposerDockViewProps {
   setRefusedPress: ReturnType<typeof useRefusedPress>['setRefusedPress']
   send: ReturnType<typeof useComposerSend>['send']
   pickModel: (modelName: string) => void
+  pickBackend: (backend: string) => Promise<void>
   setProject: (path: string) => Promise<void>
   switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
   currentSlot: ChatSlot | undefined
@@ -307,7 +311,7 @@ export default function ComposerDockView({
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
-  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, switchAgent,
+  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, pickBackend, setProject, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
@@ -332,6 +336,11 @@ export default function ComposerDockView({
   // A worker's steer is refused past the steer route's limit BEFORE the draft is
   // cleared, so an over-long paste stays in the box with the reason beside it.
   const [steerTooLong, setSteerTooLong] = useState(false)
+  // Backend picker: chip anchor + the backend roster (same query the settings
+  // panel reads, so the two lists cannot diverge).
+  const [backendDropdown, setBackendDropdown] = useState(false)
+  const { rect: backendBtnRect, anchorTo: anchorBackendBtn } = useAnchoredTriggerRect(backendDropdown)
+  const acpBackendsQ = useQuery({ queryKey: ['acpBackends'], queryFn: () => api.acpBackends(), staleTime: 60_000 })
   const steerFits = (text?: string): boolean => {
     if (steerWorker === undefined) return true
     const fits = (text ?? composerDraft.get()).length <= CREW_STEER_MAX_CHARS
@@ -676,6 +685,12 @@ export default function ComposerDockView({
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
                 anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown)
               }}
+              backendName={currentSlot?.backend ?? ''}
+              backendIsDefault={!currentSlot?.backend}
+              onBackendClick={(rect, trigger) => {
+                anchorBackendBtn(rect, trigger)
+                setBackendDropdown(o => !o)
+              }}
               onProjectClick={(rect, trigger) => {
                 anchorProjectBtn(rect, trigger)
                 setProjectPickerOpen(o => !o)
@@ -857,6 +872,28 @@ export default function ComposerDockView({
                   })
                 }}
               />
+            </OverlayPortal>}
+            {/* Backend dropdown portal — triggered from the composer's backend chip */}
+            {backendDropdown && backendBtnRect && <OverlayPortal>
+              <div role="dialog" aria-label={i18nT('pages.chatPage.backend_picker')} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[220px] max-w-[300px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(backendBtnRect.left, window.innerWidth - 308)); return { bottom: window.innerHeight - backendBtnRect.top + 4, left } })()}>
+                <div role="listbox" aria-label={i18nT('pages.chatPage.backend_picker')} className="overflow-y-auto max-h-[280px]">
+                  <button type="button" role="option" aria-selected={!currentSlot?.backend} data-testid="backend-pick-default"
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] bg-transparent border-none cursor-pointer text-left text-text"
+                    onClick={() => { void pickBackend(''); setBackendDropdown(false) }}>
+                    {currentSlot?.backend ? <span className="w-[13px] shrink-0" /> : <Check size={13} className="shrink-0" />}
+                    <span className="truncate">{i18nT('pages.chatPage.backend_pick_default')}</span>
+                  </button>
+                  {(acpBackendsQ.data?.backends ?? []).filter(b => b.selectable).map(b => (
+                    <button key={b.id} type="button" role="option" aria-selected={currentSlot?.backend === b.id} disabled={b.installed !== 'installed'} data-testid={'backend-pick-' + b.id}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] bg-transparent border-none cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed text-text"
+                      onClick={() => { void pickBackend(b.id); setBackendDropdown(false) }}>
+                      {currentSlot?.backend === b.id ? <Check size={13} className="shrink-0" /> : <span className="w-[13px] shrink-0" />}
+                      <span className="truncate">{acpBackendName(b)}</span>
+                      {b.installed !== 'installed' && <span className="ml-auto text-[10px] text-muted shrink-0">{i18nT('pages.chatPage.backend_not_installed')}</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </OverlayPortal>}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker

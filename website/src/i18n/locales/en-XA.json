@@ -5909,6 +5909,9 @@
       "terminal": "[Ţèŕɱìñàĺ ············]"
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "approval_hint_adjust": "[Àðĵùşţ àþþŕøṽàĺ ɱøðè ··················]",
       "approval_hint_question": "[Ţìŕèð øƒ çøñƒìŕɱìñğ èṽèŕý şţèþ? ················]",
       "add_files_options": "[Àðð ƒìĺèş & øþţìøñş ·················]",
@@ -12313,6 +12316,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "agent_list": "[Àğèñţ ĺìşţ ···············]",
       "agent_selector": "[Àğèñţ şèĺèçţøŕ ·············]",
       "chat_messages": "[Çĥàţ ɱèşşàğèş ············]",

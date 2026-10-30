@@ -6373,6 +6373,9 @@
       "unsaved_files_lost": "इन फ़ाइलों में बिना सहेजे बदलाव हैं, जो खो जाएँगे।"
     },
     "chatInput": {
+      "backend": "Backend: {{name}}",
+      "backend_default": "Backend: gateway default",
+      "backend_default_short": "Default",
       "auto_jev": "स्वतः (Jev)",
       "auto_jev_desc": "Jev चुने: अभी लागू करें, या बाद में चलाएँ",
       "auto_jev_enter": "स्वतः (Jev) — Jev तय करता है कि अभी लागू करें या बाद में चलाएँ (Enter)",
@@ -12634,6 +12637,9 @@
       }
     },
     "chatPage": {
+      "backend_picker": "Chat backend",
+      "backend_pick_default": "Gateway default",
+      "backend_not_installed": "not installed",
       "turn_minimap": "वार्तालाप के चरणों में जाएँ",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "वार्तालाप के चरण",
