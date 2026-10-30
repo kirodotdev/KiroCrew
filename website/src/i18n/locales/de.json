@@ -11775,6 +11775,13 @@
         "session_colors": "Sitzungsfarben",
         "save_failed": "Die Sitzungsfarbe konnte nicht gespeichert werden"
       },
+      "sessionMessageCard": {
+        "open_session": "{{name}} öffnen",
+        "show_less": "Weniger anzeigen",
+        "show_more": "Mehr anzeigen",
+        "this_session": "Diese Sitzung",
+        "to_recipient": "Gesendet an {{name}}"
+      },
       "sessionFlyout": {
         "new": "Neu",
         "new_chat": "Neuer Chat",

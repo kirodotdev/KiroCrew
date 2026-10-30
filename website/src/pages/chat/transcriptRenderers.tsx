@@ -54,6 +54,9 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import UserMessage from './UserMessage'
+import SessionMessageCard from './SessionMessageCard'
+import { isSessionSendTool, parseSessionSend } from './sessionRelay'
+import { i18nT } from '../../i18n/t'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
 import { CardCornersContext } from '../../cards/cardCorners'
@@ -450,6 +453,39 @@ export function createTranscriptRenderers(
       },
     },
     {
+      // This session's OWN `session_send` tool call, once it DELIVERED: the
+      // OUTGOING session-message card, its `@tag` naming the slot the gateway
+      // resolved (so a send addressed by title links to the real key). Refines
+      // the generic tool line and must precede it. A call still running, refused,
+      // rejected or denied has no success result and stays that line, which shows
+      // its state; so does one whose args will not parse. `session_broadcast`
+      // (many targets) is left to the generic line — one `@tag` cannot name a
+      // fan-out.
+      id: 'session_send_tool',
+      roles: ['tool'],
+      match: m => !!m.content?.startsWith('🔧') && isSessionSendTool(m),
+      render: (m, ctx) => {
+        const call = parseSessionSend(m)
+        if (!call) return toolLine(m, ctx)
+        const selfKey = o.slot ?? o.activeSession ?? ''
+        const selfTitle = (selfKey && o.sessions?.get(selfKey)) || i18nT('pages.chat.sessionMessageCard.this_session')
+        const recipientTitle = o.sessions?.get(call.delivered) || o.sessions?.get(call.target) || call.target
+        return ctx.row(
+          <SessionMessageCard
+            key={ctx.key}
+            sender={{ key: selfKey || 'self', title: selfTitle }}
+            recipient={{ key: call.delivered, title: recipientTitle }}
+            body={call.message}
+            time={formatTs(m.ts)}
+            // The same gate as the body's session chips: a host that withholds
+            // the roster (offline) cannot navigate, so the @tag stays plain text.
+            onOpenSession={o.sessions ? o.onSessionOpen : undefined}
+          />,
+          true,
+        )
+      },
+    },
+    {
       // An MCP server's own question to the person (a form or a link). The SDK
       // default draws it read-only because it has no slot to answer on; every
       // dashboard surface that knows its slot (the page, a pane, a crew window)
@@ -769,6 +805,10 @@ export function createTranscriptRenderers(
                 meta={m.meta}
                 timestamp={formatTs(m.ts)}
                 timestampTitle={fmtMessageTimeFull(m.ts)}
+                // A message another session delivered names its sender as a
+                // link; the same gate the body's session chips use.
+                sessions={o.onSessionOpen ? o.sessions : undefined}
+                onSessionOpen={o.sessions ? o.onSessionOpen : undefined}
                 // The session triple mirrors the crewmate bubble above, so a
                 // `/chat?sid=…` the USER pasted resolves exactly as the same
                 // link does in the reply quoting it back.

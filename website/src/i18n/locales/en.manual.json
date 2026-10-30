@@ -5525,6 +5525,13 @@
       "sessionColorPicker": {
         "save_failed": "Couldn't save the session color"
       },
+      "sessionMessageCard": {
+        "open_session": "Open {{name}}",
+        "show_less": "Show less",
+        "show_more": "Show more",
+        "this_session": "This session",
+        "to_recipient": "Sent to {{name}}"
+      },
       "userMessage": {
         "copied": "Copied",
         "copy_failed": "Copy failed",

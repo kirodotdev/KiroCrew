@@ -11942,6 +11942,13 @@
         "session_colors": "Colori delle sessioni",
         "save_failed": "Impossibile salvare il colore della sessione"
       },
+      "sessionMessageCard": {
+        "open_session": "Apri {{name}}",
+        "show_less": "Mostra di meno",
+        "show_more": "Mostra di più",
+        "this_session": "Questa sessione",
+        "to_recipient": "Inviato a {{name}}"
+      },
       "sessionFlyout": {
         "new": "Nuovo",
         "new_chat": "Nuova chat",
