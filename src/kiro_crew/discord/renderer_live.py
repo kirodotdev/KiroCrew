@@ -160,7 +160,8 @@ async def _rotate_at_markers(self: DiscordRenderer) -> None:
         self._buf = [raw[: marker.start()]]
         self._delivery_text = None
         summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
-        summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
+        # Raw: ``on_steer_consumed`` neutralizes it, and the escape is not idempotent.
+        summary = summary_match.group(1) if summary_match else ""
         await self.on_steer_consumed(summary)
         self._buf = [raw[marker.end() :]]
         self._delivery_text = None
