@@ -595,7 +595,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 177, from 32,970, for the ``rm`` floor reading each nested-shell payload
 #: through the shared reader, and ``shell_commands.redirect_hidden_payloads``: a redirect
 #: before the ``-c`` operand hides no payload. Deny-only: no allow widened.
-_PACKAGE_LINE_BUDGET = 33_147
+#: Raised by 165, from 33,147, for ``curl_upload.py``: the ``data-exfil-curl-upload``
+#: row reads the curl command itself through the shared reader, case-sensitive ``-T``
+#: included, at the deny gate and the exfil gate. It narrows that one row to the curl
+#: command; every curl upload spelling stays refused.
+_PACKAGE_LINE_BUDGET = 33_312
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

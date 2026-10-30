@@ -57,6 +57,7 @@ from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
 from . import (
     argv_floor,
+    curl_upload,
     denied_rules,
     diagnostics,
     exfil,

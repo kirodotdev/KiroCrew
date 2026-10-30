@@ -789,6 +789,21 @@ def is_denied(
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
+    # ── curl upload floor (argv-structural, UNION with the regex) ──
+    # The row's regex reads the long flag inside one segment and cannot read
+    # ``-T`` at all: the text is case-folded, and ``-t`` uploads nothing. The
+    # reader reads the original text, quote-aware, nested payloads included, and
+    # runs only while the row is in the effective set.
+    _curl = _submodule("curl_upload")
+    curl_pattern = _curl._CURL_UPLOAD_PATTERN
+    if curl_pattern in regex_patterns and _curl.curl_upload_flag(tool_name):
+        _emit_deny_event(tool_name, curl_pattern, tool_name)
+        return _reason(
+            curl_pattern,
+            _curl._CURL_UPLOAD_NOTE,
+            rule=_curl.CURL_UPLOAD_RULE_ID,
+            component="argv-floor",
+        )
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #
