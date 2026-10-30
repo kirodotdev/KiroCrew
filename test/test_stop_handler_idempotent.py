@@ -187,6 +187,8 @@ class TestInterruptHandlerIdempotent:
         body = json.loads(resp.body)
 
         assert body.get("info") == "stop already in progress"
+        # No card was selected, so the client releases the one it latched.
+        assert body.get("queue_selected") is False
         # Queue unchanged
         assert len(slot._queue) == 1
 
@@ -320,8 +322,177 @@ class TestInterruptHandlerIdempotent:
         body = json.loads(resp.body)
 
         assert body.get("ok") is True
+        # The card was promoted, so the client keeps it latched until it runs.
+        assert body.get("queue_selected") is True
         # The selected message leads the queue despite the stand-down.
         assert [item["id"] for item in slot._queue] == ["q2", "q1"]
+
+    @pytest.mark.asyncio
+    async def test_run_this_next_marks_only_the_chosen_restored_card(self):
+        """The turn's end drains with no card named and holds restored cards,
+        so the picked restored card carries the chosen mark and the other
+        restored card does not."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+        from kiro_crew.dashboard.slot_queue_repository import (
+            RESTORED_QUEUE_KEY,
+            RESTORED_SEND_CHOSEN_KEY,
+        )
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [
+            {"id": "q1", "content": "first", RESTORED_QUEUE_KEY: True},
+            {"id": "q2", "content": "second", RESTORED_QUEUE_KEY: True},
+        ]
+
+        class TurnEndsPayload(BodyStreamPayload):
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "idle"
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'{"queue_id": "q2"}'
+        request.content = TurnEndsPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                await api_chat_slot_interrupt(request)
+
+        assert [item["id"] for item in slot._queue] == ["q2", "q1"]
+        assert slot._queue[0].get(RESTORED_SEND_CHOSEN_KEY) is True
+        assert slot._queue[0].get(RESTORED_QUEUE_KEY) is True
+        assert RESTORED_SEND_CHOSEN_KEY not in slot._queue[1]
+
+    @pytest.mark.asyncio
+    async def test_chosen_restored_card_starts_when_the_turn_ended_during_the_read(self):
+        """The running turn ends while the body is read: its drain skipped the
+        still-unmarked restored card, and the stop finds nothing to stop. The
+        handler then starts exactly the chosen card, or it would wait forever."""
+        import asyncio
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+        from kiro_crew.dashboard.slot_queue_repository import (
+            RESTORED_QUEUE_KEY,
+            RESTORED_SEND_CHOSEN_KEY,
+        )
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._lock = asyncio.Lock()
+        slot.is_closing = False
+        slot._turn_admission_reserved = False
+        slot._queue = [
+            {"id": "q1", "content": "first", RESTORED_QUEUE_KEY: True},
+            {"id": "q2", "content": "second", RESTORED_QUEUE_KEY: True},
+        ]
+
+        class TurnEndsPayload(BodyStreamPayload):
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "idle"
+                slot.running = False
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'{"queue_id": "q2"}'
+        request.content = TurnEndsPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        start = AsyncMock(return_value=True)
+        with (
+            patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel,
+            patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
+            patch("kiro_crew.dashboard.chat_handlers._start_next_queued_turn", start),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._slot_replaced_while_queued",
+                return_value=False,
+            ),
+            patch("kiro_crew.dashboard.chat_handlers._app_cancel_denied", return_value=None),
+        ):
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            await api_chat_slot_interrupt(request)
+
+        assert slot._queue[0].get(RESTORED_SEND_CHOSEN_KEY) is True
+        start.assert_awaited_once()
+        assert start.await_args.kwargs == {"required_queue_id": "q2"}
+        assert slot._turn_admission_reserved is False
+
+    @pytest.mark.asyncio
+    async def test_chosen_restored_card_waits_for_a_turn_still_running(self):
+        """A turn still running drains the chosen card when it ends; the handler
+        does not start a second turn beside it."""
+        import asyncio
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+        from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._lock = asyncio.Lock()
+        slot.is_closing = False
+        slot._turn_admission_reserved = False
+        slot._queue = [{"id": "q2", "content": "second", RESTORED_QUEUE_KEY: True}]
+
+        class TurnEndsPayload(BodyStreamPayload):
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "idle"
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'{"queue_id": "q2"}'
+        request.content = TurnEndsPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        start = AsyncMock(return_value=True)
+        with (
+            patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel,
+            patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
+            patch("kiro_crew.dashboard.chat_handlers._start_next_queued_turn", start),
+        ):
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            await api_chat_slot_interrupt(request)
+
+        start.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stale_interrupt_does_not_overwrite_a_later_selection(self):
@@ -377,6 +548,8 @@ class TestInterruptHandlerIdempotent:
         body = json.loads(resp.body)
 
         assert body.get("info") == "stop already in progress"
+        # A's card was not promoted, so the receipt tells the client to release it.
+        assert body.get("queue_selected") is False
         # B's selection still leads; A's stale promotion never landed.
         assert [item["id"] for item in slot._queue] == ["q2", "q1", "q3"]
 

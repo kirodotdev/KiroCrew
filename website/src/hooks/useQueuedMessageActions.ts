@@ -274,9 +274,17 @@ export function useQueuedMessageActions({
     if (!slot) return
     markPending(queueId, true)
     api.interruptSlot(slot, queueId).then(
-      // Accepted: the entry is being promoted, so stay latched until the row is
-      // gone rather than until this response landed.
-      () => setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId))),
+      (receipt: { queue_selected?: boolean } | undefined) => {
+        // Declined: the server answered without promoting this card (another
+        // stop owns the slot), so it stays queued and must stay usable.
+        if (receipt?.queue_selected === false) {
+          markPending(queueId, false)
+          return
+        }
+        // Accepted: the entry is being promoted, so stay latched until the row
+        // is gone rather than until this response landed.
+        setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId)))
+      },
       // Rejected: nothing was promoted and the card is still the same card, so
       // release at once and let the user try again.
       () => markPending(queueId, false),

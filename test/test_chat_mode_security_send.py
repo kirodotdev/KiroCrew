@@ -1064,7 +1064,8 @@ async def test_a_restored_queue_entry_is_never_a_cron_notification(state) -> Non
     slot._queue = sanitize_restored_queue(durable_queue_entries(live._queue))
     assert slot._queue, "a plain queued send must survive the restart"
 
-    row = await _drain_once(state, slot)
+    # A restored card runs only when the user sends it.
+    row = await _drain_once(state, slot, required_queue_id=slot._queue[0]["id"])
 
     assert row["role"] == "user"
     assert "injectKind" not in (row.get("meta") or {})
@@ -1105,7 +1106,13 @@ async def test_restored_recovery_identity_cannot_continue_a_live_stream(state) -
     )
     slot._queue[0][RESTORED_QUEUE_KEY] = True
 
-    await _drain_once(state, slot, predecessor_actor="app", predecessor_turn_id="turn-a")
+    await _drain_once(
+        state,
+        slot,
+        predecessor_actor="app",
+        predecessor_turn_id="turn-a",
+        required_queue_id=slot._queue[0]["id"],
+    )
 
     assert slot.drain()[0]["cls"] == TURN_END_WIRE_CLS
 
@@ -1118,7 +1125,7 @@ async def test_restored_app_turn_titles_only_an_app_owned_slot(state, owned: boo
     slot = _user_slot(state)
     slot._queue = sanitize_restored_queue(durable_queue_entries(live._queue))
     assert TURN_ACTOR_META_KEY not in slot._queue[0].get("meta", {})
-    row = await _drain_once(state, slot)
+    row = await _drain_once(state, slot, required_queue_id=slot._queue[0]["id"])
     # Exercise the titler's owner exemption independently of queue admission:
     # an app-bound restore may itself be held by containment revalidation.
     slot._app = "crew-keyboard" if owned else ""
@@ -1143,6 +1150,44 @@ async def test_restored_app_turn_titles_only_an_app_owned_slot(state, owned: boo
         assert slot.title != "restored app request"
 
 
+@pytest.mark.asyncio
+async def test_resume_runs_only_the_recovery_and_leaves_restored_cards_queued(state) -> None:
+    slot = _user_slot(state)
+    slot._queue = sanitize_restored_queue([{"id": "old", "content": "restored request"}])
+    slot.queue_insert(0, "[Continue the interrupted turn]", kind=SYNTHETIC_RECOVERY_KIND)
+
+    row = await _drain_once(state, slot)
+    slot.append("assistant", "recovered reply")
+
+    assert row["content"] != "restored request"
+    assert [entry["content"] for entry in slot._queue] == ["restored request"]
+    # The recovery's turn end hands off to the queue; the restored card waits.
+    with (
+        patch.object(chat_runner, "spawn_guarded_turn", side_effect=_spawn_closing_the_turn),
+        patch.object(chat_runner, "_run_chat", new=MagicMock()),
+    ):
+        assert await chat_runner._start_next_queued_turn(state, slot) is False
+    assert [entry["content"] for entry in slot._queue] == ["restored request"]
+
+
+@pytest.mark.asyncio
+async def test_a_restored_card_chosen_while_a_turn_ran_drains_at_the_turn_end(state) -> None:
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_SEND_CHOSEN_KEY
+
+    slot = _user_slot(state)
+    slot._queue = sanitize_restored_queue(
+        [{"id": "picked", "content": "picked request"}, {"id": "other", "content": "other"}]
+    )
+    slot.queue_append("fresh user request", directive_user_origin=True)
+    # What "run this next" on a running turn leaves: the card promoted and marked.
+    slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+
+    row = await _drain_once(state, slot)
+
+    assert row["content"] == "picked request"
+    assert [entry["content"] for entry in slot._queue] == ["other", "fresh user request"]
+
+
 @pytest.mark.parametrize("restored_first", [False, True])
 @pytest.mark.asyncio
 async def test_restored_and_fresh_queue_rows_never_merge(state, restored_first: bool) -> None:
@@ -1155,20 +1200,28 @@ async def test_restored_and_fresh_queue_rows_never_merge(state, restored_first: 
     config = KiroCrewConfig()
     config.dashboard.merge_queued_messages = True
     with patch.object(KiroCrewConfig, "load", return_value=config):
-        first = await _drain_once(state, slot)
+        # The fresh entry drains on its own, wherever it sits; the restored
+        # card waits for the user, even at the head of the queue.
+        fresh = await _drain_once(state, slot)
         slot.append("assistant", "first reply")
         assert slot.queue_depth == 1
-        second = await _drain_once(state, slot)
+        assert slot._queue[0]["content"] == "restored app request"
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", side_effect=_spawn_closing_the_turn),
+            patch.object(chat_runner, "_run_chat", new=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is False
+        assert slot.queue_depth == 1
+        restored_row = await _drain_once(state, slot, required_queue_id=slot._queue[0]["id"])
         slot.append("assistant", "second reply")
     assert slot.queue_depth == 0
-    fresh, restored_row = (second, first) if restored_first else (first, second)
     assert fresh["content"] == "fresh user request"
     assert restored_row["content"] == "restored app request"
     assert _counts_as_user_turn(slot, fresh)
     assert not _counts_as_user_turn(slot, restored_row)
     assert [row["content"] for row in _titling_messages(slot)] == [
         "fresh user request",
-        "second reply" if restored_first else "first reply",
+        "first reply",
     ]
     # Keep the count above the fixed-milestone floor, so counting the restored
     # row incorrectly changes the rebase result instead of hiding under it.
