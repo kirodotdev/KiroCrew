@@ -18503,6 +18503,8 @@
         "installed_theme_could_not_be_loaded": "Das installierte Theme konnte nicht geladen werden. Installiere es erneut oder wähle ein anderes Theme.",
         "custom_theme_could_not_be_loaded": "Dieses Theme konnte nicht geladen werden. Wähle ein anderes Theme oder bearbeite dieses.",
         "local_folder": "Lokaler Ordner",
+        "browse_theme_folder": "Durchsuchen…",
+        "browse_theme_folder_failed": "Die Ordnerauswahl konnte nicht geöffnet werden. Gib den Pfad stattdessen ein.",
         "zip_file": "Zip-Datei",
         "mode": "Modus",
         "native_window_zoom_tip": "Nativer Fensterzoom, dieselbe Einstellung wie {{mod}}+ / {{mod}}− (50–300 %). Wird über Neustarts hinweg beibehalten.",

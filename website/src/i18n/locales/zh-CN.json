@@ -18046,6 +18046,8 @@
         "installed_theme_could_not_be_loaded": "无法加载已安装的主题。重新安装，或选择其他主题。",
         "custom_theme_could_not_be_loaded": "无法加载此主题。选择其他主题，或编辑此主题。",
         "local_folder": "本地文件夹",
+        "browse_theme_folder": "浏览…",
+        "browse_theme_folder_failed": "无法打开文件夹选择器。请直接输入路径。",
         "zip_file": "Zip 文件",
         "mode": "模式",
         "native_window_zoom_tip": "原生窗口缩放，与 {{mod}}+ / {{mod}}− 是同一项设置（50%–300%）。重新启动后仍保留。",

@@ -18046,6 +18046,8 @@
         "installed_theme_could_not_be_loaded": "インストール済みのテーマを読み込めませんでした。再インストールするか、別のテーマを選択してください。",
         "custom_theme_could_not_be_loaded": "このテーマを読み込めませんでした。別のテーマを選択するか、このテーマを編集してください。",
         "local_folder": "ローカルフォルダー",
+        "browse_theme_folder": "参照…",
+        "browse_theme_folder_failed": "フォルダー選択ダイアログを開けませんでした。代わりにパスを入力してください。",
         "zip_file": "Zip ファイル",
         "mode": "モード",
         "native_window_zoom_tip": "ネイティブウィンドウのズーム（{{mod}}+ / {{mod}}− と同じ設定、50%〜300%）。次回起動後も保持されます。",
