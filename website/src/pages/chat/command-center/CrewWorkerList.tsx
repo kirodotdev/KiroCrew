@@ -1,18 +1,21 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import type { CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { SearchFilterBar } from '../../../components/SearchFilterBar'
+import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
 import { fmtRelativeTime } from '../sessionOrder'
 import { useAppDispatch, useAppSelector, useAppStore, type RootState } from '../../../store'
 import { closeActivityPanel, openActivityPanel, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import { useIsMobile } from '../../../hooks/useIsMobile'
+import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { openPanelView } from '../../../hooks/usePanelTabs'
-import { ChevronLeft } from 'lucide-react'
 import { CrewGhostBadge, CrewStatusDot } from '../../../components/crew/CrewModeMarks'
 import { useCrewBack } from '../../../components/crew/useCrewBack'
-import { CREW_GROUP_LABEL_KEY, crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, groupCrewWorkers, liveCrewWorkers, mergeCrewWorkers, orderUnderDispatcher } from '../../../lib/crewWorkers'
+import { CREW_FINISHED_GROUP, CREW_GROUP_LABEL_KEY, crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, groupCrewWorkers, liveCrewWorkers, mergeCrewWorkers, orderUnderDispatcher, searchCrewWorkers } from '../../../lib/crewWorkers'
 import CrewTimeline from './CrewTimeline'
 
 /** The status labels, keyed by the wire value `GET .../crew-workers` sends. */
@@ -26,6 +29,26 @@ export const CREW_WORKER_STATUS_KEY: Record<CrewWorker['status'], string> = {
 
 /** The query key of one root's worker list, for anything that must re-read it. */
 export const crewWorkersQueryKey = (root: string) => ['crew-workers', root] as const
+
+/** Where the Done group's open/closed choice is kept (closed by default). */
+export const CREW_FINISHED_OPEN_KEY = 'mc-crew-workers-finished-open'
+
+/** The search box shows from this many workers up: a shorter list is read at a glance. */
+export const CREW_WORKER_SEARCH_MIN = 6
+
+/** Where a root's search query is kept for this tab: opening a match switches
+ *  the slot and remounts the list, and the person keeps their search. */
+export const crewWorkerQueryKey = (root: string) => `mc-crew-workers-search:${root}`
+
+function useCrewWorkerQuery(root: string): [string, (query: string) => void] {
+  const [query, setState] = useState(() => safeGetSessionItem(crewWorkerQueryKey(root)) || '')
+  const set = useCallback((next: string) => {
+    setState(next)
+    // Storage off: the query lives as long as the list.
+    safeSetSessionItem(crewWorkerQueryKey(root), next)
+  }, [root])
+  return [query, set]
+}
 
 /** `crewRouteNotServed`, for the worker list route. */
 const routeNotServed = crewRouteNotServed
@@ -132,7 +155,10 @@ export async function reopenCrewSession(
 
 /**
  * A Crew Mode root's workers in the side panel: cards grouped Approval needed, Working,
- * Waiting, Done, each heading with its count, what needs the person first. A
+ * Waiting, Done, each heading with its count, what needs the person first. Done
+ * folds under its heading, closed by default (`CREW_FINISHED_OPEN_KEY`). From
+ * `CREW_WORKER_SEARCH_MIN` workers up, a search box over the cards filters them
+ * by title or task line, finished ones included (`searchCrewWorkers`). A
  * card opens that worker in the MAIN pane like any session; the card for the
  * worker on screen is marked current, so moving between workers is one click.
  *
@@ -169,6 +195,7 @@ export default function CrewWorkerList({ root, viewing, active }: {
     void reopenCrewWorker(dispatch, store.getState, key, title, !isMobile).then(ok => { if (!ok) setReopenFailed(true) })
   }, [dispatch, store, isMobile])
   const [view, setView] = useState<'list' | 'timeline'>('list')
+  const [finishedOpen, setFinishedOpen] = usePersistedBool(CREW_FINISHED_OPEN_KEY, false)
   const showTimeline = view === 'timeline' && !isMobile
   // Read only while the cards are on screen: the timeline has its own read. The
   // root's open workers come from the slot store whatever the read does, so a
@@ -176,7 +203,13 @@ export default function CrewWorkerList({ root, viewing, active }: {
   const workers = useCrewWorkers(root, active && !showTimeline)
   const live = useLiveCrewWorkers(root)
   const all = mergeCrewWorkers(workers.data?.workers, live)
-  const groups = groupCrewWorkers(all)
+  // The search filters the cards in place, live and finished alike. While it is
+  // on, the Done group lists its matches open; the person's fold choice is left
+  // as it was, so clearing the search folds it back.
+  const [query, setQuery] = useCrewWorkerQuery(root)
+  const searching = query.trim() !== ''
+  const showSearch = searching || all.length >= CREW_WORKER_SEARCH_MIN
+  const groups = groupCrewWorkers(searching ? searchCrewWorkers(all, query) : all)
   // A sub-conductor's crew: one indent step and a "from <dispatcher>" note,
   // whatever the depth. The note names it for readers too, not the indent alone.
   const titleOf = (key: string) => all.find(w => w.key === key)?.title || t('commandCenter.worker_untitled')
@@ -188,6 +221,7 @@ export default function CrewWorkerList({ root, viewing, active }: {
         Nothing to lose: the composer's draft is saved per chat (utils/chatDrafts),
         so the hand-off may navigate. */}
     {reopenFailed && <div className="px-3 pt-3"><ErrorNotice message={t('commandCenter.worker_reopen_failed')} askAgent /></div>}
+    {!showTimeline && showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
     {showTimeline
       ? <div className="flex-1 min-h-0 overflow-y-auto"><CrewTimeline root={root} viewing={viewing} active={active} onOpen={open} /></div>
       : <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
@@ -197,20 +231,41 @@ export default function CrewWorkerList({ root, viewing, active }: {
       {/* The first read is in flight and the store names no worker yet: say so,
           so a slow read is not an empty panel. */}
       {workers.isPending && live.length === 0 && <p role="status" aria-busy="true" className="text-sm text-muted" data-testid="crew-workers-loading">{t('commandCenter.workers_loading')}</p>}
-      {(workers.isSuccess || routeNotServed(workers.error)) && groups.length === 0 && <p className="text-sm text-muted">{t('commandCenter.workers_empty')}</p>}
-      {groups.map(({ group, workers: rows }) => (
-        <section key={group} aria-labelledby={`crew-group-${group}`} data-testid="crew-worker-group" data-group={group}>
+      {!searching && (workers.isSuccess || routeNotServed(workers.error)) && groups.length === 0 && <p className="text-sm text-muted">{t('commandCenter.workers_empty')}</p>}
+      {/* "No match" only once the full list is read: while the read is pending or
+          failed, only the live rows are here, and a finished match may be missing. */}
+      {searching && (workers.isSuccess || routeNotServed(workers.error)) && groups.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{t('commandCenter.workers_search_empty', { query: query.trim() })}</p>}
+      {groups.map(({ group, workers: rows }) => {
+        const label = `${t(CREW_GROUP_LABEL_KEY[group])} · ${rows.length}`
+        // Finished workers fold under one toggle, closed by default, so the live
+        // ones stay on top. The choice is kept per browser like other view choices.
+        // A search shows its finished matches open, under a plain heading.
+        const folds = group === CREW_FINISHED_GROUP && !searching
+        // Folded, it still shows the worker on screen, so its card stays marked current.
+        const shownRows = !folds || finishedOpen ? rows : rows.filter(w => w.key === viewing)
+        return <section key={group} aria-labelledby={`crew-group-${group}`} data-testid="crew-worker-group" data-group={group}>
           <h3 id={`crew-group-${group}`} className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-            {t(CREW_GROUP_LABEL_KEY[group])} · {rows.length}
+            {folds
+              ? <button
+                  type="button"
+                  aria-expanded={finishedOpen}
+                  data-testid="crew-finished-toggle"
+                  onClick={() => setFinishedOpen(!finishedOpen)}
+                  className="-mx-1 inline-flex min-h-6 items-center gap-1 rounded px-1 uppercase tracking-wide hover:text-text focus-ring"
+                >
+                  <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform motion-reduce:transition-none ${finishedOpen ? 'rotate-90' : ''}`} />
+                  {label}
+                </button>
+              : label}
           </h3>
-          <ul className="space-y-2">
-            {orderUnderDispatcher(rows, root).map(w => {
+          {shownRows.length > 0 && <ul className="space-y-2">
+            {orderUnderDispatcher(shownRows, root).map(w => {
               const by = crewSubDispatcher(w, root)
               return <CrewWorkerCard key={w.key} worker={w} current={w.key === viewing} from={by ? titleOf(by) : ''} onOpen={() => open(w.key, w.title, w.status === 'closed')} />
             })}
-          </ul>
+          </ul>}
         </section>
-      ))}
+      })}
     </div>}
     <p className="shrink-0 border-t border-border px-3 py-2 text-[12px] text-muted" data-testid="crew-projects-soon">{t('commandCenter.projects_coming_soon')}</p>
   </div>
@@ -254,6 +309,30 @@ function CrewViewSwitch({ view, onChange }: { view: 'list' | 'timeline'; onChang
       {option('list', t('commandCenter.workers_view_list'))}
       {option('timeline', t('commandCenter.workers_view_timeline'))}
     </div>
+  </div>
+}
+
+/** The list's search box, the shared list search row: filters as the person types; Esc or the clear button empties it. */
+function CrewWorkerSearch({ query, onChange }: { query: string; onChange: (query: string) => void }) {
+  const { t } = useTranslation()
+  return <div className="shrink-0" role="search">
+    <SearchFilterBar
+      value={query}
+      onChange={onChange}
+      placeholder={t('commandCenter.workers_search_placeholder')}
+      clearLabel={t('commandCenter.workers_search_clear')}
+      aria-label={t('commandCenter.workers_search_label')}
+      inputTestId="crew-search"
+      className="px-3 pt-3"
+      onKeyDown={e => {
+        // Esc clears a typed query; on an empty box it is left to the panel.
+        if (e.key === 'Escape' && query) {
+          e.preventDefault()
+          e.stopPropagation()
+          onChange('')
+        }
+      }}
+    />
   </div>
 }
 
