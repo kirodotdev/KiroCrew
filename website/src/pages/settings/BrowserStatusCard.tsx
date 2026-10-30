@@ -141,7 +141,7 @@ export function BrowserStatusCard({
         </span>
         <div className="flex-1 min-w-0 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[14px] font-semibold text-text truncate">{title}</span>
+            <span className="min-w-0 text-[14px] font-semibold text-text truncate">{title}</span>
             <InfoTip text={tip} />
           </div>
           {line !== null && (

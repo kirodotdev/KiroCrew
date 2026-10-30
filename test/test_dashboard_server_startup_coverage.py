@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import functools
+import importlib
 import logging
 import os
 import socket
@@ -43,8 +44,21 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestClient, TestServer
 
+from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.dashboard import server as srv
 from kiro_crew.testing.wait import async_wait_until
+
+# ``start_dashboard`` imports every built-in app package on its first call, and some
+# of them bind ``config_dir`` by name at import time. The tests below patch
+# ``loader.config_dir`` with a lambda; a package first imported under that patch keeps
+# the lambda after teardown and points later tests in the worker at a dead tmp dir.
+# Import them here, before any patch, so they bind the real function.
+for _builtin_name in BUILTIN_NAMES:
+    try:
+        importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
+            raise
 
 requires_unix_socket = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
