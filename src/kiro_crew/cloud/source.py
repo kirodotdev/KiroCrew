@@ -18,6 +18,7 @@ import logging
 import os
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -1082,8 +1083,9 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     it here rather than per-launch CloudFormation, so:
 
     * it is created ONCE and reused by every launch (idempotent — an existing
-      one is left untouched, never re-versioned: that immutability is the whole
-      point);
+      one is never re-versioned by the launcher credential: that immutability is
+      the whole point; only an exact earlier document of this launcher's is
+      upgraded, and only by a caller holding ``iam:CreatePolicyVersion``);
     * the generated launcher policy grants only ``iam:CreatePolicy`` +
       ``iam:GetPolicy`` + ``iam:GetPolicyVersion`` on this exact name (no
       ``CreatePolicyVersion`` / ``Delete*``), so a leaked launcher credential
@@ -1351,6 +1353,12 @@ def _verify_boundary_content(
 ) -> None:
     """Fail closed unless the existing boundary's default version equals our fixed doc.
 
+    A boundary holding exactly one of ``previous`` is first upgraded in place with
+    :func:`upgrade_boundary`, which only works for a caller allowed to re-version
+    it: a human terminal whose credentials hold ``iam:CreatePolicyVersion``. The
+    launcher policy never grants that, so a launcher-only credential (or an agent
+    session) gets the refusal naming ``upgrade_step`` instead.
+
     Shared by BOTH boundaries (``kirocrew-ec2-boundary`` and
     ``kirocrew-crew-boundary``) rather than copied per lane: the fail-closed
     comparison is the control that makes a create-once boundary trustworthy, so a
@@ -1374,13 +1382,29 @@ def _verify_boundary_content(
     if _canonical(actual) == _canonical(expected):
         return
     if any(_canonical(actual) == _canonical(doc) for doc in previous):
-        raise aws.AWSError(
-            f"the permissions boundary '{name}' holds the earlier content-fixed "
-            "document, and this build's instance role needs the newer one. An AWS "
-            "admin upgrades it once for this account with "
-            f"`{upgrade_step or UPGRADE_STEP}`, then retry.",
-            action="iam:GetPolicyVersion",
+        try:
+            upgrade_boundary(
+                name=name,
+                arn=arn,
+                expected=expected,
+                previous=previous,
+                profile=profile,
+                region=region,
+            )
+        except (aws.AWSError, aws.CloudActionDenied) as exc:
+            logger.info("automatic upgrade of boundary %s refused: %s", name, exc)
+            raise aws.AWSError(
+                f"the permissions boundary '{name}' holds the earlier content-fixed "
+                "document, and this build's instance role needs the newer one. An AWS "
+                "admin upgrades it once for this account with "
+                f"`{upgrade_step or UPGRADE_STEP}`, then retry.",
+                action="iam:GetPolicyVersion",
+            ) from exc
+        print(
+            f"Upgraded the permissions boundary '{name}' to this build's document.",
+            file=sys.stderr,
         )
+        return
     raise aws.AWSError(
         f"the existing permissions boundary '{name}' does NOT match "
         "the expected content-fixed document — refusing to reuse it (a boundary "

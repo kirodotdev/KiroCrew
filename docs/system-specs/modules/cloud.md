@@ -714,8 +714,12 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     create-once for the launcher: it still has no `iam:CreatePolicyVersion`. A
     launch that finds the exact document this launcher created before the
     edition statements existed (`iam.previous_boundary_documents`,
-    `previous_kms_boundary_documents`) is refused with
-    `kirocrew cloud iam-boundary --upgrade` named (`--upgrade --ssm-kms` for
+    `previous_kms_boundary_documents`) runs `source.upgrade_boundary` itself and,
+    when it succeeds, prints one line saying the boundary was upgraded and
+    continues. That succeeds only from a terminal whose credentials hold
+    `iam:CreatePolicyVersion`; a launcher-only credential, an agent session or a
+    policy at its five-version limit gets the refusal naming
+    `kirocrew cloud iam-boundary --upgrade` (`--upgrade --ssm-kms` for
     the KMS boundary, whose upgrade needs that flag). That admin step
     (`source.upgrade_boundary`, refused in an agent session) re-versions the
     boundary only when it holds that earlier document, sets the new version as
