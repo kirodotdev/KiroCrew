@@ -80,8 +80,11 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
             # the restore builds exist (``shared_crew.host_hooks``).
             mark_sessions_restored(state)
 
+        from kiro_crew.dashboard.member_slot_retry import schedule_member_slot_retry
         from kiro_crew.dashboard.slot_queue_repository import drain_restored_parked_sends
 
+        # A crewmate thread the restore deferred is built once more after boot.
+        schedule_member_slot_retry(state)
         await drain_restored_parked_sends(state)
 
         if state._dynamic_cards is not None:
