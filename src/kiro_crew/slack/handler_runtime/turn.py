@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         build_working_blocks,
         canonical_key,
         consume_reinjection,
+        context_template,
         credential_give_up_text,
         enter_turn,
         exit_turn,
@@ -642,6 +643,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if channel_agent and _agent == channel_agent and is_slack_born(session_key)
             else None
         )
+        # The context builder takes the TEMPLATE the turn runs, never a record's
+        # name, including on a dashboard-linked session (``context_template``).
+        _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)
         _alloc: dict[str, Any] = (
             _channel_crew.allocation_kwargs() if _channel_crew else {"agent": _agent}
         )
@@ -799,7 +803,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 session_key,
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
-                agent=_agent,
+                agent=_context_agent,
                 memory_store=_memory_store,
                 resumed=resumed,
                 needs_reinjection=_needs_reinjection,
