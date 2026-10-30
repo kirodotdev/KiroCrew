@@ -614,7 +614,12 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#: Raised by 320, from 33,523, for ``shell_normalizer._xargs_reconstructed_commands``:
+#: an xargs kill payload is rebuilt from every command that feeds its pipeline, with
+#: producer words flattened past glued separators, and the lexical half of that reading
+#: (separators, stages, operand words) lives in ``shell_normalizer_xargs`` with its own
+#: header and the re-export block. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 33_843
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
