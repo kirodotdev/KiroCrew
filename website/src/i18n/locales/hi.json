@@ -20457,7 +20457,7 @@
     "setup_systems_manager_body": "साथी Systems Manager सत्रों के ज़रिए क्लाउड पर होस्ट किए गए Crew से जुड़ते हैं।",
     "setup_status_not_in_build": "इस बिल्ड में उपलब्ध नहीं",
     "queued_crew": "इस Crew की साझा सीमा में जगह का इंतज़ार",
-    "settings_tab_description": "किसने इस Crew का इस्तेमाल किया और पहुँच कहाँ संभाली जाती है",
+    "settings_tab_description": "इस Crew का उपयोग कौन करता है",
     "invite_status_accepted": "स्वीकृत",
     "waitlist_approved_badge": "मंज़ूर",
     "send_race_dismiss": "बंद करो",

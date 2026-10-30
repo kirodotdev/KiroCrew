@@ -323,6 +323,12 @@ def owner_login() -> str:
         return _OWNER["login"]
 
 
+def owner_user_id() -> str:
+    """This machine's own Tailscale stable user id, or ``""`` when not known."""
+    with _LOCK:
+        return _OWNER["user_id"]
+
+
 def set_owner(login: str, user_id: str) -> AccessSnapshot:
     with _LOCK:
         _OWNER.update(login=_norm(login), user_id=user_id)

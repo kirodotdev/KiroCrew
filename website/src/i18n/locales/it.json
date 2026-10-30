@@ -20768,7 +20768,7 @@
     "setup_systems_manager_body": "I colleghi si collegano a una Crew ospitata nel cloud tramite sessioni di Systems Manager.",
     "setup_status_not_in_build": "Non disponibile in questa build",
     "queued_crew": "in attesa di posto nel limite condiviso di questo Crew",
-    "settings_tab_description": "Chi ha usato questo Crew e dove si gestisce l'accesso",
+    "settings_tab_description": "Chi usa questo Crew",
     "invite_status_accepted": "Accettato",
     "waitlist_approved_badge": "Approvato",
     "send_race_dismiss": "Ignora",

@@ -20146,7 +20146,7 @@
     "setup_systems_manager_body": "팀원은 Systems Manager 세션으로 클라우드에 호스팅된 Crew에 접속합니다.",
     "setup_status_not_in_build": "이 빌드에서는 사용할 수 없음",
     "queued_crew": "해당 Crew의 공유 한도에 자리가 나기를 기다리는 중",
-    "settings_tab_description": "이 Crew를 사용한 사람과 접근 권한을 관리하는 곳",
+    "settings_tab_description": "이 Crew를 사용하는 사람",
     "invite_status_accepted": "수락됨",
     "waitlist_approved_badge": "승인됨",
     "send_race_dismiss": "닫기",

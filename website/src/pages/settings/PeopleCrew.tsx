@@ -45,6 +45,11 @@ function Avatar({ row, size = 32 }: { row: PeopleRow; size?: number }) {
   )
 }
 
+/** Here now: an open tab in presence, or the viewer, who is on this page. */
+function isHere(row: PeopleRow): boolean {
+  return !!row.live || !!row.is_viewer
+}
+
 function HereDot({ label }: { label: string }) {
   return <span className="inline-block w-2 h-2 rounded-full bg-ok shrink-0" role="img" aria-label={label} />
 }
@@ -59,7 +64,7 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
   const [copied, setCopied] = useState<boolean | null>(null)
   const [inviting, setInviting] = useState(false)
   const active = tailnetDirectActive(direct)
-  const here = people.filter(row => row.live)
+  const here = people.filter(isHere)
   const [primary, ...fallbacks] = active ? direct.urls : []
   const copy = async () => {
     let ok = false
@@ -68,7 +73,9 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
     if (ok) setTimeout(() => setCopied(null), 2000)
   }
   return (
-    <SettingsCard>
+    // One bordered card: the settings cards are frameless, and this one is the
+    // page's summary, so it carries its own surface.
+    <div className="rounded-lg border border-border bg-card p-4 animate-rise">
       <div className="flex flex-col gap-3 min-w-0" data-testid="share-hero">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {active ? (
@@ -84,9 +91,9 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
           {headingTip(i18nT('sharedCrew.hero_tip'), 'share-hero-tip')}
           {here.length > 0 && (
             <span className="ml-auto inline-flex items-center gap-2 min-w-0" data-testid="share-hero-here">
-              <span className="inline-flex -space-x-2">
+              <span className="inline-flex gap-1">
                 {here.slice(0, STACK_MAX).map(row => (
-                  <span key={row.principal.id} className="rounded-full ring-2 ring-[var(--bg)]" title={displayName(row)}><Avatar row={row} size={24} /></span>
+                  <span key={row.principal.id} className="rounded-full" title={displayName(row)}><Avatar row={row} size={24} /></span>
                 ))}
               </span>
               <span className="text-[13px] text-muted">{i18nT('sharedCrew.here_now', { n: fmtNumber(here.length) })}</span>
@@ -134,7 +141,7 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
         </a>
       </div>
       {canInvite && <InviteDialog open={inviting} onClose={() => setInviting(false)} />}
-    </SettingsCard>
+    </div>
   )
 }
 
@@ -147,7 +154,7 @@ function activityText(row: PeopleRow, usageAvailable: boolean): string {
   if (usageAvailable && (row.usage?.active ?? 0) > 0) {
     return i18nT('sharedCrew.activity_running', { n: fmtNumber(row.usage?.active ?? 0) })
   }
-  if (row.live) return i18nT('sharedCrew.here_now_label')
+  if (isHere(row)) return i18nT('sharedCrew.here_now_label')
   return row.last_seen_at ? i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) }) : i18nT('sharedCrew.not_seen_live')
 }
 
@@ -168,7 +175,7 @@ function PersonLine({ row, usageAvailable, onEdit }: { row: PeopleRow; usageAvai
           {activityText(row, usageAvailable)}
         </span>
       </div>
-      {row.live && <HereDot label={i18nT('sharedCrew.here_now_label')} />}
+      {isHere(row) && <HereDot label={i18nT('sharedCrew.here_now_label')} />}
       {row.tailscale_user_id && (
         <Btn onClick={() => onEdit(row)} aria-label={i18nT('sharedCrew.edit_person', { name })} data-testid="person-edit">
           <Pencil size={14} aria-hidden />

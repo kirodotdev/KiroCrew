@@ -21079,7 +21079,7 @@
     "setup_systems_manager_body": "Коллеги подключаются к Crew в облаке через сеансы Systems Manager.",
     "setup_status_not_in_build": "Недоступно в этой сборке",
     "queued_crew": "ждёт места в общем лимите этого Crew",
-    "settings_tab_description": "Кто пользовался этим Crew и где управляется доступ",
+    "settings_tab_description": "Кто пользуется этим Crew",
     "invite_status_accepted": "Принято",
     "waitlist_approved_badge": "Одобрен",
     "send_race_dismiss": "Закрыть",

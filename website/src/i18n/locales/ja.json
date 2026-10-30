@@ -20146,7 +20146,7 @@
     "setup_systems_manager_body": "メンバーは Systems Manager セッションでクラウド上の Crew に接続します。",
     "setup_status_not_in_build": "このビルドでは利用できません",
     "queued_crew": "この Crew の共有上限に空きが出るのを待っています",
-    "settings_tab_description": "この Crew を使った人と、アクセスを管理する場所",
+    "settings_tab_description": "この Crew を使っている人",
     "invite_status_accepted": "承認済み",
     "waitlist_approved_badge": "承認済み",
     "send_race_dismiss": "閉じる",

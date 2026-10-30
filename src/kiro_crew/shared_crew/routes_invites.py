@@ -300,7 +300,9 @@ def decorate_people(body: dict[str, Any]) -> dict[str, Any]:
     session creator read back from stored attribution never borrows an alias.
     A row whose stable user id is known carries it as ``tailscale_user_id`` (the
     key the display route edits). A display record anyone set wins over the
-    alias and picture an accepted invite carried.
+    alias and picture an accepted invite carried. A local operator row is the
+    person who runs this Crew, so it carries this machine's own Tailscale user
+    id when the daemon reported it, and can be named like anyone else.
     """
     from kiro_crew.dashboard import tailnet_live_allowlist
 
@@ -309,7 +311,19 @@ def decorate_people(body: dict[str, Any]) -> dict[str, Any]:
     display_by_login = {
         str(d.get("login") or "").strip().lower(): uid for uid, d in display.items()
     }
+    owner_id = access_set.owner_user_id()
     for row in body.get("people") or []:
+        if row.get("provenance") == Provenance.LOCAL_OPERATOR.value:
+            shown = display.get(owner_id) if owner_id else None
+            if owner_id:
+                row["tailscale_user_id"] = owner_id
+            if shown:
+                row["member"] = {
+                    "alias": shown.get("alias") or "",
+                    "avatar_id": shown.get("avatar_id") or "",
+                    "profile_pic_url": "",
+                }
+            continue
         if row.get("provenance") not in _TAILNET_PROVENANCE:
             continue
         principal = row.get("principal") or {}

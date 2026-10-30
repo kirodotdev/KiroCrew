@@ -20146,7 +20146,7 @@
     "setup_systems_manager_body": "队友通过 Systems Manager 会话连接到云端托管的 Crew。",
     "setup_status_not_in_build": "此版本不可用",
     "queued_crew": "正在等待此 Crew 共享限额的空位",
-    "settings_tab_description": "谁使用过此 Crew，以及访问权限在哪里管理",
+    "settings_tab_description": "谁在使用此 Crew",
     "invite_status_accepted": "已接受",
     "waitlist_approved_badge": "已批准",
     "send_race_dismiss": "关闭",

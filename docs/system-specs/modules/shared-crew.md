@@ -1399,12 +1399,13 @@ A source answers from state it already holds; it does no I/O on the request path
 
 In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
 
-1. The share card. A green dot and "Shared on your tailnet" while
+1. The share card, one bordered card. A green dot and "Shared on your tailnet" while
    `tailnet_direct.state` is `active`, else the Tailscale setup path's status badge;
    it reports the gateway's own listener and never claims the viewer can reach it.
    Its ⓘ says who can open the Crew (people Tailscale lets reach this machine) and
    that messages still go to the AI model service. On the right, the faces of the
-   people connected now and "N here now", from presence. Below, the share link with
+   people connected now and "N here now", from presence; the viewer counts as here,
+   since they are on this page. Below, the share link with
    a primary "Copy link" and, for the owner only (the invite read answered), a
    secondary "Invite...", then "Manage people in Tailscale"
    (`https://login.tailscale.com/admin/users`, a fixed URL, new tab, `noopener
@@ -1413,7 +1414,10 @@ In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
    owner; names and photos are display only; remove people in Tailscale). Each row:
    picture, name (with You), the login and one activity (typing in a session from
    presence, else the running count, else here now or last seen), a green dot while
-   connected, and ✎ when the row has a `tailscale_user_id`. Invites nobody accepted
+   connected (always on the viewer's own row), and ✎ when the row has a
+   `tailscale_user_id`. A local operator row is the person who runs this Crew and
+   carries this machine's own Tailscale user id (`access_set.owner_user_id`) once
+   the daemon reported it, so everyone, the owner included, can rename themselves. Invites nobody accepted
    yet follow, dimmed, offering only Revoke.
 3. Remote Control with an ⓘ and its "Set up" button.
 

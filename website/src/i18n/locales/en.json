@@ -10800,7 +10800,7 @@
     "sessions_created": "Sessions created: {{n}}",
     "session_state_failed": "Could not load this session's sharing details.",
     "sessions_failed": "Could not load the filtered sessions.",
-    "settings_tab_description": "Who has used this Crew, and where access is managed",
+    "settings_tab_description": "Who uses this Crew",
     "settings_tab_label": "People",
     "setup_body": "Choose how teammates reach this Crew. Until one of these is set up, only you can use it.",
     "setup_guide_link": "Read the {{name}} guide",

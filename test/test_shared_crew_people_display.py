@@ -201,3 +201,24 @@ def test_people_rows_say_who_is_here_and_where_by_the_tab_slot_key() -> None:
         "activity": "typing", "session_key": "Release_plan", "session_title": "Release plan"
     }
     assert "live" not in gone
+
+
+@pytest.mark.asyncio
+async def test_the_person_who_runs_this_crew_can_be_named_like_anyone(
+    monkeypatch: pytest.MonkeyPatch, written: list[Any]
+) -> None:
+    from kiro_crew.shared_crew import access_set
+
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+    monkeypatch.setattr(access_set, "owner_user_id", lambda: "11")
+    monkeypatch.setattr(access_set, "owner_login", lambda: "owner@example.com")
+    app, _ = _app(local_operator_principal("local-app"))
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.put(_path("11"), json={"alias": "Bolin"})
+        assert resp.status == 200
+    assert store.display_overrides()["11"]["login"] == "owner@example.com"
+    body = {"people": [{"principal": local_operator_principal("local-app").to_public_dict(),
+                        "provenance": Provenance.LOCAL_OPERATOR.value}]}
+    row = routes_invites.decorate_people(body)["people"][0]
+    assert row["tailscale_user_id"] == "11"
+    assert row["member"]["alias"] == "Bolin"

@@ -348,6 +348,22 @@ describe('PeoplePanel layout C', () => {
     expect(bob).toHaveTextContent('typing in Release plan')
     expect(bob.querySelector('[aria-label="Here now"]')).not.toBeNull()
     expect(screen.getByTestId('person-p_c').querySelector('[aria-label="Here now"]')).toBeNull()
+  })
+
+  it('counts the viewer as here now and lets them edit their own row', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: [
+      row('p_me', 'Me', { is_viewer: true, last_seen_at: 1_700_000_000, tailscale_user_id: '11' }),
+      row('p_c', 'Cleo'),
+    ] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    const me = await screen.findByTestId('person-p_me')
+    expect(me).toHaveTextContent('Here now')
+    expect(me).not.toHaveTextContent('Last seen')
+    expect(me.querySelector('[aria-label="Here now"]')).not.toBeNull()
+    expect(me.querySelector('[data-testid="person-edit"]')).not.toBeNull()
+    expect(screen.getByTestId('share-hero-here')).toHaveTextContent('1 here now')
     expect(tipText('people-tip')).toMatch(/Tailscale names the person who owns each device/)
   })
 

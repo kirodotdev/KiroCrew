@@ -60,6 +60,10 @@ def login_of(user_id: str) -> str:
         row = state.get(table, {}).get(user_id)
         if isinstance(row, dict) and row.get("login"):
             return str(row["login"]).strip().lower()
+    from kiro_crew.shared_crew import access_set
+
+    if user_id == access_set.owner_user_id() and access_set.owner_login():
+        return access_set.owner_login()
     known = sorted(tailnet_live_allowlist.logins_for(user_id))
     return known[0] if known else ""
 
