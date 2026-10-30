@@ -10552,6 +10552,29 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Session Kiro CLI",
+      "no_folder": "Aucun dossier enregistré",
+      "loading": "Chargement de la conversation…",
+      "show_earlier": "Afficher les messages précédents",
+      "no_messages": "Cette session ne contient aucun message à afficher.",
+      "you": "Toi",
+      "kiro": "Kiro",
+      "truncated": "Raccourci pour l’aperçu. Le message complet est repris quand tu continues.",
+      "skipped": "Certaines lignes de cette session n’ont pas pu être lues et ne sont pas affichées.",
+      "continue_hint": "Continuer dans Crew ouvre une nouvelle conversation avec une copie de celle-ci. La session de ton terminal reste telle quelle.",
+          "state_kept": "La nouvelle conversation garde aussi l’état de session enregistré par kiro-cli.",
+          "state_needs_tool_search_off": "La nouvelle conversation reprend à partir des messages affichés ici. Pour garder aussi l’état de session enregistré par kiro-cli, désactive la Recherche d’outils MCP.",
+          "state_needs_harness": "La nouvelle conversation reprend à partir des messages affichés ici. Pour garder aussi l’état de session enregistré par kiro-cli, règle Paramètres → Harness de l’agent sur Kiro CLI et désactive la Recherche d’outils MCP.",
+          "state_unavailable": "La nouvelle conversation reprend à partir des messages affichés ici. Elle ne peut pas reprendre l’état de session enregistré par kiro-cli sur cette machine, car kiro-cli y exécute les conversations de {{productName}} avec Kiro Agent.",
+      "continue": "Continuer dans Crew",
+      "continuing": "Copie en cours…",
+      "continue_failed": "Impossible de continuer cette session",
+      "opened_without_project": "La nouvelle conversation est prête, mais elle s’ouvre sans dossier de projet : {{reason}}",
+      "opened_without_folder": "Ouverte sans son dossier",
+      "open_chat": "Ouvrir la conversation",
+      "close": "Fermer"
     }
   },
   "hooks": {
@@ -13417,7 +13440,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "Normal",
       "kind_section_mate": "Des coéquipiers",
-      "filter_crew_description": "Afficher uniquement les discussions Crew Mode"
+      "filter_crew_description": "Afficher uniquement les discussions Crew Mode",
+      "history_source": "Source de l’historique",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Rechercher dans les sessions Kiro CLI",
+      "kiro_cli_loading": "Chargement des sessions…",
+      "kiro_cli_empty": "Aucune session kiro-cli de ton terminal pour l’instant.",
+      "kiro_cli_no_folder": "Aucun dossier"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

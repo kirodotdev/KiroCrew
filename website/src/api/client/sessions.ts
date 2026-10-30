@@ -125,5 +125,88 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
         .then(j) as Promise<CrewBoardActionResult>,
   }
 
-  return { runtimes, history, historyDetail, crewBoard }
+  /**
+   * The kiro-cli sessions the owner ran in a terminal (History > Kiro CLI). The
+   * gateway decides which qualify (`kiro_cli_sessions.is_terminal_session`): never
+   * a session Crew owns, a background run or an untitled one. Continuing one
+   * COPIES it into a new chat; the terminal session is left as it was.
+   */
+  const kiroCli = {
+    /** A page of the list; *after* is the last row already shown, for the page that follows it. */
+    kiroCliSessions: (q = '', limit = 50, after: KiroCliSessionRow | null = null) =>
+      fetch('/api/kiro-cli/sessions?limit=' + limit + (q ? '&q=' + encodeURIComponent(q) : '')
+        + (after?.id ? '&after_updated=' + encodeURIComponent(after.updated_at) + '&after_id=' + encodeURIComponent(after.id) : ''))
+        .then(j) as Promise<KiroCliSessionList>,
+    /** A page of the conversation, newest last; pass the answer's `start` as `before` for the older page. */
+    kiroCliSession: (id: string, before?: number, limit = 100) =>
+      fetch('/api/kiro-cli/sessions/' + encodeURIComponent(id) + '?limit=' + limit + (before === undefined ? '' : '&before=' + before))
+        .then(j) as Promise<KiroCliSessionPage>,
+    continueKiroCliSession: (id: string) =>
+      post('/api/kiro-cli/sessions/' + encodeURIComponent(id) + '/continue')
+        .then(j) as Promise<KiroCliContinueResult>,
+  }
+
+  return { runtimes, history, historyDetail, kiroCli, crewBoard }
+}
+
+/** One terminal kiro-cli session in the History list. */
+export interface KiroCliSessionRow {
+  id: string
+  title: string
+  /** The folder the session ran in; '' when kiro-cli recorded none. */
+  cwd: string
+  created_at: string
+  updated_at: string
+}
+
+export interface KiroCliSessionList {
+  sessions: KiroCliSessionRow[]
+  total: number
+  has_more: boolean
+}
+
+export interface KiroCliMessage {
+  role: 'user' | 'assistant'
+  content: string
+  ts: string
+  /** The gateway cut this message to its preview cap. */
+  truncated: boolean
+}
+
+export interface KiroCliSessionPage extends KiroCliSessionRow {
+  messages: KiroCliMessage[]
+  /** Index of the first message on this page; the older page's `before`. */
+  start: number
+  total: number
+  /** Records in the log that could not be read and were left out. */
+  skipped: number
+  has_transcript: boolean
+  /** Set when Continue would copy the transcript only, with the code Continue
+   *  itself answers, so the preview can say so before the click. */
+  context_skipped?: KiroCliContextSkipped
+}
+
+/** Why a continued chat carries the transcript only. Fixed codes, never a
+ *  configured value: another harness than Kiro CLI; Kiro CLI with MCP Tool
+ *  Search on, which starts every resumed dashboard chat afresh from its
+ *  transcript; or a machine whose kiro-cli runs Crew's chats on Kiro Agent,
+ *  where no setting gives full state. */
+export type KiroCliContextSkipped =
+  | 'kiro_cli_backend_required'
+  | 'tool_search_replays_transcript'
+  | 'kiro_cli_state_unavailable'
+
+export interface KiroCliContinueResult {
+  ok: boolean
+  key: string
+  title: string
+  messages: number
+  resume_mode: string
+  folder_id?: string
+  /** The new chat's project folder; '' when the session's folder could not be used. */
+  project: string
+  /** Why the session's folder was not used, when it was not. */
+  project_skipped?: string
+  /** Set when the copy is transcript-only; see {@link KiroCliContextSkipped}. */
+  context_skipped?: KiroCliContextSkipped
 }

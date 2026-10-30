@@ -10260,6 +10260,29 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI のセッション",
+      "no_folder": "フォルダーの記録がありません",
+      "loading": "会話を読み込んでいます…",
+      "show_earlier": "以前のメッセージを表示",
+      "no_messages": "このセッションに表示できるメッセージはありません。",
+      "you": "あなた",
+      "kiro": "Kiro",
+      "truncated": "プレビュー用に短縮しています。続行するとメッセージ全体が引き継がれます。",
+      "skipped": "このセッションの一部の行を読み取れなかったため、表示していません。",
+      "continue_hint": "「Crew で続行」は、この会話のコピーで新しいチャットを開きます。ターミナルのセッションはそのまま残ります。",
+          "state_kept": "新しいチャットは、kiro-cli が保存したセッションの状態も引き継ぎます。",
+          "state_needs_tool_search_off": "新しいチャットは、ここに表示されているメッセージから続きます。kiro-cli が保存したセッションの状態も引き継ぐには、MCP ツール検索をオフにしてください。",
+          "state_needs_harness": "新しいチャットは、ここに表示されているメッセージから続きます。kiro-cli が保存したセッションの状態も引き継ぐには、設定 → エージェントハーネスで Kiro CLI を選び、MCP ツール検索をオフにしてください。",
+          "state_unavailable": "新しいチャットは、ここに表示されているメッセージから続きます。このマシンの kiro-cli は {{productName}} のチャットを Kiro Agent で実行するため、kiro-cli が保存したセッションの状態は引き継げません。",
+      "continue": "Crew で続行",
+      "continuing": "コピーしています…",
+      "continue_failed": "このセッションを続行できませんでした",
+      "opened_without_project": "新しいチャットの準備ができましたが、プロジェクトフォルダーなしで開きます: {{reason}}",
+      "opened_without_folder": "フォルダーなしで開きました",
+      "open_chat": "チャットを開く",
+      "close": "閉じる"
     }
   },
   "hooks": {
@@ -12983,7 +13006,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "通常",
       "kind_section_mate": "クルーメイトから",
-      "filter_crew_description": "Crew Mode のチャットだけを表示"
+      "filter_crew_description": "Crew Mode のチャットだけを表示",
+      "history_source": "履歴の種類",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI のセッションを検索",
+      "kiro_cli_loading": "セッションを読み込んでいます…",
+      "kiro_cli_empty": "ターミナルで実行した kiro-cli のセッションはまだありません。",
+      "kiro_cli_no_folder": "フォルダーなし"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

@@ -10406,6 +10406,29 @@
         "tool_search_label": "সরঞ্জাম অনুসন্ধান",
         "tool_search_description": "চাহিদা অনুযায়ী বিলম্বিত MCP সরঞ্জাম স্পেসিফিকেশন লোড করো।"
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI সেশন",
+      "no_folder": "কোনো ফোল্ডার রেকর্ড করা নেই",
+      "loading": "কথোপকথন লোড হচ্ছে…",
+      "show_earlier": "আগের মেসেজ দেখাও",
+      "no_messages": "এই সেশনে দেখানোর মতো কোনো মেসেজ নেই।",
+      "you": "তুমি",
+      "kiro": "Kiro",
+      "truncated": "প্রিভিউয়ের জন্য ছোট করা হয়েছে। চালিয়ে গেলে পুরো মেসেজটাই সঙ্গে যাবে।",
+      "skipped": "এই সেশনের কিছু লাইন পড়া যায়নি, তাই দেখানো হচ্ছে না।",
+      "continue_hint": "Crew-এ চালিয়ে যাও এই কথোপকথনের একটা কপি নিয়ে নতুন চ্যাট খোলে। তোমার টার্মিনালের সেশন যেমন আছে তেমনই থাকে।",
+          "state_kept": "নতুন চ্যাটে kiro-cli-র নিজের সংরক্ষিত সেশনের অবস্থাও থাকে।",
+          "state_needs_tool_search_off": "নতুন চ্যাট এখানে দেখানো বার্তাগুলো থেকে চলে। kiro-cli-র নিজের সংরক্ষিত সেশনের অবস্থাও রাখতে MCP টুল অনুসন্ধান বন্ধ করো।",
+          "state_needs_harness": "নতুন চ্যাট এখানে দেখানো বার্তাগুলো থেকে চলে। kiro-cli-র নিজের সংরক্ষিত সেশনের অবস্থাও রাখতে সেটিংস → এজেন্ট হারনেস-এ Kiro CLI বাছো আর MCP টুল অনুসন্ধান বন্ধ করো।",
+          "state_unavailable": "নতুন চ্যাট এখানে দেখানো বার্তাগুলো থেকে চলে। এই মেশিনে kiro-cli-র নিজের সংরক্ষিত সেশনের অবস্থা আনা যায় না, কারণ এখানকার kiro-cli {{productName}}-এর চ্যাটগুলো Kiro Agent-এ চালায়।",
+      "continue": "Crew-এ চালিয়ে যাও",
+      "continuing": "কপি হচ্ছে…",
+      "continue_failed": "এই সেশন চালিয়ে যাওয়া গেল না",
+      "opened_without_project": "নতুন চ্যাট তৈরি, কিন্তু এটা প্রকল্প ফোল্ডার ছাড়াই খুলবে: {{reason}}",
+      "opened_without_folder": "ফোল্ডার ছাড়াই খোলা হয়েছে",
+      "open_chat": "চ্যাট খোলো",
+      "close": "বন্ধ করো"
     }
   },
   "hooks": {
@@ -13200,7 +13223,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "সাধারণ",
       "kind_section_mate": "সঙ্গীদের থেকে",
-      "filter_crew_description": "শুধু Crew Mode চ্যাট দেখাও"
+      "filter_crew_description": "শুধু Crew Mode চ্যাট দেখাও",
+      "history_source": "ইতিহাসের উৎস",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI সেশন খোঁজো",
+      "kiro_cli_loading": "সেশন লোড হচ্ছে…",
+      "kiro_cli_empty": "তোমার টার্মিনাল থেকে এখনো কোনো kiro-cli সেশন নেই।",
+      "kiro_cli_no_folder": "কোনো ফোল্ডার নেই"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

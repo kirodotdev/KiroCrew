@@ -74,9 +74,40 @@ chat ([Terminal](dashboard.md#terminal)).
 
 ## Sessions
 
-A kiro-cli session you ran in a terminal and a Crew chat are separate. Crew's
-History lists Crew chats only, and a terminal session cannot be continued as a
-Crew chat.
+A kiro-cli session you ran in a terminal is not a Crew chat, but you can carry
+it over. Open **Older Sessions**, the footer at the bottom of the Sessions
+list, and choose its **Kiro CLI** tab: it lists the titled sessions kiro-cli
+saved on this machine, newest first. Click one to read it,
+then choose **Continue in Crew**. Crew opens a new chat holding a copy of the
+session, titled "(from kiro-cli)" and kept in a **from kiro-cli** folder in the
+Sessions list, with the session's folder as its project when Crew can use that
+folder. The terminal session itself is left untouched, so you can still resume
+it in kiro-cli, and continuing it twice makes two separate chats.
+
+By default the new chat continues from the session's transcript, the
+conversation you can read, without the session state kiro-cli saved for the
+model. The chat opens as usual, its title ends in "transcript only", and the
+preview says before you click which it will be on your machine.
+
+The chat resumes the full kiro-cli session only when all of these hold:
+
+- Crew runs the **Kiro CLI** harness (**Settings → Agent Harness**), and
+- MCP Tool Search is off, and
+- the kiro-cli installed on this machine still runs that harness on its own
+  engine. A kiro-cli that offers its v3 engine runs Crew's chats on Kiro Agent
+  even when Kiro CLI is chosen, and then no setting gives a continued chat the
+  saved state; the preview says so.
+
+```bash
+kirocrew config set agent.acp_backend kiro
+kirocrew config set agent.tool_search false
+```
+
+Tool Search is on by default, and while it is on every resumed dashboard chat
+on kiro-cli starts a fresh session from its transcript, because a loaded
+session would come back without the tools Tool Search had loaded
+([Configuration](configuration.md)). Turning it off sends every MCP tool
+definition with each turn again.
 
 ## Giving Crew a task the way you gave the CLI one
 

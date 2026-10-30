@@ -371,23 +371,8 @@ async def _install_arrived_bundle(
     *keep* holds resources that must live until the arrival is finished rather
     than until the body has been read — today that is the expansion permit.
     """
-    # Imported function-locally, not at module level: chat_handlers' import graph
-    # reaches back here (see the layering note at the top of this module), so a
-    # module-level import would close an import cycle.
-    from kiro_crew.dashboard.chat_handlers import _materialise_slot_from_history
-
     state: DashboardState = request.app["state"]
-    request_app = request.get("app", "")
-    caller = request_app or "dashboard"
-    # The AUTHORIZATION identity, resolved by the shared rule rather than read
-    # off the request the way ``request_app`` above is. The two differ for a
-    # caller that carries no app claim but does carry a session key an app owns:
-    # ``request.get("app")`` is empty there and the shared rule derives the app.
-    # Filing must see the derived value, because that is the caller an
-    # app-scoped arrival has to be refused a folder for. Kept SEPARATE from
-    # ``request_app`` on purpose — that value is the slot's own app attribution
-    # and its meaning is not this one's.
-    folder_app = effective_request_app(state, request)
+    caller = request.get("app", "") or "dashboard"
 
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
@@ -426,6 +411,50 @@ async def _install_arrived_bundle(
             error="bundle rejected",
         )
         return err
+    return await install_validated_bundle(request, bundle)
+
+
+async def install_validated_bundle(
+    request: web.Request,
+    bundle: dict[str, Any],
+    *,
+    project: str = "",
+    top_level_folder: bool = False,
+) -> web.Response:
+    """Install a bundle :func:`_validate_bundle` accepted as a NEW slot; the response.
+
+    Everything after the body is read and validated, so a caller that builds its
+    bundle on THIS host (``POST /api/kiro-cli/sessions/{sid}/continue``) lands its
+    session through exactly the path a peer's arrives on: a fresh slot key, Layer
+    B under a fresh sid, the arrival folder, and every rollback below.
+
+    *project* is a project directory the caller has ALREADY validated for this
+    host. An arriving bundle never sets one (the sender's checkout path means
+    nothing here, see the module docstring of ``session_transfer``); a local
+    session copied from a terminal does, because its folder is on this machine.
+
+    *top_level_folder* files the session into a top-level ``from <origin>``
+    folder instead of ``Imported`` / ``from <origin>``: a session copied from
+    this host's own kiro-cli store did not arrive from another place. Every
+    arrival route leaves it off.
+    """
+    # Imported function-locally, not at module level: chat_handlers' import graph
+    # reaches back here (see the layering note at the top of this module), so a
+    # module-level import would close an import cycle.
+    from kiro_crew.dashboard.chat_handlers import _materialise_slot_from_history
+
+    state: DashboardState = request.app["state"]
+    request_app = request.get("app", "")
+    caller = request_app or "dashboard"
+    # The AUTHORIZATION identity, resolved by the shared rule rather than read
+    # off the request the way ``request_app`` above is. The two differ for a
+    # caller that carries no app claim but does carry a session key an app owns:
+    # ``request.get("app")`` is empty there and the shared rule derives the app.
+    # Filing must see the derived value, because that is the caller an
+    # app-scoped arrival has to be refused a folder for. Kept SEPARATE from
+    # ``request_app`` on purpose — that value is the slot's own app attribution
+    # and its meaning is not this one's.
+    folder_app = effective_request_app(state, request)
 
     messages = bundle["messages"]
     # Agent resolution scans the agents directory and parses each manifest, so it
@@ -475,6 +504,8 @@ async def _install_arrived_bundle(
         "title": f"{_IMPORT_TITLE_MARKER}{source_title}{suffix}",
         "agent": resolved_agent,
     }
+    if project:
+        meta["project"] = project
 
     # Re-check the cap HERE, with no await between this test and the creation
     # inside the shared materialiser below. The check at the top of the handler
@@ -632,7 +663,9 @@ async def _install_arrived_bundle(
         # refusal (app-scoped caller, ceiling reached, store write failure) and
         # the session then lands unfiled, exactly as it did before this shipped.
         # The transcript is the payload; the grouping is convenience.
-        filing = await arrival_folder_id(state, origin=origin, request_app=folder_app)
+        filing = await arrival_folder_id(
+            state, origin=origin, request_app=folder_app, top_level=top_level_folder
+        )
         arrival_folder = filing.folder_id
         # Rows this filing CREATED, for the failure paths below. Held in the
         # handler's own scope rather than re-derived: after a failure the store no

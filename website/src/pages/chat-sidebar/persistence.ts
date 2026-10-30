@@ -26,6 +26,25 @@ export function readStoredRecentWindow(): number {
   }
 }
 
+/** Which history the Older Sessions pane shows: Crew's own (`crew`) or the
+ *  kiro-cli sessions run in a terminal (`kiro-cli`). */
+export const HISTORY_SOURCE_LS_KEY = 'mc-history-source'
+export type HistorySource = 'crew' | 'kiro-cli'
+
+/** Read the persisted history source; anything else, or a throwing storage, is Crew. */
+export function readStoredHistorySource(): HistorySource {
+  try {
+    return localStorage.getItem(HISTORY_SOURCE_LS_KEY) === 'kiro-cli' ? 'kiro-cli' : 'crew'
+  } catch {
+    return 'crew'
+  }
+}
+
+/** Persist the history source the pane was switched to. */
+export function storeHistorySource(source: HistorySource): void {
+  safeSetItem(HISTORY_SOURCE_LS_KEY, source)
+}
+
 /** Folders excluded from the flat lane (see `filterHiddenFolders`). Stored as a JSON
  *  array of folder ids under this key. */
 export const HIDDEN_FOLDERS_LS_KEY = 'mc-flat-hidden-folders'

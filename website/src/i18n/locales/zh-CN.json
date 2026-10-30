@@ -10260,6 +10260,29 @@
         "tool_search_label": "工具搜索",
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI 会话",
+      "no_folder": "未记录文件夹",
+      "loading": "正在加载对话…",
+      "show_earlier": "显示更早的消息",
+      "no_messages": "此会话没有可显示的消息。",
+      "you": "你",
+      "kiro": "Kiro",
+      "truncated": "预览中已缩短。继续时会完整带上这条消息。",
+      "skipped": "此会话有部分行无法读取，未显示。",
+      "continue_hint": "“在 Crew 中继续”会用这段对话的副本打开一个新聊天。你终端中的会话保持不变。",
+          "state_kept": "新聊天还会保留 kiro-cli 保存的会话状态。",
+          "state_needs_tool_search_off": "新聊天从这里显示的消息继续。若还想保留 kiro-cli 保存的会话状态，请关闭 MCP 工具搜索。",
+          "state_needs_harness": "新聊天从这里显示的消息继续。若还想保留 kiro-cli 保存的会话状态，请在 设置 → 代理运行框架 中选择 Kiro CLI，并关闭 MCP 工具搜索。",
+          "state_unavailable": "新聊天从这里显示的消息继续。这台机器上的 kiro-cli 用 Kiro Agent 运行 {{productName}} 聊天，因此无法带入 kiro-cli 保存的会话状态。",
+      "continue": "在 Crew 中继续",
+      "continuing": "正在复制…",
+      "continue_failed": "无法继续此会话",
+      "opened_without_project": "新聊天已就绪，但打开时没有项目文件夹：{{reason}}",
+      "opened_without_folder": "已在没有文件夹的情况下打开",
+      "open_chat": "打开聊天",
+      "close": "关闭"
     }
   },
   "hooks": {
@@ -12983,7 +13006,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "普通",
       "kind_section_mate": "来自队友",
-      "filter_crew_description": "只显示 Crew Mode 对话"
+      "filter_crew_description": "只显示 Crew Mode 对话",
+      "history_source": "历史来源",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "搜索 Kiro CLI 会话",
+      "kiro_cli_loading": "正在加载会话…",
+      "kiro_cli_empty": "还没有在终端中运行过的 kiro-cli 会话。",
+      "kiro_cli_no_folder": "无文件夹"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

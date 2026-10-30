@@ -59,7 +59,9 @@ if TYPE_CHECKING:
         _SHORT_SLOT_NAME_RE,
         _AppOwnedKeys,
         _app_search,
+        _crew_owned_kiro_cli_sids,
         _has_user_content,
+        _int_query,
         _is_machine_only_session,
         _is_user_listed_row,
         _open_slot_transcript_keys,
@@ -68,6 +70,8 @@ if TYPE_CHECKING:
         api_session_archive_list,
         api_session_archive_read,
         api_session_detail,
+        api_session_kiro_cli_list,
+        api_session_kiro_cli_read,
         api_session_meta,
         api_sessions,
         api_sessions_search,
@@ -191,6 +195,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import internal_memory_scope  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.interaction_coordinator import _slot_decision  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.history import ConversationLog  # noqa: F401

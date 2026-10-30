@@ -287,6 +287,66 @@ async def test_a_failed_import_leaves_a_hidden_folder_hidden():
     ], "a failed import must leave the visibility preference exactly as it found it"
 
 
+# ── a top-level sender folder (Continue in Crew) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_top_level_files_into_a_root_sender_folder_with_no_imported_parent():
+    # A session this host copied from its own kiro-cli store did not arrive
+    # from anywhere, so it gets "from kiro-cli" at the top of the sidebar.
+    state = _store()
+    filing = await af.arrival_folder_id(state, origin="kiro-cli", request_app="", top_level=True)
+
+    assert _tree(state) == {"from kiro-cli": ""}
+    (row,) = state._folders
+    assert filing.folder_id == str(row["id"])
+    # Created by this filing, so a failed import can roll it back.
+    assert filing.created_rows == ((str(row["id"]), "from kiro-cli", ""),)
+
+
+@pytest.mark.asyncio
+async def test_top_level_reuses_the_root_folder_and_never_the_one_under_imported():
+    nested_parent = _row("Imported")
+    nested = _row("from kiro-cli", parent_id=nested_parent["id"])
+    nested["id"] = "id-nested"
+    root = _row("from kiro-cli")
+    state = _store([nested_parent, nested, root])
+
+    first = await af.arrival_folder_id(state, origin="kiro-cli", request_app="", top_level=True)
+    second = await af.arrival_folder_id(state, origin="kiro-cli", request_app="", top_level=True)
+
+    assert first.folder_id == second.folder_id == root["id"]
+    assert first.created_ids == ()
+    assert len(state._folders) == 3
+
+
+@pytest.mark.asyncio
+async def test_without_top_level_an_arrival_still_files_under_imported():
+    # The export-file and tunnel routes are unchanged.
+    state = _store([_row("from kiro-cli")])
+    filing = await af.arrival_folder_id(state, origin="kiro-cli", request_app="")
+
+    group = next(f for f in state._folders if f["name"] == "Imported")
+    assert filing.folder_id not in ("", "id-from-kiro-cli")
+    assert (
+        next(f for f in state._folders if f["id"] == filing.folder_id)["parent_id"] == group["id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_top_level_refuses_at_the_ceiling_and_an_app_is_never_filed():
+    full = _store([_row(f"f{i}") for i in range(MAX_CHAT_FOLDERS)])
+    assert (
+        await af.arrival_folder_id(full, origin="kiro-cli", request_app="", top_level=True)
+    ).folder_id == ""
+    assert len(full._folders) == MAX_CHAT_FOLDERS
+    app = _store()
+    assert (
+        await af.arrival_folder_id(app, origin="kiro-cli", request_app="some-app", top_level=True)
+    ).folder_id == ""
+    assert app._folders == [] and app.mutations == 0
+
+
 # ── refusals ─────────────────────────────────────────────────────────────
 
 
