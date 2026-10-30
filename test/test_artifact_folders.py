@@ -234,7 +234,7 @@ class TestResolvePath:
         assert len(folders.list()) == 3
 
     def test_mkdir_p_idempotent_for_long_segments(self, folders: ArtifactFolderStore) -> None:
-        # A >100-char segment is truncated by _clean_name on create; the lookup
+        # A >100-char segment is truncated by clean_name on create; the lookup
         # must normalize through the same truncation, or every repeat resolve of
         # the same long path would mint a duplicate folder.
         long_seg = "x" * 150
