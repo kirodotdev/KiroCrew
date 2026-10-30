@@ -682,7 +682,7 @@ kernel wake that buys a follow-up tick. `judge=False` keeps that rule exact, sin
 judge call can hold a change back or time out into a turn.
 
 What the reading cannot see waits for the quiet floor, a turn after 10 quiet ticks
-(about 50 minutes at 300 s): main moving in this PR's files without a conflict
+(about 100 minutes at 600 s): main moving in this PR's files without a conflict
 (`green_age.py` exit 30), a lane that never posts, and a finding the turn that
 carried it left unanswered. A lane edits its verdict comment in place, so an old one
 falls out of the reading, but the lane's check run finishes with the edit and wakes
@@ -694,6 +694,27 @@ a Slack or Discord loop gets one last turn. So the Report goes out on the conver
 turn, and the `Merged` step runs only where that last turn exists. The decision is
 recorded in the `rfc-gated-pr-poll-loops` RFC
 ([#22440](https://github.com/kirodotdev/KiroCrew/pull/22440)).
+
+## Why the interval is 600 s
+
+Gating gave the interval a second job. It still bounds how long a change waits to
+be noticed, and it now also paces the quiet floor, which delivers a turn every
+`_MAX_QUIET_STREAK = 10` quiet ticks (`autonudge_service/gate.py`). So on a pull
+request where nothing is happening, the interval alone decides what the loop
+spends: at 300 s the floor paid a turn every 50 minutes, about 29 of them across
+the 24-hour budget, each one running `green_age.py` and `pr_status.py` to report
+no change.
+
+600 s halves that, and halves the gateway-side readings with it. What it costs is
+detection. A change waits up to 600 s to be noticed instead of 300, so the mean
+grows by 150 s a round against the 20-to-40-minute CI round this loop is written
+for. Raising it further trades more latency than the saved turns are worth: at
+900 s the floor fires about 10 times a day instead of 14, and a five-round loop
+carries a quarter-hour of worst-case detection delay a round.
+
+`max_cycles` follows the interval rather than standing on its own, because
+interval x `max_cycles` has to stay at or above `max_runtime_secs` for the
+runtime to be the bound that ends the loop. 600 x 144 is exactly 86400.
 
 ## How the profile resolves, and what its JSON carries
 

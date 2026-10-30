@@ -344,7 +344,7 @@ that view; no local round log is needed.
   ambiguous large conflict; a hard external blocker (infra, permissions, a check
   that never runs). Recurrence, round count, a re-raised finding or self-added
   code is never one. When you pause, name the option you would take.
-- `monitor_start` is bounded to `max_cycles=288` and `max_runtime_secs=86400`
+- `monitor_start` is bounded to `max_cycles=144` and `max_runtime_secs=86400`
   (24 hours, Phase 4's watch included); the agent never raises either. At
   exhaustion, hand over `--rounds` and open findings. Phase 2 separately caps
   local review at 10 passes.
@@ -545,7 +545,7 @@ comes after a record, never instead of one:
      bounded in-turn `wait` + re-poll and disclose that fallback.
 
      Arm it with the call in `references/monitor-loop.md` (read it first, swap in the
-     real PR URL): `interval_secs=300, max_cycles=288, max_runtime_secs=86400,
+     real PR URL): `interval_secs=600, max_cycles=144, max_runtime_secs=86400,
      judge=False`. The loop is gated: an unchanged PR costs no turn and any change
      wakes it. Under a merge hold, rewrite its `Exit 0` clause as that file says; a
      hold heard after arming goes in with `monitor_update(message=...)` that turn

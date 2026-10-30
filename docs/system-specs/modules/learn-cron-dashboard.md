@@ -5736,9 +5736,11 @@ request's comments and reviews by body digest beside its checks, head and
 mergeability, so an unchanged pull request costs no turn, any change wakes the loop
 once, and the quiet floor still delivers a turn for what the reading cannot see.
 Its 48 cycles at 300 seconds cover its 14,400-second runtime.
-The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 288-cycle
+The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 144-cycle
 poll budget with an explicit 24-hour runtime cap, so the four-hour default does
-not truncate its longer review loop. Both recipes keep interval x `max_cycles` at
+not truncate its longer review loop. Its 600-second interval paces the quiet floor
+as well as detection, so it is what decides how many turns a loop spends on a pull
+request where nothing is happening. Both recipes keep interval x `max_cycles` at
 or above `max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.
 Legacy monitor MCP calls require positive cycle and runtime caps;
 omitted caps default to 24 cycles and 14,400 seconds. The controller persists
