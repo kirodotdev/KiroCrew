@@ -84,6 +84,9 @@ _POPULATED: dict = {
     "_auto_tagged": True,
     "_human_seen": True,
     "forked_from": "parent-slot",
+    "fork_point_mid": "mid-parent-3",
+    "fork_point_ts": "2026-10-29T12:00:00Z",
+    "fork_direction": "tail",
     "linked_session_key": "slack:C1:1.2",
     "channel_origin": True,
     "_tab_id": "tab-src",
@@ -155,6 +158,9 @@ _BASE_LINE_ORDER = (
     "deferred_notes",
     "queued_prompts",
     "forked_from",
+    "fork_point_mid",
+    "fork_point_ts",
+    "fork_direction",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -195,6 +201,9 @@ _BASE_MERGE_ORDER = (
     "linked_session_key",
     "channel_origin",
     "forked_from",
+    "fork_point_mid",
+    "fork_point_ts",
+    "fork_direction",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",
@@ -523,6 +532,24 @@ def test_a_non_string_title_fails_a_restore_but_reads_as_absent_on_resume(tmp_pa
         codec.apply(state, slot, {"title": 5}, chosen)
     resume, _, _ = _read_back(state, {"title": 5}, codec.RESUME)
     assert resume._titled is False
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"fork_point_mid": 7, "fork_point_ts": ["x"], "fork_direction": "sideways"},
+        {"fork_point_mid": "m" * 129, "fork_point_ts": "t" * 129, "fork_direction": 1},
+        {"fork_point_mid": "", "fork_point_ts": "", "fork_direction": ""},
+        {"fork_point_mid": {"a": 1}, "fork_point_ts": None, "fork_direction": ["head"]},
+    ],
+)
+@pytest.mark.parametrize("purpose", [codec.RESTORE, codec.RECENT, codec.RESUME])
+def test_a_malformed_fork_point_is_dropped_not_restored(tmp_path, monkeypatch, meta, purpose):
+    """The line is agent-writable and the client draws a marker from these values,
+    so a wrong type, an over-long id or an unknown direction reads back as none."""
+    state = _state(tmp_path, monkeypatch)
+    slot, _, _ = _read_back(state, dict(meta), purpose)
+    assert (slot.fork_point_mid, slot.fork_point_ts, slot.fork_direction) == (None, None, None)
 
 
 def test_a_restore_reads_the_committed_agent_not_the_lines(tmp_path, monkeypatch):

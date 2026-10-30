@@ -12828,7 +12828,11 @@
       "your_crewmate": "তোমার ক্রুমেট",
       "jump_to_new_one": "{{count}}টি নতুন · সর্বশেষে যান",
       "jump_to_new_other": "{{count}}টি নতুন · সর্বশেষে যান",
-      "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি"
+      "could_not_repair_images": "ছবিগুলো মেরামত করা যায়নি",
+      "fork_point_forked_into": "এখানে ফর্ক করা হয়েছে",
+      "fork_point_continued_in": "পরের বার্তাগুলো এখানে চলছে",
+      "fork_point_show_all": "সব দেখাও",
+      "fork_point_open": "{{name}} খোলো"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",

@@ -788,6 +788,8 @@ from kiro_crew.dashboard.slot_persistence.metadata_values import (  # noqa: E402
     _restored_mode,
     _validate_autocompact_pct,
     _validate_turn_timeout_secs,
+    fork_direction,
+    fork_point_text,
 )
 from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,F401
     _build_kiro_model_map,

@@ -13027,7 +13027,11 @@
       "jump_to_new_one": "{{count}} nouveau · Aller en bas",
       "jump_to_new_other": "{{count}} nouveaux · Aller en bas",
       "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
-      "could_not_repair_images": "Impossible de réparer les images"
+      "could_not_repair_images": "Impossible de réparer les images",
+      "fork_point_forked_into": "Dérivé vers",
+      "fork_point_continued_in": "Les messages suivants continuent dans",
+      "fork_point_show_all": "Tout afficher",
+      "fork_point_open": "Ouvrir {{name}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

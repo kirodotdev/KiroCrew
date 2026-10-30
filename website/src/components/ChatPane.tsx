@@ -730,12 +730,26 @@ export default function ChatPane({
             onAttempt={() => setTitleError(null)}
           />
           {parentKey && (
-            <span
-              className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
-              title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
-            >
-              ↳ {parentTitle}
-            </span>
+            // A link only when the parent is a session this host can open; a
+            // parent that is gone or out of reach keeps the plain tag.
+            onSessionOpen && parentSlot ? (
+              <button
+                type="button"
+                data-testid="chat-pane-fork-parent"
+                className="shrink-0 text-[10px] text-accent bg-accent/10 hover:bg-accent/20 rounded-full px-1.5 py-0.5 truncate max-w-[38%] border-none cursor-pointer"
+                title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
+                onClick={() => onSessionOpen(parentKey)}
+              >
+                ↳ {parentTitle}
+              </button>
+            ) : (
+              <span
+                className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
+                title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
+              >
+                ↳ {parentTitle}
+              </span>
+            )
           )}
           <span className="flex-1" />
           {running && (

@@ -12828,7 +12828,11 @@
       "your_crewmate": "Dein Crewmate",
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
-      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "fork_point_forked_into": "Verzweigt nach",
+      "fork_point_continued_in": "Spätere Nachrichten weiter in",
+      "fork_point_show_all": "Alle anzeigen",
+      "fork_point_open": "{{name}} öffnen"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
