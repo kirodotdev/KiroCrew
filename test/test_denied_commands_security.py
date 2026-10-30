@@ -52,7 +52,8 @@ class TestCatalog:
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 113
+        # Then (113 -> 114): data-exfil-gh-file-body, gh's body-from-file flags.
+        assert len(BUILTIN_DENIED_RULES) == 114
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 

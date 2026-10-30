@@ -507,7 +507,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     # ── Floor-PRIMARY exfil rules ──
-    # Enforcement for these seven is the always-on gate
+    # Enforcement for these eight is the always-on gate
     # (``audit_bash_exfiltration`` / ``_check_imds_access``), not the regex tier:
     # the gate sees flag spellings and IP encodings no single human-auditable
     # regex can cover. Each ``pattern`` below is a readable SUBSET that exists so
@@ -558,6 +558,17 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         description=(
             "Blocks `wget --post-file`, which posts the contents of a local file to a remote "
             "endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-gh-file-body",
+        pattern="^\\s*gh\\s+api\\s+[^\\s'\"-]\\S*(\\s+-[xX]\\s*[a-zA-Z]+)?\\s+--input[= ][^-\\s'\"]\\S*\\s*$",
+        category="credential-exfil",
+        description=(
+            "Blocks `gh` sending a request body read from a LOCAL FILE: `gh api --input <file>`, "
+            "`--field k=@<file>`, and `gh release --notes-file <file>`. Stdin (`--input -`, "
+            "`k=@-`) is not blocked. Separate from the curl rows, so turning it off leaves "
+            "`curl -d @file` blocked."
         ),
     ),
     DeniedCommandRule(
