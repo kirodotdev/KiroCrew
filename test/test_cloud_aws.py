@@ -11,6 +11,8 @@ import threading
 
 import pytest
 
+from kiro_crew import sandbox as kc_sandbox
+from kiro_crew import sandbox_launch_mark
 from kiro_crew.cloud import aws
 
 
@@ -272,6 +274,76 @@ class TestCheckedJson:
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "not json", ""))
         with pytest.raises(aws.AWSError):
             aws.checked_json(["ec2", "describe-vpcs"], "dev", action="ec2:DescribeVpcs")
+
+
+_REAL_AGENT_CONFINEMENT = getattr(aws, "_agent_confinement", None)
+
+
+class TestAgentSessionSignals:
+    """``_in_agent_session`` reads every marker Kiro Crew sets on an agent tree,
+    not only ``KIROCREW_SESSION_KEY``: a worker on the shared runtime has no
+    session key but carries the runtime and launcher markers, the remembered
+    sandbox marker, and (on Linux) the agents cgroup. Any one of them must refuse
+    a cloud mutation."""
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_signal(self, _floor_monkeypatch):
+        monkeypatch = _floor_monkeypatch
+        for name in (
+            "KIROCREW_SESSION_KEY",
+            "KIROCREW_SPAWNED",
+            "KIROCREW_RUNTIME_AGENT",
+            "KIROCREW_HOST_PID",
+            sandbox_launch_mark.SANDBOX_MARKER,
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(sandbox_launch_mark, "_launched_in_sandbox", False)
+        monkeypatch.setattr(kc_sandbox, "agent_confinement_evidence", lambda *a, **k: None)
+        # test/conftest.py pins this off for every other test; run the real one here.
+        monkeypatch.setattr(aws, "_agent_confinement", _REAL_AGENT_CONFINEMENT, raising=False)
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: pytest.fail("must not spawn aws"))
+
+    def test_bare_terminal_is_human(self):
+        assert aws._in_agent_session() is False
+        aws.assert_human_action("iam:CreatePolicyVersion")  # must not raise
+
+    def test_worker_without_session_key_is_refused(self, monkeypatch):
+        # The shape seen in a gateway chat worker: no KIROCREW_SESSION_KEY.
+        monkeypatch.setenv("KIROCREW_SPAWNED", "1")
+        monkeypatch.setenv("KIROCREW_RUNTIME_AGENT", "kirocrew-worker")
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("iam:CreatePolicyVersion")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.run_aws(["iam", "create-policy-version", "--policy-arn", "arn:x"])
+
+    @pytest.mark.parametrize("name", ["KIROCREW_RUNTIME_AGENT", "KIROCREW_HOST_PID"])
+    def test_each_spawn_marker_alone_is_refused(self, monkeypatch, name):
+        monkeypatch.setenv(name, "1")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("ec2:StopInstances")
+
+    def test_spawned_marker_alone_stays_human(self, monkeypatch):
+        # An app backend, or a gateway one restarted (Dev Fleet foreground
+        # restart), carries only KIROCREW_SPAWNED. The owner's dashboard cloud
+        # actions run there, so that marker alone must not refuse them.
+        monkeypatch.setenv("KIROCREW_SPAWNED", "1")
+        assert aws._in_agent_session() is False
+        aws.assert_human_action("ec2:StopInstances")  # must not raise
+
+    def test_sandbox_marker_dropped_by_cli_main_is_remembered(self, monkeypatch):
+        # cli.main notes then pops KIROCREW_SANDBOX_ACTIVE before the subcommand.
+        monkeypatch.setattr(sandbox_launch_mark, "_launched_in_sandbox", True)
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("cloudformation:DeleteStack")
+
+    def test_confinement_evidence_alone_is_refused(self, monkeypatch):
+        # Env scrubbed (``env -u``) but still in the agents cgroup.
+        monkeypatch.setattr(
+            kc_sandbox, "agent_confinement_evidence", lambda *a, **k: "agents cgroup"
+        )
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("ssm:StartSession")
 
 
 class TestChokepointHumanActionGuard:
