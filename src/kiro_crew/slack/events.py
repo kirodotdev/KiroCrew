@@ -109,6 +109,7 @@ from kiro_crew.slack.blocks import (
     voice_config_modal,
 )
 from kiro_crew.slack.code_channels import install as install_code_channels
+from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
@@ -256,6 +257,13 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     # (the hooks fire only for a bound code channel).
     install_code_channels(lambda: orch.slack)
     await asyncio.to_thread(code_channel_store().load)
+    if orch.dashboard_state:
+        # A slot list serialized before this load marked bound rows pending;
+        # re-push it now the store is read so those rows get their badge.
+        try:
+            orch.dashboard_state.push_slots_update()
+        except Exception:
+            logger.warning("slot list re-push after code-channel load failed", exc_info=True)
 
     # ── Enterprise Grid workspace validation ──
     # Blocks data exfiltration via personal/external Slack workspaces.
@@ -350,6 +358,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         # ── Agent sessions: native Stop and user renames (agent_sessions) ──
         if event_type in AGENT_SESSION_EVENTS:
             dispatch_agent_session_event(orch, req.payload or {}, event)
+            return
+
+        # ── Code channels: archive, unarchive, rename ──
+        if event_type in code_channel_lifecycle.LIFECYCLE_EVENTS:
+            code_channel_lifecycle.dispatch(req.payload or {}, event)
             return
 
         # ── Messages and mentions ──

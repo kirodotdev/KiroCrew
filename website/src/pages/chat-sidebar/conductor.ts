@@ -255,6 +255,19 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
     })
   }, [persistConductorExpanded])
 
+  /** Open one conductor, idempotently: a no-op when it is already open. A reveal
+   *  calls this rather than toggling from a value it read earlier, which could
+   *  close the very fold it means to open. */
+  const openConductor = useCallback((key: string) => {
+    setConductorExpanded(prev => {
+      if (prev.has(key)) return prev
+      const next = new Set(prev)
+      next.add(key)
+      persistConductorExpanded(next)
+      return next
+    })
+  }, [persistConductorExpanded])
+
   /**
    * Open every ancestor of *key* so a nested row becomes visible.
    *
@@ -361,6 +374,6 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
   }, [conductorLaneActive, lineage, lanePopulation, expandConductorAncestors])
   return {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
-    expandConductorAncestors,
+    expandConductorAncestors, openConductor,
   }
 }
