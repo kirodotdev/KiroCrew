@@ -1011,6 +1011,7 @@ mounts or gates on it.
 | Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
 | Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 | Todoist | project-management | 2 | yes / yes | none — the server lists only `data:read_write`; the entry adds `data:delete` and leaves out `project:delete` | gated | manual launch-gate check, including two sessions held past the one-hour token expiry (refresh tokens rotate on every use) |
+| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | gated | manual launch-gate check, including a `tools/list` against the 58-tool roster the card copy describes |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so

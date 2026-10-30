@@ -26,6 +26,7 @@ import postmanLogoUrl from './logos/postman.svg'
 import neonLogoUrl from './logos/neon.svg'
 import prismaLogoUrl from './logos/prisma.svg'
 import todoistLogoUrl from './logos/todoist.svg'
+import ticktickLogoUrl from './logos/ticktick.svg'
 
 /** Official provider brand marks for the Connections cards.
  *
@@ -77,6 +78,7 @@ const MASKED: Record<string, string> = {
   neon: neonLogoUrl,
   prisma: prismaLogoUrl,
   todoist: todoistLogoUrl,
+  ticktick: ticktickLogoUrl,
 }
 
 /** Full-colour marks — plain `<img>`, colours preserved. */

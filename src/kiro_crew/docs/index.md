@@ -38,7 +38,7 @@ over and what changes.
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
 | [Apps](apps.md) | Twenty-four apps ship in the package — enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
-| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 29-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
+| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 30-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |

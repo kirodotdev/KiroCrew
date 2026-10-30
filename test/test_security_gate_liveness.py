@@ -602,7 +602,9 @@ def _url_payload_command(n: int) -> str:
 #: takes the word a shell runs after the options and redirections that follow a shell's
 #: own ``-c`` (``bash -c -x '<script>'``). One forward scanner, its lazy per-position
 #: memos and the own-option-run scope; the reader only adds payloads. Re-measured.
-_PACKAGE_LINE_BUDGET = 33_334
+#: Raised by one, from 33,334, for the TickTick consent host in ``exfil_oauth``'s
+#: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
+_PACKAGE_LINE_BUDGET = 33_335
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
