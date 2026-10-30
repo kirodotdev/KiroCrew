@@ -104,6 +104,10 @@ def _list_themes_sync() -> list[dict[str, Any]]:
         for f in themes_path.glob("*.json"):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
+                # Valid JSON that is not an object (a list, a number) is skipped
+                # like a corrupt file, so one bad file never fails the whole list.
+                if not isinstance(data, dict):
+                    continue
                 result.append(
                     {
                         "slug": f.stem,
@@ -128,6 +132,8 @@ def _list_themes_sync() -> list[dict[str, Any]]:
             try:
                 m = json.loads(mpath.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                continue
+            if not isinstance(m, dict):
                 continue
             result.append(
                 {
@@ -930,6 +936,8 @@ async def api_theme_detail(request: web.Request) -> web.Response:
                 try:
                     existing = json.loads(target.read_text("utf-8"))
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                    existing = {}
+                if not isinstance(existing, dict):
                     existing = {}
                 td = {
                     "name": name,
