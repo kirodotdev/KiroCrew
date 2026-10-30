@@ -148,9 +148,12 @@ grant audits retain their audit-or-deny contract.
   failure exit (`platform_compat.exit_after_failed_restart_exec`) drain an
   existing SEL singleton with `flush_audit_queue_before_hard_exit`, which uses
   the teardown executor and an outer deadline, before the gateway.log tail.
-  Restart retains its inline off-loop drain. These best-effort drains avoid
-  initializing a trust root during exit. The second-signal force exit does not
-  drain SEL yet (#19042).
+  Restart retains its inline off-loop drain. The second-signal force exit
+  drains on its own non-daemon `kc-force-exit` thread with the synchronous
+  `flush_audit_queue`, once before its orphan sweep and once more before the
+  gateway.log tail, and the graceful exit parks rather than drain or exit
+  under it (see the gateway's Shutdown Sequence). These best-effort drains
+  avoid initializing a trust root during exit.
 - **Fallback**: if the writer can't be started, `log()` writes synchronously so
   an event is never silently dropped.
 - **Write failures**: when an append or the chain lock raises `OSError`, the
