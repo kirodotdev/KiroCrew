@@ -288,7 +288,7 @@ _LOADER_SIGNATURES = {
     "set_inject_on_trigger": "(self, name: 'str', inject: 'bool') -> 'bool'",
     "set_pinned": "(self, name: 'str', pinned: 'bool') -> 'bool'",
     "split_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'tuple[list[str], list[str]]'",
-    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'str | None'",
+    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None, missing_scripts: 'list[str] | None' = None, rejected_scripts: 'dict[str, list[str]] | None' = None) -> 'str | None'",
     "strip_frontmatter": "(content: 'str') -> 'str'",
     "sync_builtins": "(self) -> 'None'",
     "trigger_hint": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'str'",
