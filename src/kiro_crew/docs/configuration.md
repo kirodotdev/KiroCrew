@@ -171,7 +171,9 @@ KAS can also run with **no kiro-cli at all**. `kirocrew kas install` downloads
 the `@kiro/agent` version this Kiro Crew release pins, plus its own Node runtime,
 from a sha256-pinned manifest (`agent.kas_bundle_url`) into
 `<data home>/engines/kas/<version>/`. Each Kiro Crew release runs exactly one
-engine version; after a Kiro Crew update run `kirocrew kas install` again. And
+engine version, and `kirocrew update` (like the dashboard's Update and the
+automatic update) installs the new release's engine before it switches over;
+the previous version stays on disk. And
 `agent.kas_bundle: true` makes the `kas` backend spawn that engine directly. On
 this route Kiro Crew is always the credential owner: sign in from the dashboard
 (Sign in) — kiro-cli's login is not consulted. The chat model picker lists the

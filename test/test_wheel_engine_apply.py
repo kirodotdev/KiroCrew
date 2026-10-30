@@ -598,3 +598,39 @@ class TestApplyWheelUpdateOrchestration:
                 expected_version="9.9.9",
             )
         assert not layout.stable_link.exists(), "a failed verification must not promote"
+
+    def test_the_engine_step_runs_on_the_verified_tree_before_the_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The release's engine install sees the verified tree and this apply's context."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        seen: list[tuple[Path, bool]] = []
+
+        def engine(tree: Path, ctx: object) -> None:
+            calls.append("engine")
+            assert not layout.stable_link.exists(), "the engine step runs before promotion"
+            seen.append((tree, getattr(ctx, "trusted_env")))
+
+        promoted = self._apply(
+            install_engine=engine,
+            before_promote=lambda: calls.append("snapshot"),
+            trusted_env=False,
+        )
+        assert calls == ["manifest", "download", "build", "verify", "engine", "snapshot"]
+        assert seen == [(layout.versioned_tree("9.9.9"), False)]
+        assert layout.stable_link.resolve() == promoted.resolve()
+
+    def test_a_failed_engine_step_never_promotes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An engine that did not install fails the update; the old version keeps running."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+
+        def engine(_tree: Path, _ctx: object) -> None:
+            raise WheelUpdateError("the new version's KAS engine install exited 1")
+
+        with pytest.raises(WheelUpdateError, match="KAS engine install"):
+            self._apply(install_engine=engine, before_promote=lambda: calls.append("snapshot"))
+        assert "snapshot" not in calls, "no memory copy is spent on an update that failed"
+        assert not layout.stable_link.exists()
+        assert not layout.versioned_tree("9.9.9").exists(), "the unpromoted tree is cleared"

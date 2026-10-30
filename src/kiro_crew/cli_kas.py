@@ -68,6 +68,15 @@ def add_kas_parser(parser: argparse.ArgumentParser) -> None:
     install.add_argument(
         "--force", action="store_true", help="Replace an already-installed copy of that version"
     )
+    install.add_argument(
+        "--if-in-use",
+        action="store_true",
+        help=(
+            "Install only when this install runs Kiro Crew's own engine (the bundle "
+            "route is on, or an engine version is already on disk); otherwise do "
+            "nothing. Every update runs this from the new release"
+        ),
+    )
 
     sub.add_parser("status", help="Show the pinned engine, what is installed, and the route")
     remove = sub.add_parser("remove", help="Delete installed engine versions")
@@ -109,9 +118,32 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
     return kas_bundle.installed_bundle(root=kas_bundle.kas_engines_root(), version=version)
 
 
+def _uses_kas() -> bool:
+    """Whether this install runs Crew's own engine, so an update must bring its pin along.
+
+    Either fact is enough: the bundle route is on (``kas_bundle_route()``: KAS
+    selected AND ``agent.kas_bundle`` on), or some engine version is already under
+    ``<data home>/engines/kas`` (the operator installed one). The relay route alone
+    is not: it runs kiro-cli, never the engine, and a host that cannot run the
+    engine (an old glibc, no network) must keep updating. A config that cannot be
+    read reads as the relay route, the same answer ``kas_bundle_route()`` gives
+    every other reader. An engines directory that cannot be listed leaves the
+    route to decide.
+    """
+    try:
+        if kas_bundle.installed_versions():
+            return True
+    except OSError:
+        pass
+    return kas_bundle.kas_bundle_route()
+
+
 def _install(args: argparse.Namespace) -> int:
     from kiro_crew.config.loader import KiroCrewConfig
 
+    if getattr(args, "if_in_use", False) and not _uses_kas():
+        print("The KAS engine bundle is not in use on this install; nothing to install.")
+        return 0
     try:
         if args.from_dir:
             source_dir = Path(args.from_dir).expanduser().resolve()

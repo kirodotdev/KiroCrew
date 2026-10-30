@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         redact_log_via_context,
+        release_apply,
         repo_exec_config_reason,
         resolve_remote_url,
         restart_command_hint,
@@ -683,19 +684,17 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # non-fatal.
         # On the KAS bundle route kiro-cli is not part of what runs, so its
         # self-update is skipped with the reason in the log (the only place an
-        # unattended apply reports). The engine is Crew's own install, laid
-        # down separately by `kirocrew kas install` for the pin the installed
-        # release carries; this apply does not install it, so the log names
-        # that command for a changed pin. Local import: this body runs on the
-        # gateway facade's globals, and the config read goes off the loop like
-        # every other blocking read in this apply.
+        # unattended apply reports). The engine is Crew's own install, which
+        # the release install below lays down for the new release's pin
+        # (release_apply). Local import: this body runs on the gateway facade's
+        # globals, and the config read goes off the loop like every other
+        # blocking read in this apply.
         from kiro_crew.agent_sdk import kas_bundle
 
         if await asyncio.to_thread(kas_bundle.kas_bundle_route):
             logger.info(
                 "Auto-update: kiro-cli update skipped; KAS runs Kiro Crew's own engine "
-                "bundle, not kiro-cli. A changed engine pin needs `kirocrew kas install` "
-                "after the restart."
+                "bundle, not kiro-cli."
             )
             kiro_cli_bin = None
         else:
@@ -769,14 +768,21 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         #
         # Supervised: a shutdown that cancels this task also cancels the install,
         # so one still queued, or cancelled before its last check ahead of pip,
-        # never starts pip. A pip already running is left to finish (see
-        # dep_sync.sync_or_reinstall_supervised for the exact window).
-        pip_rc = await dep_sync.sync_or_reinstall_supervised(
+        # never starts pip, and an engine install in flight is killed. A pip
+        # already running is left to finish (see
+        # release_apply.apply_release_supervised for the exact window).
+        #
+        # The release, not the package: after the code, the new revision's own
+        # `kirocrew kas install --if-in-use` lays down the engine it pins, and a
+        # failure there stops the update before the restart.
+        pip_rc = await release_apply.apply_release_supervised(
             subprocess_executor(),
-            Path(proj),
-            Path(sys.executable),
-            lambda message, error: pip_messages.append((message, error)),
-            timeout=600,
+            release_apply.GitRelease(
+                Path(proj),
+                Path(sys.executable),
+                lambda message, error: pip_messages.append((message, error)),
+                timeout=600,
+            ),
         )
         if pip_rc != 0:
             # The tree moved but its dependencies did not, and this step
@@ -795,13 +801,16 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
                 pip_rc,
                 err_text,
             )
-            if pip_rc == dep_sync.REFUSED:
+            if pip_rc in (dep_sync.REFUSED, release_apply.ENGINE_FAILED):
                 # REFUSED means the sync stopped BEFORE touching the venv --
                 # most importantly when that venv serves a different
                 # checkout. The core-dep repair below would then install into
                 # exactly the venv the guard just protected, so a refusal ends
                 # the auto-update here without even repairing: the messages
                 # above name the remedy, and nothing was changed.
+                # ENGINE_FAILED means the dependencies DID install and only the
+                # new release's KAS engine did not: there is nothing for the
+                # repair to fix, and the messages name `kirocrew kas install`.
                 if self.dashboard_state:
                     self.dashboard_state.push_update_progress("error", err_text)
                 return
