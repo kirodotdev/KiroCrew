@@ -280,6 +280,10 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     validate_cwd,
     visible_agent_names,
 )
+from kiro_crew.subagent_parts.child_outcome import (  # noqa: F401
+    ChildOutcome,
+    classify_child_outcome,
+)
 from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     _TEARDOWN_GATE_TTL_SECS,
     DELIVERY_ROUTING_FIELDS,

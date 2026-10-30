@@ -1026,7 +1026,7 @@ def test_a_terminal_is_recorded_before_the_child_leaves_the_running_set():
 
     from kiro_crew.subagent_manager.terminal import TerminalCoordinator
 
-    body = inspect.getsource(TerminalCoordinator._report_terminal_impl)
+    body = inspect.getsource(TerminalCoordinator._finish)
     record = body.index("self._record_crew_log_terminal(info)")
     flip = body.index("info.done = True")
     assert record < flip, (
@@ -1114,6 +1114,7 @@ def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
     coordinator._record_crew_log_terminal = lambda i: TerminalCoordinator._record_crew_log_terminal(
         coordinator, i
     )
+    coordinator._finish = lambda i: TerminalCoordinator._finish(coordinator, i)
 
     asyncio.run(
         TerminalCoordinator._report_terminal_impl(
