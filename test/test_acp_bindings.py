@@ -111,6 +111,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_goose_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kas_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kiro_backend": ("property", False, "a6632a57e602", "acp"),
+    "is_mimocode_backend": ("property", False, "a6632a57e602", "acp"),
     "is_opencode_backend": ("property", False, "a6632a57e602", "acp"),
     "is_pi_backend": ("property", False, "a6632a57e602", "acp"),
     "is_process_alive": ("function", False, "a6632a57e602", "acp"),

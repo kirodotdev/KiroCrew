@@ -25,6 +25,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -139,11 +140,17 @@ from kiro_crew.agent_sdk.backends import (
 # The array still carries the stdio elements on the wire because the session report
 # and the mount check read their roster from it, and each transport has exactly one
 # channel that mounts it, so nothing is mounted twice.
+# mimocode is a member on a ROUND TRIP rather than on its ancestry: driven on 0.1.15,
+# the element ``acp.session_mcp.acp_server_element`` emits was mounted, the server
+# was asked ``initialize``, ``tools/list`` and ``tools/call``, and the call came back
+# under opencode's fused title (``crew-probe_crew_probe_echo``) after a permission
+# request (``test/fixtures/acp_frames/mimocode/mcp-stdio-mount-live.jsonl``).
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
@@ -371,6 +378,13 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # session's own directory WITHOUT a permission request (measured -- its ``view``
 # ran unasked), so ``_deny_zero_tools`` never sees that call and a total ban cannot
 # be honoured.
+#
+# A fourth fact excludes a backend that meets the other three: membership in
+# ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``, a harness some of whose own tools run with
+# no permission request at all. ``_deny_zero_tools`` runs at that request, so those
+# calls stay live under ``"tools": []``. mimocode is excluded on this ground: it is
+# mirrored, enforced and served by ``AcpClient``, but its ``memory``, ``history``
+# and ``task`` tools never ask.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,

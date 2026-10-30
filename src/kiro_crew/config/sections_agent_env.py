@@ -256,11 +256,18 @@ AGENT_ENV_DENIED_NAMES = frozenset(
 #: ``OPENCODE_`` is where Kiro Crew hands the opencode harness its own config
 #: (``OPENCODE_CONFIG_CONTENT``), and ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR``
 #: point that harness at a config file whose MCP commands it runs at start-up.
+#: ``MIMOCODE_`` is the same for MiMo Code (``MIMOCODE_CONFIG_CONTENT``,
+#: ``MIMOCODE_CONFIG``, ``MIMOCODE_CONFIG_DIR``), and its namespace also holds the
+#: switches that change its asking posture (``MIMOCODE_PERMISSION``,
+#: ``MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS``), the variable that relocates its
+#: credential (``MIMOCODE_HOME``) and a whole provider credential store in one value
+#: (``MIMOCODE_AUTH_CONTENT``).
 AGENT_ENV_DENIED_PREFIXES = (
     "KIROCREW_",
     "KIRO_",
     "DSH_",
     "OPENCODE_",
+    "MIMOCODE_",
     "LD_",
     "DYLD_",
     "PYTHON",

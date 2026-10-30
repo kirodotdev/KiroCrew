@@ -120,6 +120,22 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_version_child_is_wrapped_like_the_read_back`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/harness/opencode.py::_opencode_reported_major",
+        # MiMo Code's routing read-back and version probe: the same two shapes as
+        # the opencode pair above, in MiMo Code's own launch module. ONE fixed argv
+        # each -- the resolved ``mimo`` binary plus the literal words in
+        # ``_MIMOCODE_CONFIG_READBACK_ARGS`` (``debug config``) or ``_MIMOCODE_VERSION_ARGS``
+        # (``--version``) -- no shell, a 30s / 15s timeout, and the session work dir
+        # as cwd. The read-back's only variable input is the child's
+        # ``MIMOCODE_CONFIG_CONTENT``, composed by ``_mimocode_routing_config`` from this
+        # core's permission-setting table; the probe carries no seed. Both children
+        # get this harness's strip and pin of ``MIMOCODE_*`` variables, and the
+        # read-back refuses before spawning when a refused variable is set. Both are
+        # SANDBOX-WRAPPED by their callers through ``wrap_argv_async`` with the
+        # session's credential mask, and both run on a worker thread --
+        # ``test_the_read_back_and_the_version_probe_run_wrapped_and_off_the_loop``
+        # in ``test/test_acp_mimocode_backend.py`` pins that.
+        "acp/harness/mimocode.py::_verify_mimocode_routing",
+        "acp/harness/mimocode.py::_mimocode_reported_version",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three

@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -79,6 +80,12 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
         NativeAllowStore(f".config/opencode/{name}", (("XDG_CONFIG_HOME", f"opencode/{name}"),))
         for name in ("opencode.json", "opencode.jsonc", "config.json")
     ),
+    # MiMo Code reads its global config from its own directory under the same XDG
+    # root (``resolveMimocodeHome`` and ``Config``'s global load, 0.1.15).
+    ACP_BACKEND_MIMOCODE: tuple(
+        NativeAllowStore(f".config/mimocode/{name}", (("XDG_CONFIG_HOME", f"mimocode/{name}"),))
+        for name in ("mimocode.json", "mimocode.jsonc", "config.json")
+    ),
     ACP_BACKEND_CODEX: (NativeAllowStore(".codex/config.toml", (("CODEX_HOME", "config.toml"),)),),
     # extensions: code pi loads into its own process.
     ACP_BACKEND_PI: (_pi("settings.json"), _pi("extensions")),
@@ -119,6 +126,12 @@ PROJECT_ALLOW_STORES: tuple[str, ...] = (
     ".pi/settings.json",
     ".pi/mcp.json",
     ".pi/extensions/",
+    # MiMo Code, opencode's fork, under its own names (``ConfigPaths`` 0.1.15): config
+    # found walking up from the work dir, and its .mimocode dirs (config, agents,
+    # commands, plugins), the one in the home directory included.
+    "mimocode.json",
+    "mimocode.jsonc",
+    ".mimocode/",
 )
 
 

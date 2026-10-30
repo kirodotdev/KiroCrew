@@ -1,0 +1,547 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.1.15",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "probe/probe-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Probe/probe-model",
+            "value": "probe/probe-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          },
+          {
+            "description": "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
+            "name": "compose",
+            "value": "compose"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "I'll run that"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll run that",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": " command for"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " command for",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": " you."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " you.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "bash",
+        "tool_call_id": "call-1",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-ok",
+          "description": "Output the text probe-ok"
+        },
+        "title": "Output the text probe-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\",\n  \"description\": \"Output the text probe-ok\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo probe-ok",
+          "description": "Output the text probe-ok"
+        },
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\",\n  \"description\": \"Output the text probe-ok\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-ok",
+          "description": "Output the text probe-ok"
+        },
+        "title": "Output the text probe-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\",\n  \"description\": \"Output the text probe-ok\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_output": "probe-ok\n",
+        "tool_output_bytes": 9,
+        "tool_output_digest": "acbd711313ac7a94dc13913a8b68adf3394104c4f1070897876f76b1b9e1351a",
+        "tool_status": "in_progress"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-ok",
+          "description": "Output the text probe-ok"
+        },
+        "title": "Output the text probe-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\",\n  \"description\": \"Output the text probe-ok\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "probe-ok\n",
+        "tool_output_bytes": 9,
+        "tool_output_digest": "acbd711313ac7a94dc13913a8b68adf3394104c4f1070897876f76b1b9e1351a",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-ok",
+          "description": "Output the text probe-ok"
+        },
+        "title": "Output the text probe-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-ok\",\n  \"description\": \"Output the text probe-ok\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Output the text probe-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "The"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " command"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " command",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " output"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " output",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " was"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " was",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " \""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " \"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "probe-ok\"."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "probe-ok\".",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      28884,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      28884,
+      12,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "'ll run that command for you."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "'ll run that command for you.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "bash",
+        "tool_call_id": "call-2",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call-2",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Output the text probe-two"
+        },
+        "title": "Output the text probe-two",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Output the text probe-two\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_output": "The user rejected permission to use this specific tool call.",
+        "tool_output_bytes": 60,
+        "tool_output_digest": "429de7bbbb8f2cde584cf8b969d2a96af527a0d0330efac23eab6f549b46abd4",
+        "tool_status": "failed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Output the text probe-two"
+        },
+        "title": "Output the text probe-two",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Output the text probe-two\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

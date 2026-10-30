@@ -31,6 +31,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -138,6 +139,11 @@ from kiro_crew.agent_sdk.backends import (
 # dsh-owned ``read``, ``grep`` and ``glob`` calls with absolute targets. Unknown,
 # shadowed, MCP and command tools fail closed. The capture is
 # ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``.
+#
+# mimocode is NOT a member, for opencode's reason and one of its own. Its asks come from
+# its own ``permission`` setting, not a derived read-only spec, and its ``memory``,
+# ``history`` and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``),
+# so a side turn could not be confined to reads even if every asked call were.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
 )
@@ -274,9 +280,28 @@ ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 #: through :mod:`kiro_crew.acp.harness_tool_names`. claude and codex are NOT: each
 #: approves some calls inside the harness without asking, so a PreToolUse hook
 #: would be skipped on exactly those calls until Crew makes them ask.
+#:
+#: mimocode is NOT a member, although it asks under the same seed opencode does: several
+#: of its own tools never reach its permission service at all (``memory``,
+#: ``history``, ``task``, and an edit under its memory directory; ``cron`` too,
+#: which the launch pins off), so a PreToolUse hook would be skipped on exactly
+#: those calls, the claude and codex ground.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
 )
+
+#: Backends whose harness runs some of its own tools without a permission request
+#: even under the asking posture Crew seeds and reads back. A refusal Crew applies at
+#: the permission request therefore never meets those calls: the zero-tool ban's
+#: ``AcpClient._deny_zero_tools`` among them, which is why membership here keeps a
+#: backend out of ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`` whatever its routing.
+#:
+#: mimocode: ``memory``, ``history`` and ``task`` never consult its permission service
+#: (``tool/memory.ts``, ``tool/history.ts``, ``tool/task.ts`` hold no ``ctx.ask``),
+#: and an edit under its memory tree skips the ask (``askEditUnlessMemory``). Its
+#: ``mimo debug agent build`` lists all three on the xiaomi model, and no switch
+#: removes them.
+ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
 
 
 # ── How a harness is made to ask ──
@@ -394,6 +419,11 @@ ACP_BACKEND_ROUTING: dict = {
     # that switch as an ACP v1 session config option (``allow_all``) on every
     # session/new and session/load -- Codex's mechanism, applied the same way.
     ACP_BACKEND_COPILOT: Routing.SESSION_CONFIG,
+    # opencode's mechanism under MiMo Code's own variable: ``permission: "ask"`` in
+    # ``MIMOCODE_CONFIG_CONTENT``, read back from ``mimo debug config`` before the
+    # session spawns. Measured on 0.1.15: every shell and MCP call then sends
+    # ``session/request_permission`` (``test/fixtures/acp_frames/mimocode``).
+    ACP_BACKEND_MIMOCODE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -445,6 +475,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 #: ``UNVERIFIED`` instead.
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
+    ACP_BACKEND_MIMOCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 

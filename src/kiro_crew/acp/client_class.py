@@ -61,6 +61,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -317,6 +318,22 @@ class AcpClient:
         # own resolved config, so a fused tool title from one of them splits back
         # exactly. Recorded by its launch (``acp.harness.opencode``).
         self._opencode_config_mcp_servers: tuple[str, ...] = ()
+        # MiMo Code's own copies of the four read-back fields above, recorded by its
+        # launch (``acp.harness.mimocode``) and read only on a mimocode session.
+        self._mimocode_denies_in_force: frozenset[str] | None = None
+        self._mimocode_denies_unenforced: frozenset[str] = frozenset()
+        self._mimocode_native_mounts: frozenset[str] = frozenset()
+        self._mimocode_disabled_servers: frozenset[str] = frozenset()
+        self._mimocode_config_mcp_servers: tuple[str, ...] = ()
+        # How the harness starts each local server of its own config, and the
+        # tools/list Crew read from a server it needed a real tool name of, both
+        # per spawn (``_mimocode_settle_mcp_tool_name``).
+        self._mimocode_native_mount_launches: dict[str, Any] = {}
+        self._mimocode_mcp_tool_lists: dict[str, asyncio.Task] = {}
+        # The one directory MiMo Code's edit tools write under without asking (its
+        # memory tree), recorded by its launch; an unasked edit outside it trips the
+        # tripwire below. ``""`` on every other session.
+        self._mimocode_memory_root = ""
         # The per-session nonce a gate extension echoes in every dialog it raises;
         # minted by the pi or DeepSeek Harness launch, placed in the child's
         # environment there, and the only key under which a permission frame is read
@@ -349,6 +366,11 @@ class AcpClient:
         # read tools by name, or ``""`` once its launch proved stock dsh composes
         # them (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
         self._deepseek_read_only_issue = "the harness composition was not read back"
+        # Set by the MiMo Code launch once its routing is read back: a shell call
+        # that completes without Crew having been asked about it stops the harness,
+        # because that harness's own loopback listener can switch it to auto-allow
+        # mid-session (``acp.harness.mimocode``).
+        self._unasked_shell_tripwire = False
         # toolCallIds the gate extension asked about in this session, read off the
         # envelopes; a completed tool call not in it is a call the gate never saw.
         self._pi_gate_asked_ids: set[str] = set()
@@ -806,6 +828,7 @@ class AcpClient:
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
     _claude_session_mcp_servers = _client_mcp_array._claude_session_mcp_servers
     _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
+    _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
@@ -877,6 +900,10 @@ class AcpClient:
     @property
     def _is_opencode(self) -> bool:
         return self.backend == ACP_BACKEND_OPENCODE
+
+    @property
+    def _is_mimocode(self) -> bool:
+        return self.backend == ACP_BACKEND_MIMOCODE
 
     @property
     def _is_pi(self) -> bool:
@@ -1342,6 +1369,11 @@ class AcpClient:
     _deny_spec_disabled_tool = _client_permissions._deny_spec_disabled_tool
     _reject_unknown_server_request = _client_permissions._reject_unknown_server_request
     _note_pi_gate_asked = _client_permissions._note_pi_gate_asked
+    _recover_mimocode_mcp_identity = _client_permissions._recover_mimocode_mcp_identity
+    _mimocode_mcp_call_unnamed = _client_permissions._mimocode_mcp_call_unnamed
+    _mimocode_known_mcp_servers = _client_permissions._mimocode_known_mcp_servers
+    _mimocode_settle_mcp_tool_name = _client_permissions._mimocode_settle_mcp_tool_name
+    _mimocode_mcp_tool_list = _client_permissions._mimocode_mcp_tool_list
     _build_permission_event = _client_permissions._build_permission_event
 
     @property
@@ -1387,6 +1419,7 @@ class AcpClient:
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission
+    _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
     _prompt_loop = _client_turn._prompt_loop
     _consult_liveness_model_wait = _client_turn._consult_liveness_model_wait
     send_message = _client_turn.send_message

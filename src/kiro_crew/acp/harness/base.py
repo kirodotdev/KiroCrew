@@ -138,12 +138,20 @@ class ProcessSession(Protocol):
     _opencode_denies_in_force: frozenset[str] | None
     _opencode_denies_unenforced: frozenset[str]
     _opencode_native_mounts: frozenset[str]
+    _mimocode_config_mcp_servers: tuple[str, ...]
+    _mimocode_denies_in_force: frozenset[str] | None
+    _mimocode_denies_unenforced: frozenset[str]
+    _mimocode_native_mounts: frozenset[str]
+    _mimocode_disabled_servers: frozenset[str]
+    _mimocode_native_mount_launches: dict[str, Any]
+    _mimocode_memory_root: str
     _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
+    _unasked_shell_tripwire: bool
     _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
 

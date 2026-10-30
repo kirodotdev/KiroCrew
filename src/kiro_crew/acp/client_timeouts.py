@@ -165,6 +165,11 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
 
 _READ_TIMEOUT = 20.0
 _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT = 2.0
+# How long a command-less MiMo Code shell request waits for the running update that
+# carries its command. Every 0.1.15 capture has the two frames adjacent
+# (``test/fixtures/acp_frames/mimocode``), so this only bounds a stalled harness; a
+# request still unpaired at the bound reaches the dispatcher without a command.
+_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT = 2.0
 # Steers sent as a second ``session/prompt`` (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``).
 # A steer the running loop read is answered at the same idle as the turn, so the
 # turn's clean end waits only this long for its answer.

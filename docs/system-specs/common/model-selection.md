@@ -266,6 +266,21 @@ vocabulary holds the id, excluding the session's own. The exclusion is
 load-bearing: two namespaces list one model family, so without it a harness is
 reported as foreign to itself.
 
+### A harness that accepts any model value
+
+The rule above sends an unclaimed id to the wire and lets the harness refuse it.
+That relies on the harness refusing. `ACP_BACKENDS_MODEL_SELECT_UNCHECKED`
+(`agent_sdk/backends_models.py`) names a harness that does not: MiMo Code 0.1.15
+stores any `model` value `session/set_config_option` hands it and then fails every
+prompt on one it cannot resolve, with an `end_turn` and no content (measured with an
+inherited `claude-opus-5.5` pin). On a member, `AcpClient` judges the value itself
+before it writes: with a warm advertised list it writes only
+`runtime_models.resolve_pin_spelling_on(pin, advertised, backend=...)`, and a value
+the list does not carry takes the refusal path without reaching the wire. A cold
+cache has nothing to judge against and keeps the ordinary ladder. This is a
+stricter wire check for that one harness, not a scoping rule: `model_scope` still
+decides first whether the pin applies to the session at all.
+
 ### Scoping is a read, and every tier takes it
 
 Nothing on disk is rewritten. The stored pin stays as the user picked it and is

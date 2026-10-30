@@ -163,6 +163,9 @@ with no row here.
    * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
      - driver-internal (whether an advertised ``<model>[<effort>]`` id is applied
        as two config-option writes)
+   * - ``ACP_BACKENDS_MODEL_SELECT_UNCHECKED``
+     - driver-internal (whether the client checks a model value against the
+       advertised select before writing it, because the harness does not)
    * - ``effort_config_option_id``
      - driver-internal (which ``configId`` carries the reasoning effort)
    * - ``effort_config_option_value``
@@ -261,6 +264,11 @@ with no row here.
        is the resulting server list, which it already receives
    * - ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``
      - semantic question (``SessionCapabilities.honors_zero_tool_ban``)
+   * - ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``
+     - driver-internal (whether some of the harness's own tools run with no
+       permission request under the seeded asking posture; an input to
+       ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``'s membership rule, which no consumer
+       above the boundary asks on its own)
    * - ``ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP``
      - driver-internal (whether a ``session/new`` stdio element whose command
        cannot be found is left out and reported as failed before the request)
@@ -351,6 +359,15 @@ ACP_BACKEND_DEEPSEEK = "deepseek"
 # (``test/fixtures/acp_frames/copilot/``). Its ``allow_all`` option and its
 # ``session/request_permission`` per tool call are wire facts of that release.
 ACP_BACKEND_COPILOT = "copilot"
+# MiMo Code: Xiaomi's fork of OpenCode, a single binary that serves ACP itself
+# (``mimo acp``). It keeps OpenCode's permission rule algebra and its
+# ``debug config`` read-back, and its launch and mirror are its own modules
+# (``acp.harness.mimocode``, ``providers.mirrors.mimocode``) with its own spellings: a
+# different config variable (``MIMOCODE_CONFIG_CONTENT``), a different tested line
+# (0.1), and environment overrides that a read-back cannot see and the launch
+# therefore strips. A separate id, not an alias of ``opencode``: a saved choice or
+# a governance rule naming ``opencode`` must keep meaning OpenCode.
+ACP_BACKEND_MIMOCODE = "mimocode"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -395,6 +412,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -402,6 +420,12 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 # known to launch independently. New adapters opt in after their install and
 # sandbox path is verified; a KAS-like backend cannot inherit the bypass merely
 # because its id is neither Kiro nor KAS.
+#
+# mimocode opts in on both: the install is one global npm package whose ``mimo``
+# binary the self-served ladder resolves, and a gateway on a host whose launcher
+# can create the user namespace spawned ``mimo acp`` under the sandbox with its
+# credential mask, read its routing back and ran sessions and sub-agents on
+# MiMo Code 0.1.15. Nothing on that path runs kiro-cli.
 ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -411,6 +435,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -515,6 +540,21 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   ``off`` value is advertised and applies it before the first prompt, refusing
 #:   the session otherwise, so a user's own allow-all default cannot reach a Crew
 #:   session. See :data:`Routing.SESSION_CONFIG`.
+#:
+#: ``ACP_BACKEND_MIMOCODE`` is included on the same two conditions as OpenCode, met by
+#: the same mechanism with MiMo Code's own spellings:
+#:
+#: * ``backend_install`` probes for the ``mimo`` binary, one component, because
+#:   the harness's own package ships the executable that serves ACP.
+#: * its tool calls are ROUTED and the routing is VERIFIED: the client seeds
+#:   ``permission: "ask"`` through ``MIMOCODE_CONFIG_CONTENT`` and reads the
+#:   harness's resolved configuration back with ``mimo debug config``. Two
+#:   environment overrides change the asking posture without showing in that
+#:   read-back (``MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS`` and
+#:   ``MIMOCODE_AUTO_APPROVE_DELETE``), so the launch strips them; and because
+#:   the ACP server's own loopback HTTP listener can switch the session to
+#:   auto-allow mid-session, a shell call that completes without having asked
+#:   stops the harness (``acp.harness.mimocode``).
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -526,6 +566,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -552,6 +593,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
+    ACP_BACKEND_MIMOCODE: ACP_BACKEND_MIMOCODE,
 }
 
 #: The backend a deployment policy may never deny.
@@ -1056,6 +1098,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     CC_PERMISSION_MODE_ENV,
@@ -1088,6 +1131,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SIDE_READONLY,
+    ACP_BACKENDS_UNASKED_NATIVE_TOOLS,
     Readback,
     Routing,
     gate_probe_command_for,

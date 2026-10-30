@@ -1,0 +1,200 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "'ll run that command for you."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "'ll run that command for you.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "bash",
+        "tool_call_id": "call-1",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Echo probe-two to verify output"
+        },
+        "title": "Echo probe-two to verify output",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Echo probe-two to verify output\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Echo probe-two to verify output"
+        },
+        "title": "Echo probe-two to verify output",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Echo probe-two to verify output\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_output": "probe-two\n",
+        "tool_output_bytes": 10,
+        "tool_output_digest": "48ebf70900efdd782dba9f4d8d915619dde7baddae520052bc33b271d9725670",
+        "tool_status": "in_progress"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Echo probe-two to verify output"
+        },
+        "title": "Echo probe-two to verify output",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Echo probe-two to verify output\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "probe-two\n",
+        "tool_output_bytes": 10,
+        "tool_output_digest": "48ebf70900efdd782dba9f4d8d915619dde7baddae520052bc33b271d9725670",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo probe-two",
+          "description": "Echo probe-two to verify output"
+        },
+        "title": "Echo probe-two to verify output",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo probe-two\",\n  \"description\": \"Echo probe-two to verify output\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Echo probe-two to verify output"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "The command output is \"probe-two"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The command output is \"probe-two",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "\"."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\".",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      29028,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      29028,
+      12,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

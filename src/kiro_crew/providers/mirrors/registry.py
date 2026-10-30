@@ -37,6 +37,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -46,6 +47,7 @@ from kiro_crew.providers.mirrors.codex import CodexMirror
 from kiro_crew.providers.mirrors.copilot import CopilotMirror
 from kiro_crew.providers.mirrors.deepseek import DeepSeekMirror
 from kiro_crew.providers.mirrors.goose import GooseMirror
+from kiro_crew.providers.mirrors.mimocode import MimoCodeMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
 
@@ -225,6 +227,7 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_GOOSE: GooseMirror,
     ACP_BACKEND_DEEPSEEK: DeepSeekMirror,
     ACP_BACKEND_COPILOT: CopilotMirror,
+    ACP_BACKEND_MIMOCODE: MimoCodeMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -392,6 +395,20 @@ PROJECTIONS: dict[str, McpProjection] = {
         # No per-call deny path is verified for this harness, so a narrowed server is
         # withheld whole, the direction that cannot leave a switched-off tool reachable.
         per_tool_deny=PerToolDeny.WHOLE_SERVER,
+    ),
+    ACP_BACKEND_MIMOCODE: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="mimocode.py -- MiMo Code's own projection, measured on 0.1.15: the element "
+        "acp.session_mcp.acp_server_element emits was mounted, its server was asked "
+        "initialize, tools/list and tools/call, and the call came back under the "
+        "fused <server>_<tool> title after a permission request. Crew writes no "
+        "MiMo Code MCP config; MIMOCODE_CONFIG_CONTENT carries the permission routing "
+        "alone, so the array is this backend's whole MCP channel",
+        # SETTINGS-FILE on opencode's terms, the "file" being the inline block Crew
+        # seeds for the routing (MIMOCODE_CONFIG_CONTENT): a deny rule under the fused
+        # tool id, after the seed's "*": "ask", hid that tool from the model while its
+        # sibling stayed listed and still asked.
+        per_tool_deny=PerToolDeny.SETTINGS_FILE,
     ),
 }
 

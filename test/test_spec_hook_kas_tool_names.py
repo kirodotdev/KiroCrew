@@ -23,6 +23,7 @@ from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -60,7 +61,13 @@ def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES
 
     assert ACP_BACKEND_KAS in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
-    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS} == frozenset(HARNESS_TOOL_TABLES)
+    # mimocode has a table and is not fired for: the table names its calls for the
+    # gate's own hooks on the calls that do ask, while the spec's hooks are withheld
+    # because some of its tools never ask (``providers/mirrors/mimocode.py``).
+    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS} == frozenset(
+        HARNESS_TOOL_TABLES
+    ) - {ACP_BACKEND_MIMOCODE}
+    assert ACP_BACKEND_MIMOCODE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():
@@ -167,6 +174,16 @@ def test_a_matcher_the_table_does_not_know_is_kept_and_warned(caplog):
         hooks = _pre_tool_hooks("use_aws")
     assert [h.matcher for h in hooks] == ["use_aws"]
     assert any("use_aws" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("matcher", ["actor", "notebook_edit", "view_image"])
+def test_a_matcher_naming_only_a_mimocode_id_is_still_warned(matcher, caplog):
+    # mimocode has a table but no fired spec hooks, so its ids must not quiet the
+    # warning a KAS, goose or opencode spec would otherwise get.
+    with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
+        hooks = _pre_tool_hooks(matcher)
+    assert [h.matcher for h in hooks] == [matcher]
+    assert any(matcher in r.getMessage() for r in caplog.records)
 
 
 def test_a_kept_matcher_meets_the_kas_id_it_names(tmp_path, monkeypatch):

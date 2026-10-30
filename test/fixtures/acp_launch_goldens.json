@@ -134,6 +134,26 @@
     "spawn_label": "kiro-cli acp",
     "stderr_label": "kiro-cli"
   },
+  "mimocode": {
+    "argv": [
+      "/opt/bin/mimo",
+      "acp"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "MIMOCODE_CODEX_MODE": "false",
+      "MIMOCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
+      "MIMOCODE_DISABLE_CLAUDE_IMPORT": "1",
+      "MIMOCODE_DISABLE_CRON": "1",
+      "MIMOCODE_EXPERIMENTAL_CRON": "false",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "mimo acp",
+    "stderr_label": "mimo"
+  },
   "opencode": {
     "argv": [
       "/opt/bin/opencode",

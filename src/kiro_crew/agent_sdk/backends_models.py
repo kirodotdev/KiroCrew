@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -50,6 +51,11 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # ``provider/model`` id pi resolved from its own ``models.json``
 # (``test/fixtures/acp_frames/pi/session-live.jsonl``).
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member on the same evidence as opencode, whose ACP
+# server it forks: its ``session/new`` result advertises a ``model`` select whose
+# ``currentValue`` is the ``provider/model`` id named in ``MIMOCODE_CONFIG_CONTENT``
+# (``test/fixtures/acp_frames/mimocode/session-live.jsonl``).
+#
 # ``ACP_BACKEND_DEEPSEEK`` is a member on the same kind of evidence, with one shape
 # to respect: its ``model`` select carries OPAQUE values. Each is a JSON-encoded
 # ``[provider, model]`` pair -- ``["deepseek-official", "deepseek-v4-flash"]`` -- so
@@ -63,6 +69,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -151,6 +158,13 @@ def model_refusal_phrase(backend: str) -> str:
 # the bare code is a value refusal there too. A ``model`` write resets the variant
 # to the new model's first one, which is why the live switch re-applies the level.
 # ``test/fixtures/acp_frames/opencode/effort-live.jsonl`` is the evidence.
+#
+# mimocode is NOT a member, though its parent is. On 0.1.15 the ``session/new`` result
+# carries a ``model`` select and a ``mode`` select and no effort option: a model's
+# reasoning variants are advertised as model ids of their own,
+# ``<provider>/<model>/<variant>`` (``acp/agent.ts:1686-1692``; seen live as
+# ``xiaomi/mimo-v2.6-flash/low`` beside ``xiaomi/mimo-v2.6-flash``), so the level is
+# chosen with the model and there is no separate option for this channel to write.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -174,6 +188,20 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
 # context window and must reach the wire intact, and opencode's ``provider/model``
 # ids carry no suffix at all -- neither may inherit a split it never advertised.
 ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
+
+# Backends whose ``model`` config option takes ANY string. The push ladder reads a
+# harness's refusal of a value outside its own select as its signal to stay on the
+# backend's default; whether every other member of
+# ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`` refuses such a value was not measured here.
+# A member here answers success instead: MiMo Code 0.1.15's
+# ``setSessionConfigOption`` parses the value into ``provider/model`` and stores it
+# without looking it up. Measured live: an inherited ``claude-opus-5.5`` pin was
+# accepted, and every prompt after it failed inside the harness with
+# ``ProviderModelNotFoundError`` while the ACP turn ended ``end_turn`` with no
+# content, so the session looked like a model that answers nothing. On a member
+# the client therefore judges the value against the advertised select itself
+# before it writes, and a value the select does not carry is handled as refused.
+ACP_BACKENDS_MODEL_SELECT_UNCHECKED = frozenset({ACP_BACKEND_MIMOCODE})
 
 # The ``configId`` each backend spells its reasoning-effort option with. One home
 # for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
@@ -257,6 +285,9 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
 # take a level, is the right authority for them.
+#
+# mimocode is NOT a member: membership presumes the effort channel above, which it is
+# outside. Its levels are model ids, so no advertised effort option exists to read.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
@@ -376,6 +407,13 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
 # is the only vocabulary its ``session/set_config_option`` accepts, and the static
 # registry names none of them.
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member for the capture half for opencode's reason: its
+# ids are ``provider/model`` pairs from its own provider list, and a model's
+# reasoning variants are advertised as further rows of the same select
+# (``xiaomi/mimo-v2.6-pro/high``) rather than as a separate effort option, so the
+# advertised select is the only vocabulary its ``session/set_config_option``
+# accepts.
+#
 # ``ACP_BACKEND_PI`` is a member for the capture half too, and its ids come from
 # the same place opencode's do: ``provider/model`` pairs out of the operator's own
 # ``models.json`` (``ollama/llama3.2:3b`` for a local model), which no static
@@ -404,6 +442,7 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -509,6 +548,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_OPENCODE: "opencode",
     # pi likewise: ``provider/model`` pairs from the operator's own models.json.
     ACP_BACKEND_PI: "pi",
+    # MiMo Code likewise, and not opencode's bucket even though it forks opencode:
+    # its provider list is its own (``xiaomi/…``, ``mimo/…``), so a shared bucket
+    # would let one harness's advertised ids replace what the picker offers for the
+    # other.
+    ACP_BACKEND_MIMOCODE: "mimocode",
     # goose likewise, and it is the sharpest case: its ``session/new`` advertises the
     # whole provider catalog it could reach, so sharing the ``acp`` bucket would not
     # merely mix two harnesses' ids -- it would replace kiro-cli's advertised catalog

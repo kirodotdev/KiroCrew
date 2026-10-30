@@ -709,6 +709,15 @@ def build_permission_event(
             # the cut -- but earns no durable trust, since a value was not seen
             # whole.
             _raw_params_trusted = envelope is not None and not envelope["truncated"]
+    # A harness whose tools spell an argument the gates read under another name
+    # (MiMo's ``notebook_path``, ``patch_text``) gains the canonical spelling here,
+    # beside its own, so the path and patch checks judge it. Table-driven by
+    # backend: a backend with no row gets its params back untouched. Imported at
+    # the one call, so the dispatch facade re-binds no per-backend table that only
+    # this line reads.
+    from kiro_crew.acp.harness_tool_names import canonical_tool_params
+
+    _resolved_raw_params = canonical_tool_params(harness_backend, _resolved_raw_params)
 
     # Trusted MCP server + tool identity recovered from the preceding tool_call
     # (identity is never read off the permission payload). .get() (not .pop()) mirrors the

@@ -367,6 +367,11 @@ def test_core_counts_per_harness_are_pinned() -> None:
         "goose": 7,
         "kas": 7,
         "kiro": 6,
+        # MiMo Code: Crew tools, member thread tools, /compact and the model switch.
+        # Of its fork parent's other two, effort rides the model select rather than
+        # an option, and a second session/prompt sent mid-turn was answered at once
+        # without joining the running turn, so it is not a steer channel.
+        "mimocode": 4,
         "opencode": 6,
         "pi": 6,
     }

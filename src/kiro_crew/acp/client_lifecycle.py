@@ -17,6 +17,10 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
+``_mimocode_config_mcp_servers``, ``_mimocode_denies_in_force``,
+``_mimocode_denies_unenforced``, ``_mimocode_disabled_servers``,
+``_mimocode_mcp_tool_lists``, ``_mimocode_memory_root``,
+``_mimocode_native_mount_launches``, ``_mimocode_native_mounts``,
 ``_oauth_emitted_servers``,
 ``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
 ``_opencode_native_mounts``, ``_pending_oauth_requests``,
@@ -690,6 +694,17 @@ def _reset_state(self: AcpClient) -> None:
     self._opencode_denies_in_force = None
     self._opencode_denies_unenforced = frozenset()
     self._opencode_native_mounts = frozenset()
+    self._mimocode_denies_in_force = None
+    self._mimocode_denies_unenforced = frozenset()
+    self._mimocode_native_mounts = frozenset()
+    self._mimocode_disabled_servers = frozenset()
+    self._mimocode_native_mount_launches = {}
+    self._mimocode_config_mcp_servers = ()
+    self._mimocode_memory_root = ""
+    # A tool list read for the old process describes servers it mounted.
+    for probe in getattr(self, "_mimocode_mcp_tool_lists", {}).values():
+        probe.cancel()
+    self._mimocode_mcp_tool_lists = {}
     # Save PID state before clearing it. A root is confirmed exited only
     # when its own Process reports a reaped return code; a missing or
     # unreadable PID is not enough to reclaim its working directory.

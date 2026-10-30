@@ -151,6 +151,7 @@ underneath.
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
+| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
@@ -177,6 +178,11 @@ entirely; the refusal is not applied there. `codex` is served by `AcpRuntime` /
 but no `zero_tools` and no equivalent refusal, so nothing closes the gap on a
 codex session either. An agent spec relying on `tools: []` on claude or codex is
 not enforced at all.
+`mimocode` is mirrored and enforced like `opencode`, and the refusal does run on its
+sessions, but some of MiMo Code's own tools (`memory`, `history`, `task`, an edit
+under its memory tree) never send a permission request, so they stay callable
+under `tools: []` (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`); the pool does not run on
+it.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -348,7 +354,9 @@ is the part worth knowing before you switch:
   Crew's gate instead of being pre-approved inside the harness.
 - **`hooks` reaches only two mirrors, and `resources` only half-reaches.**
   `hooks` is `translated` on `goose` and `opencode`, where Crew's turn loop fires
-  it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
+  it, and `no-channel` on `claude` and `codex`. On `mimocode` it is `withheld`: that
+  fork's projection follows opencode's rules, but some of its tools never ask, so
+  Crew does not fire hooks there. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
   `file://` steering glob is the one that silently reaches nothing

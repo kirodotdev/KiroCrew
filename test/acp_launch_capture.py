@@ -47,6 +47,7 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.harness import deepseek as deepseek_mod
+from kiro_crew.acp.harness import mimocode as mimocode_mod
 from kiro_crew.acp.harness import opencode as opencode_mod
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.runtime import AcpRuntime
@@ -55,6 +56,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -83,11 +85,15 @@ _PI_MCP_HANDOFF = "/opt/run/kirocrew_pi_gate_mcp_handoff.json"
 _DSH_EXTENSION = "/opt/run/kiro_crew_tool_gate.mjs"
 _DSH_PATCH = "/opt/run/kiro_crew_dsh_gate.patch.yml"
 _OPENCODE_BIN = "/opt/bin/opencode"
+_MIMOCODE_BIN = "/opt/bin/mimo"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
 _COPILOT_BIN = "/opt/bin/copilot"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
+#: The stubbed return of ``_mimocode_routing_config``. The golden pins this literal, not
+#: the harness's real seed text (which ``json.dumps`` spells with spaces).
+_MIMOCODE_CONFIG = '{"permission":"ask"}'
 
 #: Env keys whose VALUE is a property of the host or the run. The key still has to
 #: appear -- that a harness receives it at all is the fact being pinned.
@@ -450,12 +456,18 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(
                 opencode_mod, "_opencode_version_refusal", new=AsyncMock(return_value=("", ""))
             ),
+            patch.object(mimocode_mod, "_verify_mimocode_routing", return_value=("", "")),
+            patch.object(mimocode_mod, "_mimocode_routing_config", return_value=_MIMOCODE_CONFIG),
+            patch.object(
+                mimocode_mod, "_mimocode_version_refusal", new=AsyncMock(return_value=("", ""))
+            ),
             patch.object(launch_mod, "_unlink_readback_launcher", return_value=None),
             patch.object(
                 launch_mod,
                 "_resolve_self_served_bin",
                 side_effect=lambda backend: {
                     ACP_BACKEND_OPENCODE: (_OPENCODE_BIN, _SEARCH_PATH),
+                    ACP_BACKEND_MIMOCODE: (_MIMOCODE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_GOOSE: (_GOOSE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_DEEPSEEK: (_DEEPSEEK_BIN, _SEARCH_PATH),
                     ACP_BACKEND_COPILOT: (_COPILOT_BIN, _SEARCH_PATH),
@@ -478,7 +490,7 @@ _ADAPTER_CACHES: dict[str, Any] = {
 _ADAPTER_CACHE_NAMES = tuple(_ADAPTER_CACHES)
 
 #: The host adapters whose routing read-back binds its own sandbox wrap and scrub.
-_READBACK_MODULES = (pi_mod, opencode_mod, deepseek_mod)
+_READBACK_MODULES = (pi_mod, opencode_mod, mimocode_mod, deepseek_mod)
 
 
 def snapshot_bin_caches() -> dict[str, Any]:

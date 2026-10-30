@@ -257,6 +257,9 @@ _BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
         "launcher",
         "node",
         "opencode",
+        # MiMo Code: its npm ``mimo`` entry is a Node script (``node``, above) that
+        # execs the bundled ``.mimocode`` binary, which is what runs the agent.
+        ".mimocode",
         "playwright-cli",
         "sh",
         "zsh",

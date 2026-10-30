@@ -132,6 +132,7 @@ provider.
 | `claude` | Claude Code | Uses the public `claude-agent-acp` adapter. |
 | `codex` | Codex | Uses the Codex ACP adapter. |
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. |
+| `mimocode` | MiMo Code | Uses MiMo Code's native ACP server (`mimo acp`, tested on the 0.1 line). Requires a working sandbox backend; a session is refused when `MIMOCODE_HOME` is set. |
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |

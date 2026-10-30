@@ -38,6 +38,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     METHOD_INITIALIZE,
     METHOD_SESSION_NEW,
@@ -587,7 +588,21 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
     # Each push describes only itself; the split below sets it again.
     self.model_pin_partial = ""
     last_exc: AcpError | None = None
-    for cand in self._model_config_candidates(model_id):
+    candidates = self._model_config_candidates(model_id)
+    if self.backend in ACP_BACKENDS_MODEL_SELECT_UNCHECKED:
+        # This harness accepts any value and then fails every prompt on one it
+        # cannot resolve, so its acceptance proves nothing. Judge the value
+        # against the advertised select here instead: only the advertised
+        # spelling is written, and a value the select does not carry takes the
+        # refusal path below without touching the wire. A cold cache has
+        # nothing to judge against and keeps the ladder as it was.
+        advertised = self._advertised_model_ids()
+        if advertised:
+            resolved = runtime_models.resolve_pin_spelling_on(
+                model_id, advertised, backend=self.backend
+            )
+            candidates = [resolved] if resolved else []
+    for cand in candidates:
         try:
             await self.set_config_option("model", cand)
         except AcpError as exc:
@@ -645,9 +660,13 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
             ),
         ) from last_exc
     logger.warning(
-        "ACP model %s rejected by the adapter; staying on the backend default %s "
-        "(advertised: %s)",
+        "ACP model %s %s; staying on the backend default %s (advertised: %s)",
         _rejected_log,
+        (
+            "is not in the advertised model list and was not sent"
+            if not candidates
+            else "rejected by the adapter"
+        ),
         self._resolved_model_id or DEFAULT_MODEL,
         ", ".join(advertised_ids) or "none",
     )

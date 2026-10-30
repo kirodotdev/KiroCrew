@@ -2,9 +2,8 @@
 
 The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
 ``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
-opencode shell-permission deferral, the liveness consult and the redaction of a Claude native
-child's events, with the flush of their held text for a turn cut short.
-
+opencode and MiMo Code shell-permission deferrals, the liveness consult and the redaction of a
+Claude native child's events, with the flush of their held text for a turn cut short.
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
@@ -44,6 +43,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client_timeouts import (
     _COMPACTION_FAILED_TURN_BUDGET,
     _MAX_CONSECUTIVE_EMPTY,
+    _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _READ_TIMEOUT,
     _STALE_TURN_TIMEOUT,
@@ -64,6 +64,7 @@ from kiro_crew.acp.transport_errors import (
     registration_rate_limited_error,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -301,6 +302,90 @@ async def _defer_opencode_shell_permission(
         return False
 
     # The normal dispatcher caches the command before building permission.
+    self._buffer.appendleft(msg)
+    self._buffer.appendleft(following)
+    return True
+
+
+#: The permission categories MiMo Code's shell tool asks under with NO metadata,
+#: so their request carries no command: ``tool/bash.ts:399-413`` on 0.1.15 asks
+#: ``external_directory`` and then ``bash`` with ``metadata: {}``, and the ACP layer
+#: forwards a request's metadata as its ``rawInput`` and its category as its
+#: ``title`` (``acp/agent.ts:198-205``). ``bash_delete`` is not one of them: it asks
+#: with ``{command, deletes}`` (``:424-432``), and only after ``bash`` was answered.
+_MIMOCODE_COMMANDLESS_SHELL_ASKS = frozenset({"bash", "external_directory"})
+
+
+def _is_mimocode_running_input(
+    update_frame: JsonRpcMessage, session_id: object, call_id: str
+) -> bool:
+    """Whether *update_frame* is MiMo Code's running-state update carrying the command.
+
+    MiMo Code sends one ``tool_call_update`` per state of a tool part, and the
+    running one carries the parsed input as ``rawInput`` and no output yet
+    (``acp/agent.ts:284-336`` on 0.1.15).
+    """
+    frame_params = update_frame.params if isinstance(update_frame.params, dict) else {}
+    update = frame_params.get("update")
+    update = update if isinstance(update, dict) else {}
+    raw_input = update.get("rawInput")
+    command = raw_input.get("command") if isinstance(raw_input, dict) else None
+    return (
+        update_frame.is_method(METHOD_SESSION_UPDATE)
+        and isinstance(session_id, str)
+        and frame_params.get("sessionId") == session_id
+        and update.get("sessionUpdate") == "tool_call_update"
+        and update.get("toolCallId") == call_id
+        and update.get("status") == "in_progress"
+        and isinstance(command, str)
+        and bool(command)
+        and not update.get("content")
+        and not update.get("rawOutput")
+    )
+
+
+async def _defer_mimocode_shell_permission(
+    self: AcpClient, msg: JsonRpcMessage, remaining: float
+) -> bool:
+    """Let MiMo Code's running shell update reach the cache before its permission.
+
+    On MiMo Code a shell permission NEVER carries the command: the categories in
+    :data:`_MIMOCODE_COMMANDLESS_SHELL_ASKS` ask with empty metadata, so the only
+    trusted source of the command is the part's running update, and the two are
+    published on separate bus events with no order between them. 0.1.15 delivered
+    them adjacent but in either order (``test/fixtures/acp_frames/mimocode/
+    session-live.jsonl``: update first on the first turn, request first on the
+    second). So when a command-less shell request arrives first, the next frame is
+    read, and if it is that update both are re-queued update first.
+
+    Keyed on MiMo Code's own request shape, not only on the tool being a shell: a
+    request of another category, or one for a call whose command is already
+    cached, goes straight to the dispatcher. ``external_directory`` and ``bash``
+    can both ask for one call; the first one reorders, and the second finds the
+    command cached. The request's own ``rawInput`` never fills the trusted cache.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    tool_call = params.get("toolCall")
+    tool_call = tool_call if isinstance(tool_call, dict) else {}
+    call_id = tool_call.get("toolCallId")
+    if tool_call.get("title") not in _MIMOCODE_COMMANDLESS_SHELL_ASKS:
+        return False
+    if not isinstance(call_id, str) or self._tool_call_is_shell.get(call_id) is not True:
+        return False
+    cached = self._tool_call_params.get(call_id, {})
+    if isinstance(cached, dict) and cached.get("command"):
+        return False
+    following = await self._read_message(
+        timeout=min(_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
+    )
+    if following is None:
+        return False
+    room = self._buffer.maxlen is None or len(self._buffer) <= self._buffer.maxlen - 2
+    if not (room and _is_mimocode_running_input(following, params.get("sessionId"), call_id)):
+        # Not the update: hand it back untouched, ahead of everything still queued.
+        self._buffer.appendleft(following)
+        return False
+    # Update first, so the dispatcher caches the command before it builds the permission.
     self._buffer.appendleft(msg)
     self._buffer.appendleft(following)
     return True
@@ -604,10 +689,15 @@ async def _prompt_loop(
                 continue
 
             action = self._process_message(msg, req_id)
-            if (
-                action == "permission"
-                and self.backend == ACP_BACKEND_OPENCODE
-                and await self._defer_opencode_shell_permission(msg, remaining)
+            if action == "permission" and (
+                (
+                    self.backend == ACP_BACKEND_OPENCODE
+                    and await self._defer_opencode_shell_permission(msg, remaining)
+                )
+                or (
+                    self.backend == ACP_BACKEND_MIMOCODE
+                    and await self._defer_mimocode_shell_permission(msg, remaining)
+                )
             ):
                 self.last_prompt_stats.event_count -= 1
                 continue

@@ -973,7 +973,7 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: harness. Declared rather than discovered so a DELETED splice fails the test below
 #: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
 #: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "copilot", "deepseek", "goose", "opencode", "pi"]
+_MCP_SEAM_HOOKS = ["claude", "copilot", "deepseek", "goose", "mimocode", "opencode", "pi"]
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
