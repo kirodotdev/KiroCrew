@@ -829,9 +829,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 f"Error: memory store {store_name!r} is a private V2 store, and this import "
                 "cannot carry the scope, surface, crew, session and derivation facets its "
                 "rows hold, so nothing was written. Import into a V1 store, or use the "
-                "owner-authorized copy in the dashboard, which preserves provenance."
+                "owner-authorized copy in the dashboard, which preserves provenance.",
+                file=sys.stderr,
             )
-            return
+            sys.exit(1)
         import_payload: dict | None = None
         if action == "import":
             # PARSED BEFORE THE OPEN, for the same reason the guard above exists. `import`
@@ -1068,9 +1069,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         "exported here. That tree is read through a fence this verb does not "
                         "carry, and its refusal is indistinguishable from an empty file, so "
                         "no payload is written rather than one claiming the tree is empty. "
-                        "Re-run without --include-markdown to export the store's rows."
+                        "Re-run without --include-markdown to export the store's rows.",
+                        file=sys.stderr,
                     )
-                    return
+                    sys.exit(1)
                 episodic = store.get_episodic_list(limit=_EXPORT_EPISODIC_LIMIT)
                 events = store.get_events(limit=_EXPORT_EVENTS_LIMIT)
                 # A full page may hide more rows. Reading past the limit counts

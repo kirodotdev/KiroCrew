@@ -656,9 +656,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         continue
                     if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
                         print(
-                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
+                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})",
+                            file=sys.stderr,
                         )
-                        return
+                        sys.exit(1)
                 kwargs[field] = val
         if getattr(args, "agent", None) is not None:
             agent_val = args.agent.strip()

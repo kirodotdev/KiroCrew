@@ -309,6 +309,28 @@ class TestCronCli:
             out = capsys.readouterr().out
             assert "at least one field" in out
 
+    def test_cron_update_bad_channel_exits_1_on_stderr(self, tmp_path, capsys):
+        """A refused channel writes nothing and must not read as a success to a script."""
+        with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
+            mock_svc = mock_svc_cls.return_value
+            args = argparse.Namespace(
+                cron_action="update",
+                job_id="job1",
+                name=None,
+                message=None,
+                every_secs=None,
+                cron_expr=None,
+                channel="!!",
+                approval_mode=None,
+            )
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
+            out, err = capsys.readouterr()
+            assert "invalid channel ID format" in err
+            assert out == ""
+            mock_svc.update_job.assert_not_called()
+
     def test_cron_update_every_and_cron_exclusive(self, tmp_path, capsys):
         with patch("kiro_crew.cli_commands.CronService"):
             args = argparse.Namespace(

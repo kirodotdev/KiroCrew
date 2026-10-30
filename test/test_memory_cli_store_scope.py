@@ -515,10 +515,12 @@ class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
 
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [{"key": _BETA_KEY, "value": "x"}]}), "utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=store_name))
-        out = capsys.readouterr().out
-        assert "cannot carry the scope, surface, crew, session and derivation facets" in out
-        assert "Import complete" not in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=store_name))
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "cannot carry the scope, surface, crew, session and derivation facets" in err
+        assert out == ""
         assert _BETA_KEY not in _semantic_keys(store_name)
         # The axes the refusal protects, read from the schema rather than restated.
         assert memory_schema.FACET_NAMES == (
@@ -601,10 +603,14 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
         markdown.mkdir(parents=True, exist_ok=True)
         (markdown / "preferences.md").write_text("- acme prefers tabs\n", encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME, include_markdown=True))
-        out = capsys.readouterr().out
-        assert "cannot be exported here" in out
-        assert '"semantic"' not in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(mem_action="export", output=None, store=_ACME, include_markdown=True)
+            )
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "cannot be exported here" in err
+        assert out == ""
         assert "acme prefers tabs" not in out
 
     def test_the_refusal_leaves_no_file_behind(
@@ -612,15 +618,17 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
     ) -> None:
         """No half-file, because a half-file is what gets mistaken for the copy."""
         out_file = tmp_path / "acme.json"
-        cc._memory_cmd(
-            _ns(
-                mem_action="export",
-                output=str(out_file),
-                store=_ACME,
-                include_markdown=True,
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(
+                    mem_action="export",
+                    output=str(out_file),
+                    store=_ACME,
+                    include_markdown=True,
+                )
             )
-        )
-        assert "cannot be exported here" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "cannot be exported here" in capsys.readouterr().err
         assert not out_file.exists()
 
     def test_include_markdown_still_works_on_the_default_store(
