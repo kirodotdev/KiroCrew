@@ -36,6 +36,7 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: reports ``(is_redirection, consumes_next_word)``; it reads a WHOLE token, so
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
+_LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
@@ -189,6 +190,28 @@ def _command_lines(text: str) -> "list[str]":
     return lines
 
 
+def _expands_nothing(command: str) -> bool:
+    """*command* is one command and bash hands it on verbatim: it holds a ``\\$``, every
+    ``$`` is single-quoted, and there is no ``"``, backtick or ``\\\\``. Read once per call."""
+    if "\\$" not in command or any(mark in command for mark in ('"', "`", "\\\\")):
+        return False
+    if len(_commands.read_commands(command)) != 1:
+        return False
+    return all(c.state == 1 for c in _shell._iter_shell_chars(command) if c.char == "$")
+
+
+def _literal_shell_script(tokens: "list[str]") -> "str | None":
+    """The script of exactly ``<shell> -c '<script>'`` or ``<shell> <<< '<script>'``
+    (``bash``, ``sh`` …, never ``busybox``). Only that script, in a command that
+    :func:`_expands_nothing`, keeps its ``\\$`` literal; any other payload (a forwarded
+    ``sed …/e``, ``env -S``, ``xargs``) may be unescaped, so it keeps the fail-closed view."""
+    if len(tokens) != 3 or _shell._program_basename(tokens[0]) not in _LITERAL_SHELLS:
+        return None
+    if tokens[1] != "<<<" and not _shell._is_shell_command_flag(tokens[1]):
+        return None
+    return tokens[2]
+
+
 def _command_tokens(text: str) -> "list[list[str]]":
     """Dequoted argv of each command the shared reader finds in each line, read every
     way so each reading only adds payloads; a command stopped at ``<<`` runs to the
@@ -216,6 +239,7 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
     """
     kinds: set[str] = set()
     pending, seen = [command], {command}
+    verbatim = _expands_nothing(command)
     while pending:
         source = pending.pop()
         kinds |= _rm_wipe_targets(source)
@@ -225,6 +249,7 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
             payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
             if not payloads:
                 continue
+            script = _literal_shell_script(tokens) if source == command and verbatim else None
             programs = _shell._argv_programs(tokens)
             disqualified = _shell._data_consumer_command_disqualified(tokens)
             joined = "\0".join(tokens)
@@ -241,8 +266,9 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
                     for i in spots
                 ):
                     continue
-                # The tokenizer keeps ``\\$`` inside double quotes, where bash drops it.
-                for view in (payload, payload.replace("\\$", "$")):
+                literal = payload == script
+                views = (payload,) if literal else (payload, payload.replace("\\$", "$"))
+                for view in views:
                     if len(view) < len(source) and view not in seen:
                         seen.add(view)
                         pending.append(view)

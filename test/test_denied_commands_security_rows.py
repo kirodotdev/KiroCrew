@@ -778,8 +778,33 @@ class TestRmFloorReadsNestedShellPayloads:
             "bash -c <>/tmp/o 'RM -fr ~'",
             "sh -c>/tmp/o 'RM -fr /'",
             "env -S</dev/null 'RM -fr ~'",
-            # Known fail-closed: the tokenizer keeps ``\\$`` here, read as ``$``.
-            "bash -c 'RM -fr \\$HOME'",
+            # bash drops a double-quoted ``\\$``, so the payload expands it.
+            'sh -c "RM -rf \\${HOME}"',
+            'bash <<< "RM -fr \\$HOME"',
+            "bash -c 'bash -c \"RM -fr \\$HOME\"'",
+            # The outer shell expands a ``$`` after ``\\\\``; the inner one strips the ``\\``.
+            'bash -c "RM -fr \\\\$HOME"',
+            'bash <<< "RM -fr \\\\${HOME}"',
+            # A backtick body drops the ``\\`` before ``$``, even in a single-quoted payload.
+            "bash -c 'echo `RM -fr \\$HOME`'",
+            "bash -c 'echo \"`RM -fr \\$HOME`\"'",
+            # So does an enclosing backtick, and a nested ``$'…'`` decodes ``\\\\`` first.
+            "echo `bash -c 'RM -fr \\$HOME'`",
+            "x=`sh -c 'RM -rf \\${HOME}'`",
+            "echo \"`bash <<< 'RM -fr \\$HOME'`\"",
+            "bash -c \"bash -c $'RM -fr " + "\\" * 4 + "$HOME'\"",
+            # A live ``$`` or any ``"`` or ``\\\\`` beside the payload: its ``\\$`` fails closed.
+            'bash -c "RM -fr \\\\"$HOME',
+            'sh -c "RM -fr \\\\"${HOME}',
+            'bash <<< "RM -fr \\\\"$HOME',
+            "bash -c 'RM -fr \\'\"$HOME\"",
+            "bash -c 'RM -fr \\'$HOME",
+            "bash -c 'RM -fr \"\\$HOME\"'",
+            # Only a lone shell keeps a ``\\$`` literal: GNU sed's ``e`` flag unescapes it.
+            "printf x | sed 's/.*/RM -fr \\$HOME/e'",
+            "printf x | sed -e 's|.*|RM -fr \\${HOME}/*|e'",
+            # Only the shell's own script stays literal, not argv it forwards.
+            "bash -c 'IFS=;$@' _ sed 's/.*/RM -fr \\$HOME/e' /etc/hostname",
             # A live control operator glued to a word ends the command.
             "echo x&&bash -c 'RM -fr /'",
             "echo x &&bash -c 'RM -fr ~'",
@@ -818,6 +843,11 @@ class TestRmFloorReadsNestedShellPayloads:
             "cat > docs/notes.md <<-EOF\n- bash -c 'RM -r -f /' is refused\nEOF",
             "git commit -F - <<'EOF'\nnote: $(bash -c 'RM -fr ~') blocked\nEOF",
             "cat > f <<'EOF'\necho $( bash -c 'RM -fr /' )\nEOF",
+            # A single-quoted ``\\$`` reaches the payload as is: a literal ``$HOME`` path.
+            "bash -c 'RM -fr \\$HOME'",
+            "sh -c 'RM -rf \\${HOME}'",
+            "bash <<< 'RM -fr \\$HOME'",
+            "bash -c 'cd /tmp; RM -fr \\$HOME/*'",
         ],
     )
     def test_a_nested_harmless_command_keeps_its_verdict(self, command):
