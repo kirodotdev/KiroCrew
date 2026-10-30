@@ -710,7 +710,7 @@ class TestGptFalsificationPassSafeguards:
         # ...whose cp bootstrap must itself fail closed: cp succeeds on a
         # zero-byte source, and an empty staged block would silently drop a
         # contract section while the lane still publishes a verdict.
-        assert "is empty in the checkout too" in codex
+        assert "Refusing to review against a partial contract" in codex
         loop_line = _line_containing(codex, "for p in gpt-")
         for name in self.SHARED_PROMPTS:
             assert name in loop_line, name

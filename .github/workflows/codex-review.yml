@@ -311,20 +311,33 @@ jobs:
         run: |
           # Load the shared GPT prompt blocks from the BASE commit, mirroring
           # the Opus lanes: a PR must not edit the contract that judges it.
-          # Fall back to the checked-out copy (with a warning) only when a
-          # block is absent on the base -- the bootstrap window for the PR
-          # that introduces a block. If it is absent everywhere, fail closed.
+          # Fall back to the checked-out copy (with a warning) only when the
+          # base commit's tree has NO such path -- the bootstrap window for the
+          # PR that introduces a block. `git ls-tree` tells that apart from a
+          # read that failed (an object the checkout lacks): it prints nothing
+          # and exits 0 for an absent path, and exits non-zero when the tree
+          # cannot be read. Any failed read, and a present-but-empty block,
+          # fails closed rather than handing the PR its own contract.
           rm -rf .review-prompts-gpt
           mkdir -p .review-prompts-gpt
           for p in gpt-preamble gpt-diff-not-evidence gpt-repo-context gpt-review-core gpt-round-convergence gpt-output-contract gpt-falsification-mandate gpt-falsification-verdict; do
-            git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts-gpt/$p.md" 2>/dev/null || true
-            if [ ! -s ".review-prompts-gpt/$p.md" ]; then
-              echo "::warning::.github/review-prompts/$p.md is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the PR that introduces it)."
-              cp ".github/review-prompts/$p.md" ".review-prompts-gpt/$p.md"
-              if [ ! -s ".review-prompts-gpt/$p.md" ]; then
-                echo "::error::.github/review-prompts/$p.md is empty in the checkout too. Refusing to review against a partial contract."
+            src=".github/review-prompts/$p.md"
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "$src")"; then
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for $src. Failing closed rather than falling back to the PR's copy."
+              exit 1
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts-gpt/$p.md"; then
+                echo "::error::$src is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the PR's copy."
                 exit 1
               fi
+            else
+              echo "::warning::$src is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the PR that introduces it)."
+              cp ".github/review-prompts/$p.md" ".review-prompts-gpt/$p.md"
+            fi
+            if [ ! -s ".review-prompts-gpt/$p.md" ]; then
+              echo "::error::$src is empty (base commit $BASE_SHA, or the checkout on the bootstrap round). Refusing to review against a partial contract."
+              exit 1
             fi
           done
 

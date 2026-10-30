@@ -295,13 +295,25 @@ jobs:
           rm -rf .review-prompts-scope
           mkdir -p .review-prompts-scope
           contract=".review-prompts-scope/security-scope.md"
-          git show "$BASE_SHA:.github/review-prompts/security-scope.md" > "$contract" 2>/dev/null || true
-          if [ ! -s "$contract" ]; then
+          # Only a base TREE with no such path is the bootstrap window. `git
+          # ls-tree` prints nothing and exits 0 for an absent path, and exits
+          # non-zero when the tree cannot be read; a failed read must not take
+          # the bootstrap branch and hand the PR its own contract.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- .github/review-prompts/security-scope.md)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for .github/review-prompts/security-scope.md. Failing closed rather than falling back to the head commit's copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:.github/review-prompts/security-scope.md" > "$contract" || [ ! -s "$contract" ]; then
+              echo "::error::.github/review-prompts/security-scope.md is on the base commit ($BASE_SHA) but could not be read, or is empty. Refusing to review against an unspecified contract."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the PR that
             # introduces the contract. Use the head COMMIT and say so; a contract
             # absent EVERYWHERE fails closed rather than degrading into an
             # unspecified review that could look clean.
-            echo "::warning::.github/review-prompts/security-scope.md is missing or empty on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
+            echo "::warning::.github/review-prompts/security-scope.md is absent on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
             # The HEAD BLOB, never the checkout. This job's workspace is the BASE
             # tree, so the head copy is not on disk to `cp` at all -- and committed
             # content is what `publish`'s own bootstraps already read, for the same
@@ -767,16 +779,27 @@ jobs:
           rm -rf "$dir"
           mkdir -p "$dir"
           dest="$dir/scope_redact.py"
-          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
-          if [ ! -s "$dest" ]; then
+          # Only a base TREE with no such path is the bootstrap window: `git
+          # ls-tree` exits 0 with no output for an absent path and non-zero when
+          # the tree cannot be read, so a failed read fails closed instead.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- scripts/scope_redact.py)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/scope_redact.py. Failing closed rather than falling back to the checked-out copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:scripts/scope_redact.py" > "$dest"; then
+              echo "::error::scripts/scope_redact.py is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the checked-out copy."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the pull request that
             # introduces the redactor, and admissible in this job for the same reason
             # the harness bootstrap is: nothing here is worth reaching.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+            echo "::warning::scripts/scope_redact.py is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
             cp scripts/scope_redact.py "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
+            echo "::error::scripts/scope_redact.py is empty on the base commit, or missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -978,20 +1001,33 @@ jobs:
           mkdir -p "$HARNESS"
           bootstrap=""
           for f in scope_candidates.py deny_diff.py; do
-            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
-            if [ ! -s "$HARNESS/$f" ]; then
+            # Only a base TREE with no such path is the bootstrap window: `git
+            # ls-tree` exits 0 with no output for an absent path and non-zero
+            # when the tree cannot be read, so a failed read fails closed.
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "scripts/$f")"; then
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/$f. Failing closed rather than falling back to the checked-out copy."
+              exit 1
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f"; then
+                echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+                echo "::error::scripts/$f is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the checked-out copy."
+                exit 1
+              fi
+            else
               # Absent on the base -- the bootstrap window for the pull request that
               # introduces the harness, exactly as the corpus above handles its own
               # first commit. Use the checked-out copy and NAME the bootstrap; a
               # harness absent everywhere fails closed rather than degrading into an
               # unvalidated candidate file that could read as clean.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+              echo "::warning::scripts/$f is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
               cp "scripts/$f" "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
             if [ ! -s "$HARNESS/$f" ]; then
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
+              echo "::error::scripts/$f is empty on the base commit, or missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
               exit 1
             fi
           done
@@ -1452,17 +1488,28 @@ jobs:
           rm -rf "$dir"
           mkdir -p "$dir"
           dest="$dir/scope_redact.py"
-          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
-          if [ ! -s "$dest" ]; then
+          # Only a base TREE with no such path is the bootstrap window: `git
+          # ls-tree` exits 0 with no output for an absent path and non-zero when
+          # the tree cannot be read, so a failed read fails closed instead.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- scripts/scope_redact.py)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/scope_redact.py. Failing closed rather than falling back to the head commit's copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:scripts/scope_redact.py" > "$dest"; then
+              echo "::error::scripts/scope_redact.py is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the head commit's copy."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the pull request that
             # introduces the redactor. The HEAD BLOB, never the worktree file: this
             # job holds `pull-requests: write`, and a `cp` out of the merge-ref
             # checkout would execute a path any earlier step could have written.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            echo "::warning::scripts/scope_redact.py is absent on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
             git show "$HEAD_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
+            echo "::error::scripts/scope_redact.py is empty on the base commit, or missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -1556,15 +1603,29 @@ jobs:
           mkdir -p "$HARNESS"
           bootstrap=""
           for f in scope_candidates.py deny_diff.py; do
-            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
-            if [ ! -s "$HARNESS/$f" ]; then
+            # Only a base TREE with no such path is the bootstrap window: `git
+            # ls-tree` exits 0 with no output for an absent path and non-zero
+            # when the tree cannot be read. A failed read is the same fail-closed
+            # `error` verdict as no folder anywhere, never the head's copy.
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "scripts/$f")"; then
+              echo "folded=error" >> "$GITHUB_OUTPUT"
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/$f. Refusing to fold a verdict with a folder the pull request supplied."
+              exit 0
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f"; then
+                echo "folded=error" >> "$GITHUB_OUTPUT"
+                echo "::error::scripts/$f is on the base commit ($BASE_SHA) but could not be read. Refusing to fold a verdict with a folder the pull request supplied."
+                exit 0
+              fi
+            else
               # Absent on the base -- the bootstrap window for the pull request that
               # introduces the harness. The HEAD BLOB, not the worktree file: a `cp`
               # out of this checkout would run a path any earlier step in this
               # write-scoped job could have written, and committed content is the
               # weakest thing that closes that. Same source `adjudicate` bootstraps
               # from, for the same reason.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+              echo "::warning::scripts/$f is absent on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
               git show "$HEAD_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
@@ -1572,7 +1633,7 @@ jobs:
               # No folder anywhere. `error` is the fail-closed verdict: a run that
               # could not fold has measured nothing, and the step below reds on it.
               echo "folded=error" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
+              echo "::error::scripts/$f is empty on the base commit, or missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
               exit 0
             fi
           done
