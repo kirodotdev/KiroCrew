@@ -335,14 +335,16 @@ def test_codex_still_needs_its_read_only_mode() -> None:
     assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
 
 
-def test_known_membership_is_unchanged_by_the_move() -> None:
-    """``ACP_BACKENDS_KNOWN`` gained and lost nothing.
+def test_known_membership_is_explicit() -> None:
+    """``ACP_BACKENDS_KNOWN`` names every accepted id.
 
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject.
+    provider construction accepts a value it must reject. Antigravity is the one
+    deliberate addition after the capability move.
     """
     assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == [
         "",
+        "antigravity",
         "claude",
         "codex",
         "copilot",
@@ -695,6 +697,9 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     # session's own directory without asking (measured, see the set's comment), so a
     # total ban cannot be honoured there even though the three facts hold.
     reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
+    # Antigravity advertises the default permission flow, but no authenticated turn
+    # proves every native and MCP call asks, so its ban is not claimed.
+    asks_unproven = {sdk_backends.ACP_BACKEND_ANTIGRAVITY}
     # A second ground, beside the refusal: a zero-tool session that MOUNTS NO TOOL,
     # so no call exists for a pre-approval to run. claude's session options carry an
     # empty ``tools`` with ``strictMcpConfig`` and an empty wire array, measured on
@@ -712,6 +717,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
                 )
                 and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
                 and backend not in reads_unasked
+                and backend not in asks_unproven
             )
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN

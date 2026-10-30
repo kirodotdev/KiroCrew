@@ -224,6 +224,7 @@ _SCANNED_MODULES = [
     "src/kiro_crew/acp/client_transport.py",
     "src/kiro_crew/acp/client_turn.py",
     "src/kiro_crew/acp/client_turn_control.py",
+    "src/kiro_crew/acp/client_unasked_watch.py",
     "src/kiro_crew/acp/client_usage.py",
     # The client's error formatter and classifiers, with their redactor calls.
     "src/kiro_crew/acp/transport_errors.py",

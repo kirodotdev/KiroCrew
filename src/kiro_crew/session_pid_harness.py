@@ -84,9 +84,16 @@ _MANAGED_AGENT_MARKERS: tuple[str, ...] = tuple(
 #: Neither is a kill (the report says so in as many words), and both are wrong.
 #:
 #: ``kiro-cli-chat`` belongs here and not above: as an exact basename it is not
-#: covered by ``kiro-cli``.
+#: covered by ``kiro-cli``. ``agy_acp_server.par`` is the POSIX file name of the Antigravity
+#: runtime; the registry holds only its stem.
 _MANAGED_AGENT_BASENAMES: frozenset[bytes] = frozenset(
-    name.encode() for name in {*agent_process_markers(), "claude", "kiro-cli-chat"}
+    name.encode()
+    for name in {
+        *agent_process_markers(),
+        "claude",
+        "kiro-cli-chat",
+        "agy_acp_server.par",
+    }
 )
 
 

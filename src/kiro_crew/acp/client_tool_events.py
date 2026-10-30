@@ -66,7 +66,10 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+)
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE, fire_tool_hooks, get_global_hook_store
@@ -618,7 +621,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_name = harness_tool_name(update)
+                _harness_name = harness_tool_name(update, backend=self.backend)
                 # dsh forwards the provider's tool-call id verbatim, and its
                 # permission frame names only that id. Two calls under one id
                 # in a turn leave the name unknown, so neither is read as the
@@ -636,6 +639,15 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 and self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
             ):
                 self._tool_call_identity_unreadable[tool_call_id] = True
+            # Antigravity's bounded ``_meta.mcp`` channel: the mark describes the
+            # frame the identity caches above were just written from, so a later
+            # frame under the same id sets or clears it with them, as the
+            # handle's store does. ``_build_permission_event`` refuses on it.
+            elif self.backend == ACP_BACKEND_ANTIGRAVITY:
+                if identity.identity_unreadable:
+                    self._tool_call_identity_unreadable[tool_call_id] = True
+                else:
+                    self._tool_call_identity_unreadable.pop(tool_call_id, None)
             # Copilot only (H13): it names an MCP call nowhere but its title.
             if self._is_copilot and not identity.mcp_server_name and not is_shell:
                 self._recover_copilot_mcp_identity(tool_call_id, update)
