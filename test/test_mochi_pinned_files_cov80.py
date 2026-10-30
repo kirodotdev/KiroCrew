@@ -412,7 +412,8 @@ class TestRemoveAndMarkSeen:
             raise OSError("ENOSPC")
 
         monkeypatch.setattr(pfs, "atomic_write", _boom)
-        assert svc.remove_pin(str(target)) is False
+        with pytest.raises(pfs.PinsWriteError):
+            svc.remove_pin(str(target))
         assert [p["path"] for p in svc.get_pins()] == [str(target)]
         # Still watched: nothing durably changed, so the watcher must stay.
         assert svc.get_watched_paths() == {str(target)}
@@ -444,7 +445,8 @@ class TestRemoveAndMarkSeen:
             raise OSError("ENOSPC")
 
         monkeypatch.setattr(pfs, "atomic_write", _boom)
-        svc.mark_seen(str(target))
+        with pytest.raises(pfs.PinsWriteError):
+            svc.mark_seen(str(target))
         assert svc.get_pins()[0]["updatedAt"] == NOW
         assert events == []
 
