@@ -128,7 +128,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "update_self",
             "description": (
                 "Change what the user sees of you: your display name, your description "
-                "(a short line about what you do), or your ghost face. Applied at once, "
+                "(a short line about what you do), or your ghost face. A display name is "
+                "a label only: other mates still reach you by your short name, which it "
+                "never changes. Applied at once, "
                 "shown in this chat as one line the user can undo. Pass only the fields "
                 "the user asked to change, with the values exactly as they gave them. "
                 'avatar is {"traits": {...}} naming one or more axes (' + vocab + "; "
@@ -636,10 +638,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         changed = d.get("changed") or []
         if not changed:
             return _render({**d, "next": "Those were already your values; nothing changed."})
+        short_name = str(d.get("member") or "").strip()
         shown = {
             "display_name": "Your name now shows as "
             + str((d.get("after") or {}).get("display_name") or "")
-            + " everywhere in the dashboard; answer to it from now on.",
+            + " everywhere in the dashboard; answer to it from now on. The new name is "
+            "a label: other mates still reach you by your short name"
+            + (f", {short_name}" if short_name else "")
+            + ", which does not change. Tell the user that in the same reply.",
             "description": "Your description is updated on the roster and in your prompt.",
             "avatar": "Your face is updated everywhere the dashboard shows you.",
         }

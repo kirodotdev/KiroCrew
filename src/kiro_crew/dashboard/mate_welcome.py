@@ -54,7 +54,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
-from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,8 @@ _WELCOME_OFFER = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_tools"
 #: (``member_mate_tools``): the user saves the name on its crewmate page.
 _WELCOME_OFFER_NO_TOOLS = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_no_tools")
 
-#: Mate's welcome for a user with no other crewmate. ``{name}`` is its label.
+#: Mate's welcome for a user with no other crewmate. ``{name}`` is its label,
+#: ``{key}`` its short name.
 FIRST_WELCOME = _KICKOFF_PREAMBLE + _WELCOME_INTRO + _FIRST_OF_CREW + _WELCOME_OFFER
 
 #: Mate's welcome for a user who already has other crewmates.
@@ -227,7 +228,7 @@ def welcome_kickoff(
         template = (
             FIRST_WELCOME_WITH_CREW_NO_TOOLS if has_other_crewmates else FIRST_WELCOME_NO_TOOLS
         )
-    return template.format(name=label or ASSISTANT_DEFAULT_DISPLAY_NAME)
+    return template.format(name=label or ASSISTANT_DEFAULT_DISPLAY_NAME, key=ASSISTANT_MEMBER_NAME)
 
 
 #: One-time claim under the member's directory (``members/<slug>/``).
