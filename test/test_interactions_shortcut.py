@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -89,6 +90,32 @@ def orch():
     return FakeOrch()
 
 
+@pytest.fixture
+def sel_log(tmp_path, monkeypatch):
+    """A real, synchronous security event log under tmp_path, read back by the tests."""
+    from kiro_crew import sel as sel_mod
+    from kiro_crew.slack import interactions
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    monkeypatch.setattr(interactions, "sel", lambda: log)
+    return log
+
+
+def _sel_rows(log) -> list[dict]:
+    keys = ("caller_identity", "operation", "outcome", "source", "resources", "error")
+    return [{k: e[k] for k in keys} for e in log.recent()]
+
+
+def _log_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.slack.interactions"]
+
+
 class TestRegisterViewHandler:
     def test_registers_handler(self):
         handler = AsyncMock()
@@ -107,16 +134,20 @@ class TestHandleViewSubmission:
         handler.assert_awaited_once_with(payload)
 
     @pytest.mark.asyncio
-    async def test_unknown_callback_does_not_raise(self):
+    async def test_unknown_callback_does_not_raise(self, caplog):
         payload = {"view": {"callback_id": "unknown_cb"}}
-        await handle_view_submission(payload)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.interactions"):
+            await handle_view_submission(payload)
+        assert _log_lines(caplog) == ["No view handler registered for callback_id=unknown_cb"]
 
     @pytest.mark.asyncio
-    async def test_handler_exception_is_caught(self):
+    async def test_handler_exception_is_caught(self, caplog):
         handler = AsyncMock(side_effect=RuntimeError("boom"))
         register_view_handler("error_cb", handler)
         payload = {"view": {"callback_id": "error_cb"}}
-        await handle_view_submission(payload)
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.slack.interactions"):
+            await handle_view_submission(payload)
+        assert _log_lines(caplog) == ["View handler failed for callback_id=error_cb"]
 
 
 class TestHandleMessageShortcut:
@@ -620,12 +651,12 @@ class TestHandleShortcutSubmission:
         assert len(orch.slack.messages_posted) == 0
 
     @pytest.mark.asyncio
-    async def test_rejects_unauthorized_user_logs_sel(self, orch):
+    async def test_rejects_unauthorized_user_logs_sel(self, orch, sel_log):
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         with patch("kiro_crew.slack.interactions._orch", orch), \
              patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=sel_log.log_api_access)
             payload = {
                 "user": {"id": "U_NOBODY"},
                 "view": {
@@ -643,17 +674,28 @@ class TestHandleShortcutSubmission:
             source="slack",
             error="unauthorized user",
         )
+        assert _sel_rows(sel_log) == [
+            {
+                "caller_identity": "U_NOBODY",
+                "operation": "slack.shortcut_submit",
+                "outcome": "denied",
+                "source": "slack",
+                "resources": "",
+                "error": "unauthorized user",
+            }
+        ]
+        assert orch.slack.messages_posted == []
 
 
 class TestViewsOpenError:
     @pytest.mark.asyncio
-    async def test_modal_open_failure_logs_error_outcome(self, orch):
+    async def test_modal_open_failure_logs_error_outcome(self, orch, sel_log):
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         orch.slack.views_open = AsyncMock(side_effect=RuntimeError("API down"))
         with patch("kiro_crew.slack.interactions._orch", orch), \
              patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=sel_log.log_api_access)
             payload = {
                 "callback_id": "send_to_kirocrew",
                 "user": {"id": "U_OWNER"},
@@ -670,6 +712,16 @@ class TestViewsOpenError:
             resources="send_to_kirocrew",
             error="views_open failed",
         )
+        assert _sel_rows(sel_log) == [
+            {
+                "caller_identity": "U_OWNER",
+                "operation": "slack.message_shortcut",
+                "outcome": "error",
+                "source": "slack",
+                "resources": "send_to_kirocrew",
+                "error": "views_open failed",
+            }
+        ]
 
 
 class TestShortcutSubmissionSelErrors:
@@ -744,7 +796,7 @@ class TestShortcutSubmissionSelErrors:
         assert len(orch.slack.messages_posted) == 0
 
     @pytest.mark.asyncio
-    async def test_post_message_failure_logs_sel_error(self, orch):
+    async def test_post_message_failure_logs_sel_error(self, orch, sel_log):
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         orch.slack.post_message = AsyncMock(return_value=None)
@@ -752,7 +804,7 @@ class TestShortcutSubmissionSelErrors:
 
         with patch("kiro_crew.slack.interactions._orch", orch), \
              patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=sel_log.log_api_access)
             payload = {
                 "user": {"id": "U_OWNER"},
                 "view": {
@@ -775,6 +827,16 @@ class TestShortcutSubmissionSelErrors:
             source="slack",
             error="post_message failed",
         )
+        assert _sel_rows(sel_log) == [
+            {
+                "caller_identity": "U_OWNER",
+                "operation": "slack.shortcut_submit",
+                "outcome": "error",
+                "source": "slack",
+                "resources": "",
+                "error": "post_message failed",
+            }
+        ]
 
 
 class TestInit:

@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.dashboard import chat_persistence
+from kiro_crew.dashboard.chat_utils_slack_options import options_records, set_options_records
 from kiro_crew.slack import interactions as ix
 from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
@@ -444,12 +445,14 @@ class TestForgetOptionsControl:
     def test_nothing_is_forgotten_without_an_orchestrator_or_a_thread(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        recorder = MagicMock()
-        monkeypatch.setattr(ix, "forget_slack_options_for_thread", recorder)
-        ix._forget_options_control("", "m1")
+        posted = PostedOptions(channel="C1", ts="m1", choices=("A",), blocks=())
+        state = SimpleNamespace(_slack_options_by_key={}, sessions=None)
+        set_options_records(state, "slack:t1", (posted,))
+        orch.dashboard_state = state
+        ix._forget_options_control("", "m1", keys=("slack:t1",), channel="C1")
         monkeypatch.setattr(ix, "_orch", None)
-        ix._forget_options_control("t1", "m1")
-        recorder.assert_not_called()
+        ix._forget_options_control("t1", "m1", keys=("slack:t1",), channel="C1")
+        assert options_records(state, "slack:t1") == (posted,)
 
     def test_a_failing_forget_is_logged_not_raised(
         self,
