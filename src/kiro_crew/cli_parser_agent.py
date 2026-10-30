@@ -367,7 +367,12 @@ Examples:
         help="Run on this model id; it outranks the member's and the template's pin",
     )
     spawn_sub.add_parser("list", help="List subagents")
-    spawn_parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
+    spawn_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: found as `kirocrew status` finds it)",
+    )
 
 
 def register_run_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) -> None:

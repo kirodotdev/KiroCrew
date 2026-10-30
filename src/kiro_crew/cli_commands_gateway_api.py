@@ -24,8 +24,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from kiro_crew.config.loader import KiroCrewConfig, read_local_secret
-from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.config.loader import read_local_secret
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import safe_terminal_line
@@ -88,8 +87,23 @@ def _spawn_row_text(row: dict[str, object]) -> str:
     return f"{row_id}  {task}"
 
 
+def _client_port(cli_port: int | None) -> int:
+    """The gateway port this command calls, found the way ``kirocrew status`` finds it.
+
+    ``resolve_client_port`` walks the flag, ``KIROCREW_PORT``, the bound port, the
+    port in ``dashboard.url`` and the running gateway's marker, so a gateway on a
+    non-default port is reached without a ``--port``. Imported in-function: a
+    module-scope import would surface on this split module's star-import facade
+    (cli_commands).
+    """
+    from kiro_crew.port_resolution import resolve_client_port
+
+    return resolve_client_port(cli_port)
+
+
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
+    args.port = _client_port(getattr(args, "port", None))
     base = f"http://127.0.0.1:{args.port}"
     action = getattr(args, "spawn_action", None)
 
@@ -284,8 +298,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
 
 def _artifact(args: argparse.Namespace) -> None:
     """List, save, view, update, or delete artifacts."""
-    cfg = KiroCrewConfig.load()
-    _host, port = parse_dashboard_url(cfg.dashboard.url)
+    port = _client_port(None)
     base = f"http://127.0.0.1:{port}"
 
     action = getattr(args, "artifact_action", None) or "list"
