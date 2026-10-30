@@ -8245,6 +8245,7 @@
       "save_failed_typed": "Impossible d'enregistrer ce profil AWS. Vérifie le nom et réessaie.",
       "applies_next": "Choisir un profil n'exécute rien maintenant. Cela définit seulement le profil AWS qu'utilisent les nouvelles discussions de ce dossier.",
       "read_failed": "Impossible de lire le profil AWS de ce projet",
+      "read_unreachable": "La passerelle est occupée et n'a pas répondu. Réessaie dans un instant.",
       "row_title": "Profil AWS de {{name}}"
     },
     "projectPicker": {

@@ -284,6 +284,20 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
 
     # Snapshot the job before yielding; reloading a cron cannot rebind it.
     cron_agents = list(job.agent_sequence)
+    # Only an agent run writes a transcript under this key; tagging a script or
+    # command job would create an empty transcript on every fire.
+    if (
+        not job.persistent_session
+        and not (job.script or job.command)
+        and not agent_sequence_dispatches(cron_agents)
+    ):
+
+        def tag_run_transcript() -> None:
+            from kiro_crew.history import ConversationLog
+
+            ConversationLog().update_metadata(session_key, {"cron_run": "ephemeral"})
+
+        await asyncio.to_thread(tag_run_transcript)
     # ── Default-agent fallback (LLM jobs) ──
     # A job with no explicit agent_id must run the configured default
     # agent (config.agent.default_agent), matching the chat transports'

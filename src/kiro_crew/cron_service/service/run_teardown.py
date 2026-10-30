@@ -43,6 +43,20 @@ logger = logging.getLogger("kiro_crew.cron")
 
 # ── Reaper ──
 
+#: How often the reaper also removes stale per-run transcripts of stateless jobs.
+_RESIDUE_PRUNE_INTERVAL_SECS = 3600.0
+
+
+async def _prune_run_residue(service: CronService, now: float) -> None:
+    """Remove stale per-run transcripts off the loop; never fail the reaper."""
+    from kiro_crew.cron_service.run_residue import prune_stale_run_transcripts
+
+    active = service.active_session_keys()
+    try:
+        await asyncio.to_thread(prune_stale_run_transcripts, active_keys=active, now=now)
+    except Exception:
+        logger.debug("Reaper: cron run transcript prune failed", exc_info=True)
+
 
 def start_reaper(self: CronService, sessions: SessionManager) -> None:
     """Start the periodic reaper loop.  Call once after the event loop is running."""
@@ -60,10 +74,16 @@ async def _reaper_loop(self: CronService) -> None:
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
+    # The first residue pass waits a full interval, so it never adds to the
+    # startup burst of a gateway restoring its sessions.
+    next_residue_prune = seams.time.monotonic() + _RESIDUE_PRUNE_INTERVAL_SECS
     while True:
         await asyncio.sleep(seams._REAPER_INTERVAL)
         now = seams.time.time()
         now_mono = seams.time.monotonic()
+        if now_mono >= next_residue_prune:
+            next_residue_prune = now_mono + _RESIDUE_PRUNE_INTERVAL_SECS
+            await _prune_run_residue(self, now)
         # Snapshot the job list CACHE-ONLY — no store lock, no _sync, no
         # disk I/O on the loop (same rationale as list_jobs/get_job). The
         # batch-remove worker (remove_jobs → asyncio.to_thread) builds a

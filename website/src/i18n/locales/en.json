@@ -5148,6 +5148,7 @@
       "save_failed_typed": "Could not save this AWS profile. Check the name and try again.",
       "applies_next": "Picking one runs nothing now. It only sets which AWS profile new chats in this folder use.",
       "read_failed": "Could not read this project's AWS profile",
+      "read_unreachable": "The gateway is busy and did not answer. Try again in a moment.",
       "row_title": "AWS profile for {{name}}"
     },
     "projectPicker": {

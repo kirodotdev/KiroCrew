@@ -163,3 +163,61 @@ class TestBuildCronSessionContext:
         )
         _key, prompt = build_cron_session_context(job)
         assert prompt == "do work"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("sequence", [[], ["deadbeef"], ["deadbeef", "cafebabe"]])
+async def test_fire_capture_tags_only_fresh_single_agent_keys(monkeypatch, persistent, sequence):
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    job = CronJob(
+        id="abcd1234",
+        name="poll",
+        message="check",
+        persistent_session=persistent,
+        agent_sequence=sequence,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef(DEFAULT_MEMORY_STORE), "template", "kirocrew"
+        ).to_record(),
+    )
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    cap = await gw._cron_capture(job)
+    metadata = ConversationLog().get_metadata(cap.session_key)
+    if not persistent and len(sequence) < 2:
+        assert cap.session_key.startswith(f"cron:{job.id}:")
+        assert metadata["cron_run"] == "ephemeral"
+    else:
+        assert "cron_run" not in metadata
+    for agent in sequence:
+        assert "cron_run" not in ConversationLog().get_metadata(f"cron:{job.id}:{agent}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [{"command": "echo hi"}, {"script": "/tmp/x.py:run"}])
+async def test_fire_capture_creates_no_transcript_for_a_code_job(monkeypatch, code):
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    job = CronJob(
+        id="abcd1234",
+        name="poll",
+        message="check",
+        persistent_session=False,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef(DEFAULT_MEMORY_STORE), "template", "kirocrew"
+        ).to_record(),
+        **code,
+    )
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    cap = await gw._cron_capture(job)
+    assert not ConversationLog().has_log(cap.session_key)
