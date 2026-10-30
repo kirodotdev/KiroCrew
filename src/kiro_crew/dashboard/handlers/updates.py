@@ -172,6 +172,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401
     from kiro_crew.platform import feed_trust  # noqa: F401
+    from kiro_crew.platform import release_apply  # noqa: F401
     from kiro_crew.platform.update_capability import AUTO_EFFECT_UNKNOWN  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_DEFERRED  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_FAILED  # noqa: F401
