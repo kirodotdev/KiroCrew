@@ -754,7 +754,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
           {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow size={11} className="inline mr-0.5" />{i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
           <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
-            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} softBreaks /></MessageErrorBoundary>
+            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} onArtifactOpen={ctx.onArtifactOpen} softBreaks /></MessageErrorBoundary>
           </div>
         </>,
       )
