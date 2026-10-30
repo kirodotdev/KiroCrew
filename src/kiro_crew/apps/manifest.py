@@ -80,6 +80,8 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
     _OVERLAY_SLUG_RE,
+    LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
+    LIFECYCLE_SCRIPT_TIMEOUT_MAX,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -98,6 +100,10 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    clamp_lifecycle_timeout,
+    lifecycle_timeout_error,
+    lifecycle_timeout_seconds,
+    logger,
 )
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -641,6 +647,9 @@ class AppManifest:
 
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
+
+        # onEnable / onDisable timeouts that are not a number at all
+        errors.extend(self.setup.validate())
 
         # Platform names the install and enable gates compare against
         errors.extend(self.platform.validate())

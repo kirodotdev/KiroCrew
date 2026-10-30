@@ -145,6 +145,12 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
+        # Self-registration parses without validating, and parsing records a
+        # lifecycle timeout `int()` cannot read instead of raising. Refuse it here,
+        # before any write, the way install validation does.
+        setup_errors = admission_manifest.setup.validate()
+        if setup_errors:
+            return AppResult(ok=False, name=name, error="; ".join(setup_errors))
     denied = app_admission_denied(
         name,
         manifest=admission_manifest,

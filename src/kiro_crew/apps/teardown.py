@@ -51,6 +51,7 @@ from kiro_crew.apps.hooks_integration import (
     stop_app_startup_hooks,
 )
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
+from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
 
@@ -302,7 +303,10 @@ async def teardown_app_runtime(
             script_output = await run_lifecycle_script(
                 name,
                 on_disable,
-                timeout=int(setup.get("onDisableTimeout", 30)),
+                # The stored record keeps the manifest as written: clamp (and log) here.
+                timeout=lifecycle_timeout_seconds(
+                    setup.get("onDisableTimeout"), app_name=name, field_name="onDisableTimeout"
+                ),
                 action="on_disable",
             )
             if script_output.get("failed"):
