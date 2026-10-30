@@ -396,7 +396,7 @@ export function InstancesPanel() {
           <span className={`inline-block w-2 h-2 rounded-full ${active ? 'bg-ok' : 'bg-warn'}`} aria-hidden />
           <span className="text-muted">
             {i18nT('pages.settings.instancesPanel.multi_instance_management_is')} <span className="text-text font-medium">{i18nT('pages.settings.instancesPanel.enabled')}</span>
-            {active ? '' : ' — not active until restart'}
+            {active ? '' : ` ${i18nT('pages.settings.instancesPanel.not_active_until_restart')}`}
           </span>
         </div>
         <Btn onClick={() => setEnabledMutation.mutate(false)} disabled={setEnabledMutation.isPending} aria-label={i18nT('pages.settings.instancesPanel.disable_multi_instance_management')}>

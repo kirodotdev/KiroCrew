@@ -18022,7 +18022,8 @@
         "default_destination_hint": "«Отправить копию» показывает эту crew первой с пометкой «по умолчанию». Папка может выбрать свою.",
         "default_destination_none": "Без значения по умолчанию",
         "default_destination_not_registered": "{{id}} (не зарегистрирована)",
-        "default_destination_save_failed": "Не удалось сохранить crew назначения по умолчанию."
+        "default_destination_save_failed": "Не удалось сохранить crew назначения по умолчанию.",
+        "not_active_until_restart": "— не активно до перезапуска"
       },
       "notificationsPanel": {
         "desktop_alerts": "Уведомления на рабочем столе",
@@ -18144,7 +18145,10 @@
         "custom_sound_preview": "Воспроизвести",
         "custom_sound_choose_where": "Выбери, где он звучит, в разделе «Звуки по категориям»",
         "custom_sound_kind_file": "Файл",
-        "custom_sound_kind_tones": "Тоны"
+        "custom_sound_kind_tones": "Тоны",
+        "priority_critical": "Критический",
+        "priority_default": "По умолчанию",
+        "priority_passive": "Тихий"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

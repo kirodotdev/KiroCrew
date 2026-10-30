@@ -17727,7 +17727,8 @@
         "default_destination_hint": "\"Enviar uma cópia para\" mostra primeiro esta crew, marcada como padrão. Uma pasta pode escolher a sua.",
         "default_destination_none": "Sem padrão",
         "default_destination_not_registered": "{{id}} (não registrada)",
-        "default_destination_save_failed": "Não foi possível salvar a crew de destino padrão."
+        "default_destination_save_failed": "Não foi possível salvar a crew de destino padrão.",
+        "not_active_until_restart": "— inativo até reiniciar"
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas da área de trabalho",
@@ -17849,7 +17850,10 @@
         "custom_sound_preview": "Reproduzir",
         "custom_sound_choose_where": "Escolha onde ele toca em Sons por categoria",
         "custom_sound_kind_file": "Arquivo",
-        "custom_sound_kind_tones": "Tons"
+        "custom_sound_kind_tones": "Tons",
+        "priority_critical": "Crítica",
+        "priority_default": "Padrão",
+        "priority_passive": "Passiva"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

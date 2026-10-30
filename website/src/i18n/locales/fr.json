@@ -17727,7 +17727,8 @@
         "default_destination_hint": "« Envoyer une copie à » affiche d’abord cette crew, marquée par défaut. Un dossier peut choisir la sienne.",
         "default_destination_none": "Pas de valeur par défaut",
         "default_destination_not_registered": "{{id}} (non enregistrée)",
-        "default_destination_save_failed": "Impossible d’enregistrer la crew de destination par défaut."
+        "default_destination_save_failed": "Impossible d’enregistrer la crew de destination par défaut.",
+        "not_active_until_restart": "— inactive jusqu’au redémarrage"
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertes du bureau",
@@ -17849,7 +17850,10 @@
         "custom_sound_preview": "Écouter",
         "custom_sound_choose_where": "Choisis où il se joue dans Sons par catégorie",
         "custom_sound_kind_file": "Fichier",
-        "custom_sound_kind_tones": "Tonalités"
+        "custom_sound_kind_tones": "Tonalités",
+        "priority_critical": "Critique",
+        "priority_default": "Par défaut",
+        "priority_passive": "Passive"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

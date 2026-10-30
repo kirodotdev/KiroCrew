@@ -17137,7 +17137,8 @@
         "default_destination_hint": "“发送副本到”会优先列出此 crew，并标记为默认。文件夹可以选择自己的 crew。",
         "default_destination_none": "无默认值",
         "default_destination_not_registered": "{{id}}（未注册）",
-        "default_destination_save_failed": "无法保存默认目标 crew。"
+        "default_destination_save_failed": "无法保存默认目标 crew。",
+        "not_active_until_restart": "— 重启后才会生效"
       },
       "notificationsPanel": {
         "desktop_alerts": "桌面通知",
@@ -17259,7 +17260,10 @@
         "custom_sound_preview": "播放",
         "custom_sound_choose_where": "前往“分类提示音”选择在哪里播放",
         "custom_sound_kind_file": "文件",
-        "custom_sound_kind_tones": "音符"
+        "custom_sound_kind_tones": "音符",
+        "priority_critical": "紧急",
+        "priority_default": "默认",
+        "priority_passive": "静默"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

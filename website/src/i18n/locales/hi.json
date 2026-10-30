@@ -17432,7 +17432,8 @@
         "default_destination_hint": "\"कॉपी भेजें\" में यह crew डिफ़ॉल्ट के रूप में सबसे पहले दिखती है। कोई फ़ोल्डर अपनी crew चुन सकता है।",
         "default_destination_none": "कोई डिफ़ॉल्ट नहीं",
         "default_destination_not_registered": "{{id}} (पंजीकृत नहीं)",
-        "default_destination_save_failed": "डिफ़ॉल्ट गंतव्य crew सहेजी नहीं जा सकी।"
+        "default_destination_save_failed": "डिफ़ॉल्ट गंतव्य crew सहेजी नहीं जा सकी।",
+        "not_active_until_restart": "— रीस्टार्ट होने तक सक्रिय नहीं"
       },
       "notificationsPanel": {
         "desktop_alerts": "डेस्कटॉप सूचनाएँ",
@@ -17554,7 +17555,10 @@
         "custom_sound_preview": "चलाओ",
         "custom_sound_choose_where": "श्रेणी-वार ध्वनियाँ में चुनो कि यह कहाँ बजे",
         "custom_sound_kind_file": "फ़ाइल",
-        "custom_sound_kind_tones": "टोन"
+        "custom_sound_kind_tones": "टोन",
+        "priority_critical": "गंभीर",
+        "priority_default": "डिफ़ॉल्ट",
+        "priority_passive": "शांत"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

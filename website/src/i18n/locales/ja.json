@@ -17137,7 +17137,8 @@
         "default_destination_hint": "「コピーを送信」にこの crew が既定として最初に表示されます。フォルダーごとに別の crew を選べます。",
         "default_destination_none": "既定なし",
         "default_destination_not_registered": "{{id}}（未登録）",
-        "default_destination_save_failed": "既定の送信先 crew を保存できませんでした。"
+        "default_destination_save_failed": "既定の送信先 crew を保存できませんでした。",
+        "not_active_until_restart": "— 再起動するまで有効になりません"
       },
       "notificationsPanel": {
         "desktop_alerts": "デスクトップ通知",
@@ -17259,7 +17260,10 @@
         "custom_sound_preview": "再生",
         "custom_sound_choose_where": "「カテゴリごとのサウンド」で鳴らす場所を選ぶ",
         "custom_sound_kind_file": "ファイル",
-        "custom_sound_kind_tones": "トーン"
+        "custom_sound_kind_tones": "トーン",
+        "priority_critical": "緊急",
+        "priority_default": "デフォルト",
+        "priority_passive": "控えめ"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

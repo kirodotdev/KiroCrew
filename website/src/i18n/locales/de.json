@@ -17432,7 +17432,8 @@
         "default_destination_hint": "„Kopie senden an“ zeigt diese Crew zuerst, als Standard markiert. Ein Ordner kann eine eigene wählen.",
         "default_destination_none": "Keine Vorgabe",
         "default_destination_not_registered": "{{id}} (nicht registriert)",
-        "default_destination_save_failed": "Die Standard-Zielcrew konnte nicht gespeichert werden."
+        "default_destination_save_failed": "Die Standard-Zielcrew konnte nicht gespeichert werden.",
+        "not_active_until_restart": "— erst nach einem Neustart aktiv"
       },
       "notificationsPanel": {
         "desktop_alerts": "Desktop-Benachrichtigungen",
@@ -17554,7 +17555,10 @@
         "custom_sound_preview": "Abspielen",
         "custom_sound_choose_where": "Wähle unter Töne pro Kategorie, wo er erklingt",
         "custom_sound_kind_file": "Datei",
-        "custom_sound_kind_tones": "Töne"
+        "custom_sound_kind_tones": "Töne",
+        "priority_critical": "Kritisch",
+        "priority_default": "Standard",
+        "priority_passive": "Passiv"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

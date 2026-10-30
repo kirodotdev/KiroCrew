@@ -17137,7 +17137,8 @@
         "default_destination_hint": "\"사본 보내기\"에 이 crew가 기본으로 표시되어 먼저 나옵니다. 폴더마다 다른 crew를 고를 수 있습니다.",
         "default_destination_none": "기본값 없음",
         "default_destination_not_registered": "{{id}} (등록되지 않음)",
-        "default_destination_save_failed": "기본 대상 crew를 저장하지 못했습니다."
+        "default_destination_save_failed": "기본 대상 crew를 저장하지 못했습니다.",
+        "not_active_until_restart": "— 다시 시작할 때까지 활성화되지 않음"
       },
       "privacyPanel": {
         "recordMetricsLabel": "메트릭 기록",
@@ -17271,7 +17272,10 @@
         "custom_sound_preview": "재생",
         "custom_sound_choose_where": "카테고리별 소리에서 재생할 곳 선택",
         "custom_sound_kind_file": "파일",
-        "custom_sound_kind_tones": "톤"
+        "custom_sound_kind_tones": "톤",
+        "priority_critical": "긴급",
+        "priority_default": "기본",
+        "priority_passive": "조용함"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",
