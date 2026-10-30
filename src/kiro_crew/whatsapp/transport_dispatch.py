@@ -54,6 +54,7 @@ from kiro_crew.session_lifecycle import (
 )
 from kiro_crew.start_priority import person_priority
 from kiro_crew.whatsapp.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
@@ -340,20 +341,24 @@ class WhatsAppDispatcher:
 
         Serialized against the turn semaphore with ``try_acquire``: compacting
         while a turn is mutating the same session interleaves JSON-RPC on one
-        provider and races the transcript. A refused acquire is two different
-        situations to the operator -- a turn holds the session (ask again) or
+        provider and races the transcript. A refused acquire is three different
+        situations to the operator -- a turn holds the session (ask again), the
+        Kiro account changed and the next message restarts the conversation, or
         there is no session at all (nothing to compact) -- and telling them the
         wrong one leaves them waiting for a compaction that will never happen.
         Whatever is acquired is always released.
         """
         session_key = self._live_session_key(scope)
         if not await self.sessions.try_acquire(session_key):
-            has_session = False
+            receipt = COMPACT_NOTHING_TEXT
             try:
-                has_session = bool(self.sessions.has_session(session_key))
+                if self.sessions.is_retiring(session_key):
+                    receipt = COMPACT_ACCOUNT_CHANGED_TEXT
+                elif self.sessions.has_session(session_key):
+                    receipt = COMPACT_BUSY_TEXT
             except Exception:  # noqa: BLE001: a lookup failure must not eat the receipt
                 logger.warning("whatsapp: session lookup failed", exc_info=True)
-            await self._say(scope, COMPACT_BUSY_TEXT if has_session else COMPACT_NOTHING_TEXT)
+            await self._say(scope, receipt)
             return
         try:
             provider = self.sessions.get_provider(session_key)

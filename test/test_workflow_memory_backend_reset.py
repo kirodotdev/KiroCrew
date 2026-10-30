@@ -299,6 +299,12 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
         async def destroy(self, key):
             pass
 
+        async def run_identity_check(self):
+            pass
+
+        def is_retiring(self, key):
+            return False
+
     async def exercise():
         agent_fn, pool = build_pooled_agent_fn(
             Sessions(), run_id="run", max_workers=1, max_identities=1

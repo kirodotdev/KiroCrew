@@ -92,6 +92,12 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "identity_retirement"),
+    "holds_kiro_process_of_unknown_account": (
+        "function",
+        False,
+        "542f3ac72725",
+        "identity_retirement",
+    ),
     "note_stop": ("function", False, "1eda252b53bd", "turn_stop"),
     "open_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "refresh_defaults": ("function", True, "8d9c819b471f", "fleet"),

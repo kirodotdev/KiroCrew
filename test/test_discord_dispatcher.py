@@ -55,6 +55,7 @@ from kiro_crew.discord.transport_dispatch import (
     _QueuedOrigin,
 )
 from kiro_crew.messaging.attachments import cleanup
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -942,6 +943,16 @@ class TestDispatcher:
         assert sess._gp.cancelled == 1
         assert sess.queued == []
         assert "Stopped" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        d, cli, sess = _dispatcher({"u1"})
+        sess.retiring = True
+        await d.handle_message(self._msg("!compact"))
+        assert sess.acquired == [] and sess.released == []
+        assert [text for text, _ in cli.sent] == [COMPACT_ACCOUNT_CHANGED_TEXT]
 
     @pytest.mark.asyncio
     async def test_compact_uses_try_acquire_and_releases(self) -> None:

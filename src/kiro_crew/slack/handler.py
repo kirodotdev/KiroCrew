@@ -124,6 +124,7 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
     compact_unsupported_reply,
     cron_command_reply,
