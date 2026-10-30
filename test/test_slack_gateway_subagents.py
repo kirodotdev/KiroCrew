@@ -20,6 +20,22 @@ from slack_gateway_helpers import (
     _mock_sessions,
 )
 
+
+def _admit_drains(slot: MagicMock) -> None:
+    """Give a mock tab the open admission state an idle completion's drain reads.
+
+    A bare MagicMock attribute is truthy, which reads as a Stop or a close in
+    flight, and its ``_lock`` is a threading lock, not an ``asyncio.Lock``.
+    """
+    slot._lock = asyncio.Lock()
+    slot._queue = []
+    slot._turn_admission_reserved = False
+    slot.is_closing = False
+    slot._last_turn_auth_required = False
+    slot._stopping = False
+    slot._stop_state = "idle"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_subagents
 # ═══════════════════════════════════════════════════════════════════════════
@@ -321,6 +337,7 @@ class TestSubagentFinalSummaryDirective:
         slot._pending_synthesis = False  # explicit start (not a MagicMock auto-attr)
         slot._subagent_deliveries_inflight = 0  # real int so the gateway counter works
         slot._subagents_inline_collected = set()
+        _admit_drains(slot)
         ds.get_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         on_done = self._capture_on_done(orch)
@@ -334,7 +351,7 @@ class TestSubagentFinalSummaryDirective:
         self.mgr = orch.subagent_mgr
 
         info = SubagentInfo(id="a1", task="do X", parent_session_key="dashboard:s1")
-        with patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()):
+        with patch("kiro_crew.slack.gateway._start_next_queued_turn", new=AsyncMock()):
             await on_done(info)
             # flake-ok: pre-existing sleep barrier for the injection task, moved verbatim; tracked for a de-flake pass
             await asyncio.sleep(0.05)  # let the injection task settle
@@ -426,8 +443,17 @@ class TestSynthesisAfterAOneTurnBatch:
         if blocker is not None:
             slot.task = blocker
         try:
+            from kiro_crew.dashboard import chat_runner
+
             with (
-                patch("kiro_crew.slack.gateway._run_chat", new=AsyncMock()),
+                # An idle tab drains the completion through the real queue
+                # drain, which starts a stub completion turn.
+                patch.object(chat_runner, "_run_chat", new=AsyncMock()),
+                patch.object(
+                    chat_runner,
+                    "spawn_guarded_turn",
+                    side_effect=lambda _state, _slot, coro: asyncio.ensure_future(coro),
+                ),
                 patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 0.01),
             ):
                 await on_done(info)
@@ -500,6 +526,20 @@ class TestSynthesisAfterAOneTurnBatch:
             slot.task = None
         assert await self._turn_end(state, slot) is False
         assert slot._pending_synthesis is False, "the arm is consumed, not left for later"
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_held_for_the_children_runs_after_the_last_result(self, tmp_path):
+        """A message sent while the last child ran waits behind its result.
+
+        Drained first, it would be answered without that result, and a drained
+        user message disarms the batch's synthesis."""
+        on_done, state, slot, _ = self._wire(tmp_path)
+        slot.queue_append("sent while the children ran")
+
+        await self._complete(on_done, slot, "a1")
+
+        assert [entry["content"] for entry in slot._queue] == ["sent while the children ran"]
+        assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
     async def test_a_wave_digest_in_one_turn_gets_no_synthesis(self, tmp_path):
@@ -616,8 +656,10 @@ class TestSubagentDone:
         return orch, mock_sm
 
     @pytest.mark.asyncio
-    async def test_dashboard_slot_idle_triggers_run_chat(self):
-        """Subagent done → dashboard slot idle → _run_chat."""
+    async def test_dashboard_slot_idle_queues_and_drains(self):
+        """Subagent done → dashboard slot idle → queued, then the queue drains."""
+        from kiro_crew.slack.gateway import SUBAGENT_COMPLETION_KIND
+
         orch, mock_sm = self._setup_orch_with_subagent_mgr()
         on_done = mock_sm.call_args[1]["on_done"]
 
@@ -627,6 +669,7 @@ class TestSubagentDone:
         slot.key = "test-slot"
         slot.mode = ""
         slot._pending_subagent_failures = []
+        _admit_drains(slot)
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
 
         info = MagicMock()
@@ -641,14 +684,23 @@ class TestSubagentDone:
         info.elapsed = 5.0
         info.started = 0.0
 
-        with patch(
-            "kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock, return_value=None
-        ) as mock_run_chat:
+        with (
+            patch(
+                "kiro_crew.slack.gateway._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_drain,
+            patch(
+                "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
+            ) as mock_run_chat,
+        ):
             await on_done(info)
 
-        mock_run_chat.assert_called_once()
-        assert mock_run_chat.call_args.args[1] is slot
-        assert "done!" in mock_run_chat.call_args.args[2]
+        slot.queue_append.assert_called_once()
+        assert "done!" in slot.queue_append.call_args.args[0]
+        assert slot.queue_append.call_args.kwargs["kind"] == SUBAGENT_COMPLETION_KIND
+        mock_drain.assert_awaited_once_with(orch.dashboard_state, slot)
+        mock_run_chat.assert_not_called()
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.push_slots_update.assert_called()
 

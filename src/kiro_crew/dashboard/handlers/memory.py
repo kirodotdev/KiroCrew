@@ -662,7 +662,8 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
             status=400,
         )
     try:
-        limit = min(int(request.query.get("limit", "1000")), 1000)
+        # Floored as well as capped: SQLite reads a negative LIMIT as "no limit".
+        limit = max(1, min(int(request.query.get("limit", "1000")), 1000))
         # Clamped before the store binds it: see ``clamp_query_offset``.
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
@@ -898,7 +899,7 @@ async def api_memory_events(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     try:
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = max(1, min(int(request.query.get("limit", "50")), 200))
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
@@ -951,7 +952,7 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         return denial
     query = request.query.get("q", "")[:500]
     try:
-        limit = min(int(request.query.get("limit", "20")), 50)
+        limit = max(1, min(int(request.query.get("limit", "20")), 50))
     except (ValueError, TypeError):
         limit = 20
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
@@ -993,7 +994,7 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
             status=400,
         )
     try:
-        limit = min(int(request.query.get("limit", "50")), 100)
+        limit = max(1, min(int(request.query.get("limit", "50")), 100))
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)

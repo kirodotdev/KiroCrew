@@ -1371,7 +1371,7 @@ frame and the close, which is what lets a long-running client rotate to a fresh
 socket without loss. `ready` advertises the cap as `max_duration_ms` so that
 client can plan the rotation.
 
-The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` uses a request timeout, while `_prepare_local_with_progress` also bounds how long a WebSocket waits. On the WebSocket timeout the transfer is shielded and left running:
+The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` bounds each socket read with `_NETWORK_STALL_TIMEOUT_SECS`, while `_run_local_session` bounds the whole wait with `_MAX_MODEL_PREPARE_SECS` around `_relay_download_progress`. On the WebSocket timeout the transfer is shielded and left running:
 cancelling it would release the model store's transfer lock while its worker thread
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.

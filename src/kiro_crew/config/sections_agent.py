@@ -834,8 +834,10 @@ class AgentConfig:
             "sessions, background sessions and subagents) ONLY when the variable "
             "is not already set in the environment it inherits. kiro-cli sizes its "
             "thread pools by core count, and every thread counts against the agent "
-            "slice's task ceiling, so a name left out of this map defaults to "
-            "min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; kirocrew "
+            "slice's task ceiling, so where that ceiling is in force (Linux with "
+            "the agents slice) a name left out of this map defaults to "
+            "min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; on other "
+            "hosts no default is set. kirocrew "
             "doctor shows the value in force. A value set here wins, e.g. "
             '{"TOKIO_WORKER_THREADS": "8"}. Only '
             "TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a "

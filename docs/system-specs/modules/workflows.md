@@ -1537,6 +1537,14 @@ budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
 user gets a synthesized answer rather than a raw blob.
 
+A finished run's message carries its result as a `json` block when the serialized
+result is at most `_MAX_RESULT_CHARS` (4,000) characters. A longer result is cut to
+that many characters and shown in a `text` block, after a line that says it was
+truncated, gives both sizes and names the `result` field of
+`workflow_result('<run_id>')` as the complete value. A cut JSON document is not JSON,
+so a preview is never labelled `json`. A result `json.dumps` cannot serialize is shown
+as its `str()` form, in a `text` block too.
+
 An agent the run ends before it finishes has no `agent_finished`: `_RunContext.agent()`
 records that event only after its call returns, and a cancel leaves the call by
 `CancelledError`, which is not the `Exception` its handler catches, whether an operator

@@ -19,6 +19,7 @@ import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
 import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
+import { useNewFolderMove } from '../hooks/useNewFolderMove'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useCopyAck } from './FilePathMenu'
@@ -170,6 +171,7 @@ export default function SessionActionsMenu({
   const selfPopout = isSelfPopout(slotKey)
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
+  const newFolderMove = useNewFolderMove()
 
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
@@ -328,6 +330,8 @@ export default function SessionActionsMenu({
           onPick={(folderId) => move(slotKey, folderId)}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
           sortMode={folderSortMode}
+          onNewFolder={newFolderMove ? () => newFolderMove.open(slotKey) : undefined}
+          newFolderLabel={i18nT('components.sessionActionsMenu.new_folder')}
         />
       ),
       // Under the row whose list it describes, and only with folders to list,

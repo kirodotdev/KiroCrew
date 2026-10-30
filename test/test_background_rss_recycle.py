@@ -226,3 +226,34 @@ class TestAnUnreadableTreeFallsThrough:
         measure.assert_not_called()
         provider.shutdown.assert_not_awaited()
         await mgr.close_all()
+
+
+@pytest.mark.parametrize("verb", ["reset", "remove"])
+@pytest.mark.asyncio
+async def test_a_teardown_while_the_recycle_holds_the_permit_does_not_over_release_it(cfg, verb):
+    """A teardown that pops the background session while ``recycle_background``
+    holds its permit records the recycle as the holder and hands the permit on.
+    The recycle's own release must then be absorbed, not raise
+    ``ValueError: BoundedSemaphore released too many times``."""
+    mgr = await _started_manager(cfg)
+    popped = mgr._sessions[BACKGROUND_KEY]
+    base_factory = mgr._provider_factory
+
+    def factory(*args, **kwargs):
+        replacement = base_factory(*args, **kwargs)
+
+        async def _start() -> None:
+            # The recycle holds the permit here; tear the entry down under it.
+            await getattr(mgr, verb)(BACKGROUND_KEY)
+
+        replacement.start = AsyncMock(side_effect=_start)
+        return replacement
+
+    mgr._provider_factory = factory
+    try:
+        with patch("kiro_crew.session.get_session_rss_mb", return_value=_CEILING_MB):
+            await mgr.recycle_background()
+        assert BACKGROUND_KEY not in mgr._sessions
+        assert not popped.semaphore.locked()
+    finally:
+        await mgr.close_all()

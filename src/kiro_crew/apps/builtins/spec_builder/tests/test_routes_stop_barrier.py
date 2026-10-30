@@ -27,6 +27,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa:
     _redirect_state,
     _slot_stub,
 )
+from kiro_crew.testing.wait import await_until
 
 
 class _NoConfiguredOwner:
@@ -715,7 +716,9 @@ async def test_stop_revokes_a_message_after_its_final_scan_captured_old_identity
                 json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "continue"},
             )
         )
-        await asyncio.wait_for(final_scan_waiting.wait(), timeout=1)
+        # The signal, under the lost-run bound only: the first request to a freshly
+        # started server can take over a second on a Windows runner.
+        await await_until(final_scan_waiting, what="the message route's final alias scan")
         rewritten_dir = str(tmp_path / "wd" / ".kiro" / "specs" / "rewritten")
         replacement_slot = "spec-builder-s-deadbeef"
         routes._save_index(
@@ -734,7 +737,7 @@ async def test_stop_revokes_a_message_after_its_final_scan_captured_old_identity
         ) as capture:
             capture.commit()
         release_final_scan.set()
-        response = await request
+        response = await await_until(request, what="the stale message request")
         payload = await response.json()
     finally:
         release_final_scan.set()

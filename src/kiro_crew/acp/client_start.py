@@ -180,6 +180,18 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
 }
 
 
+def _jsonl_size(path: Path) -> int:
+    """Byte size of a kiro-cli session transcript, 0 when it is missing or unreadable.
+
+    Blocking: call it through ``asyncio.to_thread``. The tool-result reader seeks
+    to this offset, so a session reads only the results written after it starts.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 async def _spawn(self: AcpClient) -> None:
     """Start the ACP backend subprocess with stdio pipes, suspended, then track it.
 
@@ -890,7 +902,9 @@ async def _initialize_session(self: AcpClient) -> None:
             file_ok = True
         else:
             session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
-            file_ok = Path(session_file).exists()
+            # Off the loop: the sessions dir sits under the home directory,
+            # which can be a network mount, and this runs on every resume.
+            file_ok = await asyncio.to_thread(Path(session_file).exists)
         if file_ok:
             # WHICH restore verb, from the same membership set that chose the
             # capability above. The two calls share a contract --
@@ -1074,11 +1088,9 @@ async def _initialize_session(self: AcpClient) -> None:
     # Seek to end of JSONL so we only read new tool results.
     # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
     if self._session_id and self._is_kiro:
-        _jpath = kiro_sessions_dir() / f"{self._session_id}.jsonl"
-        try:
-            self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
-        except OSError:
-            self._jsonl_pos = 0
+        self._jsonl_pos = await asyncio.to_thread(
+            _jsonl_size, kiro_sessions_dir() / f"{self._session_id}.jsonl"
+        )
 
     # The host has now consumed the ``mcpServers`` array, by whichever route created
     # the session -- ``session/load``, ``session/new``, or the substitution retry --

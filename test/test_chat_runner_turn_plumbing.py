@@ -397,6 +397,7 @@ _CUT_FROM_RUN_CHAT: dict[str, tuple[str, ...]] = {
     "turn_reply_seams": (
         "_persist_partial_reply",
         "_record_abnormal_turn_usage",
+        "_stamp_abnormal_turn_footer",
         "_attach_abnormal_turn_stats",
         "_flush_text_stream",
         "_flush_thinking_stream",

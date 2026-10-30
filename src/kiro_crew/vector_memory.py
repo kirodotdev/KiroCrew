@@ -111,6 +111,8 @@ from kiro_crew.vector_memory_lifecycle import (  # noqa: F401
     _migrate_v2,
 )
 from kiro_crew.vector_memory_member import (  # noqa: F401
+    _member_consolidation_confidence,
+    _member_consolidation_metadata,
     _member_identity,
     _member_store,
     consolidation_source_digest,
@@ -242,6 +244,7 @@ _FAISS_FILE = "memory.faiss"
 _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.ALLOWLIST,
     SemanticRejectCode.CONFIDENCE,
+    SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
     SemanticRejectCode.VALUE_EMPTY,

@@ -2068,15 +2068,17 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   SEL audit event), mirroring the folder-watcher file-read guard.
 - **Dedup tie-in.** A file-backed artifact whose `source_path` is also inside a
   synced folder source is the same document under two sources (the aggregate
-  `artifact` source and the folder's `local_file` source). The aggregate
-  `artifact` source is **excluded from dedup entirely** (`enumerate_docs` and
-  `_build_doc_for` skip `_AGGREGATE_SOURCE_TYPES`, and `_delete_doc` refuses a
-  cascade on them): treating the whole aggregate as one dedup unit keyed on a
-  single item's hash both misidentified it and — when it lost a pair — cascade-
-  deleted the user's entire artifact library. The artifact↔folder overlap
-  therefore persists (both copies remain retrievable) until per-artifact-slug
-  dedup is built; that is a recorded, intentional trade against silent data
-  loss on the hard-delete path.
+  `artifact` source and the folder's `local_file` source). Dedup treats each
+  artifact as its own document: `enumerate_docs` builds one unit per
+  `artifact_item_state` row (its slug and the items it owns), never one unit for
+  the whole source, so two artifacts with identical text stay separate units. A
+  losing artifact goes through `_collapse_doc`: the winner's items gain the
+  artifact source as a location, the loser's own items are deleted, and its
+  `artifact_item_state` row is marked `deduped` with `merged_into_source_id`
+  naming the winner. The source row stays while it still holds a document or a
+  location (`_source_is_now_empty`), so a collapse removes one artifact's
+  redundant copy, never the library. A folder copy outranks an artifact copy
+  (`pick_winner` prefers `PERSISTENT_SOURCE_TYPES`).
 
 ## Companion Chat
 

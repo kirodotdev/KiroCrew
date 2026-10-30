@@ -741,6 +741,35 @@ describe('⌘/Ctrl+[ and ⌘/Ctrl+] session cycling', () => {
     expect(prev?.alt).toBeUndefined()
     expect(next?.ctrl).toBeUndefined()
   })
+
+  // The shortcuts list must say which of the two prev/next chords works while
+  // typing. Alt+←/→ is left to a focused text field (word-jump on macOS), so its
+  // rows carry that rule; the bracket rows, which work from the composer, keep
+  // the plain label. Both halves are pinned: the label, and the handler
+  // behaviour the label describes.
+  it('labels the Alt+arrow rows with their focus rule in the shortcuts list', () => {
+    renderWithProviders(<ShortcutsModal onClose={vi.fn()} />)
+    const altPrev = screen.getByText('Previous chat (outside text fields)').parentElement!
+    const altNext = screen.getByText('Next chat (outside text fields)').parentElement!
+    expect(altPrev).toHaveTextContent('←')
+    expect(altNext).toHaveTextContent('→')
+    expect(screen.getByText('Previous chat').parentElement!).toHaveTextContent('[')
+    expect(screen.getByText('Next chat').parentElement!).toHaveTextContent(']')
+  })
+
+  it('Alt+arrow switches chats from the page but not from a text field', () => {
+    const store = threeSlots('slot-1')
+    mount(store)
+    const altRight = (target: EventTarget) =>
+      !target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', altKey: true, cancelable: true, bubbles: true }))
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    expect(altRight(textarea)).toBe(false) // left to the field's word-jump
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+    expect(altRight(document)).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+    textarea.remove()
+  })
 })
 
 /**

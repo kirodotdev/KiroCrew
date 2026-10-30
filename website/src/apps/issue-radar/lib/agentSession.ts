@@ -342,7 +342,10 @@ export function useAgentSession(): UseAgentSession {
         await dispatch(switchSlot(slot.key)).unwrap().catch(() => {})
         // The repo's folder can be collapsed: open its path so the row of the
         // session /chat opens on shows. Skipped when the switch did not hold.
-        dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: slot.folder_id || folderId, onlyIfActive: true }))
+        // The create's answer is the slot's own row, so its folder is where the
+        // session sits: an empty one is the top level, with no folder to open,
+        // even though the create asked for the repo folder.
+        if (slot.folder_id) dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: slot.folder_id, onlyIfActive: true }))
         navigate('/chat')
         return res.investigation
       } catch (e) {

@@ -521,3 +521,21 @@ describe('SubagentProgressBar — elapsed figure (#19930)', () => {
     }
   })
 })
+
+describe('SubagentProgressBar — overflow row', () => {
+  beforeEach(() => { vi.clearAllMocks(); try { localStorage.clear() } catch { /* not available in this env */ } })
+
+  // The row's accessible name comes from the catalog with a plural count, so a
+  // translated UI does not announce it in English and one extra agent reads as one.
+  it('names the hidden agents with a plural-aware catalog string', () => {
+    renderBar(makeStore(Array.from({ length: 10 }, (_, i) => `a${i}`)))
+    expect(screen.getByTestId('subagent-overflow-row'))
+      .toHaveAttribute('aria-label', 'Show 2 more running subagents in the sidebar')
+  })
+
+  it('says subagent, not subagents, for one hidden agent', () => {
+    renderBar(makeStore(Array.from({ length: 9 }, (_, i) => `a${i}`)))
+    expect(screen.getByTestId('subagent-overflow-row'))
+      .toHaveAttribute('aria-label', 'Show 1 more running subagent in the sidebar')
+  })
+})

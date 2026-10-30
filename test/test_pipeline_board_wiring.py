@@ -441,7 +441,12 @@ def test_the_unsaid_sentinel_never_reaches_the_rendered_data(monkeypatch) -> Non
 
     data = _read(record, monkeypatch)["board"]
 
-    assert UNSAID not in json.dumps(data)
+    # ``json.dumps`` would itself raise on an ``Unsaid`` member -- it is not JSON --
+    # so a clean serialization already proves no sentinel reached the island; the text
+    # scan then guards against a stringified copy of it leaking in as data.
+    serialized = json.dumps(data)
+    assert repr(UNSAID) not in serialized
+    assert UNSAID.value not in serialized
     # And the absence is a real one: this publisher supplied only a lede, so every
     # per-card judgment is unsaid. A payload with no nulls at all would mean the
     # conversion never ran rather than that nothing needed converting.

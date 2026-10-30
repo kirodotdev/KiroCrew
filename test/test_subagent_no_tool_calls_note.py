@@ -17,6 +17,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 
 from kiro_crew.constants import NO_TOOL_CALLS_NOTE
 from kiro_crew.subagent import SubagentInfo
@@ -150,6 +154,7 @@ def _dashboard_state() -> MagicMock:
     ds.close_all_ws = AsyncMock()
     ds._background_tasks = set()
     slot = MagicMock()
+    open_idle_tab(slot)
     slot.mode = "chat"
     slot.running = False
     slot.task = None
@@ -202,7 +207,7 @@ class TestCompletionEventNote:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             for n, info in enumerate(infos):

@@ -91,6 +91,7 @@ from kiro_crew.skills_dedupe import (
 )
 from kiro_crew.skills_script_validator import validate_skill_script
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -1161,6 +1162,7 @@ _BOUND_FOR_IMPORTERS = (
     VERDICT_DUP,
     VERDICT_NEW,
     VERDICT_UPDATE,
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -1230,16 +1232,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
         _SEMANTIC_SNAPSHOT_PAGE,
+        _audit_oversized_semantic,
         _bounded_semantic_table,
         _BoundedTable,
         _EmbedBudget,
         _InheritGlobal,
         _is_plausible_memory_file,
         _LessonDeleteDecision,
+        _OversizedItem,
         _recency,
+        _refuse_oversized_semantic,
         _reroute_lesson_semantic_keys,
         _semantic_snapshot_in_pages,
         _session_facets,
+        _v1_consolidation_confidence,
+        _v1_consolidation_metadata,
         _withhold_unseen_deletes,
     )
     from kiro_crew.history_consolidation_pass import (  # noqa: F401

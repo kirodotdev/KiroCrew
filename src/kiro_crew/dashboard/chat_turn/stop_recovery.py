@@ -58,7 +58,7 @@ if TYPE_CHECKING:
         _persist_partial_reply,
     )
     from kiro_crew.dashboard.chat_turn.turn_stats import (
-        _attach_owned_turn_stats,
+        _attach_turn_stats,
         _emit_recovery_outcome,
         _turn_outcome,
     )
@@ -356,15 +356,12 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
     slot = turn.slot
     state = turn.state
     if not _retrying_empty:
-        # Attach per-turn stats (elapsed / credits) to the last assistant
-        # message so the footer can show them (parity with kiro-cli).
-        # Scoped to this turn's messages via _turn_msg_boundary, and to the
-        # rows this runner appended when it appended any: a workflow result
-        # another writer appended mid-turn must not take this turn's figures.
-        # A turn whose only row is not a recorded reply (a command's own
-        # confirmation) keeps the plain boundary scan.
+        # Attach per-turn stats (elapsed / credits) to the reply this turn
+        # recorded so the footer can show them (parity with kiro-cli).
+        # Scoped to this turn's rows via _turn_msg_boundary and
+        # _turn_start_mid, like the file-change flush below.
         _reply_mids = getattr(slot, "_turn_reply_mids", None)
-        _stats_attached = _attach_owned_turn_stats(
+        _stats_attached = _attach_turn_stats(
             slot,
             _turn_elapsed_ms,
             _turn_credits,
@@ -372,9 +369,10 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             turn_boundary=_turn_msg_boundary,
             model=_turn_model,
             ttft_ms=_ttft_visible.ms,
-            reply_mids=_reply_mids if isinstance(_reply_mids, list) and _reply_mids else None,
+            turn_start_mid=_turn_start_mid,
             retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,
         )
+        turn._turn_footer_attached = True
         if _prompt_depth == 0 and _stats_attached:
             slot._carried_ttft_clock = None
         # Attach accumulated file changes to this turn's assistant row before

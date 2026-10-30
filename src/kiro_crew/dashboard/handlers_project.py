@@ -98,19 +98,3 @@ async def api_project_delete(request):
     except WorkflowInitializing as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     return web.json_response({"ok": True})
-
-
-async def api_activities_list(request):
-    return web.json_response([])
-
-
-async def api_comment_add(request):
-    return web.json_response({"ok": True}, status=201)
-
-
-async def api_comments_list(request):
-    return web.json_response([])
-
-
-async def api_comment_delete(request):
-    return web.json_response({"ok": True})

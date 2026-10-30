@@ -196,10 +196,12 @@ def test_actor_and_event_truth_table(
         # A same-repository PR head from a listed actor uses the fleet.
         ("pull_request_target", _REPO, _REPO, "", "101", _ACTORS, True),
         ("pull_request_target", _REPO, _REPO, "", "202", _ACTORS, True),
-        # A fork head stays hosted; the workflow_run field never stands in.
+        # A fork head misses the fleet and takes the group; the workflow_run
+        # field never stands in.
         ("pull_request_target", _REPO, _FORK, "", "101", _ACTORS, False),
         ("pull_request_target", _REPO, "", _REPO, "101", _ACTORS, False),
-        # The merge-guard hold path stays hosted, same-repo head or not.
+        # The merge-guard hold path misses the fleet and takes the group,
+        # same-repo head or not.
         ("workflow_run", _REPO, "", _REPO, "202", _ACTORS, False),
         ("workflow_run", _REPO, _REPO, _REPO, "101", _ACTORS, False),
         ("workflow_run", _REPO, "", _FORK, "101", _ACTORS, False),
@@ -226,7 +228,20 @@ def test_readiness_route_truth_table(event, repo, pr_head, run_head, actor, acto
         "github.run_id": "456",
         "github.run_attempt": "3",
     }
-    expected = "codebuild-kirocrew-gha-linux-456-3" if eligible else "ubuntu-latest"
+    # Pinned here as literals, deliberately NOT read off the expression under
+    # test the way the policy table above does it. This lane publishes the
+    # repository's one required status and its workflow_run leg carries the
+    # merge-guard hold, so moving any of these destinations has to be done on
+    # purpose in two places; deriving the expectation from the constant would
+    # let a future edit to both carry its own expectation along. Only a run
+    # executing OUTSIDE this repository reaches the hosted image, because a
+    # fork's own copy cannot reach an organization runner group.
+    if eligible:
+        expected = "codebuild-kirocrew-gha-linux-456-3"
+    elif repo == _REPO:
+        expected = "kirocrew-linux-4-core"
+    else:
+        expected = "ubuntu-latest"
     assert _evaluate(parity._CANONICAL_READINESS_EXPR, context) == expected
 
 

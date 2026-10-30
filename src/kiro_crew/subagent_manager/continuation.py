@@ -716,6 +716,18 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if not isinstance(backend, str):
             backend = None
+        # Another turn of the same run sits at the same place in its tree.
+        # Admission keeps the deeper of this and what the parent proves now,
+        # so a run whose parent's record is gone cannot restart the count.
+        run_depth = (
+            original.depth
+            if original is not None
+            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
+                "depth"
+            )
+        )
+        if type(run_depth) is not int:
+            run_depth = None
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -752,6 +764,7 @@ class ContinuationCoordinator(ManagerComponent):
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
             _memory_mode=_memory_mode,
+            _depth=run_depth,
             app=app,
             **(
                 {"_execution_context": _execution_context.to_record()}

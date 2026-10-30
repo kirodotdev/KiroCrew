@@ -2979,7 +2979,8 @@ a milestone is reached is the mate's own word in that reading, never judged by t
 gateway), and
 `dashboard/waiting_changed` when `waiting_items` differs from the last list
 recorded, checked after each growth of that DM log (`emit.add_growth_listener`,
-coalesced for 0.4 s), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
+coalesced for 0.4 s; only a session's first growth in that window walks the open
+slots to learn which thread it is, and a retired question looks its slot up by key), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands

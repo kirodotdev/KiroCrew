@@ -1244,7 +1244,7 @@ def test_an_unsaid_value_never_reaches_the_card_as_a_zero() -> None:
         stale_after_seconds=900,
         now_epoch=1790696200.0,
     )
-    panel["meta"]["age_seconds"] = "__unsaid__"  # type: ignore[typeddict-item]
+    panel["meta"]["age_seconds"] = UNSAID  # type: ignore[typeddict-item]
     assert NOT_SAID in panel_card_data(panel)["meta_when"]
     assert "0s" not in panel_card_data(panel)["meta_when"]
 

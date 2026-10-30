@@ -523,15 +523,18 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch, caplog) -> N
 
 class TestReviveIntendedInstances:
     @pytest.mark.asyncio
-    async def test_no_intent_means_no_connect_attempt(self) -> None:
+    async def test_no_intent_means_no_connect_attempt(self, caplog) -> None:
         registry = MagicMock(
             list=MagicMock(return_value=[SimpleNamespace(id="a", was_connected=False)])
         )
         manager = MagicMock(connect=AsyncMock())
 
-        await srv._revive_intended_instances(registry, manager)
+        with caplog.at_level(logging.INFO, logger=srv.logger.name):
+            await srv._revive_intended_instances(registry, manager)
 
         assert not manager.connect.called
+        # No revive round is announced when nothing was left connected.
+        assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == []
 
     @pytest.mark.asyncio
     async def test_one_failing_host_does_not_abort_the_rest(self, caplog) -> None:

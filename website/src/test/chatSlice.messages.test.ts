@@ -542,6 +542,24 @@ describe('sseChatMessagePatchByTs', () => {
       expect(out.messages[1].meta?.superseded).toBe(true)
       expect(out.messages[0].meta?.superseded).toBeUndefined()
     })
+
+    /** The live reply footer: `_broadcast_turn_stats` sends `chat_message_update`
+     *  keyed on the reply's mid with `meta: { turn_stats }` only. The row keeps
+     *  everything else its meta carries (its mid above all, which the next patch
+     *  and the pin walks read), and the sibling sharing its ts gets nothing. */
+    it('a turn_stats patch by mid adds the footer and keeps the rest of the row\'s meta', () => {
+      const { state } = withCollidingBanners()
+      const stats = { elapsed_ms: 1200, credits: 0.12 }
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: { slot: 'slot-1', ts: '', mid: 'm-second', meta: { turn_stats: stats } },
+      })
+      expect(out.messages[1].meta).toEqual({
+        mid: 'm-second', server_name: 'linear', oauth_url: 'https://mcp.linear.app/authorize', turn_stats: stats,
+      })
+      expect(out.messages[0].meta?.turn_stats).toBeUndefined()
+      expect(out.slotMessages['slot-1'][1].meta?.turn_stats).toEqual(stats)
+    })
   })
 
   it('no-op when slot is empty', () => {

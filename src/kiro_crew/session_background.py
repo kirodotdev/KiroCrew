@@ -118,6 +118,8 @@ class _BackgroundOwner(Protocol):
 
     def _advance_session_generation(self, key: str) -> int: ...
 
+    def absorb_orphaned_release(self, key: str) -> bool: ...
+
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
 
     def _configured_bg_backend_raw(self) -> str | None: ...
@@ -1170,7 +1172,12 @@ class BackgroundSessionRuntime:
                     exc_info=True,
                 )
         finally:
-            session.semaphore.release()
+            # Release ONLY a permit this task still owns: a teardown that popped
+            # the session during the recycle recorded this task as the holder and
+            # handed the permit to a woken claimant, so a second release here
+            # would over-release it (``retire_turn_permit``).
+            if not self._owner.absorb_orphaned_release(background_key):
+                session.semaphore.release()
             # ``_reacquire_and_validate`` named this task the holder; the
             # holding ends with this release.
             session.turn_owner = None

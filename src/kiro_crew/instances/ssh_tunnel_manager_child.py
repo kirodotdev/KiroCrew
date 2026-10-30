@@ -79,6 +79,17 @@ _MAX_STDERR_CHARS = 2000
 #: is bounded; what the drain captured is kept either way.
 _STDERR_DRAIN_GRACE_SECS = 2.0
 
+#: How long _terminate waits for the child to settle after each signal.
+_TERMINATE_WAIT_SECS = 5.0
+#: How long an already-exited child gets for its pipes to close before the
+#: survivors still holding them are treated as a live forward.
+_EXITED_SETTLE_SECS = 1.0
+#: How long a probe-forced teardown may take before the still-running forward
+#: is logged as stuck. Above the worst case of _terminate's bounded waits.
+_PROBE_TEARDOWN_CONFIRM_SECS = 30.0
+#: Poll cadence while waiting for a terminated child to settle.
+_SETTLE_POLL_SECS = 0.05
+
 # Bound on retained SSM stdout, at parity with the stderr cap. The SSM child's
 # stdout is drained concurrently for the whole session (see _drain_stdout), so
 # this is what keeps a service that streams into that pipe from growing memory.
@@ -239,6 +250,12 @@ class _SshTunnel:
         # _stderr_task too. ssh writes a line there for every forwarded connection
         # the far end refuses, so a long-lived tunnel fills the OS buffer.
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        # SSM on POSIX only: the process group the spawned ``aws`` wrapper leads,
+        # read at spawn while the wrapper is still un-reaped so the id cannot name
+        # anyone else's group. ``session-manager-plugin`` stays in this group after
+        # the wrapper exits, and ``os.getpgid`` of the reaped wrapper can no
+        # longer name it, so _terminate addresses the survivor through this id.
+        self._ssm_pgid: int | None = None
         self._child_path = ""  # the PATH the last spawned child was given
         self.status = TunnelStatus(
             instance_id=instance_id,
@@ -368,6 +385,8 @@ class _SshTunnel:
             logger.error("Tunnel spawn failed for %s: %s", self._id, e)
             return False
 
+        self._ssm_pgid = self._spawned_group(self._proc) if ssm else None
+
         # Started BEFORE the readiness wait, so a child that closes during
         # startup still has its reason captured: _wait_until_ready can conclude
         # via _failed_on_child_exit, which classifies on this buffer.
@@ -455,7 +474,7 @@ class _SshTunnel:
                     # Terminate the child; _monitor (not stopping) marks ERROR and
                     # fires on_exit. Done in a task so we don't await our own
                     # cancellation if stop() races in.
-                    task = asyncio.create_task(self._terminate())
+                    task = asyncio.create_task(self._probe_teardown())
                     _BACKGROUND_TASKS.add(task)
                     task.add_done_callback(_BACKGROUND_TASKS.discard)
                     return
@@ -998,26 +1017,156 @@ class _SshTunnel:
         ``killpg`` on POSIX, ``taskkill /T`` off the loop on Windows, so the plugin
         is reaped on **every** supported platform without stalling the loop. A
         tree-kill failure falls back to the single-process kill.
+
+        The wrapper's exit is not the forward's end. ``session-manager-plugin``
+        can outlive it -- a plugin closing a session to a terminated target
+        does not finish on SIGTERM -- and it then keeps the port bound and
+        the child's pipes open. :meth:`_monitor`'s ``proc.wait()`` was entered
+        while the wrapper ran, and asyncio resolves such a wait only once every
+        pipe has closed, so the exit is never reported. ``kill_process_tree``
+        cannot reach that survivor: it resolves the group from the wrapper's pid,
+        which names no process once the wrapper is reaped. So on POSIX a child
+        that has not settled (see :meth:`_child_settled`) after the signals above
+        has the group recorded at spawn signalled directly, TERM then KILL.
         """
         proc = self._proc
-        if proc and proc.returncode is None:
+        if proc is None:
+            return
+        term_sent = False
+        if proc.returncode is None:
             group_signalled = False
             if self._transport == "ssm":
                 group_signalled = await self._signal_group_async(proc.pid, platform_compat.SIGTERM)
+            term_sent = True
             try:
                 if not group_signalled:
                     proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_SECS)
             except (asyncio.TimeoutError, ProcessLookupError):
                 if self._transport == "ssm" and await self._signal_group_async(
                     proc.pid, platform_compat.SIGKILL
                 ):
                     with contextlib.suppress(Exception):
-                        await asyncio.wait_for(proc.wait(), timeout=5)
+                        await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_SECS)
                 else:
                     with contextlib.suppress(ProcessLookupError):
                         proc.kill()
+        if not await self._wait_settled(proc, _EXITED_SETTLE_SECS):
+            await self._reap_recorded_group(proc, term_sent=term_sent)
         self._proc = None
+
+    def _child_settled(self, proc: asyncio.subprocess.Process) -> bool:
+        """Whether nothing this tunnel started still holds the forward.
+
+        A fresh ``proc.wait()`` cannot answer this: once the wrapper's exit is
+        recorded it returns at once, pipes or not. Settled means the wrapper has
+        exited and either its recorded group has no member left or both pipes
+        have reached EOF (no process holds a write end). The group test alone is
+        not enough, because a killed member can linger as a zombie under a
+        subreaper; the pipe test alone is not enough, because a stopped drain
+        leaves unread data that keeps ``at_eof()`` False. Without a recorded
+        group there is nothing further to signal, so the child counts as settled.
+        """
+        if proc.returncode is None:
+            return False
+        pgid = self._ssm_pgid
+        if pgid is None or not platform_compat.pgroup_exists(pgid):
+            return True
+        streams = (getattr(proc, "stdout", None), getattr(proc, "stderr", None))
+        return all(stream is None or stream.at_eof() for stream in streams)
+
+    async def _wait_settled(self, proc: asyncio.subprocess.Process, timeout: float) -> bool:
+        """Poll :meth:`_child_settled` for up to *timeout* seconds."""
+        deadline = time.monotonic() + timeout
+        while not self._child_settled(proc):
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(_SETTLE_POLL_SECS)
+        return True
+
+    async def _reap_recorded_group(
+        self, proc: asyncio.subprocess.Process, *, term_sent: bool
+    ) -> None:
+        """Signal the SSM group recorded at spawn until the child settles (POSIX).
+
+        Reached only for a child that has not settled, which needs a recorded
+        group with a live member. SIGTERM first unless this teardown already
+        sent one, then SIGKILL, each followed by a bounded wait to settle. The id
+        was read while the leader was un-reaped and a group id is not reused
+        while any member lives, so it still names this tunnel's group.
+        """
+        pgid = self._ssm_pgid
+        if pgid is None:
+            return
+        signals = [platform_compat.SIGKILL]
+        if not term_sent:
+            signals.insert(0, platform_compat.SIGTERM)
+        for sig in signals:
+            try:
+                platform_compat.kill_process_group(pgid, sig)
+            except Exception as exc:  # the group emptied, or a member is unsignalable
+                logger.warning(
+                    "Could not signal the SSM forwarder group for %s: %s",
+                    self._id,
+                    type(exc).__name__,
+                )
+                return
+            if await self._wait_settled(proc, _TERMINATE_WAIT_SECS):
+                return
+        logger.warning(
+            "SSM forwarder for %s survived SIGKILL; port 127.0.0.1:%d may still be held",
+            self._id,
+            self._local_port,
+        )
+
+    @staticmethod
+    def _spawned_group(proc: asyncio.subprocess.Process) -> int | None:
+        """The process group a just-spawned SSM child leads, or ``None``.
+
+        Read while the child is un-reaped, so its pid still names it. Kept only
+        when the child leads its own group (``pgid == pid``, which
+        ``start_new_session=True`` makes it); anything else is not a group this
+        tunnel owns. POSIX only: Windows reaps the tree through ``taskkill /T``.
+        """
+        pid = getattr(proc, "pid", None)
+        if not platform_compat.IS_POSIX or type(pid) is not int or pid <= 1:
+            return None
+        if proc.returncode is not None:
+            return None
+        return pid if platform_compat.pgroup_of(pid) == pid else None
+
+    async def _probe_teardown(self) -> None:
+        """Tear the forward down after the probe failed, and say so if it stays up.
+
+        The probe loop has already returned when this runs, so nothing else
+        would notice a teardown that raised or that left the forwarder running:
+        the tunnel would sit CONNECTED, unprobed and never rebuilt. A failure is
+        logged with its cause, and a forward whose exit :meth:`_monitor` has not
+        reported within :data:`_PROBE_TEARDOWN_CONFIRM_SECS` is logged as stuck.
+        """
+        try:
+            await self._terminate()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Probe-forced teardown failed for %s: %s: %s",
+                self._id,
+                type(exc).__name__,
+                exc,
+            )
+        monitor = self._monitor_task
+        if monitor is None or self._stopping:
+            return
+        await asyncio.wait({monitor}, timeout=_PROBE_TEARDOWN_CONFIRM_SECS)
+        if not monitor.done() and not self._stopping:
+            logger.warning(
+                "Tunnel for %s is still up %ss after the probe-forced teardown: the "
+                "forwarder on 127.0.0.1:%d did not exit, so recovery has not started",
+                self._id,
+                _PROBE_TEARDOWN_CONFIRM_SECS,
+                self._local_port,
+            )
 
     @staticmethod
     def _signal_group(pid: int, sig: int) -> bool:

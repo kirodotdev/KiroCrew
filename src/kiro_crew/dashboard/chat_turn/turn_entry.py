@@ -150,6 +150,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # once. Set on the turn object here, before any call reaches the seam that
     # writes it, so every reader sees one value.
     turn._turn_usage_persisted = False
+    # True once this turn's reply row has been given its footer, by whichever
+    # path: the completed turn's attach, or the abnormal-end seam, which stamps a
+    # reply exactly once (a turn whose completion claimed the usage row and was
+    # then cut off before the end-of-turn attach reaches the seam with the row
+    # already written, and the seam still gives the reply its footer from the
+    # figures that row was billed with). Set here for the same reason as above.
+    turn._turn_footer_attached = False
 
     # The abnormal-end seam (_persist_partial_reply, run from the CancelledError /
     # AcpAuthRequired / AcpProcessDied / AcpError recovery arms) reads these four
@@ -441,7 +448,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # The runs _wsred holds across a tool call or approval prompt, one per cut
     # crossed before its next output (see _cut_segment / _settle_held).
     turn._held_runs = []
-    # Set once the end-of-turn flush has saved ``assistant_text`` as the reply.
+    # Set once ``assistant_text`` is a saved reply row: the end-of-turn flush
+    # wrote it, or _persist_partial_reply did (it appends the text once per turn).
     turn._reply_flushed = False
     # The reply rows this turn appended, snapshotted before _flush_file_changes
     # clears the live slot list, so the Slack mirror can still read the whole

@@ -2254,6 +2254,11 @@
       "unwrap": "Unwrap lines",
       "wrap": "Wrap lines"
     },
+    "blockquote": {
+      "copied": "Copied!",
+      "copy": "Copy quote",
+      "copy_failed": "Copy failed. Select the quote and copy it yourself."
+    },
     "commandPalette": {
       "min_query_chars": "Type at least {{min}} characters to search {{scope}}",
       "no_matches": "No matches",
@@ -4590,8 +4595,9 @@
       "jump_to_chat": "Jump to chat {{n}}",
       "last_visited_chat_mru": "Last visited chat (MRU)",
       "next_chat": "Next chat",
+      "next_chat_outside_text_fields": "Next chat (outside text fields)",
       "next_notification": "Next notification",
-      "next_prompt": "Next prompt in this chat",
+      "next_prompt": "Next prompt in this chat (outside text fields)",
       "notifications_panel": "Notifications panel",
       "open_agent_monitor": "Open agent monitor (subagents)",
       "open_settings": "Open settings",
@@ -4599,9 +4605,10 @@
       "previous_agent": "Previous agent",
       "previous_approval_mode": "Previous approval mode",
       "previous_chat": "Previous chat",
+      "previous_chat_outside_text_fields": "Previous chat (outside text fields)",
       "previous_model": "Previous model",
       "previous_notification": "Previous notification",
-      "previous_prompt": "Previous prompt in this chat",
+      "previous_prompt": "Previous prompt in this chat (outside text fields)",
       "previous_reasoning_effort": "Previous reasoning effort",
       "projects_panel": "Task Runner panel",
       "schedule_panel": "Schedule panel",
@@ -5207,6 +5214,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Agent \"{{name}}\" loads only its own MCP servers.",
+        "default_agent_loads_all_mcp_servers": "{{name}} loads all configured MCP servers — manage them in Overview → MCP.",
         "load_failed": "Couldn't load the MCP servers",
         "mcp_servers_count": "MCP Servers ({{count}}/{{total}} enabled)",
         "mode_load_failed": "Couldn't read the Tool Search mode; showing the default"
@@ -6176,6 +6184,8 @@
       "filter_unread_description": "Show only sessions with unread messages",
       "filter_running": "In progress",
       "filter_running_description": "Show only sessions the agent is actively working on",
+      "filter_not_running": "Not in progress",
+      "filter_not_running_description": "Hide sessions the agent is actively working on",
       "filter_pinned": "Pinned",
       "filter_pinned_description": "Show only sessions you have pinned",
       "filter_recent": "Recent",
@@ -9619,6 +9629,7 @@
       "hide_folders": "hide folders",
       "menu_reason": "Gateway offline — the dimmed actions need a connection",
       "move_folders": "move folders",
+      "move_sessions": "move sessions",
       "name_not_saved_keep_field_open": "Gateway offline — not saved yet. Keep this field open and reconnect; closing it discards the name.",
       "optimize": "optimize",
       "rename_folders": "rename folders",

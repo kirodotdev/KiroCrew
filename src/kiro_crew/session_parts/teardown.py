@@ -239,6 +239,11 @@ def adopt_turn(self: SessionManager, key: str) -> None:
     self._lifecycle_boundary().adopt_turn(key)
 
 
+def retire_turn_permit(self: SessionManager, key: str, session: _Session) -> None:
+    """Record a just-popped session's permit holder and wake its parked claimants."""
+    self._lifecycle_boundary().retire_turn_permit(key, session)
+
+
 # ── Cancel ──
 
 

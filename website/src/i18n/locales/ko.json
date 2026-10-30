@@ -1977,7 +1977,8 @@
       "pathBar": {
         "click_to_edit_path": "클릭해서 경로 편집",
         "folder_path": "폴더 경로",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "폴더 새로 고침"
       },
       "searchPanel": {
         "capped": "(상한 도달)",
@@ -6492,6 +6493,11 @@
       "unwrap": "줄 바꿈 해제",
       "wrap": "줄 바꿈"
     },
+    "blockquote": {
+      "copied": "복사했습니다!",
+      "copy": "인용 복사",
+      "copy_failed": "복사하지 못했습니다. 인용문을 선택하여 직접 복사하세요."
+    },
     "columnResizer": {
       "resize_column": "열 너비 조절: {{column}}",
       "resize_hint": "드래그하여 크기 조절 (더블클릭하면 초기화)"
@@ -8448,6 +8454,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "new_folder": "새 폴더…",
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
@@ -8467,6 +8474,17 @@
       "unmute": "이 세션 음소거 해제",
       "mute_failed": "이 세션을 음소거할 수 없습니다",
       "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "취소",
+      "create_and_move": "만들고 이동",
+      "inside_current": "‘{{name}}’ 안에 만들기",
+      "move_failed": "‘{{name}}’을(를) 만들었지만 세션을 그 안으로 이동하지 못했습니다: {{error}}",
+      "move_failed_inside": "‘{{parent}}’ 안에 ‘{{name}}’을(를) 만들었지만 세션을 그 안으로 이동하지 못했습니다: {{error}}",
+      "name_label": "폴더 이름",
+      "retry_move": "다시 이동",
+      "session_closed": "이 세션은 닫혀서 이동할 항목이 없습니다.",
+      "title": "새 폴더"
     },
     "sessionTurnLimit": {
       "all_sessions": "모든 세션: 설정 열기",
@@ -10324,8 +10342,9 @@
       "jump_to_chat_letters": "채팅 10 이후로 이동 (수정자 키를 누르고 있으면 각 채팅의 문자가 표시됨, macOS에서는 텍스트 필드에 포커스가 있을 때 작동하지 않음)",
       "last_visited_chat_mru": "마지막으로 방문한 채팅(MRU)",
       "next_chat": "다음 채팅",
+      "next_chat_outside_text_fields": "다음 채팅 (텍스트 입력란 밖에서)",
       "next_notification": "다음 알림",
-      "next_prompt": "이 채팅의 다음 프롬프트",
+      "next_prompt": "이 채팅의 다음 프롬프트 (텍스트 입력란 밖에서)",
       "notifications_panel": "알림 패널",
       "open_agent_monitor": "에이전트 모니터 열기(서브에이전트)",
       "open_settings": "설정 열기",
@@ -10333,9 +10352,10 @@
       "previous_agent": "이전 에이전트",
       "previous_approval_mode": "이전 승인 모드",
       "previous_chat": "이전 채팅",
+      "previous_chat_outside_text_fields": "이전 채팅 (텍스트 입력란 밖에서)",
       "previous_notification": "이전 알림",
       "previous_model": "이전 모델",
-      "previous_prompt": "이 채팅의 이전 프롬프트",
+      "previous_prompt": "이 채팅의 이전 프롬프트 (텍스트 입력란 밖에서)",
       "previous_reasoning_effort": "이전 추론 강도",
       "projects_panel": "Task Runner 패널",
       "schedule_panel": "스케줄 패널",
@@ -10626,6 +10646,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "{{productName}} 메타데이터만 제거합니다 — 앱 자체는 외부에서 관리됩니다",
       "removing": "제거하는 중…",
       "repository": "저장소:",
+      "report_issue": "문제 신고",
       "requires_local_install": "로컬 설치 필요",
       "resources": "리소스",
       "resources_2": "| 리소스:",
@@ -11577,6 +11598,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "에이전트 ‘{{name}}’은(는) 자신의 MCP 서버만 불러옵니다.",
+        "default_agent_loads_all_mcp_servers": "{{name}}은(는) 구성된 모든 MCP 서버를 불러옵니다. 개요 → MCP에서 관리하세요.",
         "disabled": "사용 안 함",
         "load_failed": "MCP 서버를 불러올 수 없습니다",
         "mcp_servers_count": "MCP 서버 ({{count}}/{{total}} 활성화됨)",
@@ -11787,6 +11809,7 @@
         "collapse_agent_list": "서브에이전트 목록 접기",
         "expand_agent_list": "서브에이전트 목록 펼치기",
         "more_running_normally": "나머지는 정상 실행 중…",
+        "show_more_running_in_sidebar_other": "사이드바에서 실행 중인 서브에이전트 {{count}}개 더 보기",
         "no_activity_possibly_stalled": "활동 없음 — 멈췄을 수 있습니다",
         "open_in_subagents_sidebar": "{{label}}을(를) 서브에이전트 사이드바에서 열기",
         "possibly_stalled_at_tool": "{{tool}} 에서 멈췄을 수 있습니다 — 활동 없음",
@@ -12847,6 +12870,8 @@
       "filter_recent_description": "선택한 기간에 활동한 세션만 표시",
       "filter_running": "진행 중",
       "filter_running_description": "에이전트가 작업 중인 세션만 표시",
+      "filter_not_running": "진행 중 아님",
+      "filter_not_running_description": "에이전트가 작업 중인 세션 숨기기",
       "filter_tags": "태그 필터: {{name}}",
       "filter_unhide_named": "{{filter}} 세션 숨기기 해제",
       "filter_unread": "읽지 않음",
@@ -19709,6 +19734,7 @@
       "hide_folders": "폴더를 숨기기",
       "menu_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "move_folders": "폴더를 이동",
+      "move_sessions": "세션을 이동",
       "name_not_saved_keep_field_open": "게이트웨이가 오프라인입니다 — 아직 저장되지 않았습니다. 이 입력란을 열어 둔 채 다시 연결하세요. 닫으면 이름이 삭제됩니다.",
       "optimize": "최적화",
       "rename_folders": "폴더 이름을 변경",

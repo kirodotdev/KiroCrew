@@ -1937,7 +1937,8 @@
       "pathBar": {
         "click_to_edit_path": "पथ संपादित करने के लिए क्लिक करें",
         "folder_path": "फ़ोल्डर पथ",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "फ़ोल्डर रीफ़्रेश करो"
       },
       "searchPanel": {
         "capped": "(सीमित)",
@@ -6606,6 +6607,11 @@
       "unwrap": "पंक्तियाँ न लपेटें",
       "wrap": "पंक्तियाँ लपेटें"
     },
+    "blockquote": {
+      "copied": "कॉपी हो गया!",
+      "copy": "उद्धरण कॉपी करो",
+      "copy_failed": "कॉपी विफल रही। उद्धरण चुनो और उसे खुद कॉपी करो।"
+    },
     "columnResizer": {
       "resize_column": "कॉलम का आकार बदलो: {{column}}",
       "resize_hint": "आकार बदलने के लिए खींचो (रीसेट करने के लिए डबल-क्लिक करो)"
@@ -8585,6 +8591,7 @@
       "mark_as_read": "पढ़ा हुआ चिह्नित करें",
       "mark_as_unread": "अनपढ़ा चिह्नित करें",
       "move_to_folder": "फ़ोल्डर में ले जाएँ…",
+      "new_folder": "नया फ़ोल्डर…",
       "open_in_new_tab": "सत्र टैब में खोलें",
       "pin": "पिन करें",
       "pop_out_to_window": "अलग विंडो में खोलें",
@@ -8604,6 +8611,17 @@
       "unmute": "यह सत्र अनम्यूट करो",
       "mute_failed": "यह सत्र म्यूट नहीं हो सका",
       "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "रद्द करो",
+      "create_and_move": "बनाओ और ले जाओ",
+      "inside_current": "“{{name}}” के अंदर बनाओ",
+      "move_failed": "“{{name}}” बनाया गया, लेकिन सेशन उसमें नहीं ले जाया जा सका: {{error}}",
+      "move_failed_inside": "“{{parent}}” के अंदर “{{name}}” बनाया गया, लेकिन सेशन उसमें नहीं ले जाया जा सका: {{error}}",
+      "name_label": "फ़ोल्डर का नाम",
+      "retry_move": "फिर से ले जाओ",
+      "session_closed": "यह सेशन बंद हो चुका है, इसलिए ले जाने के लिए कुछ नहीं है।",
+      "title": "नया फ़ोल्डर"
     },
     "sessionTurnLimit": {
       "all_sessions": "सभी सत्र: सेटिंग्स खोलो",
@@ -10477,8 +10495,9 @@
       "jump_to_chat_letters": "चैट 10 और उसके आगे जाओ (हर चैट का अक्षर देखने के लिए मॉडिफ़ायर कुंजी दबाए रखो; macOS पर, टेक्स्ट फ़ील्ड पर फ़ोकस होने पर नहीं)",
       "last_visited_chat_mru": "पिछली देखी गई चैट (MRU)",
       "next_chat": "अगली चैट",
+      "next_chat_outside_text_fields": "अगली चैट (टेक्स्ट फ़ील्ड के बाहर)",
       "next_notification": "अगली सूचना",
-      "next_prompt": "इस चैट का अगला प्रॉम्प्ट",
+      "next_prompt": "इस चैट का अगला प्रॉम्प्ट (टेक्स्ट फ़ील्ड के बाहर)",
       "notifications_panel": "सूचना पैनल",
       "open_agent_monitor": "एजेंट मॉनिटर खोलें (सब-एजेंट)",
       "open_settings": "सेटिंग्स खोलें",
@@ -10486,9 +10505,10 @@
       "previous_agent": "पिछला एजेंट",
       "previous_approval_mode": "पिछला मंज़ूरी मोड",
       "previous_chat": "पिछली चैट",
+      "previous_chat_outside_text_fields": "पिछली चैट (टेक्स्ट फ़ील्ड के बाहर)",
       "previous_notification": "पिछली सूचना",
       "previous_model": "पिछला मॉडल",
-      "previous_prompt": "इस चैट का पिछला प्रॉम्प्ट",
+      "previous_prompt": "इस चैट का पिछला प्रॉम्प्ट (टेक्स्ट फ़ील्ड के बाहर)",
       "previous_reasoning_effort": "पिछला रीज़निंग प्रयास",
       "projects_panel": "Task Runner पैनल",
       "schedule_panel": "शेड्यूल पैनल",
@@ -10781,6 +10801,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "केवल {{productName}} मेटाडेटा हटाता है — ऐप स्वयं बाहर से प्रबंधित होता है",
       "removing": "हटाया जा रहा है…",
       "repository": "रिपॉज़िटरी:",
+      "report_issue": "समस्या रिपोर्ट करो",
       "requires_local_install": "लोकल इंस्टॉल आवश्यक",
       "resources": "संसाधन",
       "resources_2": "| संसाधन:",
@@ -11752,6 +11773,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "एजेंट \"{{name}}\" सिर्फ़ अपने ही MCP सर्वर लोड करता है।",
+        "default_agent_loads_all_mcp_servers": "{{name}} सभी कॉन्फ़िगर किए गए MCP सर्वर लोड करता है — इन्हें अवलोकन → MCP में मैनेज करो।",
         "disabled": "अक्षम",
         "load_failed": "MCP सर्वर लोड नहीं हो सके",
         "mcp_servers_count": "MCP सर्वर ({{count}}/{{total}} सक्षम)",
@@ -11964,6 +11986,8 @@
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
         "more_running_normally": "और सामान्य रूप से चल रहे…",
+        "show_more_running_in_sidebar_one": "साइडबार में {{count}} और चल रहा सबएजेंट दिखाओ",
+        "show_more_running_in_sidebar_other": "साइडबार में {{count}} और चल रहे सबएजेंट दिखाओ",
         "no_activity_possibly_stalled": "कोई गतिविधि नहीं — संभवतः अटका हुआ",
         "open_in_subagents_sidebar": "{{label}} को सबएजेंट साइडबार में खोलें",
         "possibly_stalled_at_tool": "{{tool}} पर संभवतः अटका हुआ — कोई गतिविधि नहीं",
@@ -13053,6 +13077,8 @@
       "filter_recent_description": "केवल चुनी गई अवधि में सक्रिय रहे सत्र दिखाता है",
       "filter_running": "चल रहे",
       "filter_running_description": "केवल वे सत्र दिखाता है जिन पर एजेंट सक्रिय रूप से काम कर रहा है",
+      "filter_not_running": "चल नहीं रहे",
+      "filter_not_running_description": "एजेंट जिन सत्रों पर सक्रिय रूप से काम कर रहा है उन्हें छुपाता है",
       "filter_tags": "टैग फ़िल्टर करें: {{name}}",
       "filter_unhide_named": "{{filter}} सत्र छिपाना बंद करो",
       "filter_unread": "अपठित",
@@ -20033,6 +20059,7 @@
       "hide_folders": "फ़ोल्डर छिपाने",
       "menu_reason": "गेटवे ऑफ़लाइन — धुँधले विकल्पों के लिए कनेक्शन ज़रूरी है",
       "move_folders": "फ़ोल्डर ले जाने",
+      "move_sessions": "सेशन ले जाने",
       "name_not_saved_keep_field_open": "गेटवे ऑफ़लाइन — अभी सहेजा नहीं गया। इस फ़ील्ड को खुला रखो और फिर से कनेक्ट करो; बंद करने पर नाम चला जाएगा।",
       "optimize": "अनुकूलित करने",
       "rename_folders": "फ़ोल्डर का नाम बदलने",

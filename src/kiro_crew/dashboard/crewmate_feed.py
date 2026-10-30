@@ -158,8 +158,10 @@ def _sid(slot: Any) -> str:
 def _crewmate_slots(state: Any) -> list[Any]:
     from kiro_crew import members as members_mod
 
+    # Read once per scan: each read of the facade goes through MirroredModule.__getattr__.
+    dm_mode = members_mod.DM_SLOT_MODE
     slots = getattr(state, "_slots", None) or {}
-    return [s for s in list(slots.values()) if getattr(s, "mode", "") == members_mod.DM_SLOT_MODE]
+    return [s for s in list(slots.values()) if getattr(s, "mode", "") == dm_mode]
 
 
 def _record(
@@ -285,14 +287,17 @@ def _on_log_growth(session_id: str) -> None:
 
 def _grew(session_id: str) -> None:
     global _timer
+    # A session already pending this window was scanned; a new session id scans.
+    if session_id in _pending:
+        return
+    if _timer is None:
+        _timer = asyncio.get_running_loop().call_later(_SETTLE_SECONDS, _settle)
     _pending.add(session_id)
     state = _state()
     if state is not None:
         # Learn which thread this session is now, before a teardown can clear it.
         for slot in _crewmate_slots(state):
             _sid(slot)
-    if _timer is None:
-        _timer = asyncio.get_running_loop().call_later(_SETTLE_SECONDS, _settle)
 
 
 def question_retired(slot_key: str) -> None:
@@ -313,15 +318,20 @@ def question_retired(slot_key: str) -> None:
 
 def _retired(slot_key: str) -> None:
     global _timer
+    from kiro_crew import members as members_mod
+
     state = _state()
     if state is None:
         return
-    for slot in _crewmate_slots(state):
-        if slot.key == slot_key and _sid(slot):
-            _pending.add(_sid(slot))
-            if _timer is None:
-                _timer = asyncio.get_running_loop().call_later(_SETTLE_SECONDS, _settle)
-            return
+    slot = (getattr(state, "_slots", None) or {}).get(slot_key)
+    if slot is None or getattr(slot, "mode", "") != members_mod.DM_SLOT_MODE:
+        return
+    sid = _sid(slot)
+    if not sid:
+        return
+    if _timer is None:
+        _timer = asyncio.get_running_loop().call_later(_SETTLE_SECONDS, _settle)
+    _pending.add(sid)
 
 
 def _settle() -> None:

@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,8 +31,39 @@ from kiro_crew.dashboard.handlers import terminal
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
+def _env_supports_default_signal() -> bool:
+    """GNU ``env --default-signal`` arrived in coreutils 8.31. An older ``env``
+    exits 125 on the flag, so the normalized case skips there instead of failing
+    on the host's tool rather than on the wrapper under test."""
+    if sys.platform != "linux":
+        return False
+    try:
+        probe = subprocess.run(
+            ["env", "--default-signal=INT", "true"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux runner uses GNU env")
-@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize(
+    "normalize",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                not _env_supports_default_signal(),
+                reason="env --default-signal needs GNU coreutils 8.31 or newer",
+            ),
+        ),
+    ],
+)
 def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize):
     """Exercise inherited SIG_IGN -> env -> Bash -> pytest without root.
 
@@ -39,7 +71,6 @@ def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize
     this probe executes its post-transition signal boundary at our current uid.
     """
     import shlex
-    import subprocess
 
     import yaml
 

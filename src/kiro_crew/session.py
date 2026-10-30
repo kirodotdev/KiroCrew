@@ -776,6 +776,7 @@ class SessionManager:
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release
     adopt_turn = _teardown.adopt_turn
+    retire_turn_permit = _teardown.retire_turn_permit
     cancel_current = _teardown.cancel_current
     cancel_owned_turn = _teardown.cancel_owned_turn
     stop_turn = _teardown.stop_turn

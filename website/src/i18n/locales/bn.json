@@ -1937,7 +1937,8 @@
       "pathBar": {
         "click_to_edit_path": "পাথ সম্পাদনা করতে ক্লিক করুন",
         "folder_path": "ফোল্ডার পাথ",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "ফোল্ডার রিফ্রেশ করো"
       },
       "searchPanel": {
         "capped": "(সীমিত)",
@@ -6606,6 +6607,11 @@
       "unwrap": "লাইন মোড়ানো বাতিল",
       "wrap": "লাইন মোড়ানো"
     },
+    "blockquote": {
+      "copied": "কপি হয়েছে!",
+      "copy": "উদ্ধৃতি কপি করো",
+      "copy_failed": "কপি ব্যর্থ হয়েছে। উদ্ধৃতিটি বেছে নিয়ে নিজে কপি করো।"
+    },
     "columnResizer": {
       "resize_column": "কলামের আকার বদলাও: {{column}}",
       "resize_hint": "আকার বদলাতে টানো (রিসেট করতে ডাবল-ক্লিক করো)"
@@ -8585,6 +8591,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "new_folder": "নতুন ফোল্ডার…",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -8604,6 +8611,17 @@
       "unmute": "এই সেশনের নীরবতা তুলে নাও",
       "mute_failed": "এই সেশন নীরব করা যায়নি",
       "unmute_failed": "এই সেশনের নীরবতা তোলা যায়নি"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "বাতিল",
+      "create_and_move": "তৈরি করে সরাও",
+      "inside_current": "“{{name}}”-এর ভিতরে তৈরি করো",
+      "move_failed": "“{{name}}” তৈরি হয়েছে, কিন্তু সেশনটি সেখানে সরানো যায়নি: {{error}}",
+      "move_failed_inside": "“{{parent}}”-এর ভিতরে “{{name}}” তৈরি হয়েছে, কিন্তু সেশনটি সেখানে সরানো যায়নি: {{error}}",
+      "name_label": "ফোল্ডারের নাম",
+      "retry_move": "আবার সরানোর চেষ্টা করো",
+      "session_closed": "এই সেশনটি বন্ধ হয়ে গেছে, তাই সরানোর মতো কিছু নেই।",
+      "title": "নতুন ফোল্ডার"
     },
     "sessionTurnLimit": {
       "all_sessions": "সব সেশন: সেটিংস খোলো",
@@ -10477,8 +10495,9 @@
       "jump_to_chat_letters": "চ্যাট 10 এবং তার পরে যাওয়া (প্রতিটি চ্যাটের অক্ষর দেখতে মডিফায়ার কী চেপে ধরো; macOS-এ টেক্সট ফিল্ডে ফোকাস থাকলে কাজ করে না)",
       "last_visited_chat_mru": "সর্বশেষ দেখা চ্যাট (MRU)",
       "next_chat": "পরের চ্যাট",
+      "next_chat_outside_text_fields": "পরের চ্যাট (টেক্সট ফিল্ডের বাইরে)",
       "next_notification": "পরের নোটিফিকেশন",
-      "next_prompt": "এই চ্যাটের পরের প্রম্পট",
+      "next_prompt": "এই চ্যাটের পরের প্রম্পট (টেক্সট ফিল্ডের বাইরে)",
       "notifications_panel": "নোটিফিকেশন প্যানেল",
       "open_agent_monitor": "এজেন্ট মনিটর খোলা (সাবএজেন্ট)",
       "open_settings": "সেটিংস খোলা",
@@ -10486,9 +10505,10 @@
       "previous_agent": "আগের এজেন্ট",
       "previous_approval_mode": "আগের অনুমোদন মোড",
       "previous_chat": "আগের চ্যাট",
+      "previous_chat_outside_text_fields": "আগের চ্যাট (টেক্সট ফিল্ডের বাইরে)",
       "previous_notification": "আগের নোটিফিকেশন",
       "previous_model": "আগের মডেল",
-      "previous_prompt": "এই চ্যাটের আগের প্রম্পট",
+      "previous_prompt": "এই চ্যাটের আগের প্রম্পট (টেক্সট ফিল্ডের বাইরে)",
       "previous_reasoning_effort": "আগের রিজনিং এফোর্ট",
       "projects_panel": "Task Runner প্যানেল",
       "schedule_panel": "শিডিউল প্যানেল",
@@ -10781,6 +10801,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "শুধুমাত্র {{productName}} মেটাডেটা সরানো হয় — অ্যাপটি নিজে বাইরে থেকে পরিচালিত হয়",
       "removing": "সরানো হচ্ছে…",
       "repository": "রিপোজিটরি:",
+      "report_issue": "একটি সমস্যা রিপোর্ট করো",
       "requires_local_install": "স্থানীয় ইনস্টল প্রয়োজন",
       "resources": "রিসোর্স",
       "resources_2": "| রিসোর্স:",
@@ -11752,6 +11773,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "\"{{name}}\" এজেন্ট শুধু নিজের MCP সার্ভারগুলোই লোড করে।",
+        "default_agent_loads_all_mcp_servers": "{{name}} কনফিগার করা সব MCP সার্ভার লোড করে — ওভারভিউ → MCP থেকে এগুলো সামলাও।",
         "disabled": "নিষ্ক্রিয়",
         "load_failed": "MCP সার্ভার লোড করা যায়নি",
         "mcp_servers_count": "MCP সার্ভার ({{count}}/{{total}} সক্রিয়)",
@@ -11964,6 +11986,8 @@
         "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
         "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",
         "more_running_normally": "আরও কয়েকটি স্বাভাবিকভাবে চলছে…",
+        "show_more_running_in_sidebar_one": "সাইডবারে আরও {{count}}টি চলমান সাবএজেন্ট দেখাও",
+        "show_more_running_in_sidebar_other": "সাইডবারে আরও {{count}}টি চলমান সাবএজেন্ট দেখাও",
         "no_activity_possibly_stalled": "কোনো অ্যাক্টিভিটি নেই — সম্ভবত থমকে গেছে",
         "open_in_subagents_sidebar": "সাবএজেন্ট সাইডবারে {{label}} খোলো",
         "possibly_stalled_at_tool": "{{tool}} এ সম্ভবত থমকে গেছে — কোনো অ্যাক্টিভিটি নেই",
@@ -13053,6 +13077,8 @@
       "filter_recent_description": "শুধু নির্বাচিত সময়সীমার মধ্যে সক্রিয় ছিল এমন সেশনগুলো দেখায়",
       "filter_running": "চলমান",
       "filter_running_description": "শুধু যেসব সেশনে এজেন্ট সক্রিয়ভাবে কাজ করছে সেগুলো দেখায়",
+      "filter_not_running": "চলমান নয়",
+      "filter_not_running_description": "এজেন্ট সক্রিয়ভাবে কাজ করছে এমন সেশনগুলো লুকায়",
       "filter_tags": "ট্যাগ ফিল্টার: {{name}}",
       "filter_unhide_named": "{{filter}} সেশনগুলো লুকানো বন্ধ করো",
       "filter_unread": "অপঠিত",
@@ -20033,6 +20059,7 @@
       "hide_folders": "ফোল্ডার লুকানো",
       "menu_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "move_folders": "ফোল্ডার সরানো",
+      "move_sessions": "সেশন সরানো",
       "name_not_saved_keep_field_open": "গেটওয়ে অফলাইন — এখনো সংরক্ষণ হয়নি। এই ঘরটি খোলা রাখো এবং আবার সংযুক্ত হও; বন্ধ করলে নামটি হারিয়ে যাবে।",
       "optimize": "অপ্টিমাইজ করা",
       "rename_folders": "ফোল্ডারের নাম পরিবর্তন",

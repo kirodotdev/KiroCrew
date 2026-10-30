@@ -72,6 +72,7 @@ from kiro_crew.apps.builtins.mochi.petdex_import import (
 from kiro_crew.apps.builtins.mochi.pinned_files_service import (
     DATA_FILE_NAME,
     PinsCorruptError,
+    PinsWriteError,
     pins_mutation,
 )
 from kiro_crew.apps.builtins.mochi.queue_file import QUEUE_FILE as _QUEUE_FILE
@@ -336,6 +337,18 @@ def _pins_corrupt() -> web.Response:
     )
 
 
+def _pins_write_failed() -> web.Response:
+    """The pin list could not be saved (e.g. a full data home); nothing changed.
+
+    A 200 here would let the page clear its error and leave the pin exactly as it
+    was, with nothing telling the person why the click did nothing.
+    """
+    return web.json_response(
+        {"error": "the pin list could not be saved", "code": "pins_write_failed"},
+        status=500,
+    )
+
+
 async def _handle_pinned_get(request: web.Request) -> web.Response:
     # Pin labels are agent-authored (pin_file) — redact before the browser.
     return web.json_response({"pins": _redact_plan_tree(_rt().pinned.get_pins())})
@@ -361,6 +374,8 @@ async def _handle_pinned_unpin(request: web.Request) -> web.Response:
         ok = await asyncio.to_thread(_rt().pinned.remove_pin, path)
     except PinsCorruptError:
         return _pins_corrupt()
+    except PinsWriteError:
+        return _pins_write_failed()
     return web.json_response({"ok": ok})
 
 
@@ -380,6 +395,8 @@ async def _handle_pinned_mark_seen(request: web.Request) -> web.Response:
         await asyncio.to_thread(_rt().pinned.mark_seen, path)
     except PinsCorruptError:
         return _pins_corrupt()
+    except PinsWriteError:
+        return _pins_write_failed()
     return web.json_response({"ok": True})
 
 

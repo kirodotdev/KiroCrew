@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -422,35 +422,57 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const hideLabel = hidden
                     ? i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })
                     : i18nT('pages.chatSidebar.filter_hide_named', { filter: filterLabel })
+                  // "In progress" gets a named "Not in progress" row instead of the
+                  // hover-only EyeOff button, so hiding running sessions is discoverable
+                  // without hovering. Unread and Pinned keep the EyeOff. The row stays
+                  // in the menu while show-only is on, so the menu keeps its shape:
+                  // toggleHideFilter clears show-only and toggleFilter drops the hide,
+                  // so one click moves between the two.
+                  const notRow = filterDef.key === 'running'
                   return (
-                    <div
-                      key={filterDef.key}
-                      role="group"
-                      className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
-                    >
-                      {showRow}
-                      {!active && (
-                        <DropdownMenuItem
-                          aria-label={hideLabel}
-                          title={hideLabel}
-                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
-                          className="group/hide shrink-0"
-                          data-testid={`filter-hide-${filterDef.key}`}
-                          data-filter-hidden={hidden ? 'true' : undefined}
-                        >
-                          <span
-                            className={hidden
-                              ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
-                              : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                    <Fragment key={filterDef.key}>
+                      <div
+                        role="group"
+                        className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
+                      >
+                        {showRow}
+                        {!active && !notRow && (
+                          <DropdownMenuItem
+                            aria-label={hideLabel}
+                            title={hideLabel}
+                            onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                            className="group/hide shrink-0"
+                            data-testid={`filter-hide-${filterDef.key}`}
+                            data-filter-hidden={hidden ? 'true' : undefined}
                           >
-                            <EyeOff
-                              size={12}
-                              className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
-                            />
-                          </span>
+                            <span
+                              className={hidden
+                                ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                                : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                            >
+                              <EyeOff
+                                size={12}
+                                className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
+                              />
+                            </span>
+                          </DropdownMenuItem>
+                        )}
+                      </div>
+                      {notRow && (
+                        <DropdownMenuItem
+                          title={i18nT('pages.chatSidebar.filter_not_running_description')}
+                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                          data-testid={`filter-not-${filterDef.key}`}
+                          data-filter-hidden={hidden ? 'true' : undefined}
+                          role="menuitemcheckbox"
+                          aria-checked={hidden}
+                        >
+                          <ZapOff size={12} className={hidden ? 'text-[var(--warn)]' : 'text-muted'} />
+                          <span className="flex-1 truncate">{i18nT('pages.chatSidebar.filter_not_running')}</span>
+                          {hidden && <Check size={14} className="text-accent shrink-0" />}
                         </DropdownMenuItem>
                       )}
-                    </div>
+                    </Fragment>
                   )
                 })}
                 {/* Lift every active status filter at once, for a look at the

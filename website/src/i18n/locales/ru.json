@@ -2033,7 +2033,8 @@
       "pathBar": {
         "click_to_edit_path": "Нажмите, чтобы изменить путь",
         "folder_path": "Путь к папке",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Обновить папку"
       },
       "searchPanel": {
         "capped": "(усечено)",
@@ -6834,6 +6835,11 @@
       "unwrap": "Не переносить строки",
       "wrap": "Переносить строки"
     },
+    "blockquote": {
+      "copied": "Скопировано!",
+      "copy": "Копировать цитату",
+      "copy_failed": "Не удалось скопировать. Выдели цитату и скопируй её вручную."
+    },
     "columnResizer": {
       "resize_column": "Изменить ширину столбца: {{column}}",
       "resize_hint": "Потяни, чтобы изменить размер (двойной щелчок — сброс)"
@@ -8859,6 +8865,7 @@
       "mark_as_read": "Отметить как прочитанное",
       "mark_as_unread": "Отметить как непрочитанное",
       "move_to_folder": "Переместить в папку…",
+      "new_folder": "Новая папка…",
       "open_in_new_tab": "Открыть во вкладке сессии",
       "pin": "Закрепить",
       "pop_out_to_window": "Открыть в отдельном окне",
@@ -8878,6 +8885,17 @@
       "unmute": "Включить уведомления этой сессии",
       "mute_failed": "Не удалось отключить уведомления этой сессии",
       "unmute_failed": "Не удалось включить уведомления этой сессии"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Отмена",
+      "create_and_move": "Создать и переместить",
+      "inside_current": "Создать внутри «{{name}}»",
+      "move_failed": "Папка «{{name}}» создана, но сеанс не удалось в неё переместить: {{error}}",
+      "move_failed_inside": "Папка «{{name}}» создана внутри «{{parent}}», но сеанс не удалось в неё переместить: {{error}}",
+      "name_label": "Имя папки",
+      "retry_move": "Повторить перемещение",
+      "session_closed": "Этот сеанс закрыт, поэтому перемещать нечего.",
+      "title": "Новая папка"
     },
     "sessionTurnLimit": {
       "all_sessions": "Все сессии: открыть настройки",
@@ -10783,8 +10801,9 @@
       "jump_to_chat_letters": "Перейти к чату 10 и далее (удерживай клавишу-модификатор, чтобы увидеть букву каждого чата; в macOS — не когда фокус в текстовом поле)",
       "last_visited_chat_mru": "Последний посещённый чат (MRU)",
       "next_chat": "Следующий чат",
+      "next_chat_outside_text_fields": "Следующий чат (вне текстовых полей)",
       "next_notification": "Следующее уведомление",
-      "next_prompt": "Следующий промпт в этом чате",
+      "next_prompt": "Следующий промпт в этом чате (вне текстовых полей)",
       "notifications_panel": "Панель уведомлений",
       "open_agent_monitor": "Открыть монитор агентов (субагенты)",
       "open_settings": "Открыть настройки",
@@ -10792,9 +10811,10 @@
       "previous_agent": "Предыдущий агент",
       "previous_approval_mode": "Предыдущий режим подтверждения",
       "previous_chat": "Предыдущий чат",
+      "previous_chat_outside_text_fields": "Предыдущий чат (вне текстовых полей)",
       "previous_notification": "Предыдущее уведомление",
       "previous_model": "Предыдущая модель",
-      "previous_prompt": "Предыдущий промпт в этом чате",
+      "previous_prompt": "Предыдущий промпт в этом чате (вне текстовых полей)",
       "previous_reasoning_effort": "Предыдущая глубина размышлений",
       "projects_panel": "Панель Task Runner",
       "schedule_panel": "Панель расписания",
@@ -11091,6 +11111,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Удаляются только метаданные {{productName}} — само приложение управляется извне",
       "removing": "Удаление…",
       "repository": "Репозиторий:",
+      "report_issue": "Сообщить о проблеме",
       "requires_local_install": "Требуется локальная установка",
       "resources": "Ресурсы",
       "resources_2": "| Ресурсы:",
@@ -12102,6 +12123,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Агент «{{name}}» загружает только свои серверы MCP.",
+        "default_agent_loads_all_mcp_servers": "{{name}} загружает все настроенные MCP-серверы — управляй ими в разделе Обзор → MCP.",
         "disabled": "отключено",
         "load_failed": "Не удалось загрузить серверы MCP",
         "mcp_servers_count": "MCP-серверы ({{count}}/{{total}} включено)",
@@ -12318,6 +12340,10 @@
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
         "more_running_normally": "ещё выполняются нормально…",
+        "show_more_running_in_sidebar_one": "Показать ещё {{count}} выполняющийся субагент на боковой панели",
+        "show_more_running_in_sidebar_few": "Показать ещё {{count}} выполняющихся субагента на боковой панели",
+        "show_more_running_in_sidebar_many": "Показать ещё {{count}} выполняющихся субагентов на боковой панели",
+        "show_more_running_in_sidebar_other": "Показать ещё {{count}} выполняющегося субагента на боковой панели",
         "no_activity_possibly_stalled": "Нет активности — возможно, застряло",
         "open_in_subagents_sidebar": "Открыть {{label}} на панели субагентов",
         "possibly_stalled_at_tool": "возможно, застряло на {{tool}} — нет активности",
@@ -13465,6 +13491,8 @@
       "filter_recent_description": "Показывать только сессии, активные в выбранном периоде",
       "filter_running": "В работе",
       "filter_running_description": "Показывать только сессии, над которыми агент активно работает",
+      "filter_not_running": "Не в работе",
+      "filter_not_running_description": "Скрывать сессии, над которыми агент активно работает",
       "filter_tags": "Фильтр по тегам: {{name}}",
       "filter_unhide_named": "Больше не скрывать сессии «{{filter}}»",
       "filter_unread": "Непрочитанные",
@@ -20681,6 +20709,7 @@
       "hide_folders": "скрывать папки",
       "menu_reason": "Шлюз не в сети — неактивным действиям нужно подключение",
       "move_folders": "перемещать папки",
+      "move_sessions": "перемещать сеансы",
       "name_not_saved_keep_field_open": "Шлюз не в сети — ещё не сохранено. Оставь это поле открытым и подключись снова; если закроешь его, имя будет потеряно.",
       "optimize": "оптимизировать",
       "rename_folders": "переименовывать папки",

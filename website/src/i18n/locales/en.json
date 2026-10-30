@@ -1108,7 +1108,8 @@
       "pathBar": {
         "click_to_edit_path": "Click to edit path",
         "folder_path": "Folder path",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Refresh folder"
       },
       "searchPanel": {
         "close_esc": "Close (Esc)",
@@ -5410,11 +5411,23 @@
       "copy_session_id_failed_detail": "Your browser blocked clipboard access. Copy it from the session link instead, or try again.",
       "focus_popped_out_window": "Focus popped-out window",
       "move_to_folder": "Move to folder…",
+      "new_folder": "New folder…",
       "pop_out_to_window": "Pop out to window",
       "reference_in_chat": "Reference in chat",
       "rename": "Rename",
       "reveal_in_sidebar": "Reveal in sidebar",
       "tags": "Tags…"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Cancel",
+      "create_and_move": "Create and move",
+      "inside_current": "Create inside “{{name}}”",
+      "move_failed": "Created “{{name}}”, but the session was not moved into it: {{error}}",
+      "move_failed_inside": "Created “{{name}}” inside “{{parent}}”, but the session was not moved into it: {{error}}",
+      "name_label": "Folder name",
+      "retry_move": "Retry move",
+      "session_closed": "This session was closed, so there is nothing to move.",
+      "title": "New folder"
     },
     "sessionTurnLimit": {
       "all_sessions": "All sessions: open Settings",
@@ -6242,6 +6255,7 @@
       "previous": "Previous",
       "removes_kirocrew_metadata_only_the_app_itself_is": "Removes {{productName}} metadata only — the app itself is managed externally",
       "repository": "Repository:",
+      "report_issue": "Report an issue",
       "requires_local_install": "Requires local install",
       "resources": "Resources",
       "resources_2": "| Resources:",
@@ -6909,6 +6923,8 @@
       "subagentProgressBar": {
         "backend_hiccup_retrying": "connection unstable — retrying…",
         "more_running_normally": "more running normally…",
+        "show_more_running_in_sidebar_one": "Show {{count}} more running subagent in the sidebar",
+        "show_more_running_in_sidebar_other": "Show {{count}} more running subagents in the sidebar",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
         "possibly_stalled_at_tool": "possibly stalled at {{tool}} — no activity",
         "possibly_stalled_at_tool_for_secs": "possibly stalled at {{tool}} — no activity for {{secs}}s",

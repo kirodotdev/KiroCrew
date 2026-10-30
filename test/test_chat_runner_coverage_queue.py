@@ -16,7 +16,7 @@ import pytest
 from chat_runner_coverage_helpers import _errors, _slot, _state
 
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.chat_utils import chunk_generation
+from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND, chunk_generation
 from kiro_crew.testing.wait import async_wait_until
 
 # ── queue drain / synthesis ───────────────────────────────────────────────
@@ -180,7 +180,6 @@ class TestStartNextQueuedTurn:
             ({}, True),
             ({"running": [{"id": "b2", "stalled": True}]}, False),
             ({"in_memory": True}, False),
-            ({"delivering": 1}, False),
             ({"unreadable": True}, False),
             ({"probe_raises": True}, False),
             ({"queued_in_store": 1}, False),
@@ -190,7 +189,6 @@ class TestStartNextQueuedTurn:
             "settled",
             "running",
             "pending-in-memory",
-            "delivering",
             "unreadable",
             "probe-raises",
             "queued-in-store",
@@ -211,7 +209,6 @@ class TestStartNextQueuedTurn:
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
-        slot._subagent_deliveries_inflight = children.get("delivering", 0)
         subs = _children(
             running=children.get("running", ()),
             in_memory=children.get("in_memory", False),
@@ -244,6 +241,66 @@ class TestStartNextQueuedTurn:
         assert spawn.call_count == 1, "the message drained as the next turn"
         assert slot._pending_synthesis is False, "the user takes over, as before"
         assert slot._synthesis_completion_turns == (0 if ends_batch else 2)
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_waits_while_a_completion_is_being_delivered(self, tmp_path):
+        """A completion still on its way to the tab holds user messages as a
+        running child does: the last child is done, but its result is not queued
+        yet, and the message must not be answered without it."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._subagent_deliveries_inflight = 1
+        state.subagents = _children()
+        slot.queue_append("a user message")
+        slot.task = ending = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+
+        assert spawn.call_count == 0
+        assert [entry["content"] for entry in slot._queue] == ["a user message"]
+        assert slot._pending_synthesis is True
+        assert slot._synthesis_completion_turns == 2
+
+    @pytest.mark.asyncio
+    async def test_a_queued_completion_runs_before_a_user_message_queued_ahead_of_it(
+        self, tmp_path
+    ):
+        """A completion that queued behind another system turn keeps the hold: that
+        turn's end runs the completion, not the user message held for the
+        children, though no child is running and none is being delivered."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        state.subagents = _children()
+        slot.queue_append("a user message")
+        slot.queue_append(
+            "[Subagent completion event] the last result", kind=SUBAGENT_COMPLETION_KIND
+        )
+        slot.task = ending = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+
+        assert spawn.call_count == 1
+        assert [entry["content"] for entry in slot._queue] == ["a user message"]
+        assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
     async def test_an_armed_drain_reads_no_store_and_keeps_the_count(self, tmp_path):

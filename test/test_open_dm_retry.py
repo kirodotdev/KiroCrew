@@ -119,3 +119,79 @@ async def test_aiohttp_client_error_retried():
         result = await gw._open_dm_with_retry("U1", "job1")
     assert result == "D123"
     assert gw.slack.open_dm.await_count == 2
+
+
+def _recorded_sleep():
+    """Patch the retry's sleep to record the requested delay without waiting."""
+    mock_sleep = AsyncMock()
+    sleeping = patch(
+        "kiro_crew.slack.retry.asyncio.sleep", mock_sleep
+    )  # flake-ok: records the requested delay, reads no clock
+    return mock_sleep, sleeping
+
+
+def _rate_limited(headers: object) -> SlackApiError:
+    resp = MagicMock()
+    resp.status_code = 429
+    resp.headers = headers
+    return SlackApiError(message="ratelimited", response=resp)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Retry-After": "12"}, 12.0),
+        ({"retry-after": ["7"]}, 7.0),
+        ({"Retry-After": "600"}, 30.0),
+    ],
+    ids=["string", "list-lowercase", "capped"],
+)
+async def test_a_429_waits_out_its_retry_after(headers, expected):
+    # Slack names the seconds left in the rate-limit window. A retry after the
+    # linear 1s would be another 429 and spend the attempt for nothing.
+    gw = _make_gateway()
+    gw.slack.open_dm.side_effect = [_rate_limited(headers), "D123"]
+    mock_sleep, sleeping = _recorded_sleep()
+    with sleeping:
+        result = await gw._open_dm_with_retry("U1", "job1")
+    assert result == "D123"
+    mock_sleep.assert_awaited_once_with(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Retry-After": "soon"}, {"Retry-After": "-5"}, {"Retry-After": "nan"}, None],
+    ids=["absent", "not-a-number", "negative", "nan", "no-headers"],
+)
+async def test_a_429_without_a_usable_retry_after_keeps_the_linear_backoff(headers):
+    gw = _make_gateway()
+    gw.slack.open_dm.side_effect = [_rate_limited(headers), "D123"]
+    mock_sleep, sleeping = _recorded_sleep()
+    with sleeping:
+        await gw._open_dm_with_retry("U1", "job1")
+    mock_sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_short_retry_after_never_shortens_the_linear_backoff():
+    gw = _make_gateway()
+    gw.slack.open_dm.side_effect = [_slack_error(500), _rate_limited({"Retry-After": "0"}), "D1"]
+    mock_sleep, sleeping = _recorded_sleep()
+    with sleeping:
+        await gw._open_dm_with_retry("U1", "job1", max_attempts=3)
+    assert [c.args[0] for c in mock_sleep.await_args_list] == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_a_5xx_ignores_a_retry_after_header():
+    resp = MagicMock()
+    resp.status_code = 503
+    resp.headers = {"Retry-After": "20"}
+    gw = _make_gateway()
+    gw.slack.open_dm.side_effect = [SlackApiError(message="down", response=resp), "D1"]
+    mock_sleep, sleeping = _recorded_sleep()
+    with sleeping:
+        await gw._open_dm_with_retry("U1", "job1")
+    mock_sleep.assert_awaited_once_with(1.0)

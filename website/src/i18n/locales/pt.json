@@ -1985,7 +1985,8 @@
       "pathBar": {
         "click_to_edit_path": "Clique para editar o caminho",
         "folder_path": "Caminho da pasta",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Atualizar pasta"
       },
       "searchPanel": {
         "capped": "(limitado)",
@@ -6720,6 +6721,11 @@
       "unwrap": "Desativar quebra de linha",
       "wrap": "Quebrar linhas"
     },
+    "blockquote": {
+      "copied": "Copiado!",
+      "copy": "Copiar citação",
+      "copy_failed": "Falha ao copiar. Selecione a citação e copie-a manualmente."
+    },
     "columnResizer": {
       "resize_column": "Redimensionar coluna: {{column}}",
       "resize_hint": "Arraste para redimensionar (clique duplo para redefinir)"
@@ -8722,6 +8728,7 @@
       "mark_as_read": "Marcar como lida",
       "mark_as_unread": "Marcar como não lida",
       "move_to_folder": "Mover para pasta…",
+      "new_folder": "Nova pasta…",
       "open_in_new_tab": "Abrir em uma aba de sessão",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
@@ -8741,6 +8748,17 @@
       "unmute": "Reativar som desta sessão",
       "mute_failed": "Não foi possível silenciar esta sessão",
       "unmute_failed": "Não foi possível reativar o som desta sessão"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Cancelar",
+      "create_and_move": "Criar e mover",
+      "inside_current": "Criar dentro de “{{name}}”",
+      "move_failed": "“{{name}}” foi criada, mas a sessão não foi movida para ela: {{error}}",
+      "move_failed_inside": "“{{name}}” foi criada dentro de “{{parent}}”, mas a sessão não foi movida para ela: {{error}}",
+      "name_label": "Nome da pasta",
+      "retry_move": "Tentar mover de novo",
+      "session_closed": "Esta sessão foi fechada, então não há nada para mover.",
+      "title": "Nova pasta"
     },
     "sessionTurnLimit": {
       "all_sessions": "Todas as sessões: abrir Configurações",
@@ -10630,8 +10648,9 @@
       "jump_to_chat_letters": "Ir para a conversa 10 e além (segure o modificador para ver a letra de cada conversa; no macOS, não enquanto um campo de texto estiver em foco)",
       "last_visited_chat_mru": "Última conversa visitada (MRU)",
       "next_chat": "Próxima conversa",
+      "next_chat_outside_text_fields": "Próxima conversa (fora dos campos de texto)",
       "next_notification": "Próxima notificação",
-      "next_prompt": "Próximo prompt desta conversa",
+      "next_prompt": "Próximo prompt desta conversa (fora dos campos de texto)",
       "notifications_panel": "Painel de notificações",
       "open_agent_monitor": "Abrir o monitor de agentes (subagentes)",
       "open_settings": "Abrir as configurações",
@@ -10639,9 +10658,10 @@
       "previous_agent": "Agente anterior",
       "previous_approval_mode": "Modo de aprovação anterior",
       "previous_chat": "Conversa anterior",
+      "previous_chat_outside_text_fields": "Conversa anterior (fora dos campos de texto)",
       "previous_notification": "Notificação anterior",
       "previous_model": "Modelo anterior",
-      "previous_prompt": "Prompt anterior desta conversa",
+      "previous_prompt": "Prompt anterior desta conversa (fora dos campos de texto)",
       "previous_reasoning_effort": "Esforço de raciocínio anterior",
       "projects_panel": "Painel do Task Runner",
       "schedule_panel": "Painel de agendamentos",
@@ -10936,6 +10956,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Remove apenas os metadados do {{productName}} — o app em si é gerenciado externamente",
       "removing": "Removendo…",
       "repository": "Repositório:",
+      "report_issue": "Relatar um problema",
       "requires_local_install": "Requer instalação local",
       "resources": "Recursos",
       "resources_2": "| Recursos:",
@@ -11927,6 +11948,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "O agente \"{{name}}\" carrega apenas os próprios servidores MCP.",
+        "default_agent_loads_all_mcp_servers": "{{name}} carrega todos os servidores MCP configurados; gerencie-os em Visão geral → MCP.",
         "disabled": "desativado",
         "load_failed": "Não foi possível carregar os servidores MCP",
         "mcp_servers_count": "Servidores MCP ({{count}}/{{total}} ativados)",
@@ -12141,6 +12163,9 @@
         "collapse_agent_list": "Recolher a lista de subagentes",
         "expand_agent_list": "Expandir a lista de subagentes",
         "more_running_normally": "mais em execução normal…",
+        "show_more_running_in_sidebar_one": "Mostrar mais {{count}} subagente em execução na barra lateral",
+        "show_more_running_in_sidebar_many": "Mostrar mais {{count}} subagentes em execução na barra lateral",
+        "show_more_running_in_sidebar_other": "Mostrar mais {{count}} subagentes em execução na barra lateral",
         "no_activity_possibly_stalled": "Sem atividade — possivelmente travado",
         "open_in_subagents_sidebar": "Abrir {{label}} na barra lateral de subagentes",
         "possibly_stalled_at_tool": "possivelmente travado em {{tool}} — sem atividade",
@@ -13259,6 +13284,8 @@
       "filter_recent_description": "Mostrar apenas sessões ativas no período selecionado",
       "filter_running": "Em execução",
       "filter_running_description": "Mostrar apenas sessões em que o agente está trabalhando ativamente",
+      "filter_not_running": "Não em execução",
+      "filter_not_running_description": "Ocultar as sessões em que o agente está trabalhando ativamente",
       "filter_tags": "Filtrar tags: {{name}}",
       "filter_unhide_named": "Parar de ocultar sessões {{filter}}",
       "filter_unread": "Não lidas",
@@ -20357,6 +20384,7 @@
       "hide_folders": "ocultar pastas",
       "menu_reason": "Gateway offline — as ações esmaecidas precisam de conexão",
       "move_folders": "mover pastas",
+      "move_sessions": "mover sessões",
       "name_not_saved_keep_field_open": "Gateway offline — ainda não foi salvo. Deixe este campo aberto e reconecte; se fechá-lo, o nome é descartado.",
       "optimize": "otimizar",
       "rename_folders": "renomear pastas",

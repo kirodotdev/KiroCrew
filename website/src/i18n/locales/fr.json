@@ -2075,7 +2075,8 @@
       "pathBar": {
         "click_to_edit_path": "Cliquer pour modifier le chemin",
         "folder_path": "Chemin du dossier",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "Actualiser le dossier"
       },
       "searchPanel": {
         "capped": "(tronqué)",
@@ -6720,6 +6721,11 @@
       "unwrap": "Désactiver le retour à la ligne",
       "wrap": "Retour à la ligne"
     },
+    "blockquote": {
+      "copied": "Copié !",
+      "copy": "Copier la citation",
+      "copy_failed": "Échec de la copie. Sélectionne la citation et copie-la toi-même."
+    },
     "columnResizer": {
       "resize_column": "Redimensionner la colonne : {{column}}",
       "resize_hint": "Faire glisser pour redimensionner (double-cliquer pour réinitialiser)"
@@ -8722,6 +8728,7 @@
       "mark_as_read": "Marquer comme lu",
       "mark_as_unread": "Marquer comme non lu",
       "move_to_folder": "Déplacer vers un dossier…",
+      "new_folder": "Nouveau dossier…",
       "open_in_new_tab": "Ouvrir dans un onglet de session",
       "pin": "Épingler",
       "pop_out_to_window": "Détacher dans une fenêtre",
@@ -8741,6 +8748,17 @@
       "unmute": "Réactiver le son de cette session",
       "mute_failed": "Impossible de mettre cette session en sourdine",
       "unmute_failed": "Impossible de réactiver le son de cette session"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Annuler",
+      "create_and_move": "Créer et déplacer",
+      "inside_current": "Créer dans « {{name}} »",
+      "move_failed": "« {{name}} » a été créé, mais la session n’a pas pu y être déplacée : {{error}}",
+      "move_failed_inside": "« {{name}} » a été créé dans « {{parent}} », mais la session n’a pas pu y être déplacée : {{error}}",
+      "name_label": "Nom du dossier",
+      "retry_move": "Réessayer le déplacement",
+      "session_closed": "Cette session a été fermée, il n’y a donc rien à déplacer.",
+      "title": "Nouveau dossier"
     },
     "sessionTurnLimit": {
       "all_sessions": "Toutes les sessions : ouvrir les Réglages",
@@ -10630,8 +10648,9 @@
       "jump_to_chat_letters": "Aller au chat 10 et au-delà (maintiens la touche de modification pour voir la lettre de chaque chat ; sous macOS, pas lorsqu’un champ de texte a le focus)",
       "last_visited_chat_mru": "Dernier chat visité (MRU)",
       "next_chat": "Chat suivant",
+      "next_chat_outside_text_fields": "Chat suivant (hors des champs de texte)",
       "next_notification": "Notification suivante",
-      "next_prompt": "Prompt suivant de ce chat",
+      "next_prompt": "Prompt suivant de ce chat (hors des champs de texte)",
       "notifications_panel": "Panneau des notifications",
       "open_agent_monitor": "Ouvrir le moniteur d’agents (sous-agents)",
       "open_settings": "Ouvrir les paramètres",
@@ -10639,9 +10658,10 @@
       "previous_agent": "Agent précédent",
       "previous_approval_mode": "Mode d’approbation précédent",
       "previous_chat": "Chat précédent",
+      "previous_chat_outside_text_fields": "Chat précédent (hors des champs de texte)",
       "previous_notification": "Notification précédente",
       "previous_model": "Modèle précédent",
-      "previous_prompt": "Prompt précédent de ce chat",
+      "previous_prompt": "Prompt précédent de ce chat (hors des champs de texte)",
       "previous_reasoning_effort": "Effort de raisonnement précédent",
       "projects_panel": "Panneau Task Runner",
       "schedule_panel": "Panneau de planification",
@@ -10936,6 +10956,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Supprime uniquement les métadonnées {{productName}} — l'application elle-même est gérée en externe",
       "removing": "Suppression…",
       "repository": "Dépôt :",
+      "report_issue": "Signaler un problème",
       "requires_local_install": "Nécessite une installation locale",
       "resources": "Ressources",
       "resources_2": "| Ressources :",
@@ -11927,6 +11948,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "L’agent « {{name}} » ne charge que ses propres serveurs MCP.",
+        "default_agent_loads_all_mcp_servers": "{{name}} charge tous les serveurs MCP configurés ; gère-les dans Vue d'ensemble → MCP.",
         "disabled": "désactivé",
         "load_failed": "Impossible de charger les serveurs MCP",
         "mcp_servers_count": "Serveurs MCP ({{count}}/{{total}} activés)",
@@ -12141,6 +12163,9 @@
         "collapse_agent_list": "Réduire la liste des sous-agents",
         "expand_agent_list": "Développer la liste des sous-agents",
         "more_running_normally": "autres en cours normalement…",
+        "show_more_running_in_sidebar_one": "Afficher {{count}} autre sous-agent en cours dans la barre latérale",
+        "show_more_running_in_sidebar_many": "Afficher {{count}} autres sous-agents en cours dans la barre latérale",
+        "show_more_running_in_sidebar_other": "Afficher {{count}} autres sous-agents en cours dans la barre latérale",
         "no_activity_possibly_stalled": "Aucune activité — peut-être bloqué",
         "open_in_subagents_sidebar": "Ouvrir {{label}} dans la barre latérale des sous-agents",
         "possibly_stalled_at_tool": "peut-être bloqué à {{tool}} — aucune activité",
@@ -13259,6 +13284,8 @@
       "filter_recent_description": "Afficher uniquement les sessions actives dans la période sélectionnée",
       "filter_running": "En cours",
       "filter_running_description": "Afficher uniquement les sessions sur lesquelles l’agent travaille activement",
+      "filter_not_running": "Pas en cours",
+      "filter_not_running_description": "Masquer les sessions sur lesquelles l'agent travaille activement",
       "filter_tags": "Filtrer les étiquettes : {{name}}",
       "filter_unhide_named": "Ne plus masquer les sessions {{filter}}",
       "filter_unread": "Non lues",
@@ -20357,6 +20384,7 @@
       "hide_folders": "masquer des dossiers",
       "menu_reason": "Passerelle hors ligne — les actions grisées nécessitent une connexion",
       "move_folders": "déplacer des dossiers",
+      "move_sessions": "déplacer des sessions",
       "name_not_saved_keep_field_open": "Passerelle hors ligne — pas encore enregistré. Laisse ce champ ouvert et reconnecte-toi ; si tu le fermes, le nom est abandonné.",
       "optimize": "optimiser",
       "rename_folders": "renommer des dossiers",

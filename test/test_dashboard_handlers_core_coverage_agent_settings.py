@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -623,13 +624,11 @@ class TestSessionAgentRoutes:
     async def test_stream_stops_when_the_client_disconnects(self, monkeypatch, fake_sel) -> None:
         """A reset peer must end the loop, not spin for the full 20 minutes."""
 
-        def _reset(**_k):
+        def _reset(_self):
             raise ConnectionResetError("peer went away")
 
-        monkeypatch.setattr(
-            "kiro_crew.session_workspace.result_path",
-            lambda *_a: SimpleNamespace(exists=lambda: True, read_text=_reset),
-        )
+        monkeypatch.setattr("kiro_crew.session_workspace.result_path", lambda *_a: Path("unused"))
+        monkeypatch.setattr("kiro_crew.session_workspace_tail.ResultTail.read_new", _reset)
         app = web.Application()
         app["state"] = SimpleNamespace(subagents=None)
         app.router.add_get(

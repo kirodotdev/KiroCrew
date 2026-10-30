@@ -1889,7 +1889,8 @@
       "pathBar": {
         "click_to_edit_path": "点击编辑路径",
         "folder_path": "文件夹路径",
-        "path_to_folder": "/path/to/folder"
+        "path_to_folder": "/path/to/folder",
+        "refresh_folder": "刷新文件夹"
       },
       "searchPanel": {
         "capped": "（已截断）",
@@ -6492,6 +6493,11 @@
       "unwrap": "不折行",
       "wrap": "折行"
     },
+    "blockquote": {
+      "copied": "已复制！",
+      "copy": "复制引用",
+      "copy_failed": "复制失败。请选择引用内容并手动复制。"
+    },
     "columnResizer": {
       "resize_column": "调整列宽：{{column}}",
       "resize_hint": "拖动调整大小（双击重置）"
@@ -8448,6 +8454,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "new_folder": "新建文件夹…",
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
@@ -8467,6 +8474,17 @@
       "unmute": "取消静音此会话",
       "mute_failed": "无法静音此会话",
       "unmute_failed": "无法取消静音此会话"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "取消",
+      "create_and_move": "创建并移动",
+      "inside_current": "在“{{name}}”内创建",
+      "move_failed": "已创建“{{name}}”，但会话未能移入其中：{{error}}",
+      "move_failed_inside": "已在“{{parent}}”内创建“{{name}}”，但会话未能移入其中：{{error}}",
+      "name_label": "文件夹名称",
+      "retry_move": "重试移动",
+      "session_closed": "此会话已关闭，没有可移动的内容。",
+      "title": "新建文件夹"
     },
     "sessionTurnLimit": {
       "all_sessions": "所有会话：打开设置",
@@ -10324,8 +10342,9 @@
       "jump_to_chat_letters": "跳转到聊天 10 及以后（按住修饰键可查看每个聊天的字母；在 macOS 上，文本框获得焦点时不可用）",
       "last_visited_chat_mru": "上次访问的聊天（MRU）",
       "next_chat": "下一个聊天",
+      "next_chat_outside_text_fields": "下一个聊天（不在文本框中时）",
       "next_notification": "下一条通知",
-      "next_prompt": "当前聊天的下一个提示词",
+      "next_prompt": "当前聊天的下一个提示词（不在文本框中时）",
       "notifications_panel": "通知面板",
       "open_agent_monitor": "打开代理监视器（子代理）",
       "open_settings": "打开设置",
@@ -10333,9 +10352,10 @@
       "previous_agent": "上一个代理",
       "previous_approval_mode": "上一个审批模式",
       "previous_chat": "上一个聊天",
+      "previous_chat_outside_text_fields": "上一个聊天（不在文本框中时）",
       "previous_notification": "上一条通知",
       "previous_model": "上一个模型",
-      "previous_prompt": "当前聊天的上一个提示词",
+      "previous_prompt": "当前聊天的上一个提示词（不在文本框中时）",
       "previous_reasoning_effort": "上一个推理强度",
       "projects_panel": "Task Runner 面板",
       "schedule_panel": "计划面板",
@@ -10626,6 +10646,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "仅移除 {{productName}} 元数据 — 应用本身由外部管理",
       "removing": "正在移除…",
       "repository": "仓库：",
+      "report_issue": "报告问题",
       "requires_local_install": "需要本地安装",
       "resources": "资源",
       "resources_2": "| 资源：",
@@ -11577,6 +11598,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "代理“{{name}}”仅加载自己的 MCP 服务器。",
+        "default_agent_loads_all_mcp_servers": "{{name}} 加载所有已配置的 MCP 服务器，可在 概览 → MCP 中管理。",
         "disabled": "已禁用",
         "load_failed": "无法加载 MCP 服务器",
         "mcp_servers_count": "MCP 服务器（{{count}}/{{total}} 已启用）",
@@ -11787,6 +11809,7 @@
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
         "more_running_normally": "个仍在正常运行…",
+        "show_more_running_in_sidebar_other": "在侧边栏中显示另外 {{count}} 个正在运行的子代理",
         "no_activity_possibly_stalled": "无活动 — 可能已停滞",
         "open_in_subagents_sidebar": "在子代理侧边栏中打开 {{label}}",
         "possibly_stalled_at_tool": "在 {{tool}} 处可能已停滞 — 无活动",
@@ -12847,6 +12870,8 @@
       "filter_recent_description": "仅显示所选时间窗口内活跃过的会话",
       "filter_running": "运行中",
       "filter_running_description": "仅显示代理正在处理的会话",
+      "filter_not_running": "未运行",
+      "filter_not_running_description": "隐藏代理正在处理的会话",
       "filter_tags": "筛选标签：{{name}}",
       "filter_unhide_named": "停止隐藏“{{filter}}”会话",
       "filter_unread": "未读",
@@ -19709,6 +19734,7 @@
       "hide_folders": "隐藏文件夹",
       "menu_reason": "网关离线 — 变暗的操作需要连接",
       "move_folders": "移动文件夹",
+      "move_sessions": "移动会话",
       "name_not_saved_keep_field_open": "网关离线 — 尚未保存。请保持此输入框打开并重新连接。关闭后名称将被丢弃。",
       "optimize": "优化",
       "rename_folders": "重命名文件夹",

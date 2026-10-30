@@ -1977,7 +1977,8 @@
       "pathBar": {
         "click_to_edit_path": "クリックしてパスを編集",
         "folder_path": "フォルダーパス",
-        "path_to_folder": "/パス/フォルダー"
+        "path_to_folder": "/パス/フォルダー",
+        "refresh_folder": "フォルダーを更新"
       },
       "searchPanel": {
         "capped": "（上限あり）",
@@ -6492,6 +6493,11 @@
       "unwrap": "折り返し解除",
       "wrap": "折り返し"
     },
+    "blockquote": {
+      "copied": "コピーしました！",
+      "copy": "引用をコピー",
+      "copy_failed": "コピーに失敗しました。引用を選択して手動でコピーしてください。"
+    },
     "columnResizer": {
       "resize_column": "列の幅を変更: {{column}}",
       "resize_hint": "ドラッグしてリサイズ (ダブルクリックでリセット)"
@@ -8448,6 +8454,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "new_folder": "新しいフォルダー…",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -8467,6 +8474,17 @@
       "unmute": "このセッションのミュートを解除",
       "mute_failed": "このセッションをミュートできませんでした",
       "unmute_failed": "このセッションのミュートを解除できませんでした"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "キャンセル",
+      "create_and_move": "作成して移動",
+      "inside_current": "「{{name}}」内に作成",
+      "move_failed": "「{{name}}」を作成しましたが、セッションを移動できませんでした: {{error}}",
+      "move_failed_inside": "「{{parent}}」内に「{{name}}」を作成しましたが、セッションを移動できませんでした: {{error}}",
+      "name_label": "フォルダー名",
+      "retry_move": "移動を再試行",
+      "session_closed": "このセッションは閉じられたため、移動するものはありません。",
+      "title": "新しいフォルダー"
     },
     "sessionTurnLimit": {
       "all_sessions": "すべてのセッション：設定を開く",
@@ -10324,8 +10342,9 @@
       "jump_to_chat_letters": "チャット 10 以降にジャンプ（修飾キーを押し続けると各チャットの文字が表示されます。macOS ではテキスト欄にフォーカスがある間は使えません）",
       "last_visited_chat_mru": "最後にアクセスしたチャット（MRU）",
       "next_chat": "次のチャット",
+      "next_chat_outside_text_fields": "次のチャット（テキスト入力欄の外で）",
       "next_notification": "次の通知",
-      "next_prompt": "このチャットの次のプロンプト",
+      "next_prompt": "このチャットの次のプロンプト（テキスト入力欄の外で）",
       "notifications_panel": "通知パネル",
       "open_agent_monitor": "エージェントモニターを開く（サブエージェント）",
       "open_settings": "設定を開く",
@@ -10333,9 +10352,10 @@
       "previous_agent": "前のエージェント",
       "previous_approval_mode": "前の承認モード",
       "previous_chat": "前のチャット",
+      "previous_chat_outside_text_fields": "前のチャット（テキスト入力欄の外で）",
       "previous_notification": "前の通知",
       "previous_model": "前のモデル",
-      "previous_prompt": "このチャットの前のプロンプト",
+      "previous_prompt": "このチャットの前のプロンプト（テキスト入力欄の外で）",
       "previous_reasoning_effort": "前の推論努力度",
       "projects_panel": "Task Runner パネル",
       "schedule_panel": "スケジュールパネル",
@@ -10626,6 +10646,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "{{productName}} メタデータのみを削除します — アプリ自体は外部で管理されます",
       "removing": "削除中…",
       "repository": "リポジトリ:",
+      "report_issue": "問題を報告",
       "requires_local_install": "ローカルインストールが必要",
       "resources": "リソース",
       "resources_2": "| リソース:",
@@ -11577,6 +11598,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "エージェント「{{name}}」は自身の MCP サーバーのみを読み込みます。",
+        "default_agent_loads_all_mcp_servers": "{{name}} は設定済みのすべての MCP サーバーを読み込みます。概要 → MCP で管理できます。",
         "disabled": "無効",
         "load_failed": "MCP サーバーを読み込めませんでした",
         "mcp_servers_count": "MCP サーバー（{{count}}/{{total}} 有効）",
@@ -11787,6 +11809,7 @@
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",
         "expand_agent_list": "サブエージェント一覧を展開",
         "more_running_normally": "ほかは正常に実行中…",
+        "show_more_running_in_sidebar_other": "サイドバーで実行中のサブエージェントをあと {{count}} 件表示",
         "no_activity_possibly_stalled": "アクティビティなし — 停止している可能性があります",
         "open_in_subagents_sidebar": "{{label}} をサブエージェントサイドバーで開く",
         "possibly_stalled_at_tool": "{{tool}} で停止している可能性があります — アクティビティなし",
@@ -12846,6 +12869,8 @@
       "filter_recent_description": "選択した期間内にアクティブだったセッションのみ表示",
       "filter_running": "進行中",
       "filter_running_description": "エージェントが作業中のセッションのみ表示",
+      "filter_not_running": "進行中でない",
+      "filter_not_running_description": "エージェントが作業中のセッションを非表示にする",
       "filter_tags": "タグをフィルター：{{name}}",
       "filter_unhide_named": "{{filter}}セッションの非表示を解除",
       "filter_unread": "未読",
@@ -19709,6 +19734,7 @@
       "hide_folders": "フォルダーを非表示に",
       "menu_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "move_folders": "フォルダーを移動",
+      "move_sessions": "セッションを移動",
       "name_not_saved_keep_field_open": "ゲートウェイがオフラインです — まだ保存されていません。この入力欄を開いたまま再接続してください。閉じると名前は破棄されます。",
       "optimize": "最適化",
       "rename_folders": "フォルダー名を変更",

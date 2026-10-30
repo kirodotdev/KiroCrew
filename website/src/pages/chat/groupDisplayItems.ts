@@ -2,6 +2,7 @@ import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isNoteRow } from '../../lib/noteContract'
+import { isSystemNoticeRow } from './CompactionCard'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -78,13 +79,15 @@ export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
  * Keyed on the meta, not on the prompt's text: the prose is a backend constant
  * that may be reworded, the meta key is a wire contract.
  */
-const isSynthesisInjection = (msg: ChatMessage): boolean =>
+export const isSynthesisInjection = (msg: ChatMessage): boolean =>
   msg.role === 'inject' &&
   (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'synthesis'
 
 /**
- * The last assistant row of a COMPLETED turn, identified by the per-turn stats
- * the runner stamps on exactly that row (`_attach_turn_stats`, chat_runner.py).
+ * The row a turn that ENDED carries its per-turn stats on: its last
+ * assistant-role row for a completed turn (`_attach_turn_stats`), the newest
+ * reply the runner recorded for any other end (`_persist_partial_reply`,
+ * chat_runner.py).
  *
  * This is how the region walk finds where a synthesis turn ENDED. A synthesis
  * row opens a turn whose answer is real, user-facing content no later synthesis
@@ -98,11 +101,65 @@ const isSynthesisInjection = (msg: ChatMessage): boolean =>
  * an answer still streaming. Both are handled by the caller degrading to the
  * previous behaviour (leave the region unfolded) rather than guessing a
  * boundary, because a wrong guess hides an answer behind a toggle that promises
- * a repeat below.
+ * a repeat below. A reply an error cut short DOES carry stats (the runner stamps
+ * every turn end), so where a `recovery` inject resumes that turn the answer
+ * runs on past it: see `answerEndIndex`.
  */
 export const isTurnEnd = (msg: ChatMessage): boolean =>
   msg.role === 'assistant' &&
   !!(msg.meta as Record<string, unknown> | undefined)?.turn_stats
+
+/** A `recovery` inject: the runner resuming the SAME turn after it ended
+ *  abnormally (`build_recovery_requeue`), not a prompt of its own. */
+export const isRecoveryInjection = (msg: ChatMessage): boolean =>
+  msg.role === 'inject' &&
+  (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'recovery'
+
+/** A row that reports on the turn above it rather than starting anything: an
+ *  error card, or a system notice (`isSystemNoticeRow`: a compaction or
+ *  session-reload status row, written under the assistant role). */
+export const isTurnStatusRow = (msg: ChatMessage): boolean =>
+  msg.role === 'error' || isSystemNoticeRow(msg)
+
+/** An assistant-role envelope another writer appends into the window while a
+ *  turn runs: a workflow result (`kind` `workflow_result`) or a sub-agent
+ *  completion. The runner never records one as its reply, so after a stamped
+ *  answer it is neither the next reply nor the answer's end. */
+export const isEnvelopeRow = (msg: ChatMessage): boolean =>
+  msg.role === 'assistant' &&
+  ((msg.kind ?? (msg.meta?.kind as string | undefined)) === 'workflow_result' ||
+    isSubagentCompletionMessage(msg))
+
+/**
+ * Index in `items` of the row that ends a synthesis answer, or -1 when it cannot
+ * be located. A stamped reply ends the answer, and so does an error card or a
+ * system notice drawn after it before any other reply: it reports on the turn
+ * that wrote the answer, as the rows between them belong to it. Another
+ * writer's envelope in between is passed over. When the first reply-or-inject
+ * row after that is a `recovery` inject, the turn was cut short and resumed, the
+ * recovered remainder is still the answer, and the end is the next stamped
+ * reply. A resumed answer with no stamped reply yet has no locatable end. The
+ * runner's own status lines (an approval that timed out unattended, an agent
+ * switch) carry no marker, so one after the stamped answer reads as the next
+ * reply.
+ */
+function answerEndIndex(items: readonly TurnItem[]): number {
+  let end = -1
+  let resumed = false
+  for (let k = 0; k < items.length; k++) {
+    const t = items[k]
+    if (t.kind !== 'single') continue
+    if (end < 0 || resumed) {
+      if (isTurnEnd(t.msg)) { end = k; resumed = false }
+      continue
+    }
+    if (isRecoveryInjection(t.msg)) { resumed = true; continue }
+    if (isTurnStatusRow(t.msg)) { end = k; continue }
+    if (isEnvelopeRow(t.msg)) continue
+    if (t.msg.role === 'assistant' || t.msg.role === 'streaming' || t.msg.role === 'inject') return end
+  }
+  return resumed ? -1 : end
+}
 
 /**
  * An injected row that is NOT part of the fan-out, and whose presence therefore
@@ -289,7 +346,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
    */
   const settlePendingSynthesisAnswer = () => {
     if (!pendingSynthesisAnswer) return
-    const end = turnItems.findIndex(t => t.kind === 'single' && isTurnEnd(t.msg))
+    const end = answerEndIndex(turnItems)
     if (end >= 0) {
       flushTurn(turnItems.slice(0, end + 1), true)
       turnItems = turnItems.slice(end + 1)

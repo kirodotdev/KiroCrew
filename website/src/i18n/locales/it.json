@@ -1985,7 +1985,8 @@
       "pathBar": {
         "click_to_edit_path": "Clicca per modificare il percorso",
         "folder_path": "Percorso della cartella",
-        "path_to_folder": "/percorso/della/cartella"
+        "path_to_folder": "/percorso/della/cartella",
+        "refresh_folder": "Aggiorna cartella"
       },
       "searchPanel": {
         "capped": "(limitato)",
@@ -6720,6 +6721,11 @@
       "unwrap": "Non mandare a capo",
       "wrap": "Manda a capo"
     },
+    "blockquote": {
+      "copied": "Copiato!",
+      "copy": "Copia citazione",
+      "copy_failed": "Copia non riuscita. Seleziona la citazione e copiala manualmente."
+    },
     "columnResizer": {
       "resize_column": "Ridimensiona colonna: {{column}}",
       "resize_hint": "Trascina per ridimensionare (doppio clic per reimpostare)"
@@ -8722,6 +8728,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "new_folder": "Nuova cartella…",
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
@@ -8741,6 +8748,17 @@
       "unmute": "Riattiva l'audio di questa sessione",
       "mute_failed": "Impossibile silenziare questa sessione",
       "unmute_failed": "Impossibile riattivare l'audio di questa sessione"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Annulla",
+      "create_and_move": "Crea e sposta",
+      "inside_current": "Crea in «{{name}}»",
+      "move_failed": "«{{name}}» è stata creata, ma la sessione non è stata spostata al suo interno: {{error}}",
+      "move_failed_inside": "«{{name}}» è stata creata in «{{parent}}», ma la sessione non è stata spostata al suo interno: {{error}}",
+      "name_label": "Nome della cartella",
+      "retry_move": "Riprova lo spostamento",
+      "session_closed": "Questa sessione è stata chiusa, quindi non c’è nulla da spostare.",
+      "title": "Nuova cartella"
     },
     "sessionTurnLimit": {
       "all_sessions": "Tutte le sessioni: apri le Impostazioni",
@@ -10630,8 +10648,9 @@
       "jump_to_chat_letters": "Vai alla chat 10 e oltre (tieni premuto il modificatore per vedere la lettera di ogni chat; su macOS, non mentre un campo di testo ha il focus)",
       "last_visited_chat_mru": "Ultima chat visitata (MRU)",
       "next_chat": "Chat successiva",
+      "next_chat_outside_text_fields": "Chat successiva (fuori dai campi di testo)",
       "next_notification": "Notifica successiva",
-      "next_prompt": "Prompt successivo di questa chat",
+      "next_prompt": "Prompt successivo di questa chat (fuori dai campi di testo)",
       "notifications_panel": "Pannello delle notifiche",
       "open_agent_monitor": "Apri il monitor degli agenti (subagenti)",
       "open_settings": "Apri le impostazioni",
@@ -10639,9 +10658,10 @@
       "previous_agent": "Agente precedente",
       "previous_approval_mode": "Modalità di approvazione precedente",
       "previous_chat": "Chat precedente",
+      "previous_chat_outside_text_fields": "Chat precedente (fuori dai campi di testo)",
       "previous_notification": "Notifica precedente",
       "previous_model": "Modello precedente",
-      "previous_prompt": "Prompt precedente di questa chat",
+      "previous_prompt": "Prompt precedente di questa chat (fuori dai campi di testo)",
       "previous_reasoning_effort": "Livello di ragionamento precedente",
       "projects_panel": "Pannello Task Runner",
       "schedule_panel": "Pannello della pianificazione",
@@ -10936,6 +10956,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Rimuove solo i metadati di {{productName}} — l'app stessa è gestita esternamente",
       "removing": "Rimozione…",
       "repository": "Repository:",
+      "report_issue": "Segnala un problema",
       "requires_local_install": "Richiede l'installazione locale",
       "resources": "Risorse",
       "resources_2": "| Risorse:",
@@ -11927,6 +11948,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "L’agente \"{{name}}\" carica solo i propri server MCP.",
+        "default_agent_loads_all_mcp_servers": "{{name}} carica tutti i server MCP configurati: gestiscili in Panoramica → MCP.",
         "disabled": "disattivato",
         "load_failed": "Impossibile caricare i server MCP",
         "mcp_servers_count": "Server MCP ({{count}}/{{total}} attivati)",
@@ -12141,6 +12163,9 @@
         "collapse_agent_list": "Comprimi l’elenco dei subagenti",
         "expand_agent_list": "Espandi l’elenco dei subagenti",
         "more_running_normally": "altri in esecuzione normale…",
+        "show_more_running_in_sidebar_one": "Mostra {{count}} altro subagente in esecuzione nella barra laterale",
+        "show_more_running_in_sidebar_many": "Mostra altri {{count}} subagenti in esecuzione nella barra laterale",
+        "show_more_running_in_sidebar_other": "Mostra altri {{count}} subagenti in esecuzione nella barra laterale",
         "no_activity_possibly_stalled": "Nessuna attività — potrebbe essere in stallo",
         "open_in_subagents_sidebar": "Apri {{label}} nella barra laterale dei subagenti",
         "possibly_stalled_at_tool": "potrebbe essere in stallo su {{tool}} — nessuna attività",
@@ -13259,6 +13284,8 @@
       "filter_recent_description": "Mostra solo le sessioni attive nel periodo selezionato",
       "filter_running": "In corso",
       "filter_running_description": "Mostra solo le sessioni su cui l’agente sta lavorando attivamente",
+      "filter_not_running": "Non in corso",
+      "filter_not_running_description": "Nascondi le sessioni su cui l'agente sta lavorando attivamente",
       "filter_tags": "Filtra i tag: {{name}}",
       "filter_unhide_named": "Smetti di nascondere le sessioni {{filter}}",
       "filter_unread": "Non lette",
@@ -20357,6 +20384,7 @@
       "hide_folders": "nascondere cartelle",
       "menu_reason": "Gateway offline — le azioni attenuate richiedono una connessione",
       "move_folders": "spostare cartelle",
+      "move_sessions": "spostare sessioni",
       "name_not_saved_keep_field_open": "Gateway offline — non ancora salvato. Lascia questo campo aperto e riconnettiti; se lo chiudi, il nome viene scartato.",
       "optimize": "ottimizzare",
       "rename_folders": "rinominare le cartelle",

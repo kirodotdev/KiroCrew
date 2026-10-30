@@ -23,6 +23,9 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+)
 from turn_harness import Raise, TurnScript, VirtualClock, Wait, run_turn
 
 from kiro_crew.acp.client import AcpProcessDied
@@ -939,7 +942,9 @@ class TestDrainSettlesDelivery:
         state.subagents = _manager()
         slot = state.get_or_create_slot("spoof")
         _finished_run("a1", agent_root)
-        # The genuine completion is queued BEHIND the user's copy of its text.
+        # The genuine completion is queued BEHIND the user's copy of its text,
+        # and the user runs the copy now (a queued completion otherwise keeps
+        # user rows waiting behind it).
         slot._queue = [
             {"id": "u1", "content": COMPLETION, "kind": ""},
             {"id": "q1", "content": COMPLETION, "kind": SUBAGENT_COMPLETION_KIND},
@@ -951,7 +956,12 @@ class TestDrainSettlesDelivery:
             "kiro_crew.dashboard.chat_runner.spawn_guarded_turn",
             self._turn_spawner(done),
         ):
-            assert await _start_next_queued_turn(state, slot) is True
+            assert (
+                await _start_next_queued_turn(
+                    state, slot, allow_user_during_subagents=True, required_queue_id="u1"
+                )
+                is True
+            )
         done.set_result(None)
         await asyncio.sleep(0.05)
 
@@ -1119,7 +1129,7 @@ class TestReaperDoesNotPruneAQueuedPromise:
         _finished_run(info.id, agent_root)
         with (
             patch.object(gateway, "_injection_slot_busy", side_effect=checked_busy),
-            patch.object(gateway, "_run_chat", side_effect=run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=run_chat),
         ):
             delivery = asyncio.create_task(on_done(info))
             try:

@@ -7,6 +7,11 @@ out and listed so the chat agent can open them directly.
 
 from __future__ import annotations
 
+import json
+import re
+
+import pytest
+
 from kiro_crew.dashboard.workflow_inject import (
     _collect_artifact_paths,
     _slot_key_from_session,
@@ -126,6 +131,57 @@ def test_summary_reports_failure() -> None:
     snap = {"name": "x", "run_id": "wf_3", "status": "failed", "error": "boom"}
     body = _summarize(snap)
     assert "failed" in body and "boom" in body
+
+
+def _finished(run_id: str, result: object) -> dict:
+    return {"name": "x", "run_id": run_id, "status": "finished", "result": result}
+
+
+def _result_of_size(chars: int) -> dict:
+    """A result whose ``json.dumps(..., indent=2)`` form is exactly ``chars`` long."""
+    result = {"k": "x" * (chars - len(json.dumps({"k": ""}, indent=2)))}
+    assert len(json.dumps(result, indent=2)) == chars
+    return result
+
+
+def _json_blocks(body: str) -> list[str]:
+    return re.findall(r"```json\n(.*?)\n```", body, re.S)
+
+
+_NESTED_RESULT = {
+    "survived": [{"id": f"F{i}", "claim": "x" * 120, "evidence": "line " * 20} for i in range(30)]
+}
+
+
+@pytest.mark.parametrize("chars", [200, 4000])
+def test_summary_keeps_a_result_within_the_cap_unchanged(chars: int) -> None:
+    result = _result_of_size(chars)
+    body = _summarize(_finished("wf_fits", result))
+    assert _json_blocks(body) == [json.dumps(result, indent=2)]
+    assert "truncat" not in body.lower()
+
+
+@pytest.mark.parametrize(
+    "result", [_result_of_size(4001), _NESTED_RESULT], ids=["one-over-the-cap", "nested"]
+)
+def test_summary_marks_an_oversized_result_as_truncated(result: dict) -> None:
+    """A result over the cap never reaches the chat as a json block that does not
+    parse; the message says it was cut, gives both sizes, and names where the
+    complete value is."""
+    full = json.dumps(result, indent=2)
+    body = _summarize(_finished("wf_big", result))
+    for block in _json_blocks(body):
+        json.loads(block)
+    assert "truncated" in body.lower()
+    assert str(len(full)) in body and "4000" in body
+    assert full[:200] in body
+    assert "workflow_result('wf_big')" in body and "`result`" in body
+
+
+def test_summary_does_not_label_an_unserializable_result_as_json() -> None:
+    body = _summarize(_finished("wf_odd", {("a", "b"): 1}))
+    assert _json_blocks(body) == []
+    assert "('a', 'b')" in body
 
 
 def test_summary_header_format_is_pinned_for_frontend() -> None:

@@ -15,9 +15,12 @@ Two values are derived here, each used only when config leaves it unset:
   (``resource_limits.max_total_processes``).
 * :func:`size_thread_pool` -- the default for ``TOKIO_WORKER_THREADS`` and
   ``RAYON_NUM_THREADS`` in spawned kiro-cli children
-  (``agent.child_env_defaults``). Both variables are honored by kiro-cli-chat,
-  and ``TOKIO_WORKER_THREADS`` by ``creds_agent``, which inherits it through the
-  MCP tree. ``GOMAXPROCS`` is not set: neither binary is a Go program.
+  (``agent.child_env_defaults``), set only where the agents slice's task
+  ceiling is in force (:func:`task_ceiling_in_force`); elsewhere there is no
+  ceiling to protect and each runtime keeps its own pool sizes. Both variables
+  are honored by kiro-cli-chat, and ``TOKIO_WORKER_THREADS`` by ``creds_agent``,
+  which inherits it through the MCP tree. ``GOMAXPROCS`` is not set: neither
+  binary is a Go program.
 
 Python MCP servers are not covered here because ``kirocrew mcp-*`` already
 caps OpenBLAS and OpenMP at one thread in-process (``cli.main`` and
@@ -217,8 +220,42 @@ def size_thread_pool(facts: HostTaskFacts) -> int | None:
     return min(facts.cpus, THREAD_POOL_CAP)
 
 
-def thread_pool_env_defaults(facts: HostTaskFacts | None = None) -> dict[str, str]:
-    """The host-derived ``agent.child_env_defaults`` entries; empty when unsized."""
+def task_ceiling_in_force() -> bool:
+    """Whether agent spawns on this host run under the agents slice's ``TasksMax``.
+
+    The same capability check both cgroup layers gate on
+    (``sandbox._probe_cgroup_scope``: Linux, cgroup v2, the ``pids`` and
+    ``memory`` controllers delegated, ``systemd-run``, a reachable user bus).
+    Where it fails, ``cgroup_scope_argv`` returns the argv unwrapped and
+    ``ensure_agents_slice_limits`` skips the slice, so no task ceiling exists for
+    a capped pool to protect: macOS, Windows, and Linux without the slice.
+    ``False`` when the check itself fails. The probe is cached with a TTL and may
+    shell out on a miss, so call off the event loop.
+    """
+    try:
+        from kiro_crew import sandbox
+
+        available, _reason = sandbox._probe_cgroup_scope()
+    except Exception:
+        logger.debug("task ceiling probe failed", exc_info=True)
+        return False
+    return bool(available)
+
+
+def thread_pool_env_defaults(
+    facts: HostTaskFacts | None = None, *, ceiling_in_force: bool | None = None
+) -> dict[str, str]:
+    """The host-derived ``agent.child_env_defaults`` entries.
+
+    Empty when the pools cannot be sized, and empty where no task ceiling is in
+    force (:func:`task_ceiling_in_force`): the cap exists only to keep agent
+    trees inside the agents slice's ``TasksMax``, so a host without that slice
+    keeps each runtime's own pool sizes. *ceiling_in_force* overrides the
+    reading for a caller that already has one.
+    """
+    in_force = task_ceiling_in_force() if ceiling_in_force is None else ceiling_in_force
+    if not in_force:
+        return {}
     pool = size_thread_pool(facts if facts is not None else host_task_facts())
     if pool is None:
         return {}

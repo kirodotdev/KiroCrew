@@ -422,6 +422,9 @@ class TestMacOsNestingDetection:
         # unconditionally — that would brick in-sandbox spawns wherever the probe
         # is unavailable.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # Unknown outer tier, so a `strict` request proves no downgrade and the argv
+        # passes through unchanged; a host `standard` would add the env-scrub wrap.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         with patch("kiro_crew.sel.sel"):
             result, _ = wrap_argv(["kiro-cli", "acp"], mode="strict")

@@ -1,12 +1,16 @@
 import type React from 'react'
-import { Folder, Check, ChevronRight } from 'lucide-react'
+import { Folder, FolderPlus, Check, ChevronRight } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import { orderFoldersWithPaths, type FolderSortMode } from '../utils/folderTree'
+import { offlineMenuRow } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
+import OfflineMenuReason from './OfflineMenuReason'
+import { i18nT } from '../i18n/t'
 import {
-  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem, DropdownMenuSeparator,
 } from './ui/dropdown-menu'
 import {
-  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
+  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem, ContextMenuSeparator,
 } from './ui/context-menu'
 
 interface FolderMoveSubmenuProps {
@@ -46,6 +50,14 @@ interface FolderMoveSubmenuProps {
   readonly offline?: boolean
   /** Offline tooltip for the trigger; required in substance when `offline` is set. */
   readonly offlineTitle?: string
+  /**
+   * When set, the list ends with a "New folder…" entry that calls this, for a
+   * caller that can create a folder and move the item into it in one step.
+   * Absent, the submenu lists existing folders only.
+   */
+  readonly onNewFolder?: () => void
+  /** Label for the "New folder…" entry; required in substance when `onNewFolder` is set. */
+  readonly newFolderLabel?: string
 }
 
 /**
@@ -70,7 +82,7 @@ interface FolderMoveSubmenuProps {
  *). `Item` is the Radix menu-item primitive of the hosting menu
  * family — items must match their parent menu's family.
  */
-export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item, sortMode = 'custom' }: {
+export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item, sortMode = 'custom', onNewFolder, newFolderLabel, Separator }: {
   readonly folders: readonly ChatFolder[]
   /** The sidebar's folder sort mode, so a CHAT-folder picker lists the tree in
    *  the order the sidebar draws. A prop rather than a hook read here because
@@ -81,7 +93,14 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
   readonly onPick: (folderId: string | null) => void
   readonly currentFolderId?: string | null
   readonly rootLabel?: string
-  readonly Item: React.ComponentType<{ title?: string; style?: React.CSSProperties; onSelect?: (event: Event) => void; children?: React.ReactNode }>
+  readonly Item: MenuItemComponent
+  /** Ends the list with a "New folder…" entry that calls this (see
+   *  `FolderMoveSubmenu`'s prop of the same name). */
+  readonly onNewFolder?: () => void
+  readonly newFolderLabel?: string
+  /** The hosting menu family's separator, drawn above the "New folder…" entry
+   *  so it reads as an action rather than one more destination. */
+  readonly Separator?: React.ComponentType
 }) {
   const atRoot = currentFolderId == null || currentFolderId === ''
   const ordered = orderFoldersWithPaths(folders, sortMode)
@@ -108,6 +127,44 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
           {currentFolderId === f.id && <Check size={13} className="ml-auto text-accent shrink-0" />}
         </Item>
       ))}
+      {onNewFolder && <NewFolderEntry Item={Item} Separator={Separator} onNewFolder={onNewFolder} label={newFolderLabel ?? ''} />}
+    </>
+  )
+}
+
+type MenuItemComponent = React.ComponentType<{
+  title?: string
+  style?: React.CSSProperties
+  onSelect?: (event: Event) => void
+  children?: React.ReactNode
+  offline?: boolean
+  'aria-disabled'?: React.AriaAttributes['aria-disabled']
+  'aria-label'?: string
+}>
+
+/**
+ * The list's closing "New folder…" action. Its own component so the connection
+ * read happens only for a caller that offers the entry: `FolderPickerItems`
+ * also renders where no store is mounted. The entry creates a folder, a gateway
+ * write, so offline it is gated the way the sidebar's own New folder row is:
+ * dimmed, named why, and refused on select with the submenu left open over the
+ * standing reason.
+ */
+function NewFolderEntry({ Item, Separator, onNewFolder, label }: {
+  readonly Item: MenuItemComponent
+  readonly Separator?: React.ComponentType
+  readonly onNewFolder: () => void
+  readonly label: string
+}) {
+  const connected = useConnected()
+  return (
+    <>
+      {Separator && <Separator />}
+      <Item title={label} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), label, onNewFolder)}>
+        <FolderPlus size={13} className="text-accent shrink-0" />
+        <span className="truncate font-medium">{label}</span>
+      </Item>
+      <OfflineMenuReason testId="folder-move-new-folder-offline" />
     </>
   )
 }
@@ -122,6 +179,8 @@ export default function FolderMoveSubmenu({
   sortMode = 'custom',
   offline = false,
   offlineTitle,
+  onNewFolder,
+  newFolderLabel,
 }: FolderMoveSubmenuProps) {
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
@@ -129,6 +188,7 @@ export default function FolderMoveSubmenu({
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   return (
     <Sub>
@@ -142,7 +202,7 @@ export default function FolderMoveSubmenu({
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[170px] max-h-[280px] overflow-y-auto">
-        <FolderPickerItems folders={folders} onPick={onPick} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} sortMode={sortMode} />
+        <FolderPickerItems folders={folders} onPick={onPick} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} sortMode={sortMode} onNewFolder={onNewFolder} newFolderLabel={newFolderLabel} Separator={Separator} />
       </SubContent>
     </Sub>
   )

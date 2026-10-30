@@ -1189,9 +1189,14 @@ class TestRunProbe:
         # test_sandbox_gradle_daemon.py::test_sets_the_flag_when_gradle_opts_is_absent.
         # `KIROCREW_SANDBOX_TOOL` is the tool-tree marker the chokepoint stamps on every
         # tree it spawns, for the runtime reconciler to read back.
+        # `_KIROCREW_USERNS_FAILURE` is the Linux launcher's permanent userns verdict,
+        # written only when this process recorded one (a sandboxed host, or one whose
+        # kernel refuses unshare). `_set_inherited_userns_failure` overwrites or drops
+        # any parent value, so it never carries an inherited one.
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
                             "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SANDBOX_TOOL",
-                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND", "GRADLE_OPTS"}
+                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND", "GRADLE_OPTS",
+                            "_KIROCREW_USERNS_FAILURE"}
         shell_added = {"PWD", "SHLVL", "_"}
         # macOS injects __CF_USER_TEXT_ENCODING into every spawned process
         # unconditionally (CoreFoundation per-user encoding preference). This is

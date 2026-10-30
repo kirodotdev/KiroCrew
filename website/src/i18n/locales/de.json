@@ -2026,7 +2026,8 @@
       "pathBar": {
         "click_to_edit_path": "Klicken, um den Pfad zu bearbeiten",
         "folder_path": "Ordnerpfad",
-        "path_to_folder": "/pfad/zum/ordner"
+        "path_to_folder": "/pfad/zum/ordner",
+        "refresh_folder": "Ordner aktualisieren"
       },
       "searchPanel": {
         "capped": "(begrenzt)",
@@ -6606,6 +6607,11 @@
       "unwrap": "Zeilenumbruch aufheben",
       "wrap": "Zeilen umbrechen"
     },
+    "blockquote": {
+      "copied": "Kopiert!",
+      "copy": "Zitat kopieren",
+      "copy_failed": "Kopieren fehlgeschlagen. Markiere das Zitat und kopiere es selbst."
+    },
     "columnResizer": {
       "resize_column": "Spaltenbreite ändern: {{column}}",
       "resize_hint": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)"
@@ -8585,6 +8591,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "new_folder": "Neuer Ordner…",
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
@@ -8604,6 +8611,17 @@
       "unmute": "Stummschaltung dieser Sitzung aufheben",
       "mute_failed": "Diese Sitzung konnte nicht stummgeschaltet werden",
       "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Abbrechen",
+      "create_and_move": "Erstellen und verschieben",
+      "inside_current": "In „{{name}}“ erstellen",
+      "move_failed": "„{{name}}“ wurde erstellt, aber die Sitzung konnte nicht hineinverschoben werden: {{error}}",
+      "move_failed_inside": "„{{name}}“ wurde in „{{parent}}“ erstellt, aber die Sitzung konnte nicht hineinverschoben werden: {{error}}",
+      "name_label": "Ordnername",
+      "retry_move": "Verschieben erneut versuchen",
+      "session_closed": "Diese Sitzung wurde geschlossen, es gibt also nichts zu verschieben.",
+      "title": "Neuer Ordner"
     },
     "sessionTurnLimit": {
       "all_sessions": "Alle Sitzungen: Einstellungen öffnen",
@@ -10477,8 +10495,9 @@
       "jump_to_chat_letters": "Zu Chat 10 und weiteren springen (halte die Modifikatortaste, um den Buchstaben jedes Chats zu sehen; unter macOS nicht, solange ein Textfeld fokussiert ist)",
       "last_visited_chat_mru": "Zuletzt besuchter Chat (MRU)",
       "next_chat": "Nächster Chat",
+      "next_chat_outside_text_fields": "Nächster Chat (außerhalb von Textfeldern)",
       "next_notification": "Nächste Benachrichtigung",
-      "next_prompt": "Nächster Prompt in diesem Chat",
+      "next_prompt": "Nächster Prompt in diesem Chat (außerhalb von Textfeldern)",
       "notifications_panel": "Benachrichtigungs-Panel",
       "open_agent_monitor": "Agenten-Monitor öffnen (Subagenten)",
       "open_settings": "Einstellungen öffnen",
@@ -10486,9 +10505,10 @@
       "previous_agent": "Vorheriger Agent",
       "previous_approval_mode": "Vorheriger Genehmigungsmodus",
       "previous_chat": "Vorheriger Chat",
+      "previous_chat_outside_text_fields": "Vorheriger Chat (außerhalb von Textfeldern)",
       "previous_notification": "Vorherige Benachrichtigung",
       "previous_model": "Vorheriges Modell",
-      "previous_prompt": "Vorheriger Prompt in diesem Chat",
+      "previous_prompt": "Vorheriger Prompt in diesem Chat (außerhalb von Textfeldern)",
       "previous_reasoning_effort": "Vorheriger Denkaufwand",
       "projects_panel": "Task Runner-Panel",
       "schedule_panel": "Zeitplan-Panel",
@@ -10781,6 +10801,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Entfernt nur die {{productName}}-Metadaten — die App selbst wird extern verwaltet",
       "removing": "Wird entfernt…",
       "repository": "Repository:",
+      "report_issue": "Problem melden",
       "requires_local_install": "Erfordert lokale Installation",
       "resources": "Ressourcen",
       "resources_2": "| Ressourcen:",
@@ -11752,6 +11773,7 @@
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "Der Agent „{{name}}“ lädt nur seine eigenen MCP-Server.",
+        "default_agent_loads_all_mcp_servers": "{{name}} lädt alle konfigurierten MCP-Server – verwalte sie unter Übersicht → MCP.",
         "disabled": "deaktiviert",
         "load_failed": "MCP-Server konnten nicht geladen werden",
         "mcp_servers_count": "MCP-Server ({{count}}/{{total}} aktiviert)",
@@ -11964,6 +11986,8 @@
         "collapse_agent_list": "Subagentenliste einklappen",
         "expand_agent_list": "Subagentenliste aufklappen",
         "more_running_normally": "weitere laufen normal…",
+        "show_more_running_in_sidebar_one": "{{count}} weiteren laufenden Subagenten in der Seitenleiste anzeigen",
+        "show_more_running_in_sidebar_other": "{{count}} weitere laufende Subagenten in der Seitenleiste anzeigen",
         "no_activity_possibly_stalled": "Keine Aktivität — möglicherweise blockiert",
         "open_in_subagents_sidebar": "{{label}} in der Subagenten-Seitenleiste öffnen",
         "possibly_stalled_at_tool": "möglicherweise blockiert bei {{tool}} — keine Aktivität",
@@ -13053,6 +13077,8 @@
       "filter_recent_description": "Nur Sitzungen anzeigen, die im gewählten Zeitraum aktiv waren",
       "filter_running": "Läuft",
       "filter_running_description": "Nur Sitzungen anzeigen, an denen der Agent aktiv arbeitet",
+      "filter_not_running": "Nicht in Bearbeitung",
+      "filter_not_running_description": "Sitzungen ausblenden, an denen der Agent aktiv arbeitet",
       "filter_tags": "Tags filtern: {{name}}",
       "filter_unhide_named": "„{{filter}}“-Sitzungen nicht mehr ausblenden",
       "filter_unread": "Ungelesen",
@@ -20033,6 +20059,7 @@
       "hide_folders": "das Ausblenden von Ordnern",
       "menu_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "move_folders": "das Verschieben von Ordnern",
+      "move_sessions": "das Verschieben von Sitzungen",
       "name_not_saved_keep_field_open": "Gateway offline — noch nicht gespeichert. Lass dieses Feld offen und verbinde neu; wenn du es schließt, wird der Name verworfen.",
       "optimize": "das Optimieren",
       "rename_folders": "das Umbenennen von Ordnern",

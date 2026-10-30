@@ -939,9 +939,10 @@ tool.
 
 **The emoji sink is injected, never imported.** The single channel operation the
 ladder needs is "add or remove ONE emoji on ONE message", and it arrives as a
-`ReactionSink` bound to one message (`CallableReactionSink` wraps two coroutine
-functions, so a channel binds its client, channel and message into closures at the
-call site rather than writing a sink class). That is what keeps the pinned one-way
+`ReactionSink` bound to one message. The channel supplies it as its own small
+class that holds its client, channel and message and satisfies the protocol's
+`add` / `remove` (Discord's is `_MessageReactionSink` in
+`discord/renderer_status.py`). That is what keeps the pinned one-way
 dependency direction intact: `kiro_crew.messaging` imports nothing from
 `kiro_crew.slack` / `kiro_crew.discord` / `kiro_crew.dashboard`, and a ladder that
 reached for a channel's REST client would reintroduce exactly the cycle this

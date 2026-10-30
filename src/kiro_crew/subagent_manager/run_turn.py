@@ -1616,6 +1616,7 @@ async def _run_inner_impl(
             # recovery must see child activity too; only the turn
             # increment is parent-scoped.
             info.last_tool = event.title or ""
+            info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
@@ -1692,6 +1693,8 @@ async def _run_inner_impl(
             info.tool_count += 1
             _final_segment = ""
             info.last_tool = event.title or info.last_tool
+            if event.title:
+                info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
             await self._manager._fire_event(
                 "subagent_tool",
