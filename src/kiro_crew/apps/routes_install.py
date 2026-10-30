@@ -386,6 +386,25 @@ async def handle_install_app(request: web.Request) -> web.Response:
             manifest_data = json.loads(
                 await asyncio.to_thread(manifest_path.read_text, encoding="utf-8")
             )
+            if not isinstance(manifest_data, dict):
+                # Valid JSON that is not an object is a settled invalid manifest,
+                # not a manifest caught mid-write, so it gets install_app's own
+                # invalid-manifest answer instead of the retryable 409 below.
+                detail = (
+                    "invalid app.json: app.json must be a JSON object, "
+                    f"got {type(manifest_data).__name__}"
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_install",
+                    outcome="failed",
+                    resources=str(source_path),
+                    error=detail,
+                )
+                return web.json_response(
+                    {"ok": False, "name": "", "error": detail, "code": "manifest_not_object"},
+                    status=400,
+                )
             ver_err = _check_min_version(manifest_data)
             if ver_err:
                 return web.json_response({"error": ver_err}, status=400)
