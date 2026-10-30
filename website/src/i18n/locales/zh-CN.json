@@ -14227,7 +14227,9 @@
         "web_page_hosts_allowed": "通过 HTTPS 抓取一个网页。允许的网站：{{hosts}}。",
         "web_page_no_hosts_allowed": "还没有允许任何网站，所以无法抓取。要允许一个网站，请在下方填入网站，在终端运行该命令，然后关闭并重新打开此表单。",
         "web_page_hosts_unavailable": "无法加载允许的网站。请关闭并重新打开此表单再试。",
-        "web_page_site_not_allowed": "{{site}} 还不是允许的网站。允许的网站：{{hosts}}。要允许它，请在终端运行下面的命令，然后关闭并重新打开此表单。"
+        "web_page_site_not_allowed": "{{site}} 还不是允许的网站。允许的网站：{{hosts}}。要允许它，请在终端运行下面的命令，然后关闭并重新打开此表单。",
+        "ingest_status_done": "完成",
+        "ingest_status_uploading": "上传中"
       },
       "settings": {
         "title": "Ingestion Settings",

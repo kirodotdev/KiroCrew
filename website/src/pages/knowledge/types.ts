@@ -115,5 +115,7 @@ export interface NamespaceInfo {
 
 export interface IngestionJob {
   name: string
-  status: string
+  status: 'uploading' | 'done' | 'error'
+  /** The failure message, when the upload failed with one. */
+  error?: string
 }

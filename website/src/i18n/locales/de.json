@@ -14468,7 +14468,9 @@
         "web_page_hosts_allowed": "Ruft eine Seite über HTTPS ab. Erlaubte Websites: {{hosts}}.",
         "web_page_no_hosts_allowed": "Noch ist keine Website erlaubt, daher kann nichts abgerufen werden. Um eine Website zu erlauben, trag sie unten ein, führ den Befehl in einem Terminal aus und schließ dieses Formular, dann öffne es erneut.",
         "web_page_hosts_unavailable": "Die erlaubten Websites konnten nicht geladen werden. Schließ dieses Formular und öffne es erneut.",
-        "web_page_site_not_allowed": "{{site}} ist noch keine erlaubte Website. Erlaubte Websites: {{hosts}}. Um sie zu erlauben, führ den Befehl unten in einem Terminal aus, schließ dann dieses Formular und öffne es erneut."
+        "web_page_site_not_allowed": "{{site}} ist noch keine erlaubte Website. Erlaubte Websites: {{hosts}}. Um sie zu erlauben, führ den Befehl unten in einem Terminal aus, schließ dann dieses Formular und öffne es erneut.",
+        "ingest_status_done": "fertig",
+        "ingest_status_uploading": "wird hochgeladen"
       },
       "settings": {
         "title": "Ingestion Settings",

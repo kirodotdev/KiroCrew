@@ -14227,7 +14227,9 @@
         "web_page_hosts_allowed": "HTTPS로 페이지 하나를 가져옵니다. 허용된 사이트: {{hosts}}.",
         "web_page_no_hosts_allowed": "아직 허용된 사이트가 없어 아무것도 가져올 수 없습니다. 사이트를 허용하려면 아래에 입력하고 터미널에서 명령을 실행한 뒤 이 양식을 닫았다가 다시 여세요.",
         "web_page_hosts_unavailable": "허용된 사이트를 불러오지 못했습니다. 이 양식을 닫았다가 다시 열어 주세요.",
-        "web_page_site_not_allowed": "{{site}}은(는) 아직 허용된 사이트가 아닙니다. 허용된 사이트: {{hosts}}. 허용하려면 터미널에서 아래 명령을 실행한 뒤 이 양식을 닫았다가 다시 여세요."
+        "web_page_site_not_allowed": "{{site}}은(는) 아직 허용된 사이트가 아닙니다. 허용된 사이트: {{hosts}}. 허용하려면 터미널에서 아래 명령을 실행한 뒤 이 양식을 닫았다가 다시 여세요.",
+        "ingest_status_done": "완료",
+        "ingest_status_uploading": "업로드 중"
       },
       "settings": {
         "title": "Ingestion Settings",

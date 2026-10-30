@@ -7867,6 +7867,8 @@
         "ignore_patterns": "Ignore patterns",
         "ignore_patterns_one_per_line_e_g_trash_templates": "Ignore patterns (one per line, e.g. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Include subdirectories (recursive)",
+        "ingest_status_done": "done",
+        "ingest_status_uploading": "uploading",
         "items": "items",
         "local_file": "Local File",
         "local_folder": "Local Folder",

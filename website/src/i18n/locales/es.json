@@ -14709,7 +14709,9 @@
         "web_page_hosts_allowed": "Descarga una página por HTTPS. Sitios permitidos: {{hosts}}.",
         "web_page_no_hosts_allowed": "Todavía no hay sitios permitidos, así que no se puede descargar nada. Para permitir un sitio, escríbelo abajo, ejecuta el comando en una terminal y luego cierra y vuelve a abrir este formulario.",
         "web_page_hosts_unavailable": "No se pudieron cargar los sitios permitidos. Cierra y vuelve a abrir este formulario para intentarlo de nuevo.",
-        "web_page_site_not_allowed": "{{site}} todavía no es un sitio permitido. Sitios permitidos: {{hosts}}. Para permitirlo, ejecuta el comando de abajo en una terminal y luego cierra y vuelve a abrir este formulario."
+        "web_page_site_not_allowed": "{{site}} todavía no es un sitio permitido. Sitios permitidos: {{hosts}}. Para permitirlo, ejecuta el comando de abajo en una terminal y luego cierra y vuelve a abrir este formulario.",
+        "ingest_status_done": "listo",
+        "ingest_status_uploading": "subiendo"
       },
       "settings": {
         "title": "Ingestion Settings",

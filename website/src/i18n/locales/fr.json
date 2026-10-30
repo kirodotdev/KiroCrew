@@ -14709,7 +14709,9 @@
         "web_page_hosts_allowed": "Récupère une page en HTTPS. Sites autorisés : {{hosts}}.",
         "web_page_no_hosts_allowed": "Aucun site n'est encore autorisé, donc rien ne peut être récupéré. Pour autoriser un site, saisis-le ci-dessous, exécute la commande dans un terminal, puis ferme et rouvre ce formulaire.",
         "web_page_hosts_unavailable": "Impossible de charger les sites autorisés. Ferme puis rouvre ce formulaire pour réessayer.",
-        "web_page_site_not_allowed": "{{site}} n'est pas encore un site autorisé. Sites autorisés : {{hosts}}. Pour l'autoriser, exécute la commande ci-dessous dans un terminal, puis ferme et rouvre ce formulaire."
+        "web_page_site_not_allowed": "{{site}} n'est pas encore un site autorisé. Sites autorisés : {{hosts}}. Pour l'autoriser, exécute la commande ci-dessous dans un terminal, puis ferme et rouvre ce formulaire.",
+        "ingest_status_done": "terminé",
+        "ingest_status_uploading": "envoi en cours"
       },
       "settings": {
         "title": "Ingestion Settings",

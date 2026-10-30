@@ -5,7 +5,7 @@ import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel } from './knowledgeUtils'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
@@ -144,9 +144,18 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
     <div className="space-y-1.5 mt-3">
       {jobs.map((j, i) => (
         <div key={i} className="flex items-center gap-2 text-[13px]">
-          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status.startsWith('error') ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
+          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status === 'error' ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
           <span className="text-text truncate flex-1">{j.name}</span>
-          <span className="text-muted text-[11px]">{j.status}</span>
+          {j.status === 'error' ? (
+            <>
+              {/* No hand-off: this list sits in the add-source panel beside the
+                  namespace picker, whose typed value is page state only — a
+                  navigation to the chat would unmount and discard it. */}
+              <ErrorNotice variant="inline" showIcon={false} className="min-w-0" message={j.error ?? i18nT('pages.knowledge.sourcesList.failed')} />
+            </>
+          ) : (
+            <span className="text-muted text-[11px]">{ingestionStatusLabel(j.status)}</span>
+          )}
         </div>
       ))}
     </div>
