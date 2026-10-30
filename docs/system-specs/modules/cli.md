@@ -651,6 +651,16 @@ module outside the snapshot family imports an owner.
 | `kirocrew mcp-computer` | MCP server for computer-use tools (spawned by kiro-cli; hidden — registered with no `help`, so it is in neither listing). A **thin shim** — it forwards to the gateway over loopback and does no accessibility work itself. |
 | `kirocrew --version` | Print version. Every entry (both fast paths and argparse) prints `kiro_crew.version_line()`: `kirocrew <version>`, followed by `(source checkout, not a release build)` when the package resolves inside `<repo>/src/kiro_crew` (a `setup.cfg` two levels up) and carries no `BUILD_VERSION` stamp. There the number is the tree's own literal, which no release lane rewrote, so the note travels with it into a pasted bug report. |
 
+## Memory Store Refusals
+
+A `kirocrew memory` verb that refuses a store writes one line to stderr and
+exits 1, so a script chaining it with `&&` cannot read the refusal as a
+success. This covers the store admission that `export`, `import` and `carve`
+share (an undeclared or malformed store, a path that is not the store's own
+file, a named store whose database is missing on a read), and the two `carve`
+refusals: a store that cannot record facets, and an unknown `--kind`. Nothing
+is read or written on any of these paths.
+
 ## Token Command Output Streams
 
 `kirocrew token` has a **machine-readable stdout contract**: stdout carries only

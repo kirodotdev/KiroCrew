@@ -375,7 +375,7 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
 def _admitted_store_path(
     store_name: str, cfg: "KiroCrewConfig", *, may_create: bool
 ) -> Path | None:
-    """*store_name*'s own vector file, or ``None`` after printing the refusal.
+    """*store_name*'s own vector file, or ``None`` after printing the refusal to stderr.
 
     One guard for every ``kirocrew memory`` verb that opens a NAMED store, because
     the cause it guards is not per-verb: ``VectorMemoryStore.init`` creates whatever
@@ -410,7 +410,7 @@ def _admitted_store_path(
     except UnknownMemoryStore as exc:
         # One line, not a traceback, and the seam's own wording rather than a second
         # phrasing of the same refusal.
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)
         return None
     db_path = owned_store_path(store_name)
     if db_path is None:
@@ -418,7 +418,10 @@ def _admitted_store_path(
         # `memory backups` uses: `owned_store_path` re-checks that the composed path
         # is that store's OWN file, so a symlink redirecting one store's directory at
         # another's is refused instead of handing two crews one silo.
-        print(f"Error: memory store {store_name!r} did not resolve to its own file")
+        print(
+            f"Error: memory store {store_name!r} did not resolve to its own file",
+            file=sys.stderr,
+        )
         return None
     if named_store_or_empty(store_name) and not may_create and not db_path.exists():
         # ONLY `import` may bring a named store's database into existence; every other
@@ -442,7 +445,8 @@ def _admitted_store_path(
             f"Error: memory store {store_name!r} has no {db_path.name}; refusing to "
             "create one on a read. If the store was never written this is expected; "
             "if it held rows, restore it with `kirocrew memory restore --store "
-            f"{store_name}` before reading."
+            f"{store_name}` before reading.",
+            file=sys.stderr,
         )
         return None
     return db_path
@@ -476,8 +480,8 @@ def _memory_carve(args: argparse.Namespace) -> None:
         # A shape defect raises rather than degrading, because repairing `../work`
         # or `Work` onto `work` is the one case that would silently point two crews
         # at one directory. Reported as one line, not a traceback.
-        print(f"Error: {exc}")
-        return
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     cfg = KiroCrewConfig.load()
     # The same admission every other named-store verb takes, and for the same reason:
     # `carve` is a READ, so a declared store whose database was deleted must be
@@ -486,7 +490,7 @@ def _memory_carve(args: argparse.Namespace) -> None:
     # own-file re-check that `owned_store_path` performs inside it.
     db_path = _admitted_store_path(name, cfg, may_create=False)
     if db_path is None:
-        return
+        sys.exit(1)
     # Opened the way the store's declaration says: a member store refuses a bare
     # V1 `init()`, and V2 member stores are the stores facets exist for.
     store = declared_store(
@@ -539,9 +543,11 @@ def _memory_carve(args: argparse.Namespace) -> None:
         # Named, never answered with an empty list: "no rows carry that crew" and
         # "this store cannot record a crew at all" are different facts, and only
         # one of them means the carve is empty.
-        print(f"Cannot carve {name!r}: {exc}")
+        print(f"Cannot carve {name!r}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except memory_schema.UnknownFacet as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     finally:
         store.close()
 
@@ -799,7 +805,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
             create_guard.enter_context(memory_store_namespace_lock())
         db_path = _admitted_store_path(store_name, cfg, may_create=action == "import")
         if db_path is None:
-            return
+            sys.exit(1)
         if action == "import" and memory_store_version(store_name) == 2:
             # REFUSED BEFORE THE OPEN, because `import_memory` cannot carry what a V2 row
             # holds. It rebuilds every row through `set_semantic` and `write_episodic` and
