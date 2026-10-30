@@ -1629,6 +1629,20 @@ def _telegram_put(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict) -
         ({"allow_forum": "yes"}, "allow_forum must be a boolean"),
         ({"allowed_forum_chat_ids": "x"}, "allowed_forum_chat_ids must be a list"),
         ({"allowed_forum_chat_ids": ["abc"]}, "invalid Telegram chat ID: abc (integer IDs only)"),
+        # "²".isdigit() is True while int("²") raises: a 400, never a crash.
+        ({"allowed_user_ids": ["²"]}, "invalid Telegram user ID: ² (numeric IDs only)"),
+        ({"allowed_user_ids": ["١"]}, "invalid Telegram user ID: ١ (numeric IDs only)"),
+        ({"allowed_forum_chat_ids": ["-²"]}, "invalid Telegram chat ID: -² (integer IDs only)"),
+        ({"allowed_forum_chat_ids": ["-١"]}, "invalid Telegram chat ID: -١ (integer IDs only)"),
+        # Past int()'s digit limit it raises too: a 400, never a crash.
+        (
+            {"allowed_user_ids": ["1" * 21]},
+            f"invalid Telegram user ID: {'1' * 21} (numeric IDs only)",
+        ),
+        (
+            {"allowed_forum_chat_ids": ["-" + "1" * 21]},
+            f"invalid Telegram chat ID: -{'1' * 21} (integer IDs only)",
+        ),
     ],
 )
 def test_the_telegram_saver_refuses_a_bad_field_with_its_text(

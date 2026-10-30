@@ -48,6 +48,7 @@ from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.renderer import session_provenance_tag
 from kiro_crew.messaging.session_resume import RoutingDecision
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.telegram.session_resume import TelegramSessionResume
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 from kiro_crew.testing.wait import await_until
@@ -1112,3 +1113,14 @@ class TestResumedRefusalsCharacterization:
         await dispatcher.on_callback(_callback(f"opt:0:{tag}", label="Ship it"))
 
         assert rotated == [] and sessions.last_key == "dashboard:chat-1"
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [("s:abc:²", ("", -1)), ("s:abc:١", ("", -1)), ("s:abc:3", ("abc", 3))],
+)
+def test_a_picker_press_parses_only_ascii_digit_indexes(
+    data: str, expected: tuple[str, int]
+) -> None:
+    """``"²".isdigit()`` is True but ``int("²")`` raises: refuse it, never crash."""
+    assert TelegramSessionResume._parse_choice(data) == expected
