@@ -385,49 +385,6 @@ class TestDoSelectCrew:
         self._patch_cfg(monkeypatch, _crew_config({}, ""))
         assert json.loads(_do_select_crew("ghost"))["available"] == "(none)"
 
-    def test_a_display_name_one_crew_holds_is_refused_with_a_hint_naming_its_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        cfg = _crew_config(
-            {
-                "mate": SimpleNamespace(triggers="", model="auto", display_name="SDE Buddy"),
-                "docs": SimpleNamespace(triggers="d", model="auto", display_name="Writer"),
-            },
-            "main",
-        )
-        self._patch_cfg(monkeypatch, cfg)
-        recorded: list[Any] = []
-        monkeypatch.setattr(mcp_core, "record_activity", lambda *a, **k: recorded.append(a))
-        resolved: list[Any] = []
-        monkeypatch.setattr(mcp_core, "resolve_agent_bindings", lambda *a, **k: resolved.append(a))
-        out = json.loads(_do_select_crew("SDE Buddy"))
-        assert out["error"] == "unknown crew 'SDE Buddy'"
-        assert "did you mean `mate` (SDE Buddy)?" in out["hint"]
-        assert "crew='mate'" in out["hint"]
-        assert "bound" not in out and "crew" not in out
-        assert recorded == [] and resolved == []
-
-    def test_a_display_name_several_crews_share_gets_no_hint(self, monkeypatch: pytest.MonkeyPatch):
-        cfg = _crew_config(
-            {
-                "mate": SimpleNamespace(triggers="", model="auto", display_name="Buddy"),
-                "docs": SimpleNamespace(triggers="d", model="auto", display_name="Buddy"),
-            },
-            "main",
-        )
-        self._patch_cfg(monkeypatch, cfg)
-        out = json.loads(_do_select_crew("Buddy"))
-        assert out["error"] == "unknown crew 'Buddy'"
-        assert "hint" not in out
-
-    def test_a_name_no_crew_holds_gets_no_hint(self, monkeypatch: pytest.MonkeyPatch):
-        cfg = _crew_config(
-            {"mate": SimpleNamespace(triggers="", model="auto", display_name="SDE Buddy")},
-            "main",
-        )
-        self._patch_cfg(monkeypatch, cfg)
-        assert "hint" not in json.loads(_do_select_crew("sde buddy"))
-
     def test_named_crew_returns_resolved_bindings(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         cfg = _crew_config({"docs": SimpleNamespace(triggers="d", model="opus")}, "main")
         self._patch_cfg(monkeypatch, cfg)

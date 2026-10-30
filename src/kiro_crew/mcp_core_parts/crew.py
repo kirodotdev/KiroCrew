@@ -42,30 +42,6 @@ def _key_with_label(key: str, label: str | None) -> str:
     return f"{key} ({label})" if label else key
 
 
-def _display_name_hint(cfg: KiroCrewConfig, name: str) -> str:
-    """A "did you mean" line for an unknown crew *name* that is one crew's label.
-
-    Reports only: the caller still refuses *name*, and nothing here binds or
-    resolves a crew, since a crew is named by its key and its label is never
-    matched. An exact label match on exactly one crew gives the hint; no match,
-    or a label several crews share, gives ``""``.
-    """
-    wanted = name.strip()
-    if not wanted:
-        return ""
-    hits = []
-    for key, agent in cfg.agents.items():
-        label = getattr(agent, "display_name", "")
-        if isinstance(label, str) and label.strip() == wanted:
-            hits.append(key)
-    if len(hits) != 1:
-        return ""
-    return (
-        f"did you mean `{hits[0]}` ({wanted})? '{wanted}' is that crew's display "
-        f"name; a crew is named by its short name, so pass crew='{hits[0]}'."
-    )
-
-
 def _do_route_crew(task: str) -> str:
     """Rank the crews whose triggers match *task* (the route_crew tool body).
 
@@ -188,11 +164,10 @@ def _do_select_crew(crew: str) -> str:
             )
             or "(none)"
         )
-        refusal = {"error": f"unknown crew '{crew}'", "available": available}
-        hint = _display_name_hint(cfg, crew)
-        if hint:
-            refusal["hint"] = hint
-        return json.dumps(refusal, ensure_ascii=False)
+        return json.dumps(
+            {"error": f"unknown crew '{crew}'", "available": available},
+            ensure_ascii=False,
+        )
     try:
         b = resolve_agent_bindings(cfg, crew, validate_memory_files=False)
     except UnknownMemoryStore as exc:
