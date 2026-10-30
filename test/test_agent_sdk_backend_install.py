@@ -644,11 +644,36 @@ class TestKasBundleRouteAnswersFromTheInstalledEngine:
         assert kas.policy_id == "kas"
 
     @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
-    def test_no_engine_is_missing_the_bundle_not_kiro_cli(self, monkeypatch, kiro_bin):
+    def test_no_engine_yet_is_installed_because_the_gateway_installs_it(
+        self, monkeypatch, kiro_bin
+    ):
+        """The first spawn lays the pinned engine down, so the setup gate lets KAS
+        through instead of sending the user to kiro-cli."""
         from kiro_crew.agent_sdk import kas_bundle
 
         _stub_resolvers(monkeypatch, kiro=kiro_bin)
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: None)
+        monkeypatch.setattr(probe, "_engine_installable_here", lambda: True)
+        kas = probe.probe_backend(ACP_BACKEND_KAS)
+        assert kas.installed == probe.INSTALLED
+        assert kas.missing_components == ()
+
+    def test_a_platform_the_pin_publishes_nothing_for_is_not_installable(self, monkeypatch):
+        from kiro_crew.acp import kas_bundle as acp_kas_bundle
+
+        monkeypatch.setattr(acp_kas_bundle, "host_platform_key", lambda *a: "win32-arm64")
+        monkeypatch.setattr(acp_kas_bundle, "host_node_key", lambda *a: "win32-arm64")
+        monkeypatch.setattr(acp_kas_bundle, "_require_loadable_glibc", lambda *a: None)
+        assert probe._engine_installable_here() is False
+
+    @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
+    def test_no_engine_is_missing_the_bundle_not_kiro_cli(self, monkeypatch, kiro_bin):
+        """A host that cannot run the engine at all names the bundle, not kiro-cli."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        _stub_resolvers(monkeypatch, kiro=kiro_bin)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: None)
+        monkeypatch.setattr(probe, "_engine_installable_here", lambda: False)
         kas = probe.probe_backend(ACP_BACKEND_KAS)
         assert kas.installed == probe.MISSING
         assert kas.missing_components == (probe.COMPONENT_KAS_BUNDLE,)

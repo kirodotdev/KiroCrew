@@ -181,7 +181,19 @@ picker offers `auto`). `kirocrew kas status` shows what is
 installed and whether the route is on; `kirocrew doctor` reports it under
 "KAS backend". The engine directory is read-only inside the agent sandbox and
 fenced from the agent's file tools, so a session cannot rewrite the code its next
-session runs; only the install command (your own terminal) writes there.
+session runs; only the install command (your own terminal) and the gateway's own
+install write there.
+
+Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in, so the
+switch is not the only way onto this route. When KAS is the backend and
+kiro-cli's relay cannot run -- kiro-cli is not installed, or it is not signed in
+and your Kiro Crew sign-in cannot reach the engine through it -- the `kas`
+backend runs Kiro Crew's own engine instead. If that engine is not installed
+yet, the gateway downloads it the first time a chat needs it, and the dashboard
+shows the download (and, when it fails, why and the `kirocrew kas install` command
+to retry). The switch is logged in the gateway log, shown on the KAS engine card
+under Settings → Agent Harness, and printed by `kirocrew doctor` as the `route:`
+row. A stored `agent.acp_backend: "kiro"` is not moved: it stays on kiro-cli.
 
 Harness capabilities differ: agent-spec projection, MCP transport, model
 selection, permission routing, resume, compaction, and subagent continuation are
@@ -291,7 +303,7 @@ whether or not that preview is on.
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
 | `agent.crew_mode_agent` | The conductor template a chat runs when Crew Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-conductor"` |
-| `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. `true` with nothing installed refuses the spawn and names the install command | `false` |
+| `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. With nothing installed the gateway installs the pinned engine at the first spawn; a failed install refuses the spawn and names the install command. With `false`, KAS still takes this route when kiro-cli's relay cannot run on the host | `false` |
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Takes effect when a KAS process starts | `false` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
 | `agent.native_skill_projection` | Launch each `kiro` backend agent under a Kiro Crew managed view (`kirocrew-skill-view-*.json` in the kiro agents directory) that serves skills through Kiro Crew's skill search, with `.kiro/settings/cli.json` in the workspace overlaid while it runs. `false` launches agents under their authored names, writes no view, rolls the workspace overlay back, and lets kiro-cli load skill metadata natively. Turn it off when you also run kiro-cli on its own against the same agents directory. `KIROCREW_NATIVE_SKILL_PROJECTION=0` disables it regardless of this value. Takes effect when a native session is next spawned | `true` |

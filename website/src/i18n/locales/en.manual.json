@@ -4526,6 +4526,13 @@
       "read_failed_title": "Could not check your remote crews' versions after this update",
       "unread": "No version from {{names}} yet, so they may be behind too."
     },
+    "kasEngineNotice": {
+      "downloading": "Downloading {{productName}}'s KAS engine. Your chat starts when it finishes.",
+      "downloading_progress": "Downloading {{productName}}'s KAS engine ({{percent}}). Your chat starts when it finishes.",
+      "failed_title": "Could not install {{productName}}'s KAS engine",
+      "retry": "Retry",
+      "retry_failed": "The retry did not start ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro sign-in expired",
       "open_sign_in": "Open sign-in settings",
@@ -9293,7 +9300,9 @@
         "installing_progress": "Installing KAS {{version}}: {{percent}} ({{done}} of {{total}})",
         "install_failed": "Could not start the KAS engine install.",
         "save_failed": "Could not save the KAS engine setting.",
-        "status_unavailable": "Could not read the KAS engine status."
+        "status_unavailable": "Could not read the KAS engine status.",
+        "route_auto_no_kiro_cli": "Kiro CLI is not installed, so KAS runs on {{productName}}'s own engine.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI is not signed in, so KAS runs on {{productName}}'s own engine."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

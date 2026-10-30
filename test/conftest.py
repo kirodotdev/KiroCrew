@@ -549,6 +549,30 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
 
 
+@pytest.fixture(autouse=True)
+def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
+    """Start every test with KAS's automatic bundle switch closed and no install state.
+
+    A KAS spawn takes Crew's own engine automatically when kiro-cli's relay cannot
+    run on the host (``acp/kas_route.py``), and the gateway then installs the engine
+    from the network. Whether that happens depends on the runner's own kiro-cli and
+    its sign-in store, so it is pinned closed here: a test that spawns KAS gets the
+    relay or the configured route, as it states them. The tests of the switch open
+    it with their own ``monkeypatch``. The last spawn's route and the installer's
+    state are process slots, rebound per test so one test's spawn is not the next
+    one's.
+    """
+    from kiro_crew.acp import kas_engine_install, kas_route
+
+    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda: False)
+    _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
+    _floor_monkeypatch.setattr(
+        kas_engine_install,
+        "_STATE",
+        {"running": False, "done": 0, "total": 0, "error": ""},
+    )
+
+
 @pytest.fixture
 def fresh_darwin_libc_handles(_floor_monkeypatch):
     """Start the test with both macOS libc handle caches unbuilt, and put them back after.

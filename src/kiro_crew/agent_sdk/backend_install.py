@@ -200,18 +200,49 @@ def _probe_kiro() -> BackendInstallState:
 
 
 def _kas_bundle_route() -> bool:
-    """Whether ``agent.kas_bundle`` is on: KAS then runs Crew's own engine, not kiro-cli.
+    """Whether KAS runs Crew's own engine, not kiro-cli: ``agent.kas_bundle`` is on,
+    or kiro-cli's relay cannot run on this host (``acp/kas_route.py``).
 
-    Read on every probe, never remembered here: the switch is boot-only for the
-    harness but the panel reads this verdict live, and the probe cache's TTL is
-    the one staleness this module already accepts.
+    Read on every probe, never remembered here: the panel reads this verdict
+    live, and the probe cache's TTL is the one staleness this module already
+    accepts.
     """
+    from kiro_crew.agent_sdk import kas_bundle
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        return bool(KiroCrewConfig.load().agent.kas_bundle)
+        if KiroCrewConfig.load().agent.kas_bundle:
+            return True
+        return bool(kas_bundle.kas_route().bundle)
     except Exception:
         return False
+
+
+def _engine_installable_here() -> bool:
+    """Whether this host can run the engine the gateway would download for it.
+
+    No network: the platform keys and the glibc floor are local facts. A host
+    that fails them cannot run the engine at all, so the row says what is
+    missing instead of promising a download that will be refused.
+    """
+    from kiro_crew.acp import kas_bundle as acp_kas_bundle
+
+    # Only the release's pin installs unattended (``acp/kas_engine_install.py``).
+    if acp_kas_bundle.pinned_version() != acp_kas_bundle.KAS_PIN_VERSION:
+        return False
+    from kiro_crew.acp import kas_pin
+
+    try:
+        platform_key = acp_kas_bundle.host_platform_key()
+        node_key = acp_kas_bundle.host_node_key()
+        acp_kas_bundle._require_loadable_glibc(None, None)
+    except Exception:
+        return False
+    # A key the pinned manifest publishes no build for (Windows on ARM) is
+    # refused by the download, so it is not installable either.
+    return (
+        platform_key in kas_pin.KAS_PIN_ENGINE_PLATFORMS and node_key in kas_pin.KAS_PIN_NODE_BUILDS
+    )
 
 
 def _probe_kas() -> BackendInstallState:
@@ -223,11 +254,12 @@ def _probe_kas() -> BackendInstallState:
     search for something that is never spawned -- and it could then disagree with
     kiro's verdict about the one binary they share.
 
-    On the BUNDLE route (``agent.kas_bundle`` on) the answer is Crew's own
-    installed engine instead (``agent_sdk.kas_bundle.installed_bundle``): that
-    route never runs kiro-cli, so a host without it is INSTALLED once the engine
-    is, and a host with kiro-cli but no engine is MISSING the bundle -- the one
-    component the row then names, with the command that lays it down.
+    On the BUNDLE route (``agent.kas_bundle`` on, or kiro-cli's relay cannot run
+    here) the answer is Crew's own engine instead: that route never runs kiro-cli,
+    so a host without it is INSTALLED. An engine not installed yet still answers
+    INSTALLED, because the gateway installs the pinned engine at the first spawn;
+    only a host that cannot run the engine (no build for its platform, a glibc
+    below the floor) is MISSING the bundle, with the command that names the cause.
 
     Delegating through :func:`probe_backend` rather than calling ``_probe_kiro``
     directly also means both rows share one cache entry on the relay route, so
@@ -236,7 +268,10 @@ def _probe_kas() -> BackendInstallState:
     if _kas_bundle_route():
         from kiro_crew.agent_sdk import kas_bundle
 
-        if kas_bundle.installed_bundle() is None:
+        # An engine that is not there yet is not a missing install: the gateway
+        # lays the pinned engine down at the first spawn (``acp/kas_engine_install.py``).
+        # Only a host that cannot run it at all is MISSING the bundle.
+        if kas_bundle.installed_bundle() is None and not _engine_installable_here():
             return BackendInstallState(
                 ACP_BACKEND_KAS,
                 _policy_id(ACP_BACKEND_KAS),

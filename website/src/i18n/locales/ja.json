@@ -10261,6 +10261,13 @@
       "read_failed_title": "この更新の後、リモートクルーのバージョンを確認できませんでした",
       "unread": "{{names}} からはまだバージョンが届いていないため、これらも遅れている可能性があります。"
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}} の KAS エンジンをダウンロードしています。完了するとチャットが始まります。",
+      "downloading_progress": "{{productName}} の KAS エンジンをダウンロードしています（{{percent}}）。完了するとチャットが始まります。",
+      "failed_title": "{{productName}} の KAS エンジンをインストールできませんでした",
+      "retry": "再試行",
+      "retry_failed": "再試行を開始できませんでした（{{reason}}）。"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro サインインが失効しました",
       "open_sign_in": "サインイン設定を開く",
@@ -13812,7 +13819,9 @@
         "installing_progress": "KAS {{version}} をインストール中: {{percent}}（{{done}} / {{total}}）",
         "install_failed": "KAS エンジンのインストールを開始できませんでした。",
         "save_failed": "KAS エンジンの設定を保存できませんでした。",
-        "status_unavailable": "KAS エンジンの状態を読み取れませんでした。"
+        "status_unavailable": "KAS エンジンの状態を読み取れませんでした。",
+        "route_auto_no_kiro_cli": "Kiro CLI がインストールされていないため、KAS は {{productName}} 自身のエンジンで動作します。",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI にサインインしていないため、KAS は {{productName}} 自身のエンジンで動作します。"
       },
       "kiroSignInCard": {
         "title": "Kiro サインイン",
