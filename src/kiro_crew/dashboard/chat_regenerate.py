@@ -323,6 +323,19 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
                 {"error": "corrupt variant entry", "code": "variant_corrupt"}, status=400
             )
         target_dict: dict = target
+        # The reply being left keeps its own stats: a variant stashed without
+        # them would otherwise lose the row's stats to the restore below.
+        leaving_idx = target_dict.get("variant_idx")
+        row_meta = target_dict.get("meta")
+        row_stats = row_meta.get("turn_stats") if isinstance(row_meta, dict) else None
+        if isinstance(leaving_idx, int) and 0 <= leaving_idx < len(variants):
+            leaving = variants[leaving_idx]
+            if (
+                isinstance(leaving, dict)
+                and isinstance(row_stats, dict)
+                and not isinstance(leaving.get("turn_stats"), dict)
+            ):
+                leaving["turn_stats"] = dict(row_stats)
         adopt_variant_text(target_dict, chosen)
         slot.invalidate_source_links()
         target_dict["variant_idx"] = idx

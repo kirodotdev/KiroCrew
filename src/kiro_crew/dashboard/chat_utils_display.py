@@ -76,7 +76,7 @@ BLOCKED_LINKS_ORDERED_KEY = "blocked_links_ordered"
 
 
 def variant_from_row(row: dict) -> dict:
-    """Stash a row as a variant, taking its redaction records with it.
+    """Stash a row as a variant, taking its turn stats and redaction records with it.
 
     The mirror of ``adopt_variant_text``: that one moves a variant onto the row,
     this one moves the row into the variant list. Both directions carry the
@@ -89,6 +89,9 @@ def variant_from_row(row: dict) -> dict:
     entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
     meta = row.get("meta")
     if isinstance(meta, dict):
+        turn_stats = meta.get("turn_stats")
+        if isinstance(turn_stats, dict):
+            entry["turn_stats"] = dict(turn_stats)
         # Bounded here, at retention: the row's meta was read off a transcript
         # line, and a variant list outlives the render that would bound it later.
         for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
@@ -159,18 +162,26 @@ def _variant_for_emit(variant: dict) -> dict:
 
 
 def adopt_variant_text(row: dict, variant: dict) -> None:
-    """Move a row onto one of its variants, text and redaction records together.
+    """Move a row onto one of its variants, text and row-specific metadata together.
 
     A record describes ONE text: it names what was removed from a placeholder
     standing in that text. A caller that takes a variant's content without its
     records leaves the row explaining something absent from the text on screen.
-    The pair moves through this one function so no site can take half of it --
-    the records are replaced when the variant carries them and REMOVED when it
-    does not, because a variant with no records has nothing to explain.
+    The records are replaced when the variant carries them and REMOVED when it
+    does not. Turn stats move with the reply too; legacy variants without stats
+    clear the active reply's stale stats instead of showing another variant's.
     """
     row["content"] = variant.get("content", "")
     row["ts"] = variant.get("ts", row.get("ts", ""))
     meta = row.get("meta")
+    turn_stats = variant.get("turn_stats")
+    if isinstance(turn_stats, dict):
+        if not isinstance(meta, dict):
+            meta = {}
+            row["meta"] = meta
+        meta["turn_stats"] = dict(turn_stats)
+    elif isinstance(meta, dict):
+        meta.pop("turn_stats", None)
     for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
         records = bound(variant.get(key))
         if records:

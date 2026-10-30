@@ -185,6 +185,21 @@ def _attach_owned_turn_stats(
         if reply_mids is not None and row_mid(m) not in reply_mids:
             continue
         m.setdefault("meta", {})["turn_stats"] = stats
+        # A regenerate already attached stashed variants by flush time, and the
+        # segment builder added the newest variant WITHOUT stats because the
+        # figures only exist here. ``adopt_variant_text`` restores the ACTIVE
+        # variant onto the row, so the newest reply's stats must live in that
+        # variant too -- otherwise the first switch to it deletes them from the
+        # row and the deletion is what gets persisted.
+        variants = m.get("variants")
+        index = m.get("variant_idx")
+        if (
+            isinstance(variants, list)
+            and isinstance(index, int)
+            and 0 <= index < len(variants)
+            and isinstance(variants[index], dict)
+        ):
+            variants[index]["turn_stats"] = dict(stats)
         return True
     return False
 
