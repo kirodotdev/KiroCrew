@@ -203,6 +203,7 @@ class _ChatTurn:
     _shell_tool_calls: "set[str]"
     _span_base_len: "int"
     _span_probe: "str"
+    _prompt_segments: "tuple[Any, ...]"
     _spec_hooks: "list[Any]"
     _spec_hooks_cwd: "str | None"
     _spec_hooks_unreadable: "bool"

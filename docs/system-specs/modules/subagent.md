@@ -83,7 +83,11 @@ Prompt construction receives the captured context explicitly and reads permanent
 rules/brief/profile documents directly. Learned database preparation is optional
 for this prompt; an explicit learned-memory operation fails on unavailable or
 wrong-store data without selecting Global. Provider privacy mode is supplied
-before shared-session creation or dedicated startup.
+before shared-session creation or dedicated startup. `run_turn.py` keeps the
+builder's prompt segments when adding its hook prefix through `prepend_injected`:
+only the prefix is injected, and an empty prefix leaves the prompt unchanged.
+Initial sends and zero-activity resends reuse that same segmented prompt, so
+memory and hook image paths stay text while the task's own images can attach.
 
 Continuation tools retain the original `subagent:<conversation-id>` while each
 follow-up has its own run ID. Ordinary HTTP caller recognition uses the unique

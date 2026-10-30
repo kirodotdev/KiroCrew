@@ -548,7 +548,9 @@ async def _run_inner_impl(
         fresh_session=is_new and not _resumed,
         spec=_spec,
     )
-    full_message = _hook_prefix + full_message
+    from kiro_crew.prompt_segments import prepend_injected
+
+    full_message = prepend_injected(_hook_prefix, full_message)
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
     from kiro_crew import tool_permission

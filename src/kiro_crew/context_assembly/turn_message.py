@@ -1010,6 +1010,7 @@ def build_message(
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
     # lands is resolved there too, because only that step sees every transform.
     _turn_neutralized, _user_bounds = _turn.user_turn(text, hook_result, user_text_range)
+    _turn_part_index = len(parts)
     if _user_bounds is not None:
         _user_part_index = len(parts)
     parts.append(_turn_neutralized)
@@ -1032,6 +1033,23 @@ def build_message(
         measured_span = (start, end)
         if report_user_span and user_span_out is not None:
             user_span_out.extend(measured_span)
+    # Provenance for the prompt builder: only the user's own text may be upgraded
+    # into extra content blocks (kiro_crew.prompt_segments). Without measured
+    # bounds the whole turn part is the user's, as a channel's turn is.
+    _turn_start = len("".join(parts[:_turn_part_index]).translate(ctx._MULTIBYTE_TABLE))
+    _turn_end = _turn_start + len(parts[_turn_part_index].translate(ctx._MULTIBYTE_TABLE))
+    if _user_bounds is not None and _user_part_index is not None:
+        _seg_start, _seg_end = measured_span
+        if _seg_start == _seg_end:
+            # Nothing attributable was typed: an @prompt body or a quick-prompt
+            # expansion stands where the typed text was, and is the request. The
+            # envelope the caller prefixed to the turn stays injected.
+            _seg_end = _turn_end
+    else:
+        _seg_start, _seg_end = _turn_start, _turn_end
+    from kiro_crew import prompt_segments as _prompt_segments
+
+    final = _prompt_segments.around(final, _seg_start, _seg_end)
     try:
         if minimal_context:
             meter_lifecycle = "minimal"
