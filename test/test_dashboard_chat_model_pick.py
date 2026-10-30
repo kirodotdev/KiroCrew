@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -68,11 +69,11 @@ class TestSlotProbeWrapsSharedRestoreBody:
         from kiro_crew.dashboard import chat_runner
 
         slot = self._slot(_model_pick_gen=4)  # picked after the swap
-        with patch(
-            "kiro_crew.dashboard.chat_runner.probe_fallback_restore", new_callable=AsyncMock
-        ) as probe:
-            await chat_runner._probe_fallback_restore_for_slot(slot, MagicMock())
-        assert probe.await_args.kwargs["stale"] is True
+        # A restore attempt fails, which would keep the fallback record; only the
+        # stale path drops it without trying the primary.
+        client = SimpleNamespace(set_model=AsyncMock(side_effect=RuntimeError("primary down")))
+        await chat_runner._probe_fallback_restore_for_slot(slot, client)
+        assert (slot._active_fallback_model, slot._fallback_primary_model) == ("", "")
 
     @pytest.mark.asyncio
     async def test_heal_hook_restores_the_activation_snapshot(self):
