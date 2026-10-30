@@ -19,7 +19,7 @@ Two main pages, one set of data:
 | Page | Route | What it is for |
 |---|---|---|
 | **Discover** | `/apps` | The storefront: featured collections, a category rail, and every app the catalog offers. Install from here. |
-| **Library** | `/apps/library` | Your installed apps as an icon grid, with each tile offering the actions that apply to that app in its current state. |
+| **Library** | `/apps/library` | Your installed apps as an icon grid: enabled apps first, disabled ones in their own section below. Click a tile to open the app; its ⋯ menu holds the actions that apply to it in its current state. |
 | Detail | `/apps/detail/:name` | One app's description, screenshots, highlights, publisher and version. |
 | Updates | `/apps/-/updates` | Every pending update in one worklist, with **Update All**. |
 | Migration | `/apps/migrate/:name` | Guidance for an app that used to ship inside the package and no longer does. |
@@ -40,8 +40,8 @@ registry, or install a local directory from a path.
 - **Uninstall** applies to apps you installed; a shipped app cannot be uninstalled,
   only disabled. Uninstalling keeps the app's data by default. Pass `--purge-data` on
   the CLI to delete that too — which is not reversible.
-- The pin badge on a Library tile controls whether an enabled app shows in the
-  sidebar. It does not disable anything.
+- **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
+  shows in the sidebar; the tile's caption says which. They do not disable anything.
 
 Two shipped apps are on from a fresh install: **Command Bar** and **Task Runner**.
 Everything else waits for you.

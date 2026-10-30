@@ -3327,18 +3327,18 @@
       "id": "apps-library",
       "feature": "apps",
       "title": "Library",
-      "user_story": "As a user, I want installed apps as launchpad tiles with rail pinning and a 'Show N disabled' toggle, so that I can launch and organise apps.",
+      "user_story": "As a user, I want installed apps as launchpad tiles with rail pinning and disabled apps in their own section below, so that I can launch and organise apps.",
       "start_url": "/apps/library",
-      "entry_path": "Rail > Apps > Library > LaunchpadTile > pin toggle (rail row hides/shows) > 'Show N disabled'",
+      "entry_path": "Rail > Apps > Library > LaunchpadTile > ⋯ Pin/Unpin (rail row hides/shows) > Disabled section > Enable",
       "preconditions": {
         "seed": "apps-installed",
         "members": [],
         "feature_flags": [],
-        "notes": "Fixture provides fixture-notes (origin=local, enabled, no page) as a non-builtin subject and at least one disabled app for the toggle. Pin toggle writes mc-app-nav-hidden; App.tsx materializes order into mc-app-nav-order at hide time."
+        "notes": "Fixture provides fixture-notes (origin=local, enabled, no page) as a non-builtin subject and at least one disabled app for the Disabled section. Pin/Unpin writes mc-app-nav-hidden; App.tsx materializes order into mc-app-nav-order at hide time."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
-      "rationale": "Launchpad is the daily entry to apps; open, toggle disabled, pin -- three offline actions on the apps-installed fixture. Pin/unpin is a localStorage write plus a rail re-render with no backend dependency.",
+      "rationale": "Launchpad is the daily entry to apps; open, enable a disabled app, pin -- three offline actions on the apps-installed fixture. Pin/unpin is a localStorage write plus a rail re-render with no backend dependency.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",

@@ -134,7 +134,6 @@
   "pages.appsPage.agent",
   "pages.appsPage.app",
   "pages.appsPage.cron_job",
-  "pages.appsPage.show_disabled",
   "pages.appsPage.skill",
   "pages.appsPage.update",
   "pages.appsPage.updated_app",

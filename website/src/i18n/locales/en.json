@@ -4355,7 +4355,6 @@
       },
       "installedAppCard": {
         "dismiss": "Dismiss",
-        "open": "Open",
         "remote_environment_detected": "Remote environment detected",
         "run_this_on_your_local_machine": "Run this on your local machine:",
         "uninstall": "Uninstall",

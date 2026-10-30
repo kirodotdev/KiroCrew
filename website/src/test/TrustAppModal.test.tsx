@@ -264,17 +264,7 @@ describe('isSessionApprovalConsentRequiredError', () => {
 
 describe('LibraryPage trust gate', () => {
   // The consent flow is reached by clicking Enable on a DISABLED third-party
-  // tile, which the Library's default "enabled only" view filters out. This
-  // block is about the trust gate, not the default view, so it opts into the
-  // show-all view (persisted `mc-apps-library-show-all` toggle, '1' = show all)
-  // to render the tile it acts on.
-  beforeEach(() => {
-    localStorage.setItem('mc-apps-library-show-all', '1')
-  })
-  afterEach(() => {
-    localStorage.removeItem('mc-apps-library-show-all')
-  })
-
+  // tile, which the Library lists in its Disabled section.
   it('routes consent-required enable to the detail disclosure', async () => {
     enableApp.mockRejectedValue(SESSION_APPROVAL_REQUIRED())
     renderPage()

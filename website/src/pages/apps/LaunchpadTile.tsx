@@ -4,16 +4,16 @@
  *
  * The tile is the app's identity (the shared AppIconTile through the SAME
  * icon chain UpdatesList uses, so an app wears one mark on
- * every surface), the name and a status caption sit below it, and the pin
- * badge on the icon's top-right corner toggles whether the app appears in
- * the sidebar — filled check = pinned, hollow plus = unpinned. An action
- * row under the caption carries at most two peers: Open (when the app can
- * open) and an overflow menu with everything else (Details, Pin/Unpin,
- * Update, Disable/Enable, Uninstall) — the repo's capped-action-row
- * contract (max-two-buttons-per-row), overflow via DropdownMenu like
- * SessionActionsMenu. Disabled apps render greyscale at reduced opacity,
- * hide the pin badge (an app absent from the sidebar has nothing to pin),
- * and their menu offers Details/Enable/Uninstall.
+ * every surface) with its name below. The icon and name are one button:
+ * clicking it opens the app when it can open, else its detail page, so the
+ * tile needs no separate Open control. Under the name, one row carries the
+ * status and an overflow menu (Details, Pin/Unpin, Update, Disable/Enable,
+ * Uninstall), overflow via DropdownMenu like SessionActionsMenu. On an
+ * enabled app the status is a caption saying whether it is in the sidebar;
+ * pinning lives in the menu, so the caption is the only pin indicator.
+ * Disabled apps render greyscale at reduced opacity, and their row swaps the
+ * caption for an Enable button, the one verb a disabled app is listed for;
+ * their menu offers Details/Enable/Uninstall.
  *
  * Presentational on purpose: pin persistence, enable/disable/uninstall/
  * update behavior, and navigation are the PAGE's hooks (`useAppActions`,
@@ -24,12 +24,11 @@
  * Reachability: the action row sits IN FLOW (reserved height, never
  * floating over the neighbouring grid row) and is ALWAYS visible, on
  * pointer and touch alike: its overflow menu is the tile's route to the
- * detail page, so no device or input mode hides it. Every management verb
- * is also in the 40px-friendly menu, so the 18px pin badge is a shortcut,
- * not the only path.
+ * detail page, so no device or input mode hides it.
  */
-import { ArrowUp, Check, ExternalLink, Info, MoreHorizontal, Pin, PinOff, Plus, Power, PowerOff, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowUp, Info, MoreHorizontal, Pin, PinOff, Power, PowerOff, RefreshCw, Trash2 } from 'lucide-react'
 import AppIconTile from '../../components/appstore/AppIconTile'
+import { Btn } from '../../components/ui'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import { installedIcon } from '../../components/appstore/useHeroArt'
 import {
@@ -61,8 +60,8 @@ export default function LaunchpadTile({
   /**
    * False when the app has no sidebar destination at all (`appNavTarget`
    * returned null — enabled but no UI page). A pin control there would
-   * promise a sidebar row the app cannot have, so the badge, the menu's
-   * Pin/Unpin item, and the pinned/unpinned caption are all suppressed.
+   * promise a sidebar row the app cannot have, so the menu's Pin/Unpin item
+   * and the pinned/unpinned caption are both suppressed.
    */
   pinnable?: boolean
   /** `${name}:${action}` while that action is in flight, else null. */
@@ -99,24 +98,19 @@ export default function LaunchpadTile({
   // Status caption under the name: an in-flight management action wins (the
   // overflow menu closes on click, so this caption is the only in-view
   // signal that Update/Disable/Enable/Uninstall is running — without it a
-  // multi-second update reads as a no-op and invites a re-click), then
-  // disabled (a disabled app is not in the sidebar regardless of the stored
-  // pin), else the pin state. An enabled app with no sidebar destination
-  // says so instead of silently showing nothing next to captioned siblings.
+  // multi-second update reads as a no-op and invites a re-click), else the
+  // pin state. An enabled app with no sidebar destination says so instead of
+  // silently showing nothing next to captioned siblings. A disabled app shows
+  // its Enable button here instead, which carries the in-flight caption as
+  // its label.
   const actionInFlight = !!actionLoading && actionLoading.startsWith(`${name}:`)
   const caption = actionInFlight
     ? i18nT('apps.commandBar.working')
-    : disabled
-      ? i18nT('pages.libraryPage.tile_disabled')
-      : !pinnable
-        ? i18nT('pages.libraryPage.tile_no_sidebar_page')
-        : pinned
-          ? i18nT('pages.libraryPage.tile_pinned')
-          : i18nT('pages.libraryPage.tile_unpinned')
-
-  const pinLabel = pinned
-    ? i18nT('pages.libraryPage.unpin_from_sidebar', { name: display })
-    : i18nT('pages.libraryPage.pin_to_sidebar', { name: display })
+    : !pinnable
+      ? i18nT('pages.libraryPage.tile_no_sidebar_page')
+      : pinned
+        ? i18nT('pages.libraryPage.tile_pinned')
+        : i18nT('pages.libraryPage.tile_unpinned')
 
   return (
     <div
@@ -132,11 +126,10 @@ export default function LaunchpadTile({
       {/* Tile face — a real button so the tile itself is keyboard focusable:
           opens the app when it can open, else its detail page. The icon is the
           shared AppIconTile with the mockup's 58px / rounded-15px geometry
-          (important-override on the tile's own rounded-lg). The pin badge is
-          a SIBLING of this button (absolutely anchored over the icon's
-          top-right corner), never a child: nested interactive elements get
-          flattened or mis-announced by assistive tech, so each control must
-          be its own top-level button. */}
+          (important-override on the tile's own rounded-lg). The status row
+          below is a SIBLING of this button, never a child: nested interactive
+          elements get flattened or mis-announced by assistive tech, so each
+          control must be its own top-level button. */}
       <button
         type="button"
         onClick={openable ? onOpen : onDetail}
@@ -165,41 +158,30 @@ export default function LaunchpadTile({
           {display}
         </span>
       </button>
-      {!disabled && pinnable && (
-        <button
-          type="button"
-          aria-pressed={pinned}
-          aria-label={pinLabel}
-          title={pinLabel}
-          onClick={(e) => { e.stopPropagation(); onTogglePin(name) }}
-          className={`absolute top-[5px] left-1/2 ml-5 w-[18px] h-[18px] rounded-full flex items-center justify-center cursor-pointer transition-colors border-0 p-0 ${
-            pinned
-              ? 'bg-accent text-accent-fg'
-              : 'bg-bg-elevated text-muted border border-border-strong hover:text-text'
-          }`}
-        >
-          {pinned ? <Check size={11} strokeWidth={3} aria-hidden /> : <Plus size={11} aria-hidden />}
-        </button>
-      )}
-      <span className="text-[10.5px] text-muted leading-none">{caption}</span>
 
-      {/* Action row — IN FLOW under the caption (reserved height, no float
-          over the next grid row), at most two peers: Open + overflow menu.
-          Always visible: the overflow menu is the tile's route to its detail
-          page, so it is never hover-only. */}
+      {/* Status row — IN FLOW under the name (reserved height, no float over
+          the next grid row): the caption, or a disabled app's Enable button,
+          then the overflow menu. Always visible: the overflow menu is the
+          tile's route to its detail page, so it is never hover-only. */}
       <div
         role="toolbar"
         aria-label={i18nT('pages.libraryPage.tile_actions', { name: display })}
-        className="flex items-center gap-0.5 rounded-lg"
+        className="flex items-center gap-0.5 rounded-lg min-h-[24px]"
       >
-        {openable && (
-          <button
+        {disabled ? (
+          // The button stays mounted while its own action runs and says so in
+          // its label, so keyboard focus stays on it. `aria-disabled` rather than
+          // `disabled`: a disabled button drops the focus it holds.
+          <Btn
             type="button"
-            onClick={onOpen}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md whitespace-nowrap transition-colors bg-transparent border-0 cursor-pointer text-text hover:bg-bg-elevated"
+            aria-disabled={actionInFlight || undefined}
+            onClick={() => { if (!actionInFlight) onAction(name, 'enable') }}
+            className="text-[11px] px-2 py-0.5 whitespace-nowrap border-border-strong aria-disabled:cursor-wait"
           >
-            <ExternalLink size={11} aria-hidden /> {i18nT('components.appstore.installedAppCard.open')}
-          </button>
+            {actionInFlight ? caption : i18nT('components.appstore.installedAppCard.enable')}
+          </Btn>
+        ) : (
+          <span className="text-[10.5px] text-muted leading-none pl-1.5">{caption}</span>
         )}
         <DropdownMenu onOpenChange={onMenuOpenChange}>
           <DropdownMenuTrigger asChild>

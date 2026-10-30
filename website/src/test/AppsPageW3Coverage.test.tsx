@@ -399,7 +399,7 @@ describe('AppsPage — Library actions', () => {
     // command palette use: a third-party (non-builtin) app is AppHost-routed at
     // /apps/<name>, NOT its raw manifest page route (which only a native builtin
     // serves, and which otherwise dead-ends at BuiltinAppRoute -> /chat).
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Secretary' }))
     const probe = await screen.findByTestId('detail-route')
     expect(probe).toHaveAttribute('data-path', '/apps/secretary')
   })
@@ -432,37 +432,19 @@ describe('AppsPage — Library actions', () => {
     expect(screen.queryByText(/re-enable it from the Discover/)).toBeNull()
   })
 
-  it('a disabled builtin is reachable via the show-all view, with Enable in its overflow menu', async () => {
+  it('a disabled builtin is reachable from the Disabled section, with Enable in its overflow menu', async () => {
     // The reachability property: a disabled builtin can be reached and enabled
-    // from Library. It lives behind the show-all view now, so the seed is what
-    // makes the row render; its Enable verb is in the tile's overflow menu (the
-    // launchpad grid caps direct actions at two peers).
-    localStorage.setItem('mc-apps-library-show-all', '1')
+    // from Library, on the default view with no toggle to find first.
     listApps.mockResolvedValue([{ ...BUILTIN_OFF, enabled: false }])
     renderLibrary()
+    const section = await screen.findByTestId('library-section-disabled')
+    expect(within(section).getByTestId('launchpad-tile-pets')).toBeInTheDocument()
     await openTileMenu('Pets')
     expect(await screen.findByRole('menuitem', { name: 'Enable' })).toBeInTheDocument()
   })
 
-  it('the default view hides a disabled builtin behind the labelled reveal control', async () => {
-    // The new default: a disabled builtin does NOT fill the fresh-visit list. No
-    // seed, so this asserts the shipped default. The row is filtered, not gone —
-    // the "Show 1 disabled" control names the hidden count so it stays reachable
-    // (the reachability a hard hide would break).
-    listApps.mockResolvedValue([{ ...BUILTIN_OFF, enabled: false }])
-    renderLibrary()
-    expect(await screen.findByRole('button', { name: 'Show 1 disabled app' })).toBeInTheDocument()
-    expect(screen.queryByTestId('launchpad-tile-pets')).toBeNull()
-    // Clicking the control reveals the row: reachable, just not the default.
-    fireEvent.click(screen.getByRole('button', { name: 'Show 1 disabled app' }))
-    expect(await screen.findByTestId('launchpad-tile-pets')).toBeInTheDocument()
-  })
-
   it('orders enabled rows above disabled ones', async () => {
-    // Subject is the ordering of BOTH groups, which only the show-all view
-    // renders — the seed is what puts the disabled group on screen to order. The
-    // gateway returns them disabled-first here, so a pass-through would fail.
-    localStorage.setItem('mc-apps-library-show-all', '1')
+    // The gateway returns them disabled-first here, so a pass-through would fail.
     listApps.mockResolvedValue([
       { ...BUILTIN_OFF, name: 'zeta-off', displayName: 'Zeta Off', enabled: false },
       { ...BUILTIN_OFF, name: 'alpha-on', displayName: 'Alpha On', enabled: true },
@@ -809,9 +791,6 @@ describe('AppsPage — Library enable and update', () => {
   })
 
   it('enables a switched-off installed app from the Library', async () => {
-    // Subject is the enable action on a disabled app; the row lives behind the
-    // show-all view now, so the seed is what renders it to act on.
-    localStorage.setItem('mc-apps-library-show-all', '1')
     listApps.mockResolvedValue([{ ...SECRETARY, enabled: false }])
     renderLibrary()
     await openTileMenu('Secretary')
@@ -822,9 +801,6 @@ describe('AppsPage — Library enable and update', () => {
   it('opens consent from the Library using the installed record when the catalog has no row', async () => {
     // origin `local` and absent from the registry, so `trustTarget` has to fall
     // back to the installed record for the name shown in the consent dialog.
-    // The app is disabled, so the seed renders it behind the show-all view for
-    // the Enable click that triggers consent.
-    localStorage.setItem('mc-apps-library-show-all', '1')
     listApps.mockResolvedValue([{
       ...SECRETARY, name: 'localapp', displayName: 'Local App', enabled: false, origin: 'local',
     }])

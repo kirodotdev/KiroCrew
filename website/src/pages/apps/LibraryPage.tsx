@@ -3,10 +3,11 @@
  * (PR1 App Store split; route `/apps/library`).
  *
  * The list presentation is a macOS-Launchpad-style icon grid (PR3, approved
- * mockup frame #a): each installed app is a `LaunchpadTile` whose pin badge
- * toggles whether the app appears in the sidebar (persisted as the HIDDEN
- * set under `mc-app-nav-hidden`, owned by `lib/appNavHidden.ts`), with a
- * hover action bar carrying the management verbs the old cards offered.
+ * mockup frame #a), with enabled apps first and disabled apps in their own
+ * section below. Each installed app is a `LaunchpadTile` that opens on click;
+ * its overflow menu carries the management verbs, including Pin/Unpin, which
+ * toggles whether the app appears in the sidebar (persisted as the HIDDEN set
+ * under `mc-app-nav-hidden`, owned by `lib/appNavHidden.ts`).
  * Search and the uninstall preview flow survive from the card list. Data
  * identity (installed list, update map, mc:apps-changed announcement) lives
  * in the shared `useAppsData` hook so this page and Discover cannot drift.
@@ -16,16 +17,18 @@
  * worklist and Update All (PR2 App Store split). Per-tile Update stays on
  * the action bar via the shared `useAppUpdates` hook.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { LayoutGroup, motion } from 'framer-motion'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, Lock, Trash2, X, ArrowUp, Compass,
-  AlertTriangle, PowerOff, Eye, EyeOff,
+  AlertTriangle, PowerOff,
 } from 'lucide-react'
 import { api } from '../../api/client'
 import { appNavTarget } from '../../appNav'
-import { Btn, EmptyState, PageHeader, SearchInput } from '../../components/ui'
+import { Btn, EmptyState, PageHeader, PanelSectionHeader, SearchInput } from '../../components/ui'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { recordEvent } from '../../rum'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import type { InstalledApp } from '../../components/appstore/types'
@@ -33,8 +36,8 @@ import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { toggleAppNavHidden, useAppNavHidden } from '../../lib/appNavHidden'
-import { usePersistedBool } from '../../hooks/usePersistedBool'
 import useAppsData from './useAppsData'
+import type { LibraryApp } from './useAppsData'
 import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
 import { cardDataKey } from './cardDataKey'
@@ -51,21 +54,11 @@ type UserInstalledDep = UninstallPreview['dependencies']['userInstalled'][number
 
 export default function LibraryPage() {
   const navigate = useNavigate()
-  // The reader's view control. Persisted in THIS origin's localStorage and
-  // live-synced across tabs by `usePersistedBool`; it does NOT follow the reader
-  // to a new origin. The growth-gap that once made adding keys to
-  // `DURABLE_PREF_KEYS` unsafe is closed (issue 9491's reconcile pass in
-  // lib/uiPrefs.ts), so keeping this origin-local is now purely a product
-  // decision -- a per-machine browsing-view toggle, not a preference the reader
-  // would expect to follow them. Off by
-  // default so a fresh visit shows the apps the reader enabled, not the ~20
-  // default-off builtins the wheel ships.
-  const [showAll, setShowAll] = usePersistedBool('mc-apps-library-show-all', false)
   const {
     apps, appsLoading, appsError, registryError,
-    browseApps, installedApps, disabledCount, updatables, announceAppsChanged, sources,
+    browseApps, installedApps, updatables, announceAppsChanged, sources,
     registriesUnknown,
-  } = useAppsData({ showAll })
+  } = useAppsData()
 
   const [query, setQuery] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
@@ -146,25 +139,29 @@ export default function LibraryPage() {
       || (a.manifest?.description || '').toLowerCase().includes(q)
       || (a.manifest?.tags || []).some(t => t.toLowerCase().includes(q)))
   }, [installedApps, query])
+  // Two sections, by live enabled state: enabling an app moves it up into
+  // Enabled and disabling one moves it down, so each section's heading always
+  // describes every tile under it. Search filters both.
+  const enabledApps = filteredInstalled.filter(a => a.enabled)
+  const disabledApps = filteredInstalled.filter(a => !a.enabled)
+  const reduceMotion = useReducedMotion()
+
+  // The app whose enable or disable the reader just ran, with the state it
+  // was in. When the refetch lands the tile changes section, which remounts
+  // it, so focus held inside the old tile falls to the page. Put it back on
+  // the tile's face, once, and only if nothing else took focus meanwhile.
+  const refocusApp = useRef<{ name: string; enabled: boolean } | null>(null)
+  useEffect(() => {
+    const pending = refocusApp.current
+    if (!pending) return
+    const app = installedApps.find(a => a.name === pending.name)
+    if (app && app.enabled === pending.enabled) return
+    refocusApp.current = null
+    if (!app || (document.activeElement && document.activeElement !== document.body)) return
+    document.querySelector<HTMLElement>(`[data-testid="launchpad-tile-${CSS.escape(app.name)}"] button`)?.focus()
+  }, [installedApps])
   const menuApp = menuOpenFor !== null ? installedApps.find(a => appDisplayName(a) === menuOpenFor) : undefined
   useGuideSelection('app_tile_menu_open', { selected: menuOpenFor !== null, available: installedApps.length > 0, name: menuOpenFor ?? undefined, alias: menuApp ? menuApp.displayName || menuApp.name : undefined })
-
-  // One definition of the view control, rendered both above the grid and inside
-  // the empty enabled-only view. `aria-pressed` reflects the show-all state; the
-  // label carries the hidden count so an empty list reads differently from a
-  // filtered one.
-  const revealToggle = (
-    <button
-      type="button"
-      onClick={() => setShowAll(!showAll)}
-      aria-pressed={showAll}
-      className="inline-flex items-center gap-1.5 text-[13px] text-muted hover:text-text"
-    >
-      {showAll
-        ? <><EyeOff size={13} className="shrink-0" aria-hidden /> {i18nT('pages.appsPage.show_enabled_only')}</>
-        : <><Eye size={13} className="shrink-0" aria-hidden /> {i18nT('pages.appsPage.show_disabled', { count: disabledCount })}</>}
-    </button>
-  )
 
   // ---- Actions --------------------------------------------------------------
   // Detail navigation, update routing, the trust-consent target, and the
@@ -196,11 +193,13 @@ export default function LibraryPage() {
     if (action === 'update') return runUpdate(name)
     setActionLoading(`${name}:${action}`)
     setError('')
+    refocusApp.current = { name, enabled: action === 'disable' }
     try {
       if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
       announceAppsChanged()
     } catch (e) {
+      refocusApp.current = null
       if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
       else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
     } finally {
@@ -224,6 +223,86 @@ export default function LibraryPage() {
       setUninstallTarget(null)
       setUninstallPreview(null)
     }
+  }
+
+  // One tile, shared by both sections. A crashed tile falls back to a card
+  // that keeps one recovery verb, so a broken app is never stranded.
+  const renderTile = (app: LibraryApp) => {
+    // The sidebar's own eligibility/id derivation decides
+    // pinnability: a tile only offers a pin for a row the rail
+    // could actually show, under the byte-identical id the
+    // sidebar filter matches against.
+    const target = appNavTarget(app)
+    return (
+      <motion.div
+        /* Full-data key (cardDataKey): the boundary inside latches
+           its error state, so remount when the installed app or its
+           update availability changes — e.g. when an updated payload
+           fixes a broken tile (#3719). The layoutId is the app's name
+           alone, so a remount still reads as the same tile. */
+        key={cardDataKey(app)}
+        layoutId={`library-tile-${app.name}`}
+        layout="position"
+        transition={reduceMotion ? TILE_MOVE_REDUCED : TILE_MOVE}
+      >
+        <ErrorBoundary
+          scope="apps:installed-card"
+          fallback={
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-border px-1.5 pt-3.5 pb-2.5 text-center">
+              <div className="w-[58px] h-[58px] rounded-[15px] bg-bg-elevated flex items-center justify-center">
+                <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)]" />
+              </div>
+              <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{app.manifest?.displayName || app.name}</span>
+              <span className="text-[10.5px] text-muted leading-tight">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
+              {/* The crashed tile removed the app's management surface, so the
+                  fallback must keep one recovery path: quiet a broken enabled
+                  app, or remove a disabled one entirely (locked apps cannot
+                  be uninstalled). Same handlers as the healthy tile. */}
+              {app.enabled ? (
+                <Btn
+                  onClick={() => handleAction(app.name, 'disable')}
+                  disabled={actionLoading === `${app.name}:disable`}
+                >
+                  <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
+                </Btn>
+              ) : app.lifecycle !== 'locked' && (
+                <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
+                  <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
+                </Btn>
+              )}
+            </div>
+          }
+        >
+          <LaunchpadTile
+            app={app}
+            pinned={!!target && !navHidden.has(target.id)}
+            pinnable={!!target}
+            actionLoading={updatingAll
+              ? `${app.name}:update`
+              : updatePending ? `${updatePending}:update` : actionLoading}
+            onTogglePin={togglePin}
+            onMenuOpenChange={open => setMenuOpenFor(prev => (open ? appDisplayName(app) : prev === appDisplayName(app) ? null : prev))}
+            onAction={handleAction}
+            onOpen={() => {
+              // An `openCommand` app opens by RUNNING its command
+              // never by
+              // routing — `appNavTarget` is null for it, and the
+              // `/apps/${name}` fallback would land on a detail page
+              // pretending to be the app. Remote gateways answer
+              // `{remote: true}` with the command to run locally.
+              if (app.manifest?.openCommand) {
+                api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
+                  if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
+                }).catch(() => {})
+                return
+              }
+              navigate(target?.route || `/apps/${app.name}`)
+            }}
+            onDetail={() => openDetail(app.name)}
+          />
+        </ErrorBoundary>
+      </motion.div>
+    )
   }
 
   return (
@@ -436,44 +515,22 @@ export default function LibraryPage() {
         {appsLoading ? (
           <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
         ) : filteredInstalled.length === 0 ? (
-          // The enabled-only view can be empty while disabled builtins wait
-          // behind the toggle (a fresh install enables nothing). Falling through
-          // to the "no apps installed" dead-end would strand those builtins with
-          // no way to reveal them — the #4882 failure. So when the ONLY reason
-          // the list is empty is the filter, keep the labelled reveal control.
-          !query.trim() && !showAll && disabledCount > 0 ? (
-            <div className="py-12 flex flex-col items-center gap-3 text-center animate-rise">
-              <Package size={36} className="text-muted" aria-hidden />
-              <span className="text-sm text-muted">{i18nT('pages.appsPage.no_enabled_apps')}</span>
-              {revealToggle}
-            </div>
-          ) : (
-            <EmptyState
-              icon={<Package size={36} />}
-              title={installedApps.length === 0 ? i18nT('pages.appsPage.no_apps_installed_yet') : i18nT('pages.appsPage.no_matching_apps')}
-              subtitle={installedApps.length === 0
-                ? i18nT('pages.appsPage.find_apps_in_the_discover_tab_or_install_from_a')
-                : i18nT('pages.appsPage.try_a_different_search_term')}
-              action={installedApps.length === 0
-                ? (
-                  <Link to="/apps" className="text-accent text-sm font-medium hover:underline inline-flex items-center gap-1.5">
-                    <Compass size={14} className="lucide-inline" /> {i18nT('nav.discover')}
-                  </Link>
-                )
-                : undefined}
-            />
-          )
+          <EmptyState
+            icon={<Package size={36} />}
+            title={installedApps.length === 0 ? i18nT('pages.appsPage.no_apps_installed_yet') : i18nT('pages.appsPage.no_matching_apps')}
+            subtitle={installedApps.length === 0
+              ? i18nT('pages.appsPage.find_apps_in_the_discover_tab_or_install_from_a')
+              : i18nT('pages.appsPage.try_a_different_search_term')}
+            action={installedApps.length === 0
+              ? (
+                <Link to="/apps" className="text-accent text-sm font-medium hover:underline inline-flex items-center gap-1.5">
+                  <Compass size={14} className="lucide-inline" /> {i18nT('nav.discover')}
+                </Link>
+              )
+              : undefined}
+          />
         ) : (
           <>
-            {/* Enabled-only / show-all view control (shared with the empty-view
-                fallback above via `revealToggle`). A filter, not a hide: every
-                row stays reachable through this toggle, so a default-off builtin
-                with no Discover row is still enable-able (the reachability
-                #4882 is about). Hidden while a search query is active — the
-                search already filters the full installed set. */}
-            {!query.trim() && (showAll || disabledCount > 0) && (
-              <div className="mb-4 flex items-center animate-rise">{revealToggle}</div>
-            )}
             {updatables.length > 0 && (
               /* Light hint, not a banner: the update WORKLIST (rows, version
                  diffs, Update All) lives on the Discover Updates sub-page —
@@ -487,90 +544,59 @@ export default function LibraryPage() {
                 </Link>
               </div>
             )}
-            {/* Launchpad grid (mockup frame #a): ~5 columns at desktop width,
+            {/* Launchpad grids (mockup frame #a): ~5 columns at desktop width,
                 stepping down responsively. Tiles come from `installedApps`
                 (GET /api/apps records) — the Discover/Library built-in
                 SURFACES are frontend nav entries, never installed-app
-                records, so they cannot appear as tiles. */}
+                records, so they cannot appear as tiles. Disabled apps get
+                their own section BELOW the enabled ones, always shown: Library
+                is the only surface that can enable a locally-shipped builtin,
+                so those rows must never sit behind a toggle. Headings appear
+                only when there is a Disabled section to tell apart. */}
+            {/* One LayoutGroup over both sections: a tile that changes section
+                keeps its layoutId, so it travels to its new place instead of
+                vanishing from one grid and appearing in the other. */}
+            <LayoutGroup id="library-tiles">
             <div
-              className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-7"
+              className="flex flex-col gap-8"
               aria-label={i18nT('pages.libraryPage.installed_apps')}
               {...uiLocation('apps.library.app-list')}
             >
-              {filteredInstalled.map(app => {
-                // The sidebar's own eligibility/id derivation decides
-                // pinnability: a tile only offers a pin for a row the rail
-                // could actually show, under the byte-identical id the
-                // sidebar filter matches against.
-                const target = appNavTarget(app)
-                return (
-                  <ErrorBoundary
-                    /* Full-data key (cardDataKey): the boundary latches
-                       its error state, so remount when the installed app or its
-                       update availability changes — e.g. when an updated payload
-                       fixes a broken tile (#3719). */
-                    key={cardDataKey(app)}
-                    scope="apps:installed-card"
-                    fallback={
-                      <div className="flex flex-col items-center gap-2 rounded-xl border border-border px-1.5 pt-3.5 pb-2.5 text-center">
-                        <div className="w-[58px] h-[58px] rounded-[15px] bg-bg-elevated flex items-center justify-center">
-                          <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)]" />
-                        </div>
-                        <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{app.manifest?.displayName || app.name}</span>
-                        <span className="text-[10.5px] text-muted leading-tight">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
-                        {/* The crashed tile removed the app's management surface, so the
-                            fallback must keep one recovery path: quiet a broken enabled
-                            app, or remove a disabled one entirely (locked apps cannot
-                            be uninstalled). Same handlers as the healthy tile. */}
-                        {app.enabled ? (
-                          <Btn
-                            onClick={() => handleAction(app.name, 'disable')}
-                            disabled={actionLoading === `${app.name}:disable`}
-                          >
-                            <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
-                          </Btn>
-                        ) : app.lifecycle !== 'locked' && (
-                          <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
-                            <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
-                          </Btn>
-                        )}
-                      </div>
-                    }
-                  >
-                    <LaunchpadTile
-                      app={app}
-                      pinned={!!target && !navHidden.has(target.id)}
-                      pinnable={!!target}
-                      actionLoading={updatingAll
-                        ? `${app.name}:update`
-                        : updatePending ? `${updatePending}:update` : actionLoading}
-                      onTogglePin={togglePin}
-                      onMenuOpenChange={open => setMenuOpenFor(prev => (open ? appDisplayName(app) : prev === appDisplayName(app) ? null : prev))}
-                      onAction={handleAction}
-                      onOpen={() => {
-                        // An `openCommand` app opens by RUNNING its command
-                        // never by
-                        // routing — `appNavTarget` is null for it, and the
-                        // `/apps/${name}` fallback would land on a detail page
-                        // pretending to be the app. Remote gateways answer
-                        // `{remote: true}` with the command to run locally.
-                        if (app.manifest?.openCommand) {
-                          api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
-                            if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
-                          }).catch(() => {})
-                          return
-                        }
-                        navigate(target?.route || `/apps/${app.name}`)
-                      }}
-                      onDetail={() => openDetail(app.name)}
-                    />
-                  </ErrorBoundary>
-                )
-              })}
+              {(enabledApps.length > 0 || (!query.trim() && disabledApps.length > 0)) && (
+                <section aria-label={disabledApps.length > 0 ? i18nT('pages.libraryPage.section_enabled') : undefined}>
+                  {disabledApps.length > 0 && (
+                    <PanelSectionHeader className="mb-4" label={i18nT('pages.libraryPage.section_enabled')} count={enabledApps.length} />
+                  )}
+                  {enabledApps.length > 0 ? (
+                    <div className={TILE_GRID} data-testid="library-section-enabled">
+                      {enabledApps.map(renderTile)}
+                    </div>
+                  ) : (
+                    // Nothing enabled yet (a fresh install enables nothing): say
+                    // so, and the Disabled section below holds every app.
+                    <p className="text-[13px] text-muted py-2">{i18nT('pages.appsPage.no_enabled_apps')}</p>
+                  )}
+                </section>
+              )}
+              {disabledApps.length > 0 && (
+                <section aria-label={i18nT('pages.libraryPage.section_disabled')}>
+                  <PanelSectionHeader className="mb-4" label={i18nT('pages.libraryPage.section_disabled')} count={disabledApps.length} />
+                  <div className={TILE_GRID} data-testid="library-section-disabled">
+                    {disabledApps.map(renderTile)}
+                  </div>
+                </section>
+              )}
             </div>
+            </LayoutGroup>
           </>
         )}
       </div>
     </>
   )
 }
+
+const TILE_GRID = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-7'
+
+/** How a tile travels to its new section; reduced motion drops the travel. */
+const TILE_MOVE = { type: 'spring', stiffness: 420, damping: 38 } as const
+const TILE_MOVE_REDUCED = { duration: 0 } as const
