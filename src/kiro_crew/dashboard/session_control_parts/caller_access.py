@@ -449,7 +449,7 @@ def _created_by_other(slot: Any, caller_key: str) -> bool:
 #: verbs that mint a session or act for its creator's memory (create, fork, rename,
 #: set_model, ...) stay on ``_created_by``, which a handoff never rewrites.
 HANDOFF_WIDENED_OPERATIONS: frozenset[str] = frozenset(
-    {"send", "read", "summary", "stop", "close", "adopt", "release", "handoff"}
+    {"send", "read", "summary", "queue", "stop", "close", "adopt", "release", "handoff"}
 )
 
 #: How far up the manager line :func:`_outside_reach` walks with the chain switch on.

@@ -426,6 +426,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _redact_meta,
     _redact_meta_for_role,
     _remove_queued_by_id,
+    _reorder_queued_rows,
     _resettle_restricted_key,
     _sync_dashboard_slots,
     chunk_generation,

@@ -155,6 +155,10 @@ _MATE_AUTO_GRANTS = (
 #:   ``session_read_message`` is and returns a digest of the same transcript: a
 #:   verb is granted for a step, and no conductor step calls it yet. A skill that
 #:   adopts it for the patrol cycle adds it here with that step as the reason.
+#: * ``session_queue`` — WITHHELD. Its ``move`` action reorders instructions
+#:   waiting in another session's queue, which is a write to
+#:   what that session runs next, and no conductor step calls it yet. The same
+#:   step-adopts-it rule as ``session_summary`` applies.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
 #:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
 #:   target is the session named in the ARGUMENTS, and the strictly-resolved

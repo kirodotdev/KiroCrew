@@ -41,6 +41,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 | `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
+| `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -90,7 +91,15 @@ other caller, keeps `target_not_found`.
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
 the way the Stop button does, creating opens an empty session, and sending
-delivers a message that the target runs as its next turn. Delivery is the
+delivers a message that the target runs as its next turn. `session_queue` adds
+no new content to the target: its `move` arm reorders an entry already in the
+target's queue, and the queued transcript row that mirrors it, and only for
+entries the caller itself queued. It has no `cancel`, because a queued send to a
+ledger-bound worker can already be the recorded hand-back. `move` takes the queue
+card's own path (`PUT .../queue/order`): the change
+lands in memory, the same tab frame is broadcast, and the periodic flush saves
+it, so the verb makes no durability promise the card does not. Nothing in
+`queue_target` suspends between the gate and the reply. Delivery is the
 sharpest verb and is bounded accordingly: the body is redacted through
 `sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
 session <caller> via <verb>]` envelope so the target's transcript can never
@@ -953,14 +962,14 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 ### Handoff: the manager a fenced caller is checked against
 
-The ownership fence below admits a fenced caller to the sessions it CREATED. A lead
-that opens a conductor and its workers cannot put the workers under the conductor that
-way, because the conductor created none of them. `session_handoff` names a MANAGER for
-a session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
-`read`, `summary`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence checks the
-manager instead of the creator (`_outside_reach`). Every other verb, `fork`, `rename`
-and `set_model` among them, and `session_create`'s delegation lineage, still read
-`_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
+The ownership fence below admits a fenced caller to the sessions it CREATED. A lead that
+opens a conductor and its workers cannot put the workers under the conductor that way,
+because the conductor created none of them. `session_handoff` names a MANAGER for a
+session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
+`read`, `summary`, `queue`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence
+checks the manager instead of the creator (`_outside_reach`). Every other verb, `fork`,
+`rename` and `set_model` among them, and `session_create`'s delegation lineage, still
+read `_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
 handed and cannot fork them or open sessions against the creator's memory.
 
 The reach moves: once a session is handed on, a fenced giver is refused the widened

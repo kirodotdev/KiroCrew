@@ -417,6 +417,7 @@ class TestWhatThisSetGrants:
         # Create, open, bind and seed in one call: no route the four-call path
         # does not already reach, called as the same caller (rfc-work-dispatch.md).
         "work_dispatch",
+        "session_queue",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
