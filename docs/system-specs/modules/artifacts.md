@@ -2494,6 +2494,30 @@ JSON never carries base64.
   `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
   task, the liveness heartbeat included.
 
+### Download hand-off for in-app browsers
+
+The page's Download builds the file in the browser and clicks a `blob:` URL. An
+Android in-app browser (a WebView) drops that click: the host app gets the URL and
+cannot fetch a `blob:`. So on a user agent marked `; wv)` the page POSTs the same
+bytes to `POST /api/artifact-downloads` (`dashboard/handlers/artifact_download.py`)
+and downloads them from the returned `GET /api/artifact-downloads/{doc_id}`. Every
+other browser keeps the blob path. Inside a WebView a blob cannot work, so a failed
+hand-off shows the page's Download failed notice and saves nothing.
+
+- A stash of the browser's own export, not a reader of the stored artifact, so an
+  HTML download keeps the CSP the page's export embeds in the document.
+- **Authenticated** like every other dashboard route; neither is on the bypass list.
+- The GET answers `Content-Disposition: attachment` with both `filename=` and
+  `filename*=`, `Content-Security-Policy: sandbox`, `nosniff` and
+  `Cache-Control: private, no-store`, so model-authored HTML or SVG never runs as
+  same-origin script.
+- Not single use: a WebView aborts its own fetch of a download and the host app
+  fetches the URL again. Entries expire after 5 minutes and the stash is capped
+  in count and bytes, oldest evicted first. One file may be as large as the
+  largest stored artifact plus 2 MiB for the export around it.
+- The POST takes only the export's content types; a path in the filename, an
+  unknown type or a missing field is a 400, an oversized file a 413.
+
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 
 Finalized assistant messages are scanned for **local** markdown image references

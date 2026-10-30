@@ -214,6 +214,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # store itself accepts. The cap is owned in kiro_crew/ui_prefs.py beside the
     # limits it has to cover, so the two cannot drift apart again.
     "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
+    # A browser-built download: one artifact export, at most the largest stored
+    # artifact plus the export around it, with room for JSON escaping.
+    "handlers/artifact_download.py::api_stash_artifact_download": (
+        "_MAX_REQUEST_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
     "handlers/prompts_skill_catalog.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),

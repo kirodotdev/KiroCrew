@@ -177,7 +177,7 @@ const API_KEY_ORDER = [
   'publishArtifact', 'getArtifactPublishProviders', 'cloneRemoteArtifact', 'forkRemoteArtifact',
   'browseRemoteArtifacts', 'remoteArtifactDetail', 'remoteArtifactComments', 'postRemoteArtifactComment',
   'replyRemoteArtifactComment', 'markReviewRemoteComment', 'deleteRemoteComment', 'updateArtifactSharing',
-  'unpublishArtifact', 'reprobeArtifactNotice', 'sandboxDocUrl', 'refreshArtifactSharing',
+  'unpublishArtifact', 'reprobeArtifactNotice', 'sandboxDocUrl', 'artifactDownloadUrl', 'refreshArtifactSharing',
   'pullLatest', 'upstreamStatus', 'overwriteRemote', 'artifactComments',
   'postArtifactComment', 'replyArtifactComment', 'markCommentReview', 'resolveComment',
   'reopenComment', 'deleteArtifactComment', 'editArtifactComment', 'getBrowserInstall',

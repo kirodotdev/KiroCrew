@@ -24,6 +24,8 @@ import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { artifactAssetUrl } from '../components/ArtifactBody'
+import { api } from '../api/client'
+import { downloadUrl, isAndroidWebView } from '../utils/download'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import type { Artifact } from '../types'
@@ -235,15 +237,30 @@ export function useArtifactDetailPageMenu({
       : artifact.kind === 'svg' ? 'svg'
       : artifact.kind === 'text' ? 'txt'
       : 'html'
-    const blob = new Blob([blobBody], { type: mime })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
     const safeName = artifact.name.replace(/[^a-zA-Z0-9-_ ]/g, '')
-    a.download = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    const filename = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`
+    const saveBlob = () => {
+      const blob = new Blob([blobBody], { type: mime })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    }
+    // An Android in-app browser drops a blob: download (see isAndroidWebView),
+    // so there the same bytes go up to the gateway and come back down from a
+    // real URL. A blob is no fallback there, so a failed hand-off is reported
+    // on the page's notice stack (the slot a failed copy uses).
+    if (isAndroidWebView()) {
+      setCopyError(null)
+      api.artifactDownloadUrl(filename, mime, blobBody)
+        .then(({ url }) => downloadUrl(url, filename))
+        .catch(() => setCopyError(i18nT('components.markdownPanel.download_failed')))
+      return
+    }
+    saveBlob()
   }
 
   return {
