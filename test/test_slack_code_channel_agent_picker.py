@@ -318,7 +318,69 @@ def test_a_pick_on_a_message_that_is_not_the_kickoff_is_refused(env: Env) -> Non
     _bind(env)
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder", ts="999.000001")))
     assert env.switches.calls == []
-    assert _rows(env, "denied")[0]["error"] == "not a code channel kickoff"
+    assert _rows(env, "denied")[0]["error"] == "stale kickoff"
+    # A kickoff a rebind replaced points at the live one, not "you can't".
+    assert env.slack.ephemerals == [
+        (CH, OWNER, agent_picker.STALE_PICKER_TEXT.format(command="kirocrew"))
+    ]
+
+
+def test_a_pick_from_a_workspace_not_admitted_posts_nothing(env: Env) -> None:
+    _bind(env)
+    # A stale picker: no live kickoff to check first, so the workspace must be.
+    payload = _pick("builder", ts="999.000001")
+    payload["team"] = {"id": "T-OTHER"}
+    payload["user"]["team_id"] = "T-OTHER"
+    assert asyncio.run(agent_picker.handle_select(env.orch, payload))
+    assert env.switches.calls == [] and env.slack.ephemerals == []
+    assert _rows(env, "denied")[0]["error"] == "enterprise_origin_mismatch"
+
+
+def test_a_switch_that_raises_is_answered_audited_and_redrawn(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """switch_slot_agent rolls back and re-raises (e.g. a failed session reset)."""
+    slot = _bind(env)
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("session reset failed")
+
+    monkeypatch.setattr(chat_handlers, "switch_slot_agent", boom)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [
+        (
+            CH,
+            OWNER,
+            agent_picker.FAILED_TEXT.format(
+                agent="builder", reason=agent_picker.SWITCH_FAILED_REASON
+            ),
+        )
+    ]
+    [row] = _rows(env, "error")
+    assert "result=failed" in row["resources"] and row["error"] == "switch raised"
+    # The select is put back on the agent the session runs.
+    assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
+    # The command door answers too, instead of raising into the slash handler.
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == [
+        agent_picker.FAILED_TEXT.format(agent="builder", reason=agent_picker.SWITCH_FAILED_REASON)
+    ]
+
+
+def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bind(env)
+    monkeypatch.setattr(
+        "kiro_crew.security.redact", lambda text: text.replace("SECRET", "[REDACTED]")
+    )
+    env.switches.answers.append(
+        (503, {"error": "memory store unavailable: SECRET", "code": "store_unavailable"})
+    )
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    [(_, _, text)] = env.slack.ephemerals
+    assert "SECRET" not in text and "[REDACTED]" in text
 
 
 def test_a_pick_during_a_turn_is_refused_with_try_again(env: Env) -> None:
@@ -485,8 +547,10 @@ def test_running_sub_agents_refuse_the_pick(env: Env) -> None:
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     assert slot.agent == "kirocrew-conductor"
-    [(_, _, text)] = env.slack.ephemerals
-    assert "sub-agents are running" in text
+    # A "try again", like a turn in flight -- not a failure.
+    assert env.slack.ephemerals == [
+        (CH, OWNER, agent_picker.SUBAGENTS_BUSY_TEXT.format(agent="builder"))
+    ]
 
 
 def test_an_app_slot_is_switched_in_its_own_app_scope(env: Env) -> None:

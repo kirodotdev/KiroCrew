@@ -70,13 +70,21 @@ NO_SESSION_TEXT = "This channel's session isn't open right now. Try again in a m
 SAME_AGENT_TEXT = "ℹ️ This channel already runs `{agent}`."
 SWITCHED_TEXT = "✅ This channel now runs `{agent}`."
 BUSY_TEXT = "⏳ A turn is running. Try again to switch to `{agent}` when this turn ends."
+SUBAGENTS_BUSY_TEXT = "⏳ Sub-agents are running. Try again to switch to `{agent}` when they finish."
 FAILED_TEXT = "⚠️ Could not switch to `{agent}`: {reason}"
+SWITCH_FAILED_REASON = "the switch failed"
+STALE_PICKER_TEXT = (
+    "This picker is out of date. Use the channel's latest kickoff message or "
+    "`/{command} agent <name>`."
+)
 CURRENT_TEXT = "This channel runs `{agent}`. Agents you can pick: {names}\nSwitch with `/{command} agent <name>`."
 NOT_ALLOWED_TEXT = "⛔ You can't change this channel's agent."
 
 #: The code from ``switch_slot_agent`` that means "a turn holds the session right
 #: now": the pick is refused with :data:`BUSY_TEXT`, for the person to retry.
 TURN_IN_FLIGHT = "turn_in_flight"
+#: The code for "sub-agents still hold the session": also a "try again".
+SUBAGENTS_RUNNING = "slot_subagents_running"
 
 
 def _audit(outcome: str, resources: str, error: str = "") -> None:
@@ -265,18 +273,39 @@ async def switch_channel_agent(
     if str(getattr(slot, "agent", "") or "") == agent:
         _audit("allowed", f"{resources} result=unchanged")
         return SwitchResult("unchanged", SAME_AGENT_TEXT.format(agent=agent))
-    ok, body = await _switch(state, slot, agent)
+    try:
+        ok, body = await _switch(state, slot, agent)
+    except asyncio.CancelledError:
+        # Put the select back on the agent the session runs before unwinding.
+        await asyncio.shield(refresh_kickoff(binding))
+        raise
+    except Exception:
+        # switch_slot_agent rolls its own commit back and re-raises (e.g. a
+        # failed session reset): answer, audit and redraw instead of leaving
+        # the select on a pick that did not happen.
+        logger.warning("code channel %s: agent switch raised", channel, exc_info=True)
+        _audit("error", f"{resources} result=failed", "switch raised")
+        await refresh_kickoff(binding)
+        return SwitchResult(
+            "refused", FAILED_TEXT.format(agent=agent, reason=SWITCH_FAILED_REASON)
+        )
     if ok:
         _audit("allowed", f"{resources} result=switched")
         _announce(state, slot, agent, str(body.get("warning") or ""))
         await refresh_kickoff(binding, note=SWITCHED_NOTE.format(agent=agent, user=user))
         return SwitchResult("switched", SWITCHED_TEXT.format(agent=agent))
+    from kiro_crew.security import redact
+
     code = str(body.get("code") or "")
-    reason = str(body.get("error") or "the switch was refused")
+    # The dashboard's error text can carry raw exception text: redact it before
+    # it leaves the host for Slack (as _announce does).
+    reason = redact(str(body.get("error") or "the switch was refused"))
     _audit("error", f"{resources} result=refused code={code}", reason)
     await refresh_kickoff(binding)
     if code == TURN_IN_FLIGHT:
         return SwitchResult("busy", BUSY_TEXT.format(agent=agent))
+    if code == SUBAGENTS_RUNNING:
+        return SwitchResult("busy", SUBAGENTS_BUSY_TEXT.format(agent=agent))
     return SwitchResult("refused", FAILED_TEXT.format(agent=agent, reason=reason))
 
 
@@ -356,10 +385,20 @@ async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:
         return False
     channel, user, msg_ts, team, agent = _pick_ids(payload)
     resources = f"channel={channel} user={user} agent={agent} via=select"
+    # The workspace first, before any side effect (as wrapup's archive click).
+    if not surface.workspace_admitted(team):
+        _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
+        return True
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
-    if binding is None or not msg_ts or msg_ts != binding.anchor_ts:
+    if binding is None or not msg_ts:
         _audit("denied", f"{resources} message={msg_ts}", "not a code channel kickoff")
         await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+        return True
+    if msg_ts != binding.anchor_ts:
+        # A kickoff a rebind replaced: point at the live one.
+        _audit("denied", f"{resources} message={msg_ts}", "stale kickoff")
+        command = str(getattr(orch, "slack_command", "") or "kirocrew")
+        await _ephemeral(channel, user, STALE_PICKER_TEXT.format(command=command))
         return True
     refusal = await authorize(orch, binding, user, team, resources)
     if refusal is not None:
