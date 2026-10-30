@@ -288,6 +288,23 @@ def child_hooks(state: Any) -> tuple[Any, Any]:
     return probe, cancel
 
 
+def taskrunner_hook(state: Any) -> Callable[[str], Any]:
+    """The task runner's run probe, resolving ``state.task_runner`` per call.
+
+    Installed before reconciliation, so a task run held across a restart is
+    settled by its run's state. Until the runner exists it answers "still running".
+    """
+    from kiro_crew.shared_crew import admission_entry
+
+    def probe(task_id: str) -> Any:
+        runner = getattr(state, "task_runner", None)
+        if runner is None:
+            return None
+        return admission_entry.taskrunner_probe(runner)(task_id)
+
+    return probe
+
+
 def install(state: Any) -> None:
     """Install the gateway's hooks on every admission service it builds."""
     probe, cancel = child_hooks(state)
@@ -298,6 +315,7 @@ def install(state: Any) -> None:
             reconciled=reconcile_note(state),
             child_probe=probe,
             child_cancel=cancel,
+            run_probes={OperationKind.TASK: taskrunner_hook(state)},
         )
     )
 
@@ -317,5 +335,6 @@ __all__ = [
     "parked_probe",
     "reconcile_note",
     "shutdown_probe",
+    "taskrunner_hook",
     "uninstall",
 ]
