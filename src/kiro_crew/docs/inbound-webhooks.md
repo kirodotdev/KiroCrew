@@ -398,7 +398,7 @@ message:
 ```
 
 `register_hook` takes `hook_id` and `context_summary` and returns the session key
-(`hook:<hook_id>`; from a crew member's session, `hook:<store_id>:<hook_id>`) and
+(`hook:<hook_id>`; from a Jam's session, `hook:<store_id>:<hook_id>`) and
 the webhook URL to hand to the external system. An Incognito or Temporary session
 is refused: `hook registration is disabled for Incognito and Temporary sessions`.
 Registrations live in `~/.kiro/crew/hooks.json`, written under an exclusive lock

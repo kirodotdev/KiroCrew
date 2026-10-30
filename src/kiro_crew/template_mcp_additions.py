@@ -388,7 +388,7 @@ DEFAULT_REASON = (
 #: The refusal for a crewmate's own service template, whose servers come from the
 #: crewmate's capability path rather than from this record.
 CREWMATE_REASON = (
-    "This agent belongs to a crewmate. A crewmate's servers are changed through its own "
+    "This agent belongs to a Jam. A Jam's servers are changed through its own "
     "capabilities, not added here."
 )
 

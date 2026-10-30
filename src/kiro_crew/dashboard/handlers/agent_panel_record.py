@@ -153,7 +153,7 @@ async def _resolve_record_writer(
             request,
             sk,
             "caller_not_cron",
-            "only a script cron bound to a crewmate can append a record; this caller is "
+            "only a script cron bound to a Jam can append a record; this caller is "
             "not an attested cron job",
             403,
         )
@@ -163,8 +163,8 @@ async def _resolve_record_writer(
             request,
             sk,
             "cron_not_member_bound",
-            "this cron job is bound to no crewmate, so it has no crew log to append to; "
-            "bind the job to a crewmate (its `member`) and run it again",
+            "this cron job is bound to no Jam, so it has no crew log to append to; "
+            "bind the job to a Jam (its `member`) and run it again",
             403,
         )
     job_id = session.removeprefix("cron:").split(":")[0]
@@ -194,7 +194,7 @@ async def _resolve_record_writer(
             request,
             sk,
             "member_identity_unavailable",
-            "the crewmate this cron job is bound to could not be resolved",
+            "the Jam this cron job is bound to could not be resolved",
             409,
         )
 
@@ -496,7 +496,7 @@ async def record_through_door(
             request,
             sk,
             outcome,
-            "this crewmate's thread has no crew log yet; open its chat once so its "
+            "this Jam's thread has no crew log yet; open its chat once so its "
             "session starts, then send the record again",
             409,
             operation=operation,
@@ -513,7 +513,7 @@ async def record_through_door(
         return web.json_response(
             {
                 "error": (
-                    "the record could not be written to this crewmate's crew log; "
+                    "the record could not be written to this Jam's crew log; "
                     "send it again on the next run"
                 ),
                 "code": outcome,

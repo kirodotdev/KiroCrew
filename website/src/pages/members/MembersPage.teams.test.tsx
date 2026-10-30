@@ -632,7 +632,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Edit team, so it stays -- at "0 crewmates" -- above the No-team group.
     expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
     expect(headers[0]).toHaveTextContent('Release')
-    expect(headers[0]).toHaveTextContent('0 mates')
+    expect(headers[0]).toHaveTextContent('0 Jams')
     fireEvent.click(headers[0])
     const view = await screen.findByTestId('team-view')
     expect(within(view).getByTestId('team-empty')).toBeInTheDocument()
@@ -768,7 +768,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { route: '/members?team=abc123abc123' },
     )
     const notice = await screen.findByTestId('team-view-roster-error')
-    expect(notice).toHaveTextContent(/Could not load your mates/i)
+    expect(notice).toHaveTextContent(/Could not load your Jams/i)
     // The roster column stands beside a team view from md up and carries its
     // own copy of the notice, so the pane's copy is the below-md one.
     expect(notice.closest('.md\\:hidden')).not.toBeNull()
@@ -936,10 +936,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(JSON.parse(localStorage.getItem('mc-members-teams-collapsed') ?? '[]')).toEqual(['abc123abc123'])
   })
 
-  it('the empty-state hero\'s "New mate" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
+  it('the empty-state hero\'s "New Jam" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
     await renderPage([])
     const [cta] = await screen.findAllByTestId('crewmate-empty-cta')
-    expect(cta).toHaveTextContent('New mate')
+    expect(cta).toHaveTextContent('New Jam')
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')

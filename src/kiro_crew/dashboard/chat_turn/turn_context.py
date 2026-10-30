@@ -217,7 +217,7 @@ def unavailable_agent_message(agent_name: str) -> str:
             f"version ('{agent_name}'), and the agent it was built from is not "
             "recorded. Pick the agent for this chat again, or start a new chat."
         )
-    return f"Crew Member '{agent_name}' is unavailable; restore it or choose a member"
+    return f"Jam '{agent_name}' is unavailable; restore it or choose a member"
 
 
 def _slot_member_slug(slot_key: str) -> str:

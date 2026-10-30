@@ -33,7 +33,7 @@ def installed(tmp_path, monkeypatch) -> dict:
 class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     def test_the_file_carries_this_agents_name_and_description(self, installed):
         assert installed["name"] == "kirocrew-mate-conductor"
-        assert installed["description"] == "The agent a crewmate's own chat runs on."
+        assert installed["description"] == "The agent a Jam's own chat runs on."
 
     def test_the_filename_is_owned_so_the_boot_sweep_covers_it(self):
         assert MATE_CONDUCTOR_AGENT_FILENAME == "kirocrew-mate-conductor.json"

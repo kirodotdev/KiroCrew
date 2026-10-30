@@ -80,7 +80,7 @@ def _mate_home_locked() -> web.Response:
     """The refusal for a write a mate's home folder does not take."""
     return web.json_response(
         {
-            "error": "this folder belongs to a mate and is managed for you",
+            "error": "this folder belongs to a Jam and is managed for you",
             "code": "mate_home_locked",
         },
         status=403,
@@ -415,7 +415,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # moved in: the person's chats filed there would be locked in too.
             return web.json_response(
                 {
-                    "error": "a mate's folders stay inside its own folder",
+                    "error": "a Jam's folders stay inside its own folder",
                     "code": "mate_folder_scope",
                 },
                 status=403,

@@ -98,7 +98,7 @@ def _list_tools() -> list[dict[str, Any]]:
                 "origin's response is never returned (no body, headers, status or length): "
                 "the result is the same constant whether the request succeeded or failed, "
                 "so do not use this to read data or to confirm a write landed. Works only "
-                "in a crew member's session."
+                "in a Jam's session."
             ),
             "inputSchema": {
                 "type": "object",

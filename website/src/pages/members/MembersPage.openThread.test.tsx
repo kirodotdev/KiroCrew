@@ -665,7 +665,7 @@ describe('MembersPage identity pill and Profile entry', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const header = await screen.findByTestId('member-thread-header')
-    expect(within(header).queryByLabelText('Edit mate')).toBeNull()
+    expect(within(header).queryByLabelText('Edit Jam')).toBeNull()
 
     fireEvent.click(screen.getByTestId('member-identity-pill'))
     fireEvent.click(await screen.findByTestId('crew-profile-edit'))

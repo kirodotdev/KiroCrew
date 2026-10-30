@@ -216,7 +216,7 @@ COMPONENTS: dict[str, ComponentSpec] = {
     # operator's, so UNRESOLVED like every other component.
     "crew-teams": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
-        help="crew-teams/ directory (teams.json, the crewmate team list)",
+        help="crew-teams/ directory (teams.json, the Jam team list)",
         trees=("crew-teams",),
     ),
     "workspace": ComponentSpec(

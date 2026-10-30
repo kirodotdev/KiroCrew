@@ -329,7 +329,7 @@ your `[DASHBOARD]` block names one; with no such block you have no page yet, and
 the write is refused.
 
 `panel_publish` and `dashboard_write` belong to the `@kirocrew-panel` server,
-which is mounted only on a crew member's own chat session (with `agent.crew_panel`
+which is mounted only on a Jam's own chat session (with `agent.crew_panel`
 on). The `kirocrew-pipeline-conductor` agent spec mounts `@kirocrew-core`,
 `@kirocrew-dashboard` and `@kirocrew-work` and not that server, so in an ordinary
 dashboard chat neither tool exists. Check your tool list once at startup: if

@@ -345,7 +345,7 @@ def _row_keys() -> dict[str, dict[str, Any]]:
         "goal.milestones": {
             "row_keys": list(_MILESTONE_TEXT_KEYS),
             "names_the_row": "text",
-            "row_note": "target/current are text; current is the crewmate's own latest reading; latest snapshot, not history",
+            "row_note": "target/current are text; current is the Jam's own latest reading; latest snapshot, not history",
         },
         "waiting.items": {
             "row_keys": [*_WAITING_TEXT_KEYS, "options", "options_omitted"],

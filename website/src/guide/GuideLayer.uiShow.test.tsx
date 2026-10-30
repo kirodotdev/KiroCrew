@@ -488,7 +488,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(stepBoundHolds(uninstall)).toBe(false)
   })
 
-  it('walks to Delete mate through the editor and its Danger zone row, which it points at', () => {
+  it('walks to Delete Jam through the editor and its Danger zone row, which it points at', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['select', 'reach', 'ack'])
@@ -720,7 +720,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     }
   })
 
-  it('the Delete mate guide carries the Danger zone notice as its caution text', () => {
+  it('the Delete Jam guide carries the Danger zone notice as its caution text', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]

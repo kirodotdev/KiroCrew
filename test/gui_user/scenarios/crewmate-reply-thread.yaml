@@ -30,9 +30,9 @@ preconditions:
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
-  - Still in the Developer section, below the Feature Previews list, find the "Mates" heading and turn on the switch titled "Reply threads on mate chat messages".
+  - Still in the Developer section, below the Feature Previews list, find the "Mates" heading and turn on the switch titled "Reply threads on Jam chat messages".
   - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
-  - Click the search box at the top of the mates list (its placeholder reads "Search mates…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
+  - Click the search box at the top of the mates list (its placeholder reads "Search Jams…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
   - Click the member named Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its chat.
   - Type exactly "what is one thing you can help me with?" in the message box and send it with Enter. Wait about three seconds and confirm a reply bubble from the mate appeared under your message.
   - Move the mouse over the mate's reply bubble. A small row of icon buttons appears under it; one is titled "Reply in thread" (a speech-bubble icon). Click it.

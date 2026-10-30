@@ -874,7 +874,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
 
         assert status == 409
         assert data == {
-            "error": "Atlas Prime has more than one chat open. Close the mate's other chat, "
+            "error": "Atlas Prime has more than one chat open. Close the Jam's other chat, "
             "then change the agent harness.",
             "code": "crewmate_harness_busy",
         }

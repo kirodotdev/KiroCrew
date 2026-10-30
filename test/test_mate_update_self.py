@@ -846,7 +846,7 @@ def test_a_rename_says_other_mates_still_reach_it_by_its_short_name(monkeypatch)
         },
     )
     out = mcp_mate._call_tool_inner("update_self", {"display_name": "SDE Buddy"})
-    assert "other mates still reach you by your short name, mate" in out
+    assert "other Jams still reach you by your short name, mate" in out
 
 
 def test_the_shim_says_nothing_changed_when_the_gateway_refused(monkeypatch) -> None:
@@ -1043,10 +1043,10 @@ def test_mates_first_welcome_asks_for_a_name_for_mate(others: bool) -> None:
     # It opens on what to call it -- the name is Mate's, not the user's.
     assert "Your first sentence asks what they would like to call you (you, not them)" in kickoff
     # Asked the way a person asks it, not explained, under its current name.
-    assert '"First, what would you like to call me? I\'m Mate for now."' in kickoff
+    assert '"First, what would you like to call me? I\'m Jam for now."' in kickoff
     assert "being named" not in kickoff
     # Then what a mate is, and no offer to set up or fix Kiro Crew.
-    assert "Then say what a mate is" in kickoff and "always on" in kickoff
+    assert "Then say what a Jam is" in kickoff and "always on" in kickoff
     assert "set up" not in kickoff and "not working" not in kickoff
     # The tour runs over the three guidable tabs, and choosing a goal comes last.
     for location in ("members.profile-tab", "members.schedule-tab", "members.goals-tab"):
@@ -1066,10 +1066,10 @@ def test_mates_welcome_fits_a_user_who_already_has_crewmates() -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     alone = welcome_kickoff(entry, has_other_crewmates=False)
     crewed = welcome_kickoff(entry, has_other_crewmates=True)
-    assert "You are the first mate on their crew" in alone
-    assert "first mate" not in crewed
-    assert "They already have other mates" in crewed
-    assert "one more mate" in crewed
+    assert "You are the first Jam on their crew" in alone
+    assert "first Jam" not in crewed
+    assert "They already have other Jams" in crewed
+    assert "one more Jam" in crewed
 
 
 @pytest.mark.parametrize("others", [False, True])

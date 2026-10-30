@@ -42,8 +42,8 @@ def _refuse_service_name(mate_id: str) -> None:
 
     if is_mate_service_agent(mate_id):
         raise MateConfigError(
-            f"{mate_id!r} is the name of a spec Kiro Crew generates, so no crewmate may "
-            "own a file by that name; rename the crewmate"
+            f"{mate_id!r} is the name of a spec Kiro Crew generates, so no Jam may "
+            "own a file by that name; rename the Jam"
         )
 
 
@@ -62,7 +62,7 @@ def user_agent_named(name: str) -> bool:
 
 #: Why a create naming another template is refused (:func:`start_template_refusal`).
 MATE_TEMPLATE_UNSUPPORTED = (
-    "Mates start from the built-in worker; create it, then add abilities from that "
+    "Jams start from the built-in worker; create it, then add abilities from that "
     "agent in its editor."
 )
 
@@ -174,7 +174,7 @@ def write_mate_config(mate_id: str) -> Path:
         "resources": [],
     }
     path = write_mate_spec(mate_id, spec)
-    logger.info("wrote minimal crewmate config %s", path)
+    logger.info("wrote minimal Jam config %s", path)
     return path
 
 
@@ -261,9 +261,9 @@ def _read_owners() -> dict[str, str]:
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        raise MateConfigError(f"the crewmate owner record {_owners_path()} is unreadable") from exc
+        raise MateConfigError(f"the Jam owner record {_owners_path()} is unreadable") from exc
     if not isinstance(raw, dict):
-        raise MateConfigError(f"the crewmate owner record {_owners_path()} is not an object")
+        raise MateConfigError(f"the Jam owner record {_owners_path()} is not an object")
     return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
 
@@ -278,8 +278,8 @@ def _refuse_foreign_file(mate_id: str, owners: dict[str, str]) -> None:
     owner = owners.get(mate_id)
     if owner and owner != _this_home() and mate_config_path(mate_id).is_file():
         raise MateConfigError(
-            f"another Kiro Crew instance ({owner}) already keeps a crewmate file named "
-            f"{mate_id!r} in this Kiro home; rename the crewmate"
+            f"another Kiro Crew instance ({owner}) already keeps a Jam file named "
+            f"{mate_id!r} in this Kiro home; rename the Jam"
         )
 
 
@@ -315,7 +315,7 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
                 )
     except OSError as exc:
         raise MateConfigError(
-            f"could not write crewmate config for {mate_id!r} at {path}: {exc}"
+            f"could not write Jam config for {mate_id!r} at {path}: {exc}"
         ) from exc
     publish_mate_agents([mate_id])
     return path
@@ -347,8 +347,8 @@ def adopt_own_file(name: str) -> str:
     if user_agent_named(name):
         # The binding would name a user-level agent, and the crewmate would run it.
         raise MateConfigError(
-            f"a user-level agent is already named {name!r}, so the crewmate's own file "
-            "could not be used under that name; rename the crewmate"
+            f"a user-level agent is already named {name!r}, so the Jam's own file "
+            "could not be used under that name; rename the Jam"
         )
     prior_store = binding.memory_store
     write_mate_config(name)

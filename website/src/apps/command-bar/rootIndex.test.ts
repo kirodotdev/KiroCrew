@@ -192,7 +192,7 @@ describe('rankRootRows', () => {
       'Search Sessions',
       'Search Artifacts',
       'Search Folders',
-      'Search Mates',
+      'Search Jams',
     ].map((title, i) => row({ id: `builtin${i}`, title, group: 'commands' }))
     // Demoted, the way `CommandBarOverlay` marks an argument-taking contribution: it
     // sorts last on an empty query, which is exactly where a tight cap removes it.
@@ -325,7 +325,7 @@ describe('rankRootRows', () => {
     const rows: RootRow[] = [
       row({ id: 'sess', title: 'archivist chat', group: 'recent' }),
       ...[
-        'Reply threads on mate chat messages',
+        'Reply threads on Jam chat messages',
         'Earlier conversation one decision may carry, in characters',
         'Run a local gateway and reach it here',
         'Link Previews on chat history',

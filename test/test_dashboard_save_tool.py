@@ -1339,7 +1339,7 @@ def test_a_session_that_is_not_a_crewmate_has_its_page_left_unrun(glue):
     out = glue.module.verify_package_page(SLUG, "", "slot-1", _PACKAGE)
 
     assert out is not None and out["status"] == "skipped"
-    assert "not a crewmate" in out["reason"]
+    assert "not a Jam" in out["reason"]
     assert glue.ran == [] and _FakeLivePage.built == [] and glue.audited == []
 
 

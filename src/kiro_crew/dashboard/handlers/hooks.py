@@ -665,7 +665,7 @@ def _capability_refusal_text(
     a save or could not be verified after the process ran, which a resend may
     clear, so its text asks for a resend first.
     """
-    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this Jam"
     if isinstance(exc, CapabilityStartupError):
         return (
             f"Hook agent did not run: the start of {member} could not be verified "

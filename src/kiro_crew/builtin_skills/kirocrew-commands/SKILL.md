@@ -228,7 +228,7 @@ writes.
 |---------|-------------|
 | `kirocrew spawn run "task"` | Spawn a background subagent (wait for result) |
 | `kirocrew spawn run --async "task"` | Fire-and-forget subagent |
-| `kirocrew spawn run --crew NAME "task"` | Run as a crew member (its memory and template); an unknown name is refused |
+| `kirocrew spawn run --crew NAME "task"` | Run as a Jam (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
 | `kirocrew spawn list` | List active subagents |

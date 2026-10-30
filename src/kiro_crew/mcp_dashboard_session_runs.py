@@ -209,7 +209,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
 #: supplied. They are copied into the child's own slot when it is created, as a
 #: per-session pick, so a later profile edit does not reach a child already open;
 #: the note says "copied" so the reply does not read as a live link to the profile.
-_PROFILE_COPY_NOTE = "copied from your crewmate profile at creation"
+_PROFILE_COPY_NOTE = "copied from your Jam profile at creation"
 
 
 class _Created(NamedTuple):
@@ -364,7 +364,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         on_model += f" ({_PROFILE_COPY_NOTE}: {', '.join(inherited)})"
     if resp.get("inherited_model_dropped"):
         on_model += (
-            " (your crewmate profile's worker model is not usable here, so the "
+            " (your Jam profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
     if resp.get("autocompact_pct") is not None:
@@ -412,7 +412,7 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
             "memory) or run the dispatch from their own chat tab."
         )
     return (
-        " The agent you named is a crew member whose private memory this session may "
+        " The agent you named is a Jam whose private memory this session may "
         "not bind; a member's memory binding cannot be changed in Settings. Re-send "
         'with `agent_kind: "template"` to run that agent\'s shared template on your own '
         "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "

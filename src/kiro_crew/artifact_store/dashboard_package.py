@@ -535,7 +535,7 @@ def binding_refusal(bound_to: Any, *, crew: str = "", slot: str = "") -> str:
             if len(owners) > 1:
                 return (
                     f"the dashboard binding {safe(name)!r} is a slug more than one "
-                    "crewmate resolves to, so no writer can be shown to own it and a "
+                    "Jam resolves to, so no writer can be shown to own it and a "
                     "read of it is refused 'dashboard_slug_ambiguous'. Nothing was "
                     "written: ask the person to rename one of them."
                 )
@@ -548,7 +548,7 @@ def binding_refusal(bound_to: Any, *, crew: str = "", slot: str = "") -> str:
             pass
     return (
         f"this dashboard belongs to {safe(name)!r} and you are "
-        f"{safe(crew) or 'not a crew member'}. A dashboard is written by the crewmate "
+        f"{safe(crew) or 'not a Jam'}. A dashboard is written by the Jam "
         "it is bound to; report your work with work_report instead, and the fold "
         "carries it to the page."
     )
@@ -1238,14 +1238,14 @@ def resolve_bound_slug(bound_to: str, *, store: "ArtifactStore | None" = None) -
                 raise BindingAmbiguous(
                     f"dashboard package: binding: {found!r} and {loaded.slug!r} are both "
                     f"bound to {bound_to!r}, so which one this names is unproven. There "
-                    "is one package per crewmate or slot: delete or rebind one of them"
+                    "is one package per Jam or slot: delete or rebind one of them"
                 )
             found = loaded.slug
     if len(records) > MAX_BINDING_SCAN:
         raise BindingLookupIncomplete(
             f"dashboard package: binding: {len(records)} dashboard artifacts are stored "
             f"and this lookup opens the newest {MAX_BINDING_SCAN}, so a package bound to "
-            f"{bound_to!r} behind them was not seen. There is one package per crewmate "
+            f"{bound_to!r} behind them was not seen. There is one package per Jam "
             "or slot, so this many is a library to prune, not a lookup to widen"
         )
     if unread:

@@ -830,9 +830,9 @@ class KasHarness(MembershipHarness):
             origin,
         )
         return (
-            f"Rename this mate's template: “{agent}” is reserved for a built-in "
-            "agent, so the mate's own prompt and tools would not run under it. "
-            "Both fixes are on the mate's Agent Template tab: for the mate's own "
+            f"Rename this Jam's template: “{agent}” is reserved for a built-in "
+            "agent, so the Jam's own prompt and tools would not run under it. "
+            "Both fixes are on the Jam's Agent Template tab: for the Jam's own "
             "copy, 'Save as new template…' under another name (it keeps its "
             "customizations) or 'Reset my changes'; for a shared template, the template "
             "picker at the top of the tab."

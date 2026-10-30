@@ -110,7 +110,7 @@ GHOST_TRAIT_VOCABULARY: dict[str, tuple[str, ...]] = {
 _ONLY_WHEN_ASKED = (
     "Call it only when the user has just asked for exactly this change, in their "
     "own words; never on your own initiative, never to change anyone else. Only a "
-    "crewmate in its own chat can call it, from a message the user sent in the "
+    "Jam in its own chat can call it, from a message the user sent in the "
     "dashboard."
 )
 
@@ -129,14 +129,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Change what the user sees of you: your display name, your description "
                 "(a short line about what you do), or your ghost face. A display name is "
-                "a label only: other mates still reach you by your short name, which it "
+                "a label only: other Jams still reach you by your short name, which it "
                 "never changes. Applied at once, "
                 "shown in this chat as one line the user can undo. Pass only the fields "
                 "the user asked to change, with the values exactly as they gave them. "
                 'avatar is {"traits": {...}} naming one or more axes (' + vocab + "; "
                 "blush and flip are true/false; tile is a #rrggbb background colour). An "
                 "axis you leave out keeps its current value, or the plain Kiro mark when "
-                "your face was never pinned. A crewmate wearing an uploaded picture or an "
+                "your face was never pinned. A Jam wearing an uploaded picture or an "
                 "appearance pack keeps it: that face is changed in the crew editor. "
                 + _ONLY_WHEN_ASKED
             ),
@@ -495,7 +495,7 @@ def _list_tools() -> list[dict[str, Any]]:
 def _strict_session_key() -> tuple[str, str]:
     return require_strict_session_key(
         "this session's identity could not be verified strictly, so it is not a "
-        "crewmate's own chat (a subagent has none; ask from the parent session)",
+        "Jam's own chat (a subagent has none; ask from the parent session)",
         SERVER_NAME,
     )
 
@@ -643,7 +643,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             "display_name": "Your name now shows as "
             + str((d.get("after") or {}).get("display_name") or "")
             + " everywhere in the dashboard; answer to it from now on. The new name is "
-            "a label: other mates still reach you by your short name"
+            "a label: other Jams still reach you by your short name"
             + (f", {short_name}" if short_name else "")
             + ", which does not change. Tell the user that in the same reply.",
             "description": "Your description is updated on the roster and in your prompt.",

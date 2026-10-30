@@ -530,7 +530,7 @@ def _run_chat_folder_update(args: dict[str, Any], ctx: ToolContext) -> str:
         if refused.code == "folder_not_owned":
             return (
                 "Error: this caller does not own that folder. An app agent or "
-                "crew member may update only a folder it created; ask the "
+                "Jam may update only a folder it created; ask the "
                 "person to rename or restyle theirs."
             )
         if refused.code == "channel_reachable_caller":

@@ -186,6 +186,6 @@ describe('MembersPage first paint', () => {
     })
     await waitFor(() => expect(snapshot().groups).toBeGreaterThan(0))
     expect(snapshot().rows.sort()).toEqual(['pilot', 'radar', 'scribe'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('3 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('3 Jams')
   })
 })

@@ -249,12 +249,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Model",
-            "Model for the sessions this mate dispatches through "
+            "Model for the sessions this Jam dispatches through "
             "session_create when the call names none. Empty copies the "
-            "mate's model pin when set; with both fields empty, no session "
+            "Jam's model pin when set; with both fields empty, no session "
             "model is pinned and the worker's own agent or the global default "
             "decides. Unlike 'model', 'auto' is a real pin here: workers run "
-            "on the backend's own default, which is how a mate on a costly "
+            "on the backend's own default, which is how a Jam on a costly "
             "model keeps its workers cheap. An explicit model on the call wins.",
         ),
     )
@@ -262,12 +262,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Reasoning Effort",
-            "Reasoning effort for the sessions this mate dispatches through "
+            "Reasoning effort for the sessions this Jam dispatches through "
             "session_create when the call names none. Empty means: while the "
-            "workers run the mate's own model (worker_model empty and no model "
-            "on the call) they take the mate's own effort (the field above); "
+            "workers run the Jam's own model (worker_model empty and no model "
+            "on the call) they take the Jam's own effort (the field above); "
             "under any other model no level is pinned and the worker's agent "
-            "decides as usual (its own crew pin if it runs as a mate, else "
+            "decides as usual (its own crew pin if it runs as a Jam, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
         ),
@@ -276,7 +276,7 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Harness",
-            "Agent harness for this crewmate's own chat and the worker sessions it "
+            "Agent harness for this Jam's own chat and the worker sessions it "
             "opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty "
             "inherits agent.member_acp_backend. A harness this gateway cannot start "
             "refuses the session with the reason instead of running another one. "
@@ -287,18 +287,18 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Dynamic capabilities",
-            "Preview, per crewmate: this crewmate can find "
+            "Preview, per Jam: this Jam can find "
             "new skills or tools for its worker and ask for them on a card in its "
-            "chat. Off (the default): only you add them, in this crewmate's "
+            "chat. Off (the default): only you add them, in this Jam's "
             "advanced settings, and it tells you when its worker lacks one. "
-            "Read per request, so a change reaches the crewmate's next session.",
+            "Read per request, so a change reaches the Jam's next session.",
         ),
     )
     approval_mode: str = field(
         default="",
         metadata=_meta(
             "Approval Mode",
-            "Tool approval for this mate's own Mates-page thread: normal, "
+            "Tool approval for this Jam's own Jams-page thread: normal, "
             "trust_reads or trust. Empty means the user never chose one, and the "
             "thread opens in trust.",
         ),
@@ -335,7 +335,7 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Starred",
-            "Marks this crew as a favourite on the Crew Members page. Purely a "
+            "Marks this crew as a favourite on the Jams page. Purely a "
             "roster preference: the page's star filter shows only starred "
             "crews, so the dozens of package-installed crews the agent sync "
             "writes here can be collapsed behind the few you actually drive. "
@@ -422,9 +422,9 @@ class KiroCrewAgentConfig:
         default_factory=dict,
         metadata=_meta(
             "Imported",
-            "Provenance stamp of a mate imported from a .crewmate file: "
+            "Provenance stamp of a Jam imported from a .crewmate file: "
             "{'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty "
-            "for a mate made here. The sender label is self-declared; nothing "
+            "for a Jam made here. The sender label is self-declared; nothing "
             "reads the stamp to reach the sender.",
         ),
     )

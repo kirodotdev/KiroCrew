@@ -566,7 +566,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         # The bare code names neither the setting nor the saved spec, and
         # changing agent.acp_backend does nothing for a member chat.
         _err_text = (
-            "capability_harness_unsupported: This crew member has saved "
+            "capability_harness_unsupported: This Jam has saved "
             "capabilities, and the backend its chats run on "
             "(agent.member_acp_backend, not agent.acp_backend) cannot load "
             "them. Set agent.member_acp_backend to "
@@ -595,7 +595,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         isinstance(exc, CapabilityStartupError) and str(exc) == "capability_tool_limits_unsupported"
     ):
         _err_text = (
-            "capability_tool_limits_unsupported: This crew member's saved "
+            "capability_tool_limits_unsupported: This Jam's saved "
             "capabilities turn off single tools on an MCP server. The backend "
             "its chats run on (agent.member_acp_backend) cannot turn off single "
             "tools, so they would be on. On the member's Capabilities page, turn "

@@ -351,7 +351,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 nonlocal retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
-                    raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+                    raise UnknownMemoryStore(f"Jam {name!r} was removed concurrently")
                 # Identity re-enforced on the RAW record this locked read
                 # returned, BEFORE the del and before any crew-log / avatar /
                 # private-copy cleanup. ``agents[name]["member_id"]`` is the
@@ -368,7 +368,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 if doc.get("default_agent") == name or (
                     isinstance(agent_section, dict) and agent_section.get("default_agent") == name
                 ):
-                    raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
+                    raise UnknownMemoryStore(f"Jam {name!r} became the default")
                 entry = agents[name]
                 stores = coerce_dict_section(doc, "memory_stores")
                 store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""

@@ -89,7 +89,7 @@ def member_workspace_name(member: str, taken: Collection[str]) -> str:
         if suffix > _SUFFIX_LIMIT:
             raise MemberWorkspaceUnavailable(
                 "workspace_name_exhausted",
-                f"no free workspace name for Crew Member {member!r}; name its workspace explicitly",
+                f"no free workspace name for Jam {member!r}; name its workspace explicitly",
             )
         candidate = f"{base}-{suffix}"
         suffix += 1
@@ -129,9 +129,7 @@ def provision_member_workspace(config, member: str) -> str:
     """
     agent = config.agents.get(member)
     if agent is None:
-        raise MemberWorkspaceUnavailable(
-            "member_unknown", f"Crew Member {member!r} is not in the roster"
-        )
+        raise MemberWorkspaceUnavailable("member_unknown", f"Jam {member!r} is not in the roster")
     if agent.workspace != AUTO_WORKSPACE:
         return ""
     taken = set(config.workspaces) | {DEFAULT_WORKSPACE}
@@ -216,4 +214,4 @@ def retire_unpublished_workspace(
     agent = config.agents.get(member)
     if agent is not None and agent.workspace == workspace:
         agent.workspace = previous_workspace
-    logger.debug("retired unpublished workspace %r of Crew Member %r", workspace, member)
+    logger.debug("retired unpublished workspace %r of Jam %r", workspace, member)

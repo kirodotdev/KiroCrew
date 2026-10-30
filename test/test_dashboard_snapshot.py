@@ -1094,7 +1094,7 @@ def test_the_tool_names_the_file_the_gateway_wrote(monkeypatch, tmp_path):
     assert out.startswith(f"Snapshot of your page in force (version 5): {path}\n")
     assert "1280x800 png, 300 KiB" in out and "real data" in out
     assert "default light look" in out and "theme pack" in out
-    assert "verification: passed -- the page ran once over your crewmate's data" in out
+    assert "verification: passed -- the page ran once over your Jam's data" in out
     assert "invented" not in out and "not real" not in out
     ((route, kw),) = asked
     assert route == "/api/agent-panel/dashboard/snapshot" and kw["session_key"] == "sk-1"

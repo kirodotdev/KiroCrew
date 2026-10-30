@@ -231,7 +231,7 @@ def test_final_gate_refuses_a_credential_in_a_generated_lessons_skill_name() -> 
     with pytest.raises(ex.ExportRefused) as err:
         ex.plan_export(_sources(), TOKEN, ex.ExportChoices(lessons="# Ordinary lessons"))
     assert err.value.code == ex.REASON_CREDENTIAL
-    assert err.value.message == "a part of this crewmate holds a credential or control character"
+    assert err.value.message == "a part of this Jam holds a credential or control character"
 
 
 def test_final_gate_refuses_control_characters_in_ghost_trait_keys() -> None:

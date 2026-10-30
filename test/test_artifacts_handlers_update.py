@@ -723,7 +723,7 @@ class TestDashboardBindingTargets:
     ) -> None:
         resp = await api_artifact_update(_bound_request(bound, "crewmate:someone-else"))
         assert resp.status == 400
-        assert b"names no crew member" in resp.body
+        assert b"names no Jam" in resp.body
         # And the stored binding is untouched: a refused write stores nothing.
         content = isolated_store.get(bound).content or ""
         assert json.loads(content)["bound_to"] == "crewmate:atlas"
@@ -855,7 +855,7 @@ class TestDashboardBindingTargets:
             )
         )
         assert resp.status == 400
-        assert b"names no crew member" in resp.body
+        assert b"names no Jam" in resp.body
 
     @pytest.mark.asyncio
     async def test_a_create_naming_the_crewmate_on_the_roster_is_accepted(

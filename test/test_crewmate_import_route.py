@@ -1001,7 +1001,7 @@ def test_the_partial_line_names_the_import_part_that_failed(params, part):
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
         line
-        == f"Created mate “Q” without {part} or anything after it. Undo removes the mate and what was saved"
+        == f"Created Jam “Q” without {part} or anything after it. Undo removes the Jam and what was saved"
     )
 
 

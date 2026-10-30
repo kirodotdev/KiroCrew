@@ -90,17 +90,17 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
         ("work/recorded", "cc70cbd04f19d8f6cf8b6c3ada680d8a"),
         ("work/charged", "dfafeefd53bcb426be1351ea831bb481"),
         ("panel/published", "3bed4520ab9f3b183255124dfa140c1e"),
-        ("dashboard/instance_changed", "f8187ea96d4c04bc538184bbbbffaca2"),
-        ("dashboard/agentic_value", "5fa08587836bf07bca2f89201f0ffc28"),
-        ("dashboard/agentic_refused", "8a1ec793a0785956734a05b7783512c8"),
+        ("dashboard/instance_changed", "415062f17214bc249e5d5dd47cf08057"),
+        ("dashboard/agentic_value", "57690a960b8e918bbe32c0e5a6536fda"),
+        ("dashboard/agentic_refused", "6a65b98e347fd3e4b31b87978a84ab90"),
         ("card/proposed", "3aa4b12a8444db31ec2704d9b4206cf1"),
         ("card/finished", "7b65b135a4f6c271df8f31f42152632b"),
         ("guide/offered", "721d8590a703806a77e0e40a10ef2048"),
         ("guide/started", "ebf18278dee992c5eea17a2d0b0341d6"),
         ("guide/finished", "613fdb310da277c35eea97f7911d901b"),
-        ("dashboard/goal_recorded", "d9a0196325963ff3db8e6fbdf7c84004"),
-        ("dashboard/waiting_changed", "cb4f1800ba39b67fd925d785de126b7b"),
-        ("dashboard/custom_value", "5d84827cd8f329bb4a9be149447dce62"),
+        ("dashboard/goal_recorded", "216c23a57a2435be6eeca1964645250a"),
+        ("dashboard/waiting_changed", "ccbd547d5e53e90ca407fdb86af8099d"),
+        ("dashboard/custom_value", "bf6917a302b6e6ff29d37f1c302a98ca"),
     ),
     KIND_CREW: (
         ("crew/dispatch", "5820b02abe6583c997f2cf40fb1465ff"),
@@ -111,7 +111,7 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
 #: SHA-256 of ``render_markdown(kind)`` when the registry was split into owners. The
 #: member kind declares nothing here, so its digest is of the heading alone.
 _GOLDEN_RENDER: dict[str, str] = {
-    KIND_SESSION: "38bed9911f5f1c590a7056e3777f8258213cf62a1a3b85a442125990715774e5",
+    KIND_SESSION: "ec5ee8357c79a455a1914ec67dedc553eea691464d6af69bfac36c5a65920f31",
     KIND_CREW: "b6938d4f70730ae5ffce4ec6983a609443976a9fca7b013c04152e426dd8be8e",
     "member": "5cb4ea02ed8121eb6b285806b4723251aed568df0aa54b9ac8505c9ad389fa8d",
 }

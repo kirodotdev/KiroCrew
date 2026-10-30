@@ -77,7 +77,7 @@ describe('Schedule list mate schedules', () => {
   it('shows a mate job as Mate with a link to its Mates page', async () => {
     await renderList()
     const cell = typeCell('Radar triage')
-    expect(within(cell).getByText('Mate')).toBeInTheDocument()
+    expect(within(cell).getByText('Jam')).toBeInTheDocument()
     const link = await within(cell).findByRole('link', { name: /radar/ })
     expect(link).toHaveAttribute('href', '/members?member=radar')
     expect(cell.getAttribute('title')).toContain('radar')
@@ -87,7 +87,7 @@ describe('Schedule list mate schedules', () => {
     await renderList()
     const cell = typeCell('Template job')
     expect(within(cell).getByText('kiro-review')).toBeInTheDocument()
-    expect(within(cell).queryByText('Mate')).toBeNull()
+    expect(within(cell).queryByText('Jam')).toBeNull()
     expect(within(cell).queryByRole('link')).toBeNull()
   })
 
@@ -97,7 +97,7 @@ describe('Schedule list mate schedules', () => {
     const store = createTestStore()
     renderWithProviders(<SchedulePage />, { store })
     await screen.findByText('Radar triage')
-    fireEvent.click(await screen.findByLabelText('Filter by mate'))
+    fireEvent.click(await screen.findByLabelText('Filter by Jam'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
 
@@ -107,7 +107,7 @@ describe('Schedule list mate schedules', () => {
 
     expect(await screen.findByText('Scout sweep')).toBeInTheDocument()
     expect(screen.getByText('Template job')).toBeInTheDocument()
-    expect(screen.getByLabelText('Filter by mate')).toHaveTextContent('All mates')
+    expect(screen.getByLabelText('Filter by Jam')).toHaveTextContent('All Jams')
   })
 
   it('finds a mate job by the display name its row shows', async () => {
@@ -140,7 +140,7 @@ describe('Schedule list mate schedules', () => {
   it('shows the raw id, unlinked, for a mate that is gone', async () => {
     await renderList()
     const cell = typeCell('Orphan job')
-    expect(within(cell).getByText('Mate')).toBeInTheDocument()
+    expect(within(cell).getByText('Jam')).toBeInTheDocument()
     expect(within(cell).getByText('member-gone')).toBeInTheDocument()
     expect(within(cell).queryByRole('link')).toBeNull()
   })
@@ -152,27 +152,27 @@ describe('Schedule list mate schedules', () => {
 
     const notice = await screen.findByTestId('schedule-crewmate-roster-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent('Could not load your mates.')
+    expect(notice).toHaveTextContent('Could not load your Jams.')
     expect(notice).toHaveTextContent('Members request failed (HTTP 500)')
     for (const job of JOBS.filter(j => j.member_id)) {
       const cell = typeCell(job.name)
-      expect(within(cell).getByText('Mate')).toBeInTheDocument()
+      expect(within(cell).getByText('Jam')).toBeInTheDocument()
       expect(within(cell).getByText(job.member_id!)).toBeInTheDocument()
       expect(within(cell).queryByRole('link')).toBeNull()
     }
-    expect(screen.queryByLabelText('Filter by mate')).toBeNull()
+    expect(screen.queryByLabelText('Filter by Jam')).toBeNull()
 
     vi.mocked(api).members.mockResolvedValue({ members: ROSTER })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(await within(typeCell('Radar triage')).findByRole('link', { name: /radar/ })).toHaveAttribute('href', '/members?member=radar')
-    expect(await screen.findByLabelText('Filter by mate')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Filter by Jam')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByTestId('schedule-crewmate-roster-error')).toBeNull())
   })
 
   it('the mate filter narrows the list to one mate', async () => {
     await renderList()
-    fireEvent.click(await screen.findByLabelText('Filter by mate'))
+    fireEvent.click(await screen.findByLabelText('Filter by Jam'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
     expect(screen.getByText('Radar triage')).toBeInTheDocument()
@@ -185,6 +185,6 @@ describe('Schedule list mate schedules', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: [JOBS[0]] })
     renderWithProviders(<SchedulePage />)
     await screen.findByText('Template job')
-    expect(screen.queryByLabelText('Filter by mate')).toBeNull()
+    expect(screen.queryByLabelText('Filter by Jam')).toBeNull()
   })
 })

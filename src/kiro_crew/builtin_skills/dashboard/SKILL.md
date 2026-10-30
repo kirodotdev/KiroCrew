@@ -1,12 +1,12 @@
 ---
 name: dashboard
-description: "Build or change a crewmate's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
+description: "Build or change a Jam's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
 triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template
 ---
 
 # The Dashboard Tab
 
-One page per crewmate. You design it, the person owns it, and the gateway feeds
+One page per Jam. You design it, the person owns it, and the gateway feeds
 its declared fields. The page, the values and the frame have different jobs:
 
 | Part | Job |
@@ -66,7 +66,7 @@ A template from `dashboard_templates` uses `dashboard_apply(template_id=...)`.
 gate for authored code. `dashboard_rollback` restores a version listed by
 `dashboard_fields`; restoring an old version itself creates a new version.
 
-**Progress goes on the page, not in chat.** People check a crewmate once or
+**Progress goes on the page, not in chat.** People check a Jam once or
 twice a day, and the page is what they read. Keep where your work stands on
 your Dashboard page; the chat gets few reports, and when it gets one it covers
 several things in one message, never a stream of small updates. No goal or

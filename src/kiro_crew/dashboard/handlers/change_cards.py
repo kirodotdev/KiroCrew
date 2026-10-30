@@ -502,7 +502,7 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
     if kind in catalog.SELF_ONLY_KINDS:
         # A crewmate raises its own page offer through its kirocrew-mate tool, so the
         # asked-once record is kept; propose_change never raises it.
-        return _refusal(CardError(403, "self_only", "only the crewmate itself can offer this"))
+        return _refusal(CardError(403, "self_only", "only the Jam itself can offer this"))
     if kind in catalog.GATEWAY_RESOLVED_KINDS:
         # The server entry on this card is one the gateway built; a caller-named
         # entry would be a launch line the agent wrote.
@@ -531,7 +531,7 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
             CardError(
                 403,
                 "dynamic_capabilities_off",
-                "a crewmate asks for its worker's capabilities with request_capabilities, "
+                "a Jam asks for its worker's capabilities with request_capabilities, "
                 "which offers the user the Preview first; use that instead",
             )
         )
@@ -604,7 +604,7 @@ def _worker_crewmate(slot: Any) -> str:
             return ""
         return crewmate_name_for(KiroCrewConfig.load(), record) or ""
     except Exception:  # noqa: BLE001 - an unnamed crewmate counts as off
-        logger.debug("worker crewmate unreadable for %s", getattr(slot, "key", ""), exc_info=True)
+        logger.debug("worker Jam unreadable for %s", getattr(slot, "key", ""), exc_info=True)
         return ""
 
 
@@ -770,7 +770,7 @@ async def _run_stage_sweep(store: CardStore) -> None:
         await store.warm()  # the store's first load is disk work, off the loop
         await asyncio.to_thread(crewmate_stage.sweep, _live_import_shas(store))
     except Exception:  # pragma: no cover - a sweep must never fail a card read
-        logger.debug("staged crewmate sweep failed", exc_info=True)
+        logger.debug("staged Jam sweep failed", exc_info=True)
 
 
 async def propose_app_card(app: web.Application, app_name: str, params: Any) -> dict[str, Any]:
@@ -893,7 +893,7 @@ async def api_members_import(request: web.Request) -> web.Response:
     except OSError:
         _unhold(held)
         held = ""
-        logger.warning("could not keep the checked crewmate file", exc_info=True)
+        logger.warning("could not keep the checked Jam file", exc_info=True)
         return web.json_response(
             {"error": "the file could not be kept for the card", "code": "stage_failed"},
             status=500,

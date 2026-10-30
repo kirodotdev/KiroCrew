@@ -35,9 +35,9 @@ def _table() -> dict[str, str]:
         if isinstance(value, list) and all(isinstance(line, str) for line in value):
             value = "\n".join(value)
         if not isinstance(value, str):
-            raise PromptError(f"crewmate prompt {key!r} is neither text nor a list of lines")
+            raise PromptError(f"Jam prompt {key!r} is neither text nor a list of lines")
         if key not in about:
-            raise PromptError(f"crewmate prompt {key!r} has no {ABOUT_KEY} entry")
+            raise PromptError(f"Jam prompt {key!r} has no {ABOUT_KEY} entry")
         pieces[key] = value
     stray = set(about) - set(pieces)
     if stray:
@@ -64,7 +64,7 @@ def text(key: str) -> str:
     try:
         return _table()[key]
     except KeyError:
-        raise PromptError(f"no crewmate prompt {key!r} in {PROMPTS_PATH.name}") from None
+        raise PromptError(f"no Jam prompt {key!r} in {PROMPTS_PATH.name}") from None
 
 
 def fill(key: str, /, **values: Any) -> str:
@@ -74,7 +74,5 @@ def fill(key: str, /, **values: Any) -> str:
     if wanted != given:
         missing = sorted(wanted - given)
         unknown = sorted(given - wanted)
-        raise PromptError(
-            f"crewmate prompt {key!r}: missing placeholders {missing}, unknown {unknown}"
-        )
+        raise PromptError(f"Jam prompt {key!r}: missing placeholders {missing}, unknown {unknown}")
     return text(key).format(**values)

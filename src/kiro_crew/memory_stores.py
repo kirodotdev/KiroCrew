@@ -738,7 +738,7 @@ def require_member_memory_store(config, member: str, *, require_directory: bool 
         return DEFAULT_MEMORY_STORE
     agent = config.agents.get(member)
     if agent is None:
-        raise UnknownMemoryStore(f"Unknown Crew Member {member!r}; Global was not used")
+        raise UnknownMemoryStore(f"Unknown Jam {member!r}; Global was not used")
     store = require_memory_store(
         agent.memory_store, config=config, require_directory=require_directory
     )
@@ -1038,7 +1038,7 @@ LEGACY_OWNER_MEMBER_META_KEY = "owner_member"
 #: What an operator does about a V2 store the upgrade refuses to touch. One
 #: string so the boot log and ``kirocrew doctor`` say the same thing.
 LEGACY_MEMBER_STORE_REMEDY = (
-    "edit config.json so exactly one Crew Member has memory_store set to this store "
+    "edit config.json so exactly one Jam has memory_store set to this store "
     "and an empty member_id, and make the store's owner_member name that member"
 )
 
@@ -1233,14 +1233,14 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
                 raise UnknownMemoryStore("the default store cannot be a member store")
             if len(bound) != 1:
                 raise UnknownMemoryStore(
-                    "no Crew Member is bound to it"
+                    "no Jam is bound to it"
                     if not bound
-                    else f"{len(bound)} Crew Members are bound to it: {', '.join(sorted(bound))}"
+                    else f"{len(bound)} Jams are bound to it: {', '.join(sorted(bound))}"
                 )
             alias = bound[0]
             agent = config.agents[alias]
             if not isinstance(agent.member_id, str):
-                raise UnknownMemoryStore("its Crew Member's member_id is not a string")
+                raise UnknownMemoryStore("its Jam's member_id is not a string")
             directory = _named_store_dir(name)
             # Every owner label the old build left behind must name the member
             # bound today. Accepting a manifest that merely agrees with the
@@ -1268,7 +1268,7 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
             resuming = bool(member_id) and agent.member_id == member_id
             if agent.member_id and not resuming:
                 raise UnknownMemoryStore(
-                    f"its Crew Member {alias!r} already carries member_id {agent.member_id!r}"
+                    f"its Jam {alias!r} already carries member_id {agent.member_id!r}"
                 )
             if member_id:
                 claimed = any(
@@ -1751,7 +1751,7 @@ class MemberFieldConflict(Exception):
     """A stored field is not the value the writer expected to find (compare-and-set)."""
 
     def __init__(self, field: str) -> None:
-        super().__init__(f"the crewmate's {field} changed since it was read")
+        super().__init__(f"the Jam's {field} changed since it was read")
         self.field = field
 
 
@@ -1836,7 +1836,7 @@ def persist_member_config(
         config.agents[member].workspace != new_workspace or new_workspace not in config.workspaces
     ):
         raise UnknownMemoryStore(
-            f"workspace {new_workspace!r} is not the binding of Crew Member {member!r}"
+            f"workspace {new_workspace!r} is not the binding of Jam {member!r}"
         )
     workspace_entry = config.workspaces[new_workspace] if new_workspace else None
 
@@ -1849,20 +1849,16 @@ def persist_member_config(
             agents[DEFAULT_MEMORY_STORE] = asdict(config.agents[DEFAULT_MEMORY_STORE])
         current = agents.get(member)
         if create and member in agents:
-            raise MemberAlreadyExists(
-                f"Crew Member {member!r} was created concurrently; reload the roster"
-            )
+            raise MemberAlreadyExists(f"Jam {member!r} was created concurrently; reload the roster")
         if not create and current is None:
-            raise UnknownMemoryStore(
-                f"Crew Member {member!r} was removed concurrently; reload the roster"
-            )
+            raise UnknownMemoryStore(f"Jam {member!r} was removed concurrently; reload the roster")
         if not create and current is not None:
             if (
                 not isinstance(current, dict)
                 or current.get("memory_store", DEFAULT_MEMORY_STORE) != expected_store
             ):
                 raise UnknownMemoryStore(
-                    f"Crew Member {member!r} memory changed concurrently; reload the roster"
+                    f"Jam {member!r} memory changed concurrently; reload the roster"
                 )
         if expected_approval_mode is not None and not create:
             # Compare-and-set against the record on disk, inside the

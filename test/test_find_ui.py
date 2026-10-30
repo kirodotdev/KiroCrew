@@ -159,7 +159,7 @@ def test_a_credential_setting_never_carries_a_guide() -> None:
 
 
 def test_mates_page_has_no_preview_prerequisite() -> None:
-    d = ui_index.find_ui("mates", "en")
+    d = ui_index.find_ui("jams", "en")
     page = next(r for r in d["results"] if r["id"] == "page.members")
     requires = page["placements"][0]["requires"]
     assert not any(r["kind"] == "preview_flag" for r in requires)
@@ -204,7 +204,7 @@ def test_surface_keeps_only_that_surface() -> None:
 
 
 def test_ties_are_ordered_by_id_and_flagged_ambiguous() -> None:
-    d = ui_index.find_ui("mates", "en")
+    d = ui_index.find_ui("jams", "en")
     exact = [r["id"] for r in d["results"] if r["match"] == "exact_label"]
     assert exact == sorted(exact) and len(exact) > 1
     assert d["ambiguous"] is True

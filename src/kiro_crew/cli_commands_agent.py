@@ -200,12 +200,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
 
     elif action == "create":
         if external_text_requires_redaction(args.name):
-            print("Error: invalid Crew Member name (credential-shaped text)", file=sys.stderr)
+            print("Error: invalid Jam name (credential-shaped text)", file=sys.stderr)
             sys.exit(1)
         try:
             validate_member_name(args.name)
         except MemberNameError as exc:
-            print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
+            print(f"Error: invalid Jam name ({exc})", file=sys.stderr)
             sys.exit(1)
         # Same keying as POST /api/agents.
         keyed = key_new_crew(

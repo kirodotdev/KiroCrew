@@ -81,13 +81,13 @@ describe('CrewmatesSection', () => {
   it('says under the heading that these are server settings, not previews', async () => {
     wrap(<CrewmatesSection />)
     expect(await screen.findByTestId('crewmates-section-description')).toHaveTextContent(
-      "Server settings for mates, not previews. They're saved on the server, so they apply on every device.",
+      "Server settings for Jams, not previews. They're saved on the server, so they apply on every device.",
     )
   })
 
   it('renders the reply-threads switch off by default and saves the flag on toggle', async () => {
     wrap(<CrewmatesSection />)
-    const toggle = await screen.findByRole('switch', { name: /Reply threads on mate chat messages/ })
+    const toggle = await screen.findByRole('switch', { name: /Reply threads on Jam chat messages/ })
     await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(toggle)
@@ -100,20 +100,20 @@ describe('CrewmatesSection', () => {
     vi.mocked(api.kirocrewConfig).mockRejectedValueOnce(new Error('boom'))
     wrap(<CrewmatesSection />)
     await screen.findByTestId('crewmates-config-error')
-    expect(screen.getByText("Couldn't load the mate settings.")).toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: /Reply threads on mate chat messages/ })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText("Couldn't load the Jam settings.")).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: /Reply threads on Jam chat messages/ })).toHaveAttribute('aria-disabled', 'true')
     fireEvent.click(screen.getByTestId('crewmates-config-retry'))
     await waitFor(() => expect(screen.queryByTestId('crewmates-config-error')).toBeNull())
-    await waitFor(() => expect(screen.getByRole('switch', { name: /Reply threads on mate chat messages/ })).not.toHaveAttribute('aria-disabled'))
+    await waitFor(() => expect(screen.getByRole('switch', { name: /Reply threads on Jam chat messages/ })).not.toHaveAttribute('aria-disabled'))
   })
 
   it('a refused save is said in plain words and the switch stays where the server has it', async () => {
     vi.mocked(api.patchConfig).mockRejectedValue(new Error('boom'))
     wrap(<CrewmatesSection />)
-    const toggle = await screen.findByRole('switch', { name: /Reply threads on mate chat messages/ })
+    const toggle = await screen.findByRole('switch', { name: /Reply threads on Jam chat messages/ })
     await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(toggle)
-    await screen.findByText("Couldn't save the mate setting. Try again.")
+    await screen.findByText("Couldn't save the Jam setting. Try again.")
     expect(toggle).toHaveAttribute('aria-checked', 'false')
   })
 })

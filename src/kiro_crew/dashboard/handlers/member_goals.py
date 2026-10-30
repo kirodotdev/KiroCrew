@@ -108,7 +108,7 @@ def _goal_refusal(exc: member_goals.GoalError) -> web.Response:
 
 
 def _unreadable() -> web.Response:
-    return _deny(500, "goals_unreadable", "this mate's goal record cannot be read")
+    return _deny(500, "goals_unreadable", "this Jam's goal record cannot be read")
 
 
 async def _scheduled_cadences(request: web.Request, slug: str) -> set[str]:
@@ -158,9 +158,9 @@ async def _owner_member(
         if member not in cfg.agents or members_mod.member_slug(member, cfg) != slug:
             raise members_mod.MemberSlugError(str(member))
     except members_mod.MemberSlugError:
-        return _deny(404, "member_not_found", "no crew member for this slug")
+        return _deny(404, "member_not_found", "no Jam for this slug")
     if write and _member_names_for_slug(cfg, slug) != [member]:
-        return _deny(409, "goals_slug_ambiguous", "several crewmates share this name")
+        return _deny(409, "goals_slug_ambiguous", "several Jams share this name")
     return slug, str(member), cfg
 
 
@@ -239,7 +239,7 @@ async def api_member_goals_long_term(request: web.Request) -> web.Response:
         return _deny(400, "invalid_expected", "expected must be the goal text shown")
     goal_id = body.get("goal_id")
     if goal_id is not None and not member_goals.is_goal_id(goal_id):
-        return _deny(400, "invalid_goal_id", "goal_id must be one of the mate's goal ids")
+        return _deny(400, "invalid_goal_id", "goal_id must be one of the Jam's goal ids")
     if goal_id is None and expected not in (None, ""):
         return _deny(400, "invalid_expected", "a new goal replaces nothing; name a goal_id")
     # The goal card's Heartbeat checkbox, answered: stored with the goal.
@@ -550,8 +550,8 @@ async def _agent_member(
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, operation, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, has goals")
+        _audit(sk, operation, "denied", "not a Jam thread")
+        return _deny(403, "not_a_crewmate", "only a Jam, in its own chat, has goals")
     member = who[0]
 
     def _resolve() -> str | None:
@@ -570,7 +570,7 @@ async def _agent_member(
         slug = None
     if slug is None:
         _audit(sk, operation, "denied", "thread binding mismatch")
-        return _deny(403, "not_a_crewmate", "this chat is not the crewmate's own thread")
+        return _deny(403, "not_a_crewmate", "this chat is not the Jam's own thread")
     return sk, slug, member
 
 

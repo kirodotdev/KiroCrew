@@ -331,7 +331,7 @@ def register_spawn_parser(sub: _Commands) -> None:
 Examples:
   kirocrew spawn run 'check my open CRs'        # Wait for result
   kirocrew spawn run --async 'analyze logs'     # Fire-and-forget
-  kirocrew spawn run --crew ops 'triage alerts' # Run as crew member 'ops'
+  kirocrew spawn run --crew ops 'triage alerts' # Run as Jam 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
   kirocrew spawn list                           # Show active subagents
@@ -356,7 +356,7 @@ Examples:
         "--crew",
         metavar="NAME",
         help=(
-            "Run as this crew member, with its memory store and template; "
+            "Run as this Jam, with its memory store and template; "
             "an unknown member is refused, never replaced"
         ),
     )

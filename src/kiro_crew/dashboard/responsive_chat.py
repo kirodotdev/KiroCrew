@@ -49,7 +49,7 @@ RESPONSIVE_KEY = "_responsive_human"
 QUEUED_ROW_META_KEY = "queuedEntryId"
 
 RESPONSE_GUIDANCE = (
-    "For this turn, the person is waiting in your crewmate conversation. "
+    "For this turn, the person is waiting in your Jam conversation. "
     "Start with a brief text reply to the person before calling tools: give the useful "
     "answer when it is already known, or acknowledge their message when it needs work. "
     "Tool checks and other substantial work follow that first reply. "

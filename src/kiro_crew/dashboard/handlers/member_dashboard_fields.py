@@ -698,7 +698,7 @@ def _run_package_page(
         return wire, None
 
     if not crew:
-        return skipped("only a crewmate's own page is run, and this session is not a crewmate")
+        return skipped("only a Jam's own page is run, and this session is not a Jam")
     reason = dashboard_verify.preflight()
     if reason:
         return skipped(reason)
@@ -723,7 +723,7 @@ def _run_package_page(
         )
         if not decision.granted:
             return skipped(
-                "the page is shown without script under this crewmate's network policy, so "
+                "the page is shown without script under this Jam's network policy, so "
                 "its script never runs and there is nothing to check"
             )
 
@@ -1009,7 +1009,7 @@ def package_write_refusal(request: Any, content: Any, stored_content: Any = None
     if isinstance(app_id, str) and app_id:
         return (
             "an app may not write a dashboard package: a page runs script beside the "
-            "crewmate's own fold values, so only the crewmate or session its "
+            "Jam's own fold values, so only the Jam or session its "
             "'bound_to' names may write one"
         )
     # THE PERSON at the dashboard, who owns every page on their own machine and whom

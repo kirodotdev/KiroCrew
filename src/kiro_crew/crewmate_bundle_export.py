@@ -740,7 +740,7 @@ def plan_export(
     if refusal:
         raise ExportRefused(refusal, "the name holds a credential or control character")
     if not src.name.strip():
-        raise ExportRefused("invalid_name", "the crewmate has no name")
+        raise ExportRefused("invalid_name", "the Jam has no name")
     try:
         # The name the import card takes, so a file never carries one it refuses.
         catalog._member_name({"name": src.name}, "name", max_len=_CREWMATE_NAME_MAX)
@@ -874,9 +874,7 @@ def plan_export(
         ]
     )
     if refusal:
-        raise ExportRefused(
-            refusal, "a part of this crewmate holds a credential or control character"
-        )
+        raise ExportRefused(refusal, "a part of this Jam holds a credential or control character")
     _check_importable(plan)
     return plan
 
@@ -942,7 +940,7 @@ def _fit_skills(plan: ExportPlan, skills: dict[str, dict[str, str]]) -> None:
 def _fit_parts(plan: ExportPlan) -> None:
     """Leave out a JSON part over its 64 KiB cap; refuse a manifest over it."""
     if len(_json_bytes(plan.manifest)) > MAX_JSON_BYTES:
-        raise ExportRefused(REASON_TOO_LARGE, "the crewmate's description is too long to export")
+        raise ExportRefused(REASON_TOO_LARGE, "the Jam's description is too long to export")
     if plan.rules is not None and len(_json_bytes({"rules": plan.rules})) > MAX_JSON_BYTES:
         plan.rules = None
         plan.left_out.append(LeftOut("rules", "", REASON_TOO_LARGE))

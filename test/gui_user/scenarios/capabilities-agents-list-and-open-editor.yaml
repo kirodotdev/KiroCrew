@@ -31,7 +31,7 @@ preconditions:
   fresh_target: true
 steps:
   - You are on the Customize page. It has a rail of tabs on the left, grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Mates" (people icon, first under "Agent") is not already highlighted, click it.
-  - Above the roster are a "Filter mates…" box, a "Cards | List" switcher and a "New mate" button. If "Cards" is not highlighted, click it. Two cards show, "default" (with a "Default" badge) and "nova-sky", whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose BUILT FROM is "kirocrew" and WORKSPACE "default". Do not click a card.
+  - Above the roster are a "Filter Jams…" box, a "Cards | List" switcher and a "New Jam" button. If "Cards" is not highlighted, click it. Two cards show, "default" (with a "Default" badge) and "nova-sky", whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose BUILT FROM is "kirocrew" and WORKSPACE "default". Do not click a card.
   - Click "List" in the "Cards | List" switcher (if "List" is already highlighted, leave it). The cards are replaced by a table with the columns Mate, Built from, Workspace, Memory Store and Model, with one row for default and one for nova-sky.
   - Click the "nova-sky" row to open its editor. A dialog opens whose title is the name "nova-sky".
   - Wait a second for the dialog to finish loading.

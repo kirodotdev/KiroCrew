@@ -141,7 +141,7 @@ def _refuse_mate_move_out(
     if refuses_refile(state._folders, current_folder_id, folder_id, principal):
         return web.json_response(
             {
-                "error": "this folder belongs to a mate and is managed for you",
+                "error": "this folder belongs to a Jam and is managed for you",
                 "code": "mate_home_locked",
             },
             status=403,
@@ -149,7 +149,7 @@ def _refuse_mate_move_out(
     if not is_mate_principal(principal) or in_mate_home(state._folders, folder_id, principal):
         return None
     return web.json_response(
-        {"error": "a mate's chats stay inside its own folder", "code": "mate_folder_scope"},
+        {"error": "a Jam's chats stay inside its own folder", "code": "mate_folder_scope"},
         status=403,
     )
 

@@ -585,7 +585,7 @@ def test_a_gateway_claim_the_gateway_no_longer_backs_is_not_shown_as_the_gateway
 def test_a_registry_origin_is_named_and_scoped_to_this_crewmate():
     preview = _card({"github": {"source": "registry", "registry_id": "io/gh"}}, [], IMPACT)
     where = _row(preview, "github: comes from")["after"]
-    assert "MCP registry (io/gh)" in where and "this crewmate only" in where
+    assert "MCP registry (io/gh)" in where and "this Jam only" in where
 
 
 def test_a_card_with_no_origins_keeps_its_own_rows():

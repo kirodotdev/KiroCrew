@@ -334,7 +334,7 @@ export function useCommandBarOverlayRootRows({
       // The words a reader who has not learned "crewmate" would reach for. `agent`
       // earns its place above all of them: it is what the rest of the product calls
       // the thing answering them.
-      keywords: ['crew', 'agent', 'member', 'mate', 'teammate', 'roster'],
+      keywords: ['jam', 'jams', 'crew', 'agent', 'member', 'mate', 'crewmate', 'teammate', 'roster'],
     })
     // Commands contributed by installed apps. This is the seam that lets a row live
     // outside this repository: the app declares the row and what it does, and the

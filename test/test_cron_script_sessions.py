@@ -407,7 +407,7 @@ class TestCrewLogAppend:
     def test_a_cron_bound_to_no_crewmate_raises_with_the_gateway_code(self, ctx, gateway):
         body = json.dumps(
             {
-                "error": "this cron job is bound to no crewmate, so it has no crew log to append to",
+                "error": "this cron job is bound to no Jam, so it has no crew log to append to",
                 "code": "cron_not_member_bound",
             }
         ).encode()

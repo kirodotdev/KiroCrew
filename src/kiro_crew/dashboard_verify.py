@@ -1440,7 +1440,7 @@ def _run_in_slot(
         copy = _copy_of_record(read, model, page_html, real_record)
     except _ReadFailed:
         return _skipped(
-            "this crewmate's current data could not be read, so the page was not run", started
+            "this Jam's current data could not be read, so the page was not run", started
         )
     except dashboard_synth.SynthesisRefused as exc:
         return _skipped(f"the record could not be copied for the check ({exc})", started)

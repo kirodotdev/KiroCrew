@@ -97,7 +97,7 @@ def _member(slug: str, member: str) -> tuple[str, Any, Any]:
     try:
         key, agent = member_config_for_id(cfg, slug)
     except Exception:
-        raise _Refused(404, "member_not_found", "no crewmate with that id") from None
+        raise _Refused(404, "member_not_found", "no Jam with that id") from None
     if key != member:
         raise _Refused(409, "member_slug_mismatch", "the member does not match its id")
     return key, agent, cfg
@@ -109,11 +109,11 @@ def _skills_root(cfg: Any, agent: Any) -> Path:
 
     entry = cfg.workspaces.get(agent.workspace)
     if entry is None:
-        raise _Refused(409, "workspace_missing", "the crewmate has no workspace of its own")
+        raise _Refused(409, "workspace_missing", "the Jam has no workspace of its own")
     workspace = workspace_dir_from_entry(entry)
     for part in (workspace, workspace / ".kiro", workspace / ".kiro" / "skills"):
         if part.is_symlink():
-            raise _Refused(409, "workspace_link", "the crewmate's workspace holds a link")
+            raise _Refused(409, "workspace_link", "the Jam's workspace holds a link")
     root = workspace / ".kiro" / "skills"
     real_ws = os.path.realpath(workspace)
     if os.path.commonpath([real_ws, os.path.realpath(root)]) != real_ws:
@@ -157,7 +157,7 @@ def _scripts_dir(slug: str) -> Path:
     target = parent / slug
     for part in (crons_dir, parent, target):
         if part.is_symlink():
-            raise _Refused(409, "scripts_dir_link", "the crewmate's script folder holds a link")
+            raise _Refused(409, "scripts_dir_link", "the Jam's script folder holds a link")
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     real_crons = os.path.realpath(crons_dir)
     if os.path.commonpath([real_crons, os.path.realpath(target)]) != real_crons:
@@ -182,7 +182,7 @@ def _write_files(slug: str, member: str, sha: str) -> dict[str, Any]:
     except crewmate_stage.StageError as exc:
         raise _Refused(409, exc.code, str(exc)) from None
     if crewmate_stage.read_ledger(slug) is not None:
-        raise _Refused(409, "already_written", "this crewmate's files were already written")
+        raise _Refused(409, "already_written", "this Jam's files were already written")
     try:
         files = read_crewmate_file(data)
         params = crewmate_import_params(files.bundle, files)
@@ -300,7 +300,7 @@ async def _set_avatar(key: str, ext: str, blob: bytes) -> str:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         agent = cfg.agents.get(key)
         if agent is None:
-            raise _Refused(404, "member_not_found", "no crewmate with that name")
+            raise _Refused(404, "member_not_found", "no Jam with that name")
         await drained_to_thread(_stage)
         promoted = await drained_to_thread(_promote_pending_avatar, key, avatar_token(blob))
         if promoted is None:

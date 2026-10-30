@@ -454,8 +454,8 @@ def build_preview(
         out["apply"] = [step("PATCH", f"/api/crons/{_q(p['id'])}", _cron_body(p["fields"]))]
     elif kind == KIND_CREWMATE_CREATE:
         if snapshot.get("exists"):
-            raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
-        out["title"] = f"Create mate “{p['name']}”"
+            raise _fail("already_exists", f"a Jam named '{p['name']}' already exists")
+        out["title"] = f"Create Jam “{p['name']}”"
         out["changes"] = [
             {"label": "Name", "after": p["name"]},
             {"label": "Goal", "after": p["goal"]},
@@ -511,7 +511,7 @@ def build_preview(
         out.update(_import_preview(p, snapshot))
     elif kind == KIND_CREWMATE_UPDATE:
         if not snapshot.get("exists"):
-            raise _fail("not_found", f"no mate named '{p['name']}'")
+            raise _fail("not_found", f"no Jam named '{p['name']}'")
         stored = snapshot.get("fields") or {}
         before = dict(stored)
         # An unset approval mode is not "nothing": the thread opens in the
@@ -537,7 +537,7 @@ def build_preview(
             )
         }
         if not changed:
-            raise _fail("no_change", "the mate already has those values")
+            raise _fail("no_change", "the Jam already has those values")
         if "approval_mode" in changed:
             # A permission move is ranked like ``agent.approval_mode`` is: toward
             # ``trust`` the card is a widening (badge and acknowledgement), toward
@@ -557,7 +557,7 @@ def build_preview(
             f"Allow {label} to ask you for tools its worker needs? "
             "Each one still needs your approval."
             if changed == {"dynamic_capabilities": True}
-            else f"Update mate “{label}”"
+            else f"Update Jam “{label}”"
         )
         # ``field`` lets the card draw the user's word for the field and its
         # values (the dashboard's FIELD_LABELS); ``label`` stays the fallback.
@@ -571,7 +571,7 @@ def build_preview(
         ]
     elif kind == KIND_CREWMATE_GOAL:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no mate named '{p['member']}'")
+            raise _fail("not_found", f"no Jam named '{p['member']}'")
         goals = [g for g in snapshot.get("goals") or [] if isinstance(g, dict)]
         label = str(context.get("label") or p["member"])
         gid = p.get("goal_id")
@@ -580,17 +580,17 @@ def build_preview(
             if any(
                 p["long_term"] in (g.get("text"), _goals.scrub_text(g.get("text"))) for g in goals
             ):
-                raise _fail("no_change", "the mate already has that goal")
+                raise _fail("no_change", "the Jam already has that goal")
             goal_shown: str | None = None
             out["title"] = f"Add a goal for “{label}”"
             goal_number = len(goals) + 1
         else:
             goal_numbers = {g.get("id"): n for n, g in enumerate(goals, start=1)}
             if gid not in goal_numbers:
-                raise _fail("not_found", "the mate has no goal with that id")
+                raise _fail("not_found", "the Jam has no goal with that id")
             goal_before = str(goals[goal_numbers[gid] - 1].get("text") or "")
             if goal_before == p["long_term"]:
-                raise _fail("no_change", "the mate already has that goal")
+                raise _fail("no_change", "the Jam already has that goal")
             # The change line and the plan are public (CardStore.public): the goal
             # they replace is shown as the Goals tab shows it, scrubbed, and the
             # route takes the scrubbed text as ``expected``. The raw goal stays in
@@ -645,16 +645,16 @@ def build_preview(
             )
     elif kind == KIND_CREWMATE_KEY_RESULTS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no mate named '{p['member']}'")
+            raise _fail("not_found", f"no Jam named '{p['member']}'")
         if not snapshot.get("has_goal"):
-            raise _fail("no_goal", "the mate has no goal to measure yet")
+            raise _fail("no_goal", "the Jam has no goal to measure yet")
         numbers = {
             g.get("id"): n
             for n, g in enumerate(snapshot.get("goals") or [], start=1)
             if isinstance(g, dict)
         }
         if any(g not in numbers for i in p["items"] for g in i.get("goal_ids", [])):
-            raise _fail("not_found", "a key result names a goal the mate does not have")
+            raise _fail("not_found", "a key result names a goal the Jam does not have")
         before_set = list(snapshot.get("key_results") or [])
         before_links = [
             list(r.get("goal_ids") or [])
@@ -670,7 +670,7 @@ def build_preview(
             _goals.key_result_shape(before_set) == _goals.key_result_shape(p["items"])
             and same_links
         ):
-            raise _fail("no_change", "the mate already has those key results")
+            raise _fail("no_change", "the Jam already has those key results")
         label = str(context.get("label") or p["member"])
         # The plan and the change lines are public (CardStore.public); the set
         # they replace is shown as the Goals tab shows it, scrubbed. The route
@@ -709,13 +709,13 @@ def build_preview(
         ]
     elif kind == KIND_CREWMATE_CHECK_INS:
         if not snapshot.get("exists") or not snapshot.get("slug"):
-            raise _fail("not_found", f"no mate named '{p['member']}'")
+            raise _fail("not_found", f"no Jam named '{p['member']}'")
         before_ci = snapshot.get("schedules") or {}
         changed = {k: v for k, v in p.items() if k != "member" and before_ci.get(k) != v}
         if not changed:
             raise _fail("no_change", "the check-ins are already set that way")
         if not snapshot.get("has_goal") and any(p.get(c) is True for c in _goals.CADENCES):
-            raise _fail("no_goal", "the mate has no goal to check in on yet")
+            raise _fail("no_goal", "the Jam has no goal to check in on yet")
         label = str(context.get("label") or p["member"])
         out["title"] = f"Set the check-ins for “{label}”"
         out["changes"] = [
@@ -1165,7 +1165,7 @@ def _template_server_preview(
         {"label": "Agents", "add": _template_chips(templates, aliases)},
     ]
     if members:
-        rows.append({"label": "Crew members", "add": members})
+        rows.append({"label": "Jams", "add": members})
     rows.append(
         {
             "label": "Open chats",
@@ -1347,7 +1347,7 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
     from kiro_crew import crewmate_carried
 
     if snapshot.get("exists"):
-        raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
+        raise _fail("already_exists", f"a Jam named '{p['name']}' already exists")
     carried = p.get("carried") or {}
     scripts = {s["file"] for s in carried.get("scripts") or ()}
     named = {job["script"].partition(":")[0] for job in p.get("crons") or () if "script" in job}
@@ -1356,7 +1356,7 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
     bundled = {r["name"] for r in p.get("skills") or () if r["source"] == "bundled"}
     if bundled != {s["name"] for s in carried.get("skills") or ()}:
         raise _fail("invalid_param", "each bundled skill needs its files")
-    out: dict[str, Any] = {"risk": RISK_NORMAL, "title": f"Import mate “{p['name']}”"}
+    out: dict[str, Any] = {"risk": RISK_NORMAL, "title": f"Import Jam “{p['name']}”"}
     changes: list[dict[str, Any]] = [
         {"field": "name", "label": "Name", "after": p["name"]},
         {"field": "sender", "label": "From", "after": p.get("sender", "")},
@@ -1393,7 +1393,7 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
     changes.append({"field": mode, "label": "Approval", "after": "normal"})
     if inherited:  # granted by the template, so the press widens (as crewmate.create)
         reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
-        row = {"field": "template_auto_approve", "label": "Your mates use these without asking"}
+        row = {"field": "template_auto_approve", "label": "Your Jams use these without asking"}
         changes.append({**row, "after": reach or ", ".join(inherited)})
         out["risk"] = RISK_WIDEN
     if crewmate_carried.code_exec(carried):

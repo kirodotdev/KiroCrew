@@ -169,7 +169,7 @@ def _create_private(template: str) -> bool:
         _invalidate_config_cache()
         config = KiroCrewConfig.load()
     except Exception:
-        agent_mod.logger.warning("The first crewmate was not created", exc_info=True)
+        agent_mod.logger.warning("The first Jam was not created", exc_info=True)
         return False
     if ASSISTANT_MEMBER_NAME in config.agents:
         _mark(FIRST_CREWMATE_MARKER)
@@ -203,7 +203,7 @@ def _create_private(template: str) -> bool:
             except Exception:
                 agent_mod.logger.warning("An unpublished store was not retired", exc_info=True)
         agent_mod.logger.warning(
-            "The first crewmate was not created; it is tried again at next start", exc_info=True
+            "The first Jam was not created; it is tried again at next start", exc_info=True
         )
         return False
     return True
@@ -222,6 +222,6 @@ def _owe_first_welcome() -> None:
         _invalidate_config_cache()
         config = KiroCrewConfig.load()
     except Exception:
-        agent_mod.logger.warning("The first crewmate's welcome was not recorded", exc_info=True)
+        agent_mod.logger.warning("The first Jam's welcome was not recorded", exc_info=True)
         return
     mark_welcome_owed(ASSISTANT_MEMBER_NAME, config=config)

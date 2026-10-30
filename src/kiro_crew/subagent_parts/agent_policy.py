@@ -851,7 +851,7 @@ def conductor_spawn_refusal(parent_template: str) -> str | None:
     if parent_template != MATE_CONDUCTOR_AGENT:
         return None
     return (
-        "a crewmate's own chat starts no sub-agents: hand the work to a worker session "
+        "a Jam's own chat starts no sub-agents: hand the work to a worker session "
         "with session_create, give it the brief with session_send, and read its answer "
         "with session_read_message"
     )

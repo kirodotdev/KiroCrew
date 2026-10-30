@@ -98,7 +98,7 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
   it('groups by kind and keeps a same-name member and template as two rows', () => {
     render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     const groups = screen.getAllByRole('group')
-    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Custom agents', 'Mates'])
+    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Custom agents', 'Jams'])
     expect(screen.getAllByRole('option')).toHaveLength(3)
     expect(screen.getAllByText('reviewer')).toHaveLength(2)
   })
@@ -306,7 +306,7 @@ describe('ManageAgentsFooter', () => {
   it('calls onManage when the link is activated', () => {
     const onManage = vi.fn()
     render(<ManageAgentsFooter onManage={onManage} />)
-    fireEvent.click(screen.getByText('Manage mates…'))
+    fireEvent.click(screen.getByText('Manage Jams…'))
     expect(onManage).toHaveBeenCalledTimes(1)
   })
 

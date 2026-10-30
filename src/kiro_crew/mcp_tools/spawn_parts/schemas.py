@@ -301,7 +301,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "crew": {
                         "type": "string",
                         "description": (
-                            "Crew Member name from select_crew or route_crew. "
+                            "Jam name from select_crew or route_crew. "
                             "Selects that member's memory and provider template; agent "
                             "alone selects a template. Naming a member is enough; its "
                             "Triggers only steer automatic selection. Omit to inherit the "
@@ -311,7 +311,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "target_member": {
                         "type": "string",
                         "description": (
-                            "Explicit target Crew Member. Uses its existing memory without "
+                            "Explicit target Jam. Uses its existing memory without "
                             "copying the parent's learning. Omit to inherit the current member."
                         ),
                     },

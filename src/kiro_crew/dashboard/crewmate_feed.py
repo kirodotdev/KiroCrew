@@ -252,7 +252,7 @@ async def _warm_cards(state: Any) -> bool:
     try:
         await change_cards.card_store_for(state).warm()
     except Exception:
-        logger.debug("crewmate feed: change-card store not warmed", exc_info=True)
+        logger.debug("Jam feed: change-card store not warmed", exc_info=True)
         return False
     return True
 
@@ -282,7 +282,7 @@ def _on_log_growth(session_id: str) -> None:
     try:
         loop.call_soon_threadsafe(_grew, session_id)
     except RuntimeError:
-        logger.debug("crewmate feed: growth for %s after the loop closed", session_id)
+        logger.debug("Jam feed: growth for %s after the loop closed", session_id)
 
 
 def _grew(session_id: str) -> None:
@@ -313,7 +313,7 @@ def question_retired(slot_key: str) -> None:
     try:
         loop.call_soon_threadsafe(_retired, slot_key)
     except RuntimeError:
-        logger.debug("crewmate feed: question retired on %s after the loop closed", slot_key)
+        logger.debug("Jam feed: question retired on %s after the loop closed", slot_key)
 
 
 def _retired(slot_key: str) -> None:
@@ -377,7 +377,7 @@ async def _settle_grown(state: Any, grown: set[str]) -> None:
                 _keep.add(task)
                 task.add_done_callback(_keep.discard)
         except Exception:
-            logger.debug("crewmate feed: waiting list for %s not recorded", slot.key, exc_info=True)
+            logger.debug("Jam feed: waiting list for %s not recorded", slot.key, exc_info=True)
 
 
 #: Per thread, the session its snapshots were last recorded into.
@@ -447,7 +447,7 @@ async def _record_current_goal(slot: Any, *, since: "str | None" = None) -> None
         # tries again rather than trusting the snapshot from before.
         with _lock:
             _stale_goals.add(getattr(slot, "agent", ""))
-        logger.debug("crewmate feed: goal for %s not recorded", slot.key, exc_info=True)
+        logger.debug("Jam feed: goal for %s not recorded", slot.key, exc_info=True)
 
 
 def _on_goal_written(slug: str, member: str, rec: dict[str, Any]) -> None:
@@ -460,7 +460,7 @@ def _on_goal_written(slug: str, member: str, rec: dict[str, Any]) -> None:
     try:
         loop.call_soon_threadsafe(_goal_written, member, snapshot)
     except RuntimeError:
-        logger.debug("crewmate feed: goal write for %s after the loop closed", slug)
+        logger.debug("Jam feed: goal write for %s after the loop closed", slug)
 
 
 def _goal_written(member: str, rec: dict[str, Any]) -> None:
@@ -481,7 +481,7 @@ def _goal_written(member: str, rec: dict[str, Any]) -> None:
             # wins, until the thread's next growth names one.
             record_goal(slot, rec)
         except Exception:
-            logger.debug("crewmate feed: goal for %s not recorded", slot.key, exc_info=True)
+            logger.debug("Jam feed: goal for %s not recorded", slot.key, exc_info=True)
 
 
 def start(state: Any) -> None:

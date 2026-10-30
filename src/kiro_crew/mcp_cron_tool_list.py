@@ -152,7 +152,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "member_id": {
                         "type": "string",
-                        "description": "Crew Member responsible for this schedule. Uses that "
+                        "description": "Jam responsible for this schedule. Uses that "
                         "member's memory. Omit to inherit the creating conversation's "
                         "member; ordinary conversations retain global V1 memory.",
                     },

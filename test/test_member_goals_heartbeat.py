@@ -247,7 +247,7 @@ def test_a_wake_skips_like_the_other_check_ins(_floor_monkeypatch) -> None:
     )
     _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: True)
     slot.task = DashboardTurn()  # type: ignore[assignment]
-    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: the mate is busy"
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: the Jam is busy"
     slot.task = None
     member_goals.set_schedules(slug, ORDINARY, {"heartbeat": False})
     assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: switch off or no goal"
@@ -267,7 +267,7 @@ def test_a_turn_that_starts_during_the_tools_check_skips_the_wake(_floor_monkeyp
         return True
 
     _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", busy_meanwhile)
-    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: the mate is busy"
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: the Jam is busy"
     assert sent == []
 
 

@@ -1834,7 +1834,7 @@ class TestTheRealGateAndStore:
         assert got.state == dashboard_package.STATE_LIVE, got.state_reason
         assert got.model is not None
         assert got.from_package is False
-        assert "not a crewmate binding" in caplog.text
+        assert "not a Jam binding" in caplog.text
 
 
 def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():

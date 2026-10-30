@@ -147,7 +147,7 @@ A script can also drive dashboard sessions. Each method raises `RuntimeError` ca
 - `ctx.send_to_session(slot, message)` queues the message as that slot's next turn and returns at once: `{"ok": True, "slot": <key>}` when the slot was idle, or `{"ok": True, "queued": True, "queue_id": <id>}` when it was busy.
 - `ctx.set_session_mode(slot, mode)` sets that session's tool approval mode to `trust` or `trust_reads` and returns `{"ok": True, "mode": <mode>}`. Any other mode is refused with `mode_not_allowed` and an unnamed slot with `slot_required`.
 
-Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a crew member is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
+Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a Jam is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
 
 Preview a script cron locally with real MCP tools; notifications are captured and printed instead of delivered:
 

@@ -541,7 +541,7 @@ def _run_chat_tag_column_create(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot add a board column — the "
+                "Error: an app agent or Jam cannot add a board column — the "
                 "board is the person's own layout. Read it with chat_tag_column_list."
             )
         return redact(f"Error: {refused.error}")
@@ -611,7 +611,7 @@ def _run_chat_tag_column_move(args: dict[str, Any], ctx: ToolContext) -> str:
             )
         if refused.code == "app_forbidden":
             return (
-                "Error: an app agent or crew member cannot reorder the board — it "
+                "Error: an app agent or Jam cannot reorder the board — it "
                 "is the person's own layout."
             )
         return redact(f"Error: {refused.error}")

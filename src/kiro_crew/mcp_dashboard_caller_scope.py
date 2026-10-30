@@ -168,7 +168,7 @@ def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]
         )
     if str(row.get("mode") or "") == "member":
         return {}, (
-            "Error: a crew member's pinned DM thread lives on the Crew page and is "
+            "Error: a Jam's pinned DM thread lives on the Crew page and is "
             "not filed in a sidebar folder — it spans every goal the member runs. "
             "Skip filing yourself; create your workers with "
             "session_create's `folder` set to `<goal>/<agent>` instead."

@@ -320,7 +320,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
     await openCrewmate()
     const list = await openSchedulesTab()
-    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this mate on its own yet/i)
+    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this Jam on its own yet/i)
     // No `0` anywhere — not on the rail, not in the list.
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
@@ -345,7 +345,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     await waitFor(() => expect(vi.mocked(api.crons)).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 50))
     expect(within(list).queryByTestId('crew-schedule-empty')).toBeNull()
-    expect(list).not.toHaveTextContent(/Nothing wakes this mate/i)
+    expect(list).not.toHaveTextContent(/Nothing wakes this Jam/i)
   })
 
   it('a row opens that job on the Schedule page; the footer opens the page itself', async () => {
@@ -401,11 +401,11 @@ describe('MembersPage Profile card — New schedule', () => {
     // second "What wakes this crewmate" and no second close control under the bar.
     expect(section).toHaveAttribute('data-chromeless', 'true')
     expect(within(section).queryByTestId('crew-wake-add')).toBeNull()
-    expect(within(page).queryByText('What wakes this mate')).toBeNull()
+    expect(within(page).queryByText('What wakes this Jam')).toBeNull()
     expect(within(page).queryAllByRole('button', { name: /cancel new schedule/i })).toHaveLength(0)
     // The form's pinned-crew hint speaks this page's noun: the reader is on the
     // crewmate's Profile, not in the crew editor the editor's sentence names.
-    expect(within(section).getByText("Created from this mate's profile, so the job runs as this mate.")).toBeInTheDocument()
+    expect(within(section).getByText("Created from this Jam's profile, so the job runs as this Jam.")).toBeInTheDocument()
     expect(within(section).queryByText(/this crew's editor/)).toBeNull()
     // A clean form: back pops to the list with no question asked.
     fireEvent.click(screen.getByTestId('crew-profile-back'))

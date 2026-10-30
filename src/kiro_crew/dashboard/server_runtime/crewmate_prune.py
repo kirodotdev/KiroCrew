@@ -107,7 +107,7 @@ def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -
             except asyncio.TimeoutError:
                 return web.json_response(
                     {
-                        "error": "Mates are being tidied; retry shortly.",
+                        "error": "Jams are being tidied; retry shortly.",
                         "code": "prune_in_progress",
                     },
                     status=503,
@@ -167,12 +167,12 @@ def _kick_crewmate_prune(state: DashboardState) -> None:
             )
             if prune.removed:
                 logger.info(
-                    "removed %d unused auto-generated crewmates: %s",
+                    "removed %d unused auto-generated Jams: %s",
                     len(prune.removed),
                     ", ".join(prune.removed),
                 )
         except Exception:  # noqa: BLE001 -- the pass never raises for unreadable history
-            logger.warning("crewmate prune migration failed", exc_info=True)
+            logger.warning("Jam prune migration failed", exc_info=True)
         finally:
             state.crewmate_prune_settled.set()
 
@@ -207,8 +207,8 @@ async def await_crewmate_prune_settled(state: DashboardState, *, before: str) ->
     except asyncio.TimeoutError:
         state.crewmate_prune_abandon.set()
         logger.warning(
-            "crewmate prune has not settled in %.0fs; it will keep its unjudged "
-            "crewmates, and %s starts once it has returned",
+            "Jam prune has not settled in %.0fs; it will keep its unjudged "
+            "Jams, and %s starts once it has returned",
             _CREWMATE_PRUNE_GATE_TIMEOUT_S,
             before,
         )
@@ -238,7 +238,7 @@ def _kick_deferred_transcript_removal(state: DashboardState, claimed: frozenset[
             )
             if removed:
                 logger.info(
-                    "Removed %d leftover channel transcript copies after the crewmate prune",
+                    "Removed %d leftover channel transcript copies after the Jam prune",
                     removed,
                 )
         except Exception:  # noqa: BLE001 -- the copies stay for the next start

@@ -243,7 +243,7 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
     def test_the_prompt_forbids_doing_the_crewmates_work(self) -> None:
         """A subagent that answered the question the page is about would be a second
         crewmate with a smaller surface, which is not what anybody dispatched."""
-        assert "You do not do the crewmate's work." in agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
+        assert "You do not do the Jam's work." in agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
 
 
 class TestItIsOwnedButNotRequired:

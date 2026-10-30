@@ -20,7 +20,7 @@ def _raw(**over):
         "id": "goal-board",
         "version": 1,
         "title": "Goal board",
-        "description": "What the mate is driving.",
+        "description": "What the Jam is driving.",
         "source": "builtin",
         "fields": {
             "credits": {"type": "number", "source": {"fold": "usage", "path": "credits"}},

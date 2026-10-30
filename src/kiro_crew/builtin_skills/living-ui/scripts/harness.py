@@ -641,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
             if os.environ.get(REEXEC_ENV) or not runtime or not os.path.isfile(runtime):
                 print(
                     "harness: the Dashboard mode frames the page with Kiro Crew's own code, "
-                    "which this Python cannot import; a crewmate's shell names that "
+                    "which this Python cannot import; a Jam's shell names that "
                     "interpreter in KIROCREW_RUNTIME_PYTHON",
                     file=sys.stderr,
                 )

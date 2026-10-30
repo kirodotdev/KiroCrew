@@ -221,7 +221,7 @@ async def fork_session(
             await refuse_foreign_home_filing(state, slot_history_key(caller_slot), folder_id)
         except MateHomeLockedError:
             raise SessionControlError(
-                "this folder belongs to a mate", status=403, code="mate_home_locked"
+                "this folder belongs to a Jam", status=403, code="mate_home_locked"
             ) from None
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input

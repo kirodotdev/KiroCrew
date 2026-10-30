@@ -39,7 +39,7 @@ def preview(
     template page.
     """
     if not snapshot.get("exists") or not snapshot.get("slug"):
-        raise fail("not_found", f"no crewmate named '{params['member']}'")
+        raise fail("not_found", f"no Jam named '{params['member']}'")
     label = str(context.get("label") or params["member"])
     replaces = str(context.get("replaces") or "")
     goal = str(context.get("goal") or "")

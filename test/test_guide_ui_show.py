@@ -656,7 +656,7 @@ def test_find_ui_quotes_the_pages_own_words_for_what_a_deletion_removes() -> Non
     # Delete crewmate only unbinds; Mate describes it from the page's own
     # notice, never from a guess that it wipes chats and notes for good.
     for locale, want in (
-        ("en", "Deleting a mate only unbinds it from new sessions."),
+        ("en", "Deleting a Jam only unbinds it from new sessions."),
         ("zh-CN", None),
     ):
         d = ui_index.find_ui("delete a mate", locale)

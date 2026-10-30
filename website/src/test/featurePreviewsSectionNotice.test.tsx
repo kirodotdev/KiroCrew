@@ -66,7 +66,7 @@ describe('Feature previews section, refused toggles', () => {
     [/chat on a crew/i, 'Chat on a crew'],
     [/composable layout/i, 'Composable layout'],
     [/folder conductor/i, 'Folder conductor'],
-    [/agent harness per mate/i, 'Agent harness per mate'],
+    [/agent harness per Jam/i, 'Agent harness per Jam'],
     [/session environments/i, 'Session Environments'],
   ])('names the %s switch when the owner-only write is refused', async (name, label) => {
     vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))

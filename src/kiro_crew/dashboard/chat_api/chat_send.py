@@ -1029,7 +1029,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # it" notice. The person reopens the conductor to keep working.
             return web.json_response(
                 {
-                    "error": "this crew member's conductor is closed; reopen it to keep working",
+                    "error": "this Jam's conductor is closed; reopen it to keep working",
                     "code": "crew_root_closed",
                     "root": _crew_root,
                 },

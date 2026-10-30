@@ -503,7 +503,7 @@ async def _commit_cron_tab_placement(
     # A mate's home holds only that mate's sessions: a job's tab runs on the
     # job's store, so it is filed there only when that store is the mate's.
     if chat_folder_refuses_store(state, placed, str(getattr(slot, "memory_store", "") or "")):
-        logger.info("Cron '%s': chat folder %s is a mate's; tab not moved", job.name, placed)
+        logger.info("Cron '%s': chat folder %s is a Jam's; tab not moved", job.name, placed)
         try:
             sel().log_api_access(
                 caller=f"cron:{job.id}",
@@ -586,7 +586,7 @@ async def move_cron_job_tab(
     if chat_folder_refuses_store(
         state, previous_folder_id, str(getattr(slot, "memory_store", "") or "")
     ):
-        logger.info("Cron '%s': tab sits in a mate's folder; not moved out", job.name)
+        logger.info("Cron '%s': tab sits in a Jam's folder; not moved out", job.name)
         return
     await _commit_cron_tab_placement(
         state, job, slot, placed=new_folder_id, restore_to=previous_folder_id

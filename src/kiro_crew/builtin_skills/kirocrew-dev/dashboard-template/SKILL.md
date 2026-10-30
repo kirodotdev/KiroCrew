@@ -9,13 +9,13 @@ triggers: dashboard template, dashboard card, data-dashboard-field, template con
 A dashboard page is HALF of a template. The other half is a type, and the two halves
 are checked by different machines, which is why they drift.
 
-> This skill is the procedure for the `kirocrew-dashboard-author` crewmate, whose spec
+> This skill is the procedure for the `kirocrew-dashboard-author` Jam, whose spec
 > is `agent-spec.md` beside this file: the charter (what it is for and what it may never
 > do) plus the narrowed toolset that makes the charter true against a tool list rather
 > than only against prose. A human or another agent following this file gets the same
 > procedure. The gateway installs the spec as the owned agent `kirocrew-dashboard-author` at
 > every start (`OWNED_KIRO_AGENT_FILES`, `_install_dashboard_author_agent`), so a
-> crewmate dispatched on it starts with this procedure as its prompt; a human or
+> Jam dispatched on it starts with this procedure as its prompt; a human or
 > another agent loads this skill directly.
 
 The page is inert html. The host sanitizes it, renders it, and binds text into it by

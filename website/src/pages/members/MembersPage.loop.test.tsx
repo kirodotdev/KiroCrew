@@ -141,7 +141,7 @@ describe('MembersPage — on-watch loop indicator', () => {
     await waitFor(() => expect(within(card).queryByTestId('crew-profile-loop-indicator')).toBeNull())
     expect(within(card).queryByTestId('crew-patrol-row')).toBeNull()
     // Silence here would read as "nothing wakes this mate": the failure is said instead.
-    expect(await within(card).findByTestId('crew-patrol-read-error')).toHaveTextContent('Could not read what wakes this mate on its own.')
+    expect(await within(card).findByTestId('crew-patrol-read-error')).toHaveTextContent('Could not read what wakes this Jam on its own.')
     expect(within(card).getByTestId('crew-schedule-heading-self')).toBeInTheDocument()
   })
 

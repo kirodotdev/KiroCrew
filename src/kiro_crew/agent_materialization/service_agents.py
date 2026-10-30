@@ -146,7 +146,7 @@ def _install_mate_conductor_agent() -> None:
 
     config = agent_mod.build_agent_config()
     config["name"] = "kirocrew-mate-conductor"
-    config["description"] = "The agent a crewmate's own chat runs on."
+    config["description"] = "The agent a Jam's own chat runs on."
     # The conductor dispatches and the worker does the work: its hand-off is a
     # worker session, so the sub-agent tools are not in its tool list.
     # Its MCP servers are the gateway's own, whatever servers the user has:
@@ -196,7 +196,7 @@ def _install_mate_worker_agent() -> None:
 
     config = agent_mod.build_agent_config()
     config["name"] = MATE_WORKER_AGENT
-    config["description"] = "The agent a crewmate's worker sessions run on."
+    config["description"] = "The agent a Jam's worker sessions run on."
     # The worker's own principles ride after the shared base prompt.
     principles = MATE_WORKER_PROMPT
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
@@ -578,9 +578,9 @@ def _install_dashboard_manager_agent() -> None:
     config: dict[str, object] = {
         "name": agent_mod.DASHBOARD_MANAGER_AGENT_NAME,
         "description": (
-            "Changes ONE crewmate's Dashboard page on request: searches the "
+            "Changes ONE Jam's Dashboard page on request: searches the "
             "template catalog, puts the one that fits live, and rolls back to "
-            "an earlier version. Never does the crewmate's own work."
+            "an earlier version. Never does the Jam's own work."
         ),
         "model": model,
         "includeMcpJson": False,
