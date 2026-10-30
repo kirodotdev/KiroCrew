@@ -67,6 +67,7 @@ def test_every_server_with_a_bare_search_or_fetch_declares_the_rename():
         "gitlab": {"search"},
         "neon": {"search", "fetch"},
         "todoist": {"search", "fetch"},
+        "ticktick": {"search", "fetch"},
     }
     for slug, tools in bare.items():
         assert tools <= set(declared[slug]), slug
@@ -93,6 +94,38 @@ def test_gitlab_and_todoist_share_only_search():
 def test_todoist_alone_keeps_its_natural_tool_names():
     """Invariant 3: a declaration renames nothing without a real collision."""
     assert _aliases(_servers("todoist"), ["@todoist"]) == {}
+
+
+def test_ticktick_and_todoist_mounted_together_rename_both_sides():
+    """The two task managers a user is most likely to connect side by side both
+    ship the bare ``search``/``fetch`` pair, so both sides are renamed."""
+    assert _aliases(_servers("ticktick", "todoist"), ["@ticktick", "@todoist"]) == {
+        "@ticktick/fetch": "ticktick_fetch",
+        "@ticktick/search": "ticktick_search",
+        "@todoist/fetch": "todoist_fetch",
+        "@todoist/search": "todoist_search",
+    }
+
+
+def test_gitlab_and_ticktick_share_only_search():
+    assert _aliases(_servers("ticktick", "gitlab"), ["@ticktick", "@gitlab"]) == {
+        "@gitlab/search": "gitlab_search",
+        "@ticktick/search": "ticktick_search",
+    }
+
+
+def test_ticktick_alone_keeps_its_natural_tool_names():
+    assert _aliases(_servers("ticktick"), ["@ticktick"]) == {}
+
+
+def test_ticktick_and_linear_share_only_list_projects():
+    """TickTick's smoke fixture is its own ``list_projects``, the tool Linear and
+    Vercel already rename, so TickTick declares it too; Linear ships no bare
+    ``search`` or ``fetch``, so those keep their names."""
+    assert _aliases(_servers("ticktick", "linear"), ["@ticktick", "@linear"]) == {
+        "@linear/list_projects": "linear_list_projects",
+        "@ticktick/list_projects": "ticktick_list_projects",
+    }
 
 
 def test_every_declared_alias_is_globally_unique():

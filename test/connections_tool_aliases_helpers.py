@@ -43,6 +43,7 @@ URLS = {
     "atlassian": "https://mcp.atlassian.com/v1/mcp/authv2",
     "neon": "https://mcp.neon.tech/mcp?readonly=true",
     "todoist": "https://ai.todoist.net/mcp",
+    "ticktick": "https://mcp.ticktick.com",
 }
 
 
