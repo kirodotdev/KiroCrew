@@ -226,6 +226,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         ConfigReadError,
         ConfigWriteRefused,
         config_path,
+        overlay_pins,
         update_config_locked,
     )
 
@@ -548,6 +549,27 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 f"{path_key}={value}",
                 403,
             )
+
+    # 409, not 200, when config.local.json sets this key: the overlay deep-merges
+    # over config.json, so writing the base file would change nothing in force,
+    # and a success answer lets an optimistic picker show the pick until the next
+    # refetch snaps it back to the overlay's value. Same refusal the auto-update
+    # switch and the trust settings give an overlay-owned key. A whole-section
+    # (object) value is left alone: the overlay merges INTO it key by key, so the
+    # keys it does not name still take effect.
+    if not isinstance(value, dict) and await asyncio.to_thread(overlay_pins, *path_key.split(".")):
+        _log_sel("denied", f"{path_key}=overlay_owned")
+        return web.json_response(
+            {
+                "error": (
+                    f"{path_key} is set in config.local.json, which overrides this "
+                    "setting. Change or remove it there."
+                ),
+                "code": "config_overlay_owned",
+                "overlay_override": True,
+            },
+            status=409,
+        )
 
     # Read, update, write — serialized across processes via update_config_locked.
     cfg_path = config_path()
