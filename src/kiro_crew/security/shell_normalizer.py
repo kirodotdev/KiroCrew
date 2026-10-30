@@ -12,18 +12,19 @@ blinds every tier at once, and no OS sandbox sees shell text, so this layer
 over-approximates on purpose and the tiers above it are where precision belongs.
 Narrowing a matcher means narrowing the site that DECIDES, never this one.
 
-The reader is four modules below this one, and this one keeps attribution -- which
+The reader is five modules below this one, and this one keeps attribution -- which
 program a token reaches, nested shell payloads, local assignments and function
 aliases, the data-consumer exemption, the glob reading of a program name and the
 normalized token view. ``shell_normalizer_walk`` reads characters, quotes, words and
 structure; ``shell_normalizer_redirects`` reads the carriers that bring program text
 outside argv; ``shell_normalizer_escapes`` decodes escapes; ``shell_normalizer_programs``
-holds the program vocabulary. Every name a caller imports from this module still
-resolves here, and a name a test patches lives in the same module as every reader of
-it.
+holds the program vocabulary; ``shell_normalizer_ssh_options`` extracts the command
+bodies an ssh-family program runs locally from its own option values. Every name a
+caller imports from this module still resolves here, and a name a test patches lives
+in the same module as every reader of it.
 
 Imports only ``vocabulary``, the layer below, for the product's own name, and its own
-four owners, which never import it: the tiers depend on the reader, never the reverse.
+five owners, which never import it: the tiers depend on the reader, never the reverse.
 """
 
 from __future__ import annotations
@@ -67,6 +68,9 @@ from .shell_normalizer_redirects import (  # noqa: F401  (also re-exported for i
     _shell_c_carrier_payloads,
     _stdin_program_text,
     _xargs_here_string_rebuild,
+)
+from .shell_normalizer_ssh_options import (
+    ssh_command_option_payloads as _ssh_command_option_payloads,
 )
 from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for importers)
     _AMBIGUOUS_EXPANSION_RE,
@@ -1548,6 +1552,11 @@ def _nested_shell_payloads(
             spec = _LOCAL_ASSIGN_RE.match(tokens[i + 1])
             if spec and spec.group(2) and " " in spec.group(2).strip():
                 payloads.append(spec.group(2))
+    # An ssh-family option value (``-o ProxyCommand=``, rsync ``-e``, a leading
+    # ``GIT_SSH_COMMAND=``) is a command line this host runs locally, so it is a
+    # nested payload exactly as a ``bash -c`` body is. The ssh floor keeps its own
+    # self-dial reading of the same values.
+    payloads.extend(_ssh_command_option_payloads(tokens, _argv_programs(tokens)))
     # A payload only matters if it looks like a command line rather than a bare
     # operand; a single word is already covered by the direct token scan.
     if _pipes_into_evaluator(tokens):

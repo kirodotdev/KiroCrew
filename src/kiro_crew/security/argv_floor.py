@@ -230,7 +230,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SSH_VALUELESS_SHORT_FLAGS,
         _VAR_REFERENCE_RE,
         _VERB_FOLD_AMBIGUOUS_OPT_LETTERS,
-        _VERB_VALUE_TAKING_OPT_LETTERS,
         _arith_int_literal_repl,
         _brace_alternatives,
         _brace_expansions,
@@ -310,6 +309,9 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _substitution_bodies,
         _substitution_depth_delta,
         _xargs_here_string_rebuild,
+    )
+    from kiro_crew.security.shell_normalizer_ssh_options import (  # noqa: F401
+        _VERB_VALUE_TAKING_OPT_LETTERS,
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,

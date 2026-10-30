@@ -40,6 +40,7 @@ from .shell_normalizer import (
     _substitution_depth_delta,
     _xargs_here_string_rebuild,
 )
+from .shell_normalizer_ssh_options import _VERB_VALUE_TAKING_OPT_LETTERS
 
 # ── Sandbox-escape floor (ssh back into this same host) ──
 # The agent's shell runs inside a sandbox; sshd does not.  A connection whose
@@ -608,11 +609,9 @@ _SSH_VALUELESS_SHORT_FLAGS = "1246acfgkmnqstvxy"
 # over-checking is this floor's safe direction.  (Treating such a letter as
 # valueless and betting that "the DNS layer still covers a host after it" does
 # not survive the consumption path.)  scp/rsync have no positional slot in
-# this walk, so they need no entry.
-_VERB_VALUE_TAKING_OPT_LETTERS: "dict[str, frozenset[str]]" = {
-    "ssh": frozenset("bcdefijlmopqrsw"),
-    "sftp": frozenset("bcdfijloprsx"),
-}
+# this walk, so they need no entry.  ``_VERB_VALUE_TAKING_OPT_LETTERS`` is
+# defined in the reader below this floor (``shell_normalizer_ssh_options``),
+# whose option walk finds the ssh destination and remote command with it.
 
 
 # Folded letters whose two cases DISAGREE on valueness: the letter
