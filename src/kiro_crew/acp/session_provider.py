@@ -525,7 +525,25 @@ class AcpSessionProvider(LLMProvider):
         - Parent sessions (owns_runtime=True): kill the entire runtime.
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
+
+        Either way the local MCP launch snapshots this session's projection wrote
+        go with it (``acp.kas_env_launch``): they hold env values, and a later
+        resume projects and writes new ones. Only the files its own batch names
+        are removed, so another provider of the same session keeps its own.
         """
+        batch = getattr(getattr(self, "_handle", None), "kas_registered_agents", None)
+        try:
+            await self._shutdown_session()
+        finally:
+            from kiro_crew.acp import kas_env_launch
+
+            if batch:
+                await asyncio.to_thread(kas_env_launch.discard_batch, list(batch))
+            # A resumed session's servers moved out of the batch it registered,
+            # so its snapshots are left to the age sweep, which runs here too.
+            await asyncio.to_thread(kas_env_launch.sweep_stale)
+
+    async def _shutdown_session(self) -> None:
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.

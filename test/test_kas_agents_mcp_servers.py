@@ -1158,7 +1158,10 @@ class TestHoistManagedServers:
         spec = _spec(
             mcpServers={
                 "kirocrew-core": {"command": "kc", "args": ["mcp"], "env": {"SECRET": "s"}},
-                "third-party": {"command": "tp", "env": {"TOKEN": "t"}},
+                # No env of its own: a withheld value would route this entry
+                # through the local launcher (test_kas_env_launch), which is not
+                # what the hoist tests are about.
+                "third-party": {"command": "tp"},
                 **servers,
             },
             tools=["@kirocrew-core", "@third-party"],
