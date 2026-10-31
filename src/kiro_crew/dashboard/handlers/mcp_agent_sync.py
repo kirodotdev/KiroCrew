@@ -420,10 +420,11 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
 def _mcp_hot_reload_active(request: web.Request) -> bool:
     """Whether every live session applies MCP config edits without a reset.
 
-    Two mechanisms satisfy it, per provider: the process reconciles the agent
-    file itself (kiro-cli, ``mcp_config_hot_reload``), or Crew re-sends the
+    Three mechanisms satisfy it, per provider: the process reconciles the agent
+    file itself (kiro-cli, ``mcp_config_hot_reload``), Crew re-sends the
     session's projection at its next turn boundary (KAS,
-    ``mcp_config_wire_reinject``). Keyed to the processes actually running — the
+    ``mcp_config_wire_reinject``), or Crew relaunches the process and reloads the
+    session at its next turn boundary (Strands, ``mcp_config_relaunch_reload``). Keyed to the processes actually running — the
     registered sessions plus the warm pool the reset would drain — and, for the
     first mechanism, to the version each reported at its own handshake, never
     to the binary on disk (which is newer than every live process after an
@@ -431,7 +432,7 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
     falls back to the reset that was always correct — a skipped reset is the
     one outcome a user cannot see.
 
-    A True answer is also the moment the re-injecting providers are MARKED:
+    A True answer is also the moment the re-injecting and relaunching providers are MARKED:
     nothing in their engine watches the file, so the skip is only correct if
     each of them is told a change is due. Marking is a flag per provider, never
     on the wire, so it runs here under the writer's own locks.
@@ -449,8 +450,8 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
             fence()
         if marked:
             logger.info(
-                "MCP config changed: %d live session(s) will re-send their projection "
-                "at their next turn instead of being reset",
+                "MCP config changed: %d live session(s) will apply it at their next "
+                "turn instead of being reset",
                 marked,
             )
         return True
